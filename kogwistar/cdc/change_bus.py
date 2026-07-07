@@ -48,6 +48,7 @@ class ChangeBus:
         self._sinks: list[ChangeSink] = []
         self._seq_lock = threading.Lock()
         self._seq = 0
+        self._closed = False
 
     def next_seq(self) -> int:
         with self._seq_lock:
@@ -55,29 +56,51 @@ class ChangeBus:
             return self._seq
 
     def add_sink(self, sink: ChangeSink) -> None:
+        if self._closed:
+            close = getattr(sink, "close", None)
+            if callable(close):
+                close()
+            raise RuntimeError("change bus already closed")
         self._sinks.append(sink)
 
     def emit(self, event: ChangeEvent) -> None:
+        if self._closed:
+            return
         # existing internal behavior stays
         # e.g. in-memory tracking, counters, etc.
 
         for sink in self._sinks:
             sink.publish(event)
 
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        for sink in self._sinks:
+            close = getattr(sink, "close", None)
+            if callable(close):
+                close()
+        self._sinks.clear()
+
 
 import requests
 
 
 class FastAPIChangeSink:
+    _STOP = object()
+
     def __init__(
         self, endpoint: str, *, max_queue: int = 5000, name: str = "fastapi sink"
     ):
         self.endpoint = endpoint.rstrip("/")
         self.q: queue.Queue[dict] = queue.Queue(maxsize=max_queue)
+        self._closed = threading.Event()
         self._t = threading.Thread(target=self._run, daemon=True, name=name)
         self._t.start()
 
     def publish(self, event) -> None:
+        if self._closed.is_set():
+            return
         try:
             payload = event.to_jsonable()
             # Capture current logging context (from the caller thread)
@@ -98,6 +121,8 @@ class FastAPIChangeSink:
         with requests.Session() as session:
             while True:
                 ev = self.q.get()
+                if ev is self._STOP:
+                    return
                 ctx = ev.pop("_log_ctx", None) or {}
                 try:
                     with bind_log_context(
@@ -115,3 +140,20 @@ class FastAPIChangeSink:
                     pass
                 except Exception:
                     raise
+
+    def close(self) -> None:
+        if self._closed.is_set():
+            return
+        self._closed.set()
+        try:
+            self.q.put_nowait(self._STOP)
+        except queue.Full:
+            try:
+                self.q.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                self.q.put_nowait(self._STOP)
+            except queue.Full:
+                return
+        self._t.join(timeout=1.0)

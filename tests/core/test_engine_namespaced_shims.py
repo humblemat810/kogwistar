@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import shutil
 import uuid
 from pathlib import Path
@@ -14,6 +15,12 @@ from kogwistar.engine_core.engine import (
     scoped_namespace,
 )
 from tests._helpers.fake_backend import build_fake_backend
+
+
+def _cleanup_engine(engine: GraphKnowledgeEngine, test_db_dir: Path) -> None:
+    with contextlib.suppress(Exception):
+        engine.close()
+    shutil.rmtree(test_db_dir, ignore_errors=True)
 
 
 _SHIM_CASES = [
@@ -76,7 +83,7 @@ def test_non_conversation_shims_forward_and_warn(
     assert out is sentinel
     assert seen["args"] == args
     assert seen["kwargs"] == kwargs
-    shutil.rmtree(test_db_dir, ignore_errors=True)
+    _cleanup_engine(engine, test_db_dir)
 
 
 def test_shim_map_does_not_include_conversation_methods():
@@ -106,4 +113,41 @@ def test_scoped_namespace_rebinds_engine_views():
     assert engine.read._e.namespace == original_namespace
     assert engine.write._e.namespace == original_namespace
     assert engine.indexing.engine.namespace == original_namespace
+    _cleanup_engine(engine, test_db_dir)
+
+
+def test_engine_close_closes_owned_resources_once():
+    test_db_dir = Path.cwd() / ".tmp_shim_tests" / str(uuid.uuid4())
+    test_db_dir.mkdir(parents=True, exist_ok=True)
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(test_db_dir),
+        backend_factory=build_fake_backend,
+    )
+    closed: list[str] = []
+
+    class _Closable:
+        def __init__(self, name: str):
+            self.name = name
+
+        def close(self) -> None:
+            closed.append(self.name)
+
+    engine.changes = _Closable("changes")
+    engine._oplog = _Closable("oplog")
+    engine.search_index = _Closable("search_index")
+    engine.backend = _Closable("backend")
+    engine.meta_sqlite = _Closable("meta_sqlite")
+    engine.chroma_client = _Closable("chroma_client")
+
+    engine.close()
+    engine.close()
+
+    assert closed == [
+        "changes",
+        "oplog",
+        "search_index",
+        "backend",
+        "meta_sqlite",
+        "chroma_client",
+    ]
     shutil.rmtree(test_db_dir, ignore_errors=True)

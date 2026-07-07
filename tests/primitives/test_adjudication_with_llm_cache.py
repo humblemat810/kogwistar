@@ -31,7 +31,8 @@ _skip = not all(os.getenv(k) for k in _required_env)
 
 @pytest.fixture(scope="function")
 def engine(tmp_path):
-    return GraphKnowledgeEngine(persist_directory=str(tmp_path / "chroma"))
+    with GraphKnowledgeEngine(persist_directory=str(tmp_path / "chroma")) as eng:
+        yield eng
 
 
 class BatchAdjudications(BaseModel):

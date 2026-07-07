@@ -89,6 +89,23 @@ class KnowledgeLifecyclePolicy(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
+class DefaultDreamLoopPolicy:
+    """Budgeted sampling defaults for dream-loop maintenance."""
+
+    recent_limit: int = 3
+    hotspot_limit: int = 2
+    stale_sample_limit: int = 1
+    min_budget_remaining: int = 1
+    max_proposals_per_tick: int = 3
+    sample_seed: str = "dream-loop"
+    min_evaluation_runs: int = 2
+    approval_score_threshold: float = 1.0
+    deprecation_score_threshold: float = -1.0
+    trusted_feedback_weight: float = 1.0
+    sabotage_feedback_penalty: float = 2.5
+
+
+@dataclass(frozen=True, slots=True)
 class DefaultPromotionPolicy:
     """Conservative promotion default: only auto-promote explicit approvals."""
 
@@ -256,6 +273,7 @@ __all__ = [
     "DefaultArtifactVisibilityPolicy",
     "DefaultDerivedKnowledgePolicy",
     "DefaultKnowledgeLifecyclePolicy",
+    "DefaultDreamLoopPolicy",
     "DefaultPromotionPolicy",
     "DefaultProjectionEligibilityPolicy",
     "DefaultWisdomPolicy",

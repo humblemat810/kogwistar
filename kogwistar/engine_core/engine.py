@@ -1510,6 +1510,30 @@ class GraphKnowledgeEngine:
             pass  # fall back to memory or consider handling PG specifically if index.db isn't used there
 
         self.search_index = SearchIndexService(self, index_db_path=idx_db_path)
+        self._closed = False
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.close()
+
+    def close(self) -> None:
+        if getattr(self, "_closed", False):
+            return
+        self._closed = True
+        closeables = (
+            getattr(self, "changes", None),
+            getattr(self, "_oplog", None),
+            getattr(self, "search_index", None),
+            getattr(self, "backend", None),
+            getattr(self, "meta_sqlite", None),
+            getattr(self, "chroma_client", None),
+        )
+        for resource in closeables:
+            close = getattr(resource, "close", None)
+            if callable(close):
+                close()
 
     def acl_entity_ids_for_target_item(self, **kwargs):
         return self.acl.acl_entity_ids_for_target_item(**kwargs)

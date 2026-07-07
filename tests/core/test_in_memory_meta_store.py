@@ -270,13 +270,12 @@ def test_fake_backend_uses_diskless_in_memory_meta_store() -> None:
     root = Path(".tmp_in_memory_meta_store_test")
     shutil.rmtree(root, ignore_errors=True)
     root.mkdir(parents=True, exist_ok=True)
-    engine = GraphKnowledgeEngine(
+    with GraphKnowledgeEngine(
         persist_directory=str(root / "conv"),
         kg_graph_type="conversation",
         embedding_function=FakeEmbeddingFunction(),
         backend_factory=build_in_memory_backend,
-    )
-
-    assert isinstance(engine.meta_sqlite, InMemoryMetaStore)
-    assert not (root / "conv" / "meta.sqlite").exists()
-    assert not (root / "conv" / "_memory_meta").exists()
+    ) as engine:
+        assert isinstance(engine.meta_sqlite, InMemoryMetaStore)
+        assert not (root / "conv" / "meta.sqlite").exists()
+        assert not (root / "conv" / "_memory_meta").exists()

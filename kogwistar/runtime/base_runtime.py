@@ -14,6 +14,10 @@ RESERVED_ROOT_KEYS = {
 }
 
 RESERVED_PREFIXES = ("_", "__")
+NON_CHECKPOINT_STATE_KEYS = {
+    "_deps",
+    "dream_deps",  # legacy dream DI key; keep out of checkpoints
+}
 
 
 def validate_initial_state(initial_state: WorkflowState):
@@ -80,6 +84,13 @@ def apply_state_update_inplace(
                 mute_state[k] = v
 
 
+def checkpointable_state_copy(state: WorkflowState) -> WorkflowState:
+    """Return checkpoint-safe state by dropping process-local DI plumbing."""
+    return {
+        k: v for k, v in state.items() if k not in NON_CHECKPOINT_STATE_KEYS
+    }
+
+
 class BaseRuntime:
     """Pure shared runtime helpers.
 
@@ -93,6 +104,7 @@ class BaseRuntime:
 
     validate_initial_state = staticmethod(validate_initial_state)
     apply_state_update_inplace = staticmethod(apply_state_update_inplace)
+    checkpointable_state_copy = staticmethod(checkpointable_state_copy)
 
     @staticmethod
     def _edge_priority(edge: Any) -> int:

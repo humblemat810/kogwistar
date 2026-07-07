@@ -1,0 +1,241 @@
+[
+  {
+    "id": "doc1",
+    "title": "Aster Labs Atlas overview",
+    "text": "Aster Labs is building Atlas, a customer-support assistant that summarizes tickets and drafts replies. Ben Ortiz is the product lead for Atlas. Alice Chen owns the safety review process and asks Ravi Mehta to audit edge cases. Atlas depends on the Aurora retrieval service and the QuasarDB vector database for storage.",
+    "entities": [
+      {"name": "Aster Labs", "type": "Company", "aliases": ["Aster", "Aster Labs"]},
+      {"name": "Atlas", "type": "Project", "aliases": ["Atlas project", "Atlas assistant", "customer support assistant"]},
+      {"name": "Ben Ortiz", "type": "Person", "aliases": ["Ben", "Ben Ortiz", "product lead"]},
+      {"name": "Alice Chen", "type": "Person", "aliases": ["Alice", "Alice Chen"]},
+      {"name": "Ravi Mehta", "type": "Person", "aliases": ["Ravi", "Ravi Mehta"]},
+      {"name": "Aurora Retrieval Service", "type": "Component", "aliases": ["Aurora", "Aurora retrieval service", "retrieval service"]},
+      {"name": "QuasarDB Vector Database", "type": "Component", "aliases": ["QuasarDB vector database", "vector database", "QuasarDB Aurora"]}
+    ],
+    "relations": [
+      {"subject": "Aster Labs", "predicate": "develops", "object": "Atlas"},
+      {"subject": "Ben Ortiz", "predicate": "leads", "object": "Atlas"},
+      {"subject": "Alice Chen", "predicate": "owns", "object": "Safety Project"},
+      {"subject": "Alice Chen", "predicate": "works_with", "object": "Ravi Mehta"},
+      {"subject": "Atlas", "predicate": "depends_on", "object": "Aurora Retrieval Service"},
+      {"subject": "Atlas", "predicate": "depends_on", "object": "QuasarDB Vector Database"},
+      {"subject": "Aster Labs", "predicate": "uses", "object": "QuasarDB Vector Database"}
+    ]
+  },
+  {
+    "id": "doc2",
+    "title": "Safety Project briefing",
+    "text": "Alice Chen runs the Safety Project at Aster Labs. The team checks prompt injection, red-team reports, and launch blockers for Atlas. Diego Park from Beacon Security reviews the same release because Beacon handles incident response for Aster Labs.",
+    "entities": [
+      {"name": "Alice Chen", "type": "Person", "aliases": ["Alice", "Alice Chen", "safety chief"]},
+      {"name": "Safety Project", "type": "Project", "aliases": ["Safety", "Safety Project", "trust and safety", "safety review"]},
+      {"name": "Aster Labs", "type": "Company", "aliases": ["Aster Labs"]},
+      {"name": "Atlas", "type": "Project", "aliases": ["Atlas"]},
+      {"name": "Diego Park", "type": "Person", "aliases": ["Diego", "Diego Park"]},
+      {"name": "Beacon Security", "type": "Company", "aliases": ["Beacon Security", "Beacon"]}
+    ],
+    "relations": [
+      {"subject": "Alice Chen", "predicate": "leads", "object": "Safety Project"},
+      {"subject": "Safety Project", "predicate": "reviews", "object": "Atlas"},
+      {"subject": "Diego Park", "predicate": "works_at", "object": "Beacon Security"},
+      {"subject": "Beacon Security", "predicate": "reviews", "object": "Atlas"},
+      {"subject": "Beacon Security", "predicate": "handles", "object": "incident response"},
+      {"subject": "Safety Project", "predicate": "belongs_to", "object": "Aster Labs"}
+    ]
+  },
+  {
+    "id": "doc3",
+    "title": "QuasarDB Aurora product note",
+    "text": "QuasarDB sells the Aurora vector database. Carla Singh is the principal engineer for Aurora and says it supports hybrid search for Aster Labs, Northstar AI, and Beacon Security. QuasarDB also maintains a keyword index API for customers that still need fast deterministic lookup.",
+    "entities": [
+      {"name": "QuasarDB", "type": "Company", "aliases": ["QuasarDB"]},
+      {"name": "Aurora Vector Database", "type": "Component", "aliases": ["Aurora vector database", "Aurora DB", "vector database", "Aurora"]},
+      {"name": "Carla Singh", "type": "Person", "aliases": ["Carla", "Carla Singh"]},
+      {"name": "Aster Labs", "type": "Company", "aliases": ["Aster Labs"]},
+      {"name": "Northstar AI", "type": "Company", "aliases": ["Northstar AI"]},
+      {"name": "Beacon Security", "type": "Company", "aliases": ["Beacon Security"]},
+      {"name": "Keyword Index API", "type": "Component", "aliases": ["keyword index", "index API", "keyword index API"]}
+    ],
+    "relations": [
+      {"subject": "QuasarDB", "predicate": "offers", "object": "Aurora Vector Database"},
+      {"subject": "Carla Singh", "predicate": "leads", "object": "Aurora Vector Database"},
+      {"subject": "Aurora Vector Database", "predicate": "used_by", "object": "Aster Labs"},
+      {"subject": "Aurora Vector Database", "predicate": "used_by", "object": "Northstar AI"},
+      {"subject": "Aurora Vector Database", "predicate": "used_by", "object": "Beacon Security"},
+      {"subject": "QuasarDB", "predicate": "maintains", "object": "Keyword Index API"}
+    ]
+  },
+  {
+    "id": "doc4",
+    "title": "Aurora audit module",
+    "text": "At Aster Labs, Aurora is also the code name for the reliability audit module that watches Atlas launch metrics. Alice Chen owns this internal Aurora module with Ravi Mehta. The code name is deliberately different from QuasarDB's Aurora vector database.",
+    "entities": [
+      {"name": "Aster Labs", "type": "Company", "aliases": ["Aster Labs"]},
+      {"name": "Aurora Audit Module", "type": "Component", "aliases": ["Aurora module", "Aurora audit module", "audit module", "Aurora"]},
+      {"name": "Atlas", "type": "Project", "aliases": ["Atlas"]},
+      {"name": "Alice Chen", "type": "Person", "aliases": ["Alice Chen"]},
+      {"name": "Ravi Mehta", "type": "Person", "aliases": ["Ravi Mehta"]},
+      {"name": "QuasarDB Vector Database", "type": "Component", "aliases": ["QuasarDB vector database", "Aurora vector database", "vector database"]}
+    ],
+    "relations": [
+      {"subject": "Aurora Audit Module", "predicate": "watches", "object": "Atlas"},
+      {"subject": "Alice Chen", "predicate": "owns", "object": "Aurora Audit Module"},
+      {"subject": "Alice Chen", "predicate": "works_with", "object": "Ravi Mehta"},
+      {"subject": "Aurora Audit Module", "predicate": "distinct_from", "object": "QuasarDB Vector Database"}
+    ]
+  },
+  {
+    "id": "doc5",
+    "title": "Northstar AI partner note",
+    "text": "Northstar AI is led by Elena Rossi. Its Compass platform depends on QuasarDB's Aurora vector database and uses the same retrieval stack as Atlas. Northstar partners with Aster Labs on a document classification pilot.",
+    "entities": [
+      {"name": "Northstar AI", "type": "Company", "aliases": ["Northstar AI"]},
+      {"name": "Elena Rossi", "type": "Person", "aliases": ["Elena", "Elena Rossi"]},
+      {"name": "Compass", "type": "Project", "aliases": ["Compass", "Compass platform"]},
+      {"name": "QuasarDB Vector Database", "type": "Component", "aliases": ["QuasarDB vector database", "Aurora vector database", "Aurora"]},
+      {"name": "Aster Labs", "type": "Company", "aliases": ["Aster Labs"]},
+      {"name": "Atlas", "type": "Project", "aliases": ["Atlas"]},
+      {"name": "Document Classification Pilot", "type": "Project", "aliases": ["document classification pilot", "classification pilot"]}
+    ],
+    "relations": [
+      {"subject": "Elena Rossi", "predicate": "leads", "object": "Northstar AI"},
+      {"subject": "Compass", "predicate": "depends_on", "object": "QuasarDB Vector Database"},
+      {"subject": "Northstar AI", "predicate": "partners_with", "object": "Aster Labs"},
+      {"subject": "Compass", "predicate": "shares_stack_with", "object": "Atlas"},
+      {"subject": "Northstar AI", "predicate": "runs", "object": "Document Classification Pilot"}
+    ]
+  },
+  {
+    "id": "doc6",
+    "title": "Beacon Security operations",
+    "text": "Beacon Security is run by Diego Park. Beacon monitors Atlas deployments, writes incident playbooks, and receives logs from Skyline Cloud. Beacon also advises Aster Labs when Aurora retrieval responses look suspicious.",
+    "entities": [
+      {"name": "Beacon Security", "type": "Company", "aliases": ["Beacon Security", "Beacon"]},
+      {"name": "Diego Park", "type": "Person", "aliases": ["Diego Park", "Diego"]},
+      {"name": "Atlas", "type": "Project", "aliases": ["Atlas"]},
+      {"name": "Skyline Cloud", "type": "Company", "aliases": ["Skyline Cloud", "Skyline"]},
+      {"name": "Aster Labs", "type": "Company", "aliases": ["Aster Labs"]},
+      {"name": "Aurora Retrieval Service", "type": "Component", "aliases": ["Aurora retrieval service", "Aurora"]}
+    ],
+    "relations": [
+      {"subject": "Diego Park", "predicate": "leads", "object": "Beacon Security"},
+      {"subject": "Beacon Security", "predicate": "monitors", "object": "Atlas"},
+      {"subject": "Beacon Security", "predicate": "receives_logs_from", "object": "Skyline Cloud"},
+      {"subject": "Beacon Security", "predicate": "advises", "object": "Aster Labs"},
+      {"subject": "Beacon Security", "predicate": "flags", "object": "Aurora Retrieval Service"}
+    ]
+  },
+  {
+    "id": "doc7",
+    "title": "Skyline Cloud hosting note",
+    "text": "Skyline Cloud hosts the Atlas staging environment and the Aurora retrieval service. Nora Patel is the platform owner. Skyline peered the network with QuasarDB so the team could reduce latency.",
+    "entities": [
+      {"name": "Skyline Cloud", "type": "Company", "aliases": ["Skyline Cloud", "Skyline"]},
+      {"name": "Atlas", "type": "Project", "aliases": ["Atlas"]},
+      {"name": "Aurora Retrieval Service", "type": "Component", "aliases": ["Aurora retrieval service", "Aurora"]},
+      {"name": "Nora Patel", "type": "Person", "aliases": ["Nora Patel", "Nora"]},
+      {"name": "QuasarDB", "type": "Company", "aliases": ["QuasarDB"]}
+    ],
+    "relations": [
+      {"subject": "Skyline Cloud", "predicate": "hosts", "object": "Atlas"},
+      {"subject": "Skyline Cloud", "predicate": "hosts", "object": "Aurora Retrieval Service"},
+      {"subject": "Nora Patel", "predicate": "owns", "object": "Skyline Cloud"},
+      {"subject": "Skyline Cloud", "predicate": "peers_with", "object": "QuasarDB"}
+    ]
+  },
+  {
+    "id": "doc8",
+    "title": "ByteForge legacy Atlas Search",
+    "text": "ByteForge maintains a legacy product called Atlas Search, a classic keyword system used by old support tools. The company was acquired by Northstar AI, which is why the word Atlas now appears in both the old search engine and the Aster Labs project.",
+    "entities": [
+      {"name": "ByteForge", "type": "Company", "aliases": ["ByteForge"]},
+      {"name": "Atlas Search", "type": "Product", "aliases": ["Atlas Search", "Atlas", "keyword system"]},
+      {"name": "Northstar AI", "type": "Company", "aliases": ["Northstar AI"]},
+      {"name": "Aster Labs", "type": "Company", "aliases": ["Aster Labs"]}
+    ],
+    "relations": [
+      {"subject": "ByteForge", "predicate": "maintains", "object": "Atlas Search"},
+      {"subject": "ByteForge", "predicate": "acquired_by", "object": "Northstar AI"},
+      {"subject": "Atlas Search", "predicate": "conflicts_with", "object": "Atlas"}
+    ]
+  },
+  {
+    "id": "doc9",
+    "title": "Ravi Mehta release note",
+    "text": "Ravi Mehta works on Atlas launch readiness and the Aurora audit module. He reports to Alice Chen and partners with Ben Ortiz on release gating.",
+    "entities": [
+      {"name": "Ravi Mehta", "type": "Person", "aliases": ["Ravi Mehta", "Ravi"]},
+      {"name": "Atlas", "type": "Project", "aliases": ["Atlas"]},
+      {"name": "Aurora Audit Module", "type": "Component", "aliases": ["Aurora audit module", "Aurora", "audit module"]},
+      {"name": "Alice Chen", "type": "Person", "aliases": ["Alice Chen"]},
+      {"name": "Ben Ortiz", "type": "Person", "aliases": ["Ben Ortiz"]},
+      {"name": "Release Gating", "type": "Process", "aliases": ["release gating"]}
+    ],
+    "relations": [
+      {"subject": "Ravi Mehta", "predicate": "works_on", "object": "Atlas"},
+      {"subject": "Ravi Mehta", "predicate": "works_on", "object": "Aurora Audit Module"},
+      {"subject": "Ravi Mehta", "predicate": "reports_to", "object": "Alice Chen"},
+      {"subject": "Ravi Mehta", "predicate": "partners_with", "object": "Ben Ortiz"},
+      {"subject": "Ravi Mehta", "predicate": "supports", "object": "Release Gating"}
+    ]
+  },
+  {
+    "id": "doc10",
+    "title": "Compass developer portal",
+    "text": "Compass at Northstar AI is a developer portal that indexes docs and suggests agents. Elena Rossi asked Carla Singh to tune Compass so it can answer synonym-heavy queries that the keyword index misses.",
+    "entities": [
+      {"name": "Compass", "type": "Project", "aliases": ["Compass", "developer portal"]},
+      {"name": "Northstar AI", "type": "Company", "aliases": ["Northstar AI"]},
+      {"name": "Elena Rossi", "type": "Person", "aliases": ["Elena Rossi"]},
+      {"name": "Carla Singh", "type": "Person", "aliases": ["Carla Singh"]},
+      {"name": "Keyword Index", "type": "Component", "aliases": ["keyword index", "index"]},
+      {"name": "Synonym Heavy Queries", "type": "Concept", "aliases": ["synonym-heavy queries", "synonym queries"]}
+    ],
+    "relations": [
+      {"subject": "Compass", "predicate": "belongs_to", "object": "Northstar AI"},
+      {"subject": "Elena Rossi", "predicate": "asks", "object": "Carla Singh"},
+      {"subject": "Compass", "predicate": "handles", "object": "Synonym Heavy Queries"},
+      {"subject": "Keyword Index", "predicate": "misses", "object": "Synonym Heavy Queries"}
+    ]
+  },
+  {
+    "id": "doc11",
+    "title": "Aurora audit usage note",
+    "text": "Alice Chen says the purpose of the Aurora audit module is to catch false positives in Atlas tickets before release. The module relies on QuasarDB data snapshots and on Beacon Security incident notes.",
+    "entities": [
+      {"name": "Alice Chen", "type": "Person", "aliases": ["Alice Chen"]},
+      {"name": "Aurora Audit Module", "type": "Component", "aliases": ["Aurora audit module", "Aurora", "audit module"]},
+      {"name": "Atlas", "type": "Project", "aliases": ["Atlas tickets", "Atlas"]},
+      {"name": "QuasarDB", "type": "Company", "aliases": ["QuasarDB"]},
+      {"name": "Beacon Security", "type": "Company", "aliases": ["Beacon Security"]}
+    ],
+    "relations": [
+      {"subject": "Aurora Audit Module", "predicate": "catches", "object": "false positives"},
+      {"subject": "Aurora Audit Module", "predicate": "relies_on", "object": "QuasarDB"},
+      {"subject": "Aurora Audit Module", "predicate": "relies_on", "object": "Beacon Security"},
+      {"subject": "Alice Chen", "predicate": "says", "object": "Aurora Audit Module"}
+    ]
+  },
+  {
+    "id": "doc12",
+    "title": "Migration strategy note",
+    "text": "Aster Labs migrated Atlas from a simple keyword index to Aurora retrieval because users asked questions using synonyms and indirect references. Ben Ortiz still keeps the keyword index for exact lookup, but Alice Chen prefers the graph view when the answer requires relationships across teams.",
+    "entities": [
+      {"name": "Aster Labs", "type": "Company", "aliases": ["Aster Labs"]},
+      {"name": "Atlas", "type": "Project", "aliases": ["Atlas"]},
+      {"name": "Aurora Retrieval", "type": "Concept", "aliases": ["Aurora retrieval", "Aurora"]},
+      {"name": "Keyword Index", "type": "Component", "aliases": ["keyword index", "exact lookup"]},
+      {"name": "Ben Ortiz", "type": "Person", "aliases": ["Ben Ortiz"]},
+      {"name": "Alice Chen", "type": "Person", "aliases": ["Alice Chen"]},
+      {"name": "Graph View", "type": "Concept", "aliases": ["graph view", "relationship-based answers"]}
+    ],
+    "relations": [
+      {"subject": "Aster Labs", "predicate": "migrated", "object": "Atlas"},
+      {"subject": "Atlas", "predicate": "migrated_to", "object": "Aurora Retrieval"},
+      {"subject": "Ben Ortiz", "predicate": "keeps", "object": "Keyword Index"},
+      {"subject": "Alice Chen", "predicate": "prefers", "object": "Graph View"},
+      {"subject": "Keyword Index", "predicate": "supports", "object": "exact lookup"},
+      {"subject": "Graph View", "predicate": "supports", "object": "relationships across teams"}
+    ]
+  }
+]

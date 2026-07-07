@@ -11,6 +11,7 @@ except Exception:  # pragma: no cover
     BaseModel = None  # type: ignore
 
 Json = Any
+_NON_SERIALIZABLE_MAPPING_KEYS = {"_deps", "dream_deps"}
 
 
 def stable_json_dumps(obj: Json) -> str:
@@ -24,7 +25,7 @@ def _ref_obj(obj: Any) -> dict:
     return {"_ref_type": "repr_sha256", "sha256": h, "repr": repr(obj)[:2000]}
 
 
-def to_jsonable(obj: Any) -> Json:
+def to_jsonable(obj: Any, *, _path: str = "$") -> Json:
     """Convert arbitrary objects into a JSON-compatible Python structure.
 
     Goals:
@@ -41,30 +42,38 @@ def to_jsonable(obj: Any) -> Json:
 
     # mappings
     if isinstance(obj, Mapping):
-        return {str(k): to_jsonable(v) for k, v in obj.items()}
+        out = {}
+        for k, v in obj.items():
+            key = str(k)
+            if key in _NON_SERIALIZABLE_MAPPING_KEYS:
+                raise ValueError(
+                    f"Cannot serialize runtime dependency key {key!r} at path {_path}"
+                )
+            out[key] = to_jsonable(v, _path=f"{_path}.{key}")
+        return out
 
     # iterables
     if isinstance(obj, (list, tuple, set)):
-        return [to_jsonable(v) for v in obj]
+        return [to_jsonable(v, _path=f"{_path}[{i}]") for i, v in enumerate(obj)]
 
     # pydantic models
     if BaseModel is not None and isinstance(obj, BaseModel):  # type: ignore[arg-type]
         try:
-            return to_jsonable(obj.model_dump())
+            return to_jsonable(obj.model_dump(), _path=_path)
         except Exception:
             return _ref_obj(obj)
 
     # dataclasses
     if dataclasses.is_dataclass(obj):
         try:
-            return to_jsonable(dataclasses.asdict(obj))
+            return to_jsonable(dataclasses.asdict(obj), _path=_path)
         except Exception:
             return _ref_obj(obj)
 
     # best-effort: objects with __dict__
     if hasattr(obj, "__dict__"):
         try:
-            return to_jsonable(vars(obj))
+            return to_jsonable(vars(obj), _path=_path)
         except Exception:
             return _ref_obj(obj)
 

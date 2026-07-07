@@ -10,31 +10,31 @@ import pytest
 pytestmark = pytest.mark.ci_full
 
 def test_puregraph_persist(tmp_path):
-    eng = GraphKnowledgeEngine(
+    with GraphKnowledgeEngine(
         persist_directory=str(tmp_path),
         embedding_function=ConstantEmbeddingFunction(dim=384),
-    )
-    node = PureChromaNode(
-        id="nn:wisdom-node-1",
-        domain_id="wisdom-math",
-        label="T",
-        type="entity",
-        summary="x",
-    )
-    edge = PureChromaEdge(
-        domain_id="wisdom-math",
-        label="E",
-        type="relationship",
-        summary="r",
-        relation="rel",
-        source_ids=[node.id],
-        target_ids=[node.id],
-        source_edge_ids=[],
-        target_edge_ids=[],
-    )
-    g = PureGraph(nodes=[node], edges=[edge])
-    out = eng.persist_graph(parsed=g, session_id="unit-test")
-    assert out["node_ids"] and out["edge_ids"]
+    ) as eng:
+        node = PureChromaNode(
+            id="nn:wisdom-node-1",
+            domain_id="wisdom-math",
+            label="T",
+            type="entity",
+            summary="x",
+        )
+        edge = PureChromaEdge(
+            domain_id="wisdom-math",
+            label="E",
+            type="relationship",
+            summary="r",
+            relation="rel",
+            source_ids=[node.id],
+            target_ids=[node.id],
+            source_edge_ids=[],
+            target_edge_ids=[],
+        )
+        g = PureGraph(nodes=[node], edges=[edge])
+        out = eng.persist_graph(parsed=g, session_id="unit-test")
+        assert out["node_ids"] and out["edge_ids"]
 
 
 # def test_dev_token_endpoint_ns_field():

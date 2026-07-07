@@ -27,7 +27,24 @@ The goal is to keep orchestration flexible for LLM-driven planning while preserv
 
 It is not a live execution layer.
 
-### 2.2 Workflow Invocation Semantics
+### 2.2 Dreaming Agent Semantics
+
+A dreaming agent is a maintenance-oriented agent that may run in foreground or background mode with an explicit token budget and policy gates.
+
+Its internal self-to-self reasoning may be recorded as compact conversation-layer planning traces, but not as live execution truth.
+The resulting candidate proposal belongs in wisdom as a suggestion, scored hypothesis, or reusable pattern.
+Only after approval does the system materialize that suggestion into workflow design.
+
+This keeps the layers clean:
+
+- `conversation`: internal planning dialogue, compact reasoning trace, scratchpad-like state
+- `wisdom`: proposal, confidence, evidence, failure lesson, reuse hint
+- `workflow`: approved design, versioned routing, executable control flow
+
+The self-to-self trace is reasoning, not the proposal itself.
+The proposal is a compact summary distilled from that reasoning.
+
+### 2.3 Workflow Invocation Semantics
 
 A workflow step may invoke another workflow by `workflow_id`.
 
@@ -36,7 +53,7 @@ A workflow step may invoke another workflow by `workflow_id`.
 - The parent step consumes the child result and continues execution.
 - This is an explicit runtime capability.
 
-### 2.3 Dynamic Workflow Design
+### 2.4 Dynamic Workflow Design
 
 An LLM may synthesize a new workflow on the fly.
 
@@ -44,7 +61,23 @@ An LLM may synthesize a new workflow on the fly.
 - The runtime executes it through the normal persisted workflow path.
 - The generated design remains inspectable and reusable after the run.
 
-### 2.4 `_route_next` Fanout
+### 2.5 Layer Ownership
+
+Use this placement rule:
+
+- `conversation`: self-to-self reasoning traces, scratchpad planning, user feedback snippets, and run-local conversational evidence
+- `wisdom`: proposal summaries, proposal evaluations, lessons, evidence rollups, confidence, and reuse hints
+- `workflow`: executable workflow designs, workflow nodes, workflow edges, version history, and active/inactive design lineage
+
+The split is:
+
+- thinking stays in `conversation`
+- the compact proposal and its evaluation stay in `wisdom`
+- the executable design and its versioned lineage stay in `workflow`
+
+If a candidate design is materialized before final decision, it still lives as a workflow artifact, but the accept/deprecate decision record remains in `wisdom`.
+
+### 2.6 `_route_next` Fanout
 
 A step may return one or many `_route_next` targets.
 
@@ -63,6 +96,7 @@ Keep the existing mapping aligned with the repo architecture:
 - `workflow`: runtime execution, routing, fanout, nested runs
 - `conversation`: domain-specific orchestration and step assembly
 - `wisdom`: pattern extraction, evaluation, and workflow reuse guidance
+- `maintenance agent`: background or foreground orchestration for distillation, proposal generation, and repair under budget/policy control
 
 ### 3.2 Workflow Design Artifacts
 
@@ -109,11 +143,60 @@ Typical outputs:
 - learned heuristics for future orchestration
 - distilled summaries of what worked
 
+Candidate workflow revisions belong here until approved. A failed proposal is still a wisdom artifact: it becomes a negative example, not a control-plane mutation.
+
+### 3.5 Dreaming Loop
+
+A dreaming agent should follow a small closed loop:
+
+- observe stable traces and user feedback
+- distill compact reasoning and candidate improvements
+- write proposal artifacts into wisdom
+- gate promotion through policy or human approval
+- materialize pending or approved candidate revisions into workflow when execution evidence is needed
+- keep accept / reject / deprecate decision records in wisdom via `proposal_evaluation`
+
+The edge kind for proposal outcome is `proposal_evaluation`.
+Use it for both `proposal -> approved workflow` and `proposal -> rejected lesson`.
+It records the decision, rationale, and resulting target artifact or lesson artifact.
+
+The loop may run in background maintenance mode or foreground assist mode.
+In both modes, budget exhaustion must stop further dreaming work before it mutates workflow truth.
+
+### 3.6 Dream Agent Own Workflow
+
+The dreaming agent itself should be modeled as a workflow in `workflow`, not only as a helper function.
+
+Its workflow can include steps such as:
+
+- observe recent workflow outcomes and conversation feedback
+- select signals under budget and policy gates
+- generate self-to-self reasoning in `conversation`
+- distill a proposal in `wisdom`
+- evaluate accumulated evidence across multiple rounds
+- materialize, keep pending, accept, deprecate, or revert a candidate workflow revision
+
+This makes the dream loop inspectable, replayable, and revisable. It also lets us later dream about the dream agent itself.
+
+### 3.7 Delayed Evaluation
+
+Accept or deprecate does not need to happen in the same dream run as proposal creation.
+
+If evidence is insufficient, the candidate stays pending or evaluating. Later dream cycles can keep collecting evidence from runtime bugs, performance signals, trusted positive/negative user feedback, or sabotage-like guidance that should count against naive approval. Only when policy thresholds are met should the system promote, reject, or deprecate the candidate.
+
+Implementation note: the dream agent itself is now modeled as a first-class workflow with explicit runtime step execution. Its self-to-self reasoning stays in conversation, its compact proposal and evaluation stay in wisdom, and its executable revision lineage stays in workflow.
+
 ## 4. Test Plan
 
 Add coverage for these scenarios:
 
 - wisdom layer stores meta-patterns and does not become a live execution state holder
+- a dreaming agent can emit compact planning traces in conversation without exposing raw private reasoning as system truth
+- proposal generation respects token budget and policy gates
+- failed proposal feeds back into wisdom as lesson / negative example
+- candidate workflow stays pending until enough evaluation rounds have accumulated
+- candidate workflow can be accepted, deprecated, or reverted after later evidence
+- sabotage-like user feedback is evaluated as evidence, not blindly promoted into workflow truth
 - a parent workflow invokes a child workflow by `workflow_id`
 - child workflow invocation creates a fresh run and returns a usable result
 - LLM-synthesized workflows are persisted before reuse

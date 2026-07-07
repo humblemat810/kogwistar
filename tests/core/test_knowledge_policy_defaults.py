@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 from kogwistar.policy import (
     DefaultArtifactVisibilityPolicy,
+    DefaultDreamLoopPolicy,
     DefaultDerivedKnowledgePolicy,
     DefaultKnowledgeLifecyclePolicy,
     DefaultPromotionPolicy,
@@ -122,3 +123,19 @@ def test_default_lifecycle_policy_requires_provenance_for_durable_artifacts():
     assert not policy.requires_provenance("derived_knowledge")
     assert not policy.requires_provenance("execution_wisdom")
     assert policy.replacement_ids([SimpleNamespace(id="n1"), "n2"]) == ["n1", "n2"]
+
+
+def test_default_dream_loop_policy_uses_budgeted_sampling_defaults():
+    policy = DefaultDreamLoopPolicy()
+
+    assert policy.recent_limit == 3
+    assert policy.hotspot_limit == 2
+    assert policy.stale_sample_limit == 1
+    assert policy.min_budget_remaining == 1
+    assert policy.max_proposals_per_tick == 3
+    assert policy.sample_seed == "dream-loop"
+    assert policy.min_evaluation_runs == 2
+    assert policy.approval_score_threshold == 1.0
+    assert policy.deprecation_score_threshold == -1.0
+    assert policy.trusted_feedback_weight == 1.0
+    assert policy.sabotage_feedback_penalty == 2.5

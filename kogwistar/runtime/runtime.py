@@ -3418,7 +3418,7 @@ class WorkflowRuntime(BaseRuntime):
             Span,
         )  # adjust import path
 
-        state_copy = {k: v for k, v in state.items() if k != "_deps"}
+        state_copy = self.checkpointable_state_copy(state)
         state_json = try_serialize_with_ref(state_copy)
         excerpt = f"checkpoint step_seq={step_seq}"
         span = Span(

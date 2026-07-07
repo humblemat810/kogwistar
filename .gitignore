@@ -32,3 +32,7 @@ tmp_manual*/
 tmp_verify*/
 tests/_artifacts/
 bundle/
+empty_cdc_streamer/*.bundle.html
+empty_cdc_streamer/bundle.meta.json
+test_d3_litmus_workflow_self_and_parallel/d3/*.html
+kogwistar/scripts/*.bundle.cdc.script.hl3.html
