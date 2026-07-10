@@ -12,6 +12,11 @@ from kogwistar.id_provider import stable_id
 TState = TypeVar("TState")
 TEvent = TypeVar("TEvent")
 TSnapshot = TypeVar("TSnapshot")
+_PROCESSED_EVENT_ID_TAIL_LIMIT = 1024
+
+
+class ProjectionConflictError(RuntimeError):
+    """Raised when another projector advanced the named projection first."""
 
 
 class CheckpointedProjectionStore(Protocol):
@@ -39,6 +44,20 @@ class CheckpointedProjectionStore(Protocol):
         projection_schema_version: int,
         materialization_status: str,
     ) -> None: ...
+
+    def compare_and_swap_named_projection(
+        self,
+        namespace: str,
+        key: str,
+        payload: dict[str, Any],
+        *,
+        expected_last_authoritative_seq: int | None,
+        expected_last_materialized_seq: int | None,
+        last_authoritative_seq: int,
+        last_materialized_seq: int,
+        projection_schema_version: int,
+        materialization_status: str,
+    ) -> bool: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,6 +114,16 @@ def refresh_checkpointed_named_projection(
     rebuild_from_scratch: bool = False,
 ) -> TSnapshot:
     current_row = store.get_named_projection(namespace, key)
+    expected_last_authoritative_seq = (
+        int(current_row["last_authoritative_seq"])
+        if current_row is not None and current_row.get("last_authoritative_seq") is not None
+        else None
+    )
+    expected_last_materialized_seq = (
+        int(current_row["last_materialized_seq"])
+        if current_row is not None and current_row.get("last_materialized_seq") is not None
+        else None
+    )
     current: ProjectionLoadResult[TState] | None = None
     rebuild_reason: str | None = None
     if current_row:
@@ -109,7 +138,27 @@ def refresh_checkpointed_named_projection(
     elif current is None and rebuild_reason is None:
         rebuild_reason = "missing_projection"
 
-    latest = int(store.get_latest_entity_event_seq(namespace=source_namespace))
+    def mark_failed(exc: Exception) -> None:
+        if current is None:
+            return
+        failure_payload = dict(current.payload)
+        failure_payload["rebuild_reason"] = f"projection_failed:{type(exc).__name__}"
+        failure_payload["processed_event_ids"] = list(current.checkpoint.processed_event_ids)
+        store.replace_named_projection(
+            namespace,
+            key,
+            failure_payload,
+            last_authoritative_seq=current.checkpoint.last_authoritative_seq,
+            last_materialized_seq=current.checkpoint.last_materialized_seq,
+            projection_schema_version=current.checkpoint.projection_schema_version,
+            materialization_status="failed",
+        )
+
+    try:
+        latest = int(store.get_latest_entity_event_seq(namespace=source_namespace))
+    except Exception as exc:
+        mark_failed(exc)
+        raise
     if current is not None and current.checkpoint.last_authoritative_seq > latest:
         current = None
         rebuild_reason = "source_sequence_regressed"
@@ -170,35 +219,46 @@ def refresh_checkpointed_named_projection(
             raw_event_count=raw_event_count,
             materialization_status=status,
             rebuild_reason=rebuild_reason,
-            processed_event_ids=tuple(sorted(seen_event_ids)),
+            processed_event_ids=tuple(processed_event_ids[-_PROCESSED_EVENT_ID_TAIL_LIMIT:]),
         )
         payload = build_payload(state, checkpoint, checkpoint.processed_event_ids)
-        store.replace_named_projection(
-            namespace,
-            key,
-            payload,
-            last_authoritative_seq=authoritative_after,
-            last_materialized_seq=to_seq,
-            projection_schema_version=projection_schema_version,
-            materialization_status=status,
-        )
+        compare_and_swap = getattr(store, "compare_and_swap_named_projection", None)
+        if callable(compare_and_swap):
+            committed = compare_and_swap(
+                namespace,
+                key,
+                payload,
+                expected_last_authoritative_seq=(
+                    expected_last_authoritative_seq
+                ),
+                expected_last_materialized_seq=(
+                    expected_last_materialized_seq
+                ),
+                last_authoritative_seq=authoritative_after,
+                last_materialized_seq=to_seq,
+                projection_schema_version=projection_schema_version,
+                materialization_status=status,
+            )
+            if not committed:
+                raise ProjectionConflictError(
+                    f"projection advanced concurrently: namespace={namespace!r} key={key!r}"
+                )
+        else:
+            store.replace_named_projection(
+                namespace,
+                key,
+                payload,
+                last_authoritative_seq=authoritative_after,
+                last_materialized_seq=to_seq,
+                projection_schema_version=projection_schema_version,
+                materialization_status=status,
+            )
         stored_row = store.get_named_projection(namespace, key)
         if stored_row is None:
             raise RuntimeError("projection disappeared after materialization")
         return build_snapshot(stored_row)
+    except ProjectionConflictError:
+        raise
     except Exception as exc:
-        if current is None:
-            raise
-        failure_payload = dict(current.payload)
-        failure_payload["rebuild_reason"] = f"projection_failed:{type(exc).__name__}"
-        failure_payload["processed_event_ids"] = list(current.checkpoint.processed_event_ids)
-        store.replace_named_projection(
-            namespace,
-            key,
-            failure_payload,
-            last_authoritative_seq=current.checkpoint.last_authoritative_seq,
-            last_materialized_seq=current.checkpoint.last_materialized_seq,
-            projection_schema_version=current.checkpoint.projection_schema_version,
-            materialization_status="failed",
-        )
+        mark_failed(exc)
         raise

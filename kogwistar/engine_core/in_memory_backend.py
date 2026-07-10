@@ -692,6 +692,41 @@ class _FakeMetaStore:
             "updated_at_ms": 0,
         }
 
+    def compare_and_swap_named_projection(
+        self,
+        namespace: str,
+        key: str,
+        payload: dict[str, Any],
+        *,
+        expected_last_authoritative_seq: int | None,
+        expected_last_materialized_seq: int | None,
+        last_authoritative_seq: int,
+        last_materialized_seq: int,
+        projection_schema_version: int,
+        materialization_status: str,
+    ) -> bool:
+        row_key = (str(namespace), str(key))
+        existing = self._named_projections.get(row_key)
+        if expected_last_authoritative_seq is None and expected_last_materialized_seq is None:
+            if existing is not None:
+                return False
+        elif (
+            existing is None
+            or int(existing.get("last_authoritative_seq", -1)) != int(expected_last_authoritative_seq)
+            or int(existing.get("last_materialized_seq", -1)) != int(expected_last_materialized_seq)
+        ):
+            return False
+        self.replace_named_projection(
+            namespace,
+            key,
+            payload,
+            last_authoritative_seq=last_authoritative_seq,
+            last_materialized_seq=last_materialized_seq,
+            projection_schema_version=projection_schema_version,
+            materialization_status=materialization_status,
+        )
+        return True
+
     def list_named_projections(self, namespace: str) -> list[dict[str, Any]]:
         rows = [
             copy.deepcopy(row)

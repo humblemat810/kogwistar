@@ -1364,9 +1364,33 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
         op: str,
         payload_json: str,
     ) -> int:
-        seq = self.alloc_event_seq(namespace)
         now = self._now_epoch()
         with self.transaction() as conn:
+            existing = conn.execute(
+                "SELECT namespace, seq FROM entity_events WHERE event_id = ?",
+                (event_id,),
+            ).fetchone()
+            if existing is not None:
+                if str(existing[0]) != str(namespace):
+                    raise ValueError(f"event_id already belongs to namespace {existing[0]!r}")
+                return int(existing[1])
+            seq_row = conn.execute(
+                """
+                UPDATE namespace_seq
+                SET next_seq = next_seq + 1
+                WHERE namespace = ?
+                RETURNING next_seq - 1
+                """,
+                (namespace,),
+            ).fetchone()
+            if seq_row is None:
+                conn.execute(
+                    "INSERT INTO namespace_seq(namespace, next_seq) VALUES (?, 2)",
+                    (namespace,),
+                )
+                seq = 1
+            else:
+                seq = int(seq_row[0])
             conn.execute(
                 """
                 INSERT INTO entity_events(
@@ -1583,6 +1607,58 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
                     updated_at_ms,
                 ),
             )
+
+    def compare_and_swap_named_projection(
+        self,
+        namespace: str,
+        key: str,
+        payload: dict[str, Any],
+        *,
+        expected_last_authoritative_seq: int | None,
+        expected_last_materialized_seq: int | None,
+        last_authoritative_seq: int,
+        last_materialized_seq: int,
+        projection_schema_version: int,
+        materialization_status: str,
+    ) -> bool:
+        if not isinstance(payload, dict):
+            raise TypeError("payload must be a dict")
+        updated_at_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+        payload_json = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        with self.transaction() as conn:
+            if expected_last_authoritative_seq is None and expected_last_materialized_seq is None:
+                result = conn.execute(
+                    """
+                    INSERT INTO named_projections(
+                        namespace, key, payload_json,
+                        last_authoritative_seq, last_materialized_seq,
+                        projection_schema_version, materialization_status, updated_at_ms
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(namespace, key) DO NOTHING
+                    """,
+                    (
+                        str(namespace), str(key), payload_json,
+                        int(last_authoritative_seq), int(last_materialized_seq),
+                        int(projection_schema_version), str(materialization_status), updated_at_ms,
+                    ),
+                )
+            else:
+                result = conn.execute(
+                    """
+                    UPDATE named_projections
+                    SET payload_json = ?, last_authoritative_seq = ?, last_materialized_seq = ?,
+                        projection_schema_version = ?, materialization_status = ?, updated_at_ms = ?
+                    WHERE namespace = ? AND key = ?
+                      AND last_authoritative_seq = ? AND last_materialized_seq = ?
+                    """,
+                    (
+                        payload_json, int(last_authoritative_seq), int(last_materialized_seq),
+                        int(projection_schema_version), str(materialization_status), updated_at_ms,
+                        str(namespace), str(key), int(expected_last_authoritative_seq),
+                        int(expected_last_materialized_seq),
+                    ),
+                )
+        return bool(result.rowcount == 1)
 
     def list_named_projections(self, namespace: str) -> list[dict[str, Any]]:
         with self.connect() as conn:

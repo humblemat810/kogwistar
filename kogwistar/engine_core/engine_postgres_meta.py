@@ -1322,8 +1322,34 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
         payload_json: str,
     ) -> int:
         schema = self.schema
-        seq = self.alloc_event_seq(namespace)
         with self.transaction() as conn:
+            existing = conn.execute(
+                sa.text(f"SELECT namespace, seq FROM {schema}.entity_events WHERE event_id = :eid"),
+                {"eid": event_id},
+            ).fetchone()
+            if existing is not None:
+                if str(existing[0]) != str(namespace):
+                    raise ValueError(f"event_id already belongs to namespace {existing[0]!r}")
+                return int(existing[1])
+            seq_row = conn.execute(
+                sa.text(
+                    f"""
+                    UPDATE {schema}.namespace_seq
+                    SET next_seq = next_seq + 1
+                    WHERE namespace = :ns
+                    RETURNING next_seq - 1
+                    """
+                ),
+                {"ns": namespace},
+            ).fetchone()
+            if seq_row is None:
+                conn.execute(
+                    sa.text(f"INSERT INTO {schema}.namespace_seq(namespace, next_seq) VALUES (:ns, 2)"),
+                    {"ns": namespace},
+                )
+                seq = 1
+            else:
+                seq = int(seq_row[0])
             conn.execute(
                 sa.text(f"""
                     INSERT INTO {schema}.entity_events(
@@ -1510,6 +1536,76 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                     "updated_at_ms": updated_at_ms,
                 },
             )
+
+    def compare_and_swap_named_projection(
+        self,
+        namespace: str,
+        key: str,
+        payload: dict[str, Any],
+        *,
+        expected_last_authoritative_seq: int | None,
+        expected_last_materialized_seq: int | None,
+        last_authoritative_seq: int,
+        last_materialized_seq: int,
+        projection_schema_version: int,
+        materialization_status: str,
+    ) -> bool:
+        if not isinstance(payload, dict):
+            raise TypeError("payload must be a dict")
+        schema = self.schema
+        updated_at_ms = int(time.time() * 1000)
+        payload_json = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        with self.transaction() as conn:
+            params = {
+                "namespace": str(namespace),
+                "key": str(key),
+                "payload_json": payload_json,
+                "last_authoritative_seq": int(last_authoritative_seq),
+                "last_materialized_seq": int(last_materialized_seq),
+                "projection_schema_version": int(projection_schema_version),
+                "materialization_status": str(materialization_status),
+                "updated_at_ms": updated_at_ms,
+            }
+            if expected_last_authoritative_seq is None and expected_last_materialized_seq is None:
+                result = conn.execute(
+                    sa.text(
+                        f"""
+                        INSERT INTO {schema}.named_projections(
+                            namespace, key, payload_json,
+                            last_authoritative_seq, last_materialized_seq,
+                            projection_schema_version, materialization_status, updated_at_ms
+                        ) VALUES (
+                            :namespace, :key, :payload_json,
+                            :last_authoritative_seq, :last_materialized_seq,
+                            :projection_schema_version, :materialization_status, :updated_at_ms
+                        ) ON CONFLICT(namespace, key) DO NOTHING
+                        """
+                    ),
+                    params,
+                )
+            else:
+                params.update(
+                    expected_last_authoritative_seq=int(expected_last_authoritative_seq),
+                    expected_last_materialized_seq=int(expected_last_materialized_seq),
+                )
+                result = conn.execute(
+                    sa.text(
+                        f"""
+                        UPDATE {schema}.named_projections
+                        SET payload_json = :payload_json,
+                            last_authoritative_seq = :last_authoritative_seq,
+                            last_materialized_seq = :last_materialized_seq,
+                            projection_schema_version = :projection_schema_version,
+                            materialization_status = :materialization_status,
+                            updated_at_ms = :updated_at_ms
+                        WHERE namespace = :namespace AND key = :key
+                          AND last_authoritative_seq = :expected_last_authoritative_seq
+                          AND last_materialized_seq = :expected_last_materialized_seq
+                        """
+                    ),
+                    params,
+                )
+        return bool(result.rowcount == 1)
 
     def list_named_projections(self, namespace: str) -> list[dict[str, Any]]:
         schema = self.schema

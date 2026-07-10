@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import math
 from typing import Any
 
 
@@ -80,12 +81,15 @@ def budget_event_from_dict(payload: dict[str, Any]) -> BudgetEvent:
         if isinstance(raw_attribution, dict)
         else None
     )
+    amount = float(payload.get("amount") or 0.0)
+    if not math.isfinite(amount) or amount < 0:
+        raise ValueError("budget event amount must be finite and >= 0")
     return BudgetEvent(
         event_id=str(payload["event_id"]) if payload.get("event_id") is not None else None,
         run_id=str(payload.get("run_id") or ""),
         source=str(payload.get("source") or "unknown"),
         kind=str(payload.get("kind") or "unknown"),
-        amount=float(payload.get("amount") or 0.0),
+        amount=amount,
         unit=str(payload.get("unit") or ""),
         scope=str(payload.get("scope") or "run"),
         ts_ms=int(payload["ts_ms"]) if payload.get("ts_ms") is not None else None,
@@ -138,7 +142,16 @@ class BudgetLedger:
     used: int = 0
     events: list[BudgetEvent] = field(default_factory=list)
 
-    def debit(self, amount: int | float, *, reason: str = "step", source: str = "runtime", run_id: str = "") -> None:
+    def debit(
+        self,
+        amount: int | float,
+        *,
+        reason: str = "step",
+        source: str = "runtime",
+        run_id: str = "",
+        unit: str = "token",
+        attribution: BudgetAttribution | None = None,
+    ) -> None:
         amount = int(amount or 0)
         if amount < 0:
             raise ValueError("amount must be >= 0")
@@ -149,9 +162,10 @@ class BudgetLedger:
                     source=source,
                     kind="exhausted",
                     amount=float(amount),
-                    unit="token",
+                    unit=unit,
                     scope="run",
                     meta={"reason": reason},
+                    attribution=attribution,
                 )
             )
             raise BudgetExhaustedError(f"budget exhausted: used={self.used} total={self.total}")
@@ -162,9 +176,10 @@ class BudgetLedger:
                 source=source,
                 kind="debit",
                 amount=float(amount),
-                unit="token",
+                unit=unit,
                 scope="run",
                 meta={"reason": reason},
+                attribution=attribution,
             )
         )
 
@@ -173,12 +188,14 @@ class BudgetLedger:
         return max(0, int(self.total) - int(self.used))
 
     def ingest(self, event: BudgetEvent) -> None:
-        if event.kind in {"debit", "token"}:
+        if event.kind in {"debit", "token"} and event.unit != "ms":
             self.debit(
                 int(event.amount),
                 reason=str(event.meta.get("reason") or event.kind or "event"),
                 source=event.source,
                 run_id=event.run_id,
+                unit=event.unit or "token",
+                attribution=event.attribution,
             )
             return
         if event.kind == "time" or event.unit == "ms":
@@ -244,6 +261,8 @@ class StateBackedBudgetLedger:
         reason: str = "step",
         source: str = "runtime",
         run_id: str = "",
+        unit: str | None = None,
+        attribution: BudgetAttribution | None = None,
     ) -> None:
         amount = int(amount or 0)
         if amount < 0:
@@ -256,9 +275,10 @@ class StateBackedBudgetLedger:
                     source=source,
                     kind="exhausted",
                     amount=float(amount),
-                    unit=str(self.state.get("budget_kind") or "token"),
+                    unit=unit or str(self.state.get("budget_kind") or "token"),
                     scope=str(self.state.get("budget_scope") or "run"),
                     meta={"reason": reason},
+                    attribution=attribution,
                 )
             )
             raise BudgetExhaustedError(
@@ -282,19 +302,22 @@ class StateBackedBudgetLedger:
                 source=source,
                 kind="debit",
                 amount=float(amount),
-                unit=str(self.state.get("budget_kind") or "token"),
+                unit=unit or str(self.state.get("budget_kind") or "token"),
                 scope=str(self.state.get("budget_scope") or "run"),
                 meta={"reason": reason},
+                attribution=attribution,
             )
         )
 
     def ingest(self, event: BudgetEvent) -> None:
-        if event.kind in {"debit", "token"}:
+        if event.kind in {"debit", "token"} and event.unit != "ms":
             self.debit(
                 int(event.amount),
                 reason=str(event.meta.get("reason") or event.kind or "event"),
                 source=event.source,
                 run_id=event.run_id,
+                unit=event.unit or None,
+                attribution=event.attribution,
             )
             return
         if event.kind == "time" or event.unit == "ms":
@@ -320,6 +343,7 @@ class StateBackedBudgetLedger:
         reason: str = "step",
         source: str = "runtime",
         run_id: str = "",
+        attribution: BudgetAttribution | None = None,
     ) -> None:
         amount_ms = int(amount_ms or 0)
         if amount_ms < 0:
@@ -335,6 +359,7 @@ class StateBackedBudgetLedger:
                     unit="ms",
                     scope=str(self.state.get("budget_scope") or "run"),
                     meta={"reason": reason},
+                    attribution=attribution,
                 )
             )
             raise BudgetExhaustedError(
@@ -350,6 +375,7 @@ class StateBackedBudgetLedger:
                 unit="ms",
                 scope=str(self.state.get("budget_scope") or "run"),
                 meta={"reason": reason},
+                attribution=attribution,
             )
         )
 

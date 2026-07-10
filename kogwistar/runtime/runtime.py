@@ -32,7 +32,7 @@ from kogwistar.runtime.models import (
     WorkflowState,
     WorkflowStepExecNode,
 )
-from kogwistar.runtime.budget import StateBackedBudgetLedger
+from kogwistar.runtime.budget import BudgetAttribution, StateBackedBudgetLedger
 from kogwistar.runtime.budget_adapters import adapt_budget_events
 
 from .design import validate_workflow_design, Predicate
@@ -2148,11 +2148,21 @@ class WorkflowRuntime(BaseRuntime):
                     if isinstance(deps, dict):
                         budget_ledger = deps.get("budget_ledger")
                     if isinstance(budget_ledger, StateBackedBudgetLedger):
+                        step_attribution = BudgetAttribution(
+                            workspace_id=str(state.get("workspace_id") or "") or None,
+                            source_document_id=str(
+                                state.get("source_document_id") or state.get("document_id") or ""
+                            )
+                            or None,
+                            operation_id=str(stable_id("kogwistar.runtime.operation", run_id, node_id)),
+                            operation_kind=f"workflow_step:{node_id}",
+                        )
                         try:
                             budget_ledger.debit_time(
                                 max(0, dur_ms),
                                 reason=f"step:{node_id}",
                                 run_id=str(run_id),
+                                attribution=step_attribution,
                             )
                         except Exception:
                             pass
@@ -2174,6 +2184,7 @@ class WorkflowRuntime(BaseRuntime):
                                 usage_payload,
                                 run_id=str(run_id),
                                 scope="step",
+                                attribution=step_attribution,
                             ):
                                 try:
                                     budget_ledger.ingest(evt)

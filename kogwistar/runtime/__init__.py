@@ -10,6 +10,7 @@ if TYPE_CHECKING:
     from kogwistar.runtime.budget_adapters import summarize_budget_events
     from kogwistar.runtime.checkpointed_projection import (
         CheckpointedProjectionStore,
+        ProjectionConflictError,
         ProjectionCheckpoint,
         ProjectionLoadResult,
         refresh_checkpointed_named_projection,
@@ -119,6 +120,7 @@ __all__ = [
     "JsonlEventSink",
     "summarize_budget_events",
     "CheckpointedProjectionStore",
+    "ProjectionConflictError",
     "ProjectionCheckpoint",
     "ProjectionLoadResult",
     "refresh_checkpointed_named_projection",
@@ -170,6 +172,7 @@ _EXPORTS = {
     "JsonlEventSink": "kogwistar.runtime.sinks",
     "summarize_budget_events": "kogwistar.runtime.budget_adapters",
     "CheckpointedProjectionStore": "kogwistar.runtime.checkpointed_projection",
+    "ProjectionConflictError": "kogwistar.runtime.checkpointed_projection",
     "ProjectionCheckpoint": "kogwistar.runtime.checkpointed_projection",
     "ProjectionLoadResult": "kogwistar.runtime.checkpointed_projection",
     "refresh_checkpointed_named_projection": "kogwistar.runtime.checkpointed_projection",

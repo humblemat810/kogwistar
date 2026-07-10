@@ -42,7 +42,10 @@ class GenericUsageAdapter:
         if not isinstance(usage, dict):
             return []
         out: list[BudgetEvent] = []
-        for key in ("input_tokens", "output_tokens", "total_tokens", "total_cost"):
+        token_keys = [key for key in ("input_tokens", "output_tokens") if usage.get(key) is not None]
+        if not token_keys and usage.get("total_tokens") is not None:
+            token_keys.append("total_tokens")
+        for key in (*token_keys, "total_cost"):
             value = usage.get(key)
             if value is None:
                 continue

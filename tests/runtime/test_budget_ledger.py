@@ -118,6 +118,22 @@ def test_state_backed_budget_ledger_tracks_cost_events() -> None:
     assert state["cost_used"] == pytest.approx(1.75)
 
 
+def test_state_backed_budget_ledger_counts_provider_input_and_output_once() -> None:
+    state = {"token_budget": 20, "budget_kind": "token", "budget_scope": "run"}
+    ledger = StateBackedBudgetLedger(state)
+    for event in adapt_budget_events(
+        {"usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}},
+        run_id="run-1",
+    ):
+        ledger.ingest(event)
+
+    assert ledger.used == 15
+    assert [(event.unit, event.amount) for event in ledger.events] == [
+        ("input_tokens", 10.0),
+        ("output_tokens", 5.0),
+    ]
+
+
 def test_cost_ledger_can_ingest_canonical_budget_event() -> None:
     ledger = CostLedger(workspace_id="ws-2")
     event = adapt_budget_events({"usage": {"total_cost": 3}}, run_id="run-2")[0]

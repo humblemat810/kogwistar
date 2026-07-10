@@ -77,6 +77,18 @@ def test_in_memory_meta_index_jobs_and_event_log_contract() -> None:
     assert list(meta.iter_entity_events(namespace="ns-a", from_seq=1)) == [
         (1, "node", "n-1", "ADD", '{"hello":"world"}')
     ]
+    assert (
+        meta.append_entity_event(
+            namespace="ns-a",
+            event_id="evt-1",
+            entity_kind="node",
+            entity_id="n-1",
+            op="ADD",
+            payload_json='{"hello":"world"}',
+        )
+        == seq
+    )
+    assert len(list(meta.iter_entity_events(namespace="ns-a", from_seq=1))) == 1
     meta.cursor_set(namespace="ns-a", consumer="replay", last_seq=seq)
     assert meta.cursor_get(namespace="ns-a", consumer="replay") == 1
 

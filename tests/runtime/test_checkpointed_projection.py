@@ -21,6 +21,7 @@ pytestmark = [pytest.mark.ci, pytest.mark.runtime]
 class _FakeStore:
     def __init__(self) -> None:
         self.events: list[tuple[int, str, str, str, str]] = []
+        self.event_ids: dict[str, int] = {}
         self.next_seq = 1
         self.projection_row: dict[str, object] | None = None
 
@@ -34,9 +35,12 @@ class _FakeStore:
         op: str,
         payload_json: str,
     ) -> int:
+        if event_id in self.event_ids:
+            return self.event_ids[event_id]
         seq = self.next_seq
         self.next_seq += 1
         self.events.append((seq, entity_kind, entity_id, op, payload_json))
+        self.event_ids[event_id] = seq
         return seq
 
     def get_latest_entity_event_seq(self, *, namespace: str = "default") -> int:
@@ -82,6 +86,40 @@ class _FakeStore:
             "projection_schema_version": int(projection_schema_version),
             "materialization_status": str(materialization_status),
         }
+
+    def compare_and_swap_named_projection(
+        self,
+        namespace: str,
+        key: str,
+        payload: dict[str, object],
+        *,
+        expected_last_authoritative_seq: int | None,
+        expected_last_materialized_seq: int | None,
+        last_authoritative_seq: int,
+        last_materialized_seq: int,
+        projection_schema_version: int,
+        materialization_status: str,
+    ) -> bool:
+        current = self.projection_row
+        if expected_last_authoritative_seq is None and expected_last_materialized_seq is None:
+            if current is not None:
+                return False
+        elif (
+            current is None
+            or int(current["last_authoritative_seq"]) != int(expected_last_authoritative_seq)
+            or int(current["last_materialized_seq"]) != int(expected_last_materialized_seq)
+        ):
+            return False
+        self.replace_named_projection(
+            namespace,
+            key,
+            payload,
+            last_authoritative_seq=last_authoritative_seq,
+            last_materialized_seq=last_materialized_seq,
+            projection_schema_version=projection_schema_version,
+            materialization_status=materialization_status,
+        )
+        return True
 
 
 @dataclass(frozen=True)
@@ -372,3 +410,118 @@ def test_refresh_checkpointed_named_projection_can_skip_unrelated_events() -> No
     assert result.total == 5
     assert result.checkpoint.last_materialized_seq == 2
     assert result.checkpoint.raw_event_count == 1
+
+
+def test_refresh_checkpointed_named_projection_does_not_overwrite_concurrent_update() -> None:
+    store = _FakeStore()
+    _append_event(
+        store,
+        event=BudgetEvent(
+            event_id="usage-1",
+            run_id="run-1",
+            source="provider",
+            kind="token",
+            amount=5,
+            unit="input_tokens",
+        ),
+    )
+    refresh_checkpointed_named_projection(
+        store,
+        namespace="usage_projection",
+        key="ws-1",
+        projection_id="usage",
+        workspace_id="ws-1",
+        source_namespace="usage_events",
+        projection_schema_version=1,
+        decode_current=_load_current,
+        create_state=_create_state,
+        decode_event=_decode_event,
+        event_key=_event_key,
+        apply_event=_apply_event,
+        build_payload=_build_payload,
+        build_snapshot=_build_snapshot,
+    )
+
+    original_cas = store.compare_and_swap_named_projection
+
+    def conflict(*args: object, **kwargs: object) -> bool:
+        return False
+
+    store.compare_and_swap_named_projection = conflict  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError, match="projection advanced concurrently"):
+        refresh_checkpointed_named_projection(
+            store,
+            namespace="usage_projection",
+            key="ws-1",
+            projection_id="usage",
+            workspace_id="ws-1",
+            source_namespace="usage_events",
+            projection_schema_version=1,
+            decode_current=_load_current,
+            create_state=_create_state,
+            decode_event=_decode_event,
+            event_key=_event_key,
+            apply_event=_apply_event,
+            build_payload=_build_payload,
+            build_snapshot=_build_snapshot,
+        )
+    store.compare_and_swap_named_projection = original_cas  # type: ignore[method-assign]
+
+
+def test_fake_source_event_append_is_idempotent() -> None:
+    store = _FakeStore()
+    first = store.append_entity_event(
+        namespace="usage_events",
+        event_id="event-1",
+        entity_kind="usage_event",
+        entity_id="event-1",
+        op="ADD",
+        payload_json="{}",
+    )
+    second = store.append_entity_event(
+        namespace="usage_events",
+        event_id="event-1",
+        entity_kind="usage_event",
+        entity_id="event-1",
+        op="ADD",
+        payload_json="{}",
+    )
+
+    assert second == first
+
+
+def test_checkpoint_keeps_only_a_bounded_event_id_tail() -> None:
+    store = _FakeStore()
+    for index in range(1, 1100):
+        _append_event(
+            store,
+            event=BudgetEvent(
+                event_id=f"usage-{index}",
+                run_id=f"run-{index}",
+                source="provider",
+                kind="token",
+                amount=1,
+                unit="input_tokens",
+            ),
+        )
+
+    result = refresh_checkpointed_named_projection(
+        store,
+        namespace="usage_projection",
+        key="ws-1",
+        projection_id="usage",
+        workspace_id="ws-1",
+        source_namespace="usage_events",
+        projection_schema_version=1,
+        decode_current=_load_current,
+        create_state=_create_state,
+        decode_event=_decode_event,
+        event_key=_event_key,
+        apply_event=_apply_event,
+        build_payload=_build_payload,
+        build_snapshot=_build_snapshot,
+    )
+
+    assert len(result.checkpoint.processed_event_ids) == 1024
+    assert "usage-1" not in result.checkpoint.processed_event_ids
+    assert "usage-1099" in result.checkpoint.processed_event_ids

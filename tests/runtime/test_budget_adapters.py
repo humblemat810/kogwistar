@@ -18,6 +18,18 @@ def test_generic_usage_adapter_maps_usage_to_canonical_events() -> None:
     assert events[-1].source == "generic-usage"
 
 
+def test_generic_usage_adapter_does_not_emit_redundant_total_tokens() -> None:
+    events = adapt_budget_events(
+        {"usage": {"input_tokens": 5, "output_tokens": 7, "total_tokens": 12}},
+        run_id="run-1",
+    )
+
+    assert [(event.unit, event.amount) for event in events] == [
+        ("input_tokens", 5.0),
+        ("output_tokens", 7.0),
+    ]
+
+
 def test_generic_usage_adapter_ignores_non_usage_payloads() -> None:
     assert adapt_budget_events({"x": 1}, run_id="run-1") == []
 
@@ -57,3 +69,10 @@ def test_summarize_budget_events_tracks_mixed_runtime_events() -> None:
     assert summary["total_cost"] == 1.5
     assert summary["time_ms"] == 2
     assert summary["event_count"] == 4
+
+
+def test_budget_event_deserialization_rejects_invalid_amount() -> None:
+    from kogwistar.runtime.budget import budget_event_from_dict
+
+    with pytest.raises(ValueError, match="finite"):
+        budget_event_from_dict({"amount": -1, "run_id": "run-1"})

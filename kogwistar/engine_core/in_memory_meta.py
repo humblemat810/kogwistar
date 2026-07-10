@@ -30,6 +30,7 @@ def _now_ms() -> int:
 @dataclass
 class _EntityEventRow:
     seq: int
+    event_id: str
     entity_kind: str
     entity_id: str
     op: str
@@ -626,13 +627,16 @@ class InMemoryMetaStore(LaneMessageMetaStoreMixin):
         op: str,
         payload_json: str,
     ) -> int:
-        _ = event_id
-        seq = self.alloc_event_seq(namespace)
         with self.transaction() as txn:
             events = txn.state.entity_events.setdefault(str(namespace), [])
+            for existing in events:
+                if existing.event_id == str(event_id):
+                    return int(existing.seq)
+            seq = self.alloc_event_seq(namespace)
             events.append(
                 _EntityEventRow(
                     seq=seq,
+                    event_id=str(event_id),
                     entity_kind=str(entity_kind),
                     entity_id=str(entity_id),
                     op=str(op),
@@ -736,6 +740,45 @@ class InMemoryMetaStore(LaneMessageMetaStoreMixin):
                 "materialization_status": str(materialization_status),
                 "updated_at_ms": _now_ms(),
             }
+
+    def compare_and_swap_named_projection(
+        self,
+        namespace: str,
+        key: str,
+        payload: dict[str, Any],
+        *,
+        expected_last_authoritative_seq: int | None,
+        expected_last_materialized_seq: int | None,
+        last_authoritative_seq: int,
+        last_materialized_seq: int,
+        projection_schema_version: int,
+        materialization_status: str,
+    ) -> bool:
+        if not isinstance(payload, dict):
+            raise TypeError("payload must be a dict")
+        with self.transaction() as txn:
+            row_key = (str(namespace), str(key))
+            existing = txn.state.named_projections.get(row_key)
+            if expected_last_authoritative_seq is None and expected_last_materialized_seq is None:
+                if existing is not None:
+                    return False
+            elif (
+                existing is None
+                or int(existing.get("last_authoritative_seq", -1)) != int(expected_last_authoritative_seq)
+                or int(existing.get("last_materialized_seq", -1)) != int(expected_last_materialized_seq)
+            ):
+                return False
+            txn.state.named_projections[row_key] = {
+                "namespace": str(namespace),
+                "key": str(key),
+                "payload": copy.deepcopy(payload),
+                "last_authoritative_seq": int(last_authoritative_seq),
+                "last_materialized_seq": int(last_materialized_seq),
+                "projection_schema_version": int(projection_schema_version),
+                "materialization_status": str(materialization_status),
+                "updated_at_ms": _now_ms(),
+            }
+        return True
 
     def list_named_projections(self, namespace: str) -> list[dict[str, Any]]:
         with self._lock:
