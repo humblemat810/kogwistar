@@ -1620,6 +1620,8 @@ def test_async_runtime_side_by_side_node_edge_and_terminal_parity(terminal_case)
     )
 
     assert sync_out.status == async_out.status
+    assert sync_out.errors == async_out.errors
+    assert sync_out.errors == (["boom"] if terminal_case == "failure" else [])
     assert sync_out.final_state == async_out.final_state
     assert _norm_nodes(sync_conv, run_id) == _norm_nodes(async_conv, run_id)
     assert _norm_edges(sync_conv, run_id) == _norm_edges(async_conv, run_id)

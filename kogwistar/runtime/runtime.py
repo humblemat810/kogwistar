@@ -214,6 +214,7 @@ class RunResult:
     final_state: WorkflowState
     mq: queue.Queue[Dict[str, Json]]
     status: str = "succeeded"
+    errors: list[str] = field(default_factory=list)
 
 
 class _StateWriteTxn:
@@ -1100,7 +1101,13 @@ class WorkflowRuntime(BaseRuntime):
                 self.emitter.emit(
                     type="workflow_run_failed",
                     ctx=tc_done,
-                    payload={"workflow_id": str(workflow_id)},
+                    payload={
+                        "workflow_id": str(workflow_id),
+                        "errors": [
+                            str(error)[-4_000:]
+                            for error in (getattr(client_result, "errors", []) or [])
+                        ],
+                    },
                 )
             except Exception:
                 pass
@@ -1109,6 +1116,10 @@ class WorkflowRuntime(BaseRuntime):
                 run_id=run_id,
                 mq=queue.Queue(),
                 status="failure",
+                errors=[
+                    str(error)
+                    for error in (getattr(client_result, "errors", []) or [])
+                ],
             )
 
         self._persist_completed_terminal(
@@ -1425,6 +1436,7 @@ class WorkflowRuntime(BaseRuntime):
             cancel_info: dict[str, Any] | None = None
             run_suspended = False
             run_failed = False
+            run_errors: list[str] = []
 
             graveyard: queue.Queue[
                 Tuple[str, StepRunResult, int, str, str | None, str, int]
@@ -1846,9 +1858,7 @@ class WorkflowRuntime(BaseRuntime):
                                 workflow_id=str(workflow_id),
                                 run_id=str(run_id),
                                 accepted_step_seq=max(-1, int(step_seq) - 1),
-                                errors=list(
-                                    getattr(run_result, "errors", []) or []
-                                ),
+                                errors=list(run_errors),
                                 last_processed_node_id=(
                                     str(last_exec_node.safe_get_id())
                                     if last_exec_node is not None
@@ -1872,7 +1882,10 @@ class WorkflowRuntime(BaseRuntime):
                                 self.emitter.emit(
                                     type="workflow_run_failed",
                                     ctx=tc_done,
-                                    payload={"workflow_id": str(workflow_id)},
+                                    payload={
+                                        "workflow_id": str(workflow_id),
+                                        "errors": [error[-4_000:] for error in run_errors],
+                                    },
                                 )
                             except Exception:
                                 pass
@@ -1883,6 +1896,7 @@ class WorkflowRuntime(BaseRuntime):
                                 run_id=run_id,
                                 mq=mq,
                                 status="failure",
+                                errors=list(run_errors),
                             )
                         if run_suspended:
                             # suspended
@@ -2133,6 +2147,11 @@ class WorkflowRuntime(BaseRuntime):
                         status,
                         mask,
                     ) = done_task
+                    if status == "failure":
+                        run_errors.extend(
+                            str(error)
+                            for error in (getattr(run_result, "errors", []) or [])
+                        )
                     graveyard.put_nowait(done_task)
                     run_state_lock: Lock = self.state_lock[str(run_id)]
                     with self._maybe_step_uow():

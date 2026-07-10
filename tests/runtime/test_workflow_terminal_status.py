@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+import json
 import shutil
 from typing import cast
 import uuid
@@ -424,6 +425,13 @@ def test_runtime_persists_failed_terminal_for_leaf_node(backend_kind):
             checkpoint_every_n_steps=1,
             max_workers=1,
         )
+        emitted_events: list[dict[str, object]] = []
+
+        class _CaptureSink:
+            def emit(self, event: dict[str, object]) -> None:
+                emitted_events.append(dict(event))
+
+        runtime.emitter.sink = _CaptureSink()
         result = runtime.run(
             workflow_id=workflow_id,
             conversation_id=conversation_id,
@@ -432,6 +440,11 @@ def test_runtime_persists_failed_terminal_for_leaf_node(backend_kind):
         )
 
         assert result.status == "failure"
+        assert result.errors == ["boom"]
+        failed_event = next(
+            event for event in emitted_events if event.get("type") == "workflow_run_failed"
+        )
+        assert json.loads(str(failed_event["payload_json"]))["errors"] == ["boom"]
         failed = conversation_engine.get_nodes(
             where={
                 "$and": [
@@ -573,6 +586,7 @@ async def test_runtime_persists_failed_terminal_for_leaf_node_async_backends(
         )
 
         assert result.status == "failure"
+        assert result.errors == ["boom"]
         failed = await asyncio.to_thread(
             conversation_engine.get_nodes,
             where={

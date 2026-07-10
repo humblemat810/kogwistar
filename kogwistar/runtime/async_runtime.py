@@ -1064,7 +1064,13 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
         if status != "cancelled":
             _persist_rt_join_snapshot()
 
-        return RunResult(run_id=run_id, final_state=state, mq=mq, status=status)
+        return RunResult(
+            run_id=run_id,
+            final_state=state,
+            mq=mq,
+            status=status,
+            errors=list(failure_errors),
+        )
 
     def run_sync(
         self,
