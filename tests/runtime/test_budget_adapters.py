@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from kogwistar.runtime.budget import BudgetEvent
+from kogwistar.runtime.budget import BudgetAttribution, BudgetEvent
 from kogwistar.runtime.budget_adapters import adapt_budget_events, summarize_budget_events
 
 pytestmark = [pytest.mark.ci, pytest.mark.runtime]
@@ -20,6 +20,26 @@ def test_generic_usage_adapter_maps_usage_to_canonical_events() -> None:
 
 def test_generic_usage_adapter_ignores_non_usage_payloads() -> None:
     assert adapt_budget_events({"x": 1}, run_id="run-1") == []
+
+
+def test_generic_usage_adapter_preserves_attribution_context() -> None:
+    attribution = BudgetAttribution(
+        workspace_id="ws-1",
+        source_document_id="doc-1",
+        operation_id="op-1",
+        maintenance_job_id="job-1",
+        dream_job_id="dream-1",
+    )
+
+    events = adapt_budget_events(
+        {"usage": {"input_tokens": 5}},
+        run_id="run-1",
+        scope="operation",
+        attribution=attribution,
+    )
+
+    assert events[0].attribution == attribution
+    assert events[0].scope == "operation"
 
 
 def test_summarize_budget_events_tracks_mixed_runtime_events() -> None:

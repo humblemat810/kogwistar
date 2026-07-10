@@ -9,6 +9,36 @@ class BudgetExhaustedError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class BudgetAttribution:
+    """Optional dimensions used by read-side usage projections."""
+
+    workspace_id: str | None = None
+    source_document_id: str | None = None
+    operation_id: str | None = None
+    operation_kind: str | None = None
+    maintenance_job_id: str | None = None
+    dream_job_id: str | None = None
+    provider: str | None = None
+    model: str | None = None
+
+    def as_dict(self) -> dict[str, str]:
+        return {
+            key: value
+            for key, value in {
+                "workspace_id": self.workspace_id,
+                "source_document_id": self.source_document_id,
+                "operation_id": self.operation_id,
+                "operation_kind": self.operation_kind,
+                "maintenance_job_id": self.maintenance_job_id,
+                "dream_job_id": self.dream_job_id,
+                "provider": self.provider,
+                "model": self.model,
+            }.items()
+            if value is not None
+        }
+
+
+@dataclass(frozen=True)
 class BudgetEvent:
     run_id: str
     source: str
@@ -18,6 +48,50 @@ class BudgetEvent:
     scope: str = "run"
     ts_ms: int | None = None
     meta: dict[str, Any] = field(default_factory=dict)
+    event_id: str | None = None
+    attribution: BudgetAttribution | None = None
+
+
+def budget_event_to_dict(event: BudgetEvent) -> dict[str, Any]:
+    """Serialize a budget event without exposing dataclass implementation details."""
+
+    payload: dict[str, Any] = {
+        "event_id": event.event_id,
+        "run_id": event.run_id,
+        "source": event.source,
+        "kind": event.kind,
+        "amount": event.amount,
+        "unit": event.unit,
+        "scope": event.scope,
+        "ts_ms": event.ts_ms,
+        "meta": dict(event.meta),
+    }
+    if event.attribution is not None:
+        payload["attribution"] = event.attribution.as_dict()
+    return payload
+
+
+def budget_event_from_dict(payload: dict[str, Any]) -> BudgetEvent:
+    """Deserialize the stable event envelope used by raw usage projections."""
+
+    raw_attribution = payload.get("attribution")
+    attribution = (
+        BudgetAttribution(**dict(raw_attribution))
+        if isinstance(raw_attribution, dict)
+        else None
+    )
+    return BudgetEvent(
+        event_id=str(payload["event_id"]) if payload.get("event_id") is not None else None,
+        run_id=str(payload.get("run_id") or ""),
+        source=str(payload.get("source") or "unknown"),
+        kind=str(payload.get("kind") or "unknown"),
+        amount=float(payload.get("amount") or 0.0),
+        unit=str(payload.get("unit") or ""),
+        scope=str(payload.get("scope") or "run"),
+        ts_ms=int(payload["ts_ms"]) if payload.get("ts_ms") is not None else None,
+        meta=dict(payload.get("meta") or {}),
+        attribution=attribution,
+    )
 
 
 @dataclass

@@ -6,7 +6,14 @@ from importlib import import_module
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from kogwistar.runtime.budget import BudgetAttribution, BudgetEvent
     from kogwistar.runtime.budget_adapters import summarize_budget_events
+    from kogwistar.runtime.checkpointed_projection import (
+        CheckpointedProjectionStore,
+        ProjectionCheckpoint,
+        ProjectionLoadResult,
+        refresh_checkpointed_named_projection,
+    )
     from kogwistar.runtime.retry import (
         RetryAttemptRecord,
         RetryExhaustedError,
@@ -111,6 +118,14 @@ __all__ = [
     "WorkflowRuntime",
     "JsonlEventSink",
     "summarize_budget_events",
+    "CheckpointedProjectionStore",
+    "ProjectionCheckpoint",
+    "ProjectionLoadResult",
+    "refresh_checkpointed_named_projection",
+    "BudgetAttribution",
+    "BudgetEvent",
+    "budget_event_to_dict",
+    "budget_event_from_dict",
     "RetryAttemptRecord",
     "RetryExhaustedError",
     "RetryResult",
@@ -154,6 +169,14 @@ _EXPORTS = {
     "WorkflowRuntime": "kogwistar.runtime.runtime",
     "JsonlEventSink": "kogwistar.runtime.sinks",
     "summarize_budget_events": "kogwistar.runtime.budget_adapters",
+    "CheckpointedProjectionStore": "kogwistar.runtime.checkpointed_projection",
+    "ProjectionCheckpoint": "kogwistar.runtime.checkpointed_projection",
+    "ProjectionLoadResult": "kogwistar.runtime.checkpointed_projection",
+    "refresh_checkpointed_named_projection": "kogwistar.runtime.checkpointed_projection",
+    "BudgetAttribution": "kogwistar.runtime.budget",
+    "BudgetEvent": "kogwistar.runtime.budget",
+    "budget_event_to_dict": "kogwistar.runtime.budget",
+    "budget_event_from_dict": "kogwistar.runtime.budget",
     "RetryAttemptRecord": "kogwistar.runtime.retry",
     "RetryExhaustedError": "kogwistar.runtime.retry",
     "RetryResult": "kogwistar.runtime.retry",

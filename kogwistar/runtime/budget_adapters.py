@@ -4,7 +4,7 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
-from .budget import BudgetEvent
+from .budget import BudgetAttribution, BudgetEvent
 
 
 @runtime_checkable
@@ -13,7 +13,14 @@ class BudgetAdapter(Protocol):
 
     def can_adapt(self, source: Any) -> bool: ...
 
-    def adapt(self, source: Any, *, run_id: str, scope: str = "run") -> list[BudgetEvent]: ...
+    def adapt(
+        self,
+        source: Any,
+        *,
+        run_id: str,
+        scope: str = "run",
+        attribution: BudgetAttribution | None = None,
+    ) -> list[BudgetEvent]: ...
 
 
 @dataclass(frozen=True)
@@ -23,7 +30,14 @@ class GenericUsageAdapter:
     def can_adapt(self, source: Any) -> bool:
         return isinstance(source, dict) and "usage" in source
 
-    def adapt(self, source: Any, *, run_id: str, scope: str = "run") -> list[BudgetEvent]:
+    def adapt(
+        self,
+        source: Any,
+        *,
+        run_id: str,
+        scope: str = "run",
+        attribution: BudgetAttribution | None = None,
+    ) -> list[BudgetEvent]:
         usage = source.get("usage") if isinstance(source, dict) else None
         if not isinstance(usage, dict):
             return []
@@ -42,6 +56,7 @@ class GenericUsageAdapter:
                     unit=key,
                     scope=scope,
                     meta={"raw_key": key},
+                    attribution=attribution,
                 )
             )
         return out
@@ -51,11 +66,20 @@ DEFAULT_BUDGET_ADAPTERS: list[BudgetAdapter] = [GenericUsageAdapter()]
 
 
 def adapt_budget_events(
-    source: Any, *, run_id: str, scope: str = "run", adapters: list[BudgetAdapter] | None = None
+    source: Any,
+    *,
+    run_id: str,
+    scope: str = "run",
+    attribution: BudgetAttribution | None = None,
+    adapters: list[BudgetAdapter] | None = None,
 ) -> list[BudgetEvent]:
     for adapter in adapters or DEFAULT_BUDGET_ADAPTERS:
         if adapter.can_adapt(source):
-            return adapter.adapt(source, run_id=run_id, scope=scope)
+            if attribution is None:
+                # Preserve compatibility with adapters implemented before the
+                # attribution context was added.
+                return adapter.adapt(source, run_id=run_id, scope=scope)
+            return adapter.adapt(source, run_id=run_id, scope=scope, attribution=attribution)
     return []
 
 
