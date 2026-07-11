@@ -25,6 +25,7 @@ from .postgres_backend import (
     PgVectorBackend,
     PgVectorConfig,
     PostgresUnitOfWork,
+    postgres_connect_args,
 )
 
 
@@ -41,7 +42,10 @@ def build_postgres_backend(
         cfg.dsn,
         future=True,
         pool_size=max_workers + 2,
-        pool_timeout=10.0,
+        pool_timeout=float(cfg.pool_timeout_s),
+        pool_pre_ping=True,
+        pool_reset_on_return="rollback",
+        connect_args=postgres_connect_args(cfg),
     )
 
     backend = PgVectorBackend(
@@ -69,7 +73,10 @@ def build_async_postgres_backend(
         cfg.dsn,
         future=True,
         pool_size=max_workers + 2,
-        pool_timeout=10.0,
+        pool_timeout=float(cfg.pool_timeout_s),
+        pool_pre_ping=True,
+        pool_reset_on_return="rollback",
+        connect_args=postgres_connect_args(cfg),
     )
 
     backend = PgVectorBackend(

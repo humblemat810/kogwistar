@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from kogwistar.runtime.budget import BudgetAttribution, BudgetEvent
     from kogwistar.runtime.budget_adapters import summarize_budget_events
+    from kogwistar.runtime.pricing import TokenPricing, estimate_token_cost_usd
     from kogwistar.runtime.checkpointed_projection import (
         CheckpointedProjectionStore,
         ProjectionConflictError,
@@ -119,6 +120,8 @@ __all__ = [
     "WorkflowRuntime",
     "JsonlEventSink",
     "summarize_budget_events",
+    "TokenPricing",
+    "estimate_token_cost_usd",
     "CheckpointedProjectionStore",
     "ProjectionConflictError",
     "ProjectionCheckpoint",
@@ -171,6 +174,8 @@ _EXPORTS = {
     "WorkflowRuntime": "kogwistar.runtime.runtime",
     "JsonlEventSink": "kogwistar.runtime.sinks",
     "summarize_budget_events": "kogwistar.runtime.budget_adapters",
+    "TokenPricing": "kogwistar.runtime.pricing",
+    "estimate_token_cost_usd": "kogwistar.runtime.pricing",
     "CheckpointedProjectionStore": "kogwistar.runtime.checkpointed_projection",
     "ProjectionConflictError": "kogwistar.runtime.checkpointed_projection",
     "ProjectionCheckpoint": "kogwistar.runtime.checkpointed_projection",

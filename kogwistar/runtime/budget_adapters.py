@@ -42,7 +42,11 @@ class GenericUsageAdapter:
         if not isinstance(usage, dict):
             return []
         out: list[BudgetEvent] = []
-        token_keys = [key for key in ("input_tokens", "output_tokens") if usage.get(key) is not None]
+        token_keys = [
+            key
+            for key in ("input_tokens", "cached_input_tokens", "output_tokens")
+            if usage.get(key) is not None
+        ]
         if not token_keys and usage.get("total_tokens") is not None:
             token_keys.append("total_tokens")
         for key in (*token_keys, "total_cost"):
@@ -88,6 +92,7 @@ def adapt_budget_events(
 
 def summarize_budget_events(events: list[BudgetEvent]) -> dict[str, Any]:
     input_tokens = 0
+    cached_input_tokens = 0
     output_tokens = 0
     total_tokens = 0
     total_cost = 0.0
@@ -107,6 +112,8 @@ def summarize_budget_events(events: list[BudgetEvent]) -> dict[str, Any]:
         elif kind in {"debit", "token"} and unit == "output_tokens":
             output_tokens += int(amount or 0)
             total_tokens += int(amount or 0)
+        elif kind in {"debit", "token"} and unit == "cached_input_tokens":
+            cached_input_tokens += int(amount or 0)
         elif kind in {"debit", "token"} and unit == "total_tokens":
             total_tokens += int(amount or 0)
         elif kind == "cost" or unit == "total_cost":
@@ -115,6 +122,7 @@ def summarize_budget_events(events: list[BudgetEvent]) -> dict[str, Any]:
             time_ms += int(amount or 0)
     return {
         "input_tokens": input_tokens,
+        "cached_input_tokens": cached_input_tokens,
         "output_tokens": output_tokens,
         "total_tokens": total_tokens,
         "total_cost": round(total_cost, 6),

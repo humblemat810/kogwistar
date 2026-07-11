@@ -1337,22 +1337,17 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
         with self.transaction() as conn:
             row = conn.execute(
                 """
-                UPDATE namespace_seq
-                SET next_seq = next_seq + 1
-                WHERE namespace = ?
+                INSERT INTO namespace_seq(namespace, next_seq)
+                VALUES (?, 2)
+                ON CONFLICT(namespace)
+                DO UPDATE SET next_seq = namespace_seq.next_seq + 1
                 RETURNING next_seq - 1
                 """,
                 (namespace,),
             ).fetchone()
-
-            if row is not None:
-                return int(row[0])
-
-            conn.execute(
-                "INSERT INTO namespace_seq(namespace, next_seq) VALUES (?, 2)",
-                (namespace,),
-            )
-            return 1
+            if row is None:
+                raise RuntimeError(f"failed to allocate event seq for namespace {namespace!r}")
+            return int(row[0])
 
     def append_entity_event(
         self,
@@ -1376,21 +1371,19 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
                 return int(existing[1])
             seq_row = conn.execute(
                 """
-                UPDATE namespace_seq
-                SET next_seq = next_seq + 1
-                WHERE namespace = ?
+                INSERT INTO namespace_seq(namespace, next_seq)
+                VALUES (?, 2)
+                ON CONFLICT(namespace)
+                DO UPDATE SET next_seq = namespace_seq.next_seq + 1
                 RETURNING next_seq - 1
                 """,
                 (namespace,),
             ).fetchone()
             if seq_row is None:
-                conn.execute(
-                    "INSERT INTO namespace_seq(namespace, next_seq) VALUES (?, 2)",
-                    (namespace,),
+                raise RuntimeError(
+                    f"failed to allocate entity event seq for namespace {namespace!r}"
                 )
-                seq = 1
-            else:
-                seq = int(seq_row[0])
+            seq = int(seq_row[0])
             conn.execute(
                 """
                 INSERT INTO entity_events(

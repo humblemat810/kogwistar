@@ -1293,23 +1293,17 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
         with self.transaction() as conn:
             row = conn.execute(
                 sa.text(f"""
-                    UPDATE {schema}.namespace_seq
-                    SET next_seq = next_seq + 1
-                    WHERE namespace = :ns
+                    INSERT INTO {schema}.namespace_seq(namespace, next_seq)
+                    VALUES (:ns, 2)
+                    ON CONFLICT(namespace)
+                    DO UPDATE SET next_seq = {schema}.namespace_seq.next_seq + 1
                     RETURNING next_seq - 1
                 """),
                 {"ns": namespace},
             ).fetchone()
-            if row is not None:
-                return int(row[0])
-
-            conn.execute(
-                sa.text(
-                    f"INSERT INTO {schema}.namespace_seq(namespace, next_seq) VALUES (:ns, 2)"
-                ),
-                {"ns": namespace},
-            )
-            return 1
+            if row is None:
+                raise RuntimeError(f"failed to allocate event seq for namespace {namespace!r}")
+            return int(row[0])
 
     def append_entity_event(
         self,
@@ -1334,22 +1328,20 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
             seq_row = conn.execute(
                 sa.text(
                     f"""
-                    UPDATE {schema}.namespace_seq
-                    SET next_seq = next_seq + 1
-                    WHERE namespace = :ns
+                    INSERT INTO {schema}.namespace_seq(namespace, next_seq)
+                    VALUES (:ns, 2)
+                    ON CONFLICT(namespace)
+                    DO UPDATE SET next_seq = {schema}.namespace_seq.next_seq + 1
                     RETURNING next_seq - 1
                     """
                 ),
                 {"ns": namespace},
             ).fetchone()
             if seq_row is None:
-                conn.execute(
-                    sa.text(f"INSERT INTO {schema}.namespace_seq(namespace, next_seq) VALUES (:ns, 2)"),
-                    {"ns": namespace},
+                raise RuntimeError(
+                    f"failed to allocate entity event seq for namespace {namespace!r}"
                 )
-                seq = 1
-            else:
-                seq = int(seq_row[0])
+            seq = int(seq_row[0])
             conn.execute(
                 sa.text(f"""
                     INSERT INTO {schema}.entity_events(

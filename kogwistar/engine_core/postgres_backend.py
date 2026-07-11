@@ -40,6 +40,8 @@ Index/materialization collections (non-vector):
 """
 
 import asyncio
+import inspect
+import os
 import threading
 import sys
 from dataclasses import dataclass
@@ -119,6 +121,25 @@ def _set_active_conn(conn: Any):
 
 def get_active_conn() -> Any | None:
     return _pg_uow_conn.get()
+
+
+def _install_connection_observability(engine: sa.Engine | AsyncEngine, *, component: str) -> None:
+    """Tag checked-out PostgreSQL connections with their Python owner."""
+
+    sync_engine = engine.sync_engine if isinstance(engine, AsyncEngine) else engine
+
+    @sa.event.listens_for(sync_engine, "checkout")
+    def _tag_connection(dbapi_connection, connection_record, connection_proxy) -> None:
+        del connection_proxy
+        label = (
+            f"kogwistar:{component}:p{os.getpid()}:t{threading.get_ident()}"
+        )[:63]
+        connection_record.info["kogwistar_application_name"] = label
+        cursor = dbapi_connection.cursor()
+        try:
+            cursor.execute("SET application_name = %s", (label,))
+        finally:
+            cursor.close()
 
 
 def _run_coro_sync(coro):
@@ -221,6 +242,35 @@ class PgVectorConfig:
     edge_refs_table: str = "gke_edge_refs"
     node_docs_table: str = "gke_node_docs"
     node_refs_table: str = "gke_node_refs"
+    # Database-side safeguards apply only while SQL is executing. They do not
+    # limit time spent inside an LLM provider call.
+    statement_timeout_ms: int | None = 300_000
+    idle_transaction_timeout_ms: int | None = 300_000
+    pool_timeout_s: float = 10.0
+    application_name: str = "kogwistar"
+
+
+def postgres_connect_args(cfg: PgVectorConfig) -> dict[str, str]:
+    """Build safe PostgreSQL connection settings without imposing lock_timeout.
+
+    ``statement_timeout`` and ``idle_in_transaction_session_timeout`` protect
+    database work and abandoned transactions. LLM calls happen outside these
+    SQL statements, so a slow provider response is not terminated by them.
+    Lock timeout is intentionally omitted: callers may need to wait for a
+    short-lived writer and should rely on the operation/runtime watchdog when
+    deciding whether to abort.
+    """
+    options: list[str] = []
+    if cfg.statement_timeout_ms is not None:
+        options.extend(["-c", f"statement_timeout={int(cfg.statement_timeout_ms)}"])
+    if cfg.idle_transaction_timeout_ms is not None:
+        options.extend(
+            ["-c", f"idle_in_transaction_session_timeout={int(cfg.idle_transaction_timeout_ms)}"]
+        )
+    args: dict[str, str] = {"application_name": cfg.application_name}
+    if options:
+        args["options"] = " ".join(options)
+    return args
 
 
 @dataclass(frozen=True)
@@ -1533,6 +1583,16 @@ class PgVectorBackend:
         self._node_docs_c = PgCollectionFacade(self, self.node_docs, nv)
         self._node_refs_c = PgCollectionFacade(self, self.node_refs, nv)
 
+    def close(self) -> None:
+        """Dispose pooled connections and roll back any checked-in work."""
+
+        dispose = getattr(self.engine, "dispose", None)
+        if not callable(dispose):
+            return
+        result = dispose()
+        if inspect.isawaitable(result):
+            _run_coro_sync(result)
+
     def _install_async_passthroughs(self) -> None:
         """Expose async-engine collection methods as eager awaitable results.
 
@@ -2160,7 +2220,15 @@ def build_postgres_backend(
 ) -> Tuple[PgVectorBackend, PostgresUnitOfWork]:
     """Convenience helper for engine wiring."""
 
-    engine = sa.create_engine(cfg.dsn, future=True)
+    engine = sa.create_engine(
+        cfg.dsn,
+        future=True,
+        pool_pre_ping=True,
+        pool_reset_on_return="rollback",
+        pool_timeout=float(cfg.pool_timeout_s),
+        connect_args=postgres_connect_args(cfg),
+    )
+    _install_connection_observability(engine, component="pgvector")
     backend = PgVectorBackend(
         engine=engine,
         embedding_dim=cfg.embedding_dim,
@@ -2185,7 +2253,15 @@ def build_async_postgres_backend(
 
     from sqlalchemy.ext.asyncio import create_async_engine
 
-    engine = create_async_engine(cfg.dsn, future=True)
+    engine = create_async_engine(
+        cfg.dsn,
+        future=True,
+        pool_pre_ping=True,
+        pool_reset_on_return="rollback",
+        pool_timeout=float(cfg.pool_timeout_s),
+        connect_args=postgres_connect_args(cfg),
+    )
+    _install_connection_observability(engine, component="pgvector-async")
     backend = PgVectorBackend(
         engine=engine,
         embedding_dim=cfg.embedding_dim,

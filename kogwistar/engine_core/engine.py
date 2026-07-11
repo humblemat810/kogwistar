@@ -970,6 +970,7 @@ class GraphKnowledgeEngine:
             use_validation_cache=use_validation_cache,
         )
 
+
     def make_index_job_worker(
         self,
         *,

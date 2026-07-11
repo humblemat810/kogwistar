@@ -72,35 +72,47 @@ class SimplePythonSandbox(Sandbox):
     ) -> StepRunResult:
         # We use a Queue to get the result back from the child process
         result_queue: multiprocessing.Queue = multiprocessing.Queue()
-        
-        p = multiprocessing.Process(
-            target=self._worker, args=(code, state, context, result_queue)
+        process = multiprocessing.Process(
+            name="kogwistar-sandbox",
+            target=self._worker,
+            args=(code, state, context, result_queue),
         )
-        p.start()
-        p.join(timeout=self.timeout)  # Default 30s timeout
+        try:
+            process.start()
+            process.join(timeout=self.timeout)  # Default 30s
 
-        if p.is_alive():
-            p.terminate()
-            return RunFailure(
-                conversation_node_id=None,
-                state_update=[],
-                errors=["Sandbox execution timed out"],
-            )
+            if process.is_alive():
+                process.terminate()
+                process.join(timeout=2.0)
+                if process.is_alive() and hasattr(process, "kill"):
+                    process.kill()
+                    process.join(timeout=2.0)
+                return RunFailure(
+                    conversation_node_id=None,
+                    state_update=[],
+                    errors=["Sandbox execution timed out"],
+                )
 
-        if result_queue.empty():
-            return RunFailure(
-                conversation_node_id=None,
-                state_update=[],
-                errors=["Sandbox execution failed with no result"],
-            )
+            if result_queue.empty():
+                return RunFailure(
+                    conversation_node_id=None,
+                    state_update=[],
+                    errors=["Sandbox execution failed with no result"],
+                )
 
-        res = result_queue.get()
-        if isinstance(res, Exception):
-            return RunFailure(
-                conversation_node_id=None, state_update=[], errors=[str(res)]
-            )
+            res = result_queue.get()
+            if isinstance(res, Exception):
+                return RunFailure(
+                    conversation_node_id=None, state_update=[], errors=[str(res)]
+                )
 
-        return _coerce_step_result(res)
+            return _coerce_step_result(res)
+        finally:
+            if process.is_alive():
+                process.terminate()
+                process.join(timeout=2.0)
+            result_queue.close()
+            result_queue.join_thread()
 
     def _worker(
         self,

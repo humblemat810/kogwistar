@@ -1,3 +1,7 @@
+import json
+import threading
+import uuid
+
 import pytest
 pytestmark = pytest.mark.ci_full
 pytest.importorskip("sqlalchemy")
@@ -93,3 +97,43 @@ def test_engine_uow_rolls_back_meta_and_graph_writes_together(
     # Both should be rolled back if they share the same PG transaction
     assert _count_user_seq_rows(sa_engine, pg_schema) == 0
     assert _count_nodes(sa_engine, pg_schema) == 0
+
+
+@pytest.mark.ci_full
+def test_append_entity_event_allocates_unique_sequences_for_new_namespace_concurrently(
+    sa_engine, pg_schema
+):
+    meta = EnginePostgresMetaStore(engine=sa_engine, schema=pg_schema)
+    meta.ensure_initialized()
+
+    namespace = f"namespace-{uuid.uuid4().hex[:8]}"
+    barrier = threading.Barrier(2)
+    results: list[int] = []
+    errors: list[BaseException] = []
+
+    def _worker(ix: int) -> None:
+        try:
+            barrier.wait(timeout=10.0)
+            seq = meta.append_entity_event(
+                namespace=namespace,
+                event_id=f"event-{ix}-{uuid.uuid4().hex[:8]}",
+                entity_kind="node",
+                entity_id=f"node-{ix}",
+                op="UPSERT",
+                payload_json=json.dumps({"ix": ix}, sort_keys=True, separators=(",", ":")),
+            )
+            results.append(seq)
+        except BaseException as exc:  # pragma: no cover - thread capture
+            errors.append(exc)
+
+    t1 = threading.Thread(target=_worker, args=(1,), name="append-event-1")
+    t2 = threading.Thread(target=_worker, args=(2,), name="append-event-2")
+    t1.start()
+    t2.start()
+    t1.join(timeout=20.0)
+    t2.join(timeout=20.0)
+
+    assert not t1.is_alive(), "worker 1 did not finish"
+    assert not t2.is_alive(), "worker 2 did not finish"
+    assert not errors, f"unexpected concurrent append failure: {errors!r}"
+    assert sorted(results) == [1, 2]

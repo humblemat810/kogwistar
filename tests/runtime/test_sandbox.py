@@ -138,13 +138,10 @@ def test_cloud_sandboxes_mocked(sandbox_class, mock_path, mock_return):
 
 
 def test_local_sandbox_timeout():
-    # Note: testing timeout might be slow in CI, but here's how it would look
-    # sandbox = SimplePythonSandbox()
-    # code = "while True: pass"
-    # res = sandbox.run(code, {}, {})
-    # assert isinstance(res, RunFailure)
-    # assert "timed out" in res.errors[0]
-    pass
+    sandbox = SimplePythonSandbox(timeout=0.05)
+    res = sandbox.run("while True: pass", {}, {})
+    assert isinstance(res, RunFailure)
+    assert "timed out" in res.errors[0]
 
 
 def test_docker_sandbox_per_op_invokes_runtime_once():
