@@ -812,6 +812,30 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
                 ((error or "")[:2000], next_run_at, now, job_id),
             )
 
+    def requeue_index_job_at_tail(
+        self,
+        job_id: str,
+        *,
+        payload_json: str,
+        delay_seconds: int = 0,
+    ) -> None:
+        """Cooperatively requeue a claimed job after a bounded work slice."""
+        now = self._now_epoch()
+        next_run_at = now + max(0, int(delay_seconds))
+        with self.transaction() as conn:
+            tail_position = int(
+                conn.execute("SELECT COALESCE(MAX(created_at), ?) + 1 FROM index_jobs", (now,)).fetchone()[0]
+            )
+            conn.execute(
+                """
+                UPDATE index_jobs
+                SET status='PENDING', lease_until=NULL, next_run_at=?,
+                    payload_json=?, created_at=?, updated_at=?
+                WHERE job_id=? AND status='DOING'
+                """,
+                (next_run_at, payload_json, tail_position, now, job_id),
+            )
+
     def list_index_jobs(
         self,
         *,

@@ -178,3 +178,20 @@ def test_rate_window_refresh_allows_more_debit() -> None:
     ledger.debit(1, reason="step", run_id="run-1")
     assert state["rate_used"] == 1
     assert ledger.should_suspend_for_budget() is False
+
+
+def test_state_backed_budget_ledger_suspends_on_step_and_call_slice_limits() -> None:
+    state = {
+        "token_budget": 10_000,
+        "step_budget": 2,
+        "call_budget": 1,
+        "budget_kind": "token",
+        "budget_scope": "maintenance_slice",
+    }
+    ledger = StateBackedBudgetLedger(state)
+
+    ledger.debit_step(run_id="maintenance-1")
+    assert ledger.should_suspend_for_budget() is False
+    ledger.debit_call(run_id="maintenance-1")
+    assert state["call_used"] == 1
+    assert ledger.should_suspend_for_budget() is True

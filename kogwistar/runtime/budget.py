@@ -260,6 +260,82 @@ class StateBackedBudgetLedger:
             return None
         return int(self.rate_window_started_ms + self.rate_window_ms)
 
+    @property
+    def step_budget(self) -> int:
+        return int(self.state.get("step_budget", 0) or 0)
+
+    @property
+    def step_used(self) -> int:
+        return int(self.state.get("step_used", 0) or 0)
+
+    @property
+    def call_budget(self) -> int:
+        return int(self.state.get("call_budget", 0) or 0)
+
+    @property
+    def call_used(self) -> int:
+        return int(self.state.get("call_used", 0) or 0)
+
+    def debit_step(
+        self,
+        amount: int = 1,
+        *,
+        reason: str = "workflow_step",
+        run_id: str = "",
+        attribution: BudgetAttribution | None = None,
+    ) -> None:
+        amount = int(amount or 0)
+        if amount < 0:
+            raise ValueError("step amount must be >= 0")
+        next_used = self.step_used + amount
+        if self.step_budget and next_used > self.step_budget:
+            raise BudgetExhaustedError(
+                f"step budget exhausted: used={self.step_used} total={self.step_budget}"
+            )
+        self.state["step_used"] = next_used
+        self.events.append(
+            BudgetEvent(
+                run_id=run_id,
+                source="runtime",
+                kind="debit",
+                amount=float(amount),
+                unit="step",
+                scope=str(self.state.get("budget_scope") or "run"),
+                meta={"reason": reason},
+                attribution=attribution,
+            )
+        )
+
+    def debit_call(
+        self,
+        amount: int = 1,
+        *,
+        reason: str = "llm_call",
+        run_id: str = "",
+        attribution: BudgetAttribution | None = None,
+    ) -> None:
+        amount = int(amount or 0)
+        if amount < 0:
+            raise ValueError("call amount must be >= 0")
+        next_used = self.call_used + amount
+        if self.call_budget and next_used > self.call_budget:
+            raise BudgetExhaustedError(
+                f"call budget exhausted: used={self.call_used} total={self.call_budget}"
+            )
+        self.state["call_used"] = next_used
+        self.events.append(
+            BudgetEvent(
+                run_id=run_id,
+                source="runtime",
+                kind="debit",
+                amount=float(amount),
+                unit="call",
+                scope=str(self.state.get("budget_scope") or "run"),
+                meta={"reason": reason},
+                attribution=attribution,
+            )
+        )
+
     def debit(
         self,
         amount: int | float,
@@ -404,6 +480,10 @@ class StateBackedBudgetLedger:
         if self.time_budget_ms and self.time_used_ms >= self.time_budget_ms:
             return True
         if self.rate_limit and self.rate_used >= self.rate_limit:
+            return True
+        if self.step_budget and self.step_used >= self.step_budget:
+            return True
+        if self.call_budget and self.call_used >= self.call_budget:
             return True
         return False
 

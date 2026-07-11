@@ -1,4 +1,5 @@
 import json
+import json
 from pathlib import Path
 
 import pytest
@@ -60,7 +61,6 @@ def test_persist_document_graph_extraction_rejects_incorrect_span(engine_tmp):
 def test_span_repair_recovers_unique_boundary_offset(engine_tmp):
     fixture_path = (
         Path(__file__).resolve().parents[2]
-        / ".."
         / "tests"
         / "fixtures"
         / "boundary_span_failure_payload.json"

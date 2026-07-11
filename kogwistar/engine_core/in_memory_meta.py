@@ -457,6 +457,30 @@ class InMemoryMetaStore(LaneMessageMetaStoreMixin):
                 job.status = "PENDING"
                 job.next_run_at = next_run_at
 
+    def requeue_index_job_at_tail(
+        self,
+        job_id: str,
+        *,
+        payload_json: str,
+        delay_seconds: int = 0,
+    ) -> None:
+        now = _now_epoch()
+        next_run_at = now + max(0, int(delay_seconds))
+        with self.transaction() as txn:
+            job = txn.state.index_jobs.get(str(job_id))
+            if job is None or job.status != "DOING":
+                return
+            tail_position = max(
+                (item.created_at for item in txn.state.index_jobs.values()),
+                default=now,
+            ) + 1
+            job.status = "PENDING"
+            job.lease_until = None
+            job.next_run_at = next_run_at
+            job.payload_json = payload_json
+            job.created_at = tail_position
+            job.updated_at = now
+
     def list_index_jobs(
         self,
         *,

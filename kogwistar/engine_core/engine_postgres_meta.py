@@ -804,6 +804,40 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                 {"job_id": job_id, "err": (error or "")[:2000], "delay": delay},
             )
 
+    def requeue_index_job_at_tail(
+        self,
+        job_id: str,
+        *,
+        payload_json: str,
+        delay_seconds: int = 0,
+    ) -> None:
+        """Cooperatively requeue a claimed job after a bounded work slice."""
+        ij = (
+            f"{self.schema}.{self.index_jobs_table}"
+            if self.index_jobs_table == "index_jobs"
+            else f"{self.schema}.{self.index_jobs_table}"
+        )
+        delay = max(0, int(delay_seconds))
+        with self.transaction() as conn:
+            conn.execute(
+                sa.text(
+                    f"""
+                    UPDATE {ij}
+                    SET status='PENDING', lease_until=NULL,
+                        next_run_at=NOW() + (:delay || ' seconds')::interval,
+                        payload_json=:payload_json,
+                        created_at=(SELECT COALESCE(MAX(created_at), NOW()) + INTERVAL '1 microsecond' FROM {ij}),
+                        updated_at=NOW()
+                    WHERE job_id=:job_id AND status='DOING'
+                    """
+                ),
+                {
+                    "job_id": job_id,
+                    "payload_json": payload_json,
+                    "delay": delay,
+                },
+            )
+
     def list_index_jobs(
         self,
         *,

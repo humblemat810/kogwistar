@@ -2225,6 +2225,14 @@ class WorkflowRuntime(BaseRuntime):
                             operation_kind=f"workflow_step:{node_id}",
                         )
                         try:
+                            budget_ledger.debit_step(
+                                run_id=str(run_id),
+                                reason=f"step:{node_id}",
+                                attribution=step_attribution,
+                            )
+                        except Exception:
+                            pass
+                        try:
                             budget_ledger.debit_time(
                                 max(0, dur_ms),
                                 reason=f"step:{node_id}",
@@ -2232,7 +2240,11 @@ class WorkflowRuntime(BaseRuntime):
                                 attribution=step_attribution,
                             )
                         except Exception:
-                            pass
+                            # A slice may be exceeded by one in-flight step;
+                            # retain the exhausted marker so the runtime parks
+                            # the continuation instead of silently continuing.
+                            if budget_ledger.time_budget_ms:
+                                budget_ledger.state["time_used_ms"] = budget_ledger.time_budget_ms
                         try:
                             result_payload = dict(
                                 run_result.model_dump(exclude_none=True)
@@ -2247,6 +2259,14 @@ class WorkflowRuntime(BaseRuntime):
                                 "usage": result_payload.get("usage_metadata")
                             }
                         if usage_payload is not None:
+                            try:
+                                budget_ledger.debit_call(
+                                    run_id=str(run_id),
+                                    reason=f"llm_call:{node_id}",
+                                    attribution=step_attribution,
+                                )
+                            except Exception:
+                                pass
                             for evt in adapt_budget_events(
                                 usage_payload,
                                 run_id=str(run_id),

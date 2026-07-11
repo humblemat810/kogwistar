@@ -126,6 +126,28 @@ class JobQueueSubsystem:
                 return
         self.mark_failed(job.job_id, err, final=True)
 
+    def requeue_at_tail(
+        self,
+        job: JobQueueItem,
+        *,
+        payload: dict[str, Any] | None = None,
+        delay_seconds: int = 0,
+    ) -> None:
+        """Return a claimed job to the runnable queue tail.
+
+        This is for cooperative continuation, not failure retry. The payload
+        may carry a durable workflow checkpoint so the next claim resumes the
+        same job instead of restarting its work.
+        """
+        requeue = getattr(self.engine.meta_sqlite, "requeue_index_job_at_tail", None)
+        if requeue is None:
+            raise RuntimeError("meta store does not support fair job requeue")
+        requeue(
+            str(job.job_id),
+            payload_json=json.dumps(payload if payload is not None else job.payload),
+            delay_seconds=max(0, int(delay_seconds)),
+        )
+
     def list(
         self,
         *,

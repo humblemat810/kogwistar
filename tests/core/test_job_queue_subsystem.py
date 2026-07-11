@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+
 from kogwistar.engine_core import GraphKnowledgeEngine, JobQueueItem
 from kogwistar.engine_core.in_memory_backend import build_in_memory_backend
 
@@ -135,6 +137,49 @@ def test_jobs_retry_or_fail_marks_failed_when_exhausted(tmp_path):
     failed = engine.jobs.list(namespace="jobs:demo", status="FAILED")
     assert [item.job_id for item in failed] == ["job-1"]
     assert failed[0].last_error == "terminal"
+
+
+def test_jobs_requeue_at_tail_preserves_payload_and_fair_order(tmp_path):
+    engine = _engine(tmp_path)
+    for job_id in ("job-a", "job-b"):
+        engine.jobs.enqueue(
+            job_id=job_id,
+            namespace="jobs:demo",
+            entity_kind="maintenance_job",
+            entity_id=job_id,
+            job_kind="maintenance_job",
+            payload={"step": 0},
+        )
+
+    first = engine.jobs.claim(namespace="jobs:demo", limit=1)[0]
+    engine.jobs.requeue_at_tail(
+        first,
+        payload={"step": 1, "continuation_run_id": "run-a"},
+    )
+
+    claimed = engine.jobs.claim(namespace="jobs:demo", limit=2)
+    assert [job.job_id for job in claimed] == ["job-b", "job-a"]
+    assert claimed[1].payload == {"step": 1, "continuation_run_id": "run-a"}
+
+
+def test_jobs_concurrent_claims_never_return_the_same_job(tmp_path):
+    engine = _engine(tmp_path)
+    job_id = engine.jobs.enqueue(
+        namespace="jobs:race",
+        entity_kind="maintenance_job",
+        entity_id="doc-1",
+        job_kind="maintenance",
+    )
+
+    def claim_one():
+        return engine.jobs.claim(namespace="jobs:race", limit=1, lease_seconds=60)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(claim_one), executor.submit(claim_one)]
+        claimed = [future.result() for future in futures]
+
+    claimed_ids = [job.job_id for batch in claimed for job in batch]
+    assert claimed_ids.count(job_id) == 1
 
 
 def test_jobs_enqueue_preserves_existing_coalescing_semantics(tmp_path):

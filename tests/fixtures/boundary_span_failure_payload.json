@@ -1,0 +1,12 @@
+{
+  "source_document_id": "1816222e-60a3-5d80-af29-eb99a0b56c36",
+  "source_prefix_length": 306,
+  "source_prefix_character": "P",
+  "source_suffix": "\n## Step 2: Do not discard this source.\n",
+  "span": {
+    "start_char": 305,
+    "end_char": 1211,
+    "excerpt": "## Step 1: Plan\n\nAt Elm Park, Sam reviews feeding times, vet reminders, and dog-walking coverage and writes down the next concrete action.",
+    "source_cluster_id": "1816222e-60a3-5d80-af29-eb99a0b56c36|p1_t0"
+  }
+}
