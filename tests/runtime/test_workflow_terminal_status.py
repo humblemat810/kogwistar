@@ -353,6 +353,45 @@ def test_runtime_persists_completed_terminal_for_leaf_node(backend_kind):
         shutil.rmtree(root, ignore_errors=True)
 
 
+def test_runtime_resume_from_latest_checkpoint_reuses_state_and_sequence(monkeypatch):
+    runtime = WorkflowRuntime.__new__(WorkflowRuntime)
+    checkpoint = type(
+        "Checkpoint",
+        (),
+        {
+            "metadata": {
+                "workflow_id": "workflow",
+                "step_seq": 17,
+                "state_json": '{"completed_layer": 3, "_rt_join": {"pending": []}}',
+            }
+        },
+    )()
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(runtime, "_latest_checkpoint_for_run", lambda **_: checkpoint)
+
+    def fake_run(**kwargs):
+        captured.update(kwargs)
+        return "resumed-result"
+
+    monkeypatch.setattr(runtime, "run", fake_run)
+
+    result = runtime.resume_from_latest_checkpoint(
+        run_id="parser:stable-document",
+        workflow_id="workflow",
+        conversation_id="conversation",
+        turn_node_id="turn",
+    )
+
+    assert result == "resumed-result"
+    assert captured["run_id"] == "parser:stable-document"
+    assert captured["initial_state"] == {
+        "completed_layer": 3,
+        "_rt_join": {"pending": []},
+    }
+    assert captured["_resume_step_seq"] == 18
+
+
 @pytest.mark.parametrize(
     "backend_kind",
     [

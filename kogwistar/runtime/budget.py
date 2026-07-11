@@ -151,6 +151,8 @@ class BudgetLedger:
         run_id: str = "",
         unit: str = "token",
         attribution: BudgetAttribution | None = None,
+        event_id: str | None = None,
+        meta: dict[str, Any] | None = None,
     ) -> None:
         amount = int(amount or 0)
         if amount < 0:
@@ -164,7 +166,8 @@ class BudgetLedger:
                     amount=float(amount),
                     unit=unit,
                     scope="run",
-                    meta={"reason": reason},
+                    meta={"reason": reason, **(meta or {})},
+                    event_id=event_id,
                     attribution=attribution,
                 )
             )
@@ -178,7 +181,8 @@ class BudgetLedger:
                 amount=float(amount),
                 unit=unit,
                 scope="run",
-                meta={"reason": reason},
+                meta={"reason": reason, **(meta or {})},
+                event_id=event_id,
                 attribution=attribution,
             )
         )
@@ -196,6 +200,8 @@ class BudgetLedger:
                 run_id=event.run_id,
                 unit=event.unit or "token",
                 attribution=event.attribution,
+                event_id=event.event_id,
+                meta=event.meta,
             )
             return
         if event.kind == "time" or event.unit == "ms":
@@ -263,6 +269,8 @@ class StateBackedBudgetLedger:
         run_id: str = "",
         unit: str | None = None,
         attribution: BudgetAttribution | None = None,
+        event_id: str | None = None,
+        meta: dict[str, Any] | None = None,
     ) -> None:
         amount = int(amount or 0)
         if amount < 0:
@@ -277,7 +285,8 @@ class StateBackedBudgetLedger:
                     amount=float(amount),
                     unit=unit or str(self.state.get("budget_kind") or "token"),
                     scope=str(self.state.get("budget_scope") or "run"),
-                    meta={"reason": reason},
+                    meta={"reason": reason, **(meta or {})},
+                    event_id=event_id,
                     attribution=attribution,
                 )
             )
@@ -304,7 +313,8 @@ class StateBackedBudgetLedger:
                 amount=float(amount),
                 unit=unit or str(self.state.get("budget_kind") or "token"),
                 scope=str(self.state.get("budget_scope") or "run"),
-                meta={"reason": reason},
+                meta={"reason": reason, **(meta or {})},
+                event_id=event_id,
                 attribution=attribution,
             )
         )
@@ -318,6 +328,8 @@ class StateBackedBudgetLedger:
                 run_id=event.run_id,
                 unit=event.unit or None,
                 attribution=event.attribution,
+                event_id=event.event_id,
+                meta=event.meta,
             )
             return
         if event.kind == "time" or event.unit == "ms":
@@ -326,6 +338,9 @@ class StateBackedBudgetLedger:
                 reason=str(event.meta.get("reason") or event.kind or "event"),
                 source=event.source,
                 run_id=event.run_id,
+                attribution=event.attribution,
+                event_id=event.event_id,
+                meta=event.meta,
             )
             return
         if event.kind == "cost":
@@ -344,6 +359,8 @@ class StateBackedBudgetLedger:
         source: str = "runtime",
         run_id: str = "",
         attribution: BudgetAttribution | None = None,
+        event_id: str | None = None,
+        meta: dict[str, Any] | None = None,
     ) -> None:
         amount_ms = int(amount_ms or 0)
         if amount_ms < 0:
@@ -358,7 +375,8 @@ class StateBackedBudgetLedger:
                     amount=float(amount_ms),
                     unit="ms",
                     scope=str(self.state.get("budget_scope") or "run"),
-                    meta={"reason": reason},
+                    meta={"reason": reason, **(meta or {})},
+                    event_id=event_id,
                     attribution=attribution,
                 )
             )
@@ -374,7 +392,8 @@ class StateBackedBudgetLedger:
                 amount=float(amount_ms),
                 unit="ms",
                 scope=str(self.state.get("budget_scope") or "run"),
-                meta={"reason": reason},
+                meta={"reason": reason, **(meta or {})},
+                event_id=event_id,
                 attribution=attribution,
             )
         )

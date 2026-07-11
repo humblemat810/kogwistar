@@ -238,6 +238,77 @@ def test_persist_document_graph_extraction_uses_local_ids_and_resolves_same_batc
     indirect=True,
 )
 @pytest.mark.parametrize("embedding_kind", ["constant"], indirect=True)
+def test_resolve_llm_ids_accepts_stable_same_batch_node_ids(engine):
+    doc = kg_document(
+        doc_id="doc::graph_id_contract_stable_batch_ids",
+        content="x",
+        source="test_graph_extraction_id_contract",
+        doc_type="text",
+    )
+    engine.write.add_document(doc)
+
+    root_id = f"{doc.id}|root"
+    child_id = f"{root_id}|child"
+    root = Node(
+        id=root_id,
+        label="Root",
+        type="entity",
+        summary="stable root id",
+        mentions=[kg_grounding(doc.id)],
+        domain_id=None,
+        canonical_entity_id=None,
+        properties=None,
+        embedding=None,
+        doc_id=doc.id,
+        level_from_root=0,
+    )
+    child = Node(
+        id=child_id,
+        label="Child",
+        type="entity",
+        summary="stable child id",
+        mentions=[kg_grounding(doc.id)],
+        domain_id=None,
+        canonical_entity_id=None,
+        properties=None,
+        embedding=None,
+        doc_id=doc.id,
+        level_from_root=1,
+    )
+    edge = Edge(
+        id=str(uuid.uuid4()),
+        label="contains",
+        type="relationship",
+        summary="stable ids resolve within one payload",
+        relation="HAS_CHILD",
+        source_ids=[root_id],
+        target_ids=[child_id],
+        source_edge_ids=[],
+        target_edge_ids=[],
+        mentions=[kg_grounding(doc.id)],
+        domain_id=None,
+        canonical_entity_id=None,
+        properties=None,
+        embedding=None,
+        doc_id=doc.id,
+    )
+
+    parsed = GraphExtractionWithIDs(nodes=[root, child], edges=[edge])
+    engine.persist.resolve_llm_ids(doc.id, parsed)
+
+    assert edge.source_ids == [root_id]
+    assert edge.target_ids == [child_id]
+
+
+@pytest.mark.parametrize(
+    "backend_kind",
+    [
+        pytest.param("fake", marks=pytest.mark.ci),
+        pytest.param("chroma", marks=pytest.mark.ci_full),
+    ],
+    indirect=True,
+)
+@pytest.mark.parametrize("embedding_kind", ["constant"], indirect=True)
 def test_persist_document_graph_extraction_resolves_existing_alias_and_uuid_endpoints(
     engine,
 ):

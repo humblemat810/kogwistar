@@ -155,11 +155,13 @@ class PersistSubsystem(NamespaceProxy):
             return alias_to_real.get(x, x)
 
         nn2uuid: dict[str, str] = {}
+        batch_node_ids: dict[str, str] = {}
         for n in parsed.nodes:
             token = cast(str | None, getattr(n, "local_id", None)) or n.id
             
             if token is None or token == "":
                 n.id = str(uuid.uuid4())
+                batch_node_ids[token or n.id] = n.id
                 continue
 
             if _looks_like_batch_local_node(token):
@@ -170,6 +172,8 @@ class PersistSubsystem(NamespaceProxy):
                 n.id = rid
             else:
                 n.id = de_alias(token)
+            batch_node_ids[token] = n.id
+            batch_node_ids[n.id] = n.id
 
         ne2uuid: dict[str, str] = {}
         for e in parsed.edges:
@@ -197,6 +201,8 @@ class PersistSubsystem(NamespaceProxy):
                         if not rid:
                             raise ValueError(f"Unknown temp node id: {x}")
                         out.append(rid)
+                    elif x in batch_node_ids:
+                        out.append(batch_node_ids[x])
                     elif _is_alias(x) or _is_uuid(x):
                         out.append(de_alias(x))
                     else:

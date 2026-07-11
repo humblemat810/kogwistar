@@ -127,6 +127,128 @@ import json
 
 
 class BaseDocValidator:
+    def repair_span(
+        self,
+        span: Span,
+        *,
+        doc: Document,
+        origin_start: int | None = None,
+        scan_band: int = 2_000,
+    ) -> tuple[Span, dict[str, object]]:
+        """Repair a span only when the source evidence is safely recoverable.
+
+        ``Span.end_char`` is an exclusive offset in Kogwistar. This method is
+        intentionally stricter than ``fix_span``: an exact match must be
+        unique, and a fuzzy match must produce exactly one candidate. Ambiguous
+        evidence is returned as a failed diagnostic instead of being guessed.
+        """
+        validation = self.validate_span(span=span, doc=doc)
+        if validation.get("correctness") is True:
+            return span, {"repaired": False, "match_mode": "exact"}
+
+        text = str(doc.content or "")
+        excerpt = str(span.excerpt or "")
+        if not excerpt:
+            return span, {
+                "repaired": False,
+                "match_mode": "none",
+                "reason": "empty excerpt",
+            }
+        origin = int(span.start_char if origin_start is None else origin_start)
+        exact_starts = find_all_exact(text, excerpt)
+        if len(exact_starts) == 1:
+            start = exact_starts[0]
+            end = start + len(excerpt)
+            before, after = refresh_context(text, start, end)
+            repaired = span.model_copy(
+                update={
+                    "start_char": start,
+                    "end_char": end,
+                    "context_before": before,
+                    "context_after": after,
+                    "verification": MentionVerification(
+                        method="regex",
+                        is_verified=True,
+                        score=1.0,
+                        notes=json.dumps(
+                            {
+                                "reason": "unique_exact_offset_repair",
+                                "original_start": span.start_char,
+                                "original_end": span.end_char,
+                                "repaired_start": start,
+                                "repaired_end": end,
+                            },
+                            ensure_ascii=False,
+                        ),
+                    ),
+                }
+            )
+            return repaired, {
+                "repaired": True,
+                "match_mode": "unique_exact",
+                "original_start": span.start_char,
+                "original_end": span.end_char,
+                "repaired_start": start,
+                "repaired_end": end,
+            }
+        if len(exact_starts) > 1:
+            return span, {
+                "repaired": False,
+                "match_mode": "ambiguous_exact",
+                "candidate_count": len(exact_starts),
+            }
+
+        hits = fuzzy_find_best_spans(
+            text,
+            excerpt,
+            origin,
+            max_hits=2,
+            scan_band=scan_band,
+        )
+        if len(hits) != 1:
+            return span, {
+                "repaired": False,
+                "match_mode": "ambiguous_fuzzy" if hits else "none",
+                "candidate_count": len(hits),
+            }
+        hit = hits[0]
+        fixed_excerpt = text[hit.start : hit.end]
+        before, after = refresh_context(text, hit.start, hit.end)
+        repaired = span.model_copy(
+            update={
+                "start_char": hit.start,
+                "end_char": hit.end,
+                "excerpt": fixed_excerpt,
+                "context_before": before,
+                "context_after": after,
+                "verification": MentionVerification(
+                    method="levenshtein",
+                    is_verified=True,
+                    score=hit.score / 100.0,
+                    notes=json.dumps(
+                        {
+                            "reason": "unique_fuzzy_offset_repair",
+                            "original_start": span.start_char,
+                            "original_end": span.end_char,
+                            "repaired_start": hit.start,
+                            "repaired_end": hit.end,
+                            "fuzzy_score": round(hit.score / 100.0, 4),
+                        },
+                        ensure_ascii=False,
+                    ),
+                ),
+            }
+        )
+        return repaired, {
+            "repaired": True,
+            "match_mode": "unique_fuzzy",
+            "original_start": span.start_char,
+            "original_end": span.end_char,
+            "repaired_start": hit.start,
+            "repaired_end": hit.end,
+            "fuzzy_score": hit.score,
+        }
+
     def fix_span(
         self,
         span: Span,

@@ -1153,6 +1153,54 @@ class WorkflowRuntime(BaseRuntime):
             status="succeeded",
         )
 
+    def resume_from_latest_checkpoint(
+        self,
+        *,
+        run_id: str,
+        workflow_id: str,
+        conversation_id: str,
+        turn_node_id: str,
+        cache_dir=None,
+    ) -> RunResult:
+        """Continue a run from its latest ordinary workflow checkpoint.
+
+        This is for a worker/process interrupted after a normal checkpoint,
+        rather than a suspended client task requiring an external result.
+        The checkpoint contains the serialized state and pending frontier.
+        """
+        latest_ckpt = self._latest_checkpoint_for_run(
+            conversation_id=conversation_id,
+            run_id=str(run_id),
+        )
+        if latest_ckpt is None:
+            raise ValueError(f"Cannot resume run {run_id}: no checkpoints found.")
+        metadata = dict(getattr(latest_ckpt, "metadata", {}) or {})
+        checkpoint_workflow_id = str(metadata.get("workflow_id") or workflow_id)
+        if checkpoint_workflow_id != str(workflow_id):
+            raise ValueError(
+                f"Checkpoint workflow mismatch for {run_id}: "
+                f"stored={checkpoint_workflow_id!r} requested={workflow_id!r}"
+            )
+        state_raw = metadata.get("state_json", {})
+        if isinstance(state_raw, str):
+            state = json.loads(state_raw)
+        elif isinstance(state_raw, dict):
+            state = dict(state_raw)
+        else:
+            raise ValueError(f"Checkpoint state for {run_id} is not a JSON object.")
+        if not isinstance(state, dict):
+            raise ValueError(f"Checkpoint state for {run_id} is not a JSON object.")
+        step_seq = int(metadata.get("step_seq") or 0)
+        return self.run(
+            workflow_id=workflow_id,
+            conversation_id=conversation_id,
+            turn_node_id=turn_node_id,
+            initial_state=state,
+            run_id=str(run_id),
+            cache_dir=cache_dir,
+            _resume_step_seq=step_seq + 1,
+        )
+
     def run(
         self,
         *,
@@ -1178,9 +1226,9 @@ class WorkflowRuntime(BaseRuntime):
             state_schema = getattr(self.step_resolver, "_state_schema", None)
             if state_schema and isinstance(state_schema, dict):
                 for k, v in state_schema.items():
-                    if v == "u":
+                    if v == "u" and k not in initial_state:
                         initial_state[k] = None
-                    if v == "a":
+                    if v == "a" and k not in initial_state:
                         initial_state[k] = []
 
             validate_initial_state(initial_state)
