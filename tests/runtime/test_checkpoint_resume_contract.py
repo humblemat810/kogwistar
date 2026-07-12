@@ -4,7 +4,6 @@ import json
 
 import pytest
 
-from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.models import Grounding, Span
 from kogwistar.runtime.models import WorkflowCheckpointNode, WorkflowStepExecNode
 from kogwistar.runtime.replay import _apply_state_update

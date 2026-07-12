@@ -18,7 +18,6 @@ from kogwistar.server import resources as server_resources
 from kogwistar.server.auth_middleware import claims_ctx
 from kogwistar.conversation.models import ConversationNode
 from kogwistar.runtime.models import WorkflowCheckpointNode
-from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.models import Grounding, Span
 from kogwistar.server.chat_service import (
     AnswerRunRequest,

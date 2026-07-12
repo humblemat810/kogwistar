@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from kogwistar.conversation.models import ConversationEdge, ConversationNode, ConversationRole
-from kogwistar.engine_core.models import Edge, Grounding, Node
+from kogwistar.engine_core.models import Edge, Node
 from kogwistar.id_provider import stable_id
 from kogwistar.server.run_registry import RunRegistry
 from tests._helpers.graph_builders import (

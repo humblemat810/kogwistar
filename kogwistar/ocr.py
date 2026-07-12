@@ -82,7 +82,7 @@ def regen_page(file_json_raw, use_raw):
         return p.dump_supercede_parse()
     try:
         res = p.to_doc()
-    except:
+    except Exception:
         raise
     return res
 
@@ -524,7 +524,7 @@ def final_resort(
             has_error = True
         else:
             response = RawOCRResponse_to_OCRClusterResponse(response2)
-    except:
+    except Exception:
         has_error = True
     if has_error:
         # retry only
@@ -597,11 +597,11 @@ def final_resort(
                 try:
                     sp.to_doc()
                     ok = True
-                except:
+                except Exception:
                     raise Exception(
                         "Validation error response_dict cannot be validate into SplitPage"
                     )
-            except:
+            except Exception:
                 raise (
                     ValueError(
                         f"All LLM failed and coercing final resort fail, file name = {image_file_path}"

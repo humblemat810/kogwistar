@@ -480,7 +480,7 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
             try:
                 with _set_active_conn(adapter):
                     yield adapter
-            except BaseException as exc:
+            except BaseException:
                 _run_coro_blocking(txn.rollback())
                 raise
             else:

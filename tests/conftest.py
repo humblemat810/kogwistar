@@ -62,7 +62,7 @@ _TEST_ROOT = pathlib.Path(__file__).resolve().parents[1]
 for _env_name in (".env", ".env.test"):
     load_dotenv(_TEST_ROOT / _env_name, override=False)
 import pytest
-from typing import List, Optional, Sequence, Iterator, TYPE_CHECKING
+from typing import Optional, Iterator, TYPE_CHECKING
 
 if TYPE_CHECKING:
     import sqlalchemy as sa
@@ -877,14 +877,15 @@ def mcp_admin_server(tmp_path: Path) -> Iterator[dict[str, Any]]:
 
 
 from tests._helpers.embeddings import build_test_embedding_function
+# Shared test API: other test modules import these helpers from conftest.
 from tests._helpers.engine_factories import (
-    FakeEmbeddingFunction,
+    FakeEmbeddingFunction as FakeEmbeddingFunction,  # noqa: F401
     FakeStructuredRunnable,
-    _is_missing_pgvector_extension,
-    _install_conversation_policy,
-    _make_async_engine,
-    _make_engine_pair,
-    _make_workflow_engine,
+    _is_missing_pgvector_extension as _is_missing_pgvector_extension,  # noqa: F401
+    _install_conversation_policy as _install_conversation_policy,  # noqa: F401
+    _make_async_engine as _make_async_engine,  # noqa: F401
+    _make_engine_pair as _make_engine_pair,  # noqa: F401
+    _make_workflow_engine as _make_workflow_engine,  # noqa: F401
 )
 try:
     from tests._helpers.fake_backend import build_fake_backend

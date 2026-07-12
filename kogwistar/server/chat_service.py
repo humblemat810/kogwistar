@@ -15,7 +15,6 @@ from typing import Any, Callable
 
 from kogwistar.conversation.models import ConversationNode
 from kogwistar.conversation.service import ConversationService
-from kogwistar.engine_core.models import Node
 
 from .chat_service_conversation_queries import _ConversationQueryService
 from .chat_service_run_execution import _RunExecutionService

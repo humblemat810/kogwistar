@@ -1,4 +1,5 @@
 from dataclasses import asdict, dataclass, field
+import json
 
 from kogwistar.engine_core.models import (
     BaseNodeMetadata,
@@ -17,7 +18,9 @@ from pydantic import (
 )
 from typing import Any, ClassVar, Dict, List, Literal, Self, Tuple
 
-from kogwistar.provenance import EvidencePackDigest
+# Public compatibility re-export used by agentic_answering at runtime.
+from kogwistar.provenance import EvidencePackDigest as EvidencePackDigest  # noqa: F401
+
 
 # --- Phase 1: chat-edge intent classification (causality) ---
 
@@ -247,10 +250,10 @@ class ConversationRoleMixin(BaseModel):
         if self.metadata is None:
             self.metadata = {}
 
-        for field in ["role", "turn_index", "conversation_id", "user_id"]:
-            val = getattr(self, field, None)
+        for field_name in ["role", "turn_index", "conversation_id", "user_id"]:
+            val = getattr(self, field_name, None)
             if val is not None:
-                self.metadata[field] = val
+                self.metadata[field_name] = val
         return self
 
 

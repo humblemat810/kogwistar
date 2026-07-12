@@ -22,7 +22,7 @@ from kogwistar.engine_core.models import (
 )
 
 
-from typing import Callable, TypeVar, ParamSpec, cast, Sequence
+from typing import Callable, TypeVar, ParamSpec, cast
 from joblib import Memory
 from kogwistar.id_provider import stable_id
 

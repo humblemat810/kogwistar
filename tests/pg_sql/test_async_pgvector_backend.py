@@ -9,7 +9,6 @@ pytest.importorskip("sqlalchemy")
 pytest.importorskip("pgvector")
 pytest.importorskip("psycopg")
 
-from kogwistar.engine_core import postgres_backend as pg_backend_mod
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.engine_postgres_meta import EnginePostgresMetaStore
 from kogwistar.engine_core.models import Node

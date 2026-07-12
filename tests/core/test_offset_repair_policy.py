@@ -3,13 +3,21 @@ from __future__ import annotations
 import shutil
 import uuid
 from pathlib import Path
-from typing import Sequence
 import pytest
 
 pytestmark = pytest.mark.ci
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from tests._helpers.embeddings import ConstantEmbeddingFunction
+
+
+def _matches_where(node, where: dict | None) -> bool:
+    if not where:
+        return True
+    metadata = getattr(node, "metadata", {}) or {}
+    if "$and" in where:
+        return all(_matches_where(node, clause) for clause in where["$and"])
+    return all(metadata.get(key) == value for key, value in where.items())
 
 
 class FakeBackend:

@@ -10,7 +10,7 @@ from ...acl.graph import (
     ACLUsageDecision,
 )
 from ...acl.models import ACLEdge, ACLNode
-from ...cdc.change_event import EntityRefModel, Op
+from ...cdc.change_event import EntityRefModel
 from ...engine_core.models import Edge, Grounding, Node, Span
 from ...id_provider import stable_id
 from .base import NamespaceProxy

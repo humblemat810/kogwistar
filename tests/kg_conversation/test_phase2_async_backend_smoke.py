@@ -15,7 +15,7 @@ from kogwistar.conversation.models import (# noqa: E402
     MetaFromLastSummary,
 )
 from kogwistar.engine_core.engine import GraphKnowledgeEngine# noqa: E402
-from kogwistar.engine_core.models import Grounding, Span# noqa: E402
+from kogwistar.engine_core.models import Grounding# noqa: E402
 from kogwistar.engine_core.postgres_backend import PgVectorBackend# noqa: E402
 from kogwistar.id_provider import stable_id# noqa: E402
 from kogwistar.llm_tasks.contracts import SummarizeContextTaskResult# noqa: E402

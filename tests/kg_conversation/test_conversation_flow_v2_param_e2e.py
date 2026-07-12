@@ -1,7 +1,7 @@
 import json
 import re
 from pathlib import Path
-from typing import Callable, Sequence, Any, TypeVar, ParamSpec, cast
+from typing import Callable, Any, TypeVar, ParamSpec, cast
 
 import pytest
 from joblib import Memory
@@ -37,7 +37,6 @@ from kogwistar.id_provider import stable_id
 from kogwistar.engine_core.postgres_backend import PgVectorBackend
 from kogwistar.engine_core.models import (
     Node,
-    Span,
     Grounding,
 )
 from tests._helpers.engine_factories import FakeEmbeddingFunction

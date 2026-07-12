@@ -54,7 +54,6 @@ import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 from sqlalchemy.dialects import postgresql as psql
 
-from .async_compat import run_awaitable_blocking
 from ..utils.embedding_vectors import normalize_embedding_rows, normalize_embedding_vector
 
 try:

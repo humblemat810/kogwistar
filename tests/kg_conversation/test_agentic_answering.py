@@ -694,7 +694,7 @@ def test_agent_with_real_llm_cached(monkeypatch, engine, conversation_engine):
             temperature = float(os.getenv("TEST_LLM_TEMPERATURE", "0"))
 
             llm = ChatOpenAI(model=model_name, temperature=temperature)
-    except:
+    except Exception:
         pass
     try:
         model_name = "gemini-2.5-flash"
@@ -702,7 +702,7 @@ def test_agent_with_real_llm_cached(monkeypatch, engine, conversation_engine):
         from langchain_google_genai import ChatGoogleGenerativeAI
 
         llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=temperature)
-    except:
+    except Exception:
         pass
 
     if llm is None:

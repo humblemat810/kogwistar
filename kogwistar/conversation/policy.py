@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from kogwistar.engine_core.async_compat import run_awaitable_blocking
 from kogwistar.engine_core.scoped_seq import (

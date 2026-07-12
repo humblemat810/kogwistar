@@ -5,6 +5,7 @@ import threading
 import pytest
 pytestmark = [pytest.mark.core, pytest.mark.runtime]
 import json
+from typing import Any
 from pathlib import Path
 import uuid
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
@@ -23,8 +24,6 @@ from tests.conftest import FakeEmbeddingFunction, _is_missing_pgvector_extension
 from tests._helpers.fake_backend import build_fake_backend
 from tests.core._async_chroma_real import (
     make_real_async_chroma_backend,
-    make_real_async_chroma_uow,
-    real_chroma_server,
 )
 
 from kogwistar.engine_core.models import Span, Grounding

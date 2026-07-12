@@ -28,7 +28,6 @@ import argparse
 import json
 import math
 import re
-import sys
 from collections import Counter, defaultdict, deque
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -1223,7 +1222,7 @@ QUERY_SET = [
 ]
 
 
-def render_query_result(result: dict[str, Any]) -> str:
+def render_query_result(result: dict[str, Any], demo: RetrievalTutorial) -> str:
     lines = [f"Query: {result['query']}"]
     for method in ("vector", "index", "section", "graph", "hybrid"):
         block = result[method]
@@ -1256,14 +1255,14 @@ def render_query_result(result: dict[str, Any]) -> str:
         elif method == "graph":
             lines.append(f"    starts: {', '.join(block['start_entities']) or '(none)'}")
             for idx, path in enumerate(block.get("paths", [])[:2], start=1):
-                lines.append(f"    path {idx}: {self._path_trace(path['path'])}")
+                lines.append(f"    path {idx}: {demo._path_trace(path['path'])}")
             for edge_text in block["edge_texts"][:3]:
                 lines.append(f"    - {edge_text}")
         else:
             lines.append(f"    candidates: {', '.join(item['doc_id'] for item in block['candidate_docs']) or '(none)'}")
             lines.append(f"    expanded docs: {', '.join(block['expanded_doc_ids']) or '(none)'}")
             for idx, path in enumerate(block.get("paths", [])[:2], start=1):
-                lines.append(f"    path {idx}: {self._path_trace(path['path'])}")
+                lines.append(f"    path {idx}: {demo._path_trace(path['path'])}")
             for edge_text in block["graph_edges"][:3]:
                 lines.append(f"    - {edge_text}")
         lines.append(f"    answer: {block['answer']}")
@@ -1297,7 +1296,7 @@ def render_report(demo: RetrievalTutorial, results: list[dict[str, Any]]) -> Non
     print()
     for result in results:
         print("## Query Walkthrough")
-        print(render_query_result(result))
+        print(render_query_result(result, demo))
         print()
 
 

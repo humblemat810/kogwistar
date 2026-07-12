@@ -6,7 +6,6 @@ import uuid
 
 import pytest
 
-from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.server.auth_middleware import claims_ctx
 from kogwistar.server.chat_service import ChatRunService
 from kogwistar.server.run_registry import RunRegistry

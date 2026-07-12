@@ -115,3 +115,19 @@ markers = [
   "manual: manual smoke tests that require a live service",
   "e2e: end-to-end tests against real services",
 ]
+
+[tool.ruff]
+extend-exclude = ["pytest-cache-files-*", ".pytest*"]
+
+[tool.ruff.lint]
+# Existing modules intentionally use late imports for optional dependencies and
+# tests commonly import fixtures whose names are then injected as parameters.
+ignore = ["E402", "E731", "E741", "F811", "F841"]
+
+[tool.ruff.lint.per-file-ignores]
+# Pydantic-extension uses string-valued runtime slices in annotations. Pyflakes
+# parses the inner slice keys as forward-reference names.
+"kogwistar/engine_core/models.py" = ["F821"]
+"kogwistar/server/mcp_tools.py" = ["F821"]
+"kogwistar/strategies/__init__.py" = ["F401"]
+"tests/ingestions/test_ingest_document.py" = ["F821"]

@@ -14,7 +14,6 @@ from tests.server.test_chat_server_api import (
     _configure_server,
     _runtime_success_runner,
     _token_header,
-    engine_triplet,
 )
 
 pytestmark = pytest.mark.server

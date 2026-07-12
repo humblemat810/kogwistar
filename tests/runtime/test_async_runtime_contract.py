@@ -11,11 +11,10 @@ from kogwistar.runtime import (
     AsyncWorkflowRuntime,
     MappingStepResolver,
 )
-from kogwistar.runtime.async_runtime import _as_sync_step_fn, _SyncResolverAdapter
+from kogwistar.runtime.async_runtime import _SyncResolverAdapter
 from kogwistar.runtime.models import RunFailure, RunSuccess, RunSuspended
 from kogwistar.runtime.runtime import (
     RunResult,
-    StepContext,
     apply_state_update_inplace,
 )
 import queue
@@ -1422,7 +1421,6 @@ def test_async_runtime_side_by_side_node_edge_and_terminal_parity(terminal_case)
     from kogwistar.engine_core.models import Grounding, Span
     from kogwistar.runtime.models import WorkflowCompletedNode, WorkflowEdge, WorkflowFailedNode, WorkflowNode
     from kogwistar.runtime.runtime import WorkflowRuntime
-    from kogwistar.typing_interfaces import EmbeddingFunctionLike
     from tests.conftest import FakeEmbeddingFunction
     from tests._helpers.fake_backend import build_fake_backend
 

@@ -14,7 +14,6 @@ from kogwistar.wisdom.dream_loop import (
     _persist_nodes,
     _proposal_node_from_proposal,
     _reasoning_node_from_proposal,
-    _single_dummy_grounding,
     _workflow_artifact_node,
     _workflow_lineage_edge,
     DreamLoopEvidence,

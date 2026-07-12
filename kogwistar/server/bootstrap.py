@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING, Any, Literal
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.async_compat import (
     run_awaitable_blocking,
-    run_sync_or_awaitable,
 )
 from kogwistar.engine_core.chroma_backend import ChromaBackend
 

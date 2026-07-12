@@ -37,10 +37,11 @@ from kogwistar.runtime.models import (
     WorkflowNodeMetadata,
 )
 from kogwistar.server.auth_middleware import (
-    JWT_ALG,
-    JWT_AUD,
-    JWT_ISS,
-    JWT_SECRET,
+    # Compatibility exports consumed by auth clients and tests.
+    JWT_ALG as JWT_ALG,  # noqa: F401
+    JWT_AUD as JWT_AUD,  # noqa: F401
+    JWT_ISS as JWT_ISS,  # noqa: F401
+    JWT_SECRET as JWT_SECRET,  # noqa: F401
     ROLE_ORDER,
     DevStreamGuardMiddleware,
     JWTProtectMiddleware,

@@ -13,7 +13,7 @@ from kogwistar.conversation.models import (
     RetrievalResult,
 )
 from kogwistar.id_provider import stable_id
-from kogwistar.engine_core.models import Grounding, Span
+from kogwistar.engine_core.models import Grounding
 from kogwistar.conversation.conversation_orchestrator import (
     ConversationOrchestrator,
     get_id_for_conversation_turn,

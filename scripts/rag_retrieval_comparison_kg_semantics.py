@@ -300,7 +300,6 @@ from scripts.rag_retrieval_comparison_tutorial import (
     format_score,
     load_dataset,
     normalize_text,
-    sentence_snippet,
     short_excerpt,
     tokenize,
     RetrievalTutorial as RawTutorial,

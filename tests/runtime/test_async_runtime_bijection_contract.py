@@ -1096,7 +1096,7 @@ def test_async_runtime_missing_op_behavior():
     with pytest.raises(KeyError):
         sync_resolver.resolve("missing")
     with pytest.raises(KeyError):
-        asyncio.run(async_resolver.resolve_async("missing")(_DummyCtx()))
+        asyncio.run(async_resolver.resolve_async("missing")(object()))
 
 
 def test_async_runtime_exception_to_runfailure():

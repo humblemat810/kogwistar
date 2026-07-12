@@ -15,7 +15,6 @@ from ..runtime.projections import (
     workflow_checkpoint_latest_projection_namespace,
     workflow_run_status_projection_namespace,
 )
-from .service_health import ServiceHealthRepairResult
 
 
 TERMINAL_RUN_STATUSES = {"succeeded", "failed", "cancelled", "completed"}
