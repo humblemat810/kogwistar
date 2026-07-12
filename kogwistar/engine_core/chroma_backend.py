@@ -3,6 +3,28 @@ from typing import Any, Dict
 from .async_compat import run_awaitable_blocking
 
 
+def _chroma_safe_kwargs(kwargs: Dict[str, Any]) -> Dict[str, Any]:
+    """Encode empty metadata lists rejected by Chroma without changing nodes."""
+    metadatas = kwargs.get("metadatas")
+    if not isinstance(metadatas, (list, tuple)):
+        return kwargs
+    sanitized: list[Any] = []
+    changed = False
+    for metadata in metadatas:
+        if not isinstance(metadata, dict):
+            sanitized.append(metadata)
+            continue
+        safe_metadata = {
+            key: ("[]" if isinstance(value, list) and not value else value)
+            for key, value in metadata.items()
+        }
+        sanitized.append(safe_metadata)
+        changed = changed or safe_metadata != metadata
+    if not changed:
+        return kwargs
+    return {**kwargs, "metadatas": sanitized}
+
+
 class _AwaitableValue:
     def __init__(self, value: Any):
         self._value = value
@@ -79,7 +101,7 @@ class ChromaBackend:
     def call(self, collection_key: str, method: str, **kwargs) -> Any:
         coll = self._c(collection_key)
         fn = getattr(coll, method)
-        return _awaitable_result(run_awaitable_blocking(fn(**kwargs)))
+        return _awaitable_result(run_awaitable_blocking(fn(**_chroma_safe_kwargs(kwargs))))
 
     # --- node_index ---
     def node_index_get(self, **kwargs) -> Any:
