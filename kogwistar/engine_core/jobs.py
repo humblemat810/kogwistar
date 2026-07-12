@@ -27,6 +27,8 @@ class JobQueueItem:
     retry_count: int
     max_retries: int
     last_error: str | None = None
+    claim_token: str | None = None
+    claim_attempts: int = 0
 
 
 class JobQueueSubsystem:
@@ -99,15 +101,27 @@ class JobQueueSubsystem:
             for row in claim(limit=limit, lease_seconds=lease_seconds, namespace=namespace)
         ]
 
-    def mark_done(self, job_id: str) -> None:
+    def mark_done(self, job_id: str, *, claim_token: str | None = None) -> bool:
         mark_done = getattr(self.engine.meta_sqlite, "mark_index_job_done", None)
         if mark_done is not None:
-            mark_done(str(job_id))
+            if claim_token is None:
+                return bool(mark_done(str(job_id)))
+            return bool(mark_done(str(job_id), claim_token=claim_token))
+        return False
 
-    def mark_failed(self, job_id: str, error: str, *, final: bool = True) -> None:
+    def renew_lease(self, job: JobQueueItem, *, lease_seconds: int) -> bool:
+        renew = getattr(self.engine.meta_sqlite, "renew_index_job_lease", None)
+        if renew is None or job.claim_token is None:
+            return False
+        return bool(renew(job.job_id, claim_token=job.claim_token, lease_seconds=lease_seconds))
+
+    def mark_failed(self, job_id: str, error: str, *, final: bool = True, claim_token: str | None = None) -> None:
         mark_failed = getattr(self.engine.meta_sqlite, "mark_index_job_failed", None)
         if mark_failed is not None:
-            mark_failed(str(job_id), str(error), final=final)
+            if claim_token is None:
+                mark_failed(str(job_id), str(error), final=final)
+            else:
+                mark_failed(str(job_id), str(error), final=final, claim_token=claim_token)
 
     def retry_or_fail(
         self,
@@ -122,9 +136,12 @@ class JobQueueSubsystem:
             bump = getattr(self.engine.meta_sqlite, "bump_retry_and_requeue", None)
             if bump is not None:
                 delay = min(int(max_delay_seconds), 2 ** max(int(job.retry_count), 0))
-                bump(job.job_id, err, next_run_at_seconds=delay)
+                if job.claim_token is None:
+                    bump(job.job_id, err, next_run_at_seconds=delay)
+                else:
+                    bump(job.job_id, err, next_run_at_seconds=delay, claim_token=job.claim_token)
                 return
-        self.mark_failed(job.job_id, err, final=True)
+        self.mark_failed(job.job_id, err, final=True, claim_token=job.claim_token)
 
     def requeue_at_tail(
         self,
@@ -142,11 +159,13 @@ class JobQueueSubsystem:
         requeue = getattr(self.engine.meta_sqlite, "requeue_index_job_at_tail", None)
         if requeue is None:
             raise RuntimeError("meta store does not support fair job requeue")
-        requeue(
-            str(job.job_id),
-            payload_json=json.dumps(payload if payload is not None else job.payload),
-            delay_seconds=max(0, int(delay_seconds)),
-        )
+        kwargs = {
+            "payload_json": json.dumps(payload if payload is not None else job.payload),
+            "delay_seconds": max(0, int(delay_seconds)),
+        }
+        if job.claim_token is not None:
+            kwargs["claim_token"] = job.claim_token
+        requeue(str(job.job_id), **kwargs)
 
     def list(
         self,
@@ -187,6 +206,8 @@ class JobQueueSubsystem:
             retry_count=int(field("retry_count", 0) or 0),
             max_retries=int(field("max_retries", 10) or 10),
             last_error=(None if field("last_error") is None else str(field("last_error"))),
+            claim_token=(None if field("claim_token") is None else str(field("claim_token"))),
+            claim_attempts=int(field("claim_attempts", 0) or 0),
         )
 
     @staticmethod

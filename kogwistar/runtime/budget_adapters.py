@@ -99,6 +99,7 @@ def summarize_budget_events(events: list[BudgetEvent]) -> dict[str, Any]:
     time_ms = 0
     event_counts: Counter[str] = Counter()
     by_unit: Counter[str] = Counter()
+    cost_provenance: Counter[str] = Counter()
     for event in events:
         kind = str(getattr(event, "kind", "unknown"))
         unit = str(getattr(event, "unit", ""))
@@ -106,6 +107,10 @@ def summarize_budget_events(events: list[BudgetEvent]) -> dict[str, Any]:
         event_counts[kind] += 1
         if unit:
             by_unit[unit] += 1
+        if kind == "cost":
+            provenance = getattr(event, "meta", {}).get("cost_provenance")
+            if provenance:
+                cost_provenance[str(provenance)] += 1
         if kind in {"debit", "token"} and unit == "input_tokens":
             input_tokens += int(amount or 0)
             total_tokens += int(amount or 0)
@@ -130,5 +135,6 @@ def summarize_budget_events(events: list[BudgetEvent]) -> dict[str, Any]:
         "event_count": len(events),
         "event_counts": dict(event_counts),
         "by_unit": dict(by_unit),
+        "cost_provenance": dict(cost_provenance),
     }
 

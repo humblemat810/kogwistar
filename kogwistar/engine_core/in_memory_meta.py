@@ -4,6 +4,7 @@ import contextvars
 import copy
 import json
 import threading
+import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -55,6 +56,7 @@ class _JobState:
     payload_json: str | None
     created_at: int
     updated_at: int
+    claim_token: str | None = None
 
     def as_row(self) -> IndexJobRow:
         return IndexJobRow(
@@ -74,6 +76,7 @@ class _JobState:
             payload_json=self.payload_json,
             created_at=self.created_at,
             updated_at=self.updated_at,
+            claim_token=self.claim_token,
         )
 
 
@@ -389,6 +392,7 @@ class InMemoryMetaStore(LaneMessageMetaStoreMixin):
             return []
         now = _now_epoch()
         lease_until = now + int(lease_seconds)
+        claim_token = str(uuid.uuid4())
         with self.transaction() as txn:
             candidates = []
             for job in txn.state.index_jobs.values():
@@ -410,25 +414,32 @@ class InMemoryMetaStore(LaneMessageMetaStoreMixin):
             for job in claimed:
                 job.status = "DOING"
                 job.lease_until = lease_until
+                job.claim_token = claim_token
                 job.updated_at = now
                 rows.append(job.as_row())
             return rows
 
-    def mark_index_job_done(self, job_id: str) -> None:
+    def mark_index_job_done(self, job_id: str, *, claim_token: str | None = None) -> bool:
+        now = _now_epoch()
+        with self.transaction() as txn:
+            job = txn.state.index_jobs.get(str(job_id))
+            if job is None:
+                return False
+            if job.status != "DOING" or (claim_token is not None and job.claim_token != claim_token):
+                return False
+            job.status = "DONE"
+            job.lease_until = None
+            job.claim_token = None
+            job.updated_at = now
+            return True
+
+    def mark_index_job_failed(self, job_id: str, error: str, *, final: bool = True, claim_token: str | None = None) -> None:
         now = _now_epoch()
         with self.transaction() as txn:
             job = txn.state.index_jobs.get(str(job_id))
             if job is None:
                 return
-            job.status = "DONE"
-            job.lease_until = None
-            job.updated_at = now
-
-    def mark_index_job_failed(self, job_id: str, error: str, *, final: bool = True) -> None:
-        now = _now_epoch()
-        with self.transaction() as txn:
-            job = txn.state.index_jobs.get(str(job_id))
-            if job is None:
+            if job.status != "DOING" or (claim_token is not None and job.claim_token != claim_token):
                 return
             if final:
                 job.status = "FAILED"
@@ -437,7 +448,7 @@ class InMemoryMetaStore(LaneMessageMetaStoreMixin):
             job.updated_at = now
 
     def bump_retry_and_requeue(
-        self, job_id: str, error: str, *, next_run_at_seconds: int
+        self, job_id: str, error: str, *, next_run_at_seconds: int, claim_token: str | None = None
     ) -> None:
         now = _now_epoch()
         delay = max(0, int(next_run_at_seconds))
@@ -445,6 +456,8 @@ class InMemoryMetaStore(LaneMessageMetaStoreMixin):
         with self.transaction() as txn:
             job = txn.state.index_jobs.get(str(job_id))
             if job is None:
+                return
+            if job.status != "DOING" or (claim_token is not None and job.claim_token != claim_token):
                 return
             job.retry_count += 1
             job.last_error = str(error or "")[:2000]
@@ -463,12 +476,13 @@ class InMemoryMetaStore(LaneMessageMetaStoreMixin):
         *,
         payload_json: str,
         delay_seconds: int = 0,
+        claim_token: str | None = None,
     ) -> None:
         now = _now_epoch()
         next_run_at = now + max(0, int(delay_seconds))
         with self.transaction() as txn:
             job = txn.state.index_jobs.get(str(job_id))
-            if job is None or job.status != "DOING":
+            if job is None or job.status != "DOING" or (claim_token is not None and job.claim_token != claim_token):
                 return
             tail_position = max(
                 (item.created_at for item in txn.state.index_jobs.values()),
@@ -476,10 +490,24 @@ class InMemoryMetaStore(LaneMessageMetaStoreMixin):
             ) + 1
             job.status = "PENDING"
             job.lease_until = None
+            job.claim_token = None
+            job.claim_token = None
             job.next_run_at = next_run_at
             job.payload_json = payload_json
             job.created_at = tail_position
             job.updated_at = now
+
+    def renew_index_job_lease(self, job_id: str, *, claim_token: str, lease_seconds: int) -> bool:
+        now = _now_epoch()
+        with self.transaction() as txn:
+            job = txn.state.index_jobs.get(str(job_id))
+            if job is None or job.status != "DOING" or job.claim_token != claim_token:
+                return False
+            if job.lease_until is not None and job.lease_until < now:
+                return False
+            job.lease_until = now + int(lease_seconds)
+            job.updated_at = now
+            return True
 
     def list_index_jobs(
         self,

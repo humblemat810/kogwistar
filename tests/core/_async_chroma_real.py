@@ -2,7 +2,7 @@ from __future__ import annotations
 # '''_async_chroma_real.py'''
 import contextlib
 import dataclasses
-import os
+import asyncio
 import shutil
 import socket
 import subprocess
@@ -25,6 +25,7 @@ class RealChromaServer:
     host: str
     port: int
     persist_dir: Path
+    log_path: Path
 
 
 _ASYNC_CHROMA_SERVER_CLIENTS: dict[int, Any] = {}
@@ -39,12 +40,49 @@ def _free_port() -> int:
         sock.close()
 
 
-def _read_proc_output(proc: subprocess.Popen[str]) -> str:
-    if proc.stdout is None:
-        return ""
+def _tail_text(path: Path, *, limit: int = 16_000) -> str:
     with contextlib.suppress(Exception):
-        return proc.stdout.read() or ""
+        data = path.read_bytes()
+        return data[-limit:].decode(errors="replace")
     return ""
+
+
+def _terminate_process_tree(proc: subprocess.Popen[str], *, timeout: float) -> None:
+    if proc.poll() is not None:
+        return
+    if sys.platform == "win32":
+        subprocess.run(
+            ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        with contextlib.suppress(Exception):
+            proc.wait(timeout=timeout)
+        return
+
+    proc.terminate()
+    with contextlib.suppress(Exception):
+        proc.wait(timeout=timeout)
+    if proc.poll() is None:
+        proc.kill()
+
+
+def _find_chroma_cli() -> str | None:
+    chroma_cli = shutil.which("chroma")
+    if chroma_cli is not None:
+        return chroma_cli
+
+    scripts_dir = Path(sys.executable).parent
+    candidates = (
+        scripts_dir / "chroma.exe",
+        scripts_dir / "chroma.cmd",
+        scripts_dir / "chroma",
+    )
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+    return None
 
 
 def _register_async_chroma_server(client: Any) -> None:
@@ -62,7 +100,7 @@ def _close_async_chroma_server_clients() -> None:
             close = getattr(http_client, "aclose", None)
             if callable(close):
                 with contextlib.suppress(Exception):
-                    run_awaitable_blocking(close())
+                    run_awaitable_blocking(asyncio.wait_for(close(), timeout=5.0))
         clients.clear()
     _ASYNC_CHROMA_SERVER_CLIENTS.clear()
 
@@ -76,7 +114,7 @@ def _cleanup_async_chroma_clients_after_test():
 def start_real_chroma_server(tmp_path: Path) -> RealChromaServer:
     pytest.importorskip("chromadb")
 
-    chroma_cli = shutil.which("chroma")
+    chroma_cli = _find_chroma_cli()
     if chroma_cli is None:
         pytest.skip("real async Chroma tests require the `chroma` CLI")
 
@@ -95,15 +133,18 @@ def start_real_chroma_server(tmp_path: Path) -> RealChromaServer:
         "--port",
         str(port),
     ]
+    log_path = tmp_path / "chroma-server.log"
+    log_file = log_path.open("w", encoding="utf-8")
     proc = subprocess.Popen(
         cmd,
         cwd=str(tmp_path),
-        stdout=subprocess.PIPE,
+        stdout=log_file,
         stderr=subprocess.STDOUT,
         text=True,
     )
+    log_file.close()
     server = RealChromaServer(
-        proc=proc, host=host, port=port, persist_dir=persist_dir
+        proc=proc, host=host, port=port, persist_dir=persist_dir, log_path=log_path
     )
 
     deadline = time.monotonic() + 60.0
@@ -111,7 +152,7 @@ def start_real_chroma_server(tmp_path: Path) -> RealChromaServer:
     with httpx.Client(timeout=1.0) as client:
         while time.monotonic() < deadline:
             if proc.poll() is not None:
-                output = _read_proc_output(proc)
+                output = _tail_text(log_path)
                 raise RuntimeError(
                     "Chroma server exited before it became ready "
                     f"(code={proc.returncode}).\n{output}"
@@ -122,15 +163,8 @@ def start_real_chroma_server(tmp_path: Path) -> RealChromaServer:
                     return server
             time.sleep(0.25)
 
-    output = _read_proc_output(proc)
-    proc.terminate()
-    with contextlib.suppress(Exception):
-        proc.wait(timeout=5)
-    if proc.poll() is None:
-        proc.kill()
-    with contextlib.suppress(Exception):
-        if proc.stdout is not None:
-            proc.stdout.close()
+    output = _tail_text(log_path)
+    _terminate_process_tree(proc, timeout=5)
     raise TimeoutError(
         "Timed out waiting for Chroma server to become ready.\n" + output
     )
@@ -138,19 +172,19 @@ def start_real_chroma_server(tmp_path: Path) -> RealChromaServer:
 
 def stop_real_chroma_server(server: RealChromaServer) -> None:
     proc = server.proc
-    if proc.poll() is not None:
-        with contextlib.suppress(Exception):
-            if proc.stdout is not None:
-                proc.stdout.close()
-        return
-    proc.terminate()
-    with contextlib.suppress(Exception):
-        proc.wait(timeout=10)
-    if proc.poll() is None:
-        proc.kill()
-    with contextlib.suppress(Exception):
-        if proc.stdout is not None:
-            proc.stdout.close()
+    _terminate_process_tree(proc, timeout=10)
+
+
+async def _await_chroma_setup(awaitable: Any, *, operation: str, server: RealChromaServer) -> Any:
+    try:
+        return await asyncio.wait_for(awaitable, timeout=15.0)
+    except TimeoutError as exc:
+        output = _tail_text(server.log_path)
+        stop_real_chroma_server(server)
+        raise TimeoutError(
+            f"Timed out during Chroma {operation} on {server.host}:{server.port}.\n"
+            f"Chroma log tail:\n{output}"
+        ) from exc
 
 
 @pytest.fixture
@@ -167,7 +201,11 @@ async def make_real_async_chroma_backend(
 ) -> tuple[Any, AsyncChromaBackend, dict[str, Any]]:
     import chromadb
 
-    client = await chromadb.AsyncHttpClient(host=server.host, port=server.port)
+    client = await _await_chroma_setup(
+        chromadb.AsyncHttpClient(host=server.host, port=server.port),
+        operation="AsyncHttpClient",
+        server=server,
+    )
     _register_async_chroma_server(client)
     collections: dict[str, Any] = {}
     for key in (
@@ -182,8 +220,10 @@ async def make_real_async_chroma_backend(
         "edge_refs",
     ):
         collection_name = f"{collection_prefix}_{key}"
-        collections[key] = await client.get_or_create_collection(
-            name=collection_name
+        collections[key] = await _await_chroma_setup(
+            client.get_or_create_collection(name=collection_name),
+            operation=f"get_or_create_collection({collection_name!r})",
+            server=server,
         )
 
     backend = AsyncChromaBackend(

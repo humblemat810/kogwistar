@@ -4,10 +4,13 @@ import asyncio
 from contextlib import contextmanager
 from dataclasses import dataclass
 import json
+import logging
+import os
 import re
 import sys
 import threading
 import time
+import uuid
 from typing import Any, Dict, Iterator, List, Optional
 
 import sqlalchemy as sa
@@ -19,6 +22,7 @@ from .meta_lane_messages import LaneMessageMetaStoreMixin
 
 
 _SCHEMA_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+logger = logging.getLogger(__name__)
 
 
 def _run_coro_blocking(coro):
@@ -98,6 +102,32 @@ class _AsyncConnectionAdapter:
 
         return self.invoke_sync(_execute)
 
+    def begin_nested(self):
+        return _AsyncNestedTransaction(self)
+
+
+class _AsyncNestedTransaction:
+    def __init__(self, adapter: _AsyncConnectionAdapter):
+        self.adapter = adapter
+        self.transaction = None
+
+    def __enter__(self):
+        self.transaction = self.adapter._runner.run(
+            self.adapter._conn.begin_nested().start()
+        )
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if self.transaction is None:
+            return False
+        operation = (
+            self.transaction.rollback()
+            if exc_type is not None
+            else self.transaction.commit()
+        )
+        self.adapter._runner.run(operation)
+        return False
+
 
 def _make_runner() -> asyncio.Runner:
     if sys.platform == "win32":
@@ -123,6 +153,8 @@ class IndexJob:
     retry_count: int = 0
     last_error: Optional[str] = None
     payload_json: Optional[str] = None
+    claim_token: Optional[str] = None
+    claim_attempts: int = 0
 
 
 @dataclass
@@ -238,6 +270,8 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
             f"ALTER TABLE {ij} ADD COLUMN IF NOT EXISTS coalesce_key TEXT NOT NULL DEFAULT ''",
             f"ALTER TABLE {ij} ADD COLUMN IF NOT EXISTS next_run_at TIMESTAMPTZ NULL",
             f"ALTER TABLE {ij} ADD COLUMN IF NOT EXISTS max_retries INTEGER NOT NULL DEFAULT 10",
+            f"ALTER TABLE {ij} ADD COLUMN IF NOT EXISTS claim_token TEXT NULL",
+            f"ALTER TABLE {ij} ADD COLUMN IF NOT EXISTS claim_attempts INTEGER NOT NULL DEFAULT 0",
             f"CREATE UNIQUE INDEX IF NOT EXISTS uq_index_jobs_pending_ns_ck ON {ij}(namespace, coalesce_key) WHERE status='PENDING'",
             f"""
                 CREATE TABLE IF NOT EXISTS {ias} (
@@ -417,15 +451,23 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
         existing = get_active_conn()
         if existing is not None:
             if isinstance(existing, _AsyncConnectionAdapter):
-                yield existing
+                with existing.begin_nested():
+                    yield existing
             elif isinstance(existing, AsyncConnection):
                 runner = _make_runner()
                 try:
-                    yield _AsyncConnectionAdapter(existing, runner)
+                    adapter = _AsyncConnectionAdapter(existing, runner)
+                    with adapter.begin_nested():
+                        yield adapter
                 finally:
                     runner.close()
             else:
-                yield existing
+                nested = getattr(existing, "begin_nested", None)
+                if callable(nested):
+                    with nested():
+                        yield existing
+                else:  # pragma: no cover - defensive adapter compatibility
+                    yield existing
             return
 
         if self._is_async_engine:
@@ -451,6 +493,24 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
         with self.engine.begin() as conn:
             with _set_active_conn(conn):
                 yield conn
+
+    @contextmanager
+    def _queue_transaction(self, *, job_id: str, namespace: str):
+        """Run queue metadata in a savepoint-aware transaction with diagnostics."""
+        try:
+            with self.transaction() as conn:
+                yield conn
+        except Exception as exc:
+            logger.warning(
+                "postgres_queue_rollback application_name=kogwistar pid=%s tid=%s "
+                "job_id=%s namespace=%s savepoint_status=rolled_back rollback_reason=%s",
+                os.getpid(),
+                threading.get_ident(),
+                job_id,
+                namespace,
+                f"{type(exc).__name__}: {exc}",
+            )
+            raise
 
     # ----------------------------
     # Global sequence
@@ -563,44 +623,8 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
         )
         coalesce_key = f"{entity_kind}:{entity_id}:{index_kind}"
 
-        with self.transaction() as conn:
-            row = conn.execute(
-                sa.text(
-                    f"""
-                    SELECT job_id, op
-                    FROM {ij}
-                    WHERE namespace = :ns AND coalesce_key = :ck AND status='PENDING'
-                    ORDER BY created_at ASC
-                    LIMIT 1
-                    FOR UPDATE
-                    """
-                ),
-                {"ns": namespace, "ck": coalesce_key},
-            ).fetchone()
-
-            if row:
-                existing_job_id = str(row[0])
-                existing_op = str(row[1] or "")
-                next_op = (
-                    "DELETE" if (op == "DELETE" or existing_op == "DELETE") else op
-                )
-                conn.execute(
-                    sa.text(
-                        f"""
-                        UPDATE {ij}
-                        SET op=:op, payload_json=:payload_json, updated_at=NOW()
-                        WHERE job_id=:job_id
-                        """
-                    ),
-                    {
-                        "op": next_op,
-                        "payload_json": payload_json,
-                        "job_id": existing_job_id,
-                    },
-                )
-                return existing_job_id
-
-            conn.execute(
+        with self._queue_transaction(job_id=job_id, namespace=namespace) as conn:
+            result = conn.execute(
                 sa.text(
                     f"""
                     INSERT INTO {ij}(
@@ -609,7 +633,15 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                     )
                     VALUES (:job_id, :ns, :entity_kind, :entity_id, :index_kind, :ck, :op,
                             'PENDING', NULL, NULL, :max_retries, 0, NULL, :payload_json, NOW(), NOW())
-                    ON CONFLICT (job_id) DO NOTHING
+                    ON CONFLICT (namespace, coalesce_key) WHERE status='PENDING'
+                    DO UPDATE SET
+                        op = CASE
+                            WHEN EXCLUDED.op = 'DELETE' OR {ij}.op = 'DELETE' THEN 'DELETE'
+                            ELSE EXCLUDED.op
+                        END,
+                        payload_json = EXCLUDED.payload_json,
+                        updated_at = NOW()
+                    RETURNING job_id
                     """
                 ),
                 {
@@ -624,7 +656,20 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                     "max_retries": int(max_retries),
                 },
             )
-            return job_id
+            row = result.fetchone()
+            chosen_job_id = str(row[0]) if row else str(job_id)
+            logger.debug(
+                "postgres_queue_enqueue job_id=%s selected_job_id=%s namespace=%s "
+                "coalesce_key=%s pid=%s tid=%s joined_transaction=%s",
+                job_id,
+                chosen_job_id,
+                namespace,
+                coalesce_key,
+                os.getpid(),
+                threading.get_ident(),
+                get_active_conn() is not None,
+            )
+            return chosen_job_id
 
     def claim_index_jobs(
         self,
@@ -651,11 +696,19 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
         params: Dict[str, Any] = {
             "limit": int(limit),
             "lease_seconds": int(lease_seconds),
+            "claim_token": str(uuid.uuid4()),
         }
         if namespace is not None:
             namespace_sql = "AND namespace = :namespace"
             params["namespace"] = namespace
         with self.transaction() as conn:
+            conn.execute(
+                sa.text(
+                    f"UPDATE {ij} SET status='FAILED', last_error='lease ownership exceeded', lease_until=NULL, claim_token=NULL, updated_at=NOW() "
+                    "WHERE status='DOING' AND lease_until < NOW() AND claim_attempts >= :max_takeovers"
+                ),
+                {"max_takeovers": 3},
+            )
             res = conn.execute(
                 sa.text(
                     f"""
@@ -674,16 +727,27 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                     UPDATE {ij} j
                     SET status='DOING',
                         lease_until = NOW() + (:lease_seconds || ' seconds')::interval,
+                        claim_token = :claim_token,
+                        claim_attempts = claim_attempts + CASE WHEN j.status='DOING' THEN 1 ELSE 0 END,
                         updated_at = NOW()
                     FROM candidates c
                     WHERE j.job_id = c.job_id
                     RETURNING j.job_id, j.namespace, j.entity_kind, j.entity_id, j.index_kind, j.coalesce_key, j.op, j.status,
-                              j.lease_until, j.next_run_at, j.max_retries, j.retry_count, j.last_error, j.payload_json
+                              j.lease_until, j.next_run_at, j.max_retries, j.retry_count, j.last_error, j.payload_json, j.claim_token, j.claim_attempts
                     """
                 ),
                 params,
             )
             rows = res.mappings().all()
+
+        logger.debug(
+            "postgres_queue_claim namespace=%s limit=%s claimed=%s pid=%s tid=%s",
+            namespace,
+            limit,
+            len(rows),
+            os.getpid(),
+            threading.get_ident(),
+        )
 
         out: List[IndexJob] = []
         for r in rows:
@@ -719,26 +783,42 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                         if r.get("payload_json") is not None
                         else None
                     ),
+                    claim_token=(str(r.get("claim_token")) if r.get("claim_token") is not None else None),
+                    claim_attempts=int(r.get("claim_attempts") or 0),
                 )
             )
         return out
 
-    def mark_index_job_done(self, job_id: str) -> None:
+    def mark_index_job_done(self, job_id: str, *, claim_token: str | None = None) -> bool:
         ij = (
             f"{self.schema}.{self.index_jobs_table}"
             if self.index_jobs_table == "index_jobs"
             else f'{self.schema}."{self.index_jobs_table}"'
         )
         with self.transaction() as conn:
-            conn.execute(
+            result = conn.execute(
                 sa.text(
-                    f"UPDATE {ij} SET status='DONE', lease_until=NULL, updated_at=NOW() WHERE job_id=:job_id"
+                    f"UPDATE {ij} SET status='DONE', lease_until=NULL, claim_token=NULL, updated_at=NOW() WHERE job_id=:job_id AND status='DOING' AND (:claim_token IS NULL OR claim_token=:claim_token)"
                 ),
-                {"job_id": job_id},
+                {"job_id": job_id, "claim_token": claim_token},
             )
+            return bool(getattr(result, "rowcount", 0))
+
+    def renew_index_job_lease(self, job_id: str, *, claim_token: str, lease_seconds: int) -> bool:
+        ij = f"{self.schema}.{self.index_jobs_table}"
+        with self.transaction() as conn:
+            result = conn.execute(
+                sa.text(
+                    f"UPDATE {ij} SET lease_until=NOW() + (:lease_seconds || ' seconds')::interval, updated_at=NOW() "
+                    "WHERE job_id=:job_id AND status='DOING' AND claim_token=:claim_token "
+                    "AND (lease_until IS NULL OR lease_until >= NOW())"
+                ),
+                {"job_id": job_id, "claim_token": claim_token, "lease_seconds": int(lease_seconds)},
+            )
+            return bool(getattr(result, "rowcount", 0))
 
     def mark_index_job_failed(
-        self, job_id: str, error: str, *, final: bool = True
+        self, job_id: str, error: str, *, final: bool = True, claim_token: str | None = None
     ) -> None:
         """Mark a job failed.
 
@@ -757,16 +837,17 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                     UPDATE {ij}
                     SET status = CASE WHEN :final THEN 'FAILED' ELSE status END,
                         lease_until=NULL,
+                        claim_token=NULL,
                         last_error=:err,
                         updated_at=NOW()
-                    WHERE job_id=:job_id
+                    WHERE job_id=:job_id AND status='DOING' AND (:claim_token IS NULL OR claim_token=:claim_token)
                     """
                 ),
-                {"job_id": job_id, "err": (error or "")[:2000], "final": bool(final)},
+                {"job_id": job_id, "err": (error or "")[:2000], "final": bool(final), "claim_token": claim_token},
             )
 
     def bump_retry_and_requeue(
-        self, job_id: str, error: str, *, next_run_at_seconds: int
+        self, job_id: str, error: str, *, next_run_at_seconds: int, claim_token: str | None = None
     ) -> None:
         """Advance retry state after a failed apply attempt.
 
@@ -793,15 +874,16 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                             ELSE 'PENDING'
                         END,
                         lease_until = NULL,
+                        claim_token = NULL,
                         next_run_at = CASE
                             WHEN (retry_count + 1) >= max_retries THEN NULL
                             ELSE NOW() + (:delay || ' seconds')::interval
                         END,
                         updated_at = NOW()
-                    WHERE job_id=:job_id
+                    WHERE job_id=:job_id AND status='DOING' AND (:claim_token IS NULL OR claim_token=:claim_token)
                     """
                 ),
-                {"job_id": job_id, "err": (error or "")[:2000], "delay": delay},
+                {"job_id": job_id, "err": (error or "")[:2000], "delay": delay, "claim_token": claim_token},
             )
 
     def requeue_index_job_at_tail(
@@ -810,6 +892,7 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
         *,
         payload_json: str,
         delay_seconds: int = 0,
+        claim_token: str | None = None,
     ) -> None:
         """Cooperatively requeue a claimed job after a bounded work slice."""
         ij = (
@@ -823,18 +906,19 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                 sa.text(
                     f"""
                     UPDATE {ij}
-                    SET status='PENDING', lease_until=NULL,
+                    SET status='PENDING', lease_until=NULL, claim_token=NULL,
                         next_run_at=NOW() + (:delay || ' seconds')::interval,
                         payload_json=:payload_json,
                         created_at=(SELECT COALESCE(MAX(created_at), NOW()) + INTERVAL '1 microsecond' FROM {ij}),
                         updated_at=NOW()
-                    WHERE job_id=:job_id AND status='DOING'
+                    WHERE job_id=:job_id AND status='DOING' AND (:claim_token IS NULL OR claim_token=:claim_token)
                     """
                 ),
                 {
                     "job_id": job_id,
                     "payload_json": payload_json,
                     "delay": delay,
+                    "claim_token": claim_token,
                 },
             )
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextvars
 import json
 import sqlite3
+import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -48,6 +49,7 @@ class IndexJobRow:
     payload_json: Optional[str]
     created_at: int
     updated_at: int
+    claim_token: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -185,6 +187,7 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
                     payload_json TEXT,
                     created_at   INTEGER NOT NULL,
                     updated_at   INTEGER NOT NULL
+                    ,claim_token TEXT
                 )
                 """
             )
@@ -702,6 +705,7 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
             return []
         now = self._now_epoch()
         lease_until = now + int(lease_seconds)
+        claim_token = str(uuid.uuid4())
         with self.transaction() as conn:
             ns_filter = "" if namespace is None else "AND namespace = ?"
             ns_param: List[Any] = [] if namespace is None else [namespace]
@@ -719,12 +723,12 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
                     LIMIT ?
                 )
                 UPDATE index_jobs
-                SET status = 'DOING', lease_until = ?, updated_at = ?
+                SET status = 'DOING', lease_until = ?, claim_token = ?, updated_at = ?
                 WHERE job_id IN (SELECT job_id FROM candidates)
                 RETURNING job_id, namespace, entity_kind, entity_id, index_kind, coalesce_key, op, status,
-                        lease_until, next_run_at, max_retries, retry_count, last_error, payload_json, created_at, updated_at
+                        lease_until, next_run_at, max_retries, retry_count, last_error, payload_json, created_at, updated_at, claim_token
                 """,
-                (now, now, *ns_param, limit, lease_until, now),
+                (now, now, *ns_param, limit, lease_until, claim_token, now),
             ).fetchall()
 
         out: List[IndexJobRow] = []
@@ -747,24 +751,26 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
                     payload_json=str(r[13]) if r[13] is not None else None,
                     created_at=int(r[14]),
                     updated_at=int(r[15]),
+                    claim_token=str(r[16]) if r[16] is not None else None,
                 )
             )
         return out
 
-    def mark_index_job_done(self, job_id: str) -> None:
+    def mark_index_job_done(self, job_id: str, *, claim_token: str | None = None) -> bool:
         now = self._now_epoch()
         with self.transaction() as conn:
-            conn.execute(
+            result = conn.execute(
                 """
                 UPDATE index_jobs
-                SET status='DONE', lease_until=NULL, updated_at=?
-                WHERE job_id=?
+                SET status='DONE', lease_until=NULL, claim_token=NULL, updated_at=?
+                WHERE job_id=? AND status='DOING' AND (? IS NULL OR claim_token=?)
                 """,
-                (now, job_id),
+                (now, job_id, claim_token, claim_token),
             )
+            return bool(result.rowcount)
 
     def mark_index_job_failed(
-        self, job_id: str, error: str, *, final: bool = True
+        self, job_id: str, error: str, *, final: bool = True, claim_token: str | None = None
     ) -> None:
         """Mark a job failed.
 
@@ -777,15 +783,16 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
                 UPDATE index_jobs
                 SET status = CASE WHEN ? THEN 'FAILED' ELSE status END,
                     lease_until = NULL,
+                    claim_token = NULL,
                     last_error = ?,
                     updated_at = ?
-                WHERE job_id = ?
+                WHERE job_id = ? AND status='DOING' AND (? IS NULL OR claim_token=?)
                 """,
-                (1 if final else 0, (error or "")[:2000], now, job_id),
+                (1 if final else 0, (error or "")[:2000], now, job_id, claim_token, claim_token),
             )
 
     def bump_retry_and_requeue(
-        self, job_id: str, error: str, *, next_run_at_seconds: int
+        self, job_id: str, error: str, *, next_run_at_seconds: int, claim_token: str | None = None
     ) -> None:
         """Advance retry state after a failed apply attempt.
 
@@ -805,12 +812,22 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
                     last_error = ?,
                     status = CASE WHEN (retry_count + 1) >= max_retries THEN 'FAILED' ELSE 'PENDING' END,
                     lease_until = NULL,
+                    claim_token = NULL,
                     next_run_at = CASE WHEN (retry_count + 1) >= max_retries THEN NULL ELSE ? END,
                     updated_at = ?
-                WHERE job_id = ?
+                WHERE job_id = ? AND status='DOING' AND (? IS NULL OR claim_token=?)
                 """,
-                ((error or "")[:2000], next_run_at, now, job_id),
+                ((error or "")[:2000], next_run_at, now, job_id, claim_token, claim_token),
             )
+
+    def renew_index_job_lease(self, job_id: str, *, claim_token: str, lease_seconds: int) -> bool:
+        now = self._now_epoch()
+        with self.transaction() as conn:
+            result = conn.execute(
+                "UPDATE index_jobs SET lease_until=?, updated_at=? WHERE job_id=? AND status='DOING' AND claim_token=? AND (lease_until IS NULL OR lease_until>=?)",
+                (now + int(lease_seconds), now, job_id, claim_token, now),
+            )
+            return bool(result.rowcount)
 
     def requeue_index_job_at_tail(
         self,
@@ -818,6 +835,7 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
         *,
         payload_json: str,
         delay_seconds: int = 0,
+        claim_token: str | None = None,
     ) -> None:
         """Cooperatively requeue a claimed job after a bounded work slice."""
         now = self._now_epoch()
@@ -829,11 +847,11 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
             conn.execute(
                 """
                 UPDATE index_jobs
-                SET status='PENDING', lease_until=NULL, next_run_at=?,
+                SET status='PENDING', lease_until=NULL, claim_token=NULL, next_run_at=?,
                     payload_json=?, created_at=?, updated_at=?
-                WHERE job_id=? AND status='DOING'
+                WHERE job_id=? AND status='DOING' AND (? IS NULL OR claim_token=?)
                 """,
-                (next_run_at, payload_json, tail_position, now, job_id),
+                (next_run_at, payload_json, tail_position, now, job_id, claim_token, claim_token),
             )
 
     def list_index_jobs(
@@ -1407,6 +1425,10 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
                 raise RuntimeError(
                     f"failed to allocate entity event seq for namespace {namespace!r}"
                 )
+
+            cols = [r[1] for r in conn.execute("PRAGMA table_info(index_jobs)").fetchall()]
+            if "claim_token" not in cols:
+                conn.execute("ALTER TABLE index_jobs ADD COLUMN claim_token TEXT")
             seq = int(seq_row[0])
             conn.execute(
                 """
