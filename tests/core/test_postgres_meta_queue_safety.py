@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 
+import pytest
+
 from kogwistar.engine_core.engine_postgres_meta import EnginePostgresMetaStore
 from kogwistar.engine_core.postgres_backend import _set_active_conn
 from kogwistar.engine_core.in_memory_meta import InMemoryMetaStore
@@ -84,3 +86,19 @@ def test_stale_claim_cannot_complete_reclaimed_in_memory_job() -> None:
     assert meta.list_index_jobs(namespace="maintenance")[0].status == "DOING"
     meta.mark_index_job_done(second.job_id, claim_token=second.claim_token)
     assert meta.list_index_jobs(namespace="maintenance")[0].status == "DONE"
+
+
+@pytest.mark.core
+def test_postgres_claim_token_null_predicates_are_explicitly_typed() -> None:
+    """Guard PostgreSQL's inability to infer the type of a NULL bind value."""
+    meta = EnginePostgresMetaStore(engine=object(), schema="public")
+    connection = _Connection()
+
+    with _set_active_conn(connection):
+        meta.mark_index_job_done("job-1", claim_token=None)
+        meta.mark_index_job_failed("job-1", "failed", claim_token=None)
+        meta.bump_retry_and_requeue("job-1", "retry", next_run_at_seconds=0, claim_token=None)
+        meta.requeue_index_job_at_tail("job-1", payload_json="{}", claim_token=None)
+
+    assert len(connection.statements) == 4
+    assert all("CAST(:claim_token AS TEXT)" in sql for sql in connection.statements)

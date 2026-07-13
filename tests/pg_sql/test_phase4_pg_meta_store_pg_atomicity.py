@@ -137,3 +137,28 @@ def test_append_entity_event_allocates_unique_sequences_for_new_namespace_concur
     assert not t2.is_alive(), "worker 2 did not finish"
     assert not errors, f"unexpected concurrent append failure: {errors!r}"
     assert sorted(results) == [1, 2]
+
+
+@pytest.mark.ci_full
+def test_postgres_queue_accepts_null_claim_token_on_terminal_updates(sa_engine, pg_schema):
+    """Execute nullable claim-token predicates through real psycopg/Postgres."""
+    if sa_engine is None or pg_schema is None:
+        pytest.skip("Postgres fixture is not available")
+
+    meta = EnginePostgresMetaStore(engine=sa_engine, schema=pg_schema)
+    meta.ensure_initialized()
+    job_id = f"null-claim-{uuid.uuid4().hex}"
+    meta.enqueue_index_job(
+        job_id=job_id,
+        namespace="maintenance",
+        entity_kind="node",
+        entity_id=job_id,
+        index_kind="maintenance",
+        op="UPSERT",
+    )
+    claimed = meta.claim_index_jobs(limit=1, namespace="maintenance")
+    assert [job.job_id for job in claimed] == [job_id]
+
+    assert meta.mark_index_job_done(job_id, claim_token=None) is True
+    row = meta.list_index_jobs(namespace="maintenance", status="DONE")
+    assert any(job.job_id == job_id for job in row)
