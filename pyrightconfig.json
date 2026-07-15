@@ -1,0 +1,16 @@
+{
+    "include": [
+        "kogwistar",
+        "tests"
+    ],
+    "executionEnvironments": [
+        {
+            "root": ".",
+            "extraPaths": [
+                ".",
+                "./tests",
+                "./kogwistar"
+            ]
+        }
+    ]
+}

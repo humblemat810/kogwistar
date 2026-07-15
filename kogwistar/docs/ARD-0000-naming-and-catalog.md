@@ -55,6 +55,8 @@ Normalized numbering and phase-series naming:
 
 ### ADR
 - `ADR-004-phase4-pgvector-authoritative.md`
+- `ADR-0014-graph-edit-with-redo-undo.md`
+- `ADR-015-incremental-rust-port.md`
 
 ### ARD (numbered, global)
 - `ARD-0000-naming-and-catalog.md`

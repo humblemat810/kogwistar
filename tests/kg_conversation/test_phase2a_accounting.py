@@ -8,7 +8,10 @@ from kogwistar.conversation.conversation_orchestrator import (
     _estimate_tokens_from_chars,
 )
 from kogwistar.conversation.models import FilteringResult
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from tests.conftest import _make_engine_pair
+from tests._helpers.embeddings import build_test_embedding_function
+from tests._helpers.fake_backend import build_fake_backend
 
 
 class FakeConversationEngine:
@@ -88,7 +91,7 @@ def test_estimate_tokens_from_chars_default_proxy():
 
 @pytest.mark.parametrize("backend_kind", ["chroma", "pg"])
 def test_summary_trigger_can_use_token_threshold(
-    monkeypatch, backend_kind: str, tmp_path, sa_engine, pg_schema
+    request, monkeypatch, backend_kind: str, tmp_path, sa_engine, pg_schema
 ):
     kg, eng = _make_engine_pair(
         backend_kind=backend_kind,
@@ -98,6 +101,24 @@ def test_summary_trigger_can_use_token_threshold(
         dim=384,
         use_fake=True,
     )
+    if backend_kind == "chroma":
+        # This case exercises the conversation backend only. Two embedded
+        # Chroma Rust clients at different persistence roots in one process can
+        # share a global HNSW system and resolve a segment against the wrong
+        # root (`Nothing found on disk`). Keep the reference KG deterministic
+        # in-memory while retaining real Chroma for the capability under test.
+        kg.close()
+        kg = GraphKnowledgeEngine(
+            persist_directory=str(tmp_path / "kg_fake"),
+            kg_graph_type="knowledge",
+            embedding_function=build_test_embedding_function("constant", dim=384),
+            backend_factory=build_fake_backend,
+        )
+    # `_make_engine_pair` is a direct factory, not a yielding fixture. Explicit
+    # finalizers keep Chroma's lazy HNSW readers alive through the assertion and
+    # close them before pytest removes `tmp_path`.
+    request.addfinalizer(kg.close)
+    request.addfinalizer(eng.close)
 
     orch = ConversationOrchestrator(
         conversation_engine=eng,

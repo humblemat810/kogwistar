@@ -1,0 +1,46 @@
+{
+  "contract_version": 1,
+  "invariants": [
+    "namespace-local-monotonic-sequence",
+    "event-id-idempotency",
+    "compare-and-swap-projections",
+    "lease-expiry-reclaim",
+    "forward-only-backward-readable-migrations",
+    "no-automatic-startup-data-mutation"
+  ],
+  "postgresql": {
+    "metadata_tables": [
+      "global_seq",
+      "user_seq",
+      "index_jobs",
+      "projected_lane_messages",
+      "index_applied_state",
+      "namespace_seq",
+      "entity_events",
+      "replay_cursors",
+      "named_projections",
+      "workflow_design_snapshots",
+      "workflow_design_version_deltas",
+      "server_runs",
+      "server_run_events"
+    ],
+    "pgvector_same_transaction": true
+  },
+  "sqlite": {
+    "metadata_tables": [
+      "global_seq",
+      "user_seq",
+      "index_jobs",
+      "projected_lane_messages",
+      "index_applied_state",
+      "namespace_seq",
+      "entity_events",
+      "replay_cursors",
+      "named_projections",
+      "workflow_design_snapshots",
+      "workflow_design_version_deltas",
+      "server_runs",
+      "server_run_events"
+    ]
+  }
+}

@@ -1,0 +1,5 @@
+include README.md
+include LICENSE
+recursive-include kogwistar/templates *.html
+global-exclude .env .env.* *.env *.env.*
+global-exclude *.sqlite *.db *.pem *.key *.pfx *.p12 *.crt *.cer

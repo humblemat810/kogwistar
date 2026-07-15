@@ -103,7 +103,7 @@ def _tarjan_scc(n: int, succ: list[list[int]]) -> tuple[list[int], list[list[int
     return comp_of, comps
 
 
-def _compute_may_reach_join_bitsets(
+def _compute_may_reach_join_bitsets_python(
     *,
     node_ids: list[str],
     adj: dict[str, list["WorkflowEdge"]],
@@ -174,6 +174,47 @@ def _compute_may_reach_join_bitsets(
     for nid in node_ids:
         out[nid] = may[comp_of[id_to_i[nid]]]
     return out
+
+
+def _compute_may_reach_join_bitsets(
+    *,
+    node_ids: list[str],
+    adj: dict[str, list["WorkflowEdge"]],
+    join_ids: list[str],
+) -> dict[str, int]:
+    """Select static join lineage implementation without changing call shape.
+
+    Python remains the independent oracle in ``python`` and ``shadow`` modes.
+    Rust is canonical in ``rust`` mode; dynamic workflow routing stays Python.
+    """
+    from kogwistar._rust_bridge import runtime_implementation_mode, runtime_workflow_may_reach_join
+
+    mode = runtime_implementation_mode()
+    edges = [
+        (str(src), str(dst))
+        for src, workflow_edges in adj.items()
+        for edge in workflow_edges
+        for dst in (getattr(edge, "target_ids", []) or [])
+    ]
+    if mode == "rust":
+        rust_value = runtime_workflow_may_reach_join(
+            node_ids=node_ids,
+            edges=edges,
+            join_ids=join_ids,
+        )
+        return rust_value if rust_value is not None else {}
+    python_value = _compute_may_reach_join_bitsets_python(
+        node_ids=node_ids,
+        adj=adj,
+        join_ids=join_ids,
+    )
+    selected = runtime_workflow_may_reach_join(
+        node_ids=node_ids,
+        edges=edges,
+        join_ids=join_ids,
+        python_value=python_value,
+    )
+    return selected if selected is not None else python_value
 
 
 def _iter_bits(mask: int):

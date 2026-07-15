@@ -1,0 +1,73 @@
+{
+  "stable_ids": [
+    {
+      "name": "simple",
+      "kind": "node",
+      "parts": ["alpha", "beta"],
+      "expected": "5acb68cd-18b3-5d4b-b5c5-3bfd55eccc5e"
+    },
+    {
+      "name": "unicode",
+      "kind": "節點",
+      "parts": ["文件/一", "😀"],
+      "expected": "4d6cfa77-7f5f-5e61-8c05-2e93ee521f1e"
+    },
+    {
+      "name": "escapes",
+      "kind": "kind",
+      "parts": ["a\"b", "line\nnext"],
+      "expected": "fbd8b5e3-824b-55a5-8743-12aac71572fa"
+    },
+    {
+      "name": "numeric-part",
+      "kind": "projection_snapshot",
+      "parts": ["ws-1", "usage", 1099],
+      "expected": "c528b667-59c0-5e9b-80ba-4819429c3461"
+    }
+  ],
+  "canonical_json": [
+    {
+      "value": {
+        "z": 1,
+        "a": ["é", {"b": true, "a": null}]
+      },
+      "expected": "{\"a\":[\"é\",{\"a\":null,\"b\":true}],\"z\":1}"
+    }
+  ],
+  "metadata_filters": [
+    {"name":"empty","metadata":{"status":"active"},"where":null,"expected":true},
+    {"name":"field-equality","metadata":{"status":"active"},"where":{"status":"active"},"expected":true},
+    {"name":"missing-field","metadata":{"status":"active"},"where":{"missing":{"$ne":"x"}},"expected":false},
+    {"name":"missing-equals-null","metadata":{"status":"active"},"where":{"missing":null},"expected":true},
+    {"name":"numeric","metadata":{"n":3},"where":{"n":{"$gte":3,"$lt":4}},"expected":true},
+    {"name":"operator-null-equality","metadata":{"value":null},"where":{"value":{"$eq":null}},"expected":true},
+    {"name":"operator-mixed-ne","metadata":{"value":"1"},"where":{"value":{"$ne":1}},"expected":true},
+    {"name":"list-in","metadata":{"tags":["red","blue"]},"where":{"tags":{"$in":["green","blue"]}},"expected":true},
+    {"name":"list-nin","metadata":{"tags":["red","blue"]},"where":{"tags":{"$nin":["green"]}},"expected":true},
+    {"name":"contains-string","metadata":{"title":"alpha beta"},"where":{"title":{"$contains":"pha"}},"expected":true},
+    {"name":"contains-list","metadata":{"tags":["red","blue"]},"where":{"tags":{"$contains":"blue"}},"expected":true},
+    {"name":"and-or","metadata":{"status":"active","score":7},"where":{"$and":[{"status":"active"},{"$or":[{"score":{"$gt":8}},{"score":{"$lte":7}}]}]},"expected":true}
+  ],
+  "evidence_hashes": [
+    {
+      "value": {
+        "node_ids": ["β", "a", ""],
+        "edge_ids": ["e2", "e1"],
+        "depth": "shallow",
+        "max_chars_per_item": 10,
+        "max_total_chars": 20,
+        "evidence_pack_hash": "ignored",
+        "note": "😀"
+      },
+      "canonical": {
+        "node_ids": ["a", "β"],
+        "edge_ids": ["e1", "e2"],
+        "depth": "shallow",
+        "max_chars_per_item": 10,
+        "max_total_chars": 20,
+        "note": "😀"
+      },
+      "expected": "26b21b6f55149ce9bc5f9a5b24fc5ecaf2de45452e6242eb392898964f3180fa"
+    }
+  ]
+}

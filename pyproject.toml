@@ -65,6 +65,7 @@ test = [
 lint = ["ruff>=0.5"]
 typecheck = ["mypy>=1.8"]
 build = ["build", "twine"]
+rust = ["maturin>=1.7,<2"]
 full = [
   "chromadb>=1.0.15",
   "fastapi>=0.111",
@@ -112,6 +113,8 @@ markers = [
   "runtime_async: async runtime contracts",
   "runtime_sync: sync runtime contracts",
   "runtime_bridge_parity: bridge parity contract",
+  "llm_real: tests requiring non-fake LLM behavior or external LLM credentials",
+  "requires_ollama: tests requiring a live local Ollama service or model",
   "manual: manual smoke tests that require a live service",
   "e2e: end-to-end tests against real services",
 ]
@@ -131,3 +134,9 @@ ignore = ["E402", "E731", "E741", "F811", "F841"]
 "kogwistar/server/mcp_tools.py" = ["F821"]
 "kogwistar/strategies/__init__.py" = ["F401"]
 "tests/ingestions/test_ingest_document.py" = ["F821"]
+
+[tool.maturin]
+manifest-path = "rust/crates/kogwistar-python/Cargo.toml"
+module-name = "kogwistar._rust"
+python-source = "."
+bindings = "pyo3"

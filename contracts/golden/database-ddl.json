@@ -1,0 +1,200 @@
+{
+  "baseline_version": 1,
+  "postgresql": {
+    "schema_placeholder": "kogwistar",
+    "sha256": "791f41fc59b40598d41dbe2154ee453f0a9456544bb4681b62b545c63141571f",
+    "statements": [
+      "CREATE SCHEMA IF NOT EXISTS kogwistar",
+      "CREATE TABLE IF NOT EXISTS kogwistar.global_seq (value BIGINT NOT NULL)",
+      "INSERT INTO kogwistar.global_seq(value) SELECT 0 WHERE NOT EXISTS (SELECT 1 FROM kogwistar.global_seq)",
+      "CREATE TABLE IF NOT EXISTS kogwistar.user_seq (user_id TEXT PRIMARY KEY, value BIGINT NOT NULL)",
+      "CREATE TABLE IF NOT EXISTS kogwistar.index_jobs ( job_id TEXT PRIMARY KEY, namespace TEXT NOT NULL DEFAULT 'default', entity_kind TEXT NOT NULL, entity_id TEXT NOT NULL, index_kind TEXT NOT NULL, coalesce_key TEXT NOT NULL, op TEXT NOT NULL, status TEXT NOT NULL, lease_until TIMESTAMPTZ NULL, retry_count INTEGER NOT NULL DEFAULT 0, last_error TEXT NULL, payload_json TEXT NULL, next_run_at TIMESTAMPTZ NULL, max_retries INTEGER NOT NULL DEFAULT 10, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW() )",
+      "CREATE INDEX IF NOT EXISTS idx_index_jobs_status_lease ON kogwistar.index_jobs(status, lease_until)",
+      "CREATE INDEX IF NOT EXISTS idx_index_jobs_status_next_run ON kogwistar.index_jobs(status, next_run_at)",
+      "CREATE INDEX IF NOT EXISTS idx_index_jobs_entity ON kogwistar.index_jobs(entity_kind, entity_id, index_kind)",
+      "CREATE INDEX IF NOT EXISTS idx_index_jobs_namespace ON kogwistar.index_jobs(namespace)",
+      "ALTER TABLE kogwistar.index_jobs ADD COLUMN IF NOT EXISTS namespace TEXT NOT NULL DEFAULT 'default'",
+      "ALTER TABLE kogwistar.index_jobs ADD COLUMN IF NOT EXISTS coalesce_key TEXT NOT NULL DEFAULT ''",
+      "ALTER TABLE kogwistar.index_jobs ADD COLUMN IF NOT EXISTS next_run_at TIMESTAMPTZ NULL",
+      "ALTER TABLE kogwistar.index_jobs ADD COLUMN IF NOT EXISTS max_retries INTEGER NOT NULL DEFAULT 10",
+      "ALTER TABLE kogwistar.index_jobs ADD COLUMN IF NOT EXISTS claim_token TEXT NULL",
+      "ALTER TABLE kogwistar.index_jobs ADD COLUMN IF NOT EXISTS claim_attempts INTEGER NOT NULL DEFAULT 0",
+      "CREATE UNIQUE INDEX IF NOT EXISTS uq_index_jobs_pending_ns_ck ON kogwistar.index_jobs(namespace, coalesce_key) WHERE status='PENDING'",
+      "CREATE TABLE IF NOT EXISTS kogwistar.index_applied_state ( namespace TEXT NOT NULL DEFAULT 'default', coalesce_key TEXT NOT NULL, applied_fingerprint TEXT NULL, applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), last_job_id TEXT NULL, PRIMARY KEY(namespace, coalesce_key) )",
+      "CREATE INDEX IF NOT EXISTS idx_index_applied_state_key ON kogwistar.index_applied_state(coalesce_key)",
+      "CREATE TABLE IF NOT EXISTS kogwistar.projected_lane_messages ( message_id TEXT PRIMARY KEY, namespace TEXT NOT NULL DEFAULT 'default', purpose TEXT NOT NULL DEFAULT 'user_visible', inbox_id TEXT NOT NULL, conversation_id TEXT NOT NULL, recipient_id TEXT NOT NULL, sender_id TEXT NOT NULL, msg_type TEXT NOT NULL, status TEXT NOT NULL, seq BIGINT NOT NULL, conversation_seq BIGINT NOT NULL, claimed_by TEXT NULL, lease_until TIMESTAMPTZ NULL, retry_count INTEGER NOT NULL DEFAULT 0, created_at BIGINT NOT NULL, available_at BIGINT NOT NULL, run_id TEXT NULL, step_id TEXT NULL, correlation_id TEXT NULL, payload_json TEXT NULL, error_json TEXT NULL, prev_message_id TEXT NULL, next_message_id TEXT NULL, inbox_tail_message_id TEXT NULL, conversation_tail_message_id TEXT NULL )",
+      "ALTER TABLE kogwistar.projected_lane_messages ADD COLUMN IF NOT EXISTS purpose TEXT NOT NULL DEFAULT 'user_visible'",
+      "CREATE INDEX IF NOT EXISTS idx_lane_messages_namespace_inbox_seq ON kogwistar.projected_lane_messages(namespace, inbox_id, seq)",
+      "CREATE INDEX IF NOT EXISTS idx_lane_messages_claim ON kogwistar.projected_lane_messages(namespace, inbox_id, status, available_at, lease_until)",
+      "CREATE INDEX IF NOT EXISTS idx_lane_messages_conversation_seq ON kogwistar.projected_lane_messages(namespace, conversation_id, conversation_seq)",
+      "CREATE TABLE IF NOT EXISTS kogwistar.namespace_seq ( namespace TEXT PRIMARY KEY, next_seq BIGINT NOT NULL )",
+      "INSERT INTO kogwistar.namespace_seq(namespace, next_seq) VALUES ('default', 1) ON CONFLICT(namespace) DO NOTHING",
+      "CREATE TABLE IF NOT EXISTS kogwistar.entity_events ( namespace TEXT NOT NULL DEFAULT 'default', seq BIGINT NOT NULL, event_id TEXT NOT NULL, entity_kind TEXT NOT NULL, entity_id TEXT NOT NULL, op TEXT NOT NULL, payload_json TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY(namespace, seq), UNIQUE(event_id) )",
+      "CREATE INDEX IF NOT EXISTS idx_entity_events_aggregate ON kogwistar.entity_events(namespace, entity_kind, entity_id, seq)",
+      "CREATE TABLE IF NOT EXISTS kogwistar.replay_cursors ( namespace TEXT NOT NULL DEFAULT 'default', consumer TEXT NOT NULL, last_seq BIGINT NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY(namespace, consumer) )",
+      "CREATE TABLE IF NOT EXISTS kogwistar.named_projections ( namespace TEXT NOT NULL, key TEXT NOT NULL, payload_json TEXT NOT NULL, last_authoritative_seq BIGINT NOT NULL, last_materialized_seq BIGINT NOT NULL, projection_schema_version INTEGER NOT NULL, materialization_status TEXT NOT NULL, updated_at_ms BIGINT NOT NULL, PRIMARY KEY(namespace, key) )",
+      "CREATE INDEX IF NOT EXISTS idx_named_projections_namespace ON kogwistar.named_projections(namespace, updated_at_ms)",
+      "CREATE TABLE IF NOT EXISTS kogwistar.workflow_design_snapshots ( workflow_id TEXT NOT NULL, version BIGINT NOT NULL, seq BIGINT NOT NULL, payload_json TEXT NOT NULL, schema_version INTEGER NOT NULL, created_at_ms BIGINT NOT NULL, PRIMARY KEY(workflow_id, version) )",
+      "CREATE TABLE IF NOT EXISTS kogwistar.workflow_design_version_deltas ( workflow_id TEXT NOT NULL, version BIGINT NOT NULL, prev_version BIGINT NOT NULL, target_seq BIGINT NOT NULL, forward_json TEXT NOT NULL, inverse_json TEXT NOT NULL, schema_version INTEGER NOT NULL, created_at_ms BIGINT NOT NULL, PRIMARY KEY(workflow_id, version) )",
+      "CREATE TABLE IF NOT EXISTS kogwistar.server_runs ( run_id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, workflow_id TEXT NOT NULL, user_id TEXT NULL, user_turn_node_id TEXT NULL, assistant_turn_node_id TEXT NULL, status TEXT NOT NULL, cancel_requested INTEGER NOT NULL DEFAULT 0, result_json TEXT NULL, error_json TEXT NULL, created_at_ms BIGINT NOT NULL, updated_at_ms BIGINT NOT NULL, started_at_ms BIGINT NULL, finished_at_ms BIGINT NULL )",
+      "CREATE TABLE IF NOT EXISTS kogwistar.server_run_events ( seq BIGSERIAL PRIMARY KEY, run_id TEXT NOT NULL, event_type TEXT NOT NULL, payload_json TEXT NOT NULL, created_at_ms BIGINT NOT NULL )",
+      "CREATE INDEX IF NOT EXISTS idx_server_runs_status ON kogwistar.server_runs(status, updated_at_ms)",
+      "CREATE INDEX IF NOT EXISTS idx_server_run_events_run_seq ON kogwistar.server_run_events(run_id, seq)"
+    ]
+  },
+  "sqlite": {
+    "objects": [
+      {
+        "name": "idx_entity_events_aggregate",
+        "sql": "CREATE INDEX idx_entity_events_aggregate ON entity_events(namespace, entity_kind, entity_id, seq)",
+        "table": "entity_events",
+        "type": "index"
+      },
+      {
+        "name": "idx_index_applied_state_key",
+        "sql": "CREATE INDEX idx_index_applied_state_key ON index_applied_state(coalesce_key)",
+        "table": "index_applied_state",
+        "type": "index"
+      },
+      {
+        "name": "idx_index_jobs_entity",
+        "sql": "CREATE INDEX idx_index_jobs_entity ON index_jobs(entity_kind, entity_id, index_kind)",
+        "table": "index_jobs",
+        "type": "index"
+      },
+      {
+        "name": "idx_index_jobs_namespace",
+        "sql": "CREATE INDEX idx_index_jobs_namespace ON index_jobs(namespace)",
+        "table": "index_jobs",
+        "type": "index"
+      },
+      {
+        "name": "idx_index_jobs_status_lease",
+        "sql": "CREATE INDEX idx_index_jobs_status_lease ON index_jobs(status, lease_until)",
+        "table": "index_jobs",
+        "type": "index"
+      },
+      {
+        "name": "idx_lane_messages_claim",
+        "sql": "CREATE INDEX idx_lane_messages_claim ON projected_lane_messages(namespace, inbox_id, status, available_at, lease_until)",
+        "table": "projected_lane_messages",
+        "type": "index"
+      },
+      {
+        "name": "idx_lane_messages_conversation_seq",
+        "sql": "CREATE INDEX idx_lane_messages_conversation_seq ON projected_lane_messages(namespace, conversation_id, conversation_seq)",
+        "table": "projected_lane_messages",
+        "type": "index"
+      },
+      {
+        "name": "idx_lane_messages_namespace_inbox_seq",
+        "sql": "CREATE INDEX idx_lane_messages_namespace_inbox_seq ON projected_lane_messages(namespace, inbox_id, seq)",
+        "table": "projected_lane_messages",
+        "type": "index"
+      },
+      {
+        "name": "idx_named_projections_namespace",
+        "sql": "CREATE INDEX idx_named_projections_namespace ON named_projections(namespace, updated_at_ms)",
+        "table": "named_projections",
+        "type": "index"
+      },
+      {
+        "name": "idx_server_run_events_run_seq",
+        "sql": "CREATE INDEX idx_server_run_events_run_seq ON server_run_events(run_id, seq)",
+        "table": "server_run_events",
+        "type": "index"
+      },
+      {
+        "name": "idx_server_runs_status",
+        "sql": "CREATE INDEX idx_server_runs_status ON server_runs(status, updated_at_ms)",
+        "table": "server_runs",
+        "type": "index"
+      },
+      {
+        "name": "uq_index_jobs_pending_ns_coalesce",
+        "sql": "CREATE UNIQUE INDEX uq_index_jobs_pending_ns_coalesce ON index_jobs(namespace, coalesce_key) WHERE status='PENDING'",
+        "table": "index_jobs",
+        "type": "index"
+      },
+      {
+        "name": "entity_events",
+        "sql": "CREATE TABLE entity_events ( namespace TEXT NOT NULL DEFAULT 'default', seq INTEGER NOT NULL, event_id TEXT NOT NULL, entity_kind TEXT NOT NULL, -- 'node' | 'edge' entity_id TEXT NOT NULL, op TEXT NOT NULL, -- 'ADD' | 'TOMBSTONE' | 'DELETE' | 'REPLACE' payload_json TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY(namespace, seq), UNIQUE(event_id) )",
+        "table": "entity_events",
+        "type": "table"
+      },
+      {
+        "name": "global_seq",
+        "sql": "CREATE TABLE global_seq ( value INTEGER NOT NULL )",
+        "table": "global_seq",
+        "type": "table"
+      },
+      {
+        "name": "index_applied_state",
+        "sql": "CREATE TABLE index_applied_state ( namespace TEXT NOT NULL DEFAULT 'default', coalesce_key TEXT NOT NULL, applied_fingerprint TEXT, applied_at INTEGER NOT NULL, last_job_id TEXT, PRIMARY KEY(namespace, coalesce_key) )",
+        "table": "index_applied_state",
+        "type": "table"
+      },
+      {
+        "name": "index_jobs",
+        "sql": "CREATE TABLE index_jobs ( job_id TEXT PRIMARY KEY, namespace TEXT NOT NULL DEFAULT 'default', entity_kind TEXT NOT NULL, entity_id TEXT NOT NULL, index_kind TEXT NOT NULL, coalesce_key TEXT NOT NULL, op TEXT NOT NULL, status TEXT NOT NULL, lease_until INTEGER, next_run_at INTEGER, max_retries INTEGER NOT NULL DEFAULT 10, retry_count INTEGER NOT NULL DEFAULT 0, last_error TEXT, payload_json TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL ,claim_token TEXT )",
+        "table": "index_jobs",
+        "type": "table"
+      },
+      {
+        "name": "named_projections",
+        "sql": "CREATE TABLE named_projections ( namespace TEXT NOT NULL, key TEXT NOT NULL, payload_json TEXT NOT NULL, last_authoritative_seq INTEGER NOT NULL, last_materialized_seq INTEGER NOT NULL, projection_schema_version INTEGER NOT NULL, materialization_status TEXT NOT NULL, updated_at_ms INTEGER NOT NULL, PRIMARY KEY(namespace, key) )",
+        "table": "named_projections",
+        "type": "table"
+      },
+      {
+        "name": "namespace_seq",
+        "sql": "CREATE TABLE namespace_seq ( namespace TEXT PRIMARY KEY, next_seq INTEGER NOT NULL )",
+        "table": "namespace_seq",
+        "type": "table"
+      },
+      {
+        "name": "projected_lane_messages",
+        "sql": "CREATE TABLE projected_lane_messages ( message_id TEXT PRIMARY KEY, namespace TEXT NOT NULL DEFAULT 'default', purpose TEXT NOT NULL DEFAULT 'user_visible', inbox_id TEXT NOT NULL, conversation_id TEXT NOT NULL, recipient_id TEXT NOT NULL, sender_id TEXT NOT NULL, msg_type TEXT NOT NULL, status TEXT NOT NULL, seq INTEGER NOT NULL, conversation_seq INTEGER NOT NULL, claimed_by TEXT, lease_until INTEGER, retry_count INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, available_at INTEGER NOT NULL, run_id TEXT, step_id TEXT, correlation_id TEXT, payload_json TEXT, error_json TEXT, prev_message_id TEXT, next_message_id TEXT, inbox_tail_message_id TEXT, conversation_tail_message_id TEXT )",
+        "table": "projected_lane_messages",
+        "type": "table"
+      },
+      {
+        "name": "replay_cursors",
+        "sql": "CREATE TABLE replay_cursors ( namespace TEXT NOT NULL DEFAULT 'default', consumer TEXT NOT NULL, last_seq INTEGER NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY(namespace, consumer) )",
+        "table": "replay_cursors",
+        "type": "table"
+      },
+      {
+        "name": "server_run_events",
+        "sql": "CREATE TABLE server_run_events ( seq INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, event_type TEXT NOT NULL, payload_json TEXT NOT NULL, created_at_ms INTEGER NOT NULL )",
+        "table": "server_run_events",
+        "type": "table"
+      },
+      {
+        "name": "server_runs",
+        "sql": "CREATE TABLE server_runs ( run_id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, workflow_id TEXT NOT NULL, user_id TEXT, user_turn_node_id TEXT, assistant_turn_node_id TEXT, status TEXT NOT NULL, cancel_requested INTEGER NOT NULL DEFAULT 0, result_json TEXT, error_json TEXT, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL, started_at_ms INTEGER, finished_at_ms INTEGER )",
+        "table": "server_runs",
+        "type": "table"
+      },
+      {
+        "name": "user_seq",
+        "sql": "CREATE TABLE user_seq ( user_id TEXT PRIMARY KEY, value INTEGER NOT NULL )",
+        "table": "user_seq",
+        "type": "table"
+      },
+      {
+        "name": "workflow_design_snapshots",
+        "sql": "CREATE TABLE workflow_design_snapshots ( workflow_id TEXT NOT NULL, version INTEGER NOT NULL, seq INTEGER NOT NULL, payload_json TEXT NOT NULL, schema_version INTEGER NOT NULL, created_at_ms INTEGER NOT NULL, PRIMARY KEY (workflow_id, version) )",
+        "table": "workflow_design_snapshots",
+        "type": "table"
+      },
+      {
+        "name": "workflow_design_version_deltas",
+        "sql": "CREATE TABLE workflow_design_version_deltas ( workflow_id TEXT NOT NULL, version INTEGER NOT NULL, prev_version INTEGER NOT NULL, target_seq INTEGER NOT NULL, forward_json TEXT NOT NULL, inverse_json TEXT NOT NULL, schema_version INTEGER NOT NULL, created_at_ms INTEGER NOT NULL, PRIMARY KEY (workflow_id, version) )",
+        "table": "workflow_design_version_deltas",
+        "type": "table"
+      }
+    ],
+    "sha256": "12e35b4b1399b428522e47b4b40cc0bc119fd6028cdb79ad43440717b85a8ea0"
+  }
+}

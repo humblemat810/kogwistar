@@ -1,0 +1,491 @@
+{
+  "manifest_version": 1,
+  "contract_version": "1.0.0",
+  "status": "frozen-for-port",
+  "implementation_modes": [
+    "python",
+    "shadow",
+    "rust"
+  ],
+  "phase_0_evidence": {
+    "consumer_import_inventory": "contracts/inventory/consumer-imports-v1.json",
+    "benchmark_baseline": "contracts/benchmarks/python-memory-windows.json",
+    "benchmark_command": ".venv/Scripts/python.exe scripts/rust_port_benchmark.py --items 20 --workflow-iterations 2 --output-root <runtime-dir> --report <report.json>",
+    "golden_fixtures": [
+      "contracts/golden/python-model-schemas.json",
+      "contracts/golden/openapi.json",
+      "contracts/golden/event-replay.json",
+      "contracts/golden/database-contract.json",
+      "contracts/golden/database-ddl.json",
+      "contracts/golden/errors.json",
+      "contracts/golden/parser-grounded-output.json",
+      "contracts/golden/scoped-graph-snapshot.json",
+      "contracts/golden/vault-projection.json",
+      "contracts/golden/deterministic-primitives.json"
+    ],
+    "ci_jobs": [
+      "rust",
+      "native-wheel-smoke",
+      "rust-port-four-layer-compat"
+    ]
+  },
+  "phase_2_evidence": {
+    "benchmark_report": "contracts/benchmarks/rust-memory-phase2-windows.json",
+    "benchmark_command": ".venv/Scripts/python.exe scripts/rust_port_phase2_benchmark.py --items 32 --warmups 2 --samples 5 --cycles 20 --report contracts/benchmarks/rust-memory-phase2-windows.json",
+    "scope": "isolated Rust InMemoryStore read-only shadow inspection: graph list, cosine vector query, event replay, named projection list",
+    "gate_status_field": "gate.status"
+  },
+  "reference_application": {
+    "name": "kogwistar-llm-wiki",
+    "root_environment_variable": "KOGWISTAR_LLM_WIKI_ROOT",
+    "default_relative_root": "../kogwistar-llm-wiki",
+    "nested_repositories": {
+      "core_pin": "kogwistar",
+      "parser": "kg-doc-parser",
+      "sink": "kogwistar-obsidian-sink"
+    },
+    "pinned_commits": {
+      "core_pin": "206b43f9a17e19c6cb66f1b534dfcebe3b849192",
+      "application": "30d682ee79857d9b37f73c72a3b1647f0ad7a0cb",
+      "parser": "a06f1cb2cc7a848b685011acb6abff1354ce2f56",
+      "sink": "c295894443dc589b6b6bdcd7b48b68be850f6a61"
+    },
+    "candidate_identity_fields": [
+      "resolved_package_file",
+      "package_version",
+      "implementation_mode",
+      "rust_extension_file",
+      "rust_extension_version",
+      "rust_contract_version",
+      "core_commit",
+      "application_commit",
+      "parser_commit",
+      "sink_commit",
+      "application_core_pin_commit",
+      "backend",
+      "storage_root",
+      "layer_interpreters",
+      "consumer_resolved_package_file",
+      "candidate_source_sha256",
+      "identity_sha256"
+    ]
+  },
+  "python_facade": {
+    "removal_scheduled": false,
+    "legacy_python_fallback_minimum_window": "one-full-release-after-rust-default",
+    "modules": [
+      {
+        "module": "kogwistar",
+        "symbols": [
+          "GraphKnowledgeEngine",
+          "WorkflowRuntime",
+          "Node",
+          "Edge",
+          "Document",
+          "Grounding",
+          "Span"
+        ],
+        "status": "preserved"
+      },
+      {
+        "module": "kogwistar.engine_core",
+        "symbols": [
+          "GraphKnowledgeEngine",
+          "RecoverySurface",
+          "StorageBackend",
+          "UnitOfWork"
+        ],
+        "status": "preserved"
+      },
+      {
+        "module": "kogwistar.engine_core.models",
+        "symbols": [
+          "Node",
+          "Edge",
+          "Document",
+          "Grounding",
+          "Span",
+          "GraphExtractionWithIDs"
+        ],
+        "status": "preserved"
+      },
+      {
+        "module": "kogwistar.engine_core.in_memory_backend",
+        "symbols": [
+          "build_in_memory_backend"
+        ],
+        "status": "adapter-backed"
+      },
+      {
+        "module": "kogwistar.engine_core.engine",
+        "symbols": [
+          "GraphKnowledgeEngine",
+          "scoped_namespace"
+        ],
+        "status": "adapter-backed"
+      },
+      {
+        "module": "kogwistar.id_provider",
+        "symbols": [
+          "stable_id"
+        ],
+        "status": "preserved"
+      },
+      {
+        "module": "kogwistar.runtime",
+        "symbols": [
+          "WorkflowRuntime",
+          "MappingStepResolver",
+          "RetryExhaustedError",
+          "RetryResult",
+          "retry_with_context"
+        ],
+        "status": "preserved"
+      },
+      {
+        "module": "kogwistar.runtime.models",
+        "symbols": [
+          "RunSuccess",
+          "RunFailure",
+          "RunSuspended",
+          "WorkflowNode",
+          "WorkflowEdge",
+          "StepRunResult"
+        ],
+        "status": "preserved"
+      },
+      {
+        "module": "kogwistar.runtime.runtime",
+        "symbols": [
+          "WorkflowRuntime",
+          "StepContext",
+          "RunResult"
+        ],
+        "status": "adapter-backed"
+      },
+      {
+        "module": "kogwistar.provenance",
+        "symbols": [
+          "EvidencePackDigest",
+          "evidence_pack_digest_hash"
+        ],
+        "status": "preserved"
+      },
+      {
+        "module": "kogwistar.logical_refs",
+        "symbols": [],
+        "status": "preserved"
+      },
+      {
+        "module": "kogwistar.utils",
+        "symbols": [
+          "SourcePointerValidationError",
+          "validate_source_pointer",
+          "source_pointer_has_character_span"
+        ],
+        "status": "preserved"
+      },
+      {
+        "module": "kogwistar.fuzzy_offsets",
+        "symbols": [
+          "find_fuzzy_spans",
+          "offset_repair_threshold"
+        ],
+        "status": "preserved"
+      },
+      {
+        "module": "kogwistar.utils.fuzzy_offsets",
+        "symbols": [
+          "FuzzySpanHit",
+          "find_best_fuzzy_span"
+        ],
+        "status": "preserved"
+      }
+    ]
+  },
+  "consumer_import_classifications": [
+    {
+      "module": "kogwistar.engine_core",
+      "symbol": "*",
+      "status": "adapter-backed"
+    },
+    {
+      "module": "kogwistar.engine_core.engine",
+      "symbol": "*",
+      "status": "adapter-backed"
+    },
+    {
+      "module": "kogwistar.engine_core.engine_postgres",
+      "symbol": "*",
+      "status": "adapter-backed"
+    },
+    {
+      "module": "kogwistar.engine_core.in_memory_meta",
+      "symbol": "*",
+      "status": "adapter-backed"
+    },
+    {
+      "module": "kogwistar.engine_core.jobs",
+      "symbol": "*",
+      "status": "adapter-backed"
+    },
+    {
+      "module": "kogwistar.engine_core.models",
+      "symbol": "*",
+      "status": "preserved"
+    },
+    {
+      "module": "kogwistar.engine_core.postgres_backend",
+      "symbol": "*",
+      "status": "adapter-backed"
+    },
+    {
+      "module": "kogwistar.maintenance.models",
+      "symbol": "*",
+      "status": "preserved"
+    },
+    {
+      "module": "kogwistar.maintenance.template",
+      "symbol": "*",
+      "status": "preserved"
+    },
+    {
+      "module": "kogwistar.policy",
+      "symbol": "*",
+      "status": "preserved"
+    },
+    {
+      "module": "kogwistar.runtime",
+      "symbol": "*",
+      "status": "preserved"
+    },
+    {
+      "module": "kogwistar.runtime.budget",
+      "symbol": "*",
+      "status": "preserved"
+    },
+    {
+      "module": "kogwistar.runtime.budget_adapters",
+      "symbol": "*",
+      "status": "preserved"
+    },
+    {
+      "module": "kogwistar.runtime.models",
+      "symbol": "*",
+      "status": "preserved"
+    },
+    {
+      "module": "kogwistar.runtime.pricing",
+      "symbol": "*",
+      "status": "preserved"
+    },
+    {
+      "module": "kogwistar.runtime.resolvers",
+      "symbol": "*",
+      "status": "preserved"
+    },
+    {
+      "module": "kogwistar.runtime.sinks",
+      "symbol": "*",
+      "status": "preserved"
+    },
+    {
+      "module": "kogwistar.server.auth_middleware",
+      "symbol": "*",
+      "status": "adapter-backed"
+    },
+    {
+      "module": "kogwistar.server.chat_service",
+      "symbol": "*",
+      "status": "adapter-backed"
+    },
+    {
+      "module": "kogwistar.server.run_registry",
+      "symbol": "*",
+      "status": "adapter-backed"
+    },
+    {
+      "module": "kogwistar.typing_interfaces",
+      "symbol": "*",
+      "status": "preserved"
+    },
+    {
+      "module": "kogwistar.wisdom.template",
+      "symbol": "*",
+      "status": "preserved"
+    },
+    {
+      "module": "kogwistar.workers.index_job_worker",
+      "symbol": "*",
+      "status": "adapter-backed"
+    }
+  ],
+  "domain_invariants": {
+    "mandatory_provenance": [
+      "source_references",
+      "groundings",
+      "character_offsets",
+      "mention_spans"
+    ],
+    "stable_id": {
+      "algorithm": "uuid-v5",
+      "namespace_url_name": "graph-knowledge-engine",
+      "input_encoding": "utf-8-json-array-compact"
+    },
+    "canonical_json": {
+      "encoding": "utf-8",
+      "sort_keys": true,
+      "ensure_ascii": false,
+      "separators": [
+        ",",
+        ":"
+      ]
+    },
+    "mutation_semantics": [
+      "append-only-events",
+      "logical-tombstone",
+      "no-silent-in-place-replacement"
+    ]
+  },
+  "event_contracts": [
+    {
+      "type": "entity.upsert",
+      "required_fields": [
+        "type",
+        "entity",
+        "event_seq"
+      ],
+      "status": "preserved-consumer-envelope"
+    },
+    {
+      "type": "entity.tombstone",
+      "accepted_aliases": [
+        "entity.delete",
+        "entity.remove"
+      ],
+      "required_fields": [
+        "type",
+        "entity",
+        "event_seq"
+      ],
+      "status": "preserved-consumer-envelope"
+    },
+    {
+      "type": "entity_event",
+      "ordering": "namespace-local-monotonic-sequence",
+      "idempotency_key": "event_id",
+      "status": "authoritative"
+    }
+  ],
+  "storage_contracts": {
+    "formats": [
+      "chroma",
+      "sqlite",
+      "postgresql",
+      "pgvector"
+    ],
+    "automatic_startup_mutations": false,
+    "migration_requirements": [
+      "explicit",
+      "preflight-validated",
+      "backed-up",
+      "resumable",
+      "post-validated",
+      "rollback-rehearsed"
+    ],
+    "chroma_single_writer_preserved": true,
+    "postgres_pgvector_same_transaction": true
+  },
+  "suite_layers": [
+    {
+      "name": "core",
+      "relative_to": "candidate",
+      "path": "tests"
+    },
+    {
+      "name": "parser",
+      "relative_to": "application",
+      "path": "kg-doc-parser/tests"
+    },
+    {
+      "name": "sink",
+      "relative_to": "application",
+      "path": "kogwistar-obsidian-sink/tests"
+    },
+    {
+      "name": "application",
+      "relative_to": "application",
+      "path": "tests"
+    }
+  ],
+  "ownership": {
+    "core": "kogwistar-rust-port-owner",
+    "consumer_fixtures": "consumer-repository-owner",
+    "coordinated_release": "coordinated-release-owner"
+  },
+  "capability_ownership": [
+    {
+      "capability": "deterministic-contracts",
+      "configuration": "KOGWISTAR_IMPL_CONTRACTS",
+      "current_authoritative_writer": "python",
+      "target_authoritative_writer": "rust",
+      "rollback": "set KOGWISTAR_IMPL_CONTRACTS=python; no data conversion"
+    },
+    {
+      "capability": "sqlite-meta",
+      "configuration": "KOGWISTAR_IMPL_META_STORE",
+      "current_authoritative_writer": "python",
+      "target_authoritative_writer": "rust",
+      "rollback": "stop Rust writer, verify schema compatibility, set KOGWISTAR_IMPL_META_STORE=python"
+    },
+    {
+      "capability": "postgres-sequence-event-log",
+      "configuration": "KOGWISTAR_IMPL_META_STORE",
+      "current_authoritative_writer": "python",
+      "target_authoritative_writer": "rust",
+      "rollback": "drain Rust writer, verify committed cursor, set KOGWISTAR_IMPL_META_STORE=python; reuse same event log"
+    },
+    {
+      "capability": "projections-snapshots-run-registry",
+      "configuration": "KOGWISTAR_IMPL_META_STORE",
+      "current_authoritative_writer": "python",
+      "target_authoritative_writer": "rust",
+      "rollback": "set KOGWISTAR_IMPL_META_STORE=python and rebuild disposable projections from shared event history"
+    },
+    {
+      "capability": "queues-leases-lanes",
+      "configuration": "KOGWISTAR_IMPL_META_STORE",
+      "current_authoritative_writer": "python",
+      "target_authoritative_writer": "rust",
+      "rollback": "stop claims, wait or expire leases, set KOGWISTAR_IMPL_META_STORE=python; preserve durable rows"
+    },
+    {
+      "capability": "graph-pgvector",
+      "configuration": "KOGWISTAR_IMPL_GRAPH_STORE",
+      "current_authoritative_writer": "python",
+      "target_authoritative_writer": "rust",
+      "rollback": "drain Rust mutations, verify transaction cursor, set KOGWISTAR_IMPL_GRAPH_STORE=python; reuse same PostgreSQL state"
+    },
+    {
+      "capability": "chroma-adapter",
+      "configuration": "KOGWISTAR_IMPL_GRAPH_STORE",
+      "current_authoritative_writer": "python",
+      "target_authoritative_writer": "python-adapter",
+      "rollback": "retain Python adapter and single-writer store; shadow uses isolated read-only snapshot"
+    },
+    {
+      "capability": "workflow-runtime",
+      "configuration": "KOGWISTAR_IMPL_RUNTIME",
+      "current_authoritative_writer": "python",
+      "target_authoritative_writer": "rust",
+      "rollback": "quiesce scheduler, verify durable checkpoint, set KOGWISTAR_IMPL_RUNTIME=python; resume from shared checkpoint"
+    },
+    {
+      "capability": "server-rest-sse-mcp-cli",
+      "configuration": "KOGWISTAR_IMPL_SERVER",
+      "current_authoritative_writer": "python",
+      "target_authoritative_writer": "rust",
+      "rollback": "route traffic to Python deployment using same backward-readable database and event contracts"
+    }
+  ]
+}

@@ -1,0 +1,62 @@
+{
+  "accepted_tombstone_aliases": [
+    "entity.delete",
+    "entity.remove"
+  ],
+  "events": [
+    {
+      "entity": {
+        "id": "node:alpha",
+        "label": "Alpha",
+        "metadata": {
+          "graph_space": "base_kg",
+          "workspace_id": "ws:golden"
+        },
+        "source_ids": [],
+        "summary": "initial",
+        "target_ids": [
+          "node:beta"
+        ],
+        "type": "entity"
+      },
+      "event_seq": 1,
+      "type": "entity.upsert",
+      "version": 1
+    },
+    {
+      "entity": {
+        "id": "node:alpha",
+        "label": "Alpha",
+        "metadata": {
+          "graph_space": "base_kg",
+          "workspace_id": "ws:golden"
+        },
+        "source_ids": [],
+        "summary": "replacement",
+        "target_ids": [],
+        "type": "entity"
+      },
+      "event_seq": 2,
+      "type": "entity.upsert",
+      "version": 2
+    },
+    {
+      "entity": {
+        "id": "node:alpha",
+        "type": "entity"
+      },
+      "event_seq": 3,
+      "type": "entity.tombstone",
+      "version": 3
+    }
+  ],
+  "expected_replay": {
+    "active_entities": [],
+    "cursor": 3,
+    "replacement_is_observable_at_sequence": 2,
+    "tombstoned_entities": [
+      "node:alpha"
+    ]
+  },
+  "namespace": "ws:golden:base_kg"
+}

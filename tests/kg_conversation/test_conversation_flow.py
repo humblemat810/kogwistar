@@ -85,7 +85,12 @@ def cached(memory: Memory, fn: Callable[P, R], *args, **kwargs) -> Callable[P, R
     ],
 )
 @pytest.mark.parametrize(
-    "llm_provider_name", ["gemini", "ollama"], indirect=True
+    "llm_provider_name",
+    [
+        pytest.param("gemini", marks=pytest.mark.llm_real),
+        pytest.param("ollama", marks=pytest.mark.requires_ollama),
+    ],
+    indirect=True,
 )
 def test_conversation_flow(
     backend_kind: str,
@@ -240,7 +245,10 @@ def test_conversation_flow(
     assert start_nodes
 
     assert start_nodes_dict["metadatas"][0]["entity_type"] == "conversation_start"
-    memory = Memory(location=".joblib")
+    # Cache belongs to this scenario. A repository-global cache can replay a
+    # filtering result produced by another provider/backend parameter and make
+    # the reference-node assertions order dependent.
+    memory = Memory(location=str(tmp_path / ".joblib"))
 
     # Monkey patch with typed cacheing
     candiate_filtering_callback_cached = cached(

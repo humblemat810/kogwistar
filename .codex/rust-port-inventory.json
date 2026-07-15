@@ -1,0 +1,2359 @@
+{
+  "contract_version": "1.0.0",
+  "generated_at_utc": "2026-07-14T03:07:40.455585+00:00",
+  "inventory_version": 1,
+  "records": [
+    {
+      "lines": [
+        15
+      ],
+      "module": "kogwistar",
+      "repository": "application",
+      "scope": "test-only",
+      "source": "tests/test_import_path_smoke.py",
+      "status": "preserved",
+      "symbol": "<module>"
+    },
+    {
+      "lines": [
+        23
+      ],
+      "module": "kogwistar.engine_core",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/ingest_pipeline.py",
+      "status": "preserved",
+      "symbol": "GraphKnowledgeEngine"
+    },
+    {
+      "lines": [
+        3
+      ],
+      "module": "kogwistar.engine_core",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/maintenance_designs.py",
+      "status": "preserved",
+      "symbol": "GraphKnowledgeEngine"
+    },
+    {
+      "lines": [
+        7
+      ],
+      "module": "kogwistar.engine_core",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/maintenance_patch_apply.py",
+      "status": "preserved",
+      "symbol": "GraphKnowledgeEngine"
+    },
+    {
+      "lines": [
+        10
+      ],
+      "module": "kogwistar.engine_core",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/models.py",
+      "status": "preserved",
+      "symbol": "GraphKnowledgeEngine"
+    },
+    {
+      "lines": [
+        12
+      ],
+      "module": "kogwistar.engine_core",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/query.py",
+      "status": "preserved",
+      "symbol": "GraphKnowledgeEngine"
+    },
+    {
+      "lines": [
+        315
+      ],
+      "module": "kogwistar.engine_core",
+      "repository": "application",
+      "scope": "test-only",
+      "source": "tests/conftest.py",
+      "status": "preserved",
+      "symbol": "GraphKnowledgeEngine"
+    },
+    {
+      "lines": [
+        30
+      ],
+      "module": "kogwistar.engine_core",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/daemon.py",
+      "status": "adapter-backed",
+      "symbol": "OutputReconciliationState"
+    },
+    {
+      "lines": [
+        30
+      ],
+      "module": "kogwistar.engine_core",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/daemon.py",
+      "status": "adapter-backed",
+      "symbol": "RecoveryReport"
+    },
+    {
+      "lines": [
+        30
+      ],
+      "module": "kogwistar.engine_core",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/daemon.py",
+      "status": "preserved",
+      "symbol": "RecoverySurface"
+    },
+    {
+      "lines": [
+        49
+      ],
+      "module": "kogwistar.engine_core",
+      "repository": "application",
+      "scope": "test-only",
+      "source": "tests/integration/test_longrun_workflow_ingestion.py",
+      "status": "preserved",
+      "symbol": "RecoverySurface"
+    },
+    {
+      "lines": [
+        6
+      ],
+      "module": "kogwistar.engine_core.engine",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/utils.py",
+      "status": "adapter-backed",
+      "symbol": "GraphKnowledgeEngine"
+    },
+    {
+      "lines": [
+        6
+      ],
+      "module": "kogwistar.engine_core.engine",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/utils.py",
+      "status": "adapter-backed",
+      "symbol": "_NamespacedEngineProxy"
+    },
+    {
+      "lines": [
+        6
+      ],
+      "module": "kogwistar.engine_core.engine",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/disambiguation_service.py",
+      "status": "adapter-backed",
+      "symbol": "scoped_namespace"
+    },
+    {
+      "lines": [
+        6
+      ],
+      "module": "kogwistar.engine_core.engine",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/utils.py",
+      "status": "adapter-backed",
+      "symbol": "scoped_namespace"
+    },
+    {
+      "lines": [
+        249
+      ],
+      "module": "kogwistar.engine_core.engine_postgres",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/ingest_pipeline.py",
+      "status": "adapter-backed",
+      "symbol": "EnginePostgresConfig"
+    },
+    {
+      "lines": [
+        249
+      ],
+      "module": "kogwistar.engine_core.engine_postgres",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/ingest_pipeline.py",
+      "status": "adapter-backed",
+      "symbol": "build_postgres_backend"
+    },
+    {
+      "lines": [
+        24
+      ],
+      "module": "kogwistar.engine_core.in_memory_backend",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/ingest_pipeline.py",
+      "status": "adapter-backed",
+      "symbol": "build_in_memory_backend"
+    },
+    {
+      "lines": [
+        316
+      ],
+      "module": "kogwistar.engine_core.in_memory_backend",
+      "repository": "application",
+      "scope": "test-only",
+      "source": "tests/conftest.py",
+      "status": "adapter-backed",
+      "symbol": "build_in_memory_backend"
+    },
+    {
+      "lines": [
+        9
+      ],
+      "module": "kogwistar.engine_core.in_memory_meta",
+      "repository": "application",
+      "scope": "test-only",
+      "source": "tests/unit/test_worker_runtime_orchestration.py",
+      "status": "adapter-backed",
+      "symbol": "<module>"
+    },
+    {
+      "lines": [
+        19
+      ],
+      "module": "kogwistar.engine_core.in_memory_meta",
+      "repository": "application",
+      "scope": "test-only",
+      "source": "tests/unit/test_worker_runtime_orchestration.py",
+      "status": "adapter-backed",
+      "symbol": "InMemoryMetaStore"
+    },
+    {
+      "lines": [
+        18
+      ],
+      "module": "kogwistar.engine_core.jobs",
+      "repository": "application",
+      "scope": "test-only",
+      "source": "tests/unit/test_worker_runtime_orchestration.py",
+      "status": "adapter-backed",
+      "symbol": "DurableQueueUnavailableError"
+    },
+    {
+      "lines": [
+        6
+      ],
+      "module": "kogwistar.engine_core.jobs",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/maintenance_strategies.py",
+      "status": "adapter-backed",
+      "symbol": "JobQueueItem"
+    },
+    {
+      "lines": [
+        5
+      ],
+      "module": "kogwistar.engine_core.jobs",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/projection_worker.py",
+      "status": "adapter-backed",
+      "symbol": "JobQueueItem"
+    },
+    {
+      "lines": [
+        11
+      ],
+      "module": "kogwistar.engine_core.jobs",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/worker.py",
+      "status": "adapter-backed",
+      "symbol": "JobQueueItem"
+    },
+    {
+      "lines": [
+        20
+      ],
+      "module": "kogwistar.engine_core.jobs",
+      "repository": "application",
+      "scope": "test-only",
+      "source": "tests/unit/test_worker_runtime_orchestration.py",
+      "status": "adapter-backed",
+      "symbol": "JobQueueSubsystem"
+    },
+    {
+      "lines": [
+        25
+      ],
+      "module": "kogwistar.engine_core.models",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/ingest_pipeline.py",
+      "status": "preserved",
+      "symbol": "Document"
+    },
+    {
+      "lines": [
+        6
+      ],
+      "module": "kogwistar.engine_core.models",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/maintenance_patch_apply.py",
+      "status": "preserved",
+      "symbol": "Edge"
+    },
+    {
+      "lines": [
+        15
+      ],
+      "module": "kogwistar.engine_core.models",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/projection.py",
+      "status": "preserved",
+      "symbol": "Edge"
+    },
+    {
+      "lines": [
+        11
+      ],
+      "module": "kogwistar.engine_core.models",
+      "repository": "application",
+      "scope": "test-only",
+      "source": "tests/unit/test_llm_wiki_cli.py",
+      "status": "preserved",
+      "symbol": "Edge"
+    },
+    {
+      "lines": [
+        7
+      ],
+      "module": "kogwistar.engine_core.models",
+      "repository": "application",
+      "scope": "test-only",
+      "source": "tests/unit/test_projection_consistency.py",
+      "status": "preserved",
+      "symbol": "Edge"
+    },
+    {
+      "lines": [
+        25
+      ],
+      "module": "kogwistar.engine_core.models",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/ingest_pipeline.py",
+      "status": "preserved",
+      "symbol": "GraphExtractionWithIDs"
+    },
+    {
+      "lines": [
+        7
+      ],
+      "module": "kogwistar.engine_core.models",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/disambiguation_service.py",
+      "status": "preserved",
+      "symbol": "Grounding"
+    },
+    {
+      "lines": [
+        25
+      ],
+      "module": "kogwistar.engine_core.models",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/ingest_pipeline.py",
+      "status": "preserved",
+      "symbol": "Grounding"
+    },
+    {
+      "lines": [
+        4
+      ],
+      "module": "kogwistar.engine_core.models",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/maintenance_designs.py",
+      "status": "preserved",
+      "symbol": "Grounding"
+    },
+    {
+      "lines": [
+        6
+      ],
+      "module": "kogwistar.engine_core.models",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/maintenance_patch_apply.py",
+      "status": "preserved",
+      "symbol": "Grounding"
+    },
+    {
+      "lines": [
+        168
+      ],
+      "module": "kogwistar.engine_core.models",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/projection_worker.py",
+      "status": "preserved",
+      "symbol": "Grounding"
+    },
+    {
+      "lines": [
+        13
+      ],
+      "module": "kogwistar.engine_core.models",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/worker.py",
+      "status": "preserved",
+      "symbol": "Grounding"
+    },
+    {
+      "lines": [
+        48
+      ],
+      "module": "kogwistar.engine_core.models",
+      "repository": "application",
+      "scope": "test-only",
+      "source": "tests/integration/test_longrun_workflow_ingestion.py",
+      "status": "preserved",
+      "symbol": "Grounding"
+    },
+    {
+      "lines": [
+        5
+      ],
+      "module": "kogwistar.engine_core.models",
+      "repository": "application",
+      "scope": "test-only",
+      "source": "tests/unit/test_graph_space_query.py",
+      "status": "preserved",
+      "symbol": "Grounding"
+    },
+    {
+      "lines": [
+        3
+      ],
+      "module": "kogwistar.engine_core.models",
+      "repository": "application",
+      "scope": "test-only",
+      "source": "tests/unit/test_ingest_pipeline_projection.py",
+      "status": "preserved",
+      "symbol": "Grounding"
+    },
+    {
+      "lines": [
+        15
+      ],
+      "module": "kogwistar.engine_core.models",
+      "repository": "application",
+      "scope": "test-only",
+      "source": "tests/unit/test_knowledge_derivation.py",
+      "status": "preserved",
+      "symbol": "Grounding"
+    },
+    {
+      "lines": [
+        11
+      ],
+      "module": "kogwistar.engine_core.models",
+      "repository": "application",
+      "scope": "test-only",
+      "source": "tests/unit/test_llm_wiki_cli.py",
+      "status": "preserved",
+      "symbol": "Grounding"
+    },
+    {
+      "lines": [
+        7
+      ],
+      "module": "kogwistar.engine_core.models",
+      "repository": "application",
+      "scope": "test-only",
+      "source": "tests/unit/test_projection_consistency.py",
+      "status": "preserved",
+      "symbol": "Grounding"
+    },
+    {
+      "lines": [
+        9
+      ],
+      "module": "kogwistar.engine_core.models",
+      "repository": "application",
+      "scope": "test-only",
+      "source": "tests/unit/test_review_query.py",
+      "status": "preserved",
+      "symbol": "Grounding"
+    },
+    {
+      "lines": [
+        6
+      ],
+      "module": "kogwistar.engine_core.models",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/maintenance_patch_apply.py",
+      "status": "preserved",
+      "symbol": "MentionVerification"
+    },
+    {
+      "lines": [
+        7
+      ],
+      "module": "kogwistar.engine_core.models",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/disambiguation_service.py",
+      "status": "preserved",
+      "symbol": "Node"
+    },
+    {
+      "lines": [
+        25
+      ],
+      "module": "kogwistar.engine_core.models",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/ingest_pipeline.py",
+      "status": "preserved",
+      "symbol": "Node"
+    },
+    {
+      "lines": [
+        6
+      ],
+      "module": "kogwistar.engine_core.models",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/maintenance_patch_apply.py",
+      "status": "preserved",
+      "symbol": "Node"
+    },
+    {
+      "lines": [
+        7
+      ],
+      "module": "kogwistar.engine_core.models",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/maintenance_strategies.py",
+      "status": "preserved",
+      "symbol": "Node"
+    },
+    {
+      "lines": [
+        8
+      ],
+      "module": "kogwistar.engine_core.models",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/policies.py",
+      "status": "preserved",
+      "symbol": "Node"
+    },
+    {
+      "lines": [
+        15
+      ],
+      "module": "kogwistar.engine_core.models",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/projection.py",
+      "status": "preserved",
+      "symbol": "Node"
+    },
+    {
+      "lines": [
+        168
+      ],
+      "module": "kogwistar.engine_core.models",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/projection_worker.py",
+      "status": "preserved",
+      "symbol": "Node"
+    },
+    {
+      "lines": [
+        13
+      ],
+      "module": "kogwistar.engine_core.models",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/query.py",
+      "status": "preserved",
+      "symbol": "Node"
+    },
+    {
+      "lines": [
+        13
+      ],
+      "module": "kogwistar.engine_core.models",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/review_query.py",
+      "status": "preserved",
+      "symbol": "Node"
+    },
+    {
+      "lines": [
+        13
+      ],
+      "module": "kogwistar.engine_core.models",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/worker.py",
+      "status": "preserved",
+      "symbol": "Node"
+    },
+    {
+      "lines": [
+        5
+      ],
+      "module": "kogwistar.engine_core.models",
+      "repository": "application",
+      "scope": "test-only",
+      "source": "tests/unit/test_graph_space_query.py",
+      "status": "preserved",
+      "symbol": "Node"
+    },
+    {
+      "lines": [
+        3
+      ],
+      "module": "kogwistar.engine_core.models",
+      "repository": "application",
+      "scope": "test-only",
+      "source": "tests/unit/test_ingest_pipeline_projection.py",
+      "status": "preserved",
+      "symbol": "Node"
+    },
+    {
+      "lines": [
+        11
+      ],
+      "module": "kogwistar.engine_core.models",
+      "repository": "application",
+      "scope": "test-only",
+      "source": "tests/unit/test_llm_wiki_cli.py",
+      "status": "preserved",
+      "symbol": "Node"
+    },
+    {
+      "lines": [
+        9
+      ],
+      "module": "kogwistar.engine_core.models",
+      "repository": "application",
+      "scope": "test-only",
+      "source": "tests/unit/test_review_query.py",
+      "status": "preserved",
+      "symbol": "Node"
+    },
+    {
+      "lines": [
+        7
+      ],
+      "module": "kogwistar.engine_core.models",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/disambiguation_service.py",
+      "status": "preserved",
+      "symbol": "Span"
+    },
+    {
+      "lines": [
+        25
+      ],
+      "module": "kogwistar.engine_core.models",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/ingest_pipeline.py",
+      "status": "preserved",
+      "symbol": "Span"
+    },
+    {
+      "lines": [
+        4
+      ],
+      "module": "kogwistar.engine_core.models",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/maintenance_designs.py",
+      "status": "preserved",
+      "symbol": "Span"
+    },
+    {
+      "lines": [
+        6
+      ],
+      "module": "kogwistar.engine_core.models",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/maintenance_patch_apply.py",
+      "status": "preserved",
+      "symbol": "Span"
+    },
+    {
+      "lines": [
+        168
+      ],
+      "module": "kogwistar.engine_core.models",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/projection_worker.py",
+      "status": "preserved",
+      "symbol": "Span"
+    },
+    {
+      "lines": [
+        13
+      ],
+      "module": "kogwistar.engine_core.models",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/worker.py",
+      "status": "preserved",
+      "symbol": "Span"
+    },
+    {
+      "lines": [
+        48
+      ],
+      "module": "kogwistar.engine_core.models",
+      "repository": "application",
+      "scope": "test-only",
+      "source": "tests/integration/test_longrun_workflow_ingestion.py",
+      "status": "preserved",
+      "symbol": "Span"
+    },
+    {
+      "lines": [
+        5
+      ],
+      "module": "kogwistar.engine_core.models",
+      "repository": "application",
+      "scope": "test-only",
+      "source": "tests/unit/test_graph_space_query.py",
+      "status": "preserved",
+      "symbol": "Span"
+    },
+    {
+      "lines": [
+        3
+      ],
+      "module": "kogwistar.engine_core.models",
+      "repository": "application",
+      "scope": "test-only",
+      "source": "tests/unit/test_ingest_pipeline_projection.py",
+      "status": "preserved",
+      "symbol": "Span"
+    },
+    {
+      "lines": [
+        15,
+        628
+      ],
+      "module": "kogwistar.engine_core.models",
+      "repository": "application",
+      "scope": "test-only",
+      "source": "tests/unit/test_knowledge_derivation.py",
+      "status": "preserved",
+      "symbol": "Span"
+    },
+    {
+      "lines": [
+        11
+      ],
+      "module": "kogwistar.engine_core.models",
+      "repository": "application",
+      "scope": "test-only",
+      "source": "tests/unit/test_llm_wiki_cli.py",
+      "status": "preserved",
+      "symbol": "Span"
+    },
+    {
+      "lines": [
+        7
+      ],
+      "module": "kogwistar.engine_core.models",
+      "repository": "application",
+      "scope": "test-only",
+      "source": "tests/unit/test_projection_consistency.py",
+      "status": "preserved",
+      "symbol": "Span"
+    },
+    {
+      "lines": [
+        9
+      ],
+      "module": "kogwistar.engine_core.models",
+      "repository": "application",
+      "scope": "test-only",
+      "source": "tests/unit/test_review_query.py",
+      "status": "preserved",
+      "symbol": "Span"
+    },
+    {
+      "lines": [
+        8
+      ],
+      "module": "kogwistar.id_provider",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/disambiguation_service.py",
+      "status": "preserved",
+      "symbol": "stable_id"
+    },
+    {
+      "lines": [
+        7
+      ],
+      "module": "kogwistar.id_provider",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/entity_disambiguation.py",
+      "status": "preserved",
+      "symbol": "stable_id"
+    },
+    {
+      "lines": [
+        26
+      ],
+      "module": "kogwistar.id_provider",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/ingest_pipeline.py",
+      "status": "preserved",
+      "symbol": "stable_id"
+    },
+    {
+      "lines": [
+        5
+      ],
+      "module": "kogwistar.id_provider",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/maintenance_designs.py",
+      "status": "preserved",
+      "symbol": "stable_id"
+    },
+    {
+      "lines": [
+        7
+      ],
+      "module": "kogwistar.id_provider",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/maintenance_guards.py",
+      "status": "preserved",
+      "symbol": "stable_id"
+    },
+    {
+      "lines": [
+        3
+      ],
+      "module": "kogwistar.id_provider",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/maintenance_job_lowering.py",
+      "status": "preserved",
+      "symbol": "stable_id"
+    },
+    {
+      "lines": [
+        8
+      ],
+      "module": "kogwistar.id_provider",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/maintenance_patch_apply.py",
+      "status": "preserved",
+      "symbol": "stable_id"
+    },
+    {
+      "lines": [
+        169
+      ],
+      "module": "kogwistar.id_provider",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/projection_worker.py",
+      "status": "preserved",
+      "symbol": "stable_id"
+    },
+    {
+      "lines": [
+        10
+      ],
+      "module": "kogwistar.id_provider",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/usage_projection.py",
+      "status": "preserved",
+      "symbol": "stable_id"
+    },
+    {
+      "lines": [
+        14
+      ],
+      "module": "kogwistar.id_provider",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/worker.py",
+      "status": "preserved",
+      "symbol": "stable_id"
+    },
+    {
+      "lines": [
+        31
+      ],
+      "module": "kogwistar.id_provider",
+      "repository": "application",
+      "scope": "test-only",
+      "source": "tests/conftest.py",
+      "status": "preserved",
+      "symbol": "stable_id"
+    },
+    {
+      "lines": [
+        44
+      ],
+      "module": "kogwistar.id_provider",
+      "repository": "application",
+      "scope": "test-only",
+      "source": "tests/integration/test_longrun_workflow_ingestion.py",
+      "status": "preserved",
+      "symbol": "stable_id"
+    },
+    {
+      "lines": [
+        8
+      ],
+      "module": "kogwistar.id_provider",
+      "repository": "application",
+      "scope": "test-only",
+      "source": "tests/unit/test_ingest_pipeline_orchestration.py",
+      "status": "preserved",
+      "symbol": "stable_id"
+    },
+    {
+      "lines": [
+        27
+      ],
+      "module": "kogwistar.logical_refs",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/ingest_pipeline.py",
+      "status": "preserved",
+      "symbol": "LogicalRef"
+    },
+    {
+      "lines": [
+        27
+      ],
+      "module": "kogwistar.logical_refs",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/ingest_pipeline.py",
+      "status": "preserved",
+      "symbol": "build_reference_edge_payload"
+    },
+    {
+      "lines": [
+        27
+      ],
+      "module": "kogwistar.logical_refs",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/ingest_pipeline.py",
+      "status": "preserved",
+      "symbol": "build_reference_node_payload"
+    },
+    {
+      "lines": [
+        14
+      ],
+      "module": "kogwistar.logical_refs",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/query.py",
+      "status": "preserved",
+      "symbol": "logical_ref_from_entity"
+    },
+    {
+      "lines": [
+        27
+      ],
+      "module": "kogwistar.logical_refs",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/ingest_pipeline.py",
+      "status": "preserved",
+      "symbol": "logical_ref_id"
+    },
+    {
+      "lines": [
+        15
+      ],
+      "module": "kogwistar.maintenance.models",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/worker.py",
+      "status": "preserved",
+      "symbol": "MaintenanceTemplateResult"
+    },
+    {
+      "lines": [
+        20
+      ],
+      "module": "kogwistar.maintenance.template",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/worker.py",
+      "status": "preserved",
+      "symbol": "run_grouped_maintenance_template"
+    },
+    {
+      "lines": [
+        9
+      ],
+      "module": "kogwistar.policy",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/policies.py",
+      "status": "preserved",
+      "symbol": "DefaultArtifactVisibilityPolicy"
+    },
+    {
+      "lines": [
+        9
+      ],
+      "module": "kogwistar.policy",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/policies.py",
+      "status": "preserved",
+      "symbol": "DefaultDerivedKnowledgePolicy"
+    },
+    {
+      "lines": [
+        9
+      ],
+      "module": "kogwistar.policy",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/policies.py",
+      "status": "preserved",
+      "symbol": "DefaultProjectionEligibilityPolicy"
+    },
+    {
+      "lines": [
+        9
+      ],
+      "module": "kogwistar.policy",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/policies.py",
+      "status": "preserved",
+      "symbol": "DefaultPromotionPolicy"
+    },
+    {
+      "lines": [
+        9
+      ],
+      "module": "kogwistar.policy",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/policies.py",
+      "status": "preserved",
+      "symbol": "DefaultWisdomPolicy"
+    },
+    {
+      "lines": [
+        9
+      ],
+      "module": "kogwistar.policy",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/policies.py",
+      "status": "preserved",
+      "symbol": "PromotionContext"
+    },
+    {
+      "lines": [
+        33
+      ],
+      "module": "kogwistar.policy",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/ingest_pipeline.py",
+      "status": "preserved",
+      "symbol": "PromotionDecision"
+    },
+    {
+      "lines": [
+        9
+      ],
+      "module": "kogwistar.policy",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/policies.py",
+      "status": "preserved",
+      "symbol": "PromotionDecision"
+    },
+    {
+      "lines": [
+        9
+      ],
+      "module": "kogwistar.policy",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/policies.py",
+      "status": "preserved",
+      "symbol": "SourceQueryDecision"
+    },
+    {
+      "lines": [
+        35
+      ],
+      "module": "kogwistar.provenance",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/ingest_pipeline.py",
+      "status": "preserved",
+      "symbol": "EvidencePackDigest"
+    },
+    {
+      "lines": [
+        35
+      ],
+      "module": "kogwistar.provenance",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/ingest_pipeline.py",
+      "status": "preserved",
+      "symbol": "evidence_pack_digest_hash"
+    },
+    {
+      "lines": [
+        11
+      ],
+      "module": "kogwistar.runtime",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/usage_projection.py",
+      "status": "preserved",
+      "symbol": "BudgetAttribution"
+    },
+    {
+      "lines": [
+        7
+      ],
+      "module": "kogwistar.runtime",
+      "repository": "application",
+      "scope": "test-only",
+      "source": "tests/unit/test_usage_projection.py",
+      "status": "preserved",
+      "symbol": "BudgetAttribution"
+    },
+    {
+      "lines": [
+        10
+      ],
+      "module": "kogwistar.runtime",
+      "repository": "application",
+      "scope": "test-only",
+      "source": "tests/unit/test_worker_runtime_orchestration.py",
+      "status": "preserved",
+      "symbol": "BudgetAttribution"
+    },
+    {
+      "lines": [
+        11
+      ],
+      "module": "kogwistar.runtime",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/usage_projection.py",
+      "status": "preserved",
+      "symbol": "BudgetEvent"
+    },
+    {
+      "lines": [
+        7
+      ],
+      "module": "kogwistar.runtime",
+      "repository": "application",
+      "scope": "test-only",
+      "source": "tests/unit/test_usage_projection.py",
+      "status": "preserved",
+      "symbol": "BudgetEvent"
+    },
+    {
+      "lines": [
+        10
+      ],
+      "module": "kogwistar.runtime",
+      "repository": "application",
+      "scope": "test-only",
+      "source": "tests/unit/test_worker_runtime_orchestration.py",
+      "status": "preserved",
+      "symbol": "BudgetEvent"
+    },
+    {
+      "lines": [
+        45
+      ],
+      "module": "kogwistar.runtime",
+      "repository": "application",
+      "scope": "test-only",
+      "source": "tests/integration/test_longrun_workflow_ingestion.py",
+      "status": "preserved",
+      "symbol": "MappingStepResolver"
+    },
+    {
+      "lines": [
+        10
+      ],
+      "module": "kogwistar.runtime",
+      "repository": "application",
+      "scope": "test-only",
+      "source": "tests/unit/test_lane_message_contract_integration.py",
+      "status": "preserved",
+      "symbol": "MappingStepResolver"
+    },
+    {
+      "lines": [
+        11
+      ],
+      "module": "kogwistar.runtime",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/usage_projection.py",
+      "status": "preserved",
+      "symbol": "ProjectionCheckpoint"
+    },
+    {
+      "lines": [
+        11
+      ],
+      "module": "kogwistar.runtime",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/usage_projection.py",
+      "status": "preserved",
+      "symbol": "ProjectionLoadResult"
+    },
+    {
+      "lines": [
+        16
+      ],
+      "module": "kogwistar.runtime",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/worker.py",
+      "status": "preserved",
+      "symbol": "RunResult"
+    },
+    {
+      "lines": [
+        11
+      ],
+      "module": "kogwistar.runtime",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/usage_projection.py",
+      "status": "preserved",
+      "symbol": "budget_event_from_dict"
+    },
+    {
+      "lines": [
+        299
+      ],
+      "module": "kogwistar.runtime",
+      "repository": "application",
+      "scope": "test-only",
+      "source": "tests/unit/test_usage_projection.py",
+      "status": "preserved",
+      "symbol": "budget_event_from_dict"
+    },
+    {
+      "lines": [
+        11
+      ],
+      "module": "kogwistar.runtime",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/usage_projection.py",
+      "status": "preserved",
+      "symbol": "budget_event_to_dict"
+    },
+    {
+      "lines": [
+        299
+      ],
+      "module": "kogwistar.runtime",
+      "repository": "application",
+      "scope": "test-only",
+      "source": "tests/unit/test_usage_projection.py",
+      "status": "preserved",
+      "symbol": "budget_event_to_dict"
+    },
+    {
+      "lines": [
+        11
+      ],
+      "module": "kogwistar.runtime",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/usage_projection.py",
+      "status": "preserved",
+      "symbol": "refresh_checkpointed_named_projection"
+    },
+    {
+      "lines": [
+        12
+      ],
+      "module": "kogwistar.runtime.budget",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/llm_usage.py",
+      "status": "preserved",
+      "symbol": "BudgetAttribution"
+    },
+    {
+      "lines": [
+        12
+      ],
+      "module": "kogwistar.runtime.budget",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/llm_usage.py",
+      "status": "preserved",
+      "symbol": "BudgetEvent"
+    },
+    {
+      "lines": [
+        6
+      ],
+      "module": "kogwistar.runtime.budget",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/maintenance_reporting.py",
+      "status": "preserved",
+      "symbol": "BudgetEvent"
+    },
+    {
+      "lines": [
+        4
+      ],
+      "module": "kogwistar.runtime.budget",
+      "repository": "application",
+      "scope": "test-only",
+      "source": "tests/unit/test_longrun_parser_worker_usage.py",
+      "status": "preserved",
+      "symbol": "BudgetEvent"
+    },
+    {
+      "lines": [
+        3
+      ],
+      "module": "kogwistar.runtime.budget",
+      "repository": "application",
+      "scope": "test-only",
+      "source": "tests/unit/test_maintenance_reporting.py",
+      "status": "preserved",
+      "symbol": "BudgetEvent"
+    },
+    {
+      "lines": [
+        12
+      ],
+      "module": "kogwistar.runtime.budget",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/llm_usage.py",
+      "status": "preserved",
+      "symbol": "StateBackedBudgetLedger"
+    },
+    {
+      "lines": [
+        18
+      ],
+      "module": "kogwistar.runtime.budget",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/longrun_parser_worker.py",
+      "status": "preserved",
+      "symbol": "StateBackedBudgetLedger"
+    },
+    {
+      "lines": [
+        46
+      ],
+      "module": "kogwistar.runtime.budget",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/worker.py",
+      "status": "preserved",
+      "symbol": "StateBackedBudgetLedger"
+    },
+    {
+      "lines": [
+        7
+      ],
+      "module": "kogwistar.runtime.budget",
+      "repository": "application",
+      "scope": "test-only",
+      "source": "tests/unit/test_llm_usage.py",
+      "status": "preserved",
+      "symbol": "StateBackedBudgetLedger"
+    },
+    {
+      "lines": [
+        34
+      ],
+      "module": "kogwistar.runtime.budget",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/ingest_pipeline.py",
+      "status": "preserved",
+      "symbol": "budget_event_from_dict"
+    },
+    {
+      "lines": [
+        18
+      ],
+      "module": "kogwistar.runtime.budget",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/longrun_parser_worker.py",
+      "status": "preserved",
+      "symbol": "budget_event_to_dict"
+    },
+    {
+      "lines": [
+        13
+      ],
+      "module": "kogwistar.runtime.budget_adapters",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/llm_usage.py",
+      "status": "preserved",
+      "symbol": "adapt_budget_events"
+    },
+    {
+      "lines": [
+        17
+      ],
+      "module": "kogwistar.runtime.budget_adapters",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/longrun_parser_worker.py",
+      "status": "preserved",
+      "symbol": "summarize_budget_events"
+    },
+    {
+      "lines": [
+        7
+      ],
+      "module": "kogwistar.runtime.budget_adapters",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/maintenance_reporting.py",
+      "status": "preserved",
+      "symbol": "summarize_budget_events"
+    },
+    {
+      "lines": [
+        20
+      ],
+      "module": "kogwistar.runtime.budget_adapters",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/usage_projection.py",
+      "status": "preserved",
+      "symbol": "summarize_budget_events"
+    },
+    {
+      "lines": [
+        8
+      ],
+      "module": "kogwistar.runtime.budget_adapters",
+      "repository": "application",
+      "scope": "test-only",
+      "source": "tests/unit/test_llm_usage.py",
+      "status": "preserved",
+      "symbol": "summarize_budget_events"
+    },
+    {
+      "lines": [
+        5
+      ],
+      "module": "kogwistar.runtime.budget_adapters",
+      "repository": "application",
+      "scope": "test-only",
+      "source": "tests/unit/test_longrun_parser_worker_usage.py",
+      "status": "preserved",
+      "symbol": "summarize_budget_events"
+    },
+    {
+      "lines": [
+        17
+      ],
+      "module": "kogwistar.runtime.models",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/worker.py",
+      "status": "preserved",
+      "symbol": "RunSuccess"
+    },
+    {
+      "lines": [
+        46
+      ],
+      "module": "kogwistar.runtime.models",
+      "repository": "application",
+      "scope": "test-only",
+      "source": "tests/integration/test_longrun_workflow_ingestion.py",
+      "status": "preserved",
+      "symbol": "RunSuccess"
+    },
+    {
+      "lines": [
+        11
+      ],
+      "module": "kogwistar.runtime.models",
+      "repository": "application",
+      "scope": "test-only",
+      "source": "tests/unit/test_lane_message_contract_integration.py",
+      "status": "preserved",
+      "symbol": "RunSuccess"
+    },
+    {
+      "lines": [
+        46
+      ],
+      "module": "kogwistar.runtime.models",
+      "repository": "application",
+      "scope": "test-only",
+      "source": "tests/integration/test_longrun_workflow_ingestion.py",
+      "status": "preserved",
+      "symbol": "RunSuspended"
+    },
+    {
+      "lines": [
+        17
+      ],
+      "module": "kogwistar.runtime.models",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/worker.py",
+      "status": "preserved",
+      "symbol": "StepRunResult"
+    },
+    {
+      "lines": [
+        6
+      ],
+      "module": "kogwistar.runtime.models",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/maintenance_designs.py",
+      "status": "preserved",
+      "symbol": "WorkflowDesignArtifact"
+    },
+    {
+      "lines": [
+        6
+      ],
+      "module": "kogwistar.runtime.models",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/maintenance_designs.py",
+      "status": "preserved",
+      "symbol": "WorkflowEdge"
+    },
+    {
+      "lines": [
+        46
+      ],
+      "module": "kogwistar.runtime.models",
+      "repository": "application",
+      "scope": "test-only",
+      "source": "tests/integration/test_longrun_workflow_ingestion.py",
+      "status": "preserved",
+      "symbol": "WorkflowEdge"
+    },
+    {
+      "lines": [
+        6
+      ],
+      "module": "kogwistar.runtime.models",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/maintenance_designs.py",
+      "status": "preserved",
+      "symbol": "WorkflowNode"
+    },
+    {
+      "lines": [
+        46
+      ],
+      "module": "kogwistar.runtime.models",
+      "repository": "application",
+      "scope": "test-only",
+      "source": "tests/integration/test_longrun_workflow_ingestion.py",
+      "status": "preserved",
+      "symbol": "WorkflowNode"
+    },
+    {
+      "lines": [
+        16
+      ],
+      "module": "kogwistar.runtime.models",
+      "repository": "application",
+      "scope": "test-only",
+      "source": "tests/unit/test_knowledge_derivation.py",
+      "status": "preserved",
+      "symbol": "WorkflowStepExecNode"
+    },
+    {
+      "lines": [
+        14
+      ],
+      "module": "kogwistar.runtime.pricing",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/llm_usage.py",
+      "status": "preserved",
+      "symbol": "TokenPricing"
+    },
+    {
+      "lines": [
+        14
+      ],
+      "module": "kogwistar.runtime.pricing",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/llm_usage.py",
+      "status": "preserved",
+      "symbol": "estimate_token_cost_usd"
+    },
+    {
+      "lines": [
+        18
+      ],
+      "module": "kogwistar.runtime.resolvers",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/worker.py",
+      "status": "preserved",
+      "symbol": "MappingStepResolver"
+    },
+    {
+      "lines": [
+        47
+      ],
+      "module": "kogwistar.runtime.runtime",
+      "repository": "application",
+      "scope": "test-only",
+      "source": "tests/integration/test_longrun_workflow_ingestion.py",
+      "status": "adapter-backed",
+      "symbol": "RunResult"
+    },
+    {
+      "lines": [
+        19
+      ],
+      "module": "kogwistar.runtime.runtime",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/worker.py",
+      "status": "adapter-backed",
+      "symbol": "StepContext"
+    },
+    {
+      "lines": [
+        19
+      ],
+      "module": "kogwistar.runtime.runtime",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/worker.py",
+      "status": "adapter-backed",
+      "symbol": "WorkflowRuntime"
+    },
+    {
+      "lines": [
+        47
+      ],
+      "module": "kogwistar.runtime.runtime",
+      "repository": "application",
+      "scope": "test-only",
+      "source": "tests/integration/test_longrun_workflow_ingestion.py",
+      "status": "adapter-backed",
+      "symbol": "WorkflowRuntime"
+    },
+    {
+      "lines": [
+        12
+      ],
+      "module": "kogwistar.runtime.runtime",
+      "repository": "application",
+      "scope": "test-only",
+      "source": "tests/unit/test_lane_message_contract_integration.py",
+      "status": "adapter-backed",
+      "symbol": "WorkflowRuntime"
+    },
+    {
+      "lines": [
+        6
+      ],
+      "module": "kogwistar.runtime.sinks",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/longrun_trace_sink.py",
+      "status": "preserved",
+      "symbol": "JsonlEventSink"
+    },
+    {
+      "lines": [
+        13
+      ],
+      "module": "kogwistar.server.auth_middleware",
+      "repository": "application",
+      "scope": "test-only",
+      "source": "tests/unit/test_lane_message_contract_integration.py",
+      "status": "adapter-backed",
+      "symbol": "claims_ctx"
+    },
+    {
+      "lines": [
+        14
+      ],
+      "module": "kogwistar.server.chat_service",
+      "repository": "application",
+      "scope": "test-only",
+      "source": "tests/unit/test_lane_message_contract_integration.py",
+      "status": "adapter-backed",
+      "symbol": "ChatRunService"
+    },
+    {
+      "lines": [
+        15
+      ],
+      "module": "kogwistar.server.run_registry",
+      "repository": "application",
+      "scope": "test-only",
+      "source": "tests/unit/test_lane_message_contract_integration.py",
+      "status": "adapter-backed",
+      "symbol": "RunRegistry"
+    },
+    {
+      "lines": [
+        38
+      ],
+      "module": "kogwistar.typing_interfaces",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/ingest_pipeline.py",
+      "status": "preserved",
+      "symbol": "EmbeddingFunctionLike"
+    },
+    {
+      "lines": [
+        9
+      ],
+      "module": "kogwistar.typing_interfaces",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/maintenance_patch_apply.py",
+      "status": "preserved",
+      "symbol": "WriteLike"
+    },
+    {
+      "lines": [
+        6
+      ],
+      "module": "kogwistar.utils",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/maintenance_patches.py",
+      "status": "preserved",
+      "symbol": "SourcePointerValidationError"
+    },
+    {
+      "lines": [
+        10
+      ],
+      "module": "kogwistar.utils",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/maintenance_patch_apply.py",
+      "status": "preserved",
+      "symbol": "source_pointer_has_character_span"
+    },
+    {
+      "lines": [
+        6
+      ],
+      "module": "kogwistar.utils",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/maintenance_patches.py",
+      "status": "preserved",
+      "symbol": "source_pointer_has_character_span"
+    },
+    {
+      "lines": [
+        10
+      ],
+      "module": "kogwistar.utils",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/maintenance_patch_apply.py",
+      "status": "preserved",
+      "symbol": "validate_source_pointer"
+    },
+    {
+      "lines": [
+        6
+      ],
+      "module": "kogwistar.utils",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/maintenance_patches.py",
+      "status": "preserved",
+      "symbol": "validate_source_pointer"
+    },
+    {
+      "lines": [
+        21
+      ],
+      "module": "kogwistar.wisdom.template",
+      "repository": "application",
+      "scope": "runtime",
+      "source": "src/kogwistar_llm_wiki/worker.py",
+      "status": "preserved",
+      "symbol": "write_execution_wisdom_artifacts"
+    },
+    {
+      "lines": [
+        7
+      ],
+      "module": "kogwistar.engine_core.engine",
+      "repository": "parser",
+      "scope": "runtime",
+      "source": "kg_doc_parser/workflow_ingest/service.py",
+      "status": "adapter-backed",
+      "symbol": "GraphKnowledgeEngine"
+    },
+    {
+      "lines": [
+        10
+      ],
+      "module": "kogwistar.engine_core.engine",
+      "repository": "parser",
+      "scope": "test-only",
+      "source": "tests/test_workflow_ingest_backends_ci_full.py",
+      "status": "adapter-backed",
+      "symbol": "GraphKnowledgeEngine"
+    },
+    {
+      "lines": [
+        13
+      ],
+      "module": "kogwistar.engine_core.in_memory_backend",
+      "repository": "parser",
+      "scope": "test-only",
+      "source": "tests/_kogwistar_test_helpers.py",
+      "status": "adapter-backed",
+      "symbol": "build_in_memory_backend"
+    },
+    {
+      "lines": [
+        21
+      ],
+      "module": "kogwistar.engine_core.models",
+      "repository": "parser",
+      "scope": "runtime",
+      "source": "kg_doc_parser/workflow_ingest/clients.py",
+      "status": "preserved",
+      "symbol": "Edge"
+    },
+    {
+      "lines": [
+        119
+      ],
+      "module": "kogwistar.engine_core.models",
+      "repository": "parser",
+      "scope": "test-only",
+      "source": "tests/test_workflow_ingest_conversation_graph.py",
+      "status": "preserved",
+      "symbol": "Edge"
+    },
+    {
+      "lines": [
+        6
+      ],
+      "module": "kogwistar.engine_core.models",
+      "repository": "parser",
+      "scope": "runtime",
+      "source": "kg_doc_parser/workflow_ingest/design.py",
+      "status": "preserved",
+      "symbol": "Grounding"
+    },
+    {
+      "lines": [
+        21
+      ],
+      "module": "kogwistar.engine_core.models",
+      "repository": "parser",
+      "scope": "runtime",
+      "source": "kg_doc_parser/workflow_ingest/clients.py",
+      "status": "preserved",
+      "symbol": "Node"
+    },
+    {
+      "lines": [
+        119
+      ],
+      "module": "kogwistar.engine_core.models",
+      "repository": "parser",
+      "scope": "test-only",
+      "source": "tests/test_workflow_ingest_conversation_graph.py",
+      "status": "preserved",
+      "symbol": "Node"
+    },
+    {
+      "lines": [
+        6
+      ],
+      "module": "kogwistar.engine_core.models",
+      "repository": "parser",
+      "scope": "runtime",
+      "source": "kg_doc_parser/workflow_ingest/design.py",
+      "status": "preserved",
+      "symbol": "Span"
+    },
+    {
+      "lines": [
+        91
+      ],
+      "module": "kogwistar.engine_core.postgres_backend",
+      "repository": "parser",
+      "scope": "test-only",
+      "source": "tests/test_workflow_ingest_backends_ci_full.py",
+      "status": "adapter-backed",
+      "symbol": "PgVectorBackend"
+    },
+    {
+      "lines": [
+        11
+      ],
+      "module": "kogwistar.fuzzy_offsets",
+      "repository": "parser",
+      "scope": "runtime",
+      "source": "kg_doc_parser/workflow_ingest/layerwise_llm.py",
+      "status": "preserved",
+      "symbol": "find_fuzzy_spans"
+    },
+    {
+      "lines": [
+        11
+      ],
+      "module": "kogwistar.fuzzy_offsets",
+      "repository": "parser",
+      "scope": "runtime",
+      "source": "kg_doc_parser/workflow_ingest/layerwise_llm.py",
+      "status": "preserved",
+      "symbol": "offset_repair_threshold"
+    },
+    {
+      "lines": [
+        102
+      ],
+      "module": "kogwistar.id_provider",
+      "repository": "parser",
+      "scope": "runtime",
+      "source": "kg_doc_parser/semantic_document_splitting_layerwise_edits.py",
+      "status": "preserved",
+      "symbol": "stable_id"
+    },
+    {
+      "lines": [
+        7
+      ],
+      "module": "kogwistar.id_provider",
+      "repository": "parser",
+      "scope": "runtime",
+      "source": "kg_doc_parser/workflow_ingest/cache.py",
+      "status": "preserved",
+      "symbol": "stable_id"
+    },
+    {
+      "lines": [
+        9
+      ],
+      "module": "kogwistar.id_provider",
+      "repository": "parser",
+      "scope": "runtime",
+      "source": "kg_doc_parser/workflow_ingest/semantics.py",
+      "status": "preserved",
+      "symbol": "stable_id"
+    },
+    {
+      "lines": [
+        6
+      ],
+      "module": "kogwistar.runtime",
+      "repository": "parser",
+      "scope": "runtime",
+      "source": "kg_doc_parser/workflow_ingest/handlers.py",
+      "status": "preserved",
+      "symbol": "MappingStepResolver"
+    },
+    {
+      "lines": [
+        27
+      ],
+      "module": "kogwistar.runtime",
+      "repository": "parser",
+      "scope": "runtime",
+      "source": "kg_doc_parser/workflow_ingest/layerwise_llm.py",
+      "status": "preserved",
+      "symbol": "RetryExhaustedError"
+    },
+    {
+      "lines": [
+        27
+      ],
+      "module": "kogwistar.runtime",
+      "repository": "parser",
+      "scope": "runtime",
+      "source": "kg_doc_parser/workflow_ingest/layerwise_llm.py",
+      "status": "preserved",
+      "symbol": "RetryResult"
+    },
+    {
+      "lines": [
+        27
+      ],
+      "module": "kogwistar.runtime",
+      "repository": "parser",
+      "scope": "runtime",
+      "source": "kg_doc_parser/workflow_ingest/layerwise_llm.py",
+      "status": "preserved",
+      "symbol": "retry_with_context"
+    },
+    {
+      "lines": [
+        8
+      ],
+      "module": "kogwistar.runtime.models",
+      "repository": "parser",
+      "scope": "runtime",
+      "source": "kg_doc_parser/workflow_ingest/handlers.py",
+      "status": "preserved",
+      "symbol": "RunFailure"
+    },
+    {
+      "lines": [
+        8
+      ],
+      "module": "kogwistar.runtime.models",
+      "repository": "parser",
+      "scope": "runtime",
+      "source": "kg_doc_parser/workflow_ingest/handlers.py",
+      "status": "preserved",
+      "symbol": "RunSuccess"
+    },
+    {
+      "lines": [
+        9
+      ],
+      "module": "kogwistar.runtime.models",
+      "repository": "parser",
+      "scope": "test-only",
+      "source": "tests/test_workflow_ingest_conversation_graph.py",
+      "status": "preserved",
+      "symbol": "RunSuccess"
+    },
+    {
+      "lines": [
+        8
+      ],
+      "module": "kogwistar.runtime.models",
+      "repository": "parser",
+      "scope": "runtime",
+      "source": "kg_doc_parser/workflow_ingest/handlers.py",
+      "status": "preserved",
+      "symbol": "RunSuspended"
+    },
+    {
+      "lines": [
+        9
+      ],
+      "module": "kogwistar.runtime.models",
+      "repository": "parser",
+      "scope": "test-only",
+      "source": "tests/test_workflow_ingest_conversation_graph.py",
+      "status": "preserved",
+      "symbol": "RunSuspended"
+    },
+    {
+      "lines": [
+        8
+      ],
+      "module": "kogwistar.runtime.models",
+      "repository": "parser",
+      "scope": "runtime",
+      "source": "kg_doc_parser/workflow_ingest/handlers.py",
+      "status": "preserved",
+      "symbol": "StepRunResult"
+    },
+    {
+      "lines": [
+        7
+      ],
+      "module": "kogwistar.runtime.models",
+      "repository": "parser",
+      "scope": "runtime",
+      "source": "kg_doc_parser/workflow_ingest/design.py",
+      "status": "preserved",
+      "symbol": "WorkflowEdge"
+    },
+    {
+      "lines": [
+        7
+      ],
+      "module": "kogwistar.runtime.models",
+      "repository": "parser",
+      "scope": "runtime",
+      "source": "kg_doc_parser/workflow_ingest/design.py",
+      "status": "preserved",
+      "symbol": "WorkflowNode"
+    },
+    {
+      "lines": [
+        7
+      ],
+      "module": "kogwistar.runtime.runtime",
+      "repository": "parser",
+      "scope": "runtime",
+      "source": "kg_doc_parser/workflow_ingest/handlers.py",
+      "status": "adapter-backed",
+      "symbol": "StepContext"
+    },
+    {
+      "lines": [
+        8
+      ],
+      "module": "kogwistar.runtime.runtime",
+      "repository": "parser",
+      "scope": "runtime",
+      "source": "kg_doc_parser/workflow_ingest/service.py",
+      "status": "adapter-backed",
+      "symbol": "WorkflowRuntime"
+    },
+    {
+      "lines": [
+        10
+      ],
+      "module": "kogwistar.runtime.runtime",
+      "repository": "parser",
+      "scope": "test-only",
+      "source": "tests/test_workflow_ingest_conversation_graph.py",
+      "status": "adapter-backed",
+      "symbol": "WorkflowRuntime"
+    },
+    {
+      "lines": [
+        12
+      ],
+      "module": "kogwistar.utils",
+      "repository": "parser",
+      "scope": "runtime",
+      "source": "kg_doc_parser/workflow_ingest/layerwise_llm.py",
+      "status": "preserved",
+      "symbol": "SourcePointerValidationError"
+    },
+    {
+      "lines": [
+        12
+      ],
+      "module": "kogwistar.utils",
+      "repository": "parser",
+      "scope": "runtime",
+      "source": "kg_doc_parser/workflow_ingest/layerwise_llm.py",
+      "status": "preserved",
+      "symbol": "validate_source_pointer"
+    },
+    {
+      "lines": [
+        48
+      ],
+      "module": "kogwistar.utils.fuzzy_offsets",
+      "repository": "parser",
+      "scope": "runtime",
+      "source": "kg_doc_parser/workflow_ingest/page_index.py",
+      "status": "preserved",
+      "symbol": "FuzzySpanHit"
+    },
+    {
+      "lines": [
+        3
+      ],
+      "module": "kogwistar.utils.fuzzy_offsets",
+      "repository": "parser",
+      "scope": "test-only",
+      "source": "tests/test_fuzzy_offsets_compat.py",
+      "status": "preserved",
+      "symbol": "FuzzySpanHit"
+    },
+    {
+      "lines": [
+        48
+      ],
+      "module": "kogwistar.utils.fuzzy_offsets",
+      "repository": "parser",
+      "scope": "runtime",
+      "source": "kg_doc_parser/workflow_ingest/page_index.py",
+      "status": "preserved",
+      "symbol": "find_best_fuzzy_span"
+    },
+    {
+      "lines": [
+        3
+      ],
+      "module": "kogwistar.utils.fuzzy_offsets",
+      "repository": "parser",
+      "scope": "test-only",
+      "source": "tests/test_fuzzy_offsets_compat.py",
+      "status": "preserved",
+      "symbol": "find_best_fuzzy_span"
+    },
+    {
+      "lines": [
+        128
+      ],
+      "module": "kogwistar.workers.index_job_worker",
+      "repository": "parser",
+      "scope": "test-only",
+      "source": "tests/_kogwistar_test_helpers.py",
+      "status": "adapter-backed",
+      "symbol": "IndexJobWorker"
+    },
+    {
+      "lines": [
+        9
+      ],
+      "module": "kogwistar.engine_core.engine",
+      "repository": "sink",
+      "scope": "runtime",
+      "source": "kogwistar_obsidian_sink/demo/in_memory_obsidian_demo.py",
+      "status": "adapter-backed",
+      "symbol": "GraphKnowledgeEngine"
+    },
+    {
+      "lines": [
+        10
+      ],
+      "module": "kogwistar.engine_core.in_memory_backend",
+      "repository": "sink",
+      "scope": "runtime",
+      "source": "kogwistar_obsidian_sink/demo/in_memory_obsidian_demo.py",
+      "status": "adapter-backed",
+      "symbol": "build_in_memory_backend"
+    },
+    {
+      "lines": [
+        11
+      ],
+      "module": "kogwistar.engine_core.models",
+      "repository": "sink",
+      "scope": "runtime",
+      "source": "kogwistar_obsidian_sink/demo/in_memory_obsidian_demo.py",
+      "status": "preserved",
+      "symbol": "Edge"
+    },
+    {
+      "lines": [
+        11
+      ],
+      "module": "kogwistar.engine_core.models",
+      "repository": "sink",
+      "scope": "runtime",
+      "source": "kogwistar_obsidian_sink/demo/in_memory_obsidian_demo.py",
+      "status": "preserved",
+      "symbol": "Grounding"
+    },
+    {
+      "lines": [
+        11
+      ],
+      "module": "kogwistar.engine_core.models",
+      "repository": "sink",
+      "scope": "runtime",
+      "source": "kogwistar_obsidian_sink/demo/in_memory_obsidian_demo.py",
+      "status": "preserved",
+      "symbol": "MentionVerification"
+    },
+    {
+      "lines": [
+        11
+      ],
+      "module": "kogwistar.engine_core.models",
+      "repository": "sink",
+      "scope": "runtime",
+      "source": "kogwistar_obsidian_sink/demo/in_memory_obsidian_demo.py",
+      "status": "preserved",
+      "symbol": "Node"
+    },
+    {
+      "lines": [
+        11
+      ],
+      "module": "kogwistar.engine_core.models",
+      "repository": "sink",
+      "scope": "runtime",
+      "source": "kogwistar_obsidian_sink/demo/in_memory_obsidian_demo.py",
+      "status": "preserved",
+      "symbol": "Span"
+    }
+  ],
+  "repositories": {
+    "application": {
+      "commit": "30d682ee79857d9b37f73c72a3b1647f0ad7a0cb",
+      "root": "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki"
+    },
+    "parser": {
+      "commit": "a06f1cb2cc7a848b685011acb6abff1354ce2f56",
+      "root": "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\kg-doc-parser"
+    },
+    "sink": {
+      "commit": "c295894443dc589b6b6bdcd7b48b68be850f6a61",
+      "root": "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\kogwistar-obsidian-sink"
+    }
+  },
+  "summary": {
+    "classified": 212,
+    "records": 212,
+    "unclassified": 0
+  }
+}

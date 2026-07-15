@@ -90,7 +90,11 @@ def _build_azure_ingester_llm():
 @pytest.mark.parametrize(
     "provider_kind",
     [
-        pytest.param("ollama", id="ollama", marks=pytest.mark.slow),
+        pytest.param(
+            "ollama",
+            id="ollama",
+            marks=[pytest.mark.slow, pytest.mark.requires_ollama],
+        ),
         pytest.param("azure", id="azure", marks=pytest.mark.manual),
     ],
 )

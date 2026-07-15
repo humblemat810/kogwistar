@@ -1,0 +1,109 @@
+name: Rust Port Compatibility
+
+on:
+  workflow_dispatch:
+    inputs:
+      implementation-mode:
+        description: Contract implementation mode
+        required: true
+        type: choice
+        options: [shadow, rust, python]
+        default: shadow
+      release:
+        description: Run release markers, including integration and long-run suites
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: rust-port-compat-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  rust-port-four-layer-compat:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Checkout core candidate
+        uses: actions/checkout@v4
+        with:
+          path: candidate
+
+      - name: Checkout pinned reference application
+        uses: actions/checkout@v4
+        with:
+          repository: humblemat810/kogwistar-llm-wiki
+          ref: 30d682ee79857d9b37f73c72a3b1647f0ad7a0cb
+          path: kogwistar-llm-wiki
+
+      - name: Checkout pinned application core mirror
+        uses: actions/checkout@v4
+        with:
+          repository: humblemat810/kogwistar
+          ref: 206b43f9a17e19c6cb66f1b534dfcebe3b849192
+          path: kogwistar-llm-wiki/kogwistar
+
+      - name: Checkout pinned parser
+        uses: actions/checkout@v4
+        with:
+          repository: humblemat810/kg-doc-parser
+          ref: a06f1cb2cc7a848b685011acb6abff1354ce2f56
+          path: kogwistar-llm-wiki/kg-doc-parser
+
+      - name: Checkout pinned sink
+        uses: actions/checkout@v4
+        with:
+          repository: humblemat810/kogwistar-obsidian-sink
+          ref: c295894443dc589b6b6bdcd7b48b68be850f6a61
+          path: kogwistar-llm-wiki/kogwistar-obsidian-sink
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Set up pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.91.1
+
+      - name: Build coordinated environment
+        shell: bash
+        run: |
+          python -m venv kogwistar-llm-wiki/.venv
+          PY=kogwistar-llm-wiki/.venv/bin/python
+          "$PY" -m pip install --upgrade pip maturin
+          "$PY" -m pip install -e "./candidate[test,server,full,rust]"
+          "$PY" -m pip install -e ./kogwistar-llm-wiki/kg-doc-parser
+          "$PY" -m pip install -e ./kogwistar-llm-wiki/kogwistar-obsidian-sink --no-deps
+          "$PY" -m pip install -e ./kogwistar-llm-wiki --no-deps
+          VIRTUAL_ENV="$GITHUB_WORKSPACE/kogwistar-llm-wiki/.venv" \
+            "$PY" -m maturin develop --release \
+              --manifest-path candidate/rust/crates/kogwistar-python/Cargo.toml
+
+      - name: Run four explicit compatibility layers
+        working-directory: candidate
+        shell: bash
+        run: |
+          ARGS=()
+          if [[ "${{ inputs.release }}" == "true" ]]; then
+            ARGS+=(--release)
+          fi
+          ../kogwistar-llm-wiki/.venv/bin/python scripts/rust_port_compat.py \
+            --application-root ../kogwistar-llm-wiki \
+            --python ../kogwistar-llm-wiki/.venv/bin/python \
+            --consumer-python ../kogwistar-llm-wiki/.venv/bin/python \
+            --implementation-mode "${{ inputs.implementation-mode }}" \
+            --backend coordinated-ci \
+            --storage-root isolated-ci \
+            --report ../rust-port-compat-report.json \
+            "${ARGS[@]}"
+
+      - name: Upload compatibility evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-port-compat-${{ inputs.implementation-mode }}
+          path: rust-port-compat-report.json
+          if-no-files-found: error

@@ -16,7 +16,7 @@ from kogwistar.engine_core.models import (
 )
 from tests._kg_factories import kg_document, kg_grounding
 
-pytestmark = pytest.mark.ci_full
+pytestmark = [pytest.mark.ci_full, pytest.mark.llm_real]
 
 
 # --- Skip if Azure OpenAI env is not configured (prevents CI failures) ---

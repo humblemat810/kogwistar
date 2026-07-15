@@ -5,6 +5,12 @@ import logging
 import warnings
 from typing import Any
 
+from .._rust_bridge import (
+    RustParityError,
+    json_contract_compatible,
+    runtime_apply_state_update,
+    runtime_implementation_mode,
+)
 from .models import StateUpdate, WorkflowDesignArtifact, WorkflowInvocationRequest, WorkflowState
 from .routing import RouteComputation, compute_route_next
 
@@ -18,6 +24,52 @@ NON_CHECKPOINT_STATE_KEYS = {
     "_deps",
     "dream_deps",  # legacy dream DI key; keep out of checkpoints
 }
+
+
+def _native_state_update_payload(
+    state: WorkflowState,
+    state_update: list[tuple[str, dict[str, Any]]] | list[StateUpdate],
+    update: dict | None,
+    state_schema: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """JSON transport form; state-update pairs are tuples in public Python API."""
+    return {
+        "state": copy.deepcopy(state),
+        "state_update": [list(item) for item in state_update],
+        "update": update,
+        "state_schema": state_schema or {},
+    }
+
+
+def _native_state_update_safe(
+    state: WorkflowState,
+    state_update: list[tuple[str, dict[str, Any]]] | list[StateUpdate],
+    update: dict | None,
+    state_schema: dict[str, Any] | None,
+) -> bool:
+    """Keep Python for inputs whose observable legacy failure is not a contract fold."""
+    for item in state_update:
+        if not isinstance(item, (tuple, list)) or len(item) != 2:
+            return False
+        mode, payload = item
+        if not isinstance(payload, dict):
+            return False
+        if mode == "a" and any(key in state and not isinstance(state[key], list) for key in payload):
+            return False
+        if mode == "e":
+            if any(key in state and not isinstance(state[key], list) for key in payload):
+                return False
+            if any(not isinstance(value, (list, str, dict)) for value in payload.values()):
+                return False
+    if update:
+        schema = state_schema or {}
+        append_keys = (key for key in update if schema.get(key) == "a")
+        for key in append_keys:
+            if key in state and not isinstance(state[key], list):
+                return False
+            if not isinstance(update[key], (list, str, dict)):
+                return False
+    return True
 
 
 def validate_initial_state(initial_state: WorkflowState):
@@ -55,7 +107,30 @@ def apply_state_update_inplace(
     Single reducer for sync runtime, async runtime, and replay.
     """
     if update and state_update:
-        raise Exception("Either update or state_update can be used")
+        error = Exception("Either update or state_update can be used")
+        error.code = "KOGWISTAR_CONTRACT_STATE_UPDATE_CONFLICT"
+        raise error
+
+    mode = runtime_implementation_mode()
+    # Inspect live inputs before copying them.  Runtime state can contain
+    # process-local plumbing (notably ``_deps``) such as locks; deepcopy would
+    # raise before the JSON boundary can decline that state and retain the
+    # legacy Python reducer.
+    native_transport = {
+        "state": mute_state,
+        "state_update": [list(item) for item in state_update],
+        "update": update,
+        "state_schema": state_schema or {},
+    }
+    json_compatible = json_contract_compatible(native_transport) and _native_state_update_safe(
+        mute_state, state_update, update, state_schema
+    )
+    native_state: dict[str, Any] | None = None
+    if mode != "python" and json_compatible:
+        native_payload = _native_state_update_payload(
+            mute_state, state_update, update, state_schema
+        )
+        native_state = runtime_apply_state_update(payload=native_payload)
 
     for update_item in state_update:
         update_item: tuple[str, dict[str, Any]] | StateUpdate
@@ -82,6 +157,16 @@ def apply_state_update_inplace(
                 mute_state.setdefault(k, []).extend(v)
             else:
                 mute_state[k] = v
+
+    if native_state is not None:
+        # Rust owns the canonical fold.  The thin Python facade materializes the
+        # same delta in place so untouched and inserted mutable objects retain
+        # the identity guarantees of the existing public API.
+        if native_state != mute_state:
+            raise RustParityError(
+                "Rust parity mismatch for runtime_state_update: "
+                f"python={mute_state!r}, rust={native_state!r}"
+            )
 
 
 def checkpointable_state_copy(state: WorkflowState) -> WorkflowState:

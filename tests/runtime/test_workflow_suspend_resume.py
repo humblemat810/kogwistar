@@ -24,6 +24,8 @@ from tests.conftest import FakeEmbeddingFunction, _is_missing_pgvector_extension
 from tests._helpers.fake_backend import build_fake_backend
 from tests.core._async_chroma_real import (
     make_real_async_chroma_backend,
+    # Imported for pytest fixture discovery in file-isolated compatibility runs.
+    real_chroma_server as real_chroma_server,  # noqa: F401
 )
 
 from kogwistar.engine_core.models import Span, Grounding

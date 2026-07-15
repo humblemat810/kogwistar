@@ -16,7 +16,12 @@ _NON_SERIALIZABLE_MAPPING_KEYS = {"_deps", "dream_deps"}
 
 def stable_json_dumps(obj: Json) -> str:
     """Deterministic JSON encoding for replay/persistence."""
-    return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    python_value = json.dumps(
+        obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    )
+    from .._rust_bridge import contract_canonical_json
+
+    return contract_canonical_json(value=obj, python_value=python_value)
 
 
 def _ref_obj(obj: Any) -> dict:

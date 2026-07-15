@@ -1,0 +1,60 @@
+{
+  "errors": [
+    {
+      "code": "invalid_json",
+      "http_status": 400,
+      "python_exception": "ValueError"
+    },
+    {
+      "code": "evidence_digest_must_be_object",
+      "http_status": 400,
+      "python_exception": "ValueError"
+    },
+    {
+      "code": "rust_extension_unavailable",
+      "http_status": 503,
+      "python_exception": "RustExtensionUnavailableError"
+    },
+    {
+      "code": "rust_parity_mismatch",
+      "http_status": 500,
+      "python_exception": "RustParityError"
+    },
+    {
+      "code": "budget_exhausted",
+      "http_status": 409,
+      "python_exception": "BudgetExhaustedError"
+    },
+    {
+      "code": "projection_conflict",
+      "http_status": 409,
+      "python_exception": "ProjectionConflictError"
+    },
+    {
+      "code": "durable_queue_unavailable",
+      "http_status": 503,
+      "python_exception": "DurableQueueUnavailableError"
+    },
+    {
+      "code": "retry_exhausted",
+      "http_status": 409,
+      "python_exception": "RetryExhaustedError"
+    },
+    {
+      "code": "KOGWISTAR_CONTRACT_SHORT_ID_INVALID",
+      "http_status": 400,
+      "python_exception": "ValueError"
+    },
+    {
+      "code": "KOGWISTAR_CONTRACT_STATE_UPDATE_CONFLICT",
+      "http_status": 400,
+      "python_exception": "Exception"
+    },
+    {
+      "code": "KOGWISTAR_CONTRACT_EVENT_TYPE_UNSUPPORTED",
+      "http_status": 400,
+      "python_exception": "ValueError"
+    }
+  ],
+  "taxonomy_version": 1
+}

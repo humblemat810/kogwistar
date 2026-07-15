@@ -1,0 +1,32 @@
+[workspace]
+members = [
+    "crates/kogwistar-contracts",
+    "crates/kogwistar-engine",
+    "crates/kogwistar-python",
+    "crates/kogwistar-runtime",
+    "crates/kogwistar-store",
+    "crates/kogwistar-store-memory",
+    "crates/kogwistar-store-sqlite",
+    "crates/kogwistar-store-postgres",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.91"
+license = "MIT"
+
+[workspace.dependencies]
+hex = "0.4"
+deadpool-postgres = { version = "0.14", features = ["rt_tokio_1"] }
+pyo3 = { version = "0.27", features = ["extension-module", "abi3-py312"] }
+proptest = "1.6"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+rusqlite = { version = "0.37", features = ["bundled"] }
+sha2 = "0.10"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync"] }
+tokio-postgres = "0.7"
+uuid = { version = "1", features = ["v5"] }

@@ -1,0 +1,96 @@
+{
+  "document": {
+    "content": "Alpha links Beta.",
+    "id": "doc:golden",
+    "metadata": {
+      "source_uri": "golden://parser/document"
+    },
+    "processed": true,
+    "type": "text"
+  },
+  "edges": [
+    {
+      "id": "edge:alpha-links-beta",
+      "label": "Alpha links Beta",
+      "mentions": [
+        {
+          "spans": [
+            {
+              "collection_page_url": "golden://parser",
+              "context_after": " Beta.",
+              "context_before": "Alpha ",
+              "doc_id": "doc:golden",
+              "document_page_url": "golden://parser/document",
+              "end_char": 11,
+              "excerpt": "links",
+              "insertion_method": "system",
+              "page_number": 1,
+              "start_char": 6
+            }
+          ]
+        }
+      ],
+      "relation": "links",
+      "source_edge_ids": [],
+      "source_ids": [
+        "node:alpha"
+      ],
+      "summary": "Alpha links Beta.",
+      "target_edge_ids": [],
+      "target_ids": [
+        "node:beta"
+      ],
+      "type": "relationship"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "node:alpha",
+      "label": "Alpha",
+      "mentions": [
+        {
+          "spans": [
+            {
+              "collection_page_url": "golden://parser",
+              "context_after": " links Beta.",
+              "context_before": "",
+              "doc_id": "doc:golden",
+              "document_page_url": "golden://parser/document",
+              "end_char": 5,
+              "excerpt": "Alpha",
+              "insertion_method": "system",
+              "page_number": 1,
+              "start_char": 0
+            }
+          ]
+        }
+      ],
+      "summary": "First grounded entity.",
+      "type": "entity"
+    },
+    {
+      "id": "node:beta",
+      "label": "Beta",
+      "mentions": [
+        {
+          "spans": [
+            {
+              "collection_page_url": "golden://parser",
+              "context_after": ".",
+              "context_before": "Alpha links ",
+              "doc_id": "doc:golden",
+              "document_page_url": "golden://parser/document",
+              "end_char": 16,
+              "excerpt": "Beta",
+              "insertion_method": "system",
+              "page_number": 1,
+              "start_char": 12
+            }
+          ]
+        }
+      ],
+      "summary": "Second grounded entity.",
+      "type": "entity"
+    }
+  ]
+}

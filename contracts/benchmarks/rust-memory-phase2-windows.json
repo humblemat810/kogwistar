@@ -1,0 +1,202 @@
+{
+  "authoritative_writes": 0,
+  "benchmark_version": 1,
+  "command": "C:\\Users\\chanh\\Documents\\graphrag_v2_working_tree\\.venv\\Scripts\\python.exe scripts/rust_port_phase2_benchmark.py --items 32 --warmups 2 --samples 5 --cycles 20 --report <report.json>",
+  "cycles_per_sample": 20,
+  "database_load": {
+    "external_queries": 0,
+    "kind": "in-memory"
+  },
+  "dataset": "rust-memory-phase2-v1",
+  "dataset_items": 32,
+  "gate": {
+    "checks": {
+      "p95_latency": false,
+      "peak_rss": true,
+      "throughput": false
+    },
+    "exception": {
+      "failed_thresholds": [
+        "p95_latency",
+        "throughput"
+      ],
+      "reason": "Current Rust path is read-only shadow-safety inspection that rebuilds an isolated snapshot per operation; it is not a cutover/default persistent request path."
+    },
+    "ratios": {
+      "p95_latency": 9.258891250622922,
+      "peak_rss": 1.0168586345701647,
+      "throughput": 0.10672503037344239
+    },
+    "status": "recorded",
+    "thresholds": {
+      "p95_latency_ratio_max": 1.1,
+      "peak_rss_ratio_max": 1.1,
+      "throughput_ratio_min": 0.95
+    }
+  },
+  "modes": {
+    "python": {
+      "authoritative_writes": 0,
+      "external_db_queries": 0,
+      "output_count_per_sample": 1640,
+      "output_digest": "a70dee68dfcac9cc3745fbc607be2b058a12600746a875249ffc05a539736951",
+      "p95_cycle_latency_ms": 0.98327,
+      "peak_rss_bytes": 102772736,
+      "sample_count": 5,
+      "samples": [
+        {
+          "authoritative_writes": 0,
+          "cycle_latency_ms": 0.834955,
+          "cycles": 20,
+          "elapsed_ms": 16.6991,
+          "external_db_queries": 0,
+          "mode": "python",
+          "operations_per_cycle": 4,
+          "output_count": 1640,
+          "output_digest": "a70dee68dfcac9cc3745fbc607be2b058a12600746a875249ffc05a539736951",
+          "peak_rss_bytes": 102772736,
+          "throughput_ops_per_sec": 4790.677341892677
+        },
+        {
+          "authoritative_writes": 0,
+          "cycle_latency_ms": 0.862205,
+          "cycles": 20,
+          "elapsed_ms": 17.2441,
+          "external_db_queries": 0,
+          "mode": "python",
+          "operations_per_cycle": 4,
+          "output_count": 1640,
+          "output_digest": "a70dee68dfcac9cc3745fbc607be2b058a12600746a875249ffc05a539736951",
+          "peak_rss_bytes": 102649856,
+          "throughput_ops_per_sec": 4639.267923521668
+        },
+        {
+          "authoritative_writes": 0,
+          "cycle_latency_ms": 0.98327,
+          "cycles": 20,
+          "elapsed_ms": 19.6654,
+          "external_db_queries": 0,
+          "mode": "python",
+          "operations_per_cycle": 4,
+          "output_count": 1640,
+          "output_digest": "a70dee68dfcac9cc3745fbc607be2b058a12600746a875249ffc05a539736951",
+          "peak_rss_bytes": 102744064,
+          "throughput_ops_per_sec": 4068.0586207247247
+        },
+        {
+          "authoritative_writes": 0,
+          "cycle_latency_ms": 0.88617,
+          "cycles": 20,
+          "elapsed_ms": 17.7234,
+          "external_db_queries": 0,
+          "mode": "python",
+          "operations_per_cycle": 4,
+          "output_count": 1640,
+          "output_digest": "a70dee68dfcac9cc3745fbc607be2b058a12600746a875249ffc05a539736951",
+          "peak_rss_bytes": 102473728,
+          "throughput_ops_per_sec": 4513.806605955968
+        },
+        {
+          "authoritative_writes": 0,
+          "cycle_latency_ms": 0.851955,
+          "cycles": 20,
+          "elapsed_ms": 17.0391,
+          "external_db_queries": 0,
+          "mode": "python",
+          "operations_per_cycle": 4,
+          "output_count": 1640,
+          "output_digest": "a70dee68dfcac9cc3745fbc607be2b058a12600746a875249ffc05a539736951",
+          "peak_rss_bytes": 102445056,
+          "throughput_ops_per_sec": 4695.083660521976
+        }
+      ],
+      "throughput_ops_per_sec": 4526.366651541058
+    },
+    "rust": {
+      "authoritative_writes": 0,
+      "external_db_queries": 0,
+      "output_count_per_sample": 1640,
+      "output_digest": "a70dee68dfcac9cc3745fbc607be2b058a12600746a875249ffc05a539736951",
+      "p95_cycle_latency_ms": 9.10399,
+      "peak_rss_bytes": 104505344,
+      "sample_count": 5,
+      "samples": [
+        {
+          "authoritative_writes": 0,
+          "cycle_latency_ms": 6.907435,
+          "cycles": 20,
+          "elapsed_ms": 138.1487,
+          "external_db_queries": 0,
+          "mode": "rust",
+          "operations_per_cycle": 4,
+          "output_count": 1640,
+          "output_digest": "a70dee68dfcac9cc3745fbc607be2b058a12600746a875249ffc05a539736951",
+          "peak_rss_bytes": 104333312,
+          "throughput_ops_per_sec": 579.0861586102511
+        },
+        {
+          "authoritative_writes": 0,
+          "cycle_latency_ms": 8.629985,
+          "cycles": 20,
+          "elapsed_ms": 172.5997,
+          "external_db_queries": 0,
+          "mode": "rust",
+          "operations_per_cycle": 4,
+          "output_count": 1640,
+          "output_digest": "a70dee68dfcac9cc3745fbc607be2b058a12600746a875249ffc05a539736951",
+          "peak_rss_bytes": 104189952,
+          "throughput_ops_per_sec": 463.50022624604793
+        },
+        {
+          "authoritative_writes": 0,
+          "cycle_latency_ms": 8.64834,
+          "cycles": 20,
+          "elapsed_ms": 172.9668,
+          "external_db_queries": 0,
+          "mode": "rust",
+          "operations_per_cycle": 4,
+          "output_count": 1640,
+          "output_digest": "a70dee68dfcac9cc3745fbc607be2b058a12600746a875249ffc05a539736951",
+          "peak_rss_bytes": 104505344,
+          "throughput_ops_per_sec": 462.5165060578099
+        },
+        {
+          "authoritative_writes": 0,
+          "cycle_latency_ms": 9.10399,
+          "cycles": 20,
+          "elapsed_ms": 182.0798,
+          "external_db_queries": 0,
+          "mode": "rust",
+          "operations_per_cycle": 4,
+          "output_count": 1640,
+          "output_digest": "a70dee68dfcac9cc3745fbc607be2b058a12600746a875249ffc05a539736951",
+          "peak_rss_bytes": 104345600,
+          "throughput_ops_per_sec": 439.36779368167146
+        },
+        {
+          "authoritative_writes": 0,
+          "cycle_latency_ms": 8.11155,
+          "cycles": 20,
+          "elapsed_ms": 162.231,
+          "external_db_queries": 0,
+          "mode": "rust",
+          "operations_per_cycle": 4,
+          "output_count": 1640,
+          "output_digest": "a70dee68dfcac9cc3745fbc607be2b058a12600746a875249ffc05a539736951",
+          "peak_rss_bytes": 104202240,
+          "throughput_ops_per_sec": 493.1240021944018
+        }
+      ],
+      "throughput_ops_per_sec": 483.0766183670561
+    }
+  },
+  "operations_per_cycle": [
+    "graph_records",
+    "vector_query",
+    "replay_events",
+    "named_projections"
+  ],
+  "python": "3.13.3 (tags/v3.13.3:6280bb5, Apr  8 2025, 14:47:33) [MSC v.1943 64 bit (AMD64)]",
+  "samples_per_mode": 5,
+  "warmups_per_fresh_process": 2
+}

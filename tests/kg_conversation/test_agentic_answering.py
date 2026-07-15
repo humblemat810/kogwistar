@@ -677,6 +677,7 @@ def test_projection_is_idempotent(engines):
 
 
 @pytest.mark.ci_full
+@pytest.mark.llm_real
 def test_agent_with_real_llm_cached(monkeypatch, engine, conversation_engine):
     from kogwistar.engine_core.engine import GraphKnowledgeEngine
 

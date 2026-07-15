@@ -36,3 +36,31 @@ empty_cdc_streamer/*.bundle.html
 empty_cdc_streamer/bundle.meta.json
 test_d3_litmus_workflow_self_and_parallel/d3/*.html
 kogwistar/scripts/*.bundle.cdc.script.hl3.html
+
+# Local Codex state. Keep project-scoped .codex/agents/*.toml and config.toml trackable.
+.codex/AGENTS.md
+
+# Local runtime databases and generated tutorial/application state.
+.gke-data/
+doc_chunk*/
+auth.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
+# Root-level test, profiling, and command-output artifacts.
+/3.1
+/ci_full_result.txt
+/collected.txt
+/collected_tests.json
+/collection_ci*.txt
+/output.txt
+/parametrized_runtime_export.json
+/tests_parametrize_export.json
+/test_*.png
+/tools.tar
+/tmp*
+
+# Rust/PyO3 local build outputs (Cargo.lock remains tracked).
+/rust/target/
+*.pyd
+*.pdb

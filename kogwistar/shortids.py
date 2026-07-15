@@ -7,6 +7,13 @@ import re
 from typing import Any, Iterable
 from contextvars import ContextVar
 
+from ._rust_bridge import (
+    RustParityError,
+    contract_implementation_mode,
+    json_contract_compatible,
+    short_id_transform as _rust_short_id_transform,
+)
+
 # Run-id handling (prototype: run_id == raw JWT)
 run_id_ctx: ContextVar[str] = ContextVar("run_id", default="anonymous")
 
@@ -73,6 +80,72 @@ class ShortIdMapper:
     def _save(self) -> None:
         self._file().write_text(json.dumps(self.state, ensure_ascii=False), "utf-8")
 
+    def _native_payload(
+        self,
+        value: Any,
+        direction: str,
+        state: dict | None = None,
+        *,
+        primitive: bool = False,
+    ) -> dict:
+        return {
+            "state": self.state if state is None else state,
+            "input": value,
+            "direction": direction,
+            "depth": self.obj_max_depth - 1,
+            "scalar_keys": list(self.SCALAR_ID_KEYS),
+            "list_keys": list(self.LIST_ID_KEYS),
+            "primitive": primitive,
+        }
+
+    def _native_transform(
+        self, value: Any, direction: str, *, primitive: bool = False
+    ) -> Any | None:
+        """JSON-only native transform. File persistence remains Python-owned."""
+        if contract_implementation_mode() != "rust" or not json_contract_compatible(value):
+            return None
+        try:
+            result = _rust_short_id_transform(
+                payload=self._native_payload(
+                    value, direction, primitive=primitive
+                ),
+                python_value=None,
+            )
+        except ValueError as exc:
+            # Preserve legacy public exception class/message; code remains usable
+            # for callers that opt into machine-readable native diagnostics.
+            error = ValueError(str(exc))
+            error.code = getattr(exc, "code", None)
+            raise error from None
+        self.state = result["state"]
+        self._save()
+        return result["value"]
+
+    def _shadow_compare(
+        self,
+        value: Any,
+        direction: str,
+        before: dict,
+        python_value: Any,
+        *,
+        primitive: bool = False,
+    ) -> Any:
+        if contract_implementation_mode() != "shadow" or not json_contract_compatible(value):
+            return python_value
+        native = _rust_short_id_transform(
+            payload=self._native_payload(
+                value, direction, before, primitive=primitive
+            ),
+            python_value=None,
+        )
+        expected = {"state": self.state, "value": python_value}
+        if native != expected:
+            raise RustParityError(
+                "Rust parity mismatch for short_id_transform: "
+                f"python={expected!r}, rust={native!r}"
+            )
+        return python_value
+
     # --- knobs ---
     def set_obj_max_depth(self, depth: int) -> None:
         self.obj_max_depth = max(0, int(depth))
@@ -104,7 +177,12 @@ class ShortIdMapper:
         if self.SHORT_RE.fullmatch(in_id):
             return in_id
         # treat ANY other string as a long id in these fields
-        return self._alloc_short_for(in_id)
+        native = self._native_transform(in_id, "l2s", primitive=True)
+        if native is not None:
+            return native
+        before = json.loads(json.dumps(self.state, ensure_ascii=False))
+        output = self._alloc_short_for(in_id)
+        return self._shadow_compare(in_id, "l2s", before, output, primitive=True)
 
     def s2l_id(self, in_id: str) -> str:
         """User→Server: ONLY accept <sid>…; anything else is rejected in id fields."""
@@ -112,10 +190,14 @@ class ShortIdMapper:
             return in_id
         if not self.SHORT_RE.fullmatch(in_id):
             raise ValueError("Only <sid>… is accepted in id fields.")
+        native = self._native_transform(in_id, "s2l", primitive=True)
+        if native is not None:
+            return native
+        before = json.loads(json.dumps(self.state, ensure_ascii=False))
         long_id = self.state["s2l"].get(in_id)
         if not long_id:
             raise ValueError(f"Unknown short id '{in_id}' for this run.")
-        return long_id
+        return self._shadow_compare(in_id, "s2l", before, long_id, primitive=True)
 
     # --- depth-limited object walkers (targeted keys only) ---
     def _walk_ids_l2s(self, obj: Any, depth: int) -> Any:
@@ -184,7 +266,11 @@ class ShortIdMapper:
             data = json.loads(in_doc_str)
         except Exception:
             return in_doc_str  # not JSON: don't touch
-        data2 = self._walk_ids_l2s(data, self.obj_max_depth - 1)
+        before = json.loads(json.dumps(self.state, ensure_ascii=False))
+        data2 = self._native_transform(data, "l2s")
+        if data2 is None:
+            data2 = self._walk_ids_l2s(data, self.obj_max_depth - 1)
+            data2 = self._shadow_compare(data, "l2s", before, data2)
         return json.dumps(data2, ensure_ascii=False)
 
     def s2l_doc(self, in_doc_str: str) -> str:
@@ -194,19 +280,33 @@ class ShortIdMapper:
             data = json.loads(in_doc_str)
         except Exception:
             return in_doc_str  # not JSON: don't touch
-        data2 = self._walk_ids_s2l(data, self.obj_max_depth - 1)
+        before = json.loads(json.dumps(self.state, ensure_ascii=False))
+        data2 = self._native_transform(data, "s2l")
+        if data2 is None:
+            data2 = self._walk_ids_s2l(data, self.obj_max_depth - 1)
+            data2 = self._shadow_compare(data, "s2l", before, data2)
         return json.dumps(data2, ensure_ascii=False)
 
     # --- plain objects (dict/list) ---
     def l2s_obj(self, in_obj: Any) -> Any:
         if hasattr(in_obj, "model_dump"):
             in_obj = in_obj.model_dump()
-        return self._walk_ids_l2s(in_obj, self.obj_max_depth - 1)
+        before = json.loads(json.dumps(self.state, ensure_ascii=False))
+        output = self._native_transform(in_obj, "l2s")
+        if output is not None:
+            return output
+        output = self._walk_ids_l2s(in_obj, self.obj_max_depth - 1)
+        return self._shadow_compare(in_obj, "l2s", before, output)
 
     def s2l_obj(self, in_obj: Any) -> Any:
         if hasattr(in_obj, "model_dump"):
             in_obj = in_obj.model_dump()
-        return self._walk_ids_s2l(in_obj, self.obj_max_depth - 1)
+        before = json.loads(json.dumps(self.state, ensure_ascii=False))
+        output = self._native_transform(in_obj, "s2l")
+        if output is not None:
+            return output
+        output = self._walk_ids_s2l(in_obj, self.obj_max_depth - 1)
+        return self._shadow_compare(in_obj, "s2l", before, output)
 
 
 # Per-run registry + required top-level API

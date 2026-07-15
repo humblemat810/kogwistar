@@ -50,6 +50,10 @@ def evidence_pack_digest_hash(
 ) -> str:
     """Return a deterministic content hash for an evidence-pack payload."""
 
+    if isinstance(digest, EvidencePackDigest):
+        bridge_payload = digest.model_dump(mode="python")
+    else:
+        bridge_payload = dict(digest)
     payload = canonicalize_evidence_pack_digest(digest)
     blob = json.dumps(
         payload,
@@ -58,4 +62,10 @@ def evidence_pack_digest_hash(
         ensure_ascii=True,
         default=str,
     ).encode("utf-8")
-    return sha256(blob).hexdigest()
+    python_value = sha256(blob).hexdigest()
+    from ._rust_bridge import contract_evidence_pack_digest_hash
+
+    return contract_evidence_pack_digest_hash(
+        value=bridge_payload,
+        python_value=python_value,
+    )
