@@ -203,8 +203,11 @@ def _active_writers(
         if not isinstance(capability, str) or not isinstance(configuration, str):
             continue
         mode = capability_modes[configuration]
+        rust_cutover_ready = ownership.get("rust_cutover_ready", True)
         writer_key = (
-            "target_authoritative_writer" if mode == "rust" else "current_authoritative_writer"
+            "target_authoritative_writer"
+            if mode == "rust" and rust_cutover_ready is True
+            else "current_authoritative_writer"
         )
         writer = ownership.get(writer_key)
         if not isinstance(writer, str):
@@ -326,8 +329,22 @@ def _default_consumer_python(application_root: Path, fallback: Path) -> Path:
     return next((path.resolve() for path in candidates if path.is_file()), fallback)
 
 
-def _marker_expression(layer: str, release: bool) -> str:
-    if release:
+def _marker_expression(layer: str, profile: str) -> str:
+    exclusions = (
+        "not manual and not llm_real and not legacy and not requires_ollama"
+    )
+    if profile == "feature":
+        if layer == "sink":
+            # Sink marker debt: retain its deterministic unmarked suite until
+            # the consumer classifies feature/regression tests explicitly.
+            return (
+                "not slow and not manual and not integration and not longrun "
+                "and not external and not llm_real and not requires_ollama"
+            )
+        return f"(ci or regression) and not slow and {exclusions}"
+    if profile == "regression":
+        return f"regression and not slow and {exclusions}"
+    if profile == "milestone":
         if layer in {"core", "parser"}:
             return (
                 "(ci or ci_full) and not manual and not llm_real "
@@ -345,11 +362,7 @@ def _marker_expression(layer: str, release: bool) -> str:
                 "and not llm_real and not requires_ollama"
             )
         raise ValueError(f"unknown suite layer: {layer}")
-    if layer == "core":
-        return "ci and not ci_full"
-    if layer == "parser":
-        return "ci and not ci_full"
-    return "not manual and not integration and not longrun and not requires_ollama"
+    raise ValueError(f"unknown test profile: {profile}")
 
 
 # Full core coverage mixes embedded Chroma clients, subprocess Chroma servers,
@@ -361,10 +374,10 @@ _RELEASE_GROUP_SIZE: Final = 1
 
 
 def _target_groups(
-    *, layer: str, tests_path: Path, release: bool
+    *, layer: str, tests_path: Path, profile: str
 ) -> list[list[Path]]:
     """Return deterministic pytest process boundaries for one suite layer."""
-    if layer in _FILE_ISOLATED_RELEASE_LAYERS and release:
+    if layer in _FILE_ISOLATED_RELEASE_LAYERS and profile == "milestone":
         tests = sorted(
             (path for path in tests_path.rglob("test*.py") if path.is_file()),
             key=lambda path: path.relative_to(tests_path).as_posix(),
@@ -392,12 +405,14 @@ def _target_groups(
     return ([root_tests] if root_tests else []) + grouped + unit_groups
 
 
-def _command_succeeded(*, layer: str, release: bool, returncode: int) -> bool:
+def _command_succeeded(*, layer: str, profile: str, returncode: int) -> bool:
     # File-isolated release commands legitimately return pytest code 5
     # when every item in that file is outside ci/ci_full. Coverage is proven by
     # `_target_groups`; the raw code remains in the report for auditability.
-    return returncode == 0 or (
-        layer in _FILE_ISOLATED_RELEASE_LAYERS and release and returncode == 5
+    return returncode == 0 or (profile == "regression" and returncode == 5) or (
+        layer in _FILE_ISOLATED_RELEASE_LAYERS
+        and profile == "milestone"
+        and returncode == 5
     )
 
 
@@ -406,14 +421,14 @@ def _reusable_run(
     command: list[str],
     prior_runs: list[dict[str, object]],
     layer: str,
-    release: bool,
+    profile: str,
 ) -> dict[str, object] | None:
     for run in prior_runs:
         if run.get("command") != command:
             continue
         returncode = run.get("returncode")
         if isinstance(returncode, int) and _command_succeeded(
-            layer=layer, release=release, returncode=returncode
+            layer=layer, profile=profile, returncode=returncode
         ):
             return {**run, "reused": True}
     return None
@@ -429,14 +444,14 @@ def _run_layer(
     layer: str,
     tests_path: Path,
     cwd: Path,
-    release: bool,
+    profile: str,
     extra_pytest_args: list[str],
     dry_run: bool,
     identity_fingerprint: str,
     prior_runs: list[dict[str, object]] | None = None,
     progress: Callable[[dict[str, object]], None] | None = None,
 ) -> dict[str, object]:
-    expression = _marker_expression(layer, release)
+    expression = _marker_expression(layer, profile)
     bootstrap = (
         "import pathlib, pytest, kogwistar; "
         f"expected=pathlib.Path({str((ROOT / 'kogwistar' / '__init__.py').resolve())!r}); "
@@ -446,7 +461,7 @@ def _run_layer(
         "raise SystemExit(pytest.console_main())"
     )
     target_groups = _target_groups(
-        layer=layer, tests_path=tests_path, release=release
+        layer=layer, tests_path=tests_path, profile=profile
     )
 
     commands = [
@@ -469,6 +484,7 @@ def _run_layer(
         "tests_path": str(tests_path),
         "cwd": str(cwd),
         "marker_expression": expression,
+        "test_profile": profile,
         "commands": commands,
         "candidate_identity_sha256": identity_fingerprint,
         "capability_modes": capability_modes,
@@ -494,7 +510,7 @@ def _run_layer(
             command=command,
             prior_runs=prior_runs or [],
             layer=layer,
-            release=release,
+            profile=profile,
         )
         if reusable is not None:
             runs.append(reusable)
@@ -521,7 +537,7 @@ def _run_layer(
         if progress is not None:
             progress(record)
         if not _command_succeeded(
-            layer=layer, release=release, returncode=result.returncode
+            layer=layer, profile=profile, returncode=result.returncode
         ):
             returncode = result.returncode
             break
@@ -570,7 +586,18 @@ def _parse_args(manifest: dict | None = None) -> argparse.Namespace:
         )
     parser.add_argument("--backend", default="unspecified")
     parser.add_argument("--storage-root", default="unspecified")
-    parser.add_argument("--release", action="store_true")
+    parser.add_argument(
+        "--profile",
+        choices=("feature", "regression", "milestone"),
+        default="feature",
+        help="feature=(ci or regression) without slow; regression=regression "
+        "without slow; milestone=full ADR compatibility rehearsal.",
+    )
+    parser.add_argument(
+        "--release",
+        action="store_true",
+        help="Deprecated alias for --profile milestone.",
+    )
     parser.add_argument("--identity-only", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument(
@@ -586,6 +613,9 @@ def _parse_args(manifest: dict | None = None) -> argparse.Namespace:
 def main() -> int:
     manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
     args = _parse_args(manifest)
+    profile = "milestone" if args.release else args.profile
+    if args.release and args.profile != "feature":
+        raise SystemExit("--release cannot be combined with an explicit --profile")
     application_root = _resolve_application_root(args.application_root, manifest)
     python = Path(args.python).expanduser().resolve()
     if not python.is_file():
@@ -643,6 +673,7 @@ def main() -> int:
         "rust_contract_version"
     ]
     identity["contract_version"] = manifest["contract_version"]
+    identity["test_profile"] = profile
     fingerprint = _identity_fingerprint(identity)
     identity["identity_sha256"] = fingerprint
     print(json.dumps(identity, indent=2, sort_keys=True), flush=True)
@@ -747,7 +778,7 @@ def main() -> int:
             layer=layer,
             tests_path=tests_path,
             cwd=layer_cwds[layer],
-            release=args.release,
+            profile=profile,
             extra_pytest_args=args.pytest_args,
             dry_run=args.dry_run,
             identity_fingerprint=fingerprint,

@@ -152,6 +152,84 @@ def meta_store_implementation_mode() -> str:
     return _store_implementation_mode(env_name="KOGWISTAR_IMPL_META_STORE")
 
 
+def server_implementation_mode() -> str:
+    mode = os.getenv(
+        "KOGWISTAR_IMPL_SERVER", os.getenv("KOGWISTAR_IMPL_MODE", "python")
+    ).strip().lower()
+    if mode not in {"python", "rust"}:
+        raise ValueError(
+            "KOGWISTAR_IMPL_SERVER must be one of: python, rust; "
+            f"got {mode!r}"
+        )
+    return mode
+
+
+def api_health(*, payload: dict[str, Any], python_value: dict[str, Any]) -> dict[str, Any]:
+    """Select Rust health contract while Python transport remains compatible."""
+    if server_implementation_mode() == "python":
+        return python_value
+    extension = _load_extension()
+    rust_value = json.loads(
+        extension.api_health(
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        )
+    )
+    if not isinstance(rust_value, dict):
+        raise RuntimeError("native health response returned non-object JSON")
+    return rust_value
+
+
+def api_authorize(*, roles: list[str], required_roles: list[str]) -> bool:
+    extension = _load_extension()
+    value = json.loads(
+        extension.api_authorize(
+            json.dumps(
+                {"roles": roles, "required_roles": required_roles},
+                separators=(",", ":"),
+            )
+        )
+    )
+    return bool(value["allowed"])
+
+
+def api_sse_frame(*, event: str, data: Any, event_id: str | None = None) -> str:
+    extension = _load_extension()
+    return str(
+        extension.api_sse_frame(
+            json.dumps(
+                {"event": event, "data": data, "id": event_id},
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+        )
+    )
+
+
+def api_mcp_result(*, request_id: Any, result: Any) -> dict[str, Any]:
+    extension = _load_extension()
+    value = json.loads(
+        extension.api_mcp_result(
+            json.dumps(
+                {"id": request_id, "result": result},
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+        )
+    )
+    if not isinstance(value, dict):
+        raise RuntimeError("native MCP result returned non-object JSON")
+    return value
+
+
+def api_cli_health(*, payload: dict[str, Any]) -> str:
+    extension = _load_extension()
+    return str(
+        extension.api_cli_health(
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        )
+    )
+
+
 def _load_extension() -> ModuleType:
     try:
         return import_module("kogwistar._rust")
@@ -458,6 +536,184 @@ def runtime_workflow_terminal_reachable(
         raise RuntimeError("Shadow workflow-terminal mode requires Python result")
     return _select(
         operation="runtime_workflow_terminal_reachable",
+        python_value=python_value,
+        rust_value=rust_value,
+        mode=mode,
+    )
+
+
+def runtime_select_route(*, payload: dict[str, Any]) -> dict[str, Any]:
+    """Select scheduler route in Rust from already-evaluated Python predicates."""
+    extension = _load_extension()
+    value = json.loads(
+        extension.runtime_select_route(
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        )
+    )
+    if not isinstance(value, dict):
+        raise RuntimeError("native runtime route selector returned non-object JSON")
+    return value
+
+
+def runtime_plan_successors(
+    *, payload: dict[str, Any], python_value: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """Plan continuation/fan-out tokens and join obligations in Rust."""
+    mode = runtime_implementation_mode()
+    if mode == "python":
+        if python_value is None:
+            raise RuntimeError("Python successor planning requires Python result")
+        return python_value
+    extension = _load_extension()
+    rust_value = json.loads(
+        extension.runtime_plan_successors(
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        )
+    )
+    if not isinstance(rust_value, dict):
+        raise RuntimeError("native runtime successor planner returned non-object JSON")
+    if mode == "rust":
+        return rust_value
+    if python_value is None:
+        raise RuntimeError("Shadow successor planning requires Python result")
+
+    def normalized(value: dict[str, Any]) -> dict[str, Any]:
+        value = json.loads(json.dumps(value))
+        for token in value.get("tokens", []):
+            if token.get("spawned"):
+                token["token_id"] = "<spawned>"
+        return value
+
+    if normalized(rust_value) != normalized(python_value):
+        raise RustParityError(
+            "Rust parity mismatch for runtime successor planning: "
+            f"python={python_value!r}, rust={rust_value!r}"
+        )
+    return python_value
+
+
+def runtime_apply_join_arrival(*, payload: dict[str, Any]) -> dict[str, Any]:
+    """Apply one join arrival/release transition in Rust."""
+    extension = _load_extension()
+    value = json.loads(
+        extension.runtime_apply_join_arrival(
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        )
+    )
+    if not isinstance(value, dict):
+        raise RuntimeError("native runtime join arrival returned non-object JSON")
+    return value
+
+
+def runtime_decide_retry(
+    *, payload: dict[str, Any], python_value: dict[str, Any]
+) -> dict[str, Any]:
+    """Select pure retry policy without invoking provider callbacks."""
+    mode = runtime_implementation_mode()
+    if mode == "python":
+        return python_value
+    extension = _load_extension()
+    rust_value = json.loads(
+        extension.runtime_decide_retry(
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        )
+    )
+    if not isinstance(rust_value, dict):
+        raise RuntimeError("native runtime retry decision returned non-object JSON")
+    return _select(
+        operation="runtime_retry_decision",
+        python_value=python_value,
+        rust_value=rust_value,
+        mode=mode,
+    )
+
+
+def runtime_plan_nested_invocation(
+    *, payload: dict[str, Any], python_value: dict[str, Any]
+) -> dict[str, Any]:
+    """Select pure child-run identity and inherited invocation context."""
+    mode = runtime_implementation_mode()
+    if mode == "python":
+        return python_value
+    extension = _load_extension()
+    rust_value = json.loads(
+        extension.runtime_plan_nested_invocation(
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        )
+    )
+    if not isinstance(rust_value, dict):
+        raise RuntimeError("native nested invocation planner returned non-object JSON")
+    return _select(
+        operation="runtime_nested_invocation_plan",
+        python_value=python_value,
+        rust_value=rust_value,
+        mode=mode,
+    )
+
+
+def runtime_decide_dispatch(
+    *, payload: dict[str, Any], python_value: dict[str, Any]
+) -> dict[str, Any]:
+    """Select pure worker-capacity and cancellation dispatch policy."""
+    mode = runtime_implementation_mode()
+    if mode == "python":
+        return python_value
+    extension = _load_extension()
+    rust_value = json.loads(
+        extension.runtime_decide_dispatch(
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        )
+    )
+    if not isinstance(rust_value, dict):
+        raise RuntimeError("native runtime dispatch decision returned non-object JSON")
+    return _select(
+        operation="runtime_dispatch_decision",
+        python_value=python_value,
+        rust_value=rust_value,
+        mode=mode,
+    )
+
+
+def runtime_decide_budget_suspend(
+    *, payload: dict[str, Any], python_value: dict[str, Any]
+) -> dict[str, Any]:
+    """Select durable budget suspension policy after authoritative debits."""
+    mode = runtime_implementation_mode()
+    if mode == "python":
+        return python_value
+    extension = _load_extension()
+    rust_value = json.loads(
+        extension.runtime_decide_budget_suspend(
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        )
+    )
+    if not isinstance(rust_value, dict):
+        raise RuntimeError("native runtime budget decision returned non-object JSON")
+    return _select(
+        operation="runtime_budget_suspend_decision",
+        python_value=python_value,
+        rust_value=rust_value,
+        mode=mode,
+    )
+
+
+def runtime_scheduler_tick(
+    *, payload: dict[str, Any], python_value: dict[str, Any]
+) -> dict[str, Any]:
+    """Select one scheduler control tick; caller only executes returned effects."""
+    mode = runtime_implementation_mode()
+    if mode == "python":
+        return python_value
+    extension = _load_extension()
+    rust_value = json.loads(
+        extension.runtime_scheduler_tick(
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        )
+    )
+    if not isinstance(rust_value, dict):
+        raise RuntimeError("native runtime scheduler tick returned non-object JSON")
+    return _select(
+        operation="runtime_scheduler_tick",
         python_value=python_value,
         rust_value=rust_value,
         mode=mode,

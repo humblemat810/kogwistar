@@ -1,0 +1,31 @@
+[package]
+name = "kogwistar-api"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+axum.workspace = true
+kogwistar-contracts = { path = "../kogwistar-contracts" }
+kogwistar-store = { path = "../kogwistar-store" }
+kogwistar-store-sqlite = { path = "../kogwistar-store-sqlite" }
+kogwistar-store-postgres = { path = "../kogwistar-store-postgres" }
+kogwistar-runtime = { path = "../kogwistar-runtime" }
+jsonwebtoken.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["net"] }
+tower.workspace = true
+uuid.workspace = true
+
+[build-dependencies]
+serde_json.workspace = true
+
+[[bin]]
+name = "kogwistar-server"
+path = "src/bin/kogwistar-server.rs"
+
+[[bin]]
+name = "kogwistar-cli"
+path = "src/bin/kogwistar-cli.rs"

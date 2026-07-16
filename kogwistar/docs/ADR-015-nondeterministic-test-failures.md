@@ -151,6 +151,94 @@ The parser's PDF-indexed test imported `pdf2png` as a top-level package, while t
 owned module is `kg_doc_parser.pdf2png`. Correcting the import made the exact test
 pass without installing an unrelated package or excluding the test.
 
+## Case 4: Outer command timeout masquerades as parser failure
+
+### Symptom
+
+A four-layer feature run recorded parser return code `120` after 895.8 seconds.
+No parser assertion or traceback was present. Core had already consumed 325
+seconds, and the aggregate command ended at the orchestration tool's 20-minute
+limit.
+
+### Cause and proof
+
+The compatibility runner has no 900-second parser timeout. Its parent command was
+terminated by the outer execution deadline while pytest still used CPU. Running
+the identical parser layer alone under the same candidate and interpreter passed:
+
+```text
+58 passed, 3 skipped, 143 deselected in 867.89s
+```
+
+Historical feature parser duration ranged from roughly 401 to 894 seconds, so
+aggregate wall time can cross an outer deadline without any semantic regression.
+
+### Containment
+
+- Run long compatibility evidence one layer at a time.
+- Keep one report and use `--resume`; successful commands are reused only when
+  candidate identity is unchanged.
+- Diagnose process CPU and report progress before declaring a hang.
+- Treat an infrastructure return code without a pytest failure as inconclusive,
+  never as a green or semantic red result.
+
+### Follow-up
+
+Expose an explicit outer orchestration deadline separate from pytest and record
+termination provenance in reports. Parser performance variance remains worth
+profiling; increasing a timeout alone is not a performance fix.
+
+### Additional runtime-suite occurrence
+
+On 2026-07-16, the focused runtime feature selector was first killed by a
+120-second outer command deadline without an assertion or traceback. The exact
+command, unchanged, passed under a 300-second execution window:
+
+```text
+210 passed, 146 deselected, 72 warnings in 189.75s
+```
+
+This confirms the same classification rule applies below the four-layer runner:
+an outer timeout shorter than the observed suite duration is inconclusive, not a
+runtime regression. The selector and test inputs were unchanged; only the command
+execution window changed.
+
+## Case 5: Worker journal leaked SQLite handles on Windows
+
+### Symptom
+
+A complete PostgreSQL true-socket runtime scenario passed all semantic assertions,
+then temporary-directory cleanup failed with:
+
+```text
+PermissionError: [WinError 32] The process cannot access the file because it is being used by another process
+```
+
+The locked file was a Python worker callback-result journal such as
+`pg-fanout-branches.sqlite`.
+
+### Cause and proof
+
+`sqlite3.Connection` as a context manager commits or rolls back but does not close
+the connection. `WorkerResultJournal` opened short-lived connections under `with`
+and therefore retained native file handles until garbage collection. The entire
+runtime flow, including deterministic out-of-order fanout retry and terminal state,
+had already passed; only cleanup exposed the leak.
+
+Replacing each journal scope with explicit `contextlib.closing` plus the transaction
+context releases the handle deterministically. A Windows regression now creates a
+journal row and immediately unlinks the database file.
+
+### Containment and follow-up
+
+- Explicitly close every short-lived SQLite journal connection.
+- Keep temp-directory deletion as part of live test teardown; it is useful leak
+  detection, not incidental cleanup.
+- Audit other SQLite/Chroma/HTTP test helpers for the same mistaken assumption that
+  a transaction context closes its resource.
+- Do not add cleanup retries or sleeps; those hide ownership bugs and contribute to
+  the file-handle exhaustion described in Case 2.
+
 ## Evidence and reporting policy
 
 Every compatibility report records:

@@ -8,7 +8,9 @@ use kogwistar_engine::EntityProjection;
 use kogwistar_runtime::{
     PersistedRecordedTransition, RECORDED_RUNTIME_CONTRACT_VERSION, RecordedRuntimeError,
     RecordedRuntimeState, RecordedRuntimeTransition, RecordedTransitionResult,
-    RecordedWorkerHandoff, reduce_recorded_transition, transition_digest,
+    RecordedWorkerHandoff, RecordedWorkerSuccessEffect, RuntimeFrontier, RuntimeWorkerEffectStatus,
+    frontier_after_worker_resume, frontier_after_worker_success, frontier_after_worker_suspend,
+    reduce_recorded_transition, transition_digest, worker_effect_digest,
 };
 use kogwistar_store::{
     AppendedEvent, EntityEvent, EntityRebuildRequest, EntityRecoveryReport, EntityRecoveryRequest,
@@ -24,6 +26,7 @@ use kogwistar_store::{
 use rusqlite::{
     Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior, params,
 };
+use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -448,6 +451,138 @@ impl SqliteStore {
         })
     }
 
+    pub fn apply_claimed_recorded_worker_effect(
+        &self,
+        handoff: RecordedWorkerHandoff,
+        effect: RecordedWorkerSuccessEffect,
+    ) -> SqliteStoreResult<RecordedTransitionResult> {
+        self.immediate_transaction(|uow| uow.apply_claimed_recorded_worker_effect(handoff, effect))
+    }
+
+    pub fn resume_recorded_runtime_token(
+        &self,
+        run_id: &str,
+        workflow_id: &str,
+        conversation_id: &str,
+        node_id: &str,
+        token_id: &str,
+        resume_payload: Option<Value>,
+    ) -> SqliteStoreResult<RecordedTransitionResult> {
+        let run_id = run_id.to_owned();
+        let workflow_id = workflow_id.to_owned();
+        let conversation_id = conversation_id.to_owned();
+        let node_id = node_id.to_owned();
+        let token_id = token_id.to_owned();
+        self.immediate_transaction(|uow| {
+            let current = read_recorded_runtime_state(
+                &uow.transaction,
+                &run_id,
+                &workflow_id,
+                &conversation_id,
+            )?
+            .ok_or_else(|| {
+                SqliteStoreError::RecordedRuntimeConflict(format!(
+                    "run {run_id:?} has no recorded runtime state"
+                ))
+            })?;
+            let parent = current
+                .frontier
+                .suspended
+                .iter()
+                .find(|(node, _, token, _)| node == &node_id && token == &token_id)
+                .and_then(|(_, _, _, parent)| parent.clone());
+            let frontier = frontier_after_worker_resume(
+                &current.frontier,
+                &node_id,
+                &token_id,
+                parent.as_deref(),
+            )?;
+            let expected_event_seq = latest_server_run_event_seq(&uow.transaction, &run_id)?;
+            let result = uow.apply_recorded_runtime_transition(
+                RecordedRuntimeTransition {
+                    contract_version: RECORDED_RUNTIME_CONTRACT_VERSION,
+                    transition_id: format!("resume-{run_id}-{token_id}-{expected_event_seq}"),
+                    expected_event_seq,
+                    kind: kogwistar_runtime::RecordedTransitionKind::ResumeResult,
+                    run_id: run_id.clone(),
+                    workflow_id: workflow_id.clone(),
+                    conversation_id: conversation_id.clone(),
+                    user_id: None,
+                    user_turn_node_id: None,
+                    step_seq: current.last_step_seq.saturating_add(1),
+                    node_id: Some(node_id.clone()),
+                    token_id: Some(token_id.clone()),
+                    parent_token_id: parent.clone(),
+                    initial_state: None,
+                    state_update: Vec::new(),
+                    update: None,
+                    state_schema: Map::new(),
+                    frontier: Some(frontier),
+                    result: None,
+                    wait_reason: None,
+                    resume_payload,
+                    errors: Vec::new(),
+                },
+                false,
+            )?;
+            let message_id = format!(
+                "lane|{}",
+                kogwistar_contracts::stable_id(
+                    "runtime.worker.request",
+                    &[
+                        result.reduced.state.run_id.clone(),
+                        token_id.clone(),
+                        node_id.clone(),
+                        result
+                            .reduced
+                            .state
+                            .last_step_seq
+                            .saturating_add(1)
+                            .to_string(),
+                    ],
+                )
+            );
+            let now = unix_epoch_seconds();
+            uow.project_lane_message(NewProjectedLaneMessage {
+                message_id,
+                namespace: "workflow".to_owned(),
+                purpose: "system".to_owned(),
+                inbox_id: "workflow-runtime".to_owned(),
+                conversation_id: conversation_id.clone(),
+                recipient_id: "python-worker".to_owned(),
+                sender_id: "rust-scheduler".to_owned(),
+                msg_type: "workflow.step.execute".to_owned(),
+                status: "pending".to_owned(),
+                created_at: now,
+                available_at: now,
+                run_id: Some(run_id.clone()),
+                step_id: Some(node_id.clone()),
+                correlation_id: Some(run_id.clone()),
+                payload_json: Some(serde_json::to_string(&serde_json::json!({
+                    "contract_version": 1,
+                    "kind": "workflow.step.execute",
+                    "run_id": run_id,
+                    "workflow_id": workflow_id,
+                    "conversation_id": conversation_id,
+                    "node_id": node_id,
+                    "join_mask": result.reduced.state.frontier.pending
+                        .iter()
+                        .find(|(_, _, token, _)| token == &token_id)
+                        .map(|(_, mask, _, _)| *mask)
+                        .unwrap_or(0),
+                    "token_id": token_id,
+                    "parent_token_id": parent,
+                    "step_seq": result.reduced.state.last_step_seq.saturating_add(1),
+                    "expected_event_seq": result.event_seq,
+                    "state": result.reduced.state.state,
+                    "resume_payload": result.reduced.state.resume_payload,
+                }))?),
+                error_json: None,
+            })?;
+            Ok(result)
+        })
+    }
+
     /// Reopen/read path for recorded runtime recovery.  Pending tokens are
     /// already normalized to Python's pending-plus-inflight recovery frontier;
     /// suspended tokens remain separately parked in `frontier.suspended`.
@@ -668,6 +803,9 @@ impl SqliteUnitOfWork<'_> {
     ) -> SqliteStoreResult<Option<ProjectedLaneMessage>> {
         projected_lane_message(&self.transaction, message_id)
     }
+    pub fn get_server_run(&self, run_id: &str) -> SqliteStoreResult<Option<ServerRun>> {
+        server_run(&self.transaction, run_id)
+    }
     pub fn list_projected_lane_messages(
         &self,
         filter: &LaneMessageFilter,
@@ -698,6 +836,22 @@ impl SqliteUnitOfWork<'_> {
             inbox_tail,
             conversation_tail,
         )
+    }
+    pub fn update_projected_lane_message_payload(
+        &mut self,
+        message_id: &str,
+        payload_json: String,
+    ) -> SqliteStoreResult<()> {
+        let changed = self.transaction.execute(
+            "UPDATE projected_lane_messages SET payload_json=?1 WHERE message_id=?2",
+            params![payload_json, message_id],
+        )?;
+        if changed != 1 {
+            return Err(SqliteStoreError::RecordedRuntimeConflict(format!(
+                "lane message {message_id:?} payload update matched {changed} rows"
+            )));
+        }
+        Ok(())
     }
     pub fn clear_projected_lane_messages(&mut self, namespace: &str) -> SqliteStoreResult<u64> {
         clear_projected_lane_messages(&self.transaction, namespace)
@@ -1053,6 +1207,14 @@ impl SqliteUnitOfWork<'_> {
             transition,
             abort_after_writes,
         )
+    }
+
+    pub fn apply_claimed_recorded_worker_effect(
+        &mut self,
+        handoff: RecordedWorkerHandoff,
+        effect: RecordedWorkerSuccessEffect,
+    ) -> SqliteStoreResult<RecordedTransitionResult> {
+        apply_claimed_recorded_worker_effect(&self.transaction, handoff, effect)
     }
 }
 
@@ -2512,7 +2674,109 @@ fn update_server_run(
 }
 
 fn request_server_run_cancel(conn: &Connection, run_id: &str) -> SqliteStoreResult<()> {
-    conn.execute("UPDATE server_runs SET cancel_requested=1, status=CASE WHEN status IN ('cancelled','failed','succeeded') THEN status ELSE 'cancelling' END, updated_at_ms=?1 WHERE run_id=?2", params![unix_epoch_millis(), run_id])?;
+    let Some(run) = server_run(conn, run_id)? else {
+        return Ok(());
+    };
+    let mut current =
+        read_recorded_runtime_state(conn, run_id, &run.workflow_id, &run.conversation_id)?;
+    if current.is_none() {
+        let payload_json = conn
+            .query_row(
+                "SELECT payload_json FROM projected_lane_messages \
+                 WHERE run_id=?1 AND msg_type='workflow.run.execute' ORDER BY created_at LIMIT 1",
+                [run_id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten();
+        if let Some(payload_json) = payload_json {
+            let payload: Value = serde_json::from_str(&payload_json)?;
+            let expected_event_seq = latest_server_run_event_seq(conn, run_id)?;
+            apply_recorded_runtime_transition_inner(
+                conn,
+                RecordedRuntimeTransition {
+                    contract_version: RECORDED_RUNTIME_CONTRACT_VERSION,
+                    transition_id: format!("start-{run_id}"),
+                    expected_event_seq,
+                    kind: kogwistar_runtime::RecordedTransitionKind::Start,
+                    run_id: run_id.to_owned(),
+                    workflow_id: run.workflow_id.clone(),
+                    conversation_id: run.conversation_id.clone(),
+                    user_id: payload["user_id"].as_str().map(str::to_owned),
+                    user_turn_node_id: run
+                        .user_turn_node_id
+                        .clone()
+                        .or_else(|| payload["turn_node_id"].as_str().map(str::to_owned)),
+                    step_seq: 0,
+                    node_id: Some("start".to_owned()),
+                    token_id: Some(run_id.to_owned()),
+                    parent_token_id: None,
+                    initial_state: Some(
+                        payload["initial_state"]
+                            .as_object()
+                            .cloned()
+                            .unwrap_or_default(),
+                    ),
+                    state_update: Vec::new(),
+                    update: None,
+                    state_schema: Map::new(),
+                    frontier: Some(RuntimeFrontier {
+                        pending: vec![("start".to_owned(), 0, run_id.to_owned(), None)],
+                        ..RuntimeFrontier::default()
+                    }),
+                    result: None,
+                    wait_reason: None,
+                    resume_payload: None,
+                    errors: Vec::new(),
+                },
+                None,
+                false,
+            )?;
+            current =
+                read_recorded_runtime_state(conn, run_id, &run.workflow_id, &run.conversation_id)?;
+        }
+    }
+    if let Some(state) = current
+        && !state.status.is_terminal()
+    {
+        let expected_event_seq = latest_server_run_event_seq(conn, run_id)?;
+        apply_recorded_runtime_transition_inner(
+            conn,
+            RecordedRuntimeTransition {
+                contract_version: RECORDED_RUNTIME_CONTRACT_VERSION,
+                transition_id: format!("cancel-{run_id}-{expected_event_seq}"),
+                expected_event_seq,
+                kind: kogwistar_runtime::RecordedTransitionKind::Cancel,
+                run_id: run_id.to_owned(),
+                workflow_id: run.workflow_id.clone(),
+                conversation_id: run.conversation_id.clone(),
+                user_id: None,
+                user_turn_node_id: None,
+                step_seq: state.last_step_seq.max(0),
+                node_id: state.last_node_id,
+                token_id: state.last_token_id,
+                parent_token_id: state.last_parent_token_id,
+                initial_state: None,
+                state_update: Vec::new(),
+                update: None,
+                state_schema: Map::new(),
+                frontier: None,
+                result: None,
+                wait_reason: None,
+                resume_payload: None,
+                errors: Vec::new(),
+            },
+            None,
+            false,
+        )?;
+    } else {
+        conn.execute("UPDATE server_runs SET cancel_requested=1, status=CASE WHEN status IN ('cancelled','failed','succeeded') THEN status ELSE 'cancelling' END, updated_at_ms=?1 WHERE run_id=?2", params![unix_epoch_millis(), run_id])?;
+    }
+    conn.execute(
+        "UPDATE projected_lane_messages SET status='cancelled',claimed_by=NULL,lease_until=NULL \
+         WHERE run_id=?1 AND status NOT IN ('completed','failed','cancelled','dead-letter')",
+        [run_id],
+    )?;
     Ok(())
 }
 
@@ -2684,6 +2948,239 @@ fn apply_claimed_recorded_runtime_transition(
     Ok(result)
 }
 
+fn apply_claimed_recorded_worker_effect(
+    conn: &Connection,
+    handoff: RecordedWorkerHandoff,
+    effect: RecordedWorkerSuccessEffect,
+) -> SqliteStoreResult<RecordedTransitionResult> {
+    validate_worker_handoff(&handoff)?;
+    if effect.contract_version != RECORDED_RUNTIME_CONTRACT_VERSION || effect.effect_id.is_empty() {
+        return Err(SqliteStoreError::RecordedRuntimeConflict(
+            "worker effect contract_version/effect_id is invalid".to_owned(),
+        ));
+    }
+    let effect_digest = worker_effect_digest(&effect)?;
+    let lane = projected_lane_message(conn, &handoff.message_id)?.ok_or_else(|| {
+        SqliteStoreError::RecordedRuntimeConflict(format!(
+            "worker lane message {:?} does not exist",
+            handoff.message_id
+        ))
+    })?;
+    if lane.run_id.as_deref() != Some(handoff.run_id.as_str())
+        || lane.step_id.as_deref() != Some(handoff.step_id.as_str())
+        || lane.correlation_id.as_deref() != Some(handoff.correlation_id.as_str())
+    {
+        return Err(SqliteStoreError::RecordedRuntimeConflict(format!(
+            "worker lane message {:?} run/step/correlation identity differs",
+            handoff.message_id
+        )));
+    }
+    if server_run(conn, &handoff.run_id)?.is_some_and(|run| run.cancel_requested) {
+        return Err(SqliteStoreError::RecordedRuntimeConflict(format!(
+            "worker lane message {:?} belongs to a cancel-requested run",
+            handoff.message_id
+        )));
+    }
+    if lane.status == "completed" {
+        for event in recorded_runtime_events(conn, &handoff.run_id)? {
+            let Some(payload) = parse_runtime_event_payload(&event.payload_json)? else {
+                continue;
+            };
+            if payload.worker_handoff.as_ref() == Some(&handoff)
+                || payload
+                    .worker_handoff
+                    .as_ref()
+                    .is_some_and(|stored| stored.message_id == handoff.message_id)
+            {
+                if payload.worker_effect_digest.as_deref() != Some(effect_digest.as_str()) {
+                    return Err(SqliteStoreError::RecordedRuntimeConflict(format!(
+                        "worker handoff {:?} retried with different effect",
+                        handoff.message_id
+                    )));
+                }
+                return Ok(payload.result(event.seq, true));
+            }
+        }
+        return Err(SqliteStoreError::RecordedRuntimeConflict(format!(
+            "completed worker lane message {:?} has no matching recorded effect",
+            handoff.message_id
+        )));
+    }
+    if lane.status != "claimed"
+        || lane.claimed_by.as_deref() != Some(handoff.claimed_by.as_str())
+        || lane
+            .lease_until
+            .as_ref()
+            .and_then(|value| value.as_i64())
+            .is_none_or(|lease_until| lease_until < unix_epoch_seconds())
+    {
+        return Err(SqliteStoreError::RecordedRuntimeConflict(format!(
+            "worker lane message {:?} is not actively claimed by {:?}",
+            handoff.message_id, handoff.claimed_by
+        )));
+    }
+    let payload: serde_json::Value =
+        serde_json::from_str(lane.payload_json.as_deref().unwrap_or("{}"))?;
+    let workflow_id = payload["workflow_id"].as_str().unwrap_or_default();
+    let conversation_id = payload["conversation_id"].as_str().unwrap_or_default();
+    let token_id = payload["token_id"]
+        .as_str()
+        .unwrap_or(handoff.run_id.as_str());
+    let parent_token_id = payload["parent_token_id"].as_str();
+    let current = read_recorded_runtime_state(conn, &handoff.run_id, workflow_id, conversation_id)?
+        .ok_or_else(|| {
+            SqliteStoreError::RecordedRuntimeConflict(format!(
+                "worker lane message {:?} has no recorded runtime state",
+                handoff.message_id
+            ))
+        })?;
+    if current
+        .frontier
+        .pending
+        .first()
+        .is_none_or(|(node, _, token, parent)| {
+            node != &handoff.step_id || token != token_id || parent.as_deref() != parent_token_id
+        })
+    {
+        return Err(SqliteStoreError::RecordedRuntimeConflict(format!(
+            "worker lane message {:?} result is not next in canonical frontier order",
+            handoff.message_id
+        )));
+    }
+    let expected_event_seq = latest_server_run_event_seq(conn, &handoff.run_id)?;
+    let step_seq = current.last_step_seq.saturating_add(1);
+    let authoritative_successors = if current.static_routes.is_empty() {
+        effect.successors.clone()
+    } else {
+        current
+            .static_routes
+            .iter()
+            .filter(|route| route.source_node_id == handoff.step_id)
+            .map(|route| kogwistar_runtime::RuntimeSuccessor {
+                node_id: route.target_node_id.clone(),
+                join_mask: route.join_mask,
+            })
+            .collect()
+    };
+    let next_frontier = match effect.status {
+        RuntimeWorkerEffectStatus::Success => frontier_after_worker_success(
+            &current.frontier,
+            &handoff.step_id,
+            token_id,
+            parent_token_id,
+            step_seq,
+            &kogwistar_runtime::RuntimeWorkerSuccessEffect {
+                successors: authoritative_successors,
+            },
+        )?,
+        RuntimeWorkerEffectStatus::Suspended => frontier_after_worker_suspend(
+            &current.frontier,
+            &handoff.step_id,
+            token_id,
+            parent_token_id,
+        )?,
+    };
+    let transition = RecordedRuntimeTransition {
+        contract_version: RECORDED_RUNTIME_CONTRACT_VERSION,
+        transition_id: effect.effect_id.clone(),
+        expected_event_seq,
+        kind: match effect.status {
+            RuntimeWorkerEffectStatus::Success => {
+                kogwistar_runtime::RecordedTransitionKind::RecordedStepSuccess
+            }
+            RuntimeWorkerEffectStatus::Suspended => {
+                kogwistar_runtime::RecordedTransitionKind::Suspend
+            }
+        },
+        run_id: handoff.run_id.clone(),
+        workflow_id: workflow_id.to_owned(),
+        conversation_id: conversation_id.to_owned(),
+        user_id: None,
+        user_turn_node_id: None,
+        step_seq,
+        node_id: Some(handoff.step_id.clone()),
+        token_id: Some(token_id.to_owned()),
+        parent_token_id: parent_token_id.map(str::to_owned),
+        initial_state: None,
+        state_update: effect.state_update,
+        update: effect.update,
+        state_schema: effect.state_schema,
+        frontier: Some(next_frontier),
+        result: effect.result,
+        wait_reason: effect.wait_reason,
+        resume_payload: effect.resume_payload,
+        errors: effect.errors,
+    };
+    let reduced = reduce_recorded_transition(Some(&current), &transition)?;
+    let request_digest = transition_digest(&transition)?;
+    let persisted = PersistedRecordedTransition {
+        contract_version: RECORDED_RUNTIME_CONTRACT_VERSION,
+        transition_id: transition.transition_id.clone(),
+        request_digest,
+        worker_handoff: Some(handoff.clone()),
+        worker_effect_digest: Some(effect_digest),
+        reduced: reduced.clone(),
+    };
+    let event = append_server_run_event(
+        conn,
+        &transition.run_id,
+        RECORDED_RUNTIME_EVENT_TYPE,
+        runtime_event_payload(&persisted)?,
+    )?;
+    replace_named_projection(
+        conn,
+        &runtime_checkpoint_namespace(&transition.conversation_id),
+        &transition.run_id,
+        recorded_runtime_projection(
+            reduced.checkpoint.clone(),
+            event.seq,
+            reduced.state.status.server_status().to_owned(),
+        ),
+    )?;
+    replace_named_projection(
+        conn,
+        &runtime_status_namespace(&transition.conversation_id),
+        &transition.run_id,
+        recorded_runtime_projection(reduced.run_status.clone(), event.seq, "running".to_owned()),
+    )?;
+    let prior_run = server_run(conn, &transition.run_id)?;
+    update_server_run(
+        conn,
+        &transition.run_id,
+        ServerRunUpdate {
+            status: reduced.server_status.clone(),
+            assistant_turn_node_id: prior_run
+                .as_ref()
+                .and_then(|run| run.assistant_turn_node_id.clone()),
+            result_json: reduced
+                .result
+                .as_ref()
+                .map(serde_json::to_string)
+                .transpose()?,
+            error_json: if reduced.errors.is_empty() {
+                None
+            } else {
+                Some(serde_json::to_string(&reduced.errors)?)
+            },
+            started_at_ms: prior_run.as_ref().and_then(|run| run.started_at_ms),
+            finished_at_ms: None,
+            cancel_requested: Some(false),
+        },
+    )?;
+    let acknowledged = conn.execute(
+        "UPDATE projected_lane_messages SET status='completed',claimed_by=NULL,lease_until=NULL \
+         WHERE message_id=?1 AND status='claimed' AND claimed_by=?2 AND lease_until>=?3",
+        params![handoff.message_id, handoff.claimed_by, unix_epoch_seconds()],
+    )?;
+    if acknowledged != 1 {
+        return Err(SqliteStoreError::RecordedRuntimeConflict(format!(
+            "worker lane message {:?} claim changed before acknowledgement",
+            handoff.message_id
+        )));
+    }
+    Ok(persisted.result(event.seq, false))
+}
+
 fn validate_worker_handoff(handoff: &RecordedWorkerHandoff) -> SqliteStoreResult<()> {
     for (field, value) in [
         ("message_id", handoff.message_id.as_str()),
@@ -2824,6 +3321,7 @@ fn apply_recorded_runtime_transition_inner(
         transition_id: transition.transition_id.clone(),
         request_digest,
         worker_handoff,
+        worker_effect_digest: None,
         reduced: reduced.clone(),
     };
     let event = append_server_run_event(

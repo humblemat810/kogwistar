@@ -106,6 +106,8 @@ kogwistar = [".env", ".env.*", "*.env", "*.env.*", "*.sqlite", "*.db", "*.pem", 
 markers = [
   "ci: fast pull-request-safe tests",
   "ci_full: full integration and end-to-end tests",
+  "regression: regression coverage for changed or previously failing behavior",
+  "slow: intentionally slow tests excluded from feature and regression profiles",
   "core: core engine tests",
   "workflow: workflow-layer tests",
   "conversation: conversation-layer tests",

@@ -576,7 +576,7 @@ def designer_capabilities():
 
 @app.get("/health")
 def health():
-    return {
+    python_value = {
         "ok": True,
         "backend": storage_settings.backend,
         "persist_directory": persist_directory,
@@ -587,6 +587,9 @@ def health():
         if storage_settings.backend == "pg"
         else None,
     }
+    from kogwistar._rust_bridge import api_health
+
+    return api_health(payload={key: value for key, value in python_value.items() if key != "ok"}, python_value=python_value)
 
 # DELETE /admin/doc/{doc_id}  (non-MCP utility)
 @app.delete("/admin/doc/{doc_id}")

@@ -118,6 +118,14 @@ def test_state_backed_budget_ledger_tracks_cost_events() -> None:
     assert state["cost_used"] == pytest.approx(1.75)
 
 
+@pytest.mark.parametrize("mode", ["python", "shadow", "rust"])
+def test_state_backed_budget_ledger_suspends_at_cost_limit(monkeypatch, mode: str) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_RUNTIME", mode)
+    ledger = StateBackedBudgetLedger({"cost_budget": 2.5, "cost_used": 2.5})
+
+    assert ledger.should_suspend_for_budget() is True
+
+
 def test_state_backed_budget_ledger_counts_provider_input_and_output_once() -> None:
     state = {"token_budget": 20, "budget_kind": "token", "budget_scope": "run"}
     ledger = StateBackedBudgetLedger(state)

@@ -82,7 +82,25 @@ def retry_with_context(
             previous_error = error_message
             if callable(on_retry):
                 on_retry(record)
-            if attempt_number >= budget:
+            python_decision = {
+                "retry_budget": budget,
+                "attempt_number": attempt_number,
+                "should_retry": attempt_number < budget,
+                "exhausted": attempt_number >= budget,
+                "next_attempt_number": (
+                    attempt_number + 1 if attempt_number < budget else None
+                ),
+            }
+            from kogwistar._rust_bridge import runtime_decide_retry
+
+            decision = runtime_decide_retry(
+                payload={
+                    "retry_budget": budget,
+                    "attempt_number": attempt_number,
+                },
+                python_value=python_decision,
+            )
+            if decision["exhausted"]:
                 raise RetryExhaustedError(
                     attempts=tuple(attempts),
                     last_error=error_message,

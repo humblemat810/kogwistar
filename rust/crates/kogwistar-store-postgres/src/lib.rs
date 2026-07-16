@@ -7,6 +7,13 @@
 use deadpool_postgres::{Manager, Pool};
 use kogwistar_contracts::EntityEventEnvelope;
 use kogwistar_engine::EntityProjection;
+use kogwistar_runtime::{
+    PersistedRecordedTransition, RECORDED_RUNTIME_CONTRACT_VERSION, RecordedRuntimeError,
+    RecordedRuntimeState, RecordedRuntimeTransition, RecordedTransitionResult,
+    RecordedWorkerHandoff, RecordedWorkerSuccessEffect, RuntimeFrontier, RuntimeWorkerEffectStatus,
+    frontier_after_worker_resume, frontier_after_worker_success, frontier_after_worker_suspend,
+    reduce_recorded_transition, transition_digest, worker_effect_digest,
+};
 use kogwistar_store::{
     AppendedEvent, AppliedGraphMutation, EntityEvent, EntityRebuildRequest, EntityRecoveryReport,
     EntityRecoveryRequest, EventPruneStore, EventReadStore, EventWriteStore, GraphMutation,
@@ -50,6 +57,10 @@ pub enum PostgresStoreError {
     InvalidPayload(#[from] serde_json::Error),
     #[error("transaction aborted: {0}")]
     TransactionAborted(String),
+    #[error(transparent)]
+    RecordedRuntime(#[from] RecordedRuntimeError),
+    #[error("recorded runtime conflict: {0}")]
+    RecordedRuntimeConflict(String),
     #[error("PostgreSQL operation failed: {0}")]
     Backend(String),
     #[error(transparent)]
@@ -640,6 +651,209 @@ impl PostgresStore {
         .await
     }
 
+    pub async fn apply_recorded_runtime_transition(
+        &self,
+        transition: RecordedRuntimeTransition,
+        abort_after_writes: bool,
+    ) -> PostgresStoreResult<RecordedTransitionResult> {
+        self.transaction(move |uow| {
+            Box::pin(async move {
+                uow.apply_recorded_runtime_transition(transition, abort_after_writes)
+                    .await
+            })
+        })
+        .await
+    }
+
+    pub async fn apply_claimed_recorded_runtime_transition(
+        &self,
+        handoff: RecordedWorkerHandoff,
+        transition: RecordedRuntimeTransition,
+        abort_after_writes: bool,
+    ) -> PostgresStoreResult<RecordedTransitionResult> {
+        self.transaction(move |uow| {
+            Box::pin(async move {
+                uow.apply_claimed_recorded_runtime_transition(
+                    handoff,
+                    transition,
+                    abort_after_writes,
+                )
+                .await
+            })
+        })
+        .await
+    }
+
+    pub async fn apply_claimed_recorded_worker_effect(
+        &self,
+        handoff: RecordedWorkerHandoff,
+        effect: RecordedWorkerSuccessEffect,
+    ) -> PostgresStoreResult<RecordedTransitionResult> {
+        self.transaction(move |uow| {
+            Box::pin(async move {
+                uow.apply_claimed_recorded_worker_effect(handoff, effect)
+                    .await
+            })
+        })
+        .await
+    }
+
+    pub async fn resume_recorded_runtime_token(
+        &self,
+        run_id: &str,
+        workflow_id: &str,
+        conversation_id: &str,
+        node_id: &str,
+        token_id: &str,
+        resume_payload: Option<Value>,
+    ) -> PostgresStoreResult<RecordedTransitionResult> {
+        let run_id = run_id.to_owned();
+        let workflow_id = workflow_id.to_owned();
+        let conversation_id = conversation_id.to_owned();
+        let node_id = node_id.to_owned();
+        let token_id = token_id.to_owned();
+        self.transaction(|uow| {
+            Box::pin(async move {
+                let current = read_recorded_runtime_state(
+                    &uow.transaction,
+                    &uow.tables,
+                    &run_id,
+                    &workflow_id,
+                    &conversation_id,
+                )
+                .await?
+                .ok_or_else(|| {
+                    PostgresStoreError::RecordedRuntimeConflict(format!(
+                        "run {run_id:?} has no recorded runtime state"
+                    ))
+                })?;
+                let parent = current
+                    .frontier
+                    .suspended
+                    .iter()
+                    .find(|(node, _, token, _)| node == &node_id && token == &token_id)
+                    .and_then(|(_, _, _, parent)| parent.clone());
+                let frontier = frontier_after_worker_resume(
+                    &current.frontier,
+                    &node_id,
+                    &token_id,
+                    parent.as_deref(),
+                )?;
+                let expected_event_seq =
+                    latest_server_run_event_seq(&uow.transaction, &uow.tables, &run_id).await?;
+                let result = uow
+                    .apply_recorded_runtime_transition(
+                        RecordedRuntimeTransition {
+                            contract_version: RECORDED_RUNTIME_CONTRACT_VERSION,
+                            transition_id: format!(
+                                "resume-{run_id}-{token_id}-{expected_event_seq}"
+                            ),
+                            expected_event_seq,
+                            kind: kogwistar_runtime::RecordedTransitionKind::ResumeResult,
+                            run_id: run_id.clone(),
+                            workflow_id: workflow_id.clone(),
+                            conversation_id: conversation_id.clone(),
+                            user_id: None,
+                            user_turn_node_id: None,
+                            step_seq: current.last_step_seq.saturating_add(1),
+                            node_id: Some(node_id.clone()),
+                            token_id: Some(token_id.clone()),
+                            parent_token_id: parent.clone(),
+                            initial_state: None,
+                            state_update: Vec::new(),
+                            update: None,
+                            state_schema: Map::new(),
+                            frontier: Some(frontier),
+                            result: None,
+                            wait_reason: None,
+                            resume_payload,
+                            errors: Vec::new(),
+                        },
+                        false,
+                    )
+                    .await?;
+                let message_id = format!(
+                    "lane|{}",
+                    kogwistar_contracts::stable_id(
+                        "runtime.worker.request",
+                        &[
+                            run_id.clone(),
+                            token_id.clone(),
+                            node_id.clone(),
+                            result
+                                .reduced
+                                .state
+                                .last_step_seq
+                                .saturating_add(1)
+                                .to_string(),
+                        ],
+                    )
+                );
+                let now = unix_epoch_millis() / 1000;
+                let join_mask = result
+                    .reduced
+                    .state
+                    .frontier
+                    .pending
+                    .iter()
+                    .find(|(_, _, token, _)| token == &token_id)
+                    .map(|(_, mask, _, _)| *mask)
+                    .unwrap_or(0);
+                uow.project_lane_message(NewProjectedLaneMessage {
+                    message_id,
+                    namespace: "workflow".to_owned(),
+                    purpose: "system".to_owned(),
+                    inbox_id: "workflow-runtime".to_owned(),
+                    conversation_id: conversation_id.clone(),
+                    recipient_id: "python-worker".to_owned(),
+                    sender_id: "rust-scheduler".to_owned(),
+                    msg_type: "workflow.step.execute".to_owned(),
+                    status: "pending".to_owned(),
+                    created_at: now,
+                    available_at: now,
+                    run_id: Some(run_id.clone()),
+                    step_id: Some(node_id.clone()),
+                    correlation_id: Some(run_id.clone()),
+                    payload_json: Some(serde_json::to_string(&serde_json::json!({
+                        "contract_version": 1,
+                        "kind": "workflow.step.execute",
+                        "run_id": run_id,
+                        "workflow_id": workflow_id,
+                        "conversation_id": conversation_id,
+                        "node_id": node_id,
+                        "join_mask": join_mask,
+                        "token_id": token_id,
+                        "parent_token_id": parent,
+                        "step_seq": result.reduced.state.last_step_seq.saturating_add(1),
+                        "expected_event_seq": result.event_seq,
+                        "state": result.reduced.state.state,
+                        "resume_payload": result.reduced.state.resume_payload,
+                    }))?),
+                    error_json: None,
+                })
+                .await?;
+                Ok(result)
+            })
+        })
+        .await
+    }
+
+    pub async fn read_recorded_runtime_state(
+        &self,
+        run_id: &str,
+        workflow_id: &str,
+        conversation_id: &str,
+    ) -> PostgresStoreResult<Option<RecordedRuntimeState>> {
+        read_recorded_runtime_state(
+            &**self.client().await?,
+            &self.tables,
+            run_id,
+            workflow_id,
+            conversation_id,
+        )
+        .await
+    }
+
     pub async fn enqueue_index_job(&self, job: NewIndexJob) -> PostgresStoreResult<String> {
         let namespace = job.namespace.clone();
         require_namespace(&namespace)?;
@@ -981,6 +1195,9 @@ impl PostgresUnitOfWork<'_> {
     ) -> PostgresStoreResult<Option<ProjectedLaneMessage>> {
         projected_lane_message(&self.transaction, &self.tables, id).await
     }
+    pub async fn get_server_run(&self, run_id: &str) -> PostgresStoreResult<Option<ServerRun>> {
+        server_run(&self.transaction, &self.tables, run_id).await
+    }
     pub async fn list_projected_lane_messages(
         &self,
         filter: &LaneMessageFilter,
@@ -995,6 +1212,29 @@ impl PostgresUnitOfWork<'_> {
     ) -> PostgresStoreResult<()> {
         update_projected_lane_message_status(&self.transaction, &self.tables, id, status, error)
             .await
+    }
+    pub async fn update_projected_lane_message_payload(
+        &mut self,
+        id: &str,
+        payload_json: String,
+    ) -> PostgresStoreResult<()> {
+        let changed = self
+            .transaction
+            .execute(
+                &format!(
+                    "UPDATE {} SET payload_json=$1 WHERE message_id=$2",
+                    self.tables.projected_lane_messages
+                ),
+                &[&payload_json, &id],
+            )
+            .await
+            .map_err(backend)?;
+        if changed != 1 {
+            return Err(PostgresStoreError::RecordedRuntimeConflict(format!(
+                "lane message {id:?} payload update matched {changed} rows"
+            )));
+        }
+        Ok(())
     }
     pub async fn update_projected_lane_message_links(
         &mut self,
@@ -1411,6 +1651,44 @@ impl PostgresUnitOfWork<'_> {
     }
     pub async fn request_server_run_cancel(&mut self, run_id: &str) -> PostgresStoreResult<()> {
         request_server_run_cancel(&self.transaction, &self.tables, run_id).await
+    }
+
+    pub async fn apply_recorded_runtime_transition(
+        &mut self,
+        transition: RecordedRuntimeTransition,
+        abort_after_writes: bool,
+    ) -> PostgresStoreResult<RecordedTransitionResult> {
+        apply_recorded_runtime_transition(
+            &self.transaction,
+            &self.tables,
+            transition,
+            abort_after_writes,
+        )
+        .await
+    }
+
+    pub async fn apply_claimed_recorded_runtime_transition(
+        &mut self,
+        handoff: RecordedWorkerHandoff,
+        transition: RecordedRuntimeTransition,
+        abort_after_writes: bool,
+    ) -> PostgresStoreResult<RecordedTransitionResult> {
+        apply_claimed_recorded_runtime_transition(
+            &self.transaction,
+            &self.tables,
+            handoff,
+            transition,
+            abort_after_writes,
+        )
+        .await
+    }
+
+    pub async fn apply_claimed_recorded_worker_effect(
+        &mut self,
+        handoff: RecordedWorkerHandoff,
+        effect: RecordedWorkerSuccessEffect,
+    ) -> PostgresStoreResult<RecordedTransitionResult> {
+        apply_claimed_recorded_worker_effect(&self.transaction, &self.tables, handoff, effect).await
     }
 }
 
@@ -3035,9 +3313,807 @@ async fn request_server_run_cancel<C>(
 where
     C: GenericClient + Sync,
 {
-    let now = unix_epoch_millis();
-    client.execute(&format!("UPDATE {} SET cancel_requested=1,status=CASE WHEN status IN ('cancelled','failed','succeeded') THEN status ELSE 'cancelling' END,updated_at_ms=$1 WHERE run_id=$2", tables.server_runs), &[&now,&run_id]).await.map_err(backend)?;
+    advisory_lock(client, &format!("recorded-run\u{1f}{run_id}"), 42).await?;
+    let Some(run) = server_run(client, tables, run_id).await? else {
+        return Ok(());
+    };
+    let mut current = read_recorded_runtime_state(
+        client,
+        tables,
+        run_id,
+        &run.workflow_id,
+        &run.conversation_id,
+    )
+    .await?;
+    if current.is_none() {
+        let payload_json = client
+            .query_opt(
+                &format!(
+                    "SELECT payload_json FROM {} WHERE run_id=$1 AND msg_type='workflow.run.execute' \
+                     ORDER BY created_at LIMIT 1",
+                    tables.projected_lane_messages
+                ),
+                &[&run_id],
+            )
+            .await
+            .map_err(backend)?
+            .and_then(|row| row.try_get::<_, Option<String>>(0).ok().flatten());
+        if let Some(payload_json) = payload_json {
+            let payload: Value = serde_json::from_str(&payload_json)?;
+            let expected_event_seq = latest_server_run_event_seq(client, tables, run_id).await?;
+            apply_recorded_runtime_transition_inner(
+                client,
+                tables,
+                RecordedRuntimeTransition {
+                    contract_version: RECORDED_RUNTIME_CONTRACT_VERSION,
+                    transition_id: format!("start-{run_id}"),
+                    expected_event_seq,
+                    kind: kogwistar_runtime::RecordedTransitionKind::Start,
+                    run_id: run_id.to_owned(),
+                    workflow_id: run.workflow_id.clone(),
+                    conversation_id: run.conversation_id.clone(),
+                    user_id: payload["user_id"].as_str().map(str::to_owned),
+                    user_turn_node_id: run
+                        .user_turn_node_id
+                        .clone()
+                        .or_else(|| payload["turn_node_id"].as_str().map(str::to_owned)),
+                    step_seq: 0,
+                    node_id: Some("start".to_owned()),
+                    token_id: Some(run_id.to_owned()),
+                    parent_token_id: None,
+                    initial_state: Some(
+                        payload["initial_state"]
+                            .as_object()
+                            .cloned()
+                            .unwrap_or_default(),
+                    ),
+                    state_update: Vec::new(),
+                    update: None,
+                    state_schema: Map::new(),
+                    frontier: Some(RuntimeFrontier {
+                        pending: vec![("start".to_owned(), 0, run_id.to_owned(), None)],
+                        ..RuntimeFrontier::default()
+                    }),
+                    result: None,
+                    wait_reason: None,
+                    resume_payload: None,
+                    errors: Vec::new(),
+                },
+                None,
+                None,
+                false,
+            )
+            .await?;
+            current = read_recorded_runtime_state(
+                client,
+                tables,
+                run_id,
+                &run.workflow_id,
+                &run.conversation_id,
+            )
+            .await?;
+        }
+    }
+    if let Some(state) = current
+        && !state.status.is_terminal()
+    {
+        let expected_event_seq = latest_server_run_event_seq(client, tables, run_id).await?;
+        apply_recorded_runtime_transition_inner(
+            client,
+            tables,
+            RecordedRuntimeTransition {
+                contract_version: RECORDED_RUNTIME_CONTRACT_VERSION,
+                transition_id: format!("cancel-{run_id}-{expected_event_seq}"),
+                expected_event_seq,
+                kind: kogwistar_runtime::RecordedTransitionKind::Cancel,
+                run_id: run_id.to_owned(),
+                workflow_id: run.workflow_id.clone(),
+                conversation_id: run.conversation_id.clone(),
+                user_id: None,
+                user_turn_node_id: None,
+                step_seq: state.last_step_seq.max(0),
+                node_id: state.last_node_id,
+                token_id: state.last_token_id,
+                parent_token_id: state.last_parent_token_id,
+                initial_state: None,
+                state_update: Vec::new(),
+                update: None,
+                state_schema: Map::new(),
+                frontier: None,
+                result: None,
+                wait_reason: None,
+                resume_payload: None,
+                errors: Vec::new(),
+            },
+            None,
+            None,
+            false,
+        )
+        .await?;
+    } else {
+        let now = unix_epoch_millis();
+        client.execute(&format!("UPDATE {} SET cancel_requested=1,status=CASE WHEN status IN ('cancelled','failed','succeeded') THEN status ELSE 'cancelling' END,updated_at_ms=$1 WHERE run_id=$2", tables.server_runs), &[&now,&run_id]).await.map_err(backend)?;
+    }
+    client
+        .execute(
+            &format!(
+                "UPDATE {} SET status='cancelled',claimed_by=NULL,lease_until=NULL \
+                 WHERE run_id=$1 AND status NOT IN ('completed','failed','cancelled','dead-letter')",
+                tables.projected_lane_messages
+            ),
+            &[&run_id],
+        )
+        .await
+        .map_err(backend)?;
     Ok(())
+}
+
+const RECORDED_RUNTIME_EVENT_TYPE: &str = "workflow.recorded_transition.v1";
+const RUNTIME_PROJECTION_SCHEMA_VERSION: i64 = 1;
+
+fn runtime_checkpoint_namespace(conversation_id: &str) -> String {
+    format!("{conversation_id}:workflow_checkpoint_latest")
+}
+
+fn runtime_status_namespace(conversation_id: &str) -> String {
+    format!("{conversation_id}:workflow_run_status")
+}
+
+fn parse_runtime_event_payload(payload_json: &str) -> Option<PersistedRecordedTransition> {
+    serde_json::from_str::<PersistedRecordedTransition>(payload_json)
+        .ok()
+        .filter(|value| value.contract_version == RECORDED_RUNTIME_CONTRACT_VERSION)
+}
+
+async fn recorded_runtime_events<C>(
+    client: &C,
+    tables: &Tables,
+    run_id: Option<&str>,
+) -> PostgresStoreResult<Vec<ServerRunEvent>>
+where
+    C: GenericClient + Sync,
+{
+    let rows = client
+        .query(
+            &format!(
+                "SELECT seq,run_id,event_type,payload_json,created_at_ms FROM {} \
+                 WHERE event_type=$1 AND ($2::TEXT IS NULL OR run_id=$2) ORDER BY seq ASC",
+                tables.server_run_events
+            ),
+            &[&RECORDED_RUNTIME_EVENT_TYPE, &run_id],
+        )
+        .await
+        .map_err(backend)?;
+    rows.iter().map(server_run_event_from_row).collect()
+}
+
+async fn latest_server_run_event_seq<C>(
+    client: &C,
+    tables: &Tables,
+    run_id: &str,
+) -> PostgresStoreResult<i64>
+where
+    C: GenericClient + Sync,
+{
+    client
+        .query_one(
+            &format!(
+                "SELECT COALESCE(MAX(seq),0) FROM {} WHERE run_id=$1",
+                tables.server_run_events
+            ),
+            &[&run_id],
+        )
+        .await
+        .map_err(backend)?
+        .try_get(0)
+        .map_err(backend)
+}
+
+fn recorded_runtime_projection(
+    payload: Map<String, Value>,
+    seq: i64,
+    materialization_status: String,
+) -> NamedProjectionWrite {
+    NamedProjectionWrite {
+        payload,
+        last_authoritative_seq: seq,
+        last_materialized_seq: seq,
+        projection_schema_version: RUNTIME_PROJECTION_SCHEMA_VERSION,
+        materialization_status,
+    }
+}
+
+async fn read_recorded_runtime_state<C>(
+    client: &C,
+    tables: &Tables,
+    run_id: &str,
+    workflow_id: &str,
+    conversation_id: &str,
+) -> PostgresStoreResult<Option<RecordedRuntimeState>>
+where
+    C: GenericClient + Sync,
+{
+    let Some(run) = server_run(client, tables, run_id).await? else {
+        return Ok(None);
+    };
+    if run.workflow_id != workflow_id || run.conversation_id != conversation_id {
+        return Err(PostgresStoreError::RecordedRuntimeConflict(format!(
+            "run identity differs for {run_id:?}"
+        )));
+    }
+    let mut latest = None;
+    for event in recorded_runtime_events(client, tables, Some(run_id)).await? {
+        if let Some(payload) = parse_runtime_event_payload(&event.payload_json)
+            && payload.reduced.state.run_id == run_id
+            && payload.reduced.state.workflow_id == workflow_id
+            && payload.reduced.state.conversation_id == conversation_id
+        {
+            latest = Some(payload.reduced.state);
+        }
+    }
+    Ok(latest)
+}
+
+async fn apply_recorded_runtime_transition<C>(
+    client: &C,
+    tables: &Tables,
+    transition: RecordedRuntimeTransition,
+    abort_after_writes: bool,
+) -> PostgresStoreResult<RecordedTransitionResult>
+where
+    C: GenericClient + Sync,
+{
+    apply_recorded_runtime_transition_inner(
+        client,
+        tables,
+        transition,
+        None,
+        None,
+        abort_after_writes,
+    )
+    .await
+}
+
+async fn apply_claimed_recorded_runtime_transition<C>(
+    client: &C,
+    tables: &Tables,
+    handoff: RecordedWorkerHandoff,
+    transition: RecordedRuntimeTransition,
+    abort_after_writes: bool,
+) -> PostgresStoreResult<RecordedTransitionResult>
+where
+    C: GenericClient + Sync,
+{
+    validate_worker_handoff(&handoff)?;
+    let row = client
+        .query_opt(
+            &format!(
+                "SELECT {LANE_SELECT},lease_until>=NOW() FROM {} WHERE message_id=$1 FOR UPDATE",
+                tables.projected_lane_messages
+            ),
+            &[&handoff.message_id],
+        )
+        .await
+        .map_err(backend)?
+        .ok_or_else(|| {
+            PostgresStoreError::RecordedRuntimeConflict(format!(
+                "worker lane message {:?} does not exist",
+                handoff.message_id
+            ))
+        })?;
+    let lane = lane_from_row(&row)?;
+    let lease_active: Option<bool> = row.try_get(25).map_err(backend)?;
+    validate_worker_lane_identity(&lane, &handoff, &transition)?;
+
+    if lane.status == "completed" {
+        return retry_completed_worker_handoff(client, tables, &handoff, &transition).await;
+    }
+    if lane.status != "claimed"
+        || lane.claimed_by.as_deref() != Some(handoff.claimed_by.as_str())
+        || lease_active != Some(true)
+    {
+        return Err(PostgresStoreError::RecordedRuntimeConflict(format!(
+            "worker lane message {:?} is not actively claimed by {:?}",
+            handoff.message_id, handoff.claimed_by
+        )));
+    }
+
+    let result = apply_recorded_runtime_transition_inner(
+        client,
+        tables,
+        transition,
+        Some(handoff.clone()),
+        None,
+        false,
+    )
+    .await?;
+    let acknowledged = client
+        .execute(
+            &format!(
+                "UPDATE {} SET status='completed',claimed_by=NULL,lease_until=NULL \
+                 WHERE message_id=$1 AND status='claimed' AND claimed_by=$2 AND lease_until>=NOW()",
+                tables.projected_lane_messages
+            ),
+            &[&handoff.message_id, &handoff.claimed_by],
+        )
+        .await
+        .map_err(backend)?;
+    if acknowledged != 1 {
+        return Err(PostgresStoreError::RecordedRuntimeConflict(format!(
+            "worker lane message {:?} claim changed before acknowledgement",
+            handoff.message_id
+        )));
+    }
+    if abort_after_writes {
+        return Err(PostgresStoreError::TransactionAborted(
+            "requested after recorded runtime worker handoff writes".to_owned(),
+        ));
+    }
+    Ok(result)
+}
+
+fn validate_worker_handoff(handoff: &RecordedWorkerHandoff) -> PostgresStoreResult<()> {
+    for (field, value) in [
+        ("message_id", handoff.message_id.as_str()),
+        ("claimed_by", handoff.claimed_by.as_str()),
+        ("run_id", handoff.run_id.as_str()),
+        ("step_id", handoff.step_id.as_str()),
+        ("correlation_id", handoff.correlation_id.as_str()),
+    ] {
+        if value.is_empty() {
+            return Err(PostgresStoreError::RecordedRuntimeConflict(format!(
+                "worker handoff {field} must not be empty"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_worker_lane_identity(
+    lane: &ProjectedLaneMessage,
+    handoff: &RecordedWorkerHandoff,
+    transition: &RecordedRuntimeTransition,
+) -> PostgresStoreResult<()> {
+    if handoff.run_id != transition.run_id
+        || transition.node_id.as_deref() != Some(handoff.step_id.as_str())
+        || lane.run_id.as_deref() != Some(handoff.run_id.as_str())
+        || lane.step_id.as_deref() != Some(handoff.step_id.as_str())
+        || lane.correlation_id.as_deref() != Some(handoff.correlation_id.as_str())
+    {
+        return Err(PostgresStoreError::RecordedRuntimeConflict(format!(
+            "worker lane message {:?} run/step/correlation identity differs",
+            handoff.message_id
+        )));
+    }
+    Ok(())
+}
+
+async fn retry_completed_worker_handoff<C>(
+    client: &C,
+    tables: &Tables,
+    handoff: &RecordedWorkerHandoff,
+    transition: &RecordedRuntimeTransition,
+) -> PostgresStoreResult<RecordedTransitionResult>
+where
+    C: GenericClient + Sync,
+{
+    let request_digest = transition_digest(transition)?;
+    for event in recorded_runtime_events(client, tables, Some(&transition.run_id)).await? {
+        let Some(payload) = parse_runtime_event_payload(&event.payload_json) else {
+            continue;
+        };
+        if payload.transition_id != transition.transition_id {
+            continue;
+        }
+        if payload.request_digest != request_digest
+            || payload.worker_handoff.as_ref() != Some(handoff)
+        {
+            return Err(PostgresStoreError::RecordedRuntimeConflict(format!(
+                "worker handoff {:?} retried with different result",
+                handoff.message_id
+            )));
+        }
+        return Ok(payload.result(event.seq, true));
+    }
+    Err(PostgresStoreError::RecordedRuntimeConflict(format!(
+        "completed worker lane message {:?} has no matching recorded result",
+        handoff.message_id
+    )))
+}
+
+async fn apply_claimed_recorded_worker_effect<C>(
+    client: &C,
+    tables: &Tables,
+    handoff: RecordedWorkerHandoff,
+    effect: RecordedWorkerSuccessEffect,
+) -> PostgresStoreResult<RecordedTransitionResult>
+where
+    C: GenericClient + Sync,
+{
+    validate_worker_handoff(&handoff)?;
+    if effect.contract_version != RECORDED_RUNTIME_CONTRACT_VERSION || effect.effect_id.is_empty() {
+        return Err(PostgresStoreError::RecordedRuntimeConflict(
+            "worker effect contract_version/effect_id is invalid".to_owned(),
+        ));
+    }
+    let effect_digest = worker_effect_digest(&effect)?;
+    advisory_lock(client, &format!("recorded-run\u{1f}{}", handoff.run_id), 42).await?;
+    let row = client
+        .query_opt(
+            &format!(
+                "SELECT {LANE_SELECT},lease_until>=NOW() FROM {} WHERE message_id=$1 FOR UPDATE",
+                tables.projected_lane_messages
+            ),
+            &[&handoff.message_id],
+        )
+        .await
+        .map_err(backend)?
+        .ok_or_else(|| {
+            PostgresStoreError::RecordedRuntimeConflict(format!(
+                "worker lane message {:?} does not exist",
+                handoff.message_id
+            ))
+        })?;
+    let lane = lane_from_row(&row)?;
+    let lease_active: Option<bool> = row.try_get(25).map_err(backend)?;
+    if lane.run_id.as_deref() != Some(handoff.run_id.as_str())
+        || lane.step_id.as_deref() != Some(handoff.step_id.as_str())
+        || lane.correlation_id.as_deref() != Some(handoff.correlation_id.as_str())
+    {
+        return Err(PostgresStoreError::RecordedRuntimeConflict(format!(
+            "worker lane message {:?} run/step/correlation identity differs",
+            handoff.message_id
+        )));
+    }
+    if server_run(client, tables, &handoff.run_id)
+        .await?
+        .is_some_and(|run| run.cancel_requested)
+    {
+        return Err(PostgresStoreError::RecordedRuntimeConflict(format!(
+            "worker lane message {:?} belongs to a cancel-requested run",
+            handoff.message_id
+        )));
+    }
+    if lane.status == "completed" {
+        for event in recorded_runtime_events(client, tables, Some(&handoff.run_id)).await? {
+            let Some(payload) = parse_runtime_event_payload(&event.payload_json) else {
+                continue;
+            };
+            if payload
+                .worker_handoff
+                .as_ref()
+                .is_some_and(|stored| stored.message_id == handoff.message_id)
+            {
+                if payload.worker_effect_digest.as_deref() != Some(effect_digest.as_str()) {
+                    return Err(PostgresStoreError::RecordedRuntimeConflict(format!(
+                        "worker handoff {:?} retried with different effect",
+                        handoff.message_id
+                    )));
+                }
+                return Ok(payload.result(event.seq, true));
+            }
+        }
+        return Err(PostgresStoreError::RecordedRuntimeConflict(format!(
+            "completed worker lane message {:?} has no matching recorded effect",
+            handoff.message_id
+        )));
+    }
+    if lane.status != "claimed"
+        || lane.claimed_by.as_deref() != Some(handoff.claimed_by.as_str())
+        || lease_active != Some(true)
+    {
+        return Err(PostgresStoreError::RecordedRuntimeConflict(format!(
+            "worker lane message {:?} is not actively claimed by {:?}",
+            handoff.message_id, handoff.claimed_by
+        )));
+    }
+    let payload: Value = serde_json::from_str(lane.payload_json.as_deref().unwrap_or("{}"))?;
+    let workflow_id = payload["workflow_id"].as_str().unwrap_or_default();
+    let conversation_id = payload["conversation_id"].as_str().unwrap_or_default();
+    let token_id = payload["token_id"]
+        .as_str()
+        .unwrap_or(handoff.run_id.as_str());
+    let parent_token_id = payload["parent_token_id"].as_str();
+    let current = read_recorded_runtime_state(
+        client,
+        tables,
+        &handoff.run_id,
+        workflow_id,
+        conversation_id,
+    )
+    .await?
+    .ok_or_else(|| {
+        PostgresStoreError::RecordedRuntimeConflict(format!(
+            "worker lane message {:?} has no recorded runtime state",
+            handoff.message_id
+        ))
+    })?;
+    if current
+        .frontier
+        .pending
+        .first()
+        .is_none_or(|(node, _, token, parent)| {
+            node != &handoff.step_id || token != token_id || parent.as_deref() != parent_token_id
+        })
+    {
+        return Err(PostgresStoreError::RecordedRuntimeConflict(format!(
+            "worker lane message {:?} result is not next in canonical frontier order",
+            handoff.message_id
+        )));
+    }
+    let expected_event_seq = latest_server_run_event_seq(client, tables, &handoff.run_id).await?;
+    let step_seq = current.last_step_seq.saturating_add(1);
+    let authoritative_successors = if current.static_routes.is_empty() {
+        effect.successors.clone()
+    } else {
+        current
+            .static_routes
+            .iter()
+            .filter(|route| route.source_node_id == handoff.step_id)
+            .map(|route| kogwistar_runtime::RuntimeSuccessor {
+                node_id: route.target_node_id.clone(),
+                join_mask: route.join_mask,
+            })
+            .collect()
+    };
+    let frontier = match effect.status {
+        RuntimeWorkerEffectStatus::Success => frontier_after_worker_success(
+            &current.frontier,
+            &handoff.step_id,
+            token_id,
+            parent_token_id,
+            step_seq,
+            &kogwistar_runtime::RuntimeWorkerSuccessEffect {
+                successors: authoritative_successors,
+            },
+        )?,
+        RuntimeWorkerEffectStatus::Suspended => frontier_after_worker_suspend(
+            &current.frontier,
+            &handoff.step_id,
+            token_id,
+            parent_token_id,
+        )?,
+    };
+    let transition = RecordedRuntimeTransition {
+        contract_version: RECORDED_RUNTIME_CONTRACT_VERSION,
+        transition_id: effect.effect_id,
+        expected_event_seq,
+        kind: match effect.status {
+            RuntimeWorkerEffectStatus::Success => {
+                kogwistar_runtime::RecordedTransitionKind::RecordedStepSuccess
+            }
+            RuntimeWorkerEffectStatus::Suspended => {
+                kogwistar_runtime::RecordedTransitionKind::Suspend
+            }
+        },
+        run_id: handoff.run_id.clone(),
+        workflow_id: workflow_id.to_owned(),
+        conversation_id: conversation_id.to_owned(),
+        user_id: None,
+        user_turn_node_id: None,
+        step_seq,
+        node_id: Some(handoff.step_id.clone()),
+        token_id: Some(token_id.to_owned()),
+        parent_token_id: parent_token_id.map(str::to_owned),
+        initial_state: None,
+        state_update: effect.state_update,
+        update: effect.update,
+        state_schema: effect.state_schema,
+        frontier: Some(frontier),
+        result: effect.result,
+        wait_reason: effect.wait_reason,
+        resume_payload: effect.resume_payload,
+        errors: effect.errors,
+    };
+    let result = apply_recorded_runtime_transition_inner(
+        client,
+        tables,
+        transition,
+        Some(handoff.clone()),
+        Some(effect_digest),
+        false,
+    )
+    .await?;
+    let acknowledged = client
+        .execute(
+            &format!(
+                "UPDATE {} SET status='completed',claimed_by=NULL,lease_until=NULL \
+                 WHERE message_id=$1 AND status='claimed' AND claimed_by=$2 AND lease_until>=NOW()",
+                tables.projected_lane_messages
+            ),
+            &[&handoff.message_id, &handoff.claimed_by],
+        )
+        .await
+        .map_err(backend)?;
+    if acknowledged != 1 {
+        return Err(PostgresStoreError::RecordedRuntimeConflict(format!(
+            "worker lane message {:?} claim changed before acknowledgement",
+            handoff.message_id
+        )));
+    }
+    Ok(result)
+}
+
+async fn apply_recorded_runtime_transition_inner<C>(
+    client: &C,
+    tables: &Tables,
+    transition: RecordedRuntimeTransition,
+    worker_handoff: Option<RecordedWorkerHandoff>,
+    persisted_worker_effect_digest: Option<String>,
+    abort_after_writes: bool,
+) -> PostgresStoreResult<RecordedTransitionResult>
+where
+    C: GenericClient + Sync,
+{
+    let request_digest = transition_digest(&transition)?;
+    // Serialize global transition-id reuse and per-run sequence/CAS checks.
+    advisory_lock(
+        client,
+        &format!("recorded-transition\u{1f}{}", transition.transition_id),
+        41,
+    )
+    .await?;
+    advisory_lock(
+        client,
+        &format!("recorded-run\u{1f}{}", transition.run_id),
+        42,
+    )
+    .await?;
+
+    for event in recorded_runtime_events(client, tables, None).await? {
+        let Some(payload) = parse_runtime_event_payload(&event.payload_json) else {
+            continue;
+        };
+        if payload.transition_id == transition.transition_id {
+            if payload.request_digest != request_digest || payload.worker_handoff != worker_handoff
+            {
+                return Err(PostgresStoreError::RecordedRuntimeConflict(format!(
+                    "transition_id {:?} reused with different payload",
+                    transition.transition_id
+                )));
+            }
+            return Ok(payload.result(event.seq, true));
+        }
+    }
+
+    let existing_run = server_run(client, tables, &transition.run_id).await?;
+    if let Some(run) = &existing_run
+        && (run.workflow_id != transition.workflow_id
+            || run.conversation_id != transition.conversation_id)
+    {
+        return Err(PostgresStoreError::RecordedRuntimeConflict(format!(
+            "run identity differs for {:?}",
+            transition.run_id
+        )));
+    }
+    let current = read_recorded_runtime_state(
+        client,
+        tables,
+        &transition.run_id,
+        &transition.workflow_id,
+        &transition.conversation_id,
+    )
+    .await?;
+    let current_event_seq = latest_server_run_event_seq(client, tables, &transition.run_id).await?;
+    if current_event_seq != transition.expected_event_seq {
+        return Err(PostgresStoreError::RecordedRuntimeConflict(format!(
+            "expected_event_seq {}, current {}",
+            transition.expected_event_seq, current_event_seq
+        )));
+    }
+    let reduced = reduce_recorded_transition(current.as_ref(), &transition)?;
+
+    if current.is_none() && existing_run.is_none() {
+        let user_turn_node_id = transition.user_turn_node_id.clone().ok_or_else(|| {
+            PostgresStoreError::RecordedRuntimeConflict(
+                "start transition requires user_turn_node_id".to_owned(),
+            )
+        })?;
+        create_server_run(
+            client,
+            tables,
+            ServerRunCreate {
+                run_id: transition.run_id.clone(),
+                conversation_id: transition.conversation_id.clone(),
+                workflow_id: transition.workflow_id.clone(),
+                user_id: transition.user_id.clone(),
+                user_turn_node_id,
+                status: reduced.server_status.clone(),
+            },
+        )
+        .await?;
+    }
+
+    let persisted = PersistedRecordedTransition {
+        contract_version: RECORDED_RUNTIME_CONTRACT_VERSION,
+        transition_id: transition.transition_id.clone(),
+        request_digest,
+        worker_handoff,
+        worker_effect_digest: persisted_worker_effect_digest,
+        reduced: reduced.clone(),
+    };
+    let event = append_server_run_event(
+        client,
+        tables,
+        &transition.run_id,
+        RECORDED_RUNTIME_EVENT_TYPE,
+        serde_json::to_string(&persisted)?,
+    )
+    .await?;
+    let event_seq = event.seq;
+    replace_named_projection(
+        client,
+        tables,
+        &runtime_checkpoint_namespace(&transition.conversation_id),
+        &transition.run_id,
+        recorded_runtime_projection(
+            reduced.checkpoint.clone(),
+            event_seq,
+            reduced.state.status.server_status().to_owned(),
+        ),
+    )
+    .await?;
+    let status_materialization = match reduced.state.status {
+        kogwistar_runtime::RecordedRunStatus::Completed => "completed",
+        kogwistar_runtime::RecordedRunStatus::Failed => "failed",
+        kogwistar_runtime::RecordedRunStatus::Cancelled => "cancelled",
+        kogwistar_runtime::RecordedRunStatus::Suspended => "suspended",
+        kogwistar_runtime::RecordedRunStatus::Running => "running",
+    }
+    .to_owned();
+    replace_named_projection(
+        client,
+        tables,
+        &runtime_status_namespace(&transition.conversation_id),
+        &transition.run_id,
+        recorded_runtime_projection(
+            reduced.run_status.clone(),
+            event_seq,
+            status_materialization,
+        ),
+    )
+    .await?;
+    let prior_run = existing_run.as_ref();
+    update_server_run(
+        client,
+        tables,
+        &transition.run_id,
+        ServerRunUpdate {
+            status: reduced.server_status.clone(),
+            assistant_turn_node_id: prior_run.and_then(|run| run.assistant_turn_node_id.clone()),
+            result_json: reduced
+                .result
+                .as_ref()
+                .map(serde_json::to_string)
+                .transpose()?
+                .or_else(|| prior_run.and_then(|run| run.result_json.clone())),
+            error_json: if reduced.errors.is_empty() {
+                prior_run.and_then(|run| run.error_json.clone())
+            } else {
+                Some(serde_json::to_string(&reduced.errors)?)
+            },
+            started_at_ms: prior_run.and_then(|run| run.started_at_ms).or_else(|| {
+                (transition.kind == kogwistar_runtime::RecordedTransitionKind::Start)
+                    .then(unix_epoch_millis)
+            }),
+            finished_at_ms: if reduced.state.status.is_terminal() {
+                Some(unix_epoch_millis())
+            } else {
+                prior_run.and_then(|run| run.finished_at_ms)
+            },
+            cancel_requested: Some(matches!(
+                reduced.state.status,
+                kogwistar_runtime::RecordedRunStatus::Cancelled
+            )),
+        },
+    )
+    .await?;
+    if abort_after_writes {
+        return Err(PostgresStoreError::TransactionAborted(
+            "requested after recorded runtime transition writes".to_owned(),
+        ));
+    }
+    Ok(persisted.result(event_seq, false))
 }
 
 async fn replay_cursor<C>(
@@ -3769,6 +4845,95 @@ mod tests {
         }
     }
 
+    fn runtime_start(run_id: &str, transition_id: &str) -> RecordedRuntimeTransition {
+        serde_json::from_value(serde_json::json!({
+            "contract_version": 1,
+            "transition_id": transition_id,
+            "expected_event_seq": 0,
+            "kind": "start",
+            "run_id": run_id,
+            "workflow_id": "wf-1",
+            "conversation_id": "conv-1",
+            "user_id": "user-1",
+            "user_turn_node_id": "turn-1",
+            "step_seq": 0,
+            "node_id": "step-1",
+            "token_id": "token-1",
+            "parent_token_id": null,
+            "initial_state": {"answer": "seed"},
+            "frontier": {
+                "pending": [["step-1", 0, "token-1", null]],
+                "suspended": [],
+                "join_node_ids": [],
+                "join_outstanding": [],
+                "join_waiters": {}
+            }
+        }))
+        .unwrap()
+    }
+
+    fn runtime_result(
+        run_id: &str,
+        transition_id: &str,
+        expected_event_seq: i64,
+        answer: &str,
+    ) -> RecordedRuntimeTransition {
+        serde_json::from_value(serde_json::json!({
+            "contract_version": 1,
+            "transition_id": transition_id,
+            "expected_event_seq": expected_event_seq,
+            "kind": "recorded_step_success",
+            "run_id": run_id,
+            "workflow_id": "wf-1",
+            "conversation_id": "conv-1",
+            "step_seq": 0,
+            "node_id": "step-1",
+            "token_id": "token-1",
+            "parent_token_id": null,
+            "state_update": [["u", {"answer": answer}]],
+            "frontier": {
+                "pending": [],
+                "suspended": [],
+                "join_node_ids": [],
+                "join_outstanding": [],
+                "join_waiters": {}
+            },
+            "result": {"answer": answer}
+        }))
+        .unwrap()
+    }
+
+    fn runtime_lane(run_id: &str, message_id: &str) -> NewProjectedLaneMessage {
+        NewProjectedLaneMessage {
+            message_id: message_id.to_owned(),
+            namespace: "runtime".to_owned(),
+            purpose: "user_visible".to_owned(),
+            inbox_id: "python-workers".to_owned(),
+            conversation_id: "conv-1".to_owned(),
+            recipient_id: "python-worker".to_owned(),
+            sender_id: "rust-runtime".to_owned(),
+            msg_type: "workflow.worker.request.v1".to_owned(),
+            status: "pending".to_owned(),
+            created_at: 1,
+            available_at: 0,
+            run_id: Some(run_id.to_owned()),
+            step_id: Some("step-1".to_owned()),
+            correlation_id: Some("corr-1".to_owned()),
+            payload_json: Some("{}".to_owned()),
+            error_json: None,
+        }
+    }
+
+    fn runtime_handoff(run_id: &str, message_id: &str, owner: &str) -> RecordedWorkerHandoff {
+        RecordedWorkerHandoff {
+            message_id: message_id.to_owned(),
+            claimed_by: owner.to_owned(),
+            run_id: run_id.to_owned(),
+            step_id: "step-1".to_owned(),
+            correlation_id: "corr-1".to_owned(),
+        }
+    }
+
     #[test]
     fn identifier_validation_and_qualification_are_strict() {
         assert_eq!(quote_identifier("Mixed_Name9").unwrap(), "\"Mixed_Name9\"");
@@ -3972,6 +5137,188 @@ mod tests {
             .await
             .map_err(backend)?;
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn recorded_runtime_and_claimed_handoff_are_atomic_when_dsn_available()
+    -> PostgresStoreResult<()> {
+        let Some(dsn) = std::env::var("KOGWISTAR_TEST_PG_DSN").ok() else {
+            return Ok(());
+        };
+        let schema = test_schema("recorded_runtime");
+        let store = PostgresStore::from_dsn(&dsn, &schema)?;
+        let tables = Tables::new(&schema)?;
+        store.ensure_schema().await?;
+
+        let start_1 = store
+            .apply_recorded_runtime_transition(runtime_start("run-1", "start-1"), false)
+            .await?;
+        store
+            .project_lane_message(runtime_lane("run-1", "request-1"))
+            .await?;
+        let claimed = store
+            .claim_projected_lane_messages("runtime", "python-workers", "worker-1", 1, 30)
+            .await?;
+        assert_eq!(claimed.len(), 1);
+        let transition = runtime_result("run-1", "result-1", start_1.event_seq, "worker");
+        let handoff = runtime_handoff("run-1", "request-1", "worker-1");
+        let first = store
+            .apply_claimed_recorded_runtime_transition(handoff.clone(), transition.clone(), false)
+            .await?;
+        let retry = store
+            .apply_claimed_recorded_runtime_transition(handoff.clone(), transition.clone(), false)
+            .await?;
+        assert!(!first.idempotent && retry.idempotent);
+        assert_eq!(first.event_seq, retry.event_seq);
+        assert_eq!(
+            store
+                .get_projected_lane_message("request-1")
+                .await?
+                .unwrap()
+                .status,
+            "completed"
+        );
+        assert_eq!(
+            store
+                .read_recorded_runtime_state("run-1", "wf-1", "conv-1")
+                .await?
+                .unwrap()
+                .state["answer"],
+            serde_json::json!("worker")
+        );
+        assert!(matches!(
+            store
+                .apply_claimed_recorded_runtime_transition(
+                    handoff,
+                    runtime_result("run-1", "result-1", start_1.event_seq, "changed"),
+                    false,
+                )
+                .await,
+            Err(PostgresStoreError::RecordedRuntimeConflict(_))
+        ));
+
+        let start_2 = store
+            .apply_recorded_runtime_transition(runtime_start("run-2", "start-2"), false)
+            .await?;
+        store
+            .project_lane_message(runtime_lane("run-2", "request-2"))
+            .await?;
+        store
+            .claim_projected_lane_messages("runtime", "python-workers", "worker-2", 1, 30)
+            .await?;
+        assert!(matches!(
+            store
+                .apply_claimed_recorded_runtime_transition(
+                    runtime_handoff("run-2", "request-2", "wrong-worker"),
+                    runtime_result("run-2", "result-2", start_2.event_seq, "worker"),
+                    false,
+                )
+                .await,
+            Err(PostgresStoreError::RecordedRuntimeConflict(_))
+        ));
+
+        let start_3 = store
+            .apply_recorded_runtime_transition(runtime_start("run-3", "start-3"), false)
+            .await?;
+        store
+            .project_lane_message(runtime_lane("run-3", "request-3"))
+            .await?;
+        store
+            .claim_projected_lane_messages("runtime", "python-workers", "dead-worker", 1, -1)
+            .await?;
+        store
+            .claim_projected_lane_messages("runtime", "python-workers", "new-worker", 1, 30)
+            .await?;
+        assert!(matches!(
+            store
+                .apply_claimed_recorded_runtime_transition(
+                    runtime_handoff("run-3", "request-3", "dead-worker"),
+                    runtime_result("run-3", "result-3", start_3.event_seq, "worker"),
+                    false,
+                )
+                .await,
+            Err(PostgresStoreError::RecordedRuntimeConflict(_))
+        ));
+        let reclaimed = store
+            .apply_claimed_recorded_runtime_transition(
+                runtime_handoff("run-3", "request-3", "new-worker"),
+                runtime_result("run-3", "result-3", start_3.event_seq, "worker"),
+                false,
+            )
+            .await?;
+        assert!(!reclaimed.idempotent);
+
+        let start_4 = store
+            .apply_recorded_runtime_transition(runtime_start("run-4", "start-4"), false)
+            .await?;
+        let before = store
+            .list_server_run_events("run-4", 0, usize::MAX)
+            .await?
+            .len();
+        assert!(matches!(
+            store
+                .apply_recorded_runtime_transition(
+                    runtime_result("run-4", "result-4", start_4.event_seq, "rolled"),
+                    true,
+                )
+                .await,
+            Err(PostgresStoreError::TransactionAborted(_))
+        ));
+        assert_eq!(
+            store
+                .list_server_run_events("run-4", 0, usize::MAX)
+                .await?
+                .len(),
+            before
+        );
+
+        let start_5 = store
+            .apply_recorded_runtime_transition(runtime_start("run-5", "start-5"), false)
+            .await?;
+        store
+            .project_lane_message(runtime_lane("run-5", "request-5"))
+            .await?;
+        store
+            .claim_projected_lane_messages("runtime", "python-workers", "worker-5", 1, 30)
+            .await?;
+        store.request_server_run_cancel("run-5").await?;
+        assert_eq!(
+            store.get_server_run("run-5").await?.unwrap().status,
+            "cancelled"
+        );
+        assert_eq!(
+            store
+                .read_recorded_runtime_state("run-5", "wf-1", "conv-1")
+                .await?
+                .unwrap()
+                .status,
+            kogwistar_runtime::RecordedRunStatus::Cancelled
+        );
+        assert_eq!(
+            store
+                .get_projected_lane_message("request-5")
+                .await?
+                .unwrap()
+                .status,
+            "cancelled"
+        );
+        assert!(matches!(
+            store
+                .apply_claimed_recorded_runtime_transition(
+                    runtime_handoff("run-5", "request-5", "worker-5"),
+                    runtime_result("run-5", "result-5", start_5.event_seq, "stale"),
+                    false,
+                )
+                .await,
+            Err(PostgresStoreError::RecordedRuntimeConflict(_))
+        ));
+
+        store
+            .client()
+            .await?
+            .batch_execute(&format!("DROP SCHEMA {} CASCADE", tables.quoted_schema))
+            .await
+            .map_err(backend)
     }
 
     #[tokio::test]

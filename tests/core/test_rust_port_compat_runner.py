@@ -56,7 +56,27 @@ def test_capability_overrides_select_one_writer_per_manifest_capability() -> Non
     }
     assert writers["deterministic-contracts"] == "rust"
     assert writers["chroma-adapter"] == "python-adapter"
-    assert writers["server-rest-sse-mcp-cli"] == "rust"
+    assert writers["workflow-runtime"] == "python"
+    assert writers["server-rest-sse-mcp-cli"] == "python"
+
+
+def test_active_writers_only_cut_over_when_manifest_marks_rust_ready() -> None:
+    runner = _runner()
+    manifest = json.loads(json.dumps(MANIFEST))
+    ownership = next(
+        item
+        for item in manifest["capability_ownership"]
+        if item["capability"] == "workflow-runtime"
+    )
+    modes = runner._capability_modes(
+        manifest=manifest,
+        implementation_mode="rust",
+        overrides={key: None for key in runner._capability_configurations(manifest)},
+    )
+
+    assert runner._active_writers(manifest, modes)["workflow-runtime"] == "python"
+    ownership["rust_cutover_ready"] = True
+    assert runner._active_writers(manifest, modes)["workflow-runtime"] == "rust"
 
 
 def test_environment_exports_global_and_coarse_capability_modes(tmp_path: Path) -> None:
@@ -125,20 +145,20 @@ def test_verification_harness_fingerprint_changes_with_runner_or_config(
 
 
 @pytest.mark.parametrize("layer", ["core", "parser", "application"])
-def test_release_layers_select_only_explicit_ci_gates(layer: str) -> None:
+def test_milestone_layers_select_only_explicit_ci_gates(layer: str) -> None:
     runner = _runner()
 
-    expression = runner._marker_expression(layer, release=True)
+    expression = runner._marker_expression(layer, profile="milestone")
 
     assert expression.startswith("(ci or ci_full)")
     for excluded in ("manual", "llm_real", "legacy", "requires_ollama"):
         assert f"not {excluded}" in expression
 
 
-def test_sink_release_layer_runs_deterministic_unmarked_suite() -> None:
+def test_sink_milestone_layer_runs_deterministic_unmarked_suite() -> None:
     runner = _runner()
 
-    expression = runner._marker_expression("sink", release=True)
+    expression = runner._marker_expression("sink", profile="milestone")
 
     assert "ci or ci_full" not in expression
     for excluded in (
@@ -152,14 +172,19 @@ def test_sink_release_layer_runs_deterministic_unmarked_suite() -> None:
         assert f"not {excluded}" in expression
 
 
-def test_normal_layer_marker_expressions_remain_compatible() -> None:
+def test_fast_profile_marker_expressions() -> None:
     runner = _runner()
 
-    assert runner._marker_expression("core", release=False) == "ci and not ci_full"
-    assert runner._marker_expression("parser", release=False) == "ci and not ci_full"
-    assert runner._marker_expression("sink", release=False) == (
-        "not manual and not integration and not longrun and not requires_ollama"
-    )
+    feature = runner._marker_expression("core", profile="feature")
+    assert feature.startswith("(ci or regression) and not slow")
+    regression = runner._marker_expression("core", profile="regression")
+    assert regression.startswith("regression and not slow")
+    for expression in (feature, regression):
+        for excluded in ("manual", "llm_real", "legacy", "requires_ollama"):
+            assert f"not {excluded}" in expression
+    sink = runner._marker_expression("sink", profile="feature")
+    assert "not slow" in sink
+    assert "not integration" in sink
 
 
 def test_release_core_groups_cover_every_test_file_once_and_are_bounded(
@@ -177,8 +202,8 @@ def test_release_core_groups_cover_every_test_file_once_and_are_bounded(
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("", encoding="utf-8")
 
-    first = runner._target_groups(layer="core", tests_path=tmp_path, release=True)
-    second = runner._target_groups(layer="core", tests_path=tmp_path, release=True)
+    first = runner._target_groups(layer="core", tests_path=tmp_path, profile="milestone")
+    second = runner._target_groups(layer="core", tests_path=tmp_path, profile="milestone")
     flattened = [path for group in first for path in group]
     expected = sorted(
         tmp_path.rglob("test*.py"),
@@ -202,12 +227,12 @@ def test_release_parser_groups_cover_every_test_file_once(tmp_path: Path) -> Non
     for path in expected:
         path.write_text("", encoding="utf-8")
 
-    groups = runner._target_groups(layer="parser", tests_path=tmp_path, release=True)
+    groups = runner._target_groups(layer="parser", tests_path=tmp_path, profile="milestone")
 
     assert [path for group in groups for path in group] == expected
     assert all(len(group) == 1 for group in groups)
     assert runner._target_groups(
-        layer="parser", tests_path=tmp_path, release=False
+        layer="parser", tests_path=tmp_path, profile="feature"
     ) == [[tmp_path]]
 
 
@@ -220,10 +245,10 @@ def test_release_core_groups_split_at_bound_and_normal_core_stays_one_group(
         (tmp_path / f"test_{index:02d}.py").write_text("", encoding="utf-8")
 
     release_groups = runner._target_groups(
-        layer="core", tests_path=tmp_path, release=True
+        layer="core", tests_path=tmp_path, profile="milestone"
     )
     normal_groups = runner._target_groups(
-        layer="core", tests_path=tmp_path, release=False
+        layer="core", tests_path=tmp_path, profile="feature"
     )
 
     assert [len(group) for group in release_groups] == [1, 1, 1]
@@ -231,23 +256,24 @@ def test_release_core_groups_split_at_bound_and_normal_core_stays_one_group(
 
 
 @pytest.mark.parametrize(
-    ("layer", "release", "returncode", "expected"),
+    ("layer", "profile", "returncode", "expected"),
     [
-        ("core", True, 0, True),
-        ("core", True, 5, True),
-        ("core", True, 1, False),
-        ("core", False, 5, False),
-        ("parser", True, 5, True),
-        ("parser", True, 1, False),
+        ("core", "milestone", 0, True),
+        ("core", "milestone", 5, True),
+        ("core", "milestone", 1, False),
+        ("core", "feature", 5, False),
+        ("parser", "milestone", 5, True),
+        ("parser", "milestone", 1, False),
+        ("application", "regression", 5, True),
     ],
 )
 def test_no_selected_tests_is_success_only_for_file_isolated_release_layers(
-    layer: str, release: bool, returncode: int, expected: bool
+    layer: str, profile: str, returncode: int, expected: bool
 ) -> None:
     runner = _runner()
 
     assert runner._command_succeeded(
-        layer=layer, release=release, returncode=returncode
+        layer=layer, profile=profile, returncode=returncode
     ) is expected
 
 
@@ -263,7 +289,7 @@ def test_release_core_resume_reuses_only_matching_successful_commands() -> None:
         command=command,
         prior_runs=prior,
         layer="core",
-        release=True,
+        profile="milestone",
     )
 
     assert reused == {**prior[0], "reused": True}
@@ -272,7 +298,7 @@ def test_release_core_resume_reuses_only_matching_successful_commands() -> None:
             command=["python", "missing.py"],
             prior_runs=prior,
             layer="core",
-            release=True,
+            profile="milestone",
         )
         is None
     )
@@ -284,8 +310,8 @@ def test_release_core_resume_accepts_recorded_code_five_only_in_release() -> Non
     prior = [{"command": command, "returncode": 5, "duration_seconds": 0.1}]
 
     assert runner._reusable_run(
-        command=command, prior_runs=prior, layer="core", release=True
+        command=command, prior_runs=prior, layer="core", profile="milestone"
     ) is not None
     assert runner._reusable_run(
-        command=command, prior_runs=prior, layer="core", release=False
+        command=command, prior_runs=prior, layer="core", profile="feature"
     ) is None

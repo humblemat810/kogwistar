@@ -276,6 +276,14 @@ class StateBackedBudgetLedger:
     def call_used(self) -> int:
         return int(self.state.get("call_used", 0) or 0)
 
+    @property
+    def cost_budget(self) -> float:
+        return float(self.state.get("cost_budget", 0.0) or 0.0)
+
+    @property
+    def cost_used(self) -> float:
+        return float(self.state.get("cost_used", 0.0) or 0.0)
+
     def debit_step(
         self,
         amount: int = 1,
@@ -475,17 +483,36 @@ class StateBackedBudgetLedger:
         )
 
     def should_suspend_for_budget(self) -> bool:
-        if self.total and self.used >= self.total:
-            return True
-        if self.time_budget_ms and self.time_used_ms >= self.time_budget_ms:
-            return True
-        if self.rate_limit and self.rate_used >= self.rate_limit:
-            return True
-        if self.step_budget and self.step_used >= self.step_budget:
-            return True
-        if self.call_budget and self.call_used >= self.call_budget:
-            return True
-        return False
+        checks = [
+            (self.total and self.used >= self.total, "token"),
+            (self.time_budget_ms and self.time_used_ms >= self.time_budget_ms, "time"),
+            (self.rate_limit and self.rate_used >= self.rate_limit, "rate"),
+            (self.step_budget and self.step_used >= self.step_budget, "step"),
+            (self.call_budget and self.call_used >= self.call_budget, "call"),
+            (self.cost_budget > 0 and self.cost_used >= self.cost_budget, "cost"),
+        ]
+        reason = next((reason for exhausted, reason in checks if exhausted), None)
+        python_value = {"should_suspend": reason is not None, "reason": reason}
+        from kogwistar._rust_bridge import runtime_decide_budget_suspend
+
+        decision = runtime_decide_budget_suspend(
+            payload={
+                "token_budget": self.total,
+                "token_used": self.used,
+                "time_budget_ms": self.time_budget_ms,
+                "time_used_ms": self.time_used_ms,
+                "rate_limit": self.rate_limit,
+                "rate_used": self.rate_used,
+                "step_budget": self.step_budget,
+                "step_used": self.step_used,
+                "call_budget": self.call_budget,
+                "call_used": self.call_used,
+                "cost_budget": self.cost_budget,
+                "cost_used": self.cost_used,
+            },
+            python_value=python_value,
+        )
+        return bool(decision["should_suspend"])
 
     def is_pinned_until_refresh(self, *, now_ms: int) -> bool:
         ready_ms = self.rate_window_ready_ms

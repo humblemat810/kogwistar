@@ -10,6 +10,7 @@ name = "_rust"
 crate-type = ["cdylib"]
 
 [dependencies]
+kogwistar-api = { path = "../kogwistar-api" }
 kogwistar-contracts = { path = "../kogwistar-contracts" }
 kogwistar-engine = { path = "../kogwistar-engine" }
 kogwistar-runtime = { path = "../kogwistar-runtime" }

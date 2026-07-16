@@ -2486,6 +2486,22 @@ enum PostgresStoreOperation {
     RequestServerRunCancel {
         run_id: String,
     },
+    ApplyRecordedRuntimeTransition {
+        transition: Box<RecordedRuntimeTransition>,
+        #[serde(default)]
+        abort_after_writes: bool,
+    },
+    ApplyClaimedRecordedRuntimeTransition {
+        handoff: RecordedWorkerHandoff,
+        transition: Box<RecordedRuntimeTransition>,
+        #[serde(default)]
+        abort_after_writes: bool,
+    },
+    ReadRecordedRuntimeState {
+        run_id: String,
+        workflow_id: String,
+        conversation_id: String,
+    },
     EnqueueIndexJob {
         job_id: String,
         #[serde(default = "default_namespace")]
@@ -3188,6 +3204,39 @@ async fn postgres_store_operation_json(
             store.request_server_run_cancel(&run_id).await?;
             Ok(Value::Null)
         }
+        PostgresStoreOperation::ApplyRecordedRuntimeTransition {
+            transition,
+            abort_after_writes,
+        } => serde_json::to_value(
+            store
+                .apply_recorded_runtime_transition(*transition, abort_after_writes)
+                .await?,
+        )
+        .map_err(|error| PostgresStoreError::TransactionAborted(error.to_string())),
+        PostgresStoreOperation::ApplyClaimedRecordedRuntimeTransition {
+            handoff,
+            transition,
+            abort_after_writes,
+        } => serde_json::to_value(
+            store
+                .apply_claimed_recorded_runtime_transition(
+                    handoff,
+                    *transition,
+                    abort_after_writes,
+                )
+                .await?,
+        )
+        .map_err(|error| PostgresStoreError::TransactionAborted(error.to_string())),
+        PostgresStoreOperation::ReadRecordedRuntimeState {
+            run_id,
+            workflow_id,
+            conversation_id,
+        } => serde_json::to_value(
+            store
+                .read_recorded_runtime_state(&run_id, &workflow_id, &conversation_id)
+                .await?,
+        )
+        .map_err(|error| PostgresStoreError::TransactionAborted(error.to_string())),
         PostgresStoreOperation::EnqueueIndexJob {
             job_id,
             namespace,
@@ -3717,6 +3766,23 @@ async fn postgres_batch_operation_json(
             uow.request_server_run_cancel(&run_id).await?;
             Ok(Value::Null)
         }
+        PostgresStoreOperation::ApplyRecordedRuntimeTransition {
+            transition,
+            abort_after_writes,
+        } => serde_json::to_value(
+            uow.apply_recorded_runtime_transition(*transition, abort_after_writes)
+                .await?,
+        )
+        .map_err(|error| PostgresStoreError::TransactionAborted(error.to_string())),
+        PostgresStoreOperation::ApplyClaimedRecordedRuntimeTransition {
+            handoff,
+            transition,
+            abort_after_writes,
+        } => serde_json::to_value(
+            uow.apply_claimed_recorded_runtime_transition(handoff, *transition, abort_after_writes)
+                .await?,
+        )
+        .map_err(|error| PostgresStoreError::TransactionAborted(error.to_string())),
         PostgresStoreOperation::EnqueueIndexJob {
             job_id,
             namespace,
@@ -3952,6 +4018,8 @@ fn postgres_store_error_code(error: &PostgresStoreError) -> &'static str {
         | PostgresStoreError::EmptyNamespace
         | PostgresStoreError::Backend(_)
         | PostgresStoreError::InvalidPayload(_)
+        | PostgresStoreError::RecordedRuntime(_)
+        | PostgresStoreError::RecordedRuntimeConflict(_)
         | PostgresStoreError::Store(_) => STORE_PERSISTENCE_FAILED,
     }
 }
@@ -4132,6 +4200,11 @@ fn validate_postgres_operation(value: &Value) -> Result<(), (&'static str, Strin
             "finished_at_ms",
             "cancel_requested",
         ][..],
+        "apply_recorded_runtime_transition" => &["kind", "transition", "abort_after_writes"][..],
+        "apply_claimed_recorded_runtime_transition" => {
+            &["kind", "handoff", "transition", "abort_after_writes"][..]
+        }
+        "read_recorded_runtime_state" => &["kind", "run_id", "workflow_id", "conversation_id"][..],
         "enqueue_index_job" => &[
             "kind",
             "job_id",
@@ -4376,6 +4449,84 @@ fn workflow_terminal_reachable(payload_json: &str) -> PyResult<bool> {
     contracts::workflow_terminal_reachable_from_str(payload_json).map_err(contract_error)
 }
 
+#[pyfunction]
+fn runtime_select_route(payload_json: &str) -> PyResult<String> {
+    kogwistar_runtime::select_runtime_route_from_str(payload_json)
+        .map_err(|error| RustContractValueError::new_err(error.to_string()))
+}
+
+#[pyfunction]
+fn runtime_plan_successors(payload_json: &str) -> PyResult<String> {
+    kogwistar_runtime::plan_runtime_successors_from_str(payload_json)
+        .map_err(|error| RustContractValueError::new_err(error.to_string()))
+}
+
+#[pyfunction]
+fn runtime_apply_join_arrival(payload_json: &str) -> PyResult<String> {
+    kogwistar_runtime::apply_runtime_join_arrival_from_str(payload_json)
+        .map_err(|error| RustContractValueError::new_err(error.to_string()))
+}
+
+#[pyfunction]
+fn runtime_decide_retry(payload_json: &str) -> PyResult<String> {
+    kogwistar_runtime::decide_runtime_retry_from_str(payload_json)
+        .map_err(|error| RustContractValueError::new_err(error.to_string()))
+}
+
+#[pyfunction]
+fn runtime_plan_nested_invocation(payload_json: &str) -> PyResult<String> {
+    kogwistar_runtime::plan_runtime_nested_invocation_from_str(payload_json)
+        .map_err(|error| RustContractValueError::new_err(error.to_string()))
+}
+
+#[pyfunction]
+fn runtime_decide_dispatch(payload_json: &str) -> PyResult<String> {
+    kogwistar_runtime::decide_runtime_dispatch_from_str(payload_json)
+        .map_err(|error| RustContractValueError::new_err(error.to_string()))
+}
+
+#[pyfunction]
+fn runtime_decide_budget_suspend(payload_json: &str) -> PyResult<String> {
+    kogwistar_runtime::decide_runtime_budget_suspend_from_str(payload_json)
+        .map_err(|error| RustContractValueError::new_err(error.to_string()))
+}
+
+#[pyfunction]
+fn runtime_scheduler_tick(payload_json: &str) -> PyResult<String> {
+    kogwistar_runtime::tick_runtime_scheduler_from_str(payload_json)
+        .map_err(|error| RustContractValueError::new_err(error.to_string()))
+}
+
+#[pyfunction]
+fn api_health(payload_json: &str) -> PyResult<String> {
+    kogwistar_api::health_response_from_str(payload_json)
+        .map_err(|error| RustContractValueError::new_err(error.to_string()))
+}
+
+#[pyfunction]
+fn api_authorize(payload_json: &str) -> PyResult<String> {
+    kogwistar_api::authorize_from_str(payload_json)
+        .map_err(|error| RustContractValueError::new_err(error.to_string()))
+}
+
+#[pyfunction]
+fn api_sse_frame(payload_json: &str) -> PyResult<String> {
+    kogwistar_api::sse_frame_from_str(payload_json)
+        .map_err(|error| RustContractValueError::new_err(error.to_string()))
+}
+
+#[pyfunction]
+fn api_mcp_result(payload_json: &str) -> PyResult<String> {
+    kogwistar_api::mcp_result_from_str(payload_json)
+        .map_err(|error| RustContractValueError::new_err(error.to_string()))
+}
+
+#[pyfunction]
+fn api_cli_health(payload_json: &str) -> PyResult<String> {
+    kogwistar_api::cli_health_from_str(payload_json)
+        .map_err(|error| RustContractValueError::new_err(error.to_string()))
+}
+
 /// Build an isolated Rust in-memory store from a JSON snapshot, then inspect it.
 /// This boundary has no handle to Python-owned backend or meta-store state.
 #[pyfunction]
@@ -4421,6 +4572,19 @@ fn _rust(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(replay_entity_events, module)?)?;
     module.add_function(wrap_pyfunction!(workflow_may_reach_join, module)?)?;
     module.add_function(wrap_pyfunction!(workflow_terminal_reachable, module)?)?;
+    module.add_function(wrap_pyfunction!(runtime_select_route, module)?)?;
+    module.add_function(wrap_pyfunction!(runtime_plan_successors, module)?)?;
+    module.add_function(wrap_pyfunction!(runtime_apply_join_arrival, module)?)?;
+    module.add_function(wrap_pyfunction!(runtime_decide_retry, module)?)?;
+    module.add_function(wrap_pyfunction!(runtime_plan_nested_invocation, module)?)?;
+    module.add_function(wrap_pyfunction!(runtime_decide_dispatch, module)?)?;
+    module.add_function(wrap_pyfunction!(runtime_decide_budget_suspend, module)?)?;
+    module.add_function(wrap_pyfunction!(runtime_scheduler_tick, module)?)?;
+    module.add_function(wrap_pyfunction!(api_health, module)?)?;
+    module.add_function(wrap_pyfunction!(api_authorize, module)?)?;
+    module.add_function(wrap_pyfunction!(api_sse_frame, module)?)?;
+    module.add_function(wrap_pyfunction!(api_mcp_result, module)?)?;
+    module.add_function(wrap_pyfunction!(api_cli_health, module)?)?;
     module.add_function(wrap_pyfunction!(store_memory_read_json, module)?)?;
     module.add_function(wrap_pyfunction!(store_sqlite_json, module)?)?;
     module.add_function(wrap_pyfunction!(store_postgres_json, module)?)?;

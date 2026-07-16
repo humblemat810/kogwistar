@@ -2,6 +2,7 @@
 members = [
     "crates/kogwistar-contracts",
     "crates/kogwistar-engine",
+    "crates/kogwistar-api",
     "crates/kogwistar-python",
     "crates/kogwistar-runtime",
     "crates/kogwistar-store",
@@ -18,7 +19,9 @@ rust-version = "1.91"
 license = "MIT"
 
 [workspace.dependencies]
+axum = "0.8"
 hex = "0.4"
+jsonwebtoken = "9"
 deadpool-postgres = { version = "0.14", features = ["rt_tokio_1"] }
 pyo3 = { version = "0.27", features = ["extension-module", "abi3-py312"] }
 proptest = "1.6"
@@ -27,6 +30,7 @@ serde_json = { version = "1", features = ["preserve_order"] }
 rusqlite = { version = "0.37", features = ["bundled"] }
 sha2 = "0.10"
 thiserror = "2"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync"] }
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "sync"] }
+tower = { version = "0.5", features = ["util"] }
 tokio-postgres = "0.7"
-uuid = { version = "1", features = ["v5"] }
+uuid = { version = "1", features = ["v4", "v5"] }

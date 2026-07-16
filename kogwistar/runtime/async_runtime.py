@@ -230,14 +230,11 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
             parent_state=parent_state,
             invocation=invocation,
         )
-        child_run_id = getattr(invocation, "run_id", None) or str(
-            stable_id(
-                "workflow.child_run",
-                parent_run_id,
-                str(getattr(invocation, "workflow_id", "")),
-                str(getattr(invocation, "result_state_key", "") or ""),
-                str(getattr(invocation, "turn_node_id", "") or turn_node_id),
-            )
+        plan = self._workflow_invocation_plan(
+            invocation=invocation,
+            conversation_id=conversation_id,
+            turn_node_id=turn_node_id,
+            parent_run_id=parent_run_id,
         )
         inherited_cancel = _CANCEL_REQUESTED_CTX.get() or self.cancel_requested
 
@@ -250,12 +247,10 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
         try:
             return await self.run(
                 workflow_id=str(getattr(invocation, "workflow_id", "")),
-                conversation_id=str(
-                    getattr(invocation, "conversation_id", None) or conversation_id
-                ),
-                turn_node_id=str(getattr(invocation, "turn_node_id", None) or turn_node_id),
+                conversation_id=plan["conversation_id"],
+                turn_node_id=plan["turn_node_id"],
                 initial_state=child_state,
-                run_id=child_run_id,
+                run_id=plan["child_run_id"],
                 cache_dir=cache_dir,
             )
         finally:
@@ -837,17 +832,93 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
                 return
 
             prioritize_next = str(node_id) in join_merge_nodes
-            for idx, e in enumerate(next_edges):
-                dst = str((getattr(e, "target_ids", None) or [None])[0])
-                if not dst:
-                    continue
+            from kogwistar._rust_bridge import (
+                runtime_implementation_mode,
+                runtime_plan_successors,
+            )
 
-                next_token = token_id if idx == 0 else str(uuid.uuid4())
-                next_parent = None if idx == 0 else token_id
-                next_mask = int(may_reach_join.get(dst, 0))
+            valid_destinations = [
+                str((getattr(edge, "target_ids", None) or [None])[0])
+                for edge in next_edges
+                if (getattr(edge, "target_ids", None) or [None])[0]
+            ]
+            runtime_mode = runtime_implementation_mode()
+            successor_payload = {
+                        "token_id": str(token_id),
+                        "parent_token_id": parent_token_id,
+                        "step_seq": int(_step_seq),
+                        "current_join_mask": int(mask),
+                        "join_outstanding": list(join_outstanding),
+                        "successors": [
+                            {
+                                "node_id": dst,
+                                "join_mask": int(may_reach_join.get(dst, 0)),
+                            }
+                            for dst in valid_destinations
+                        ],
+                    }
+            native_plan = None
+            if runtime_mode == "shadow":
+                oracle_outstanding = list(join_outstanding)
+                oracle_tokens = []
+                for index, successor in enumerate(successor_payload["successors"]):
+                    successor_mask = int(successor["join_mask"])
+                    if index == 0:
+                        for bit in _iter_bits(int(mask) & ~successor_mask):
+                            oracle_outstanding[bit] = max(0, oracle_outstanding[bit] - 1)
+                        for bit in _iter_bits(successor_mask & ~int(mask)):
+                            oracle_outstanding[bit] += 1
+                        oracle_token = str(token_id)
+                        oracle_parent = parent_token_id
+                    else:
+                        for bit in _iter_bits(successor_mask):
+                            oracle_outstanding[bit] += 1
+                        oracle_token = "<spawned>"
+                        oracle_parent = str(token_id)
+                    oracle_tokens.append(
+                        {
+                            "node_id": str(successor["node_id"]),
+                            "join_mask": successor_mask,
+                            "token_id": oracle_token,
+                            "parent_token_id": oracle_parent,
+                            "spawned": index > 0,
+                        }
+                    )
+                runtime_plan_successors(
+                    payload=successor_payload,
+                    python_value={
+                        "tokens": oracle_tokens,
+                        "join_outstanding": oracle_outstanding,
+                    },
+                )
+            elif runtime_mode == "rust":
+                native_plan = runtime_plan_successors(payload=successor_payload)
+                join_outstanding[:] = [
+                    int(value) for value in native_plan["join_outstanding"]
+                ]
+
+            planned_tokens = (
+                native_plan["tokens"]
+                if native_plan is not None
+                else [
+                    {
+                        "node_id": dst,
+                        "join_mask": int(may_reach_join.get(dst, 0)),
+                        "token_id": str(token_id if idx == 0 else uuid.uuid4()),
+                        "parent_token_id": None if idx == 0 else token_id,
+                        "spawned": idx > 0,
+                    }
+                    for idx, dst in enumerate(valid_destinations)
+                ]
+            )
+            for idx, planned in enumerate(planned_tokens):
+                dst = str(planned["node_id"])
+                next_token = str(planned["token_id"])
+                next_parent = planned.get("parent_token_id")
+                next_mask = int(planned["join_mask"])
                 prioritize_dispatch = bool(prioritize_next)
 
-                if idx > 0:
+                if planned["spawned"]:
                     try:
                         mq.put_nowait(
                             {
@@ -861,36 +932,78 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
                     except queue.Full:
                         pass
 
-                if idx == 0:
+                if native_plan is None and idx == 0:
                     leaving = int(mask) & ~int(next_mask)
                     if leaving:
                         _dec(leaving)
                     gained = int(next_mask) & ~int(mask)
                     if gained:
                         _inc(gained)
-                else:
+                elif native_plan is None:
                     _inc(int(next_mask))
 
                 if dst in join_merge_nodes:
-                    join_bit = _bit_for_join(dst)
-                    if int(next_mask) & join_bit:
-                        _dec(join_bit)
-                        next_mask = _mask_without_join(int(next_mask), dst)
                     waiters = join_waiters.setdefault(dst, [])
-                    waiters.append((int(next_mask), str(next_token), next_parent))
-                    _persist_rt_join_snapshot()
                     join_idx = join_pos.get(dst)
-                    if join_idx is None or join_outstanding[join_idx] != 0:
-                        continue
-                    merged_mask = int(waiters[0][0])
-                    next_token, next_parent = waiters[0][1], waiters[0][2]
-                    for wm, _tok, _parent in waiters:
-                        _dec(int(wm))
-                    for wm, _tok, _parent in waiters[1:]:
-                        merged_mask &= int(wm)
-                    _inc(int(merged_mask))
-                    waiters.clear()
-                    next_mask = int(merged_mask)
+                    if runtime_mode == "rust" and join_idx is not None:
+                        from kogwistar._rust_bridge import runtime_apply_join_arrival
+
+                        native_join = runtime_apply_join_arrival(
+                            payload={
+                                "join_index": int(join_idx),
+                                "join_outstanding": list(join_outstanding),
+                                "waiters": [
+                                    {
+                                        "join_mask": int(waiter_mask),
+                                        "token_id": str(waiter_token),
+                                        "parent_token_id": waiter_parent,
+                                    }
+                                    for waiter_mask, waiter_token, waiter_parent in waiters
+                                ],
+                                "arrival": {
+                                    "join_mask": int(next_mask),
+                                    "token_id": str(next_token),
+                                    "parent_token_id": next_parent,
+                                },
+                                "merge": True,
+                            }
+                        )
+                        join_outstanding[:] = [
+                            int(value) for value in native_join["join_outstanding"]
+                        ]
+                        waiters[:] = [
+                            (
+                                int(waiter["join_mask"]),
+                                str(waiter["token_id"]),
+                                waiter.get("parent_token_id"),
+                            )
+                            for waiter in native_join["waiters"]
+                        ]
+                        released = native_join.get("released")
+                        _persist_rt_join_snapshot()
+                        if released is None:
+                            continue
+                        next_mask = int(released["join_mask"])
+                        next_token = str(released["token_id"])
+                        next_parent = released.get("parent_token_id")
+                    else:
+                        join_bit = _bit_for_join(dst)
+                        if int(next_mask) & join_bit:
+                            _dec(join_bit)
+                            next_mask = _mask_without_join(int(next_mask), dst)
+                        waiters.append((int(next_mask), str(next_token), next_parent))
+                        _persist_rt_join_snapshot()
+                        if join_idx is None or join_outstanding[join_idx] != 0:
+                            continue
+                        merged_mask = int(waiters[0][0])
+                        next_token, next_parent = waiters[0][1], waiters[0][2]
+                        for waiter_mask, _tok, _parent in waiters:
+                            _dec(int(waiter_mask))
+                        for waiter_mask, _tok, _parent in waiters[1:]:
+                            merged_mask &= int(waiter_mask)
+                        _inc(int(merged_mask))
+                        waiters.clear()
+                        next_mask = int(merged_mask)
                     prioritize_dispatch = True
                     _persist_rt_join_snapshot()
 
@@ -917,7 +1030,17 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
                 await _cancel_and_drain_inflight(inflight)
                 break
 
-            while pending and len(inflight) < max(1, int(self.max_workers)):
+            queued = [
+                (str(node_id), int(mask), str(token_id), parent_token_id)
+                for _launch_seq, mask, node_id, token_id, parent_token_id in pending
+            ]
+            tick = self._runtime_scheduler_tick(
+                pending=queued,
+                inflight=len(inflight),
+                max_workers=self.max_workers,
+                cancelling=False,
+            )
+            for _ in tick["dispatch"]:
                 item = pending.pop(0)
                 task = asyncio.create_task(_run_one(item))
                 inflight.add(task)

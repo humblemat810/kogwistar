@@ -9,8 +9,12 @@ from .._rust_bridge import (
     RustParityError,
     json_contract_compatible,
     runtime_apply_state_update,
+    runtime_decide_dispatch,
     runtime_implementation_mode,
+    runtime_plan_nested_invocation,
+    runtime_scheduler_tick,
 )
+from ..id_provider import stable_id
 from .models import StateUpdate, WorkflowDesignArtifact, WorkflowInvocationRequest, WorkflowState
 from .routing import RouteComputation, compute_route_next
 
@@ -256,6 +260,115 @@ class BaseRuntime:
         deps["workflow_runtime"] = self  # type: ignore[index]
         child_state["_deps"] = deps  # type: ignore[index]
         return child_state
+
+    @staticmethod
+    def _workflow_invocation_plan(
+        *,
+        invocation: WorkflowInvocationRequest,
+        conversation_id: str,
+        turn_node_id: str,
+        parent_run_id: str,
+    ) -> dict[str, str]:
+        effective_turn_node_id = invocation.turn_node_id or turn_node_id
+        python_value = {
+            "child_run_id": invocation.run_id
+            or str(
+                stable_id(
+                    "workflow.child_run",
+                    parent_run_id,
+                    invocation.workflow_id,
+                    invocation.result_state_key or "",
+                    effective_turn_node_id,
+                )
+            ),
+            "conversation_id": invocation.conversation_id or conversation_id,
+            "turn_node_id": effective_turn_node_id,
+            "result_state_key": invocation.result_state_key
+            or f"workflow_result::{invocation.workflow_id}",
+        }
+        return runtime_plan_nested_invocation(
+            payload={
+                "parent_run_id": parent_run_id,
+                "workflow_id": invocation.workflow_id,
+                "result_state_key": invocation.result_state_key,
+                "run_id": invocation.run_id,
+                "parent_conversation_id": conversation_id,
+                "conversation_id": invocation.conversation_id,
+                "parent_turn_node_id": turn_node_id,
+                "turn_node_id": invocation.turn_node_id,
+            },
+            python_value=python_value,
+        )
+
+    @staticmethod
+    def _runtime_dispatch_decision(
+        *, max_workers: int, inflight: int, pending: int, cancelling: bool
+    ) -> dict[str, Any]:
+        worker_limit = max(1, int(max_workers))
+        launch_capacity = (
+            0
+            if cancelling
+            else min(max(0, worker_limit - int(inflight)), int(pending))
+        )
+        python_value = {
+            "worker_limit": worker_limit,
+            "launch_capacity": launch_capacity,
+            "should_launch": launch_capacity > 0,
+            "should_drain": bool(cancelling and inflight > 0),
+            "cancellation_complete": bool(
+                cancelling and inflight == 0 and pending == 0
+            ),
+        }
+        return runtime_decide_dispatch(
+            payload={
+                "max_workers": int(max_workers),
+                "inflight": int(inflight),
+                "pending": int(pending),
+                "cancelling": bool(cancelling),
+            },
+            python_value=python_value,
+        )
+
+    @staticmethod
+    def _runtime_scheduler_tick(
+        *,
+        pending: list[tuple[str, int, str, str | None]],
+        inflight: int,
+        max_workers: int,
+        cancelling: bool,
+    ) -> dict[str, Any]:
+        payload_pending = [
+            {
+                "node_id": str(node_id),
+                "join_mask": int(join_mask),
+                "token_id": str(token_id),
+                "parent_token_id": parent_token_id,
+            }
+            for node_id, join_mask, token_id, parent_token_id in pending
+        ]
+        worker_limit = max(1, int(max_workers))
+        dispatch_count = (
+            0
+            if cancelling
+            else min(max(0, worker_limit - int(inflight)), len(pending))
+        )
+        python_value = {
+            "dispatch": payload_pending[:dispatch_count],
+            "pending": payload_pending[dispatch_count:],
+            "should_drain": bool(cancelling and inflight > 0),
+            "cancellation_complete": bool(
+                cancelling and inflight == 0 and not pending
+            ),
+        }
+        return runtime_scheduler_tick(
+            payload={
+                "pending": payload_pending,
+                "inflight": int(inflight),
+                "max_workers": int(max_workers),
+                "cancelling": bool(cancelling),
+            },
+            python_value=python_value,
+        )
 
     def _apply_workflow_invocation_result(
         self,

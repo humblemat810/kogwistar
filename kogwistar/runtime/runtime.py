@@ -689,21 +689,18 @@ class WorkflowRuntime(BaseRuntime):
         child_state = self._child_workflow_initial_state(
             parent_state=parent_state, invocation=invocation
         )
-        child_run_id = invocation.run_id or str(
-            stable_id(
-                "workflow.child_run",
-                parent_run_id,
-                invocation.workflow_id,
-                invocation.result_state_key or "",
-                invocation.turn_node_id or turn_node_id,
-            )
+        plan = self._workflow_invocation_plan(
+            invocation=invocation,
+            conversation_id=conversation_id,
+            turn_node_id=turn_node_id,
+            parent_run_id=parent_run_id,
         )
         return self.run(
             workflow_id=invocation.workflow_id,
-            conversation_id=invocation.conversation_id or conversation_id,
-            turn_node_id=invocation.turn_node_id or turn_node_id,
+            conversation_id=plan["conversation_id"],
+            turn_node_id=plan["turn_node_id"],
             initial_state=child_state,
-            run_id=child_run_id,
+            run_id=plan["child_run_id"],
             cache_dir=cache_dir,
         )
 
@@ -2060,36 +2057,157 @@ class WorkflowRuntime(BaseRuntime):
                                 mq=mq,
                                 status="succeeded",
                             )
-                    # schedule while capacity
-                    while (not cancel_pending) and len(inflight) < self.max_workers:
+                    queued: list[tuple[str, int, str, str | None]] = []
+                    while True:
                         try:
-                            nid, mask, token_id, parent_token_id = (
-                                scheduled_q.get_nowait()
-                            )
-                            pending_tokens.discard(
-                                (str(nid), int(mask), str(token_id), parent_token_id)
-                            )
-                            _persist_rt_join_runtime()
+                            queued.append(scheduled_q.get_nowait())
                         except queue.Empty:
                             break
+                    tick = self._runtime_scheduler_tick(
+                        pending=queued,
+                        inflight=len(inflight),
+                        max_workers=self.max_workers,
+                        cancelling=cancel_pending,
+                    )
+                    for item in tick["pending"]:
+                        scheduled_q.put(
+                            (
+                                str(item["node_id"]),
+                                int(item["join_mask"]),
+                                str(item["token_id"]),
+                                item.get("parent_token_id"),
+                            )
+                        )
+                    for item in tick["dispatch"]:
+                        nid = str(item["node_id"])
+                        mask = int(item["join_mask"])
+                        token_id = str(item["token_id"])
+                        parent_token_id = item.get("parent_token_id")
+                        pending_tokens.discard(
+                            (nid, mask, token_id, parent_token_id)
+                        )
+                        _persist_rt_join_runtime()
 
                         # If this is a join/barrier node, it doesn't execute immediately.
                         if nid in _join_waiters:
                             join_idx = _join_pos.get(nid)
                             join_bit = _bit_for_join(nid)
-                            was_before_join = bool(mask & join_bit)
-                            if was_before_join:
-                                # token reached the join -> no longer "before" this join
-                                _dec(join_bit)
-                                mask = _mask_without_join(mask, nid)
-                            # trace: token arrived at join
-                            try:
-                                join_idx = _join_pos.get(nid)
+                            released: tuple[int, str, str | None] | None = None
+                            collapsed_work_items = 0
+                            from kogwistar._rust_bridge import (
+                                RustParityError,
+                                runtime_apply_join_arrival,
+                                runtime_implementation_mode,
+                            )
+
+                            runtime_mode = runtime_implementation_mode()
+                            native_join = None
+                            if runtime_mode in {"shadow", "rust"} and join_idx is not None:
+                                native_join = runtime_apply_join_arrival(
+                                    payload={
+                                        "join_index": int(join_idx),
+                                        "join_outstanding": list(_join_outstanding),
+                                        "waiters": [
+                                            {
+                                                "join_mask": int(waiter_mask),
+                                                "token_id": str(waiter_token),
+                                                "parent_token_id": waiter_parent,
+                                            }
+                                            for waiter_mask, waiter_token, waiter_parent in _join_waiters.get(nid, [])
+                                        ],
+                                        "arrival": {
+                                            "join_mask": int(mask),
+                                            "token_id": str(token_id),
+                                            "parent_token_id": parent_token_id,
+                                        },
+                                        "merge": bool(_join_is_merge[nid]),
+                                    }
+                                )
+                            if runtime_mode == "rust" and native_join is not None:
+                                _join_outstanding[:] = [
+                                    int(value) for value in native_join["join_outstanding"]
+                                ]
+                                _join_waiters[nid] = [
+                                    (
+                                        int(waiter["join_mask"]),
+                                        str(waiter["token_id"]),
+                                        waiter.get("parent_token_id"),
+                                    )
+                                    for waiter in native_join["waiters"]
+                                ]
+                                native_released = native_join.get("released")
+                                if native_released is not None:
+                                    released = (
+                                        int(native_released["join_mask"]),
+                                        str(native_released["token_id"]),
+                                        native_released.get("parent_token_id"),
+                                    )
+                                collapsed_work_items = int(
+                                    native_join["collapsed_work_items"]
+                                )
+                                outstanding = int(native_join["outstanding"])
+                            else:
+                                if mask & join_bit:
+                                    _dec(join_bit)
+                                    mask = _mask_without_join(mask, nid)
+                                _join_waiters[nid].append(
+                                    (mask, token_id, parent_token_id)
+                                )
                                 outstanding = (
                                     int(_join_outstanding[join_idx])
                                     if join_idx is not None
                                     else 0
                                 )
+                                if not _join_is_merge[nid]:
+                                    released = (mask, token_id, parent_token_id)
+                                elif outstanding == 0:
+                                    waiters = list(_join_waiters.get(nid, []))
+                                    if waiters:
+                                        merged_mask = int(waiters[0][0])
+                                        for waiter_mask, _tok, _parent in waiters:
+                                            _dec(int(waiter_mask))
+                                        for waiter_mask, _tok, _parent in waiters[1:]:
+                                            merged_mask &= int(waiter_mask)
+                                        _inc(merged_mask)
+                                        released = (
+                                            merged_mask,
+                                            str(waiters[0][1]),
+                                            waiters[0][2],
+                                        )
+                                        collapsed_work_items = max(
+                                            0, len(waiters) - 1
+                                        )
+                                        _join_waiters[nid] = []
+                                if runtime_mode == "shadow" and native_join is not None:
+                                    python_join = {
+                                        "join_outstanding": list(_join_outstanding),
+                                        "waiters": [
+                                            {
+                                                "join_mask": int(waiter_mask),
+                                                "token_id": str(waiter_token),
+                                                "parent_token_id": waiter_parent,
+                                            }
+                                            for waiter_mask, waiter_token, waiter_parent in _join_waiters[nid]
+                                        ],
+                                        "released": (
+                                            {
+                                                "join_mask": int(released[0]),
+                                                "token_id": str(released[1]),
+                                                "parent_token_id": released[2],
+                                            }
+                                            if released is not None
+                                            else None
+                                        ),
+                                        "collapsed_work_items": int(collapsed_work_items),
+                                        "outstanding": int(outstanding),
+                                    }
+                                    if native_join != python_join:
+                                        raise RustParityError(
+                                            "Rust parity mismatch for runtime join arrival: "
+                                            f"python={python_join!r}, rust={native_join!r}"
+                                        )
+                            # trace: token arrived at join
+                            try:
                                 tcj = TraceContext(
                                     run_id=str(run_id),
                                     token_id=str(token_id),
@@ -2111,16 +2229,8 @@ class WorkflowRuntime(BaseRuntime):
                                 )
                             except Exception:
                                 pass
-
-                            _join_waiters[nid].append((mask, token_id, parent_token_id))
                             # trace: token waiting at join
                             try:
-                                join_idx = _join_pos.get(nid)
-                                outstanding = (
-                                    int(_join_outstanding[join_idx])
-                                    if join_idx is not None
-                                    else 0
-                                )
                                 tcj = TraceContext(
                                     run_id=str(run_id),
                                     token_id=str(token_id),
@@ -2144,17 +2254,13 @@ class WorkflowRuntime(BaseRuntime):
                                 pass
 
                             if _join_is_merge[nid]:
-                                if join_idx is None or _join_outstanding[join_idx] != 0:
-                                    _persist_rt_join_runtime()
-                                    continue
-                                waiters = list(_join_waiters.get(nid, []))
-                                if not waiters:
+                                if released is None:
                                     _persist_rt_join_runtime()
                                     continue
                                 try:
                                     tcj = TraceContext(
                                         run_id=str(run_id),
-                                        token_id=str(waiters[0][1]),
+                                        token_id=str(released[1]),
                                         step_seq=int(step_seq),
                                         node_id=str(nid),
                                         attempt=1,
@@ -2173,19 +2279,11 @@ class WorkflowRuntime(BaseRuntime):
                                     )
                                 except Exception:
                                     pass
-                                _join_waiters[nid] = []
                                 # N join arrivals collapse into one executable token.
                                 # Keep one outstanding work item for the released join step.
-                                _work_done(max(0, len(waiters) - 1))
-                                merged_mask = int(waiters[0][0])
-                                token_id = str(waiters[0][1])
-                                parent_token_id = waiters[0][2]
-                                for wm, _tok, _parent in waiters:
-                                    _dec(int(wm))
-                                for wm, _tok, _parent in waiters[1:]:
-                                    merged_mask &= int(wm)
-                                _inc(int(merged_mask))
-                                mask = int(merged_mask)
+                                _work_done(collapsed_work_items)
+                            if released is not None:
+                                mask, token_id, parent_token_id = released
                             _persist_rt_join_runtime()
 
                         inflight_tokens.add(
@@ -2593,9 +2691,122 @@ class WorkflowRuntime(BaseRuntime):
                         _work_done(1)
                         continue
 
-                    # continuation token
+                    from kogwistar._rust_bridge import (
+                        runtime_implementation_mode,
+                        runtime_plan_successors,
+                    )
+
+                    runtime_mode = runtime_implementation_mode()
+                    successor_payload = {
+                                "token_id": str(token_id),
+                                "parent_token_id": parent_token_id,
+                                "step_seq": int(step_seq_current),
+                                "current_join_mask": int(mask),
+                                "join_outstanding": list(_join_outstanding),
+                                "successors": [
+                                    {
+                                        "node_id": str(nxt),
+                                        "join_mask": int(_may_reach_join.get(str(nxt), 0)),
+                                    }
+                                    for nxt in next_nodes
+                                ],
+                            }
+                    native_plan = None
+                    if runtime_mode == "shadow":
+                        oracle_outstanding = list(_join_outstanding)
+                        oracle_tokens = []
+                        for index, successor in enumerate(successor_payload["successors"]):
+                            successor_mask = int(successor["join_mask"])
+                            if index == 0:
+                                for bit in _iter_bits(int(mask) & ~successor_mask):
+                                    oracle_outstanding[bit] = max(
+                                        0, oracle_outstanding[bit] - 1
+                                    )
+                                for bit in _iter_bits(successor_mask & ~int(mask)):
+                                    oracle_outstanding[bit] += 1
+                                oracle_token = str(token_id)
+                                oracle_parent = parent_token_id
+                            else:
+                                for bit in _iter_bits(successor_mask):
+                                    oracle_outstanding[bit] += 1
+                                oracle_token = "<spawned>"
+                                oracle_parent = str(token_id)
+                            oracle_tokens.append(
+                                {
+                                    "node_id": str(successor["node_id"]),
+                                    "join_mask": successor_mask,
+                                    "token_id": oracle_token,
+                                    "parent_token_id": oracle_parent,
+                                    "spawned": index > 0,
+                                }
+                            )
+                        runtime_plan_successors(
+                            payload=successor_payload,
+                            python_value={
+                                "tokens": oracle_tokens,
+                                "join_outstanding": oracle_outstanding,
+                            },
+                        )
+                    elif runtime_mode == "rust":
+                        native_plan = runtime_plan_successors(payload=successor_payload)
+                        _join_outstanding[:] = [
+                            int(value) for value in native_plan["join_outstanding"]
+                        ]
+                        for planned in native_plan["tokens"]:
+                            nxt = str(planned["node_id"])
+                            nxt_mask = int(planned["join_mask"])
+                            planned_token_id = str(planned["token_id"])
+                            planned_parent_id = planned.get("parent_token_id")
+                            t = (nxt, nxt_mask, planned_token_id, planned_parent_id)
+                            if planned["spawned"]:
+                                try:
+                                    mq.put_nowait(
+                                        {
+                                            "type": "token.spawn",
+                                            "parent_token_id": str(token_id),
+                                            "child_token_id": planned_token_id,
+                                            "from_node_id": node_id,
+                                            "to_node_id": nxt,
+                                        }
+                                    )
+                                except queue.Full:
+                                    pass
+                                try:
+                                    self.emitter.emit(
+                                        type="token_spawned",
+                                        ctx=TraceContext(
+                                            run_id=str(run_id),
+                                            token_id=str(token_id),
+                                            step_seq=int(step_seq_current),
+                                            node_id=str(node_id),
+                                            attempt=1,
+                                            conversation_id=(
+                                                str(conversation_id)
+                                                if conversation_id is not None
+                                                else None
+                                            ),
+                                            turn_node_id=(
+                                                str(turn_node_id)
+                                                if turn_node_id is not None
+                                                else None
+                                            ),
+                                        ),
+                                        payload={
+                                            "parent_token_id": str(token_id),
+                                            "child_token_id": planned_token_id,
+                                            "to_node_id": nxt,
+                                        },
+                                    )
+                                except Exception:
+                                    pass
+                            pending_tokens.add(t)
+                            _work_add(1)
+                            scheduled_q.put(t)
+                            _persist_rt_join_runtime()
+
+                    # Python fallback continuation/fan-out planner.
                     first = True
-                    for i_fanout, nxt in enumerate(next_nodes):
+                    for i_fanout, nxt in enumerate(next_nodes if native_plan is None else []):
                         nxt = str(nxt)
                         nxt_mask = int(_may_reach_join.get(nxt, 0))
 

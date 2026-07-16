@@ -9,6 +9,7 @@ license.workspace = true
 deadpool-postgres.workspace = true
 kogwistar-contracts = { path = "../kogwistar-contracts" }
 kogwistar-engine = { path = "../kogwistar-engine" }
+kogwistar-runtime = { path = "../kogwistar-runtime" }
 kogwistar-store = { path = "../kogwistar-store" }
 serde_json.workspace = true
 thiserror.workspace = true
