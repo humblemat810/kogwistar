@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 
 from kogwistar._rust_bridge import RustParityError, store_sqlite
+from kogwistar.engine_core.engine_sqlite import EngineSQLite
 from kogwistar.runtime.projections import (
     workflow_checkpoint_latest_projection_namespace,
     workflow_run_status_projection_namespace,
@@ -123,6 +124,220 @@ def _normalized_oracle(
 
 def _events(path: Path) -> list[dict[str, Any]]:
     return _read(path, "list_server_run_events", run_id="run-1", after_seq=0, limit=50)
+
+
+def _durable_snapshot(path: Path) -> dict[str, Any]:
+    return {
+        "run": _read(path, "get_server_run", run_id="run-1"),
+        "events": _events(path),
+        "checkpoint": _read(
+            path,
+            "get_named_projection",
+            namespace=workflow_checkpoint_latest_projection_namespace("conv-1"),
+            key="run-1",
+        ),
+        "status": _read(
+            path,
+            "get_named_projection",
+            namespace=workflow_run_status_projection_namespace("conv-1"),
+            key="run-1",
+        ),
+        "runtime": read_recorded_runtime_state(
+            path=path,
+            run_id="run-1",
+            workflow_id="wf-1",
+            conversation_id="conv-1",
+        ),
+    }
+
+
+def _fault_matrix_case(
+    path: Path, kind: str
+) -> tuple[dict[str, Any], str]:
+    if kind == "start":
+        return _start(), "running"
+
+    _apply(path, _start())
+    if kind == "resume_result":
+        _apply(
+            path,
+            _transition(
+                "suspend",
+                "matrix-prerequisite-suspend",
+                1,
+                0,
+                wait_reason="approval",
+                resume_payload={"question": "continue?"},
+                frontier={
+                    "pending": [],
+                    "suspended": [["node-1", 0, "token-1", None]],
+                    "join_node_ids": [],
+                    "join_outstanding": [],
+                    "join_waiters": {},
+                },
+            ),
+        )
+        return (
+            _transition(
+                kind,
+                f"matrix-{kind}",
+                2,
+                1,
+                state_update=[["u", {"approved": True}]],
+                frontier={
+                    "pending": [["node-2", 0, "token-1", None]],
+                    "suspended": [],
+                    "join_node_ids": [],
+                    "join_outstanding": [],
+                    "join_waiters": {},
+                },
+            ),
+            "running",
+        )
+
+    frontier = {
+        "pending": [],
+        "suspended": [],
+        "join_node_ids": [],
+        "join_outstanding": [],
+        "join_waiters": {},
+    }
+    more: dict[str, Any] = {"frontier": frontier}
+    expected_status = "running"
+    if kind == "recorded_step_success":
+        more.update(
+            state_update=[["u", {"answer": "matrix"}]],
+            result={"answer": "matrix"},
+        )
+    elif kind == "suspend":
+        more.update(
+            wait_reason="approval",
+            resume_payload={"question": "continue?"},
+            frontier={**frontier, "suspended": [["node-1", 0, "token-1", None]]},
+        )
+        expected_status = "suspended"
+    elif kind == "complete":
+        expected_status = "completed"
+    elif kind == "fail":
+        more["errors"] = ["matrix failure"]
+        expected_status = "failed"
+    elif kind == "cancel":
+        more["errors"] = ["matrix cancellation"]
+        expected_status = "cancelled"
+    return _transition(kind, f"matrix-{kind}", 1, 0, **more), expected_status
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "start",
+        "recorded_step_success",
+        "suspend",
+        "resume_result",
+        "complete",
+        "fail",
+        "cancel",
+    ],
+)
+def test_every_durable_transition_rolls_back_all_writes_then_retries(
+    kind: str, tmp_path: Path
+) -> None:
+    path = tmp_path / f"fault-{kind}.sqlite"
+    transition, expected_status = _fault_matrix_case(path, kind)
+    before = _durable_snapshot(path)
+
+    with pytest.raises(RustParityError) as aborted:
+        _apply(path, transition, abort_after_writes=True)
+    assert aborted.value.code == "KOGWISTAR_STORE_TRANSACTION_ABORTED"
+    assert _durable_snapshot(path) == before
+
+    accepted = _apply(path, transition)
+    assert accepted["idempotent"] is False
+    assert len(_events(path)) == len(before["events"]) + 1
+    reopened = read_recorded_runtime_state(
+        path=path,
+        run_id="run-1",
+        workflow_id="wf-1",
+        conversation_id="conv-1",
+    )
+    assert reopened is not None
+    assert reopened["status"] == expected_status
+
+
+def test_sqlite_mixed_python_rust_restart_preserves_sequence_and_projections(
+    tmp_path: Path,
+) -> None:
+    python_v1 = EngineSQLite(tmp_path, filename="mixed.sqlite")
+    python_v1.ensure_initialized()
+    path = python_v1.db_path
+
+    started = _apply(path, _start())
+    assert started["event_seq"] == 1
+    legacy = python_v1.append_server_run_event(
+        "run-1", "python.rollback-window.observed", '{"owner":"python-v1"}'
+    )
+    assert legacy["seq"] == 2
+
+    stepped_transition = _transition(
+        "recorded_step_success",
+        "mixed-step",
+        legacy["seq"],
+        0,
+        state_update=[["u", {"answer": "mixed"}]],
+        result={"answer": "mixed"},
+        frontier={
+            "pending": [["node-2", 0, "token-1", None]],
+            "suspended": [],
+            "join_node_ids": [],
+            "join_outstanding": [],
+            "join_waiters": {},
+        },
+    )
+    stepped = _apply(path, stepped_transition)
+    assert stepped["event_seq"] == 3
+
+    # A newly constructed legacy facade represents rollback/restart to Python.
+    python_v2 = EngineSQLite(tmp_path, filename="mixed.sqlite")
+    python_v2.ensure_initialized()
+    assert python_v2.get_server_run("run-1")["status"] == "running"
+    python_events = python_v2.list_server_run_events("run-1")
+    assert [event["seq"] for event in python_events] == [1, 2, 3]
+    assert python_events[1]["payload"] == {"owner": "python-v1"}
+    checkpoint = python_v2.get_named_projection(
+        workflow_checkpoint_latest_projection_namespace("conv-1"), "run-1"
+    )
+    assert checkpoint is not None
+    assert checkpoint["payload"]["node_id"] == "wf_ckpt|run-1|0"
+    assert checkpoint["last_authoritative_seq"] == stepped["event_seq"]
+    assert read_recorded_runtime_state(
+        path=path,
+        run_id="run-1",
+        workflow_id="wf-1",
+        conversation_id="conv-1",
+    )["state"]["answer"] == "mixed"
+
+    duplicate = _apply(path, copy.deepcopy(stepped_transition))
+    assert duplicate["idempotent"] is True
+    assert len(python_v2.list_server_run_events("run-1")) == 3
+    completed = _apply(
+        path,
+        _transition(
+            "complete",
+            "mixed-complete",
+            3,
+            0,
+            frontier={
+                "pending": [],
+                "suspended": [],
+                "join_node_ids": [],
+                "join_outstanding": [],
+                "join_waiters": {},
+            },
+        ),
+    )
+    assert completed["event_seq"] == 4
+    assert python_v2.get_server_run("run-1")["status"] == "succeeded"
+    assert len(python_v2.list_server_run_events("run-1")) == 4
 
 
 def test_linear_checkpoint_complete_matches_independent_oracle(tmp_path: Path) -> None:

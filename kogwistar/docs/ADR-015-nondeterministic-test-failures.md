@@ -241,6 +241,72 @@ journal row and immediately unlinks the database file.
 
 ## Evidence and reporting policy
 
+## Case 7: Pre-existing Python trace matrix mistaken for Rust transition scan
+
+### Symptom
+
+`tests/runtime/test_trace_sink_parallel_nested_minimal.py` took 610.8 seconds
+for 15 cases (an earlier run took about 981.6 seconds). This was suspected to be
+caused by the Rust recorded-runtime path replaying all run events.
+
+### Cause and proof
+
+The test constructs and calls Python `WorkflowRuntime` directly. It does not use
+the Rust recorded-transition store path. Isolated minimum-case timings were:
+
+```text
+fake    7.73s
+chroma 27.94s
+pg     22.48s
+```
+
+A `cProfile` run of the fake case attributed roughly 6.9--8.1 seconds to
+`pydantic_extension` validation stack inspection (`inspect.stack`,
+`inspect.getmodule`, and related source-file lookup). Graph fixture construction
+repeatedly triggers this pre-existing Python-side cost. Chroma and PostgreSQL add
+backend work on top. The test was slow before Rust use; the Rust O(n) scan was a
+real but independent serving-path defect.
+
+### Containment
+
+- Keep the minimum fake smoke cases in normal compatibility profiles.
+- Mark backend and stress cross-products `slow`; milestone/nightly still run them.
+- Do not claim the Rust projection/index fix improves this Python-owned test.
+- Profile or fix `pydantic_extension` stack inference separately; do not weaken
+  runtime semantics or replace live backend coverage.
+
+## Case 6: Feature marker cross-product includes slow live embeddings
+
+### Symptom
+
+The parser feature layer appeared stalled at:
+
+```text
+test_fake_workflow_run_text_success_and_knowledge_persist[chroma-worker]
+```
+
+Pytest kept using CPU without an assertion or traceback. Two runs were stopped
+after about eight and two minutes while diagnosing the apparent hang.
+
+### Cause and proof
+
+The test is a Cartesian product. `chroma` carries `ci_full`, while `worker` carries
+`ci`; pytest propagates both parameter marks to the combined case. The feature
+selector `(ci or regression) and not slow` therefore selects `chroma-worker`, even
+though Chroma construction uses a live Ollama embedding function. Historical
+evidence for the same parser layer passed in 794.31 seconds; another recorded run
+passed 58 tests with 3 skips in 867.89 seconds. High CPU plus the lack of a pytest
+failure was slow provider work, not a Rust parity deadlock.
+
+### Containment and follow-up
+
+- Let the parser feature layer run for at least its recorded 15-minute envelope.
+- Inspect parameter-mark combinations, not only function-level marks.
+- Mark live embedding cross-products `requires_ollama` (or split deterministic fake
+  embedding coverage) in the consumer repository; do not merely increase every CI
+  timeout.
+- Continue to treat outer return code 120 without traceback as inconclusive.
+
 Every compatibility report records:
 
 - candidate and verification-harness hashes;

@@ -15,17 +15,18 @@ use kogwistar_runtime::{
     reduce_recorded_transition, transition_digest, worker_effect_digest,
 };
 use kogwistar_store::{
-    AppendedEvent, AppliedGraphMutation, EntityEvent, EntityRebuildRequest, EntityRecoveryReport,
-    EntityRecoveryRequest, EventPruneStore, EventReadStore, EventWriteStore, GraphMutation,
-    GraphMutationStore, GraphProjectionRead, GraphProjectionVectorQuery, GraphRecord, IndexJob,
-    IndexJobReadStore, IndexJobWriteStore, LaneMessageFilter, LaneMessageReadStore,
-    LaneMessageWriteStore, NamedProjection, NamedProjectionWrite, NewEntityEvent, NewIndexJob,
-    NewProjectedLaneMessage, ProjectedLaneMessage, ProjectionReadStore, ProjectionWriteStore,
-    ReplayCursor, ServerRun, ServerRunCreate, ServerRunEvent, ServerRunReadStore, ServerRunUpdate,
-    ServerRunWriteStore, StoreError, StoreResult, VectorMatch, WorkflowDesignDelta,
-    WorkflowDesignDeltaWrite, WorkflowDesignHistoryReadStore, WorkflowDesignHistoryWriteStore,
-    WorkflowDesignSnapshot, WorkflowDesignSnapshotWrite, validate_entity_rebuild_request,
-    validate_entity_recovery_request,
+    AppendedEvent, AppliedGraphMutation, AuthIdentityStore, AuthUser, EntityEvent,
+    EntityRebuildRequest, EntityRecoveryReport, EntityRecoveryRequest, EventPruneStore,
+    EventReadStore, EventWriteStore, ExternalIdentity, GraphMutation, GraphMutationStore,
+    GraphProjectionRead, GraphProjectionVectorQuery, GraphRecord, IndexJob, IndexJobReadStore,
+    IndexJobWriteStore, LaneMessageFilter, LaneMessageReadStore, LaneMessageWriteStore,
+    NamedProjection, NamedProjectionWrite, NewEntityEvent, NewIndexJob, NewProjectedLaneMessage,
+    ProjectedLaneMessage, ProjectionReadStore, ProjectionWriteStore, ReplayCursor,
+    ResolveExternalIdentity, ServerRun, ServerRunCreate, ServerRunEvent, ServerRunReadStore,
+    ServerRunUpdate, ServerRunWriteStore, StoreError, StoreResult, VectorMatch,
+    WorkflowDesignDelta, WorkflowDesignDeltaWrite, WorkflowDesignHistoryReadStore,
+    WorkflowDesignHistoryWriteStore, WorkflowDesignSnapshot, WorkflowDesignSnapshotWrite,
+    validate_entity_rebuild_request, validate_entity_recovery_request,
 };
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
@@ -34,6 +35,8 @@ use std::pin::Pin;
 use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 use tokio_postgres::{Config, GenericClient, NoTls, Row, Transaction};
+
+const RUNTIME_CURRENT_STATE_NAMESPACE: &str = "workflow_runtime_current_state";
 
 /// Future accepted by [`PostgresStore::transaction`].  The lifetime is tied
 /// to the UoW borrow, so a pooled client cannot escape its transaction.
@@ -137,6 +140,7 @@ struct Tables {
     server_run_events: String,
     server_runs_status_index: String,
     server_run_events_run_seq_index: String,
+    server_run_events_transition_id_index: String,
     index_jobs: String,
     index_jobs_status_lease_index: String,
     index_jobs_status_next_run_index: String,
@@ -172,6 +176,9 @@ impl Tables {
             server_run_events: qualified(&quoted_schema, "server_run_events")?,
             server_runs_status_index: quote_identifier("idx_server_runs_status")?,
             server_run_events_run_seq_index: quote_identifier("idx_server_run_events_run_seq")?,
+            server_run_events_transition_id_index: quote_identifier(
+                "idx_server_run_events_recorded_transition_id",
+            )?,
             index_jobs: qualified(&quoted_schema, "index_jobs")?,
             index_jobs_status_lease_index: quote_identifier("idx_index_jobs_status_lease")?,
             index_jobs_status_next_run_index: quote_identifier("idx_index_jobs_status_next_run")?,
@@ -195,6 +202,207 @@ impl Tables {
 pub struct PostgresStore {
     pool: Pool,
     tables: Tables,
+}
+
+/// Independent Python-compatible PostgreSQL `AUTH_DB_URL` store. Relations
+/// remain unqualified so PostgreSQL DSN `search_path` keeps SQLAlchemy's
+/// existing deployment behavior.
+#[derive(Clone)]
+pub struct PostgresAuthStore {
+    pool: Pool,
+}
+
+impl std::fmt::Debug for PostgresAuthStore {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PostgresAuthStore")
+            .finish_non_exhaustive()
+    }
+}
+
+impl PostgresAuthStore {
+    pub fn from_config(config: Config) -> PostgresStoreResult<Self> {
+        let manager = Manager::new(config, NoTls);
+        let pool = Pool::builder(manager)
+            .build()
+            .map_err(|error| PostgresStoreError::Backend(error.to_string()))?;
+        Ok(Self { pool })
+    }
+
+    pub fn from_dsn(dsn: &str) -> PostgresStoreResult<Self> {
+        let config = dsn
+            .parse::<Config>()
+            .map_err(|error| PostgresStoreError::Backend(error.to_string()))?;
+        Self::from_config(config)
+    }
+
+    pub async fn ensure_schema(&self) -> PostgresStoreResult<()> {
+        let client = self.client().await?;
+        client
+            .batch_execute(
+                "CREATE TABLE IF NOT EXISTS users (
+                    user_id VARCHAR(64) NOT NULL PRIMARY KEY,
+                    email VARCHAR(255) NOT NULL UNIQUE,
+                    display_name VARCHAR(255),
+                    is_active BOOLEAN NOT NULL,
+                    global_role VARCHAR(32),
+                    global_ns VARCHAR(255),
+                    created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL,
+                    last_login_at TIMESTAMP WITHOUT TIME ZONE
+                );
+                CREATE INDEX IF NOT EXISTS ix_users_email ON users (email);
+                CREATE TABLE IF NOT EXISTS external_identities (
+                    issuer VARCHAR(255) NOT NULL,
+                    subject VARCHAR(255) NOT NULL,
+                    user_id VARCHAR(64) NOT NULL REFERENCES users(user_id),
+                    email VARCHAR(255),
+                    PRIMARY KEY (issuer, subject)
+                );
+                CREATE INDEX IF NOT EXISTS ix_external_identities_user_id ON external_identities (user_id);
+                CREATE TABLE IF NOT EXISTS workflow_acl (
+                    workflow_id VARCHAR(255) NOT NULL,
+                    user_id VARCHAR(64) NOT NULL REFERENCES users(user_id),
+                    role VARCHAR(32) NOT NULL,
+                    PRIMARY KEY (workflow_id, user_id)
+                );",
+            )
+            .await
+            .map_err(backend)
+    }
+
+    async fn client(&self) -> PostgresStoreResult<deadpool_postgres::Object> {
+        self.pool
+            .get()
+            .await
+            .map_err(|error| PostgresStoreError::Backend(error.to_string()))
+    }
+}
+
+fn postgres_auth_user(row: &Row) -> AuthUser {
+    AuthUser {
+        user_id: row.get(0),
+        email: row.get(1),
+        display_name: row.get(2),
+        is_active: row.get(3),
+        global_role: row.get(4),
+        global_ns: row.get(5),
+    }
+}
+
+fn postgres_auth_store_error(error: PostgresStoreError) -> StoreError {
+    StoreError::Backend {
+        backend: "postgres".to_owned(),
+        message: error.to_string(),
+    }
+}
+
+impl AuthIdentityStore for PostgresAuthStore {
+    async fn auth_user(&self, user_id: &str) -> StoreResult<Option<AuthUser>> {
+        let client = self.client().await.map_err(postgres_auth_store_error)?;
+        client
+            .query_opt(
+                "SELECT user_id, email, display_name, is_active, global_role, global_ns FROM users WHERE user_id = $1",
+                &[&user_id],
+            )
+            .await
+            .map(|row| row.as_ref().map(postgres_auth_user))
+            .map_err(|error| postgres_auth_store_error(backend(error)))
+    }
+
+    async fn external_identity(
+        &self,
+        issuer: &str,
+        subject: &str,
+    ) -> StoreResult<Option<ExternalIdentity>> {
+        let client = self.client().await.map_err(postgres_auth_store_error)?;
+        client
+            .query_opt(
+                "SELECT issuer, subject, user_id, email FROM external_identities WHERE issuer = $1 AND subject = $2",
+                &[&issuer, &subject],
+            )
+            .await
+            .map(|row| {
+                row.map(|row| ExternalIdentity {
+                    issuer: row.get(0),
+                    subject: row.get(1),
+                    user_id: row.get(2),
+                    email: row.get(3),
+                })
+            })
+            .map_err(|error| postgres_auth_store_error(backend(error)))
+    }
+
+    async fn resolve_external_identity(
+        &self,
+        request: ResolveExternalIdentity,
+    ) -> StoreResult<AuthUser> {
+        let mut client = self.client().await.map_err(postgres_auth_store_error)?;
+        let transaction = client
+            .transaction()
+            .await
+            .map_err(|error| postgres_auth_store_error(backend(error)))?;
+        transaction
+            .query_one(
+                "SELECT pg_advisory_xact_lock(hashtextextended($1::text, hashtextextended($2::text, 0)))",
+                &[&request.issuer, &request.subject],
+            )
+            .await
+            .map_err(|error| postgres_auth_store_error(backend(error)))?;
+        let existing_identity = transaction
+            .query_opt(
+                "SELECT user_id FROM external_identities WHERE issuer = $1 AND subject = $2 FOR UPDATE",
+                &[&request.issuer, &request.subject],
+            )
+            .await
+            .map_err(|error| postgres_auth_store_error(backend(error)))?;
+        let user_id = if let Some(row) = existing_identity {
+            row.get::<_, String>(0)
+        } else {
+            transaction
+                .execute(
+                    "INSERT INTO users (user_id, email, display_name, is_active, global_role, global_ns, created_at) VALUES ($1, $2, $3, TRUE, $4, $5, CURRENT_TIMESTAMP) ON CONFLICT (email) DO NOTHING",
+                    &[&request.new_user_id, &request.email, &request.display_name, &request.default_role, &request.default_ns],
+                )
+                .await
+                .map_err(|error| postgres_auth_store_error(backend(error)))?;
+            let user_id = transaction
+                .query_one(
+                    "SELECT user_id FROM users WHERE email = $1",
+                    &[&request.email],
+                )
+                .await
+                .map_err(|error| postgres_auth_store_error(backend(error)))?
+                .get::<_, String>(0);
+            transaction
+                .execute(
+                    "INSERT INTO external_identities (issuer, subject, user_id, email) VALUES ($1, $2, $3, $4) ON CONFLICT (issuer, subject) DO NOTHING",
+                    &[&request.issuer, &request.subject, &user_id, &request.email],
+                )
+                .await
+                .map_err(|error| postgres_auth_store_error(backend(error)))?;
+            transaction
+                .query_one(
+                    "SELECT user_id FROM external_identities WHERE issuer = $1 AND subject = $2",
+                    &[&request.issuer, &request.subject],
+                )
+                .await
+                .map_err(|error| postgres_auth_store_error(backend(error)))?
+                .get::<_, String>(0)
+        };
+        let row = transaction
+            .query_one(
+                "UPDATE users SET last_login_at = CURRENT_TIMESTAMP WHERE user_id = $1 RETURNING user_id, email, display_name, is_active, global_role, global_ns",
+                &[&user_id],
+            )
+            .await
+            .map_err(|error| postgres_auth_store_error(backend(error)))?;
+        let user = postgres_auth_user(&row);
+        transaction
+            .commit()
+            .await
+            .map_err(|error| postgres_auth_store_error(backend(error)))?;
+        Ok(user)
+    }
 }
 
 impl std::fmt::Debug for PostgresStore {
@@ -1111,6 +1319,22 @@ impl PostgresStore {
         })
         .await
     }
+    pub async fn repair_orphaned_claimed_lane_messages(
+        &self,
+        namespace: &str,
+        inbox_id: Option<&str>,
+        limit: usize,
+    ) -> PostgresStoreResult<Vec<String>> {
+        let namespace = namespace.to_owned();
+        let inbox_id = inbox_id.map(str::to_owned);
+        self.transaction(move |uow| {
+            Box::pin(async move {
+                uow.repair_orphaned_claimed_lane_messages(&namespace, inbox_id.as_deref(), limit)
+                    .await
+            })
+        })
+        .await
+    }
 
     /// Strict trait-compatible advance: monotonic and at most retained latest.
     pub async fn strict_advance_replay_cursor(
@@ -1162,6 +1386,20 @@ pub struct PostgresUnitOfWork<'transaction> {
 }
 
 impl PostgresUnitOfWork<'_> {
+    /// Serialize runtime queue admission checks within this database schema.
+    /// The lock is transaction-scoped and released on commit or rollback.
+    pub async fn lock_runtime_queue_admission(&self) -> PostgresStoreResult<()> {
+        advisory_lock(
+            &self.transaction,
+            &format!(
+                "runtime-queue-admission\u{1f}{}",
+                self.tables.projected_lane_messages
+            ),
+            73,
+        )
+        .await
+    }
+
     pub async fn apply_graph_mutation(
         &mut self,
         mutation: GraphMutation,
@@ -1304,6 +1542,21 @@ impl PostgresUnitOfWork<'_> {
         error: Option<String>,
     ) -> PostgresStoreResult<()> {
         dead_letter_projected_lane_message(&self.transaction, &self.tables, id, owner, error).await
+    }
+    pub async fn repair_orphaned_claimed_lane_messages(
+        &mut self,
+        namespace: &str,
+        inbox_id: Option<&str>,
+        limit: usize,
+    ) -> PostgresStoreResult<Vec<String>> {
+        repair_orphaned_claimed_lane_messages(
+            &self.transaction,
+            &self.tables,
+            namespace,
+            inbox_id,
+            limit,
+        )
+        .await
     }
     pub async fn enqueue_index_job(&mut self, job: NewIndexJob) -> PostgresStoreResult<String> {
         require_namespace(&job.namespace)?;
@@ -3523,6 +3776,68 @@ fn recorded_runtime_projection(
     }
 }
 
+fn runtime_json_object<T: serde::Serialize>(value: &T) -> PostgresStoreResult<Map<String, Value>> {
+    serde_json::to_value(value)?
+        .as_object()
+        .cloned()
+        .ok_or_else(|| {
+            PostgresStoreError::TransactionAborted(
+                "runtime projection payload is not an object".to_owned(),
+            )
+        })
+}
+
+async fn store_runtime_current_state<C>(
+    client: &C,
+    tables: &Tables,
+    persisted: &PersistedRecordedTransition,
+    event_seq: i64,
+) -> PostgresStoreResult<()>
+where
+    C: GenericClient + Sync,
+{
+    replace_named_projection(
+        client,
+        tables,
+        RUNTIME_CURRENT_STATE_NAMESPACE,
+        &persisted.reduced.state.run_id,
+        recorded_runtime_projection(
+            runtime_json_object(&persisted.reduced.state)?,
+            event_seq,
+            "ready".to_owned(),
+        ),
+    )
+    .await
+}
+
+async fn recorded_transition_by_id<C>(
+    client: &C,
+    tables: &Tables,
+    transition_id: &str,
+) -> PostgresStoreResult<Option<(PersistedRecordedTransition, i64)>>
+where
+    C: GenericClient + Sync,
+{
+    client
+        .query_opt(
+            &format!(
+                "SELECT payload_json, seq FROM {} \
+                 WHERE event_type='workflow.recorded_transition.v1' \
+                 AND payload_json::jsonb->>'transition_id'=$1 LIMIT 1",
+                tables.server_run_events
+            ),
+            &[&transition_id],
+        )
+        .await
+        .map_err(backend)?
+        .map(|row| {
+            let payload_json: String = row.try_get(0).map_err(backend)?;
+            let seq: i64 = row.try_get(1).map_err(backend)?;
+            Ok((serde_json::from_str(&payload_json)?, seq))
+        })
+        .transpose()
+}
+
 async fn read_recorded_runtime_state<C>(
     client: &C,
     tables: &Tables,
@@ -3540,6 +3855,38 @@ where
         return Err(PostgresStoreError::RecordedRuntimeConflict(format!(
             "run identity differs for {run_id:?}"
         )));
+    }
+    if let Some(row) =
+        named_projection(client, tables, RUNTIME_CURRENT_STATE_NAMESPACE, run_id).await?
+        && row.materialization_status == "ready"
+    {
+        let has_newer_recorded_event: bool = client
+            .query_one(
+                &format!(
+                    "SELECT EXISTS(
+                        SELECT 1 FROM {} WHERE run_id=$1 AND event_type=$2 AND seq>$3
+                     )",
+                    tables.server_run_events
+                ),
+                &[
+                    &run_id,
+                    &RECORDED_RUNTIME_EVENT_TYPE,
+                    &row.last_authoritative_seq,
+                ],
+            )
+            .await
+            .map_err(backend)?
+            .try_get(0)
+            .map_err(backend)?;
+        if !has_newer_recorded_event
+            && let Ok(state) =
+                serde_json::from_value::<RecordedRuntimeState>(Value::Object(row.payload))
+            && state.run_id == run_id
+            && state.workflow_id == workflow_id
+            && state.conversation_id == conversation_id
+        {
+            return Ok(Some(state));
+        }
     }
     let mut latest = None;
     for event in recorded_runtime_events(client, tables, Some(run_id)).await? {
@@ -3698,13 +4045,9 @@ where
     C: GenericClient + Sync,
 {
     let request_digest = transition_digest(transition)?;
-    for event in recorded_runtime_events(client, tables, Some(&transition.run_id)).await? {
-        let Some(payload) = parse_runtime_event_payload(&event.payload_json) else {
-            continue;
-        };
-        if payload.transition_id != transition.transition_id {
-            continue;
-        }
+    if let Some((payload, event_seq)) =
+        recorded_transition_by_id(client, tables, &transition.transition_id).await?
+    {
         if payload.request_digest != request_digest
             || payload.worker_handoff.as_ref() != Some(handoff)
         {
@@ -3713,7 +4056,7 @@ where
                 handoff.message_id
             )));
         }
-        return Ok(payload.result(event.seq, true));
+        return Ok(payload.result(event_seq, true));
     }
     Err(PostgresStoreError::RecordedRuntimeConflict(format!(
         "completed worker lane message {:?} has no matching recorded result",
@@ -3775,23 +4118,20 @@ where
         )));
     }
     if lane.status == "completed" {
-        for event in recorded_runtime_events(client, tables, Some(&handoff.run_id)).await? {
-            let Some(payload) = parse_runtime_event_payload(&event.payload_json) else {
-                continue;
-            };
-            if payload
+        if let Some((payload, event_seq)) =
+            recorded_transition_by_id(client, tables, &effect.effect_id).await?
+            && payload
                 .worker_handoff
                 .as_ref()
                 .is_some_and(|stored| stored.message_id == handoff.message_id)
-            {
-                if payload.worker_effect_digest.as_deref() != Some(effect_digest.as_str()) {
-                    return Err(PostgresStoreError::RecordedRuntimeConflict(format!(
-                        "worker handoff {:?} retried with different effect",
-                        handoff.message_id
-                    )));
-                }
-                return Ok(payload.result(event.seq, true));
+        {
+            if payload.worker_effect_digest.as_deref() != Some(effect_digest.as_str()) {
+                return Err(PostgresStoreError::RecordedRuntimeConflict(format!(
+                    "worker handoff {:?} retried with different effect",
+                    handoff.message_id
+                )));
             }
+            return Ok(payload.result(event_seq, true));
         }
         return Err(PostgresStoreError::RecordedRuntimeConflict(format!(
             "completed worker lane message {:?} has no matching recorded effect",
@@ -3843,19 +4183,11 @@ where
     }
     let expected_event_seq = latest_server_run_event_seq(client, tables, &handoff.run_id).await?;
     let step_seq = current.last_step_seq.saturating_add(1);
-    let authoritative_successors = if current.static_routes.is_empty() {
-        effect.successors.clone()
-    } else {
-        current
-            .static_routes
-            .iter()
-            .filter(|route| route.source_node_id == handoff.step_id)
-            .map(|route| kogwistar_runtime::RuntimeSuccessor {
-                node_id: route.target_node_id.clone(),
-                join_mask: route.join_mask,
-            })
-            .collect()
-    };
+    let authoritative_successors = kogwistar_runtime::authoritative_runtime_successors(
+        &current.static_routes,
+        &handoff.step_id,
+        &effect.successors,
+    )?;
     let frontier = match effect.status {
         RuntimeWorkerEffectStatus::Success => frontier_after_worker_success(
             &current.frontier,
@@ -3960,20 +4292,16 @@ where
     )
     .await?;
 
-    for event in recorded_runtime_events(client, tables, None).await? {
-        let Some(payload) = parse_runtime_event_payload(&event.payload_json) else {
-            continue;
-        };
-        if payload.transition_id == transition.transition_id {
-            if payload.request_digest != request_digest || payload.worker_handoff != worker_handoff
-            {
-                return Err(PostgresStoreError::RecordedRuntimeConflict(format!(
-                    "transition_id {:?} reused with different payload",
-                    transition.transition_id
-                )));
-            }
-            return Ok(payload.result(event.seq, true));
+    if let Some((payload, event_seq)) =
+        recorded_transition_by_id(client, tables, &transition.transition_id).await?
+    {
+        if payload.request_digest != request_digest || payload.worker_handoff != worker_handoff {
+            return Err(PostgresStoreError::RecordedRuntimeConflict(format!(
+                "transition_id {:?} reused with different payload",
+                transition.transition_id
+            )));
         }
+        return Ok(payload.result(event_seq, true));
     }
 
     let existing_run = server_run(client, tables, &transition.run_id).await?;
@@ -4041,6 +4369,7 @@ where
     )
     .await?;
     let event_seq = event.seq;
+    store_runtime_current_state(client, tables, &persisted, event_seq).await?;
     replace_named_projection(
         client,
         tables,
@@ -4553,6 +4882,53 @@ where
     c.execute(&format!("UPDATE {} SET status='dead-letter',claimed_by=NULL,lease_until=NULL,error_json=COALESCE($1,error_json) WHERE message_id=$2 AND status NOT IN ('completed','failed','cancelled','dead-letter') AND (claimed_by IS NULL OR claimed_by=$3)",t.projected_lane_messages),&[&error,&id,&owner]).await.map_err(backend)?;
     Ok(())
 }
+async fn repair_orphaned_claimed_lane_messages<C>(
+    client: &C,
+    tables: &Tables,
+    namespace: &str,
+    inbox_id: Option<&str>,
+    limit: usize,
+) -> PostgresStoreResult<Vec<String>>
+where
+    C: GenericClient + Sync,
+{
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+    let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+    let rows = client
+        .query(
+            &format!(
+                "SELECT message_id FROM {} WHERE namespace=$1 \
+                 AND ($2::TEXT IS NULL OR inbox_id=$2) AND status='claimed' \
+                 AND (lease_until IS NULL OR lease_until<=NOW()) \
+                 ORDER BY seq ASC, created_at ASC LIMIT $3 FOR UPDATE SKIP LOCKED",
+                tables.projected_lane_messages
+            ),
+            &[&namespace, &inbox_id, &limit],
+        )
+        .await
+        .map_err(backend)?;
+    let ids = rows
+        .iter()
+        .map(|row| row.try_get::<_, String>(0).map_err(backend))
+        .collect::<PostgresStoreResult<Vec<_>>>()?;
+    for id in &ids {
+        client
+            .execute(
+                &format!(
+                    "UPDATE {} SET status='pending', claimed_by=NULL, lease_until=NULL \
+                     WHERE message_id=$1 AND status='claimed' \
+                     AND (lease_until IS NULL OR lease_until<=NOW())",
+                    tables.projected_lane_messages
+                ),
+                &[id],
+            )
+            .await
+            .map_err(backend)?;
+    }
+    Ok(ids)
+}
 async fn list_projected_lane_messages<C>(
     c: &C,
     t: &Tables,
@@ -4769,6 +5145,9 @@ fn schema_sql(tables: &Tables) -> String {
          );\
          CREATE INDEX IF NOT EXISTS {server_runs_status_index} ON {server_runs}(status, updated_at_ms);\
          CREATE INDEX IF NOT EXISTS {server_run_events_run_seq_index} ON {server_run_events}(run_id, seq);\
+         CREATE UNIQUE INDEX IF NOT EXISTS {server_run_events_transition_id_index}\
+            ON {server_run_events} ((payload_json::jsonb->>'transition_id'))\
+            WHERE event_type='workflow.recorded_transition.v1';\
          CREATE TABLE IF NOT EXISTS {index_jobs} (\
             job_id TEXT PRIMARY KEY,namespace TEXT NOT NULL DEFAULT 'default',entity_kind TEXT NOT NULL,entity_id TEXT NOT NULL,index_kind TEXT NOT NULL,coalesce_key TEXT NOT NULL,op TEXT NOT NULL,status TEXT NOT NULL,lease_until TIMESTAMPTZ NULL,next_run_at TIMESTAMPTZ NULL,max_retries INTEGER NOT NULL DEFAULT 10,retry_count INTEGER NOT NULL DEFAULT 0,last_error TEXT NULL,payload_json TEXT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),claim_token TEXT NULL,claim_attempts INTEGER NOT NULL DEFAULT 0\
          );\
@@ -4803,6 +5182,7 @@ fn schema_sql(tables: &Tables) -> String {
         server_run_events = tables.server_run_events,
         server_runs_status_index = tables.server_runs_status_index,
         server_run_events_run_seq_index = tables.server_run_events_run_seq_index,
+        server_run_events_transition_id_index = tables.server_run_events_transition_id_index,
         index_jobs = tables.index_jobs,
         index_jobs_status_lease_index = tables.index_jobs_status_lease_index,
         index_jobs_status_next_run_index = tables.index_jobs_status_next_run_index,
@@ -5150,6 +5530,32 @@ mod tests {
         let tables = Tables::new(&schema)?;
         store.ensure_schema().await?;
 
+        let planner = store.client().await?;
+        planner
+            .batch_execute("SET enable_seqscan=off")
+            .await
+            .map_err(backend)?;
+        let plan = planner
+            .query(
+                &format!(
+                    "EXPLAIN SELECT payload_json, seq FROM {} \
+                     WHERE event_type='workflow.recorded_transition.v1' \
+                     AND payload_json::jsonb->>'transition_id'=$1 LIMIT 1",
+                    tables.server_run_events
+                ),
+                &[&"index-plan-probe"],
+            )
+            .await
+            .map_err(backend)?
+            .iter()
+            .map(|row| row.get::<_, String>(0))
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            plan.contains("idx_server_run_events_recorded_transition_id"),
+            "{plan}"
+        );
+
         let start_1 = store
             .apply_recorded_runtime_transition(runtime_start("run-1", "start-1"), false)
             .await?;
@@ -5359,5 +5765,73 @@ mod tests {
             .batch_execute(&format!("DROP SCHEMA {} CASCADE", tables.quoted_schema))
             .await
             .map_err(backend)
+    }
+
+    #[tokio::test]
+    async fn auth_store_links_python_user_and_retries_identity_when_dsn_available()
+    -> PostgresStoreResult<()> {
+        let Some(dsn) = std::env::var("KOGWISTAR_TEST_PG_DSN").ok() else {
+            return Ok(());
+        };
+        let schema = test_schema("auth_identity");
+        let quoted_schema = quote_identifier(&schema)?;
+        let base_config = dsn
+            .parse::<Config>()
+            .map_err(|error| PostgresStoreError::Backend(error.to_string()))?;
+        let (client, connection) = base_config.connect(NoTls).await.map_err(backend)?;
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+        client
+            .batch_execute(&format!("CREATE SCHEMA {quoted_schema}"))
+            .await
+            .map_err(backend)?;
+        let mut auth_config = base_config;
+        auth_config.options(format!("-c search_path={schema}"));
+        let store = PostgresAuthStore::from_config(auth_config)?;
+        store.ensure_schema().await?;
+        client
+            .execute(
+                &format!(
+                    "INSERT INTO {quoted_schema}.users (user_id, email, display_name, is_active, global_role, global_ns, created_at) VALUES ('python-user', 'alice@example.com', 'Python Alice', TRUE, 'rw', 'docs,workflow', CURRENT_TIMESTAMP)"
+                ),
+                &[],
+            )
+            .await
+            .map_err(backend)?;
+        let request = ResolveExternalIdentity {
+            issuer: "https://issuer.example".to_owned(),
+            subject: "subject-1".to_owned(),
+            email: "alice@example.com".to_owned(),
+            display_name: Some("Ignored".to_owned()),
+            new_user_id: "rust-user".to_owned(),
+            default_role: "ro".to_owned(),
+            default_ns: "docs".to_owned(),
+        };
+        let linked = store.resolve_external_identity(request.clone()).await?;
+        assert_eq!(linked.user_id, "python-user");
+        assert_eq!(linked.global_role.as_deref(), Some("rw"));
+        let retried = store
+            .resolve_external_identity(ResolveExternalIdentity {
+                new_user_id: "must-not-win".to_owned(),
+                email: "changed@example.com".to_owned(),
+                ..request
+            })
+            .await?;
+        assert_eq!(retried.user_id, "python-user");
+        assert_eq!(
+            store
+                .external_identity("https://issuer.example", "subject-1")
+                .await?
+                .unwrap()
+                .email
+                .as_deref(),
+            Some("alice@example.com")
+        );
+        client
+            .batch_execute(&format!("DROP SCHEMA {quoted_schema} CASCADE"))
+            .await
+            .map_err(backend)?;
+        Ok(())
     }
 }

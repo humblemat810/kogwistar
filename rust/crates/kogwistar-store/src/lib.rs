@@ -8,6 +8,54 @@ use thiserror::Error;
 pub type StoreResult<T> = Result<T, StoreError>;
 pub type EntityEvent = EntityEventEnvelope;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AuthUser {
+    pub user_id: String,
+    pub email: String,
+    pub display_name: Option<String>,
+    pub is_active: bool,
+    pub global_role: Option<String>,
+    pub global_ns: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExternalIdentity {
+    pub issuer: String,
+    pub subject: String,
+    pub user_id: String,
+    pub email: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResolveExternalIdentity {
+    pub issuer: String,
+    pub subject: String,
+    pub email: String,
+    pub display_name: Option<String>,
+    pub new_user_id: String,
+    pub default_role: String,
+    pub default_ns: String,
+}
+
+/// Standalone auth-database contract. Auth storage deliberately remains
+/// separate from engine metadata because Python configures it through
+/// `AUTH_DB_URL` and defaults to an independent `auth.sqlite` database.
+pub trait AuthIdentityStore: Send + Sync {
+    fn auth_user(
+        &self,
+        user_id: &str,
+    ) -> impl Future<Output = StoreResult<Option<AuthUser>>> + Send;
+    fn external_identity(
+        &self,
+        issuer: &str,
+        subject: &str,
+    ) -> impl Future<Output = StoreResult<Option<ExternalIdentity>>> + Send;
+    fn resolve_external_identity(
+        &self,
+        request: ResolveExternalIdentity,
+    ) -> impl Future<Output = StoreResult<AuthUser>> + Send;
+}
+
 /// Backend-neutral helpers for ABI-preserving integer queue timestamps.
 pub fn integer_timestamp(value: i64) -> Value {
     Value::from(value)

@@ -13,11 +13,12 @@ use kogwistar_runtime::{
     reduce_recorded_transition, transition_digest, worker_effect_digest,
 };
 use kogwistar_store::{
-    AppendedEvent, EntityEvent, EntityRebuildRequest, EntityRecoveryReport, EntityRecoveryRequest,
-    EventPruneStore, EventReadStore, EventWriteStore, IndexJob, IndexJobReadStore,
-    IndexJobWriteStore, LaneMessageFilter, LaneMessageReadStore, LaneMessageWriteStore,
-    NamedProjection, NamedProjectionWrite, NewEntityEvent, NewIndexJob, NewProjectedLaneMessage,
-    ProjectedLaneMessage, ProjectionReadStore, ProjectionWriteStore, ReplayCursor, ServerRun,
+    AppendedEvent, AuthIdentityStore, AuthUser, EntityEvent, EntityRebuildRequest,
+    EntityRecoveryReport, EntityRecoveryRequest, EventPruneStore, EventReadStore, EventWriteStore,
+    ExternalIdentity, IndexJob, IndexJobReadStore, IndexJobWriteStore, LaneMessageFilter,
+    LaneMessageReadStore, LaneMessageWriteStore, NamedProjection, NamedProjectionWrite,
+    NewEntityEvent, NewIndexJob, NewProjectedLaneMessage, ProjectedLaneMessage,
+    ProjectionReadStore, ProjectionWriteStore, ReplayCursor, ResolveExternalIdentity, ServerRun,
     ServerRunCreate, ServerRunEvent, ServerRunReadStore, ServerRunUpdate, ServerRunWriteStore,
     StoreError, StoreResult, WorkflowDesignDelta, WorkflowDesignDeltaWrite,
     WorkflowDesignHistoryReadStore, WorkflowDesignHistoryWriteStore, WorkflowDesignSnapshot,
@@ -36,6 +37,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
 const BUSY_TIMEOUT_MS: u64 = 30_000;
+const RUNTIME_CURRENT_STATE_NAMESPACE: &str = "workflow_runtime_current_state";
 static NEXT_CLAIM_TOKEN: AtomicU64 = AtomicU64::new(0);
 
 /// Errors for direct SQLite APIs. Trait methods retain `kogwistar-store`'s
@@ -107,6 +109,158 @@ pub struct AppendedRawEvent {
 #[derive(Clone, Debug)]
 pub struct SqliteStore {
     path: Arc<PathBuf>,
+}
+
+/// Independent Python-compatible `AUTH_DB_URL=sqlite:///...` store. Opening
+/// it creates only auth relations and never engine metadata relations.
+#[derive(Clone, Debug)]
+pub struct SqliteAuthStore {
+    path: Arc<PathBuf>,
+}
+
+impl SqliteAuthStore {
+    pub fn open(path: impl AsRef<Path>) -> SqliteStoreResult<Self> {
+        let path = path.as_ref().to_path_buf();
+        if let Some(parent) = path.parent().filter(|value| !value.as_os_str().is_empty()) {
+            fs::create_dir_all(parent)?;
+        }
+        let store = Self {
+            path: Arc::new(path),
+        };
+        let connection = store.connection()?;
+        initialize_auth_schema(&connection)?;
+        Ok(store)
+    }
+
+    pub fn path(&self) -> &Path {
+        self.path.as_ref()
+    }
+
+    fn connection(&self) -> SqliteStoreResult<Connection> {
+        let connection = Connection::open_with_flags(
+            self.path.as_ref(),
+            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE,
+        )?;
+        connection.busy_timeout(std::time::Duration::from_millis(BUSY_TIMEOUT_MS))?;
+        connection.execute_batch("PRAGMA foreign_keys = ON;")?;
+        Ok(connection)
+    }
+}
+
+fn sqlite_auth_user(row: &rusqlite::Row<'_>) -> rusqlite::Result<AuthUser> {
+    Ok(AuthUser {
+        user_id: row.get(0)?,
+        email: row.get(1)?,
+        display_name: row.get(2)?,
+        is_active: row.get(3)?,
+        global_role: row.get(4)?,
+        global_ns: row.get(5)?,
+    })
+}
+
+fn sqlite_store_error(error: SqliteStoreError) -> StoreError {
+    StoreError::Backend {
+        backend: "sqlite".to_owned(),
+        message: error.to_string(),
+    }
+}
+
+impl AuthIdentityStore for SqliteAuthStore {
+    async fn auth_user(&self, user_id: &str) -> StoreResult<Option<AuthUser>> {
+        let connection = self.connection().map_err(sqlite_store_error)?;
+        connection
+            .query_row(
+                "SELECT user_id, email, display_name, is_active, global_role, global_ns FROM users WHERE user_id = ?1",
+                [user_id],
+                sqlite_auth_user,
+            )
+            .optional()
+            .map_err(|error| sqlite_store_error(error.into()))
+    }
+
+    async fn external_identity(
+        &self,
+        issuer: &str,
+        subject: &str,
+    ) -> StoreResult<Option<ExternalIdentity>> {
+        let connection = self.connection().map_err(sqlite_store_error)?;
+        connection
+            .query_row(
+                "SELECT issuer, subject, user_id, email FROM external_identities WHERE issuer = ?1 AND subject = ?2",
+                params![issuer, subject],
+                |row| {
+                    Ok(ExternalIdentity {
+                        issuer: row.get(0)?,
+                        subject: row.get(1)?,
+                        user_id: row.get(2)?,
+                        email: row.get(3)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(|error| sqlite_store_error(error.into()))
+    }
+
+    async fn resolve_external_identity(
+        &self,
+        request: ResolveExternalIdentity,
+    ) -> StoreResult<AuthUser> {
+        let mut connection = self.connection().map_err(sqlite_store_error)?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| sqlite_store_error(error.into()))?;
+        let existing_user_id = transaction
+            .query_row(
+                "SELECT user_id FROM external_identities WHERE issuer = ?1 AND subject = ?2",
+                params![request.issuer, request.subject],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|error| sqlite_store_error(error.into()))?;
+        let user_id = if let Some(user_id) = existing_user_id {
+            user_id
+        } else {
+            let email_user_id = transaction
+                .query_row(
+                    "SELECT user_id FROM users WHERE email = ?1",
+                    [&request.email],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(|error| sqlite_store_error(error.into()))?;
+            let user_id = email_user_id.unwrap_or_else(|| request.new_user_id.clone());
+            transaction
+                .execute(
+                    "INSERT OR IGNORE INTO users (user_id, email, display_name, is_active, global_role, global_ns, created_at) VALUES (?1, ?2, ?3, 1, ?4, ?5, CURRENT_TIMESTAMP)",
+                    params![user_id, request.email, request.display_name, request.default_role, request.default_ns],
+                )
+                .map_err(|error| sqlite_store_error(error.into()))?;
+            transaction
+                .execute(
+                    "INSERT INTO external_identities (issuer, subject, user_id, email) VALUES (?1, ?2, ?3, ?4)",
+                    params![request.issuer, request.subject, user_id, request.email],
+                )
+                .map_err(|error| sqlite_store_error(error.into()))?;
+            user_id
+        };
+        transaction
+            .execute(
+                "UPDATE users SET last_login_at = CURRENT_TIMESTAMP WHERE user_id = ?1",
+                [&user_id],
+            )
+            .map_err(|error| sqlite_store_error(error.into()))?;
+        let user = transaction
+            .query_row(
+                "SELECT user_id, email, display_name, is_active, global_role, global_ns FROM users WHERE user_id = ?1",
+                [&user_id],
+                sqlite_auth_user,
+            )
+            .map_err(|error| sqlite_store_error(error.into()))?;
+        transaction
+            .commit()
+            .map_err(|error| sqlite_store_error(error.into()))?;
+        Ok(user)
+    }
 }
 
 impl SqliteStore {
@@ -766,6 +920,16 @@ impl SqliteStore {
             uow.dead_letter_projected_lane_message(message_id, claimed_by, error_json)
         })
     }
+    pub fn repair_orphaned_claimed_lane_messages(
+        &self,
+        namespace: &str,
+        inbox_id: Option<&str>,
+        limit: usize,
+    ) -> SqliteStoreResult<Vec<String>> {
+        self.immediate_transaction(|uow| {
+            uow.repair_orphaned_claimed_lane_messages(namespace, inbox_id, limit)
+        })
+    }
 
     fn connection(&self) -> SqliteStoreResult<Connection> {
         let conn = Connection::open_with_flags(
@@ -903,6 +1067,14 @@ impl SqliteUnitOfWork<'_> {
     ) -> SqliteStoreResult<()> {
         dead_letter_projected_lane_message(&self.transaction, message_id, claimed_by, error_json)
     }
+    pub fn repair_orphaned_claimed_lane_messages(
+        &mut self,
+        namespace: &str,
+        inbox_id: Option<&str>,
+        limit: usize,
+    ) -> SqliteStoreResult<Vec<String>> {
+        repair_orphaned_claimed_lane_messages(&self.transaction, namespace, inbox_id, limit)
+    }
     pub fn enqueue_index_job(&mut self, job: NewIndexJob) -> SqliteStoreResult<String> {
         enqueue_index_job(&self.transaction, job)
     }
@@ -1034,6 +1206,15 @@ impl SqliteUnitOfWork<'_> {
         event: NewRawEntityEvent,
     ) -> SqliteStoreResult<AppendedRawEvent> {
         append_raw_entity_event(&self.transaction, namespace, event)
+    }
+
+    pub fn replay_raw_events(
+        &self,
+        namespace: &str,
+        after_seq: i64,
+        limit: usize,
+    ) -> SqliteStoreResult<Vec<RawEntityEvent>> {
+        replay_raw_events(&self.transaction, namespace, after_seq, limit)
     }
 
     pub fn latest_retained_event_seq(&self, namespace: &str) -> SqliteStoreResult<i64> {
@@ -1701,6 +1882,9 @@ fn initialize_schema(conn: &Connection) -> SqliteStoreResult<()> {
         );
         CREATE INDEX IF NOT EXISTS idx_server_runs_status ON server_runs(status, updated_at_ms);
         CREATE INDEX IF NOT EXISTS idx_server_run_events_run_seq ON server_run_events(run_id, seq);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_server_run_events_recorded_transition_id
+        ON server_run_events(json_extract(payload_json, '$.transition_id'))
+        WHERE event_type = 'workflow.recorded_transition.v1';
         CREATE TABLE IF NOT EXISTS index_jobs (
             job_id TEXT PRIMARY KEY,
             namespace TEXT NOT NULL DEFAULT 'default',
@@ -1720,10 +1904,6 @@ fn initialize_schema(conn: &Connection) -> SqliteStoreResult<()> {
             updated_at INTEGER NOT NULL,
             claim_token TEXT
         );
-        CREATE INDEX IF NOT EXISTS idx_index_jobs_status_lease ON index_jobs(status, lease_until);
-        CREATE INDEX IF NOT EXISTS idx_index_jobs_entity ON index_jobs(entity_kind, entity_id, index_kind);
-        CREATE INDEX IF NOT EXISTS idx_index_jobs_namespace ON index_jobs(namespace);
-        CREATE UNIQUE INDEX IF NOT EXISTS uq_index_jobs_pending_ns_coalesce ON index_jobs(namespace, coalesce_key) WHERE status='PENDING';
         CREATE TABLE IF NOT EXISTS projected_lane_messages (
             message_id TEXT PRIMARY KEY, namespace TEXT NOT NULL DEFAULT 'default', purpose TEXT NOT NULL DEFAULT 'user_visible',
             inbox_id TEXT NOT NULL, conversation_id TEXT NOT NULL, recipient_id TEXT NOT NULL, sender_id TEXT NOT NULL,
@@ -1737,14 +1917,99 @@ fn initialize_schema(conn: &Connection) -> SqliteStoreResult<()> {
         CREATE INDEX IF NOT EXISTS idx_lane_messages_conversation_seq ON projected_lane_messages(namespace, conversation_id, conversation_seq);
         ",
     )?;
-    // Existing Python databases predate lease ownership counters.
-    let columns = conn
+    // Python-created databases may predate queue coalescing, scheduling, and
+    // lease ownership. Add columns before creating indexes that reference
+    // them so every historical Python schema remains openable by Rust.
+    let index_job_columns = conn
         .prepare("PRAGMA table_info(index_jobs)")?
         .query_map([], |row| row.get::<_, String>(1))?
         .collect::<Result<Vec<_>, _>>()?;
-    if !columns.iter().any(|column| column == "claim_token") {
+    if !index_job_columns.iter().any(|column| column == "namespace") {
+        conn.execute(
+            "ALTER TABLE index_jobs ADD COLUMN namespace TEXT NOT NULL DEFAULT 'default'",
+            [],
+        )?;
+    }
+    if !index_job_columns
+        .iter()
+        .any(|column| column == "coalesce_key")
+    {
+        conn.execute(
+            "ALTER TABLE index_jobs ADD COLUMN coalesce_key TEXT NOT NULL DEFAULT ''",
+            [],
+        )?;
+    }
+    if !index_job_columns
+        .iter()
+        .any(|column| column == "next_run_at")
+    {
+        conn.execute("ALTER TABLE index_jobs ADD COLUMN next_run_at INTEGER", [])?;
+    }
+    if !index_job_columns
+        .iter()
+        .any(|column| column == "max_retries")
+    {
+        conn.execute(
+            "ALTER TABLE index_jobs ADD COLUMN max_retries INTEGER NOT NULL DEFAULT 10",
+            [],
+        )?;
+    }
+    if !index_job_columns
+        .iter()
+        .any(|column| column == "claim_token")
+    {
         conn.execute("ALTER TABLE index_jobs ADD COLUMN claim_token TEXT", [])?;
     }
+    let lane_columns = conn
+        .prepare("PRAGMA table_info(projected_lane_messages)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<Result<Vec<_>, _>>()?;
+    if !lane_columns.iter().any(|column| column == "purpose") {
+        conn.execute(
+            "ALTER TABLE projected_lane_messages ADD COLUMN purpose TEXT NOT NULL DEFAULT 'user_visible'",
+            [],
+        )?;
+    }
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_index_jobs_status_lease ON index_jobs(status, lease_until);
+         CREATE INDEX IF NOT EXISTS idx_index_jobs_entity ON index_jobs(entity_kind, entity_id, index_kind);
+         CREATE INDEX IF NOT EXISTS idx_index_jobs_namespace ON index_jobs(namespace);
+         CREATE UNIQUE INDEX IF NOT EXISTS uq_index_jobs_pending_ns_coalesce
+         ON index_jobs(namespace, coalesce_key) WHERE status='PENDING';",
+    )?;
+    Ok(())
+}
+
+fn initialize_auth_schema(conn: &Connection) -> SqliteStoreResult<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS users (
+            user_id VARCHAR(64) NOT NULL PRIMARY KEY,
+            email VARCHAR(255) NOT NULL UNIQUE,
+            display_name VARCHAR(255),
+            is_active BOOLEAN NOT NULL,
+            global_role VARCHAR(32),
+            global_ns VARCHAR(255),
+            created_at DATETIME NOT NULL,
+            last_login_at DATETIME
+        );
+        CREATE INDEX IF NOT EXISTS ix_users_email ON users (email);
+        CREATE TABLE IF NOT EXISTS external_identities (
+            issuer VARCHAR(255) NOT NULL,
+            subject VARCHAR(255) NOT NULL,
+            user_id VARCHAR(64) NOT NULL,
+            email VARCHAR(255),
+            PRIMARY KEY (issuer, subject),
+            FOREIGN KEY(user_id) REFERENCES users (user_id)
+        );
+        CREATE INDEX IF NOT EXISTS ix_external_identities_user_id ON external_identities (user_id);
+        CREATE TABLE IF NOT EXISTS workflow_acl (
+            workflow_id VARCHAR(255) NOT NULL,
+            user_id VARCHAR(64) NOT NULL,
+            role VARCHAR(32) NOT NULL,
+            PRIMARY KEY (workflow_id, user_id),
+            FOREIGN KEY(user_id) REFERENCES users (user_id)
+        );",
+    )?;
     Ok(())
 }
 
@@ -2060,6 +2325,44 @@ fn dead_letter_projected_lane_message(
 ) -> SqliteStoreResult<()> {
     conn.execute("UPDATE projected_lane_messages SET status='dead-letter',claimed_by=NULL,lease_until=NULL,error_json=COALESCE(?1,error_json) WHERE message_id=?2 AND status NOT IN ('completed','failed','cancelled','dead-letter') AND (claimed_by IS NULL OR claimed_by=?3)",params![error,id,owner])?;
     Ok(())
+}
+fn repair_orphaned_claimed_lane_messages(
+    conn: &Connection,
+    namespace: &str,
+    inbox_id: Option<&str>,
+    limit: usize,
+) -> SqliteStoreResult<Vec<String>> {
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+    let now = unix_epoch_seconds();
+    let mut statement = conn.prepare(
+        "SELECT message_id FROM projected_lane_messages \
+         WHERE namespace=?1 AND (?2 IS NULL OR inbox_id=?2) AND status='claimed' \
+         AND (lease_until IS NULL OR lease_until<=?3) \
+         ORDER BY seq ASC, created_at ASC LIMIT ?4",
+    )?;
+    let ids = statement
+        .query_map(
+            params![
+                namespace,
+                inbox_id,
+                now,
+                i64::try_from(limit).unwrap_or(i64::MAX)
+            ],
+            |row| row.get::<_, String>(0),
+        )?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(statement);
+    for id in &ids {
+        conn.execute(
+            "UPDATE projected_lane_messages SET status='pending', claimed_by=NULL, \
+             lease_until=NULL WHERE message_id=?1 AND status='claimed' \
+             AND (lease_until IS NULL OR lease_until<=?2)",
+            params![id, now],
+        )?;
+    }
+    Ok(ids)
 }
 fn list_projected_lane_messages(
     conn: &Connection,
@@ -2826,17 +3129,6 @@ fn recorded_runtime_events(
         .map_err(Into::into)
 }
 
-fn all_recorded_runtime_events(conn: &Connection) -> SqliteStoreResult<Vec<ServerRunEvent>> {
-    let mut statement = conn.prepare(
-        "SELECT seq, run_id, event_type, payload_json, created_at_ms FROM server_run_events \
-         WHERE event_type = ?1 ORDER BY seq ASC",
-    )?;
-    statement
-        .query_map([RECORDED_RUNTIME_EVENT_TYPE], server_run_event_from_row)?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(Into::into)
-}
-
 fn latest_server_run_event_seq(conn: &Connection, run_id: &str) -> SqliteStoreResult<i64> {
     conn.query_row(
         "SELECT COALESCE(MAX(seq), 0) FROM server_run_events WHERE run_id = ?1",
@@ -2860,6 +3152,52 @@ fn recorded_runtime_projection(
     }
 }
 
+fn runtime_json_object<T: serde::Serialize>(value: &T) -> SqliteStoreResult<Map<String, Value>> {
+    serde_json::to_value(value)?
+        .as_object()
+        .cloned()
+        .ok_or_else(|| {
+            SqliteStoreError::TransactionAborted(
+                "runtime projection payload is not an object".to_owned(),
+            )
+        })
+}
+
+fn store_runtime_serving_projections(
+    conn: &Connection,
+    persisted: &PersistedRecordedTransition,
+    event_seq: i64,
+) -> SqliteStoreResult<()> {
+    replace_named_projection(
+        conn,
+        RUNTIME_CURRENT_STATE_NAMESPACE,
+        &persisted.reduced.state.run_id,
+        recorded_runtime_projection(
+            runtime_json_object(&persisted.reduced.state)?,
+            event_seq,
+            "ready".to_owned(),
+        ),
+    )
+}
+
+fn recorded_transition_by_id(
+    conn: &Connection,
+    transition_id: &str,
+) -> SqliteStoreResult<Option<(PersistedRecordedTransition, i64)>> {
+    conn.query_row(
+        "SELECT payload_json, seq FROM server_run_events \
+         WHERE event_type = ?1 AND json_extract(payload_json, '$.transition_id') = ?2 LIMIT 1",
+        params![RECORDED_RUNTIME_EVENT_TYPE, transition_id],
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+    )
+    .optional()?
+    .map(|(payload_json, seq)| {
+        let payload = serde_json::from_str::<PersistedRecordedTransition>(&payload_json)?;
+        Ok((payload, seq))
+    })
+    .transpose()
+}
+
 fn read_recorded_runtime_state(
     conn: &Connection,
     run_id: &str,
@@ -2873,6 +3211,31 @@ fn read_recorded_runtime_state(
         return Err(SqliteStoreError::RecordedRuntimeConflict(format!(
             "run identity differs for {run_id:?}"
         )));
+    }
+    if let Some(row) = named_projection(conn, RUNTIME_CURRENT_STATE_NAMESPACE, run_id)?
+        && row.materialization_status == "ready"
+    {
+        let has_newer_recorded_event: bool = conn.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM server_run_events
+                WHERE run_id = ?1 AND event_type = ?2 AND seq > ?3
+             )",
+            params![
+                run_id,
+                RECORDED_RUNTIME_EVENT_TYPE,
+                row.last_authoritative_seq
+            ],
+            |result| result.get(0),
+        )?;
+        if !has_newer_recorded_event
+            && let Ok(state) =
+                serde_json::from_value::<RecordedRuntimeState>(Value::Object(row.payload))
+            && state.run_id == run_id
+            && state.workflow_id == workflow_id
+            && state.conversation_id == conversation_id
+        {
+            return Ok(Some(state));
+        }
     }
     let mut latest: Option<RecordedRuntimeState> = None;
     for event in recorded_runtime_events(conn, run_id)? {
@@ -2982,24 +3345,20 @@ fn apply_claimed_recorded_worker_effect(
         )));
     }
     if lane.status == "completed" {
-        for event in recorded_runtime_events(conn, &handoff.run_id)? {
-            let Some(payload) = parse_runtime_event_payload(&event.payload_json)? else {
-                continue;
-            };
-            if payload.worker_handoff.as_ref() == Some(&handoff)
+        if let Some((payload, event_seq)) = recorded_transition_by_id(conn, &effect.effect_id)?
+            && (payload.worker_handoff.as_ref() == Some(&handoff)
                 || payload
                     .worker_handoff
                     .as_ref()
-                    .is_some_and(|stored| stored.message_id == handoff.message_id)
-            {
-                if payload.worker_effect_digest.as_deref() != Some(effect_digest.as_str()) {
-                    return Err(SqliteStoreError::RecordedRuntimeConflict(format!(
-                        "worker handoff {:?} retried with different effect",
-                        handoff.message_id
-                    )));
-                }
-                return Ok(payload.result(event.seq, true));
+                    .is_some_and(|stored| stored.message_id == handoff.message_id))
+        {
+            if payload.worker_effect_digest.as_deref() != Some(effect_digest.as_str()) {
+                return Err(SqliteStoreError::RecordedRuntimeConflict(format!(
+                    "worker handoff {:?} retried with different effect",
+                    handoff.message_id
+                )));
             }
+            return Ok(payload.result(event_seq, true));
         }
         return Err(SqliteStoreError::RecordedRuntimeConflict(format!(
             "completed worker lane message {:?} has no matching recorded effect",
@@ -3049,19 +3408,11 @@ fn apply_claimed_recorded_worker_effect(
     }
     let expected_event_seq = latest_server_run_event_seq(conn, &handoff.run_id)?;
     let step_seq = current.last_step_seq.saturating_add(1);
-    let authoritative_successors = if current.static_routes.is_empty() {
-        effect.successors.clone()
-    } else {
-        current
-            .static_routes
-            .iter()
-            .filter(|route| route.source_node_id == handoff.step_id)
-            .map(|route| kogwistar_runtime::RuntimeSuccessor {
-                node_id: route.target_node_id.clone(),
-                join_mask: route.join_mask,
-            })
-            .collect()
-    };
+    let authoritative_successors = kogwistar_runtime::authoritative_runtime_successors(
+        &current.static_routes,
+        &handoff.step_id,
+        &effect.successors,
+    )?;
     let next_frontier = match effect.status {
         RuntimeWorkerEffectStatus::Success => frontier_after_worker_success(
             &current.frontier,
@@ -3127,6 +3478,7 @@ fn apply_claimed_recorded_worker_effect(
         RECORDED_RUNTIME_EVENT_TYPE,
         runtime_event_payload(&persisted)?,
     )?;
+    store_runtime_serving_projections(conn, &persisted, event.seq)?;
     replace_named_projection(
         conn,
         &runtime_checkpoint_namespace(&transition.conversation_id),
@@ -3223,13 +3575,8 @@ fn retry_completed_worker_handoff(
     transition: &RecordedRuntimeTransition,
 ) -> SqliteStoreResult<RecordedTransitionResult> {
     let request_digest = transition_digest(transition)?;
-    for event in recorded_runtime_events(conn, &transition.run_id)? {
-        let Some(payload) = parse_runtime_event_payload(&event.payload_json)? else {
-            continue;
-        };
-        if payload.transition_id != transition.transition_id {
-            continue;
-        }
+    if let Some((payload, event_seq)) = recorded_transition_by_id(conn, &transition.transition_id)?
+    {
         if payload.request_digest != request_digest
             || payload.worker_handoff.as_ref() != Some(handoff)
         {
@@ -3238,7 +3585,7 @@ fn retry_completed_worker_handoff(
                 handoff.message_id
             )));
         }
-        return Ok(payload.result(event.seq, true));
+        return Ok(payload.result(event_seq, true));
     }
     Err(SqliteStoreError::RecordedRuntimeConflict(format!(
         "completed worker lane message {:?} has no matching recorded result",
@@ -3256,20 +3603,15 @@ fn apply_recorded_runtime_transition_inner(
 
     // Idempotency lookup occurs before sequence/CAS checks. Exact retry returns
     // the original response; reusing an id for different immutable input fails.
-    for event in all_recorded_runtime_events(conn)? {
-        let Some(payload) = parse_runtime_event_payload(&event.payload_json)? else {
-            continue;
-        };
-        if payload.transition_id == transition.transition_id {
-            if payload.request_digest != request_digest || payload.worker_handoff != worker_handoff
-            {
-                return Err(SqliteStoreError::RecordedRuntimeConflict(format!(
-                    "transition_id {:?} reused with different payload",
-                    transition.transition_id
-                )));
-            }
-            return Ok(payload.result(event.seq, true));
+    if let Some((payload, event_seq)) = recorded_transition_by_id(conn, &transition.transition_id)?
+    {
+        if payload.request_digest != request_digest || payload.worker_handoff != worker_handoff {
+            return Err(SqliteStoreError::RecordedRuntimeConflict(format!(
+                "transition_id {:?} reused with different payload",
+                transition.transition_id
+            )));
         }
+        return Ok(payload.result(event_seq, true));
     }
 
     let existing_run = server_run(conn, &transition.run_id)?;
@@ -3331,6 +3673,7 @@ fn apply_recorded_runtime_transition_inner(
         runtime_event_payload(&persisted)?,
     )?;
     let event_seq = event.seq;
+    store_runtime_serving_projections(conn, &persisted, event_seq)?;
     replace_named_projection(
         conn,
         &runtime_checkpoint_namespace(&transition.conversation_id),
@@ -3635,6 +3978,140 @@ mod tests {
         }
     }
 
+    fn runtime_start(run_id: &str, transition_id: &str) -> RecordedRuntimeTransition {
+        serde_json::from_value(serde_json::json!({
+            "contract_version": 1,
+            "transition_id": transition_id,
+            "expected_event_seq": 0,
+            "kind": "start",
+            "run_id": run_id,
+            "workflow_id": "wf-1",
+            "conversation_id": "conv-1",
+            "user_id": "user-1",
+            "user_turn_node_id": "turn-1",
+            "step_seq": 0,
+            "node_id": "step-1",
+            "token_id": "token-1",
+            "initial_state": {"answer": "seed"},
+            "frontier": {
+                "pending": [["step-1", 0, "token-1", null]],
+                "suspended": [], "join_node_ids": [], "join_outstanding": [],
+                "join_waiters": {}
+            }
+        }))
+        .unwrap()
+    }
+
+    fn runtime_result(
+        run_id: &str,
+        transition_id: &str,
+        expected_event_seq: i64,
+        answer: &str,
+    ) -> RecordedRuntimeTransition {
+        serde_json::from_value(serde_json::json!({
+            "contract_version": 1,
+            "transition_id": transition_id,
+            "expected_event_seq": expected_event_seq,
+            "kind": "recorded_step_success",
+            "run_id": run_id,
+            "workflow_id": "wf-1",
+            "conversation_id": "conv-1",
+            "step_seq": 0,
+            "node_id": "step-1",
+            "token_id": "token-1",
+            "state_update": [["u", {"answer": answer}]],
+            "frontier": {
+                "pending": [], "suspended": [], "join_node_ids": [],
+                "join_outstanding": [], "join_waiters": {}
+            },
+            "result": {"answer": answer}
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn auth_store_opens_python_schema_and_resolves_identity_atomically() {
+        let path = database_path("auth");
+        let store = SqliteAuthStore::open(&path).unwrap();
+        let request = ResolveExternalIdentity {
+            issuer: "https://issuer.example".to_owned(),
+            subject: "subject-1".to_owned(),
+            email: "alice@example.com".to_owned(),
+            display_name: Some("Alice".to_owned()),
+            new_user_id: "generated-1".to_owned(),
+            default_role: "ro".to_owned(),
+            default_ns: "docs".to_owned(),
+        };
+        let created = block_on(store.resolve_external_identity(request.clone())).unwrap();
+        assert_eq!(created.user_id, "generated-1");
+        assert_eq!(created.email, "alice@example.com");
+        assert_eq!(created.display_name.as_deref(), Some("Alice"));
+        assert_eq!(created.global_role.as_deref(), Some("ro"));
+        let retried = block_on(store.resolve_external_identity(ResolveExternalIdentity {
+            new_user_id: "must-not-win".to_owned(),
+            email: "changed@example.com".to_owned(),
+            ..request
+        }))
+        .unwrap();
+        assert_eq!(retried.user_id, "generated-1");
+        let identity = block_on(store.external_identity("https://issuer.example", "subject-1"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(identity.user_id, "generated-1");
+        assert_eq!(identity.email.as_deref(), Some("alice@example.com"));
+        let connection = Connection::open(&path).unwrap();
+        let table_names = connection
+            .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            table_names,
+            ["external_identities", "users", "workflow_acl"]
+        );
+        drop(connection);
+        drop(store);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn auth_store_links_existing_python_user_by_email() {
+        let path = database_path("auth-python-user");
+        let store = SqliteAuthStore::open(&path).unwrap();
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute(
+                "INSERT INTO users (user_id, email, display_name, is_active, global_role, global_ns, created_at) VALUES ('python-user', 'alice@example.com', 'Python Alice', 1, 'rw', 'docs,workflow', CURRENT_TIMESTAMP)",
+                [],
+            )
+            .unwrap();
+        drop(connection);
+        let user = block_on(store.resolve_external_identity(ResolveExternalIdentity {
+            issuer: "issuer".to_owned(),
+            subject: "subject".to_owned(),
+            email: "alice@example.com".to_owned(),
+            display_name: Some("Ignored".to_owned()),
+            new_user_id: "rust-user".to_owned(),
+            default_role: "ro".to_owned(),
+            default_ns: "docs".to_owned(),
+        }))
+        .unwrap();
+        assert_eq!(user.user_id, "python-user");
+        assert_eq!(user.display_name.as_deref(), Some("Python Alice"));
+        assert_eq!(user.global_role.as_deref(), Some("rw"));
+        assert_eq!(
+            block_on(store.external_identity("issuer", "subject"))
+                .unwrap()
+                .unwrap()
+                .user_id,
+            "python-user"
+        );
+        drop(store);
+        fs::remove_file(path).unwrap();
+    }
+
     fn block_on<T>(future: impl Future<Output = T>) -> T {
         fn no_op(_: *const ()) {}
         fn clone(_: *const ()) -> RawWaker {
@@ -3715,6 +4192,73 @@ mod tests {
     }
 
     #[test]
+    fn python_legacy_queue_schema_gets_all_additive_columns_before_indexes() {
+        let path = database_path("legacy-queue-migration");
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE index_jobs (
+                job_id TEXT PRIMARY KEY, entity_kind TEXT NOT NULL, entity_id TEXT NOT NULL,
+                index_kind TEXT NOT NULL, op TEXT NOT NULL, status TEXT NOT NULL,
+                lease_until INTEGER, retry_count INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT, payload_json TEXT, created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+             );
+             CREATE TABLE projected_lane_messages (
+                message_id TEXT PRIMARY KEY, namespace TEXT NOT NULL DEFAULT 'default',
+                inbox_id TEXT NOT NULL, conversation_id TEXT NOT NULL, recipient_id TEXT NOT NULL,
+                sender_id TEXT NOT NULL, msg_type TEXT NOT NULL, status TEXT NOT NULL,
+                seq INTEGER NOT NULL, conversation_seq INTEGER NOT NULL, claimed_by TEXT,
+                lease_until INTEGER, retry_count INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL,
+                available_at INTEGER NOT NULL, run_id TEXT, step_id TEXT, correlation_id TEXT,
+                payload_json TEXT, error_json TEXT, prev_message_id TEXT, next_message_id TEXT,
+                inbox_tail_message_id TEXT, conversation_tail_message_id TEXT
+             );",
+        )
+        .unwrap();
+        drop(conn);
+
+        let store = SqliteStore::open(&path).unwrap();
+        let conn = Connection::open(&path).unwrap();
+        let index_job_columns = conn
+            .prepare("PRAGMA table_info(index_jobs)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        for expected in [
+            "namespace",
+            "coalesce_key",
+            "next_run_at",
+            "max_retries",
+            "claim_token",
+        ] {
+            assert!(index_job_columns.iter().any(|column| column == expected));
+        }
+        let purpose_exists = conn
+            .prepare("PRAGMA table_info(projected_lane_messages)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+            .iter()
+            .any(|column| column == "purpose");
+        assert!(purpose_exists);
+        let coalesce_index_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='index' AND name='uq_index_jobs_pending_ns_coalesce')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(coalesce_index_exists);
+        drop(conn);
+        drop(store);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn rust_created_database_has_python_legacy_schema_and_sql_semantics() {
         let (store, path) = store("schema");
         store.next_global_seq().unwrap();
@@ -3775,6 +4319,203 @@ mod tests {
         );
         drop(conn);
         fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn recorded_transition_lookup_uses_json_expression_index() {
+        let (store, path) = store("runtime-transition-index");
+        drop(store);
+        let conn = Connection::open(&path).unwrap();
+        let plan = conn
+            .prepare(
+                "EXPLAIN QUERY PLAN SELECT payload_json, seq FROM server_run_events \
+                 WHERE event_type = ?1 AND json_extract(payload_json, '$.transition_id') = ?2 LIMIT 1",
+            )
+            .unwrap()
+            .query_map(params![RECORDED_RUNTIME_EVENT_TYPE, "transition-1"], |row| {
+                row.get::<_, String>(3)
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+            .join(" ");
+        assert!(
+            plan.contains("idx_server_run_events_recorded_transition_id"),
+            "{plan}"
+        );
+        drop(conn);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn runtime_current_state_projection_is_disposable_fresh_and_atomic() {
+        let (store, path) = store("runtime-current-state");
+        let start_transition = runtime_start("run-1", "start-1");
+        let start = store
+            .apply_recorded_runtime_transition(start_transition.clone(), false)
+            .unwrap();
+        let exact_retry = store
+            .apply_recorded_runtime_transition(start_transition.clone(), false)
+            .unwrap();
+        assert!(exact_retry.idempotent);
+        assert_eq!(start.event_seq, exact_retry.event_seq);
+        let mut conflicting_start = start_transition;
+        conflicting_start.initial_state = Some(Map::from_iter([(
+            "answer".to_owned(),
+            Value::String("changed".to_owned()),
+        )]));
+        assert!(matches!(
+            store.apply_recorded_runtime_transition(conflicting_start, false),
+            Err(SqliteStoreError::RecordedRuntimeConflict(_))
+        ));
+
+        let start_projection = store
+            .get_named_projection(RUNTIME_CURRENT_STATE_NAMESPACE, "run-1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(start_projection.last_authoritative_seq, start.event_seq);
+        assert_eq!(start_projection.payload["state"]["answer"], "seed");
+
+        let result_transition = runtime_result("run-1", "result-1", start.event_seq, "worker");
+        assert!(matches!(
+            store.apply_recorded_runtime_transition(result_transition.clone(), true),
+            Err(SqliteStoreError::TransactionAborted(_))
+        ));
+        assert_eq!(
+            store.list_server_run_events("run-1", 0, 10).unwrap().len(),
+            1
+        );
+        assert_eq!(
+            store
+                .get_named_projection(RUNTIME_CURRENT_STATE_NAMESPACE, "run-1")
+                .unwrap()
+                .unwrap()
+                .last_authoritative_seq,
+            start.event_seq
+        );
+
+        let result = store
+            .apply_recorded_runtime_transition(result_transition, false)
+            .unwrap();
+        assert_eq!(
+            store
+                .read_recorded_runtime_state("run-1", "wf-1", "conv-1")
+                .unwrap()
+                .unwrap()
+                .state["answer"],
+            "worker"
+        );
+
+        let conn = Connection::open(&path).unwrap();
+        conn.execute(
+            "UPDATE named_projections SET payload_json='{}', last_authoritative_seq=?1 \
+             WHERE namespace=?2 AND key='run-1'",
+            params![start.event_seq, RUNTIME_CURRENT_STATE_NAMESPACE],
+        )
+        .unwrap();
+        drop(conn);
+        let replayed = store
+            .read_recorded_runtime_state("run-1", "wf-1", "conv-1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(replayed.state["answer"], "worker");
+        assert_eq!(result.reduced.state, replayed);
+
+        let conn = Connection::open(&path).unwrap();
+        conn.execute(
+            "DELETE FROM named_projections WHERE namespace=?1 AND key='run-1'",
+            [RUNTIME_CURRENT_STATE_NAMESPACE],
+        )
+        .unwrap();
+        drop(conn);
+        assert_eq!(
+            store
+                .read_recorded_runtime_state("run-1", "wf-1", "conv-1")
+                .unwrap()
+                .unwrap(),
+            result.reduced.state
+        );
+        drop(store);
+        fs::remove_file(path).unwrap();
+    }
+
+    /// Manual code-smell probe. Absolute timings vary by host; growth ratio is
+    /// the useful signal. Both indexed retry lookup and warm current-state read
+    /// should remain near-flat as unrelated recorded history grows.
+    #[test]
+    #[ignore = "manual runtime serving-path scale probe"]
+    fn runtime_serving_lookup_scale_probe() {
+        use std::time::Instant;
+
+        fn measure(history_size: usize) -> (u128, u128) {
+            let (store, path) = store(&format!("runtime-scale-{history_size}"));
+            let start_transition = runtime_start("target-run", "target-transition");
+            store
+                .apply_recorded_runtime_transition(start_transition.clone(), false)
+                .unwrap();
+            let persisted_json = store
+                .list_server_run_events("target-run", 0, 1)
+                .unwrap()
+                .pop()
+                .unwrap()
+                .payload_json;
+            let mut persisted: Value = serde_json::from_str(&persisted_json).unwrap();
+            let conn = Connection::open(&path).unwrap();
+            let transaction = conn.unchecked_transaction().unwrap();
+            for index in 0..history_size {
+                persisted["transition_id"] = Value::String(format!("noise-{index}"));
+                transaction
+                    .execute(
+                        "INSERT INTO server_run_events(run_id,event_type,payload_json,created_at_ms) \
+                         VALUES (?1,?2,?3,0)",
+                        params![
+                            format!("noise-run-{index}"),
+                            RECORDED_RUNTIME_EVENT_TYPE,
+                            serde_json::to_string(&persisted).unwrap()
+                        ],
+                    )
+                    .unwrap();
+            }
+            transaction.commit().unwrap();
+            drop(conn);
+
+            let retry_started = Instant::now();
+            for _ in 0..200 {
+                assert!(
+                    store
+                        .apply_recorded_runtime_transition(start_transition.clone(), false)
+                        .unwrap()
+                        .idempotent
+                );
+            }
+            let retry_ns = retry_started.elapsed().as_nanos();
+            let state_started = Instant::now();
+            for _ in 0..200 {
+                assert!(
+                    store
+                        .read_recorded_runtime_state("target-run", "wf-1", "conv-1")
+                        .unwrap()
+                        .is_some()
+                );
+            }
+            let state_ns = state_started.elapsed().as_nanos();
+            drop(store);
+            fs::remove_file(path).unwrap();
+            (retry_ns, state_ns)
+        }
+
+        let small = measure(100);
+        let large = measure(10_000);
+        eprintln!(
+            "runtime-serving-scale small_100={{retry_ns:{},state_ns:{}}} \
+             large_10000={{retry_ns:{},state_ns:{}}} ratios={{retry:{:.2},state:{:.2}}}",
+            small.0,
+            small.1,
+            large.0,
+            large.1,
+            large.0 as f64 / small.0.max(1) as f64,
+            large.1 as f64 / small.1.max(1) as f64,
+        );
     }
 
     #[test]

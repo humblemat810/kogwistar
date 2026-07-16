@@ -37,8 +37,13 @@ class _WorkflowDesignService(_WorkflowDesignHistoryMixin):
         if not workflow_id:
             raise ValueError("workflow_id is required")
         with self._workflow_history_lock:
+            projection_status = self._workflow_projection_status(workflow_id=workflow_id)
+            # Rust can own authoritative designer events while Python remains the
+            # rollback owner of the legacy graph projection. Materialize lazily on
+            # first Python access instead of trusting Rust's event-only marker.
             state = self._workflow_sync_projection_locked(
-                workflow_id=workflow_id, materialize=False
+                workflow_id=workflow_id,
+                materialize=projection_status == "rust_event_only",
             )
             projection_status = self._workflow_projection_status(workflow_id=workflow_id)
             if projection_status:

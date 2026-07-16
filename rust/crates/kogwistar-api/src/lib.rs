@@ -3,29 +3,40 @@
 //! Network transports adapt these typed decisions. They do not own domain
 //! policy, authentication role checks, SSE framing, or JSON-RPC envelopes.
 
+use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
-use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header};
+use jsonwebtoken::{
+    Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, decode_header, encode,
+};
 use kogwistar_runtime::{
     RECORDED_RUNTIME_CONTRACT_VERSION, RecordedRuntimeState, RecordedRuntimeTransition,
     RecordedTransitionKind, RecordedWorkerHandoff, RecordedWorkerSuccessEffect, RuntimeFrontier,
 };
 use kogwistar_store::{
-    LaneMessageFilter, NamedProjection, NewProjectedLaneMessage, ProjectedLaneMessage, ServerRun,
-    ServerRunCreate, ServerRunEvent, WorkflowDesignSnapshot,
+    AuthIdentityStore, AuthUser, EntityEvent, LaneMessageFilter, NamedProjection,
+    NamedProjectionWrite, NewProjectedLaneMessage, ProjectedLaneMessage, ResolveExternalIdentity,
+    ServerRun, ServerRunCreate, ServerRunEvent, WorkflowDesignDeltaWrite,
+    WorkflowDesignSnapshot, WorkflowDesignSnapshotWrite,
 };
-use kogwistar_store_postgres::PostgresStore;
-use kogwistar_store_sqlite::SqliteStore;
+use kogwistar_store_postgres::{
+    NewRawEntityEvent as PostgresNewRawEntityEvent, PostgresAuthStore, PostgresStore,
+};
+use kogwistar_store_sqlite::{
+    NewRawEntityEvent as SqliteNewRawEntityEvent, SqliteAuthStore, SqliteStore,
+};
 
 use axum::{
     Json, Router,
     body::{Body, Bytes},
     extract::{OriginalUri, Query, State},
-    http::{HeaderMap, Method, StatusCode},
+    http::{HeaderMap, HeaderValue, Method, StatusCode, header},
     response::{IntoResponse, Response},
     routing::{MethodFilter, get, on, post},
 };
@@ -161,26 +172,40 @@ pub struct ApiState {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct AuthConfig {
+    pub mode: String,
     pub algorithm: Option<String>,
     pub key: Option<String>,
+    pub jwks_json: Option<String>,
     pub issuer: Option<String>,
     pub audience: Option<String>,
+    pub oidc_providers_json: Option<String>,
+    pub auth_db_url: Option<String>,
 }
 
 impl AuthConfig {
     pub fn from_environment() -> Self {
         Self {
+            mode: std::env::var("AUTH_MODE").unwrap_or_else(|_| "oidc".to_owned()),
             algorithm: std::env::var("JWT_ALG")
                 .ok()
                 .or_else(|| Some("HS256".to_owned())),
             key: std::env::var("JWT_SECRET").ok(),
+            jwks_json: std::env::var("JWT_JWKS_JSON").ok(),
             issuer: std::env::var("JWT_ISS").ok(),
             audience: std::env::var("JWT_AUD").ok(),
+            oidc_providers_json: std::env::var("OIDC_PROVIDERS_JSON").ok(),
+            auth_db_url: std::env::var("AUTH_DB_URL")
+                .ok()
+                .or_else(|| Some("sqlite:///auth.sqlite".to_owned())),
         }
     }
 
     fn configured(&self) -> bool {
         self.key.as_deref().is_some_and(|key| !key.is_empty())
+            || self
+                .jwks_json
+                .as_deref()
+                .is_some_and(|jwks| !jwks.is_empty())
     }
 }
 
@@ -202,10 +227,11 @@ impl Default for ImplementationSnapshot {
             contract_version: 1,
             schema_version: 1,
             frozen_route_operations: FROZEN_OPENAPI_ROUTES.len(),
-            // health + submit + two aliases each for run GET/events/cancel + poll on
-            // conversation API. Static transport-only /api/events and /mcp
-            // are not part of the frozen OpenAPI operation count.
-            implemented_route_operations: 9,
+            // health + submit + two aliases each for run GET/events/cancel,
+            // resume, resume-contract, steps, checkpoint list/item, and replay;
+            // plus poll on the conversation API. Static transport-only
+            // /api/events and /mcp are not frozen OpenAPI operations.
+            implemented_route_operations: 53,
             runtime_cutover_ready: false,
             server_cutover_ready: false,
         }
@@ -218,6 +244,7 @@ pub struct ApiEffectRequest {
     pub method: String,
     pub path_and_query: String,
     pub body: Vec<u8>,
+    pub principal: Value,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -299,6 +326,171 @@ fn server_run_event_value(event: ServerRunEvent) -> Value {
     })
 }
 
+#[derive(Clone, Debug)]
+struct RecordedInspectionSnapshot {
+    event_seq: i64,
+    created_at_ms: i64,
+    transition_id: String,
+    step_seq: i64,
+    workflow_id: String,
+    workflow_node_id: String,
+    state: Value,
+    result: Value,
+    errors: Vec<Value>,
+    server_status: String,
+}
+
+fn recorded_inspection_snapshots(events: Vec<ServerRunEvent>) -> Vec<RecordedInspectionSnapshot> {
+    events
+        .into_iter()
+        .filter(|event| event.event_type == "workflow.recorded_transition.v1")
+        .filter_map(|event| {
+            let payload: Value = serde_json::from_str(&event.payload_json).ok()?;
+            let reduced = payload.get("reduced")?;
+            let state = reduced.get("state")?;
+            Some(RecordedInspectionSnapshot {
+                event_seq: event.seq,
+                created_at_ms: event.created_at_ms,
+                transition_id: payload["transition_id"].as_str()?.to_owned(),
+                step_seq: state["last_step_seq"].as_i64()?,
+                workflow_id: state["workflow_id"].as_str()?.to_owned(),
+                workflow_node_id: state["last_node_id"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned(),
+                state: state.get("state").cloned().unwrap_or_else(|| json!({})),
+                result: reduced.get("result").cloned().unwrap_or(Value::Null),
+                errors: reduced["errors"].as_array().cloned().unwrap_or_default(),
+                server_status: reduced["server_status"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned(),
+            })
+        })
+        .collect()
+}
+
+fn recorded_step_snapshots(events: Vec<ServerRunEvent>) -> Vec<RecordedInspectionSnapshot> {
+    let mut steps = Vec::<RecordedInspectionSnapshot>::new();
+    for snapshot in recorded_inspection_snapshots(events) {
+        if snapshot.step_seq < 0 {
+            continue;
+        }
+        if steps.last().is_some_and(|previous| {
+            previous.step_seq == snapshot.step_seq
+                && previous.workflow_node_id == snapshot.workflow_node_id
+        }) {
+            steps.pop();
+            steps.push(snapshot);
+            continue;
+        }
+        steps.push(snapshot);
+    }
+    steps
+}
+
+fn runtime_inspection_effect(
+    request: &ApiEffectRequest,
+    run_id: &str,
+    tail: &[&str],
+    events: Vec<ServerRunEvent>,
+) -> ApiEffectResponse {
+    let steps = recorded_step_snapshots(events);
+    match tail {
+        ["steps"] => json_effect(
+            StatusCode::OK,
+            json!({
+                "run_id": run_id,
+                "steps": steps.into_iter().map(|step| json!({
+                    "node_id": format!("wf_step|{}|{}", run_id, step.step_seq),
+                    "step_seq": step.step_seq,
+                    "workflow_id": step.workflow_id,
+                    "workflow_node_id": step.workflow_node_id,
+                    "op": step.workflow_node_id,
+                    "status": if step.errors.is_empty() { "success" } else { "failure" },
+                    "duration_ms": 0,
+                    "result": step.result,
+                    "event_seq": step.event_seq,
+                    "created_at_ms": step.created_at_ms,
+                    "transition_id": step.transition_id,
+                })).collect::<Vec<_>>(),
+            }),
+        ),
+        ["checkpoints"] => json_effect(
+            StatusCode::OK,
+            json!({
+                "run_id": run_id,
+                "checkpoints": steps.into_iter().map(|step| json!({
+                    "node_id": format!("wf_ckpt|{}|{}", run_id, step.step_seq),
+                    "step_seq": step.step_seq,
+                    "workflow_id": step.workflow_id,
+                    "state": step.state,
+                    "event_seq": step.event_seq,
+                    "created_at_ms": step.created_at_ms,
+                    "status": step.server_status,
+                })).collect::<Vec<_>>(),
+            }),
+        ),
+        ["checkpoints", raw_step_seq] => {
+            let Ok(step_seq) = raw_step_seq.parse::<i64>() else {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    "step_seq must be an integer",
+                );
+            };
+            match steps.into_iter().find(|step| step.step_seq == step_seq) {
+                Some(step) => json_effect(
+                    StatusCode::OK,
+                    json!({"run_id": run_id, "step_seq": step_seq, "state": step.state}),
+                ),
+                None => effect_error(
+                    StatusCode::NOT_FOUND,
+                    "KOGWISTAR_CHECKPOINT_NOT_FOUND",
+                    format!("No checkpoint for {run_id} at step {step_seq}"),
+                ),
+            }
+        }
+        ["replay"] => {
+            let target_step_seq =
+                query_integer(&request.path_and_query, "target_step_seq", i64::MIN);
+            if target_step_seq == i64::MIN {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    "target_step_seq is required and must be an integer",
+                );
+            }
+            match steps
+                .into_iter()
+                .find(|step| step.step_seq == target_step_seq)
+            {
+                Some(step) => json_effect(
+                    StatusCode::OK,
+                    json!({
+                        "run_id": run_id,
+                        "target_step_seq": target_step_seq,
+                        "state": step.state,
+                    }),
+                ),
+                None => effect_error(
+                    StatusCode::NOT_FOUND,
+                    "KOGWISTAR_CHECKPOINT_NOT_FOUND",
+                    format!("No checkpoint for {run_id} at step {target_step_seq}"),
+                ),
+            }
+        }
+        _ => unreachable!("runtime inspection called with unsupported route"),
+    }
+}
+
+fn is_runtime_inspection_tail(tail: &[&str]) -> bool {
+    matches!(
+        tail,
+        ["steps"] | ["checkpoints"] | ["checkpoints", _] | ["replay"]
+    )
+}
+
 fn resume_contract_value(state: RecordedRuntimeState) -> Value {
     json!({
         "run_id": state.run_id,
@@ -362,17 +554,32 @@ fn runtime_graph_plan_from_snapshot(payload_json: &str) -> Option<RuntimeGraphPl
     if join_node_ids.len() >= i64::BITS as usize {
         return None;
     }
+    let fanout_nodes = nodes
+        .iter()
+        .filter(|node| node["metadata"]["wf_fanout"].as_bool() == Some(true))
+        .filter_map(|node| node["id"].as_str().map(str::to_owned))
+        .collect::<std::collections::BTreeSet<_>>();
     let mut topology_edges = Vec::new();
+    let mut route_metadata = Vec::new();
     for edge in edges {
-        if edge["metadata"]["wf_predicate"]
+        let predicate = edge["metadata"]["wf_predicate"]
             .as_str()
-            .is_some_and(|predicate| !predicate.is_empty())
-        {
-            return None;
-        }
+            .filter(|predicate| !predicate.is_empty())
+            .map(str::to_owned);
+        let multiplicity = edge["metadata"]["wf_multiplicity"]
+            .as_str()
+            .unwrap_or("one")
+            .to_owned();
         for source in string_list(&edge["source_ids"]) {
             for target in string_list(&edge["target_ids"]) {
-                topology_edges.push([source.clone(), target]);
+                topology_edges.push([source.clone(), target.clone()]);
+                route_metadata.push((
+                    source.clone(),
+                    target,
+                    predicate.clone(),
+                    multiplicity.clone(),
+                    fanout_nodes.contains(&source),
+                ));
             }
         }
     }
@@ -395,13 +602,18 @@ fn runtime_graph_plan_from_snapshot(payload_json: &str) -> Option<RuntimeGraphPl
             .filter(|bit| *bit < i64::BITS as u64)
             .fold(0_i64, |value, bit| value | (1_i64 << bit))
     };
-    let routes = topology_edges
+    let routes = route_metadata
         .into_iter()
         .map(
-            |[source_node_id, target_node_id]| kogwistar_runtime::RuntimeStaticRoute {
-                source_node_id,
-                join_mask: mask(&target_node_id),
-                target_node_id,
+            |(source_node_id, target_node_id, predicate, multiplicity, source_fanout)| {
+                kogwistar_runtime::RuntimeStaticRoute {
+                    source_node_id,
+                    join_mask: mask(&target_node_id),
+                    target_node_id,
+                    predicate,
+                    multiplicity,
+                    source_fanout,
+                }
             },
         )
         .collect();
@@ -459,6 +671,876 @@ fn query_integer(path_and_query: &str, name: &str, default: i64) -> i64 {
         .unwrap_or(default)
 }
 
+fn query_string(path_and_query: &str, name: &str) -> Option<String> {
+    path_and_query
+        .split_once('?')
+        .map(|(_, query)| query)
+        .unwrap_or_default()
+        .split('&')
+        .find_map(|pair| {
+            let (key, value) = pair.split_once('=')?;
+            (key == name && !value.is_empty()).then(|| value.to_owned())
+        })
+}
+
+const CAPABILITY_SPECS: &[(&str, &str, &str)] = &[
+    ("read_graph", "Read graph state", "read"),
+    ("write_graph", "Write graph state", "write"),
+    ("send_message", "Send conversation message", "message"),
+    ("spawn_process", "Spawn workflow process", "process"),
+    ("invoke_tool", "Invoke tool", "tool"),
+    ("read_security_scope", "Read security scope", "read"),
+    ("project_view", "Project view", "read"),
+    ("approve_action", "Approve blocked action", "approve"),
+    ("workflow.design.inspect", "Inspect workflow design", "read"),
+    ("workflow.design.write", "Mutate workflow design", "write"),
+    ("workflow.run.read", "Read workflow run", "read"),
+    (
+        "workflow.run.write",
+        "Create or mutate workflow run",
+        "write",
+    ),
+    ("service.inspect", "Inspect service state", "read"),
+    ("service.manage", "Manage service lifecycle", "write"),
+    ("service.heartbeat", "Record service heartbeat", "write"),
+];
+
+#[derive(Default)]
+struct CapabilityState {
+    approvals: BTreeMap<(String, String), BTreeSet<String>>,
+    revoked: BTreeMap<String, BTreeSet<String>>,
+    audit_log: Vec<Value>,
+    syscall_audit: Vec<Value>,
+}
+
+type SharedCapabilityState = Arc<Mutex<CapabilityState>>;
+
+fn principal_strings(principal: &Value, name: &str) -> Vec<String> {
+    match principal.get(name) {
+        Some(Value::String(raw)) => raw
+            .split(',')
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_ascii_lowercase)
+            .collect(),
+        Some(Value::Array(values)) => values
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_ascii_lowercase)
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn principal_subject(principal: &Value) -> String {
+    ["sub", "user_id", "agent_id"]
+        .into_iter()
+        .find_map(|name| principal.get(name).and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("anonymous")
+        .to_ascii_lowercase()
+}
+
+fn principal_role(principal: &Value) -> String {
+    principal
+        .get("role")
+        .and_then(Value::as_str)
+        .map(str::to_ascii_lowercase)
+        .filter(|role| matches!(role.as_str(), "ro" | "rw"))
+        .unwrap_or_else(|| "ro".to_owned())
+}
+
+fn base_capabilities(principal: &Value) -> BTreeSet<String> {
+    let explicit = principal
+        .get("capabilities")
+        .or_else(|| principal.get("caps"));
+    if explicit.is_some() {
+        return principal_strings(
+            principal,
+            if principal.get("capabilities").is_some() {
+                "capabilities"
+            } else {
+                "caps"
+            },
+        )
+        .into_iter()
+        .filter(|capability| capability != "*")
+        .collect();
+    }
+    if principal_role(principal) == "rw" {
+        CAPABILITY_SPECS
+            .iter()
+            .map(|(name, _, _)| (*name).to_owned())
+            .collect()
+    } else {
+        [
+            "read_graph",
+            "read_security_scope",
+            "project_view",
+            "workflow.design.inspect",
+            "workflow.run.read",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
+    }
+}
+
+fn effective_capabilities(principal: &Value, state: &CapabilityState) -> BTreeSet<String> {
+    let subject = principal_subject(principal);
+    let mut effective = base_capabilities(principal);
+    for ((row_subject, _), capabilities) in &state.approvals {
+        if row_subject == &subject {
+            effective.extend(capabilities.iter().cloned());
+        }
+    }
+    if let Some(revoked) = state.revoked.get(&subject) {
+        effective.retain(|capability| !revoked.contains(capability));
+    }
+    effective
+}
+
+fn capability_snapshot(principal: &Value, state: &CapabilityState) -> Value {
+    json!({
+        "specs": CAPABILITY_SPECS.iter().map(|(name, description, action_kind)| json!({
+            "name": name,
+            "description": description,
+            "action_kind": action_kind,
+            "parent": Value::Null,
+        })).collect::<Vec<_>>(),
+        "approvals": state.approvals.iter().map(|((subject, action), capabilities)| json!({
+            "subject": subject,
+            "action": action,
+            "capabilities": capabilities,
+        })).collect::<Vec<_>>(),
+        "revoked": state.revoked.iter().map(|(subject, capabilities)| json!({
+            "subject": subject,
+            "capabilities": capabilities,
+        })).collect::<Vec<_>>(),
+        "audit_log": state.audit_log,
+        "current_subject": principal_subject(principal),
+        "effective_capabilities": effective_capabilities(principal, state),
+    })
+}
+
+fn audit_capability(
+    principal: &Value,
+    state: &mut CapabilityState,
+    action: &str,
+    required: &[&str],
+) -> bool {
+    let effective = effective_capabilities(principal, state);
+    let allowed = required.iter().all(|value| effective.contains(*value));
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|value| value.as_millis() as u64)
+        .unwrap_or_default();
+    let missing = required
+        .iter()
+        .filter(|value| !effective.contains(**value))
+        .copied()
+        .collect::<Vec<_>>();
+    state.audit_log.push(json!({
+        "ts_ms": now,
+        "subject": principal_subject(principal),
+        "action": action,
+        "required": required,
+        "granted": effective,
+        "outcome": if allowed { "allow" } else { "deny" },
+        "reason": if allowed { String::new() } else { format!("missing={}", missing.join(",")) },
+        "parent_capabilities": base_capabilities(principal),
+    }));
+    allowed
+}
+
+fn security_scope_value(principal: &Value) -> Value {
+    let mut namespaces = principal_strings(principal, "ns");
+    if namespaces.is_empty() {
+        namespaces.push("docs".to_owned());
+    }
+    namespaces.sort();
+    namespaces.dedup();
+    let default_namespace = namespaces
+        .first()
+        .cloned()
+        .unwrap_or_else(|| "default".to_owned());
+    let storage_namespace = principal["storage_ns"]
+        .as_str()
+        .filter(|value| !value.is_empty())
+        .unwrap_or(&default_namespace)
+        .to_ascii_lowercase();
+    let execution_namespace = principal["execution_ns"]
+        .as_str()
+        .filter(|value| !value.is_empty())
+        .unwrap_or(&default_namespace)
+        .to_ascii_lowercase();
+    let tenant = principal["tenant"]
+        .as_str()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let workspace = principal["workspace"]
+        .as_str()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let project = principal["project"]
+        .as_str()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let scope_path = [tenant.as_str(), workspace.as_str(), project.as_str()]
+        .into_iter()
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>()
+        .join("/");
+    let security_scope = ["security_scope", "tenant", "scope"]
+        .into_iter()
+        .find_map(|name| {
+            principal[name]
+                .as_str()
+                .filter(|value| !value.is_empty() && *value != "*")
+        })
+        .map(str::to_ascii_lowercase)
+        .or_else(|| (!scope_path.is_empty()).then(|| scope_path.clone()))
+        .unwrap_or_else(|| default_namespace.clone());
+    json!({
+        "storage_namespace": storage_namespace,
+        "execution_namespace": execution_namespace,
+        "security_scope": security_scope,
+        "security_scope_path": scope_path,
+        "tenant": tenant,
+        "workspace": workspace,
+        "project": project,
+    })
+}
+
+fn capability_effect(
+    request: &ApiEffectRequest,
+    shared: &SharedCapabilityState,
+) -> Option<ApiEffectResponse> {
+    let path = request
+        .path_and_query
+        .split('?')
+        .next()
+        .unwrap_or(&request.path_and_query);
+    if !matches!(
+        path,
+        "/api/workflow/visibility"
+            | "/api/workflow/capabilities"
+            | "/api/workflow/capabilities/approve"
+            | "/api/workflow/capabilities/revoke"
+    ) {
+        return None;
+    }
+    let mut state = shared
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let (action, required): (&str, &[&str]) = match path {
+        "/api/workflow/visibility" => (
+            "read_security_scope",
+            &["read_security_scope", "project_view"],
+        ),
+        "/api/workflow/capabilities" => ("project_view", &["project_view"]),
+        _ => ("approve_action", &["approve_action"]),
+    };
+    if !audit_capability(&request.principal, &mut state, action, required) {
+        return Some(effect_error(
+            StatusCode::FORBIDDEN,
+            "KOGWISTAR_CAPABILITY_FORBIDDEN",
+            format!("Forbidden: action '{action}' requires capability {required:?}"),
+        ));
+    }
+    match (request.method.as_str(), path) {
+        ("GET", "/api/workflow/visibility") => {
+            let mapping = security_scope_value(&request.principal);
+            Some(json_effect(
+                StatusCode::OK,
+                json!({
+                    "current_subject": principal_subject(&request.principal),
+                    "current_role": principal_role(&request.principal),
+                    "current_capabilities": effective_capabilities(&request.principal, &state),
+                    "namespaces": {
+                        "storage_namespace": mapping["storage_namespace"],
+                        "execution_namespace": mapping["execution_namespace"],
+                    },
+                    "security_scope": mapping["security_scope"],
+                    "storage_security_mapping": mapping,
+                    "can_access_public": true,
+                }),
+            ))
+        }
+        ("GET", "/api/workflow/capabilities") => Some(json_effect(
+            StatusCode::OK,
+            capability_snapshot(&request.principal, &state),
+        )),
+        ("POST", "/api/workflow/capabilities/approve") => {
+            let input: Value = match serde_json::from_slice(&request.body) {
+                Ok(value) => value,
+                Err(error) => {
+                    return Some(effect_error(
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        "KOGWISTAR_INVALID_REQUEST",
+                        error.to_string(),
+                    ));
+                }
+            };
+            let Some(action) = input["action"]
+                .as_str()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            else {
+                return Some(effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    "action is required",
+                ));
+            };
+            let subject = input["subject"]
+                .as_str()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_ascii_lowercase)
+                .unwrap_or_else(|| principal_subject(&request.principal));
+            let capabilities = match &input["capabilities"] {
+                Value::String(value) => vec![value.to_ascii_lowercase()],
+                Value::Array(values) => values
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_ascii_lowercase)
+                    .collect(),
+                _ => Vec::new(),
+            };
+            if capabilities.is_empty() {
+                return Some(effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    "capabilities are required",
+                ));
+            }
+            state
+                .approvals
+                .entry((subject, action.to_ascii_lowercase()))
+                .or_default()
+                .extend(capabilities);
+            Some(json_effect(
+                StatusCode::ACCEPTED,
+                capability_snapshot(&request.principal, &state),
+            ))
+        }
+        ("POST", "/api/workflow/capabilities/revoke") => {
+            let input: Value = match serde_json::from_slice(&request.body) {
+                Ok(value) => value,
+                Err(error) => {
+                    return Some(effect_error(
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        "KOGWISTAR_INVALID_REQUEST",
+                        error.to_string(),
+                    ));
+                }
+            };
+            let Some(capability) = input["capability"]
+                .as_str()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            else {
+                return Some(effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    "capability is required",
+                ));
+            };
+            let subject = input["subject"]
+                .as_str()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_ascii_lowercase)
+                .unwrap_or_else(|| principal_subject(&request.principal));
+            state
+                .revoked
+                .entry(subject)
+                .or_default()
+                .insert(capability.to_ascii_lowercase());
+            Some(json_effect(
+                StatusCode::ACCEPTED,
+                capability_snapshot(&request.principal, &state),
+            ))
+        }
+        _ => Some(unavailable_effect(request.clone())),
+    }
+}
+
+const SYSCALL_OPS: &[&str] = &[
+    "spawn_process",
+    "terminate_process",
+    "send_message",
+    "receive_message",
+    "mount_memory",
+    "project_view",
+    "invoke_tool",
+    "checkpoint",
+    "resume",
+    "request_approval",
+];
+
+fn syscall_read_effect(
+    request: &ApiEffectRequest,
+    shared: &SharedCapabilityState,
+) -> Option<ApiEffectResponse> {
+    let path = request
+        .path_and_query
+        .split('?')
+        .next()
+        .unwrap_or(&request.path_and_query);
+    match (request.method.as_str(), path) {
+        ("GET", "/api/syscall/v1") => {
+            let mut state = shared
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|value| value.as_millis() as u64)
+                .unwrap_or_default();
+            state.syscall_audit.push(json!({
+                "ts_ms": now,
+                "version": "v1",
+                "op": "list_syscalls",
+                "status": "ok",
+            }));
+            Some(json_effect(
+                StatusCode::OK,
+                json!({"version": "v1", "ops": SYSCALL_OPS}),
+            ))
+        }
+        ("GET", "/api/syscall/v1/audit") => {
+            let limit =
+                query_integer(&request.path_and_query, "limit", 200).clamp(0, 10_000) as usize;
+            let state = shared
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let keep_from = state.syscall_audit.len().saturating_sub(limit);
+            Some(json_effect(
+                StatusCode::OK,
+                json!({"version": "v1", "events": &state.syscall_audit[keep_from..]}),
+            ))
+        }
+        _ => None,
+    }
+}
+
+fn designer_capabilities_effect(
+    request: &ApiEffectRequest,
+    shared: &SharedCapabilityState,
+) -> Option<ApiEffectResponse> {
+    if request.method != "GET"
+        || request.path_and_query.split('?').next() != Some("/designer/capabilities")
+    {
+        return None;
+    }
+    let explicit = if request.principal.get("capabilities").is_some() {
+        principal_strings(&request.principal, "capabilities")
+    } else {
+        principal_strings(&request.principal, "caps")
+    };
+    let namespaces = principal_strings(&request.principal, "ns");
+    if !namespaces
+        .iter()
+        .any(|namespace| namespace == "workflow" || namespace == "*")
+        || !explicit
+            .iter()
+            .any(|capability| capability == "workflow.design.inspect")
+        || !capability_allowed(
+            request,
+            shared,
+            "workflow.design.inspect",
+            &["workflow.design.inspect"],
+        )
+    {
+        return Some(effect_error(
+            StatusCode::FORBIDDEN,
+            "KOGWISTAR_CAPABILITY_FORBIDDEN",
+            "Inspecting workflow design requires workflow.design.inspect capability",
+        ));
+    }
+    Some(json_effect(
+        StatusCode::OK,
+        json!({
+            "schema_version": "workflow-designer-capabilities/v1",
+            "projection_schema": "workflow_design_v1",
+            "design_features": {
+                "undo_redo": true,
+                "delta_history": true,
+                "snapshot_restore": true,
+                "dry_run_validation": false,
+            },
+            "custom_ops": {
+                "allow_unregistered_ops_in_design": true,
+                "allow_execution_of_unregistered_ops": false,
+                "binding_statuses": ["resolved", "unresolved", "sandboxed", "plugin"],
+            },
+            "node_types": [{
+                "type": "workflow_node",
+                "display_name": "Workflow Node",
+                "metadata_schema": {
+                    "type": "object",
+                    "properties": {
+                        "wf_op": {"type": ["string", "null"]},
+                        "wf_start": {"type": "boolean"},
+                        "wf_terminal": {"type": "boolean"},
+                        "wf_fanout": {"type": "boolean"},
+                        "wf_join": {"type": "boolean"},
+                    },
+                },
+                "flags": {
+                    "supports_start": true,
+                    "supports_terminal": true,
+                    "supports_fanout": true,
+                    "supports_join": true,
+                },
+            }],
+            "edge_types": [{
+                "type": "workflow_edge",
+                "display_name": "Workflow Edge",
+                "metadata_schema": {
+                    "type": "object",
+                    "properties": {
+                        "wf_predicate": {"type": ["string", "null"]},
+                        "wf_priority": {"type": "integer"},
+                        "wf_is_default": {"type": "boolean"},
+                        "wf_multiplicity": {"enum": ["one", "many"]},
+                    },
+                },
+                "flags": {
+                    "supports_predicate": true,
+                    "supports_priority": true,
+                    "supports_default": true,
+                    "supports_multiplicity": true,
+                },
+            }],
+            "runtime": {
+                "resolver_found": true,
+                "builtin_ops": ["llm_call", "start"],
+                "nested_ops": [],
+                "sandboxed_ops": [],
+                "sandbox": {
+                    "supports_sandboxed_ops": false,
+                    "runtime_configured": false,
+                },
+                "state_schema": {},
+            },
+        }),
+    ))
+}
+
+fn operational_path(path_and_query: &str) -> Option<&str> {
+    let path = path_and_query.split('?').next().unwrap_or(path_and_query);
+    matches!(
+        path,
+        "/api/workflow/operator/dashboard"
+            | "/api/workflow/lane/progress"
+            | "/api/workflow/resources"
+            | "/api/workflow/budget"
+            | "/api/workflow/budget/history"
+            | "/api/workflow/scheduler/timeline"
+            | "/api/workflow/dead-letters"
+            | "/api/workflow/catalog/ops"
+    )
+    .then_some(path)
+}
+
+fn lane_progress_value(lane: &ProjectedLaneMessage) -> Value {
+    json!({
+        "event_type": format!("worker.{}", lane.status),
+        "message_id": lane.message_id,
+        "conversation_id": lane.conversation_id,
+        "inbox_id": lane.inbox_id,
+        "recipient_id": lane.recipient_id,
+        "sender_id": lane.sender_id,
+        "status": lane.status,
+        "msg_type": lane.msg_type,
+        "seq": lane.seq,
+        "conversation_seq": lane.conversation_seq,
+        "claimed_by": lane.claimed_by,
+        "retry_count": lane.retry_count,
+        "run_id": lane.run_id,
+        "step_id": lane.step_id,
+        "correlation_id": lane.correlation_id,
+        "created_at": lane.created_at,
+        "available_at": lane.available_at,
+    })
+}
+
+fn status_counts<'a>(values: impl Iterator<Item = &'a str>) -> serde_json::Map<String, Value> {
+    let mut counts = serde_json::Map::new();
+    for status in values {
+        let count = counts.get(status).and_then(Value::as_u64).unwrap_or(0) + 1;
+        counts.insert(status.to_owned(), json!(count));
+    }
+    counts
+}
+
+fn usage_history(events: &[ServerRunEvent], limit: usize) -> Vec<Value> {
+    let mut values = events
+        .iter()
+        .filter(|event| event.event_type == "workflow.usage.v1")
+        .map(|event| {
+            let payload =
+                serde_json::from_str::<Value>(&event.payload_json).unwrap_or_else(|_| json!({}));
+            json!({
+                "workspace_id": "workflow",
+                "kind": "usage",
+                "amount": payload["usage"]["total_tokens"].as_i64().unwrap_or_else(|| {
+                    payload["usage"]["input_tokens"].as_i64().unwrap_or_default()
+                        + payload["usage"]["output_tokens"].as_i64().unwrap_or_default()
+                }),
+                "source": payload["effect_id"],
+                "run_id": event.run_id,
+                "event_seq": event.seq,
+                "created_at_ms": event.created_at_ms,
+                "usage": payload["usage"],
+            })
+        })
+        .collect::<Vec<_>>();
+    let keep_from = values.len().saturating_sub(limit);
+    values.drain(0..keep_from);
+    values
+}
+
+fn resource_value(
+    runs: &[ServerRun],
+    lanes: &[ProjectedLaneMessage],
+    usage: &[Value],
+    events: &[ServerRunEvent],
+) -> Value {
+    let run_counts = status_counts(runs.iter().map(|run| run.status.as_str()));
+    let lane_counts = status_counts(lanes.iter().map(|lane| lane.status.as_str()));
+    let active = lanes.iter().filter(|lane| lane.status == "claimed").count();
+    let queued = lanes.iter().filter(|lane| lane.status == "pending").count();
+    let total_amount = usage
+        .iter()
+        .filter_map(|event| event["amount"].as_i64())
+        .sum::<i64>();
+    let now_seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|value| value.as_secs() as i64)
+        .unwrap_or_default();
+    let oldest_pending_seconds = lanes
+        .iter()
+        .filter(|lane| lane.status == "pending")
+        .map(|lane| lane.available_at)
+        .min();
+    let parity_mismatches = events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event.event_type.as_str(),
+                "rust.parity_mismatch" | "workflow.parity_mismatch.v1"
+            )
+        })
+        .count();
+    json!({
+        "scheduler": {
+            "max_active": active.max(1),
+            "max_queue": Value::Null,
+            "active": active,
+            "queued": queued,
+            "active_by_class": {},
+            "queued_by_class": {},
+            "dead_letter_count": lane_counts.get("dead-letter").and_then(Value::as_u64).unwrap_or(0),
+            "paused_count": runs.iter().filter(|run| run.status == "suspended").count(),
+            "pause_requested_count": 0,
+        },
+        "runs": {
+            "total_runs": runs.len(),
+            "by_status": run_counts,
+            "terminal_runs": runs.iter().filter(|run| matches!(run.status.as_str(), "succeeded" | "failed" | "cancelled")).count(),
+        },
+        "services": {"total_services": 0, "by_health": {}},
+        "storage_usage_bytes": 0,
+        "cost_ledger": {
+            "workspace_id": "workflow",
+            "event_count": usage.len(),
+            "total_amount": total_amount,
+            "by_kind": {"usage": usage.len()},
+        },
+        "budget_model": {"token_kind": "token", "time_kind": "ms", "storage_kind": "bytes"},
+        "policy_infra": {"cpu_millicores": Value::Null, "memory_mb": Value::Null},
+        "migration": {
+            "implementation_mode": "rust",
+            "contract_version": 1,
+            "schema_version": 1,
+            "parity_mismatch_count": parity_mismatches,
+            "queue_lag": {
+                "pending_count": queued,
+                "oldest_pending_age_seconds": oldest_pending_seconds
+                    .map(|created| now_seconds.saturating_sub(created)),
+            },
+            "replay_lag": {
+                "events_behind": 0,
+                "mode": "transactional_projection",
+            },
+        },
+    })
+}
+
+fn operational_effect(
+    request: &ApiEffectRequest,
+    path: &str,
+    runs: Vec<ServerRun>,
+    lanes: Vec<ProjectedLaneMessage>,
+    events: Vec<ServerRunEvent>,
+) -> ApiEffectResponse {
+    let limit = query_integer(&request.path_and_query, "limit", 200).clamp(0, 10_000) as usize;
+    let usage = usage_history(&events, limit.max(1));
+    let resources = resource_value(&runs, &lanes, &usage, &events);
+    match path {
+        "/api/workflow/catalog/ops" => json_effect(
+            StatusCode::OK,
+            json!([
+                {
+                    "op": "start",
+                    "label": "Start",
+                    "description": "Entry point for workflow execution.",
+                    "input_schema": {},
+                    "output_schema": {"type": "object"},
+                    "config_schema": {"type": "object"},
+                },
+                {
+                    "op": "llm_call",
+                    "label": "LLM Call",
+                    "description": "Calls an LLM and returns structured output.",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {"prompt": {"type": "string"}},
+                        "required": ["prompt"],
+                    },
+                    "output_schema": {
+                        "type": "object",
+                        "properties": {"answer": {"type": "string"}},
+                        "required": ["answer"],
+                    },
+                    "config_schema": {
+                        "type": "object",
+                        "properties": {
+                            "model": {"type": "string"},
+                            "temperature": {"type": "number"},
+                        },
+                    },
+                },
+            ]),
+        ),
+        "/api/workflow/resources" => json_effect(StatusCode::OK, resources),
+        "/api/workflow/budget" => json_effect(
+            StatusCode::OK,
+            json!({
+                "cost_ledger": resources["cost_ledger"],
+                "budget_model": resources["budget_model"],
+            }),
+        ),
+        "/api/workflow/budget/history" => json_effect(
+            StatusCode::OK,
+            json!({"cost_ledger": resources["cost_ledger"], "events": usage}),
+        ),
+        "/api/workflow/scheduler/timeline" => {
+            let run_id = query_string(&request.path_and_query, "run_id");
+            let mut timeline = events
+                .iter()
+                .filter(|event| run_id.as_ref().is_none_or(|id| id == &event.run_id))
+                .cloned()
+                .map(server_run_event_value)
+                .collect::<Vec<_>>();
+            let keep_from = timeline.len().saturating_sub(limit);
+            timeline.drain(0..keep_from);
+            json_effect(
+                StatusCode::OK,
+                json!({"run_id": run_id, "events": timeline}),
+            )
+        }
+        "/api/workflow/dead-letters" => json_effect(
+            StatusCode::OK,
+            json!({
+                "runs": lanes.iter()
+                    .filter(|lane| lane.status == "dead-letter")
+                    .take(limit)
+                    .map(lane_progress_value)
+                    .collect::<Vec<_>>(),
+                "limit": limit,
+            }),
+        ),
+        "/api/workflow/lane/progress" => {
+            let run_id = query_string(&request.path_and_query, "run_id");
+            let conversation_id = query_string(&request.path_and_query, "conversation_id");
+            let mut items = events
+                .iter()
+                .filter(|event| run_id.as_ref().is_some_and(|id| id == &event.run_id))
+                .map(|event| {
+                    let mut value = server_run_event_value(event.clone());
+                    if let Some(object) = value.as_object_mut() {
+                        object.insert("event_type".to_owned(), json!(event.event_type));
+                    }
+                    value
+                })
+                .collect::<Vec<_>>();
+            if conversation_id.is_some() {
+                items.extend(
+                    lanes
+                        .iter()
+                        .filter(|lane| {
+                            run_id
+                                .as_ref()
+                                .is_none_or(|id| lane.run_id.as_ref() == Some(id))
+                                && conversation_id
+                                    .as_ref()
+                                    .is_none_or(|id| &lane.conversation_id == id)
+                        })
+                        .map(lane_progress_value),
+                );
+            }
+            items.truncate(limit);
+            json_effect(
+                StatusCode::OK,
+                json!({"total": items.len(), "items": items}),
+            )
+        }
+        "/api/workflow/operator/dashboard" => {
+            let process_table = runs
+                .iter()
+                .take(limit)
+                .cloned()
+                .map(server_run_value)
+                .collect::<Vec<_>>();
+            let blocked_runs = runs
+                .iter()
+                .filter(|run| run.status == "suspended")
+                .take(limit)
+                .cloned()
+                .map(server_run_value)
+                .collect::<Vec<_>>();
+            let dead_letters = lanes
+                .iter()
+                .filter(|lane| lane.status == "dead-letter")
+                .take(limit)
+                .map(lane_progress_value)
+                .collect::<Vec<_>>();
+            let lane_counts = status_counts(lanes.iter().map(|lane| lane.status.as_str()));
+            json_effect(
+                StatusCode::OK,
+                json!({
+                    "process_table": process_table,
+                    "operator_inbox": blocked_runs.clone(),
+                    "blocked_runs": blocked_runs.clone(),
+                    "blocked_flow_graph": {"nodes": blocked_runs.clone(), "edges": [], "blocked_count": blocked_runs.len()},
+                    "message_queue": {"total": lanes.len(), "by_status": lane_counts, "by_inbox": {}, "failed": []},
+                    "dead_letters": {"runs": dead_letters, "limit": limit},
+                    "capabilities": {},
+                    "resources": resources,
+                }),
+            )
+        }
+        _ => unreachable!("unsupported operational path"),
+    }
+}
+
 fn runtime_run_route(path_and_query: &str) -> Option<(String, Vec<String>)> {
     let path = path_and_query.split('?').next().unwrap_or(path_and_query);
     for prefix in ["/api/runs/", "/api/workflow/runs/"] {
@@ -477,12 +1559,1037 @@ fn runtime_run_route(path_and_query: &str) -> Option<(String, Vec<String>)> {
     None
 }
 
+fn dead_letter_replay_run_id(path_and_query: &str) -> Option<String> {
+    let path = path_and_query.split('?').next().unwrap_or(path_and_query);
+    let rest = path.strip_prefix("/api/workflow/dead-letters/")?;
+    let run_id = rest.strip_suffix("/replay")?;
+    (!run_id.is_empty() && !run_id.contains('/')).then(|| run_id.to_owned())
+}
+
+fn service_get_id(path_and_query: &str) -> Option<String> {
+    let path = path_and_query.split('?').next().unwrap_or(path_and_query);
+    let service_id = path.strip_prefix("/api/workflow/services/")?;
+    (!service_id.is_empty() && !service_id.contains('/')).then(|| service_id.to_owned())
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum DesignRoute {
+    Graph,
+    History,
+    NodeUpsert,
+    NodeDelete(String),
+    EdgeUpsert,
+    EdgeDelete(String),
+    Undo,
+    Redo,
+}
+
+fn workflow_design_route(path_and_query: &str) -> Option<(String, DesignRoute)> {
+    let path = path_and_query.split('?').next().unwrap_or(path_and_query);
+    let rest = path.strip_prefix("/api/workflow/design/")?;
+    let mut segments = rest.split('/');
+    let workflow_id = segments.next()?.to_owned();
+    if workflow_id.is_empty() {
+        return None;
+    }
+    let tail = segments.collect::<Vec<_>>();
+    let route = match tail.as_slice() {
+        ["graph"] => DesignRoute::Graph,
+        ["history"] => DesignRoute::History,
+        ["nodes"] => DesignRoute::NodeUpsert,
+        ["nodes", node_id] if !node_id.is_empty() => DesignRoute::NodeDelete((*node_id).to_owned()),
+        ["edges"] => DesignRoute::EdgeUpsert,
+        ["edges", edge_id] if !edge_id.is_empty() => DesignRoute::EdgeDelete((*edge_id).to_owned()),
+        ["undo"] => DesignRoute::Undo,
+        ["redo"] => DesignRoute::Redo,
+        _ => return None,
+    };
+    Some((workflow_id, route))
+}
+
+fn design_payload(event: &EntityEvent) -> Option<&serde_json::Map<String, Value>> {
+    (event.entity_kind == "design_control")
+        .then(|| event.payload.as_object())
+        .flatten()
+}
+
+fn workflow_design_graph_value(workflow_id: &str, events: &[EntityEvent]) -> Result<Value, String> {
+    let history = workflow_design_history_value(workflow_id, events.to_vec(), "ready")?;
+    let current_version = history["current_version"].as_i64().unwrap_or(0);
+    let snapshot = graph_at_version(events, current_version);
+    Ok(json!({
+        "workflow_id": workflow_id,
+        "current_version": history["current_version"],
+        "active_tip_version": history["active_tip_version"],
+        "can_undo": history["can_undo"],
+        "can_redo": history["can_redo"],
+        "materialization_status": "ready",
+        "nodes": snapshot["nodes"].as_array().cloned().unwrap_or_default(),
+        "edges": snapshot["edges"].as_array().cloned().unwrap_or_default(),
+    }))
+}
+
+fn designer_id(request: &ApiEffectRequest, input: &Value) -> Result<String, ApiEffectResponse> {
+    let value = input["designer_id"].as_str().map(str::trim).unwrap_or("");
+    if value.is_empty() {
+        return Err(effect_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "KOGWISTAR_INVALID_REQUEST",
+            "designer_id is required",
+        ));
+    }
+    let subject = principal_subject(&request.principal);
+    if subject != "anonymous" && subject != value.to_ascii_lowercase() {
+        return Err(effect_error(
+            StatusCode::FORBIDDEN,
+            "KOGWISTAR_DESIGNER_SUBJECT_MISMATCH",
+            "designer_id must match authenticated subject",
+        ));
+    }
+    Ok(value.to_owned())
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|value| value.as_millis() as u64)
+        .unwrap_or_default()
+}
+
+fn parse_design_input(request: &ApiEffectRequest) -> Result<Value, ApiEffectResponse> {
+    serde_json::from_slice(&request.body).map_err(|error| {
+        effect_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "KOGWISTAR_INVALID_REQUEST",
+            error.to_string(),
+        )
+    })
+}
+
+fn graph_at_version(events: &[EntityEvent], version: i64) -> Value {
+    if version <= 0 {
+        return json!({"nodes": [], "edges": []});
+    }
+    let commits = events
+        .iter()
+        .filter_map(|event| {
+            let payload = design_payload(event)?;
+            (event.op == "MUTATION_COMMITTED").then(|| (
+                payload.get("version").and_then(Value::as_i64).unwrap_or(0),
+                (
+                    payload.get("prev_version").and_then(Value::as_i64).unwrap_or(0),
+                    payload.get("target_seq").and_then(Value::as_i64).unwrap_or(0),
+                    payload.get("graph").cloned(),
+                ),
+            ))
+        })
+        .collect::<BTreeMap<_, _>>();
+    let mut lineage = Vec::new();
+    let mut cursor = version;
+    let mut seen = BTreeSet::new();
+    while cursor > 0 && seen.insert(cursor) {
+        let Some((prev, target_seq, legacy_graph)) = commits.get(&cursor) else {
+            return json!({"nodes": [], "edges": []});
+        };
+        lineage.push((*target_seq, legacy_graph.clone()));
+        cursor = *prev;
+    }
+    lineage.reverse();
+    let mut graph = json!({"nodes": [], "edges": []});
+    for (target_seq, legacy_graph) in lineage {
+        if let Some(event) = events.iter().find(|event| {
+            event.seq == target_seq && matches!(event.entity_kind.as_str(), "node" | "edge")
+        }) {
+            apply_design_entity_event(&mut graph, event);
+        } else if let Some(snapshot) = legacy_graph {
+            // Transitional compatibility for pre-cutover development databases.
+            graph = snapshot;
+        }
+    }
+    graph
+}
+
+fn apply_design_entity_event(graph: &mut Value, event: &EntityEvent) {
+    let object = graph.as_object_mut().expect("graph value is object");
+    let key = if event.entity_kind == "node" { "nodes" } else { "edges" };
+    let mut records = object
+        .remove(key)
+        .and_then(|value| value.as_array().cloned())
+        .unwrap_or_default();
+    if matches!(event.op.as_str(), "TOMBSTONE" | "DELETE") {
+        records.retain(|item| item["id"].as_str() != Some(&event.entity_id));
+    } else if matches!(event.op.as_str(), "ADD" | "REPLACE") {
+        if let Some(index) = records
+            .iter()
+            .position(|item| item["id"].as_str() == Some(&event.entity_id))
+        {
+            records[index] = event.payload.clone();
+        } else {
+            records.push(event.payload.clone());
+        }
+    }
+    object.insert(key.to_owned(), Value::Array(records));
+    if event.entity_kind == "node"
+        && matches!(event.op.as_str(), "TOMBSTONE" | "DELETE")
+        && let Some(edges) = object.get_mut("edges").and_then(Value::as_array_mut)
+    {
+        edges.retain(|edge| {
+            !["source_ids", "target_ids"]
+                .iter()
+                .filter_map(|field| edge[*field].as_array())
+                .flatten()
+                .any(|id| id.as_str() == Some(&event.entity_id))
+        });
+    }
+}
+
+fn visible_delta(before: &Value, after: &Value) -> Value {
+    fn indexed(graph: &Value, key: &str) -> BTreeMap<String, Value> {
+        graph[key]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|item| Some((item["id"].as_str()?.to_owned(), item.clone())))
+            .collect()
+    }
+    let before_nodes = indexed(before, "nodes");
+    let after_nodes = indexed(after, "nodes");
+    let before_edges = indexed(before, "edges");
+    let after_edges = indexed(after, "edges");
+    json!({
+        "upsert_nodes": after_nodes.iter().filter(|(id, value)| before_nodes.get(*id) != Some(*value)).map(|(_, value)| value.clone()).collect::<Vec<_>>(),
+        "delete_node_ids": before_nodes.keys().filter(|id| !after_nodes.contains_key(*id)).cloned().collect::<Vec<_>>(),
+        "upsert_edges": after_edges.iter().filter(|(id, value)| before_edges.get(*id) != Some(*value)).map(|(_, value)| value.clone()).collect::<Vec<_>>(),
+        "delete_edge_ids": before_edges.keys().filter(|id| !after_edges.contains_key(*id)).cloned().collect::<Vec<_>>(),
+    })
+}
+
+fn design_entity_event(action: &str, entity_id: &str, before: &Value, after: &Value) -> EntityEvent {
+    let (entity_kind, op, payload) = match action {
+        "node_upsert" => ("node", "ADD", after["nodes"].as_array().and_then(|items| items.iter().find(|item| item["id"] == entity_id)).cloned().unwrap_or(Value::Null)),
+        "edge_upsert" => ("edge", "ADD", after["edges"].as_array().and_then(|items| items.iter().find(|item| item["id"] == entity_id)).cloned().unwrap_or(Value::Null)),
+        "node_delete" => ("node", "TOMBSTONE", json!({"entity_id": entity_id, "reason": "workflow_design_delete"})),
+        "edge_delete" => ("edge", "TOMBSTONE", json!({"entity_id": entity_id, "reason": "workflow_design_delete"})),
+        _ => unreachable!("known design mutation action"),
+    };
+    let _ = before;
+    EntityEvent { namespace: String::new(), seq: 0, event_id: uuid::Uuid::new_v4().to_string(), entity_kind: entity_kind.to_owned(), entity_id: entity_id.to_owned(), op: op.to_owned(), payload }
+}
+
+fn mutate_design_graph(
+    workflow_id: &str,
+    route: &DesignRoute,
+    input: &Value,
+    graph: &mut Value,
+) -> Result<(String, String, bool), ApiEffectResponse> {
+    let object = graph.as_object_mut().expect("graph value is object");
+    let mut nodes = object
+        .remove("nodes")
+        .and_then(|value| value.as_array().cloned())
+        .unwrap_or_default();
+    let mut edges = object
+        .remove("edges")
+        .and_then(|value| value.as_array().cloned())
+        .unwrap_or_default();
+    match route {
+        DesignRoute::NodeUpsert => {
+            let label = input["label"].as_str().map(str::trim).unwrap_or("");
+            if label.is_empty() {
+                return Err(effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    "label is required",
+                ));
+            }
+            let node_id = input["node_id"]
+                .as_str()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("wf|{workflow_id}|n|{}", uuid::Uuid::new_v4()));
+            let mut metadata = input["metadata"].as_object().cloned().unwrap_or_default();
+            metadata.extend(serde_json::Map::from_iter([
+                ("entity_type".to_owned(), json!("workflow_node")),
+                ("workflow_id".to_owned(), json!(workflow_id)),
+                (
+                    "wf_op".to_owned(),
+                    json!(input["op"].as_str().unwrap_or(
+                        if input["terminal"].as_bool().unwrap_or(false) {
+                            "end"
+                        } else {
+                            "noop"
+                        }
+                    )),
+                ),
+                (
+                    "wf_start".to_owned(),
+                    json!(input["start"].as_bool().unwrap_or(false)),
+                ),
+                (
+                    "wf_terminal".to_owned(),
+                    json!(input["terminal"].as_bool().unwrap_or(false)),
+                ),
+                (
+                    "wf_fanout".to_owned(),
+                    json!(input["fanout"].as_bool().unwrap_or(false)),
+                ),
+                ("designer_id".to_owned(), input["designer_id"].clone()),
+            ]));
+            let node = json!({
+                "id": node_id, "label": label, "type": "entity",
+                "summary": format!("workflow node {label}"), "doc_id": format!("workflow:{workflow_id}"),
+                "mentions": [{"spans": [{"collection_page_url":"conversation/_conv:_dummy",
+                    "document_page_url":"conversation/_conv:_dummy","doc_id":"_conv:_dummy","page_number":1,
+                    "insertion_method":"system","start_char":0,"end_char":1,"excerpt":"","context_before":"","context_after":"",
+                    "source_cluster_id":Value::Null,"verification":{"method":"system","is_verified":true,"score":1.0,"notes":""}}]}],
+                "properties": {}, "metadata": metadata, "level_from_root": 0,
+                "domain_id": Value::Null, "canonical_entity_id": Value::Null, "embedding": Value::Null,
+            });
+            if let Some(index) = nodes.iter().position(|item| item["id"] == node_id) {
+                nodes[index] = node;
+            } else {
+                nodes.push(node);
+            }
+            object.insert("nodes".to_owned(), Value::Array(nodes));
+            object.insert("edges".to_owned(), Value::Array(edges));
+            Ok(("node_upsert".to_owned(), node_id, false))
+        }
+        DesignRoute::EdgeUpsert => {
+            let src = input["src"].as_str().map(str::trim).unwrap_or("");
+            let dst = input["dst"].as_str().map(str::trim).unwrap_or("");
+            if src.is_empty() || dst.is_empty() {
+                return Err(effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    "src and dst are required",
+                ));
+            }
+            let edge_id = input["edge_id"]
+                .as_str()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("wf|{workflow_id}|e|{}", uuid::Uuid::new_v4()));
+            let relation = input["relation"].as_str().unwrap_or("wf_next");
+            let mut metadata = input["metadata"].as_object().cloned().unwrap_or_default();
+            metadata.extend(serde_json::Map::from_iter([
+                ("entity_type".to_owned(), json!("workflow_edge")),
+                ("workflow_id".to_owned(), json!(workflow_id)),
+                ("wf_predicate".to_owned(), input["predicate"].clone()),
+                (
+                    "wf_priority".to_owned(),
+                    json!(input["priority"].as_i64().unwrap_or(100)),
+                ),
+                (
+                    "wf_is_default".to_owned(),
+                    json!(input["is_default"].as_bool().unwrap_or(false)),
+                ),
+                (
+                    "wf_multiplicity".to_owned(),
+                    json!(input["multiplicity"].as_str().unwrap_or("one")),
+                ),
+                ("designer_id".to_owned(), input["designer_id"].clone()),
+            ]));
+            let edge = json!({
+                "id": edge_id, "source_ids": [src], "target_ids": [dst], "relation": relation,
+                "label": relation, "type": "relationship", "summary": format!("workflow edge {src} -> {dst}"),
+                "doc_id": format!("workflow:{workflow_id}"),
+                "mentions": [{"spans": [{"collection_page_url":"conversation/_conv:_dummy",
+                    "document_page_url":"conversation/_conv:_dummy","doc_id":"_conv:_dummy","page_number":1,
+                    "insertion_method":"system","start_char":0,"end_char":1,"excerpt":"","context_before":"","context_after":"",
+                    "source_cluster_id":Value::Null,"verification":{"method":"system","is_verified":true,"score":1.0,"notes":""}}]}],
+                "properties": {}, "metadata": metadata,
+                "source_edge_ids": [], "target_edge_ids": [], "domain_id": Value::Null,
+                "canonical_entity_id": Value::Null, "embedding": Value::Null,
+            });
+            if let Some(index) = edges.iter().position(|item| item["id"] == edge_id) {
+                edges[index] = edge;
+            } else {
+                edges.push(edge);
+            }
+            object.insert("nodes".to_owned(), Value::Array(nodes));
+            object.insert("edges".to_owned(), Value::Array(edges));
+            Ok(("edge_upsert".to_owned(), edge_id, false))
+        }
+        DesignRoute::NodeDelete(node_id) => {
+            let before = nodes.len();
+            nodes.retain(|item| item["id"] != *node_id);
+            if nodes.len() == before {
+                return Err(effect_error(
+                    StatusCode::NOT_FOUND,
+                    "KOGWISTAR_NODE_NOT_FOUND",
+                    format!("Unknown node_id: {node_id}"),
+                ));
+            }
+            edges.retain(|item| {
+                item["source_ids"]
+                    .as_array()
+                    .is_none_or(|ids| !ids.iter().any(|id| id == node_id))
+                    && item["target_ids"]
+                        .as_array()
+                        .is_none_or(|ids| !ids.iter().any(|id| id == node_id))
+            });
+            object.insert("nodes".to_owned(), Value::Array(nodes));
+            object.insert("edges".to_owned(), Value::Array(edges));
+            Ok(("node_delete".to_owned(), node_id.clone(), true))
+        }
+        DesignRoute::EdgeDelete(edge_id) => {
+            let before = edges.len();
+            edges.retain(|item| item["id"] != *edge_id);
+            if edges.len() == before {
+                return Err(effect_error(
+                    StatusCode::NOT_FOUND,
+                    "KOGWISTAR_EDGE_NOT_FOUND",
+                    format!("Unknown edge_id: {edge_id}"),
+                ));
+            }
+            object.insert("nodes".to_owned(), Value::Array(nodes));
+            object.insert("edges".to_owned(), Value::Array(edges));
+            Ok(("edge_delete".to_owned(), edge_id.clone(), true))
+        }
+        _ => unreachable!("only mutation routes reach graph mutation"),
+    }
+}
+
+fn workflow_design_history_value(
+    workflow_id: &str,
+    events: Vec<EntityEvent>,
+    materialization_status: &str,
+) -> Result<Value, String> {
+    let mut commits = BTreeMap::<i64, Value>::new();
+    let mut dropped_ranges = Vec::new();
+    let mut timeline = Vec::new();
+    let mut current_version = 0_i64;
+    let mut active_tip_version = 0_i64;
+    let mut allocated_max_version = 0_i64;
+    let latest_seq = events.iter().map(|event| event.seq).max().unwrap_or(0);
+    for event in events {
+        if event.entity_kind != "design_control" {
+            continue;
+        }
+        let payload = event.payload.as_object().cloned().unwrap_or_default();
+        let mut item = payload.clone();
+        item.insert("seq".to_owned(), json!(event.seq));
+        item.insert("op".to_owned(), json!(event.op));
+        item.entry("designer_id".to_owned()).or_insert(json!(""));
+        item.entry("ts_ms".to_owned()).or_insert(json!(0));
+        timeline.push(Value::Object(item));
+        match event.op.as_str() {
+            "MUTATION_COMMITTED" => {
+                let version = payload.get("version").and_then(Value::as_i64).unwrap_or(0);
+                let prev_version = payload
+                    .get("prev_version")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0);
+                let target_seq = payload
+                    .get("target_seq")
+                    .or_else(|| payload.get("seq"))
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0);
+                commits.insert(
+                    version,
+                    json!({
+                        "version": version,
+                        "prev_version": prev_version,
+                        "target_seq": target_seq,
+                        "created_at_ms": payload.get("ts_ms").and_then(Value::as_i64).unwrap_or(0),
+                        "entity_id": payload.get("entity_id").and_then(Value::as_str).unwrap_or(""),
+                        "action": payload.get("action").and_then(Value::as_str).unwrap_or(""),
+                    }),
+                );
+                allocated_max_version = allocated_max_version.max(version);
+                current_version = version;
+                active_tip_version = version;
+            }
+            "UNDO_APPLIED" | "REDO_APPLIED" => {
+                current_version = payload
+                    .get("to_version")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(current_version);
+            }
+            "BRANCH_DROPPED" => {
+                let start_version = payload
+                    .get("drop_from_version")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0);
+                let end_version = payload
+                    .get("drop_to_version")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(-1);
+                let start_seq = payload
+                    .get("drop_from_seq")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0);
+                let end_seq = payload
+                    .get("drop_to_seq")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(-1);
+                if end_version >= start_version
+                    && start_version >= 0
+                    && end_seq >= start_seq
+                    && start_seq >= 0
+                {
+                    dropped_ranges.push(json!({
+                        "start_version": start_version,
+                        "end_version": end_version,
+                        "start_seq": start_seq,
+                        "end_seq": end_seq,
+                    }));
+                    if (start_version..=end_version).contains(&active_tip_version) {
+                        active_tip_version = current_version;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    fn lineage(commits: &BTreeMap<i64, Value>, version: i64) -> Result<Vec<Value>, String> {
+        let mut path = Vec::new();
+        let mut seen = BTreeSet::new();
+        let mut current = version;
+        while current > 0 {
+            if !seen.insert(current) {
+                return Err(format!(
+                    "Workflow design lineage loop detected at version={current}"
+                ));
+            }
+            let commit = commits.get(&current).cloned().ok_or_else(|| {
+                format!("Workflow design history missing committed version={current}")
+            })?;
+            current = commit["prev_version"].as_i64().unwrap_or(0);
+            path.push(commit);
+        }
+        path.reverse();
+        path.insert(
+            0,
+            json!({"version": 0, "prev_version": 0, "target_seq": 0, "created_at_ms": 0}),
+        );
+        Ok(path)
+    }
+    let active_lineage = lineage(&commits, active_tip_version)?;
+    let selected_lineage = lineage(&commits, current_version)?;
+    let active_ids = active_lineage
+        .iter()
+        .filter_map(|item| item["version"].as_i64())
+        .collect::<Vec<_>>();
+    let versions = active_lineage
+        .iter()
+        .map(|item| {
+            json!({
+                "version": item["version"],
+                "seq": item["target_seq"],
+                "created_at_ms": item["created_at_ms"],
+            })
+        })
+        .collect::<Vec<_>>();
+    let selected_versions = selected_lineage
+        .iter()
+        .map(|item| {
+            json!({
+                "version": item["version"],
+                "seq": item["target_seq"],
+                "created_at_ms": item["created_at_ms"],
+                "prev_version": item["prev_version"],
+                "target_seq": item["target_seq"],
+            })
+        })
+        .collect::<Vec<_>>();
+    let current_seq = commits
+        .get(&current_version)
+        .and_then(|item| item["target_seq"].as_i64())
+        .unwrap_or(0);
+    let can_redo = active_ids
+        .iter()
+        .position(|version| *version == current_version)
+        .is_some_and(|index| index + 1 < active_ids.len());
+    let keep_from = timeline.len().saturating_sub(500);
+    Ok(json!({
+        "workflow_id": workflow_id,
+        "namespace": format!("wf_design:{workflow_id}"),
+        "current_version": current_version,
+        "active_tip_version": active_tip_version,
+        "max_version": active_tip_version,
+        "allocated_max_version": allocated_max_version,
+        "current_seq": current_seq,
+        "can_undo": current_version > 0,
+        "can_redo": can_redo,
+        "versions": versions,
+        "selected_versions": selected_versions,
+        "dropped_ranges": dropped_ranges,
+        "latest_seq": latest_seq,
+        "timeline": &timeline[keep_from..],
+        "commits": commits,
+        "materialization_status": materialization_status,
+    }))
+}
+
+fn workflow_design_projection_write(history: &Value) -> NamedProjectionWrite {
+    let selected = history["selected_versions"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let mut versions = selected.clone();
+    let selected_ids = selected
+        .iter()
+        .filter_map(|item| item["version"].as_i64())
+        .collect::<BTreeSet<_>>();
+    if let Some(active) = history["versions"].as_array() {
+        for item in active {
+            let version = item["version"].as_i64().unwrap_or(0);
+            if selected_ids.contains(&version) {
+                continue;
+            }
+            let commit = &history["commits"][version.to_string()];
+            versions.push(json!({
+                "version": version,
+                "prev_version": commit["prev_version"].as_i64().unwrap_or(0),
+                "target_seq": item["seq"].as_i64().unwrap_or(0),
+                "created_at_ms": item["created_at_ms"].as_i64().unwrap_or(0),
+            }));
+        }
+    }
+    let payload = json!({
+        "current_version": history["current_version"],
+        "active_tip_version": history["active_tip_version"],
+        "snapshot_schema_version": 1,
+        "versions": versions,
+        "dropped_ranges": history["dropped_ranges"],
+    });
+    NamedProjectionWrite {
+        payload: payload.as_object().cloned().unwrap_or_default(),
+        last_authoritative_seq: history["latest_seq"].as_i64().unwrap_or(0),
+        last_materialized_seq: history["current_seq"].as_i64().unwrap_or(0),
+        projection_schema_version: 1,
+        // Rust owns event/history writes in this slice, but Python still owns the
+        // legacy graph projection.  This marker makes rollback lazily rebuild it.
+        materialization_status: "rust_event_only".to_owned(),
+    }
+}
+
+fn capability_allowed(
+    request: &ApiEffectRequest,
+    shared: &SharedCapabilityState,
+    action: &str,
+    required: &[&str],
+) -> bool {
+    let mut state = shared
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    audit_capability(&request.principal, &mut state, action, required)
+}
+
 #[derive(Clone)]
 pub struct SqliteRunApplicationService {
     store: SqliteStore,
+    max_queue: usize,
+    capabilities: SharedCapabilityState,
+}
+
+fn runtime_max_queue() -> usize {
+    std::env::var("KOGWISTAR_RUNTIME_MAX_QUEUE")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(128)
 }
 
 impl SqliteRunApplicationService {
+    fn design_events(&self, workflow_id: &str) -> Result<Vec<EntityEvent>, String> {
+        let namespace = format!("wf_design:{workflow_id}");
+        self.store
+            .replay_raw_events(&namespace, 0, usize::MAX)
+            .map(|events| {
+                events
+                    .into_iter()
+                    .map(|event| EntityEvent {
+                        namespace: event.namespace,
+                        seq: event.seq,
+                        event_id: event.event_id,
+                        entity_kind: event.entity_kind,
+                        entity_id: event.entity_id,
+                        op: event.op,
+                        payload: serde_json::from_str(&event.payload_json).unwrap_or(Value::Null),
+                    })
+                    .collect()
+            })
+            .map_err(|error| error.to_string())
+    }
+
+    fn workflow_design_effect(
+        &self,
+        request: &ApiEffectRequest,
+        workflow_id: &str,
+        route: DesignRoute,
+    ) -> ApiEffectResponse {
+        let required = if matches!(route, DesignRoute::Graph | DesignRoute::History) {
+            "workflow.design.inspect"
+        } else {
+            "workflow.design.write"
+        };
+        if !capability_allowed(request, &self.capabilities, required, &[required]) {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                format!("Workflow design action requires {required} capability"),
+            );
+        }
+        let events = match self.design_events(workflow_id) {
+            Ok(events) => events,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_STORE_ERROR",
+                    error,
+                );
+            }
+        };
+        if route == DesignRoute::History {
+            return self.workflow_design_history(request, workflow_id);
+        }
+        if route == DesignRoute::Graph {
+            return match workflow_design_graph_value(workflow_id, &events) {
+                Ok(value) => json_effect(StatusCode::OK, value),
+                Err(error) => effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_WORKFLOW_DESIGN_HISTORY_INVALID",
+                    error,
+                ),
+            };
+        }
+        let input = match parse_design_input(request) {
+            Ok(input) => input,
+            Err(response) => return response,
+        };
+        let designer = match designer_id(request, &input) {
+            Ok(value) => value,
+            Err(response) => return response,
+        };
+        let history = match workflow_design_history_value(workflow_id, events.clone(), "ready") {
+            Ok(value) => value,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_WORKFLOW_DESIGN_HISTORY_INVALID",
+                    error,
+                );
+            }
+        };
+        let current = history["current_version"].as_i64().unwrap_or(0);
+        let active_tip = history["active_tip_version"].as_i64().unwrap_or(0);
+        let namespace = format!("wf_design:{workflow_id}");
+        let timestamp = now_ms();
+
+        let outcome = self.store.transaction(|uow| {
+            match route {
+                DesignRoute::Undo | DesignRoute::Redo => {
+                    let active = history["versions"].as_array().cloned().unwrap_or_default();
+                    let ids = active.iter().filter_map(|item| item["version"].as_i64()).collect::<Vec<_>>();
+                    let target = if route == DesignRoute::Undo {
+                        history["selected_versions"].as_array().and_then(|items| items.iter().find(|item| item["version"].as_i64() == Some(current)))
+                            .and_then(|item| item["prev_version"].as_i64()).unwrap_or(0)
+                    } else {
+                        ids.iter().position(|value| *value == current).and_then(|index| ids.get(index + 1)).copied().unwrap_or(current)
+                    };
+                    if target == current || (route == DesignRoute::Undo && current == 0) {
+                        let mut value = history.clone(); value["status"] = json!("noop"); return Ok(value);
+                    }
+                    let op = if route == DesignRoute::Undo { "UNDO_APPLIED" } else { "REDO_APPLIED" };
+                    uow.append_raw_entity_event(&namespace, SqliteNewRawEntityEvent {
+                        event_id: uuid::Uuid::new_v4().to_string(), entity_kind: "design_control".to_owned(),
+                        entity_id: workflow_id.to_owned(), op: op.to_owned(),
+                        payload_json: json!({"designer_id": designer, "source": "rest", "ts_ms": timestamp,
+                            "from_version": current, "to_version": target,
+                            "target_seq": history["commits"][target.to_string()]["target_seq"].as_i64().unwrap_or(0)}).to_string(),
+                    })?;
+                    let folded_events = uow.replay_raw_events(&namespace, 0, usize::MAX)?.into_iter().map(|event| EntityEvent {
+                        namespace: event.namespace, seq: event.seq, event_id: event.event_id, entity_kind: event.entity_kind,
+                        entity_id: event.entity_id, op: event.op, payload: serde_json::from_str(&event.payload_json).unwrap_or(Value::Null),
+                    }).collect::<Vec<_>>();
+                    let mut folded = workflow_design_history_value(workflow_id, folded_events, "ready")
+                        .map_err(kogwistar_store_sqlite::SqliteStoreError::TransactionAborted)?;
+                    uow.replace_named_projection("workflow_design", workflow_id, workflow_design_projection_write(&folded))?;
+                    folded["status"] = json!("ok"); Ok(folded)
+                }
+                DesignRoute::NodeUpsert | DesignRoute::NodeDelete(_) | DesignRoute::EdgeUpsert | DesignRoute::EdgeDelete(_) => {
+                    let before = graph_at_version(&events, current);
+                    let mut graph = before.clone();
+                    let (action, entity_id, deleted) = mutate_design_graph(workflow_id, &route, &input, &mut graph)
+                        .map_err(|response| kogwistar_store_sqlite::SqliteStoreError::TransactionAborted(String::from_utf8_lossy(&response.body).into_owned()))?;
+                    let branch = current < active_tip;
+                    if branch {
+                        let dropped = history["versions"].as_array().cloned().unwrap_or_default().into_iter()
+                            .filter(|item| item["version"].as_i64().unwrap_or(0) > current).collect::<Vec<_>>();
+                        uow.append_raw_entity_event(&namespace, SqliteNewRawEntityEvent {
+                            event_id: uuid::Uuid::new_v4().to_string(), entity_kind: "design_control".to_owned(), entity_id: workflow_id.to_owned(),
+                            op: "BRANCH_DROPPED".to_owned(), payload_json: json!({"designer_id": designer, "source": "rest", "ts_ms": timestamp,
+                                "drop_from_version": dropped.first().and_then(|item| item["version"].as_i64()).unwrap_or(current + 1),
+                                "drop_to_version": dropped.last().and_then(|item| item["version"].as_i64()).unwrap_or(active_tip),
+                                "drop_from_seq": dropped.first().and_then(|item| item["seq"].as_i64()).unwrap_or(0),
+                                "drop_to_seq": dropped.last().and_then(|item| item["seq"].as_i64()).unwrap_or(0)}).to_string(),
+                        })?;
+                    }
+                    let version = history["allocated_max_version"].as_i64().unwrap_or(0) + 1;
+                    let entity = design_entity_event(&action, &entity_id, &before, &graph);
+                    let data_event = uow.append_raw_entity_event(&namespace, SqliteNewRawEntityEvent {
+                        event_id: entity.event_id, entity_kind: entity.entity_kind, entity_id: entity.entity_id,
+                        op: entity.op, payload_json: entity.payload.to_string(),
+                    })?;
+                    uow.append_raw_entity_event(&namespace, SqliteNewRawEntityEvent {
+                        event_id: uuid::Uuid::new_v4().to_string(), entity_kind: "design_control".to_owned(), entity_id: workflow_id.to_owned(),
+                        op: "MUTATION_COMMITTED".to_owned(), payload_json: json!({"designer_id": designer, "source": "rest", "ts_ms": timestamp,
+                            "action": action, "entity_id": entity_id, "version": version, "prev_version": current,
+                            "target_seq": data_event.event.seq}).to_string(),
+                    })?;
+                    uow.put_workflow_design_delta(workflow_id, WorkflowDesignDeltaWrite {
+                        version, prev_version: current, target_seq: data_event.event.seq,
+                        forward_json: visible_delta(&before, &graph).to_string(),
+                        inverse_json: visible_delta(&graph, &before).to_string(), schema_version: 1,
+                    })?;
+                    if version % 50 == 0 {
+                        uow.put_workflow_design_snapshot(workflow_id, WorkflowDesignSnapshotWrite {
+                            version, seq: data_event.event.seq, payload_json: graph.to_string(), schema_version: 1,
+                        })?;
+                    }
+                    let folded_events = uow.replay_raw_events(&namespace, 0, usize::MAX)?.into_iter().map(|event| EntityEvent {
+                        namespace: event.namespace, seq: event.seq, event_id: event.event_id, entity_kind: event.entity_kind,
+                        entity_id: event.entity_id, op: event.op, payload: serde_json::from_str(&event.payload_json).unwrap_or(Value::Null),
+                    }).collect::<Vec<_>>();
+                    let folded = workflow_design_history_value(workflow_id, folded_events, "ready")
+                        .map_err(kogwistar_store_sqlite::SqliteStoreError::TransactionAborted)?;
+                    uow.replace_named_projection("workflow_design", workflow_id, workflow_design_projection_write(&folded))?;
+                    Ok(json!({"workflow_id": workflow_id, "namespace": namespace,
+                        if deleted { if action == "node_delete" { "node_id" } else { "edge_id" } } else if action == "node_upsert" { "node_id" } else { "edge_id" }: entity_id,
+                        "designer_id": designer, "deleted": deleted, "version": folded["current_version"],
+                        "seq": data_event.event.seq, "can_undo": folded["can_undo"], "can_redo": folded["can_redo"]}))
+                }
+                _ => unreachable!(),
+            }
+        });
+        match outcome {
+            Ok(value) => json_effect(StatusCode::OK, value),
+            Err(error)
+                if error.to_string().contains("KOGWISTAR_NODE_NOT_FOUND")
+                    || error.to_string().contains("KOGWISTAR_EDGE_NOT_FOUND") =>
+            {
+                effect_error(
+                    StatusCode::NOT_FOUND,
+                    "KOGWISTAR_DESIGN_ENTITY_NOT_FOUND",
+                    error.to_string(),
+                )
+            }
+            Err(error) => effect_error(
+                StatusCode::CONFLICT,
+                "KOGWISTAR_WORKFLOW_DESIGN_CONFLICT",
+                error.to_string(),
+            ),
+        }
+    }
+
+    fn workflow_design_history(
+        &self,
+        request: &ApiEffectRequest,
+        workflow_id: &str,
+    ) -> ApiEffectResponse {
+        if !capability_allowed(
+            request,
+            &self.capabilities,
+            "workflow.design.inspect",
+            &["workflow.design.inspect"],
+        ) {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                "Inspecting workflow design requires workflow.design.inspect capability",
+            );
+        }
+        let events = match self.design_events(workflow_id) {
+            Ok(events) => events,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_STORE_ERROR",
+                    error.to_string(),
+                );
+            }
+        };
+        let history = match workflow_design_history_value(workflow_id, events, "ready") {
+            Ok(history) => history,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_WORKFLOW_DESIGN_HISTORY_INVALID",
+                    error,
+                );
+            }
+        };
+        match self.store.replace_named_projection(
+            "workflow_design",
+            workflow_id,
+            workflow_design_projection_write(&history),
+        ) {
+            Ok(()) => json_effect(StatusCode::OK, history),
+            Err(error) => effect_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "KOGWISTAR_STORE_ERROR",
+                error.to_string(),
+            ),
+        }
+    }
+
+    fn service_read(&self, request: &ApiEffectRequest) -> Option<ApiEffectResponse> {
+        if request.method != "GET" {
+            return None;
+        }
+        let path = request
+            .path_and_query
+            .split('?')
+            .next()
+            .unwrap_or(&request.path_and_query);
+        if path != "/api/workflow/services" && service_get_id(&request.path_and_query).is_none() {
+            return None;
+        }
+        if !capability_allowed(
+            request,
+            &self.capabilities,
+            "service.inspect",
+            &["service.inspect"],
+        ) {
+            return Some(effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                "Inspecting service requires service.inspect capability",
+            ));
+        }
+        if path == "/api/workflow/services" {
+            let limit =
+                query_integer(&request.path_and_query, "limit", 200).clamp(0, 10_000) as usize;
+            return Some(
+                match self.store.list_named_projections("service_registry") {
+                    Ok(rows) => {
+                        let mut services = rows
+                            .into_iter()
+                            .map(|row| Value::Object(row.payload))
+                            .collect::<Vec<_>>();
+                        services.sort_by(|left, right| {
+                            left["service_id"]
+                                .as_str()
+                                .cmp(&right["service_id"].as_str())
+                        });
+                        services.truncate(limit);
+                        json_effect(StatusCode::OK, json!({"services": services}))
+                    }
+                    Err(error) => effect_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "KOGWISTAR_STORE_ERROR",
+                        error.to_string(),
+                    ),
+                },
+            );
+        }
+        let service_id = service_get_id(&request.path_and_query).expect("validated service route");
+        Some(
+            match self
+                .store
+                .get_named_projection("service_registry", &service_id)
+            {
+                Ok(Some(row)) => json_effect(StatusCode::OK, Value::Object(row.payload)),
+                Ok(None) => effect_error(
+                    StatusCode::NOT_FOUND,
+                    "KOGWISTAR_SERVICE_NOT_FOUND",
+                    format!("Unknown service_id: {service_id}"),
+                ),
+                Err(error) => effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_STORE_ERROR",
+                    error.to_string(),
+                ),
+            },
+        )
+    }
+
+    fn repair_orphaned_messages(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
+        if !capability_allowed(
+            request,
+            &self.capabilities,
+            "project_view",
+            &["project_view"],
+        ) {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                "Repairing claimed messages requires project_view capability",
+            );
+        }
+        let inbox_id = query_string(&request.path_and_query, "inbox_id");
+        let limit = query_integer(&request.path_and_query, "limit", 100).clamp(0, 10_000) as usize;
+        match self.store.repair_orphaned_claimed_lane_messages(
+            "workflow",
+            inbox_id.as_deref(),
+            limit,
+        ) {
+            Ok(repaired) => json_effect(StatusCode::OK, json!({"repaired_message_ids": repaired})),
+            Err(error) => effect_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "KOGWISTAR_STORE_ERROR",
+                error.to_string(),
+            ),
+        }
+    }
+
+    fn replay_dead_letter(&self, request: &ApiEffectRequest, run_id: &str) -> ApiEffectResponse {
+        if !capability_allowed(
+            request,
+            &self.capabilities,
+            "service.manage",
+            &["service.manage"],
+        ) {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                "Replaying dead letters requires service.manage capability",
+            );
+        }
+        let lanes = match self.store.list_projected_lane_messages(LaneMessageFilter {
+            namespace: Some("workflow".to_owned()),
+            status: Some("dead-letter".to_owned()),
+            limit: 10_000,
+            ..LaneMessageFilter::default()
+        }) {
+            Ok(lanes) => lanes,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_STORE_ERROR",
+                    error.to_string(),
+                );
+            }
+        };
+        let Some(lane) = lanes
+            .into_iter()
+            .find(|lane| lane.run_id.as_deref() == Some(run_id))
+        else {
+            return json_effect(StatusCode::OK, json!({"run_id": run_id, "replayed": false}));
+        };
+        match self
+            .store
+            .update_projected_lane_message_status(&lane.message_id, "pending", None)
+        {
+            Ok(()) => json_effect(
+                StatusCode::OK,
+                json!({
+                    "run_id": run_id,
+                    "replayed": true,
+                    "dead_letter": lane_progress_value(&lane),
+                }),
+            ),
+            Err(error) => effect_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "KOGWISTAR_STORE_ERROR",
+                error.to_string(),
+            ),
+        }
+    }
+
     fn resume_runtime_run(&self, run_id: &str, request: &ApiEffectRequest) -> ApiEffectResponse {
         #[derive(Deserialize)]
         struct ResumeRun {
@@ -525,8 +2632,17 @@ impl SqliteRunApplicationService {
 
     pub fn open(path: impl AsRef<std::path::Path>) -> Result<Self, String> {
         SqliteStore::open(path)
-            .map(|store| Self { store })
+            .map(|store| Self {
+                store,
+                max_queue: runtime_max_queue(),
+                capabilities: Arc::new(Mutex::new(CapabilityState::default())),
+            })
             .map_err(|error| error.to_string())
+    }
+
+    pub fn with_max_queue(mut self, max_queue: usize) -> Self {
+        self.max_queue = max_queue.max(1);
+        self
     }
 
     fn get_run(&self, run_id: &str) -> Result<Option<ServerRun>, String> {
@@ -675,7 +2791,26 @@ impl SqliteRunApplicationService {
             "start_join_mask": effective_start_join_mask,
             "start_node_id": effective_start_node_id,
         });
+        let max_queue = self.max_queue;
         let outcome = self.store.immediate_transaction(|uow| {
+            let active_count = ["pending", "claimed"]
+                .into_iter()
+                .map(|status| {
+                    uow.list_projected_lane_messages(&LaneMessageFilter {
+                        namespace: Some("workflow".to_owned()),
+                        inbox_id: Some("workflow-runtime".to_owned()),
+                        status: Some(status.to_owned()),
+                        limit: max_queue,
+                        ..LaneMessageFilter::default()
+                    })
+                    .map(|lanes| lanes.len())
+                })
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .sum::<usize>();
+            if active_count >= max_queue {
+                return Ok(false);
+            }
             uow.create_server_run(ServerRunCreate {
                 run_id: run_id.clone(),
                 conversation_id: conversation_id.to_owned(),
@@ -709,14 +2844,27 @@ impl SqliteRunApplicationService {
                 payload_json: Some(serde_json::to_string(&persisted_worker_payload)?),
                 error_json: None,
             })?;
-            Ok(())
+            Ok(true)
         });
-        if let Err(error) = outcome {
-            return effect_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "KOGWISTAR_STORE_ERROR",
-                error.to_string(),
-            );
+        match outcome {
+            Ok(false) => {
+                return json_effect(
+                    StatusCode::TOO_MANY_REQUESTS,
+                    json!({
+                        "admission": if matches!(priority_class.as_str(), "background" | "batch") { "rejected" } else { "deferred" },
+                        "reason": "queue_full",
+                        "max_queue": max_queue,
+                    }),
+                );
+            }
+            Err(error) => {
+                return effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_STORE_ERROR",
+                    error.to_string(),
+                );
+            }
+            Ok(true) => {}
         }
         json_effect(
             StatusCode::ACCEPTED,
@@ -1130,9 +3278,418 @@ impl SqliteRunApplicationService {
 #[derive(Clone)]
 pub struct PostgresRunApplicationService {
     store: PostgresStore,
+    max_queue: usize,
+    capabilities: SharedCapabilityState,
 }
 
 impl PostgresRunApplicationService {
+    async fn design_events(&self, workflow_id: &str) -> Result<Vec<EntityEvent>, String> {
+        let namespace = format!("wf_design:{workflow_id}");
+        self.store
+            .replay_raw_events(&namespace, 0, usize::MAX)
+            .await
+            .map(|events| {
+                events
+                    .into_iter()
+                    .map(|event| EntityEvent {
+                        namespace: event.namespace,
+                        seq: event.seq,
+                        event_id: event.event_id,
+                        entity_kind: event.entity_kind,
+                        entity_id: event.entity_id,
+                        op: event.op,
+                        payload: serde_json::from_str(&event.payload_json).unwrap_or(Value::Null),
+                    })
+                    .collect()
+            })
+            .map_err(|error| error.to_string())
+    }
+
+    async fn workflow_design_effect(
+        &self,
+        request: &ApiEffectRequest,
+        workflow_id: &str,
+        route: DesignRoute,
+    ) -> ApiEffectResponse {
+        let required = if matches!(route, DesignRoute::Graph | DesignRoute::History) {
+            "workflow.design.inspect"
+        } else {
+            "workflow.design.write"
+        };
+        if !capability_allowed(request, &self.capabilities, required, &[required]) {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                format!("Workflow design action requires {required} capability"),
+            );
+        }
+        let events = match self.design_events(workflow_id).await {
+            Ok(events) => events,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_STORE_ERROR",
+                    error,
+                );
+            }
+        };
+        if route == DesignRoute::History {
+            return self.workflow_design_history(request, workflow_id).await;
+        }
+        if route == DesignRoute::Graph {
+            return match workflow_design_graph_value(workflow_id, &events) {
+                Ok(value) => json_effect(StatusCode::OK, value),
+                Err(error) => effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_WORKFLOW_DESIGN_HISTORY_INVALID",
+                    error,
+                ),
+            };
+        }
+        let input = match parse_design_input(request) {
+            Ok(input) => input,
+            Err(response) => return response,
+        };
+        let designer = match designer_id(request, &input) {
+            Ok(value) => value,
+            Err(response) => return response,
+        };
+        let history = match workflow_design_history_value(workflow_id, events.clone(), "ready") {
+            Ok(value) => value,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_WORKFLOW_DESIGN_HISTORY_INVALID",
+                    error,
+                );
+            }
+        };
+        let current = history["current_version"].as_i64().unwrap_or(0);
+        let active_tip = history["active_tip_version"].as_i64().unwrap_or(0);
+        let namespace = format!("wf_design:{workflow_id}");
+        let timestamp = now_ms();
+        let workflow_id_owned = workflow_id.to_owned();
+        let outcome = self.store.transaction(move |uow| Box::pin(async move {
+            match route {
+                DesignRoute::Undo | DesignRoute::Redo => {
+                    let active = history["versions"].as_array().cloned().unwrap_or_default();
+                    let ids = active.iter().filter_map(|item| item["version"].as_i64()).collect::<Vec<_>>();
+                    let target = if route == DesignRoute::Undo {
+                        history["selected_versions"].as_array().and_then(|items| items.iter().find(|item| item["version"].as_i64() == Some(current)))
+                            .and_then(|item| item["prev_version"].as_i64()).unwrap_or(0)
+                    } else { ids.iter().position(|value| *value == current).and_then(|index| ids.get(index + 1)).copied().unwrap_or(current) };
+                    if target == current || (route == DesignRoute::Undo && current == 0) { let mut value = history.clone(); value["status"] = json!("noop"); return Ok(value); }
+                    let op = if route == DesignRoute::Undo { "UNDO_APPLIED" } else { "REDO_APPLIED" };
+                    uow.append_raw_entity_event(&namespace, PostgresNewRawEntityEvent {
+                        event_id: uuid::Uuid::new_v4().to_string(), entity_kind: "design_control".to_owned(), entity_id: workflow_id_owned.clone(), op: op.to_owned(),
+                        payload_json: json!({"designer_id": designer, "source":"rest", "ts_ms":timestamp, "from_version":current, "to_version":target,
+                            "target_seq":history["commits"][target.to_string()]["target_seq"].as_i64().unwrap_or(0)}).to_string(),
+                    }).await?;
+                    let folded_events = uow.replay_raw_events(&namespace, 0, usize::MAX).await?.into_iter().map(|event| EntityEvent {
+                        namespace:event.namespace,seq:event.seq,event_id:event.event_id,entity_kind:event.entity_kind,entity_id:event.entity_id,op:event.op,
+                        payload:serde_json::from_str(&event.payload_json).unwrap_or(Value::Null),
+                    }).collect::<Vec<_>>();
+                    let mut folded = workflow_design_history_value(&workflow_id_owned, folded_events, "ready")
+                        .map_err(kogwistar_store_postgres::PostgresStoreError::TransactionAborted)?;
+                    uow.replace_named_projection("workflow_design", &workflow_id_owned, workflow_design_projection_write(&folded)).await?;
+                    folded["status"] = json!("ok"); Ok(folded)
+                }
+                DesignRoute::NodeUpsert | DesignRoute::NodeDelete(_) | DesignRoute::EdgeUpsert | DesignRoute::EdgeDelete(_) => {
+                    let before = graph_at_version(&events, current);
+                    let mut graph = before.clone();
+                    let (action, entity_id, deleted) = mutate_design_graph(&workflow_id_owned, &route, &input, &mut graph)
+                        .map_err(|response| kogwistar_store_postgres::PostgresStoreError::TransactionAborted(String::from_utf8_lossy(&response.body).into_owned()))?;
+                    let branch = current < active_tip;
+                    if branch { uow.append_raw_entity_event(&namespace, PostgresNewRawEntityEvent {
+                        event_id:uuid::Uuid::new_v4().to_string(),entity_kind:"design_control".to_owned(),entity_id:workflow_id_owned.clone(),op:"BRANCH_DROPPED".to_owned(),
+                        payload_json:json!({"designer_id":designer,"source":"rest","ts_ms":timestamp,"drop_from_version":current+1,"drop_to_version":active_tip,
+                            "drop_from_seq":history["versions"].as_array().and_then(|items|items.iter().find(|item|item["version"].as_i64().unwrap_or(0)>current)).and_then(|item|item["seq"].as_i64()).unwrap_or(0),
+                            "drop_to_seq":history["versions"].as_array().and_then(|items|items.last()).and_then(|item|item["seq"].as_i64()).unwrap_or(0)}).to_string(),
+                    }).await?; }
+                    let version = history["allocated_max_version"].as_i64().unwrap_or(0)+1;
+                    let entity = design_entity_event(&action, &entity_id, &before, &graph);
+                    let data_event = uow.append_raw_entity_event(&namespace, PostgresNewRawEntityEvent {
+                        event_id:entity.event_id,entity_kind:entity.entity_kind,entity_id:entity.entity_id,op:entity.op,payload_json:entity.payload.to_string(),
+                    }).await?;
+                    uow.append_raw_entity_event(&namespace, PostgresNewRawEntityEvent {
+                        event_id:uuid::Uuid::new_v4().to_string(),entity_kind:"design_control".to_owned(),entity_id:workflow_id_owned.clone(),op:"MUTATION_COMMITTED".to_owned(),
+                        payload_json:json!({"designer_id":designer,"source":"rest","ts_ms":timestamp,"action":action,"entity_id":entity_id,"version":version,
+                            "prev_version":current,"target_seq":data_event.event.seq}).to_string(),
+                    }).await?;
+                    uow.put_workflow_design_delta(&workflow_id_owned, WorkflowDesignDeltaWrite {
+                        version,prev_version:current,target_seq:data_event.event.seq,
+                        forward_json:visible_delta(&before,&graph).to_string(),inverse_json:visible_delta(&graph,&before).to_string(),schema_version:1,
+                    }).await?;
+                    if version % 50 == 0 { uow.put_workflow_design_snapshot(&workflow_id_owned, WorkflowDesignSnapshotWrite {
+                        version,seq:data_event.event.seq,payload_json:graph.to_string(),schema_version:1,
+                    }).await?; }
+                    let folded_events = uow.replay_raw_events(&namespace,0,usize::MAX).await?.into_iter().map(|event|EntityEvent{
+                        namespace:event.namespace,seq:event.seq,event_id:event.event_id,entity_kind:event.entity_kind,entity_id:event.entity_id,op:event.op,
+                        payload:serde_json::from_str(&event.payload_json).unwrap_or(Value::Null),}).collect::<Vec<_>>();
+                    let folded=workflow_design_history_value(&workflow_id_owned,folded_events,"ready").map_err(kogwistar_store_postgres::PostgresStoreError::TransactionAborted)?;
+                    uow.replace_named_projection("workflow_design",&workflow_id_owned,workflow_design_projection_write(&folded)).await?;
+                    Ok(json!({"workflow_id":workflow_id_owned,"namespace":namespace,
+                        if deleted {if action=="node_delete"{"node_id"}else{"edge_id"}}else if action=="node_upsert"{"node_id"}else{"edge_id"}:entity_id,
+                        "designer_id":designer,"deleted":deleted,"version":folded["current_version"],"seq":data_event.event.seq,"can_undo":folded["can_undo"],"can_redo":folded["can_redo"]}))
+                }
+                _ => unreachable!(),
+            }
+        })).await;
+        match outcome {
+            Ok(value) => json_effect(StatusCode::OK, value),
+            Err(error)
+                if error.to_string().contains("KOGWISTAR_NODE_NOT_FOUND")
+                    || error.to_string().contains("KOGWISTAR_EDGE_NOT_FOUND") =>
+            {
+                effect_error(
+                    StatusCode::NOT_FOUND,
+                    "KOGWISTAR_DESIGN_ENTITY_NOT_FOUND",
+                    error.to_string(),
+                )
+            }
+            Err(error) => effect_error(
+                StatusCode::CONFLICT,
+                "KOGWISTAR_WORKFLOW_DESIGN_CONFLICT",
+                error.to_string(),
+            ),
+        }
+    }
+
+    async fn workflow_design_history(
+        &self,
+        request: &ApiEffectRequest,
+        workflow_id: &str,
+    ) -> ApiEffectResponse {
+        if !capability_allowed(
+            request,
+            &self.capabilities,
+            "workflow.design.inspect",
+            &["workflow.design.inspect"],
+        ) {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                "Inspecting workflow design requires workflow.design.inspect capability",
+            );
+        }
+        let namespace = format!("wf_design:{workflow_id}");
+        let events = match self
+            .store
+            .replay_raw_events(&namespace, 0, usize::MAX)
+            .await
+        {
+            Ok(events) => events
+                .into_iter()
+                .map(|event| EntityEvent {
+                    namespace: event.namespace,
+                    seq: event.seq,
+                    event_id: event.event_id,
+                    entity_kind: event.entity_kind,
+                    entity_id: event.entity_id,
+                    op: event.op,
+                    payload: serde_json::from_str(&event.payload_json).unwrap_or(Value::Null),
+                })
+                .collect(),
+            Err(error) => {
+                return effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_STORE_ERROR",
+                    error.to_string(),
+                );
+            }
+        };
+        let history = match workflow_design_history_value(workflow_id, events, "ready") {
+            Ok(history) => history,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_WORKFLOW_DESIGN_HISTORY_INVALID",
+                    error,
+                );
+            }
+        };
+        match self
+            .store
+            .replace_named_projection(
+                "workflow_design",
+                workflow_id,
+                workflow_design_projection_write(&history),
+            )
+            .await
+        {
+            Ok(()) => json_effect(StatusCode::OK, history),
+            Err(error) => effect_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "KOGWISTAR_STORE_ERROR",
+                error.to_string(),
+            ),
+        }
+    }
+
+    async fn service_read(&self, request: &ApiEffectRequest) -> Option<ApiEffectResponse> {
+        if request.method != "GET" {
+            return None;
+        }
+        let path = request
+            .path_and_query
+            .split('?')
+            .next()
+            .unwrap_or(&request.path_and_query);
+        if path != "/api/workflow/services" && service_get_id(&request.path_and_query).is_none() {
+            return None;
+        }
+        if !capability_allowed(
+            request,
+            &self.capabilities,
+            "service.inspect",
+            &["service.inspect"],
+        ) {
+            return Some(effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                "Inspecting service requires service.inspect capability",
+            ));
+        }
+        if path == "/api/workflow/services" {
+            let limit =
+                query_integer(&request.path_and_query, "limit", 200).clamp(0, 10_000) as usize;
+            return Some(
+                match self.store.list_named_projections("service_registry").await {
+                    Ok(rows) => {
+                        let mut services = rows
+                            .into_iter()
+                            .map(|row| Value::Object(row.payload))
+                            .collect::<Vec<_>>();
+                        services.sort_by(|left, right| {
+                            left["service_id"]
+                                .as_str()
+                                .cmp(&right["service_id"].as_str())
+                        });
+                        services.truncate(limit);
+                        json_effect(StatusCode::OK, json!({"services": services}))
+                    }
+                    Err(error) => effect_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "KOGWISTAR_STORE_ERROR",
+                        error.to_string(),
+                    ),
+                },
+            );
+        }
+        let service_id = service_get_id(&request.path_and_query).expect("validated service route");
+        Some(
+            match self
+                .store
+                .get_named_projection("service_registry", &service_id)
+                .await
+            {
+                Ok(Some(row)) => json_effect(StatusCode::OK, Value::Object(row.payload)),
+                Ok(None) => effect_error(
+                    StatusCode::NOT_FOUND,
+                    "KOGWISTAR_SERVICE_NOT_FOUND",
+                    format!("Unknown service_id: {service_id}"),
+                ),
+                Err(error) => effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_STORE_ERROR",
+                    error.to_string(),
+                ),
+            },
+        )
+    }
+
+    async fn repair_orphaned_messages(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
+        if !capability_allowed(
+            request,
+            &self.capabilities,
+            "project_view",
+            &["project_view"],
+        ) {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                "Repairing claimed messages requires project_view capability",
+            );
+        }
+        let inbox_id = query_string(&request.path_and_query, "inbox_id");
+        let limit = query_integer(&request.path_and_query, "limit", 100).clamp(0, 10_000) as usize;
+        match self
+            .store
+            .repair_orphaned_claimed_lane_messages("workflow", inbox_id.as_deref(), limit)
+            .await
+        {
+            Ok(repaired) => json_effect(StatusCode::OK, json!({"repaired_message_ids": repaired})),
+            Err(error) => effect_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "KOGWISTAR_STORE_ERROR",
+                error.to_string(),
+            ),
+        }
+    }
+
+    async fn replay_dead_letter(
+        &self,
+        request: &ApiEffectRequest,
+        run_id: &str,
+    ) -> ApiEffectResponse {
+        if !capability_allowed(
+            request,
+            &self.capabilities,
+            "service.manage",
+            &["service.manage"],
+        ) {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                "Replaying dead letters requires service.manage capability",
+            );
+        }
+        let lanes = match self
+            .store
+            .list_projected_lane_messages(LaneMessageFilter {
+                namespace: Some("workflow".to_owned()),
+                status: Some("dead-letter".to_owned()),
+                limit: 10_000,
+                ..LaneMessageFilter::default()
+            })
+            .await
+        {
+            Ok(lanes) => lanes,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_STORE_ERROR",
+                    error.to_string(),
+                );
+            }
+        };
+        let Some(lane) = lanes
+            .into_iter()
+            .find(|lane| lane.run_id.as_deref() == Some(run_id))
+        else {
+            return json_effect(StatusCode::OK, json!({"run_id": run_id, "replayed": false}));
+        };
+        match self
+            .store
+            .update_projected_lane_message_status(&lane.message_id, "pending", None)
+            .await
+        {
+            Ok(()) => json_effect(
+                StatusCode::OK,
+                json!({
+                    "run_id": run_id,
+                    "replayed": true,
+                    "dead_letter": lane_progress_value(&lane),
+                }),
+            ),
+            Err(error) => effect_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "KOGWISTAR_STORE_ERROR",
+                error.to_string(),
+            ),
+        }
+    }
+
     pub fn from_dsn(dsn: &str, schema: &str) -> Result<Self, String> {
         let dsn = dsn
             .strip_prefix("postgresql+psycopg://")
@@ -1143,7 +3700,11 @@ impl PostgresRunApplicationService {
             })
             .unwrap_or_else(|| dsn.to_owned());
         PostgresStore::from_dsn(&dsn, schema)
-            .map(|store| Self { store })
+            .map(|store| Self {
+                store,
+                max_queue: runtime_max_queue(),
+                capabilities: Arc::new(Mutex::new(CapabilityState::default())),
+            })
             .map_err(|error| error.to_string())
     }
 
@@ -1152,6 +3713,11 @@ impl PostgresRunApplicationService {
             .ensure_schema()
             .await
             .map_err(|error| error.to_string())
+    }
+
+    pub fn with_max_queue(mut self, max_queue: usize) -> Self {
+        self.max_queue = max_queue.max(1);
+        self
     }
 
     async fn submit_run(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
@@ -1274,10 +3840,39 @@ impl PostgresRunApplicationService {
             "admission": "accepted",
             "lane_message_id": message_id,
         });
+        let max_queue = self.max_queue;
+        let queued_priority_class = priority_class.clone();
+        let queue_full_admission = if matches!(priority_class.as_str(), "background" | "batch") {
+            "rejected"
+        } else {
+            "deferred"
+        };
         let outcome = self
             .store
             .transaction(|uow| {
                 Box::pin(async move {
+                    uow.lock_runtime_queue_admission().await?;
+                    let pending = uow
+                        .list_projected_lane_messages(&LaneMessageFilter {
+                            namespace: Some("workflow".to_owned()),
+                            inbox_id: Some("workflow-runtime".to_owned()),
+                            status: Some("pending".to_owned()),
+                            limit: max_queue,
+                            ..LaneMessageFilter::default()
+                        })
+                        .await?;
+                    let claimed = uow
+                        .list_projected_lane_messages(&LaneMessageFilter {
+                            namespace: Some("workflow".to_owned()),
+                            inbox_id: Some("workflow-runtime".to_owned()),
+                            status: Some("claimed".to_owned()),
+                            limit: max_queue,
+                            ..LaneMessageFilter::default()
+                        })
+                        .await?;
+                    if pending.len() + claimed.len() >= max_queue {
+                        return Ok(false);
+                    }
                     uow.create_server_run(ServerRunCreate {
                         run_id: run_id.clone(),
                         conversation_id: conversation_id.clone(),
@@ -1310,7 +3905,7 @@ impl PostgresRunApplicationService {
                         "turn_node_id": turn_node_id,
                         "user_id": input.user_id,
                         "initial_state": initial_state,
-                        "priority_class": priority_class,
+                        "priority_class": queued_priority_class,
                         "token_budget": input.token_budget,
                         "time_budget_ms": input.time_budget_ms,
                         "runtime_kind": runtime_kind,
@@ -1337,12 +3932,21 @@ impl PostgresRunApplicationService {
                         payload_json: Some(serde_json::to_string(&payload)?),
                         error_json: None,
                     })
-                    .await
+                    .await?;
+                    Ok(true)
                 })
             })
             .await;
         match outcome {
-            Ok(()) => json_effect(StatusCode::ACCEPTED, response),
+            Ok(true) => json_effect(StatusCode::ACCEPTED, response),
+            Ok(false) => json_effect(
+                StatusCode::TOO_MANY_REQUESTS,
+                json!({
+                    "admission": queue_full_admission,
+                    "reason": "queue_full",
+                    "max_queue": max_queue,
+                }),
+            ),
             Err(error) => effect_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "KOGWISTAR_STORE_ERROR",
@@ -1761,6 +4365,34 @@ impl PostgresRunApplicationService {
     }
 
     async fn execute_async(&self, request: ApiEffectRequest) -> ApiEffectResponse {
+        if let Some(response) = capability_effect(&request, &self.capabilities) {
+            return response;
+        }
+        if let Some(response) = syscall_read_effect(&request, &self.capabilities) {
+            return response;
+        }
+        if let Some(response) = designer_capabilities_effect(&request, &self.capabilities) {
+            return response;
+        }
+        if let Some((workflow_id, route)) = workflow_design_route(&request.path_and_query) {
+            return self
+                .workflow_design_effect(&request, &workflow_id, route)
+                .await;
+        }
+        if let Some(response) = self.service_read(&request).await {
+            return response;
+        }
+        if request.method == "POST"
+            && let Some(run_id) = dead_letter_replay_run_id(&request.path_and_query)
+        {
+            return self.replay_dead_letter(&request, &run_id).await;
+        }
+        if request.method == "POST"
+            && request.path_and_query.split('?').next()
+                == Some("/api/workflow/messages/repair-orphans")
+        {
+            return self.repair_orphaned_messages(&request).await;
+        }
         if request.method == "POST" && request.path_and_query == "/internal/runtime/claim" {
             return self.claim_runtime_work(&request).await;
         }
@@ -1771,6 +4403,58 @@ impl PostgresRunApplicationService {
             && request.path_and_query.split('?').next() == Some("/api/workflow/runs")
         {
             return self.submit_run(&request).await;
+        }
+        if request.method == "GET"
+            && let Some(path) = operational_path(&request.path_and_query)
+        {
+            let limit =
+                query_integer(&request.path_and_query, "limit", 200).clamp(1, 10_000) as usize;
+            let runs = match self.store.list_server_runs(None, None, None, 10_000).await {
+                Ok(runs) => runs,
+                Err(error) => {
+                    return effect_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "KOGWISTAR_STORE_ERROR",
+                        error.to_string(),
+                    );
+                }
+            };
+            let lanes = match self
+                .store
+                .list_projected_lane_messages(LaneMessageFilter {
+                    namespace: Some("workflow".to_owned()),
+                    limit: 10_000,
+                    ..LaneMessageFilter::default()
+                })
+                .await
+            {
+                Ok(lanes) => lanes,
+                Err(error) => {
+                    return effect_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "KOGWISTAR_STORE_ERROR",
+                        error.to_string(),
+                    );
+                }
+            };
+            let mut events = Vec::new();
+            for run in &runs {
+                match self
+                    .store
+                    .list_server_run_events(&run.run_id, 0, limit)
+                    .await
+                {
+                    Ok(mut run_events) => events.append(&mut run_events),
+                    Err(error) => {
+                        return effect_error(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "KOGWISTAR_STORE_ERROR",
+                            error.to_string(),
+                        );
+                    }
+                }
+            }
+            return operational_effect(&request, path, runs, lanes, events);
         }
         let Some((run_id, tail)) = runtime_run_route(&request.path_and_query) else {
             return unavailable_effect(request);
@@ -1793,6 +4477,16 @@ impl PostgresRunApplicationService {
             }
         };
         let tail = tail.iter().map(String::as_str).collect::<Vec<_>>();
+        if request.method == "GET" && is_runtime_inspection_tail(&tail) {
+            return match self.store.list_server_run_events(&run_id, 0, 200_000).await {
+                Ok(events) => runtime_inspection_effect(&request, &run_id, &tail, events),
+                Err(error) => effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_STORE_ERROR",
+                    error.to_string(),
+                ),
+            };
+        }
         match (request.method.as_str(), tail.as_slice()) {
             ("GET", []) => json_effect(StatusCode::OK, server_run_value(run)),
             ("GET", ["events", "poll"]) => {
@@ -1932,6 +4626,32 @@ impl ApplicationService for SqliteRunApplicationService {
 
 impl SqliteRunApplicationService {
     fn execute_sync(&self, request: ApiEffectRequest) -> ApiEffectResponse {
+        if let Some(response) = capability_effect(&request, &self.capabilities) {
+            return response;
+        }
+        if let Some(response) = syscall_read_effect(&request, &self.capabilities) {
+            return response;
+        }
+        if let Some(response) = designer_capabilities_effect(&request, &self.capabilities) {
+            return response;
+        }
+        if let Some((workflow_id, route)) = workflow_design_route(&request.path_and_query) {
+            return self.workflow_design_effect(&request, &workflow_id, route);
+        }
+        if let Some(response) = self.service_read(&request) {
+            return response;
+        }
+        if request.method == "POST"
+            && let Some(run_id) = dead_letter_replay_run_id(&request.path_and_query)
+        {
+            return self.replay_dead_letter(&request, &run_id);
+        }
+        if request.method == "POST"
+            && request.path_and_query.split('?').next()
+                == Some("/api/workflow/messages/repair-orphans")
+        {
+            return self.repair_orphaned_messages(&request);
+        }
         if request.method == "POST" && request.path_and_query == "/internal/runtime/claim" {
             return self.claim_runtime_work(&request);
         }
@@ -1942,6 +4662,50 @@ impl SqliteRunApplicationService {
             && request.path_and_query.split('?').next() == Some("/api/workflow/runs")
         {
             return self.submit_run(&request);
+        }
+        if request.method == "GET"
+            && let Some(path) = operational_path(&request.path_and_query)
+        {
+            let limit =
+                query_integer(&request.path_and_query, "limit", 200).clamp(1, 10_000) as usize;
+            let runs = match self.store.list_server_runs(None, None, None, 10_000) {
+                Ok(runs) => runs,
+                Err(error) => {
+                    return effect_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "KOGWISTAR_STORE_ERROR",
+                        error.to_string(),
+                    );
+                }
+            };
+            let lanes = match self.store.list_projected_lane_messages(LaneMessageFilter {
+                namespace: Some("workflow".to_owned()),
+                limit: 10_000,
+                ..LaneMessageFilter::default()
+            }) {
+                Ok(lanes) => lanes,
+                Err(error) => {
+                    return effect_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "KOGWISTAR_STORE_ERROR",
+                        error.to_string(),
+                    );
+                }
+            };
+            let mut events = Vec::new();
+            for run in &runs {
+                match self.store.list_server_run_events(&run.run_id, 0, limit) {
+                    Ok(mut run_events) => events.append(&mut run_events),
+                    Err(error) => {
+                        return effect_error(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "KOGWISTAR_STORE_ERROR",
+                            error.to_string(),
+                        );
+                    }
+                }
+            }
+            return operational_effect(&request, path, runs, lanes, events);
         }
         let Some((run_id, tail)) = runtime_run_route(&request.path_and_query) else {
             return unavailable_effect(request);
@@ -1964,6 +4728,16 @@ impl SqliteRunApplicationService {
             }
         };
         let tail = tail.iter().map(String::as_str).collect::<Vec<_>>();
+        if request.method == "GET" && is_runtime_inspection_tail(&tail) {
+            return match self.store.list_server_run_events(&run_id, 0, 200_000) {
+                Ok(events) => runtime_inspection_effect(&request, &run_id, &tail, events),
+                Err(error) => effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_STORE_ERROR",
+                    error.to_string(),
+                ),
+            };
+        }
         match (request.method.as_str(), tail.as_slice()) {
             ("GET", []) => json_effect(StatusCode::OK, server_run_value(run)),
             ("GET", ["events", "poll"]) => {
@@ -2113,6 +4887,14 @@ fn jwt_algorithm(value: &str) -> Option<Algorithm> {
     }
 }
 
+fn jwt_algorithm_name(algorithm: Algorithm) -> &'static str {
+    match algorithm {
+        Algorithm::HS256 => "HS256",
+        Algorithm::RS256 => "RS256",
+        _ => "unsupported",
+    }
+}
+
 fn bearer_token(headers: &HeaderMap) -> Option<&str> {
     let value = headers.get("authorization")?.to_str().ok()?;
     let (scheme, token) = value.split_once(' ')?;
@@ -2122,36 +4904,7 @@ fn bearer_token(headers: &HeaderMap) -> Option<&str> {
 }
 
 fn jwt_roles(headers: &HeaderMap, config: &AuthConfig) -> Result<Vec<String>, &'static str> {
-    let token = bearer_token(headers).ok_or("Missing bearer token")?;
-    let configured_algorithm = jwt_algorithm(config.algorithm.as_deref().unwrap_or("HS256"))
-        .ok_or("Unsupported JWT algorithm")?;
-    let header = decode_header(token).map_err(|_| "Invalid bearer token")?;
-    if header.alg != configured_algorithm {
-        return Err("JWT algorithm mismatch");
-    }
-    let key_text = config
-        .key
-        .as_deref()
-        .ok_or("JWT secret is not configured")?;
-    let key = match configured_algorithm {
-        Algorithm::HS256 => DecodingKey::from_secret(key_text.as_bytes()),
-        Algorithm::RS256 => {
-            DecodingKey::from_rsa_pem(key_text.as_bytes()).map_err(|_| "Invalid RSA public key")?
-        }
-        _ => return Err("Unsupported JWT algorithm"),
-    };
-    let mut validation = Validation::new(configured_algorithm);
-    if let Some(issuer) = &config.issuer {
-        validation.set_issuer(&[issuer]);
-    }
-    if let Some(audience) = &config.audience {
-        validation.set_audience(&[audience]);
-    } else {
-        validation.validate_aud = false;
-    }
-    let claims = decode::<Value>(token, &key, &validation)
-        .map_err(|_| "Invalid bearer token")?
-        .claims;
+    let claims = jwt_claims(headers, config)?;
     let mut roles = Vec::new();
     if let Some(role) = claims.get("role").and_then(Value::as_str) {
         roles.push(role.to_ascii_lowercase());
@@ -2167,12 +4920,70 @@ fn jwt_roles(headers: &HeaderMap, config: &AuthConfig) -> Result<Vec<String>, &'
     Ok(roles)
 }
 
+fn jwt_claims(headers: &HeaderMap, config: &AuthConfig) -> Result<Value, &'static str> {
+    let token = bearer_token(headers).ok_or("Missing bearer token")?;
+    let configured_algorithm = jwt_algorithm(config.algorithm.as_deref().unwrap_or("HS256"))
+        .ok_or("Unsupported JWT algorithm")?;
+    let header = decode_header(token).map_err(|_| "Invalid bearer token")?;
+    if header.alg != configured_algorithm {
+        return Err("JWT algorithm mismatch");
+    }
+    let key = if let Some(jwks_json) = config.jwks_json.as_deref() {
+        let key_id = header.kid.as_deref().ok_or("JWT kid is required")?;
+        let set = serde_json::from_str::<jsonwebtoken::jwk::JwkSet>(jwks_json)
+            .map_err(|_| "Invalid JWKS JSON")?;
+        let jwk = set.find(key_id).ok_or("JWT kid is not trusted")?;
+        if jwk.common.key_algorithm.is_some_and(|key_algorithm| {
+            key_algorithm.to_string() != jwt_algorithm_name(configured_algorithm)
+        }) {
+            return Err("JWT JWK algorithm mismatch");
+        }
+        DecodingKey::from_jwk(jwk).map_err(|_| "Invalid JWK")?
+    } else {
+        let key_text = config
+            .key
+            .as_deref()
+            .ok_or("JWT verification key is not configured")?;
+        match configured_algorithm {
+            Algorithm::HS256 => DecodingKey::from_secret(key_text.as_bytes()),
+            Algorithm::RS256 => DecodingKey::from_rsa_pem(key_text.as_bytes())
+                .map_err(|_| "Invalid RSA public key")?,
+            _ => return Err("Unsupported JWT algorithm"),
+        }
+    };
+    let mut validation = Validation::new(configured_algorithm);
+    if let Some(issuer) = &config.issuer {
+        validation.set_issuer(&[issuer]);
+    }
+    if let Some(audience) = &config.audience {
+        validation.set_audience(&[audience]);
+    } else {
+        validation.validate_aud = false;
+    }
+    Ok(decode::<Value>(token, &key, &validation)
+        .map_err(|_| "Invalid bearer token")?
+        .claims)
+}
+
 fn request_roles(headers: &HeaderMap, config: &AuthConfig) -> Result<Vec<String>, &'static str> {
     if config.configured() {
         jwt_roles(headers, config)
     } else {
         Ok(roles_from_headers(headers))
     }
+}
+
+fn request_principal(headers: &HeaderMap, config: &AuthConfig) -> Value {
+    if config.configured() {
+        return jwt_claims(headers, config).unwrap_or_else(|_| json!({}));
+    }
+    let roles = roles_from_headers(headers);
+    let role = if roles.iter().any(|role| role == "rw") {
+        "rw"
+    } else {
+        "ro"
+    };
+    json!({"sub": "anonymous", "role": role, "roles": roles, "ns": "workflow"})
 }
 
 fn has_required_role(headers: &HeaderMap, required_roles: &[String], config: &AuthConfig) -> bool {
@@ -2193,6 +5004,708 @@ fn forbidden_response() -> Response {
         }),
     )
         .into_response()
+}
+
+fn auth_error(status: StatusCode, detail: impl Into<String>) -> Response {
+    (status, Json(json!({"detail": detail.into()}))).into_response()
+}
+
+fn normalized_string_or_list(value: Option<&Value>, default: Value) -> Value {
+    match value {
+        None | Some(Value::Null) => default,
+        Some(Value::String(raw)) if raw.contains(',') => json!(
+            raw.split(',')
+                .map(str::trim)
+                .filter(|item| !item.is_empty())
+                .collect::<Vec<_>>()
+        ),
+        Some(Value::String(raw)) if raw.is_empty() => default,
+        Some(value) => value.clone(),
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct OidcProviderConfig {
+    #[serde(default, rename = "name")]
+    _name: String,
+    discovery_url: String,
+    redirect_uri: String,
+    client_id: String,
+    #[serde(default)]
+    client_secret: String,
+    #[serde(default)]
+    issuer: Option<String>,
+    #[serde(default)]
+    scopes: Vec<String>,
+    #[serde(default = "default_true")]
+    allowed: bool,
+    #[serde(default = "default_true")]
+    required_email: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Deserialize)]
+struct OidcProvidersConfig {
+    #[serde(default)]
+    default_provider: Option<String>,
+    #[serde(default)]
+    providers: BTreeMap<String, OidcProviderConfig>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct LoginQuery {
+    #[serde(default)]
+    redirect_uri: Option<String>,
+    #[serde(default)]
+    provider: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct CallbackQuery {
+    #[serde(default)]
+    state: Option<String>,
+    #[serde(default)]
+    code: Option<String>,
+    #[serde(default)]
+    error: Option<String>,
+    #[serde(default)]
+    error_description: Option<String>,
+}
+
+fn request_cookie(headers: &HeaderMap, name: &str) -> Option<String> {
+    headers
+        .get_all(header::COOKIE)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(';'))
+        .filter_map(|part| part.trim().split_once('='))
+        .find_map(|(cookie_name, value)| (cookie_name == name).then(|| value.to_owned()))
+}
+
+fn delete_login_cookies(response: &mut Response) {
+    for name in [
+        "auth_state",
+        "auth_pkce_verifier",
+        "auth_nonce",
+        "auth_provider",
+    ] {
+        let cookie = format!("{name}=; HttpOnly; Max-Age=0; Path=/; SameSite=Lax");
+        if let Ok(value) = HeaderValue::from_str(&cookie) {
+            response.headers_mut().append(header::SET_COOKIE, value);
+        }
+    }
+}
+
+fn random_token() -> String {
+    format!(
+        "{}{}",
+        uuid::Uuid::new_v4().simple(),
+        uuid::Uuid::new_v4().simple()
+    )
+}
+
+fn oidc_providers(config: &AuthConfig) -> Result<OidcProvidersConfig, &'static str> {
+    let raw = config
+        .oidc_providers_json
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or("OIDC provider is not configured")?;
+    serde_json::from_str(raw).map_err(|_| "OIDC provider configuration is invalid")
+}
+
+enum AuthStore {
+    Sqlite(SqliteAuthStore),
+    Postgres(PostgresAuthStore),
+}
+
+impl AuthStore {
+    async fn from_config(config: &AuthConfig) -> Result<Self, String> {
+        let url = config
+            .auth_db_url
+            .as_deref()
+            .unwrap_or("sqlite:///auth.sqlite");
+        if let Some(path) = url.strip_prefix("sqlite:///") {
+            return SqliteAuthStore::open(path)
+                .map(Self::Sqlite)
+                .map_err(|error| error.to_string());
+        }
+        if url.starts_with("postgresql://") || url.starts_with("postgres://") {
+            let store = PostgresAuthStore::from_dsn(url).map_err(|error| error.to_string())?;
+            store
+                .ensure_schema()
+                .await
+                .map_err(|error| error.to_string())?;
+            return Ok(Self::Postgres(store));
+        }
+        Err("AUTH_DB_URL backend is not supported".to_owned())
+    }
+
+    async fn resolve_external_identity(
+        &self,
+        request: ResolveExternalIdentity,
+    ) -> Result<AuthUser, String> {
+        match self {
+            Self::Sqlite(store) => store.resolve_external_identity(request).await,
+            Self::Postgres(store) => store.resolve_external_identity(request).await,
+        }
+        .map_err(|error| error.to_string())
+    }
+}
+
+fn mint_app_token(config: &AuthConfig, user: &AuthUser) -> Result<String, &'static str> {
+    let secret = config
+        .key
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .ok_or("JWT secret is not configured")?;
+    if config.algorithm.as_deref().unwrap_or("HS256") != "HS256" {
+        return Err("App token minting requires JWT_ALG=HS256");
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|value| value.as_secs())
+        .unwrap_or_default();
+    let mut claims = json!({
+        "sub": user.email,
+        "user_id": user.user_id,
+        "email": user.email,
+        "name": user.display_name,
+        "role": user.global_role.as_deref().unwrap_or("ro"),
+        "ns": normalized_string_or_list(
+            user.global_ns.as_ref().map(|value| json!(value)).as_ref(),
+            json!("docs"),
+        ),
+        "iat": now,
+        "exp": now + 4 * 60 * 60,
+        "iss": config.issuer.as_deref().unwrap_or("local"),
+    });
+    if let Some(audience) = &config.audience {
+        claims["aud"] = json!(audience);
+    }
+    encode(
+        &Header::new(Algorithm::HS256),
+        &claims,
+        &EncodingKey::from_secret(secret.as_bytes()),
+    )
+    .map_err(|_| "JWT encoding failed")
+}
+
+fn redirect_response(location: String) -> Response {
+    let mut response = StatusCode::TEMPORARY_REDIRECT.into_response();
+    match HeaderValue::from_str(&location) {
+        Ok(value) => {
+            response.headers_mut().insert(header::LOCATION, value);
+            response
+        }
+        Err(_) => auth_error(StatusCode::INTERNAL_SERVER_ERROR, "Invalid redirect URL"),
+    }
+}
+
+fn append_login_cookie(response: &mut Response, name: &str, value: &str) {
+    let cookie = format!("{name}={value}; HttpOnly; Max-Age=600; Path=/; SameSite=Lax");
+    if let Ok(value) = HeaderValue::from_str(&cookie) {
+        response.headers_mut().append(header::SET_COOKIE, value);
+    }
+}
+
+async fn auth_login_handler(
+    State(state): State<Arc<ServerState>>,
+    Query(query): Query<LoginQuery>,
+) -> Response {
+    if state.api.auth.mode.eq_ignore_ascii_case("dev") {
+        let ui_url = query
+            .redirect_uri
+            .or_else(|| std::env::var("UI_URL").ok())
+            .unwrap_or_else(|| "/".to_owned());
+        let Some(secret) = state
+            .api
+            .auth
+            .key
+            .as_deref()
+            .filter(|value| !value.is_empty())
+        else {
+            return auth_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "JWT secret is not configured",
+            );
+        };
+        if state.api.auth.algorithm.as_deref().unwrap_or("HS256") != "HS256" {
+            return auth_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Dev token minting requires JWT_ALG=HS256",
+            );
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|value| value.as_secs())
+            .unwrap_or_default();
+        let email =
+            std::env::var("DEV_AUTH_EMAIL").unwrap_or_else(|_| "dev@example.com".to_owned());
+        let mut claims = json!({
+            "sub": email,
+            "user_id": std::env::var("DEV_AUTH_SUBJECT").unwrap_or_else(|_| "dev".to_owned()),
+            "email": email,
+            "name": std::env::var("DEV_AUTH_NAME").unwrap_or_else(|_| "Dev User".to_owned()),
+            "role": std::env::var("DEV_AUTH_ROLE").unwrap_or_else(|_| "ro".to_owned()),
+            "ns": normalized_string_or_list(
+                std::env::var("DEV_AUTH_NS").ok().as_ref().map(|value| json!(value)).as_ref(),
+                json!(["docs", "conversation", "workflow", "wisdom"]),
+            ),
+            "iat": now,
+            "exp": now + 4 * 60 * 60,
+            "iss": state.api.auth.issuer.as_deref().unwrap_or("local"),
+        });
+        if let Some(audience) = &state.api.auth.audience {
+            claims["aud"] = json!(audience);
+        }
+        return match encode(
+            &Header::new(Algorithm::HS256),
+            &claims,
+            &EncodingKey::from_secret(secret.as_bytes()),
+        ) {
+            Ok(token) => redirect_response(format!("{ui_url}?token={token}")),
+            Err(_) => auth_error(StatusCode::INTERNAL_SERVER_ERROR, "JWT encoding failed"),
+        };
+    }
+
+    if query.redirect_uri.is_some() {
+        return auth_error(
+            StatusCode::BAD_REQUEST,
+            "redirect_uri override is only allowed when AUTH_MODE=dev",
+        );
+    }
+    let providers = match oidc_providers(&state.api.auth) {
+        Ok(providers) => providers,
+        Err(message) => return auth_error(StatusCode::BAD_REQUEST, message),
+    };
+    let provider_name = query.provider.or(providers.default_provider).or_else(|| {
+        (providers.providers.len() == 1)
+            .then(|| providers.providers.keys().next().cloned())
+            .flatten()
+    });
+    let Some(provider_name) = provider_name else {
+        return auth_error(StatusCode::BAD_REQUEST, "OIDC provider is not configured");
+    };
+    let Some(provider) = providers
+        .providers
+        .get(&provider_name)
+        .filter(|provider| provider.allowed)
+    else {
+        return auth_error(
+            StatusCode::BAD_REQUEST,
+            format!("OIDC provider {provider_name:?} is not configured"),
+        );
+    };
+    let discovery = match reqwest::get(&provider.discovery_url).await {
+        Ok(response) => match response.error_for_status() {
+            Ok(response) => match response.json::<Value>().await {
+                Ok(value) => value,
+                Err(_) => {
+                    return auth_error(
+                        StatusCode::BAD_GATEWAY,
+                        "OIDC discovery response is invalid",
+                    );
+                }
+            },
+            Err(_) => {
+                return auth_error(StatusCode::BAD_GATEWAY, "OIDC discovery request failed");
+            }
+        },
+        Err(_) => return auth_error(StatusCode::BAD_GATEWAY, "OIDC discovery request failed"),
+    };
+    let Some(endpoint) = discovery["authorization_endpoint"].as_str() else {
+        return auth_error(
+            StatusCode::BAD_GATEWAY,
+            "OIDC discovery response is invalid",
+        );
+    };
+    let state_token = random_token();
+    let verifier = random_token();
+    let nonce = random_token();
+    let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(Sha256::digest(verifier.as_bytes()));
+    let mut authorization_url = match url::Url::parse(endpoint) {
+        Ok(url) => url,
+        Err(_) => {
+            return auth_error(
+                StatusCode::BAD_GATEWAY,
+                "OIDC authorization endpoint is invalid",
+            );
+        }
+    };
+    let scopes = if provider.scopes.is_empty() {
+        "openid email profile".to_owned()
+    } else {
+        provider.scopes.join(" ")
+    };
+    authorization_url.query_pairs_mut().extend_pairs([
+        ("client_id", provider.client_id.as_str()),
+        ("response_type", "code"),
+        ("scope", scopes.as_str()),
+        ("redirect_uri", provider.redirect_uri.as_str()),
+        ("state", state_token.as_str()),
+        ("code_challenge", challenge.as_str()),
+        ("code_challenge_method", "S256"),
+        ("nonce", nonce.as_str()),
+    ]);
+    let mut response = redirect_response(authorization_url.into());
+    append_login_cookie(&mut response, "auth_state", &state_token);
+    append_login_cookie(&mut response, "auth_pkce_verifier", &verifier);
+    append_login_cookie(&mut response, "auth_nonce", &nonce);
+    append_login_cookie(&mut response, "auth_provider", &provider_name);
+    response
+}
+
+async fn auth_callback_handler(
+    State(state): State<Arc<ServerState>>,
+    headers: HeaderMap,
+    Query(query): Query<CallbackQuery>,
+) -> Response {
+    if state.api.auth.mode.eq_ignore_ascii_case("dev") {
+        return auth_error(
+            StatusCode::BAD_REQUEST,
+            "OIDC callback disabled (AUTH_MODE=dev)",
+        );
+    }
+    if let Some(error) = query.error {
+        return auth_error(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "OIDC Error: {error} - {}",
+                query.error_description.unwrap_or_default()
+            ),
+        );
+    }
+    let Some(code) = query.code.filter(|value| !value.is_empty()) else {
+        return auth_error(StatusCode::BAD_REQUEST, "Missing authorization code");
+    };
+    let Some(state_value) = query.state else {
+        return auth_error(StatusCode::BAD_REQUEST, "Invalid state");
+    };
+    if request_cookie(&headers, "auth_state").as_deref() != Some(state_value.as_str()) {
+        return auth_error(StatusCode::BAD_REQUEST, "Invalid state");
+    }
+    let Some(verifier) = request_cookie(&headers, "auth_pkce_verifier") else {
+        return auth_error(StatusCode::BAD_REQUEST, "Missing PKCE verifier");
+    };
+    let Some(nonce) = request_cookie(&headers, "auth_nonce") else {
+        return auth_error(StatusCode::BAD_REQUEST, "Missing nonce");
+    };
+    let Some(provider_name) = request_cookie(&headers, "auth_provider") else {
+        return auth_error(StatusCode::BAD_REQUEST, "Missing provider");
+    };
+    let providers = match oidc_providers(&state.api.auth) {
+        Ok(providers) => providers,
+        Err(message) => return auth_error(StatusCode::BAD_REQUEST, message),
+    };
+    let Some(provider) = providers
+        .providers
+        .get(&provider_name)
+        .filter(|provider| provider.allowed)
+    else {
+        return auth_error(
+            StatusCode::BAD_REQUEST,
+            format!("OIDC provider {provider_name:?} is not configured"),
+        );
+    };
+    let client = reqwest::Client::new();
+    let discovery = match client.get(&provider.discovery_url).send().await {
+        Ok(response) => match response.error_for_status() {
+            Ok(response) => match response.json::<Value>().await {
+                Ok(value) => value,
+                Err(_) => {
+                    return auth_error(
+                        StatusCode::BAD_GATEWAY,
+                        "OIDC discovery response is invalid",
+                    );
+                }
+            },
+            Err(_) => {
+                return auth_error(StatusCode::BAD_GATEWAY, "OIDC discovery request failed");
+            }
+        },
+        Err(_) => return auth_error(StatusCode::BAD_GATEWAY, "OIDC discovery request failed"),
+    };
+    let Some(token_endpoint) = discovery["token_endpoint"].as_str() else {
+        return auth_error(
+            StatusCode::BAD_GATEWAY,
+            "OIDC discovery response is invalid",
+        );
+    };
+    let mut token_form = vec![
+        ("client_id", provider.client_id.as_str()),
+        ("grant_type", "authorization_code"),
+        ("code", code.as_str()),
+        ("redirect_uri", provider.redirect_uri.as_str()),
+        ("code_verifier", verifier.as_str()),
+    ];
+    if !provider.client_secret.is_empty() {
+        token_form.push(("client_secret", provider.client_secret.as_str()));
+    }
+    let tokens = match client.post(token_endpoint).form(&token_form).send().await {
+        Ok(response) => match response.error_for_status() {
+            Ok(response) => match response.json::<Value>().await {
+                Ok(value) => value,
+                Err(_) => {
+                    return auth_error(StatusCode::BAD_GATEWAY, "OIDC token response is invalid");
+                }
+            },
+            Err(_) => return auth_error(StatusCode::BAD_GATEWAY, "OIDC token exchange failed"),
+        },
+        Err(_) => return auth_error(StatusCode::BAD_GATEWAY, "OIDC token exchange failed"),
+    };
+    let Some(id_token) = tokens["id_token"].as_str() else {
+        return auth_error(StatusCode::BAD_REQUEST, "Missing id_token");
+    };
+    let Some(access_token) = tokens["access_token"].as_str() else {
+        return auth_error(StatusCode::BAD_REQUEST, "Missing access_token");
+    };
+    let Some(jwks_uri) = discovery["jwks_uri"].as_str() else {
+        return auth_error(
+            StatusCode::BAD_GATEWAY,
+            "OIDC discovery response is invalid",
+        );
+    };
+    let jwks = match client.get(jwks_uri).send().await {
+        Ok(response) => match response.error_for_status() {
+            Ok(response) => match response.json::<jsonwebtoken::jwk::JwkSet>().await {
+                Ok(value) => value,
+                Err(_) => return auth_error(StatusCode::BAD_GATEWAY, "OIDC JWKS is invalid"),
+            },
+            Err(_) => return auth_error(StatusCode::BAD_GATEWAY, "OIDC JWKS request failed"),
+        },
+        Err(_) => return auth_error(StatusCode::BAD_GATEWAY, "OIDC JWKS request failed"),
+    };
+    let token_header = match decode_header(id_token) {
+        Ok(header) => header,
+        Err(_) => return auth_error(StatusCode::UNAUTHORIZED, "Invalid id_token"),
+    };
+    if token_header.alg != Algorithm::RS256 {
+        return auth_error(StatusCode::UNAUTHORIZED, "Invalid id_token algorithm");
+    }
+    let Some(kid) = token_header.kid.as_deref() else {
+        return auth_error(StatusCode::UNAUTHORIZED, "id_token missing kid");
+    };
+    let Some(jwk) = jwks.find(kid) else {
+        return auth_error(StatusCode::UNAUTHORIZED, "id_token kid is not trusted");
+    };
+    let key = match DecodingKey::from_jwk(jwk) {
+        Ok(key) => key,
+        Err(_) => return auth_error(StatusCode::UNAUTHORIZED, "Invalid id_token key"),
+    };
+    let issuer = provider
+        .issuer
+        .as_deref()
+        .or_else(|| discovery["issuer"].as_str());
+    let Some(issuer) = issuer else {
+        return auth_error(
+            StatusCode::BAD_GATEWAY,
+            "OIDC discovery response is invalid",
+        );
+    };
+    let mut validation = Validation::new(Algorithm::RS256);
+    validation.set_audience(&[provider.client_id.as_str()]);
+    validation.set_issuer(&[issuer]);
+    validation.set_required_spec_claims(&["exp", "iat", "iss", "aud", "sub"]);
+    validation.leeway = 60;
+    let claims = match decode::<Value>(id_token, &key, &validation) {
+        Ok(token) => token.claims,
+        Err(_) => return auth_error(StatusCode::UNAUTHORIZED, "Invalid id_token"),
+    };
+    if claims["nonce"].as_str() != Some(nonce.as_str()) {
+        return auth_error(StatusCode::UNAUTHORIZED, "Invalid nonce");
+    }
+    if claims["aud"]
+        .as_array()
+        .is_some_and(|audiences| audiences.len() > 1)
+        && claims["azp"].as_str() != Some(provider.client_id.as_str())
+    {
+        return auth_error(
+            StatusCode::UNAUTHORIZED,
+            "id_token azp does not match client_id",
+        );
+    }
+    let Some(userinfo_endpoint) = discovery["userinfo_endpoint"].as_str() else {
+        return auth_error(
+            StatusCode::BAD_GATEWAY,
+            "OIDC discovery response is invalid",
+        );
+    };
+    let userinfo = match client
+        .get(userinfo_endpoint)
+        .bearer_auth(access_token)
+        .send()
+        .await
+    {
+        Ok(response) => match response.error_for_status() {
+            Ok(response) => match response.json::<Value>().await {
+                Ok(value) => value,
+                Err(_) => {
+                    return auth_error(StatusCode::BAD_GATEWAY, "OIDC userinfo is invalid");
+                }
+            },
+            Err(_) => return auth_error(StatusCode::BAD_GATEWAY, "OIDC userinfo request failed"),
+        },
+        Err(_) => return auth_error(StatusCode::BAD_GATEWAY, "OIDC userinfo request failed"),
+    };
+    let Some(subject) = claims["sub"].as_str() else {
+        return auth_error(StatusCode::UNAUTHORIZED, "Invalid id_token");
+    };
+    if userinfo["sub"].as_str() != Some(subject) {
+        return auth_error(
+            StatusCode::UNAUTHORIZED,
+            "userinfo subject does not match validated id_token subject",
+        );
+    }
+    let id_email = claims["email"].as_str();
+    let userinfo_email = userinfo["email"].as_str();
+    if id_email.is_some() && userinfo_email.is_some() && id_email != userinfo_email {
+        return auth_error(
+            StatusCode::UNAUTHORIZED,
+            "userinfo email does not match validated id_token email",
+        );
+    }
+    let email = id_email.or(userinfo_email);
+    if provider.required_email && email.is_none() {
+        return auth_error(StatusCode::BAD_REQUEST, "OIDC identity missing email");
+    }
+    let Some(email) = email else {
+        return auth_error(StatusCode::BAD_REQUEST, "OIDC identity missing email");
+    };
+    let auth_store = match AuthStore::from_config(&state.api.auth).await {
+        Ok(store) => store,
+        Err(error) => {
+            return auth_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Auth store failed: {error}"),
+            );
+        }
+    };
+    let user = match auth_store
+        .resolve_external_identity(ResolveExternalIdentity {
+            issuer: issuer.to_owned(),
+            subject: subject.to_owned(),
+            email: email.to_owned(),
+            display_name: claims["name"]
+                .as_str()
+                .or_else(|| userinfo["name"].as_str())
+                .map(str::to_owned),
+            new_user_id: uuid::Uuid::new_v4().to_string(),
+            default_role: "ro".to_owned(),
+            default_ns: "docs".to_owned(),
+        })
+        .await
+    {
+        Ok(user) => user,
+        Err(error) => {
+            return auth_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Auth store failed: {error}"),
+            );
+        }
+    };
+    let token = match mint_app_token(&state.api.auth, &user) {
+        Ok(token) => token,
+        Err(message) => return auth_error(StatusCode::INTERNAL_SERVER_ERROR, message),
+    };
+    let ui_url = std::env::var("UI_URL").unwrap_or_else(|_| "/".to_owned());
+    let mut response = redirect_response(format!("{ui_url}?token={token}"));
+    delete_login_cookies(&mut response);
+    response
+}
+
+async fn dev_token_handler(
+    State(state): State<Arc<ServerState>>,
+    Json(input): Json<Value>,
+) -> Response {
+    if !state.api.auth.mode.eq_ignore_ascii_case("dev") {
+        return auth_error(StatusCode::NOT_FOUND, "Dev token endpoint is disabled");
+    }
+    let Some(secret) = state
+        .api
+        .auth
+        .key
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    else {
+        return auth_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "JWT secret is not configured",
+        );
+    };
+    let algorithm = state.api.auth.algorithm.as_deref().unwrap_or("HS256");
+    if algorithm != "HS256" {
+        return auth_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Dev token minting requires JWT_ALG=HS256",
+        );
+    }
+    let role = input["role"].as_str().unwrap_or("ro");
+    if !matches!(role, "ro" | "rw") {
+        return auth_error(StatusCode::BAD_REQUEST, "role must be one of ['ro', 'rw']");
+    }
+    let username = input["username"].as_str().unwrap_or("dev");
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|value| value.as_secs())
+        .unwrap_or_default();
+    let mut claims = json!({
+        "sub": username,
+        "ns": normalized_string_or_list(input.get("ns"), json!("docs")),
+        "role": role,
+        "iat": now,
+        "exp": now + 4 * 60 * 60,
+        "iss": state.api.auth.issuer.as_deref().unwrap_or("local"),
+    });
+    if let Some(capabilities) = input.get("capabilities")
+        && !capabilities.is_null()
+    {
+        claims["capabilities"] = normalized_string_or_list(Some(capabilities), Value::Null);
+    }
+    if let Some(audience) = &state.api.auth.audience {
+        claims["aud"] = json!(audience);
+    }
+    match encode(
+        &Header::new(Algorithm::HS256),
+        &claims,
+        &EncodingKey::from_secret(secret.as_bytes()),
+    ) {
+        Ok(token) => Json(json!({"token": token})).into_response(),
+        Err(_) => auth_error(StatusCode::INTERNAL_SERVER_ERROR, "JWT encoding failed"),
+    }
+}
+
+async fn auth_me_handler(State(state): State<Arc<ServerState>>, headers: HeaderMap) -> Response {
+    if !state.api.auth.configured() {
+        return auth_error(StatusCode::UNAUTHORIZED, "Not authenticated");
+    }
+    let claims = match jwt_claims(&headers, &state.api.auth) {
+        Ok(claims) => claims,
+        Err(_) => return auth_error(StatusCode::UNAUTHORIZED, "Not authenticated"),
+    };
+    let user_id = claims["user_id"]
+        .as_str()
+        .or_else(|| claims["sub"].as_str())
+        .unwrap_or_default();
+    if user_id.is_empty() {
+        return auth_error(StatusCode::UNAUTHORIZED, "Not authenticated");
+    }
+    Json(json!({
+        "user_id": user_id,
+        "email": claims["email"].as_str().or_else(|| claims["sub"].as_str()),
+        "display_name": claims["name"],
+        "is_active": true,
+        "role": claims["role"],
+        "ns": claims["ns"],
+    }))
+    .into_response()
+}
+
+async fn auth_logout_handler() -> Json<Value> {
+    Json(json!({"ok": true}))
 }
 
 async fn health_handler(State(state): State<Arc<ServerState>>) -> Json<Value> {
@@ -2274,6 +5787,7 @@ async fn mcp_handler(
         .into_response();
     }
     if method == "tools/call" {
+        let principal = request_principal(&headers, &state.api.auth);
         let params = payload.get("params").cloned().unwrap_or_else(|| json!({}));
         let tool_name = params
             .get("name")
@@ -2295,6 +5809,7 @@ async fn mcp_handler(
                     method: "GET".to_owned(),
                     path_and_query: format!("/api/workflow/runs/{run_id}"),
                     body: Vec::new(),
+                    principal: principal.clone(),
                 })
             }
             "workflow.run_cancel" | "conversation.cancel_run" if !run_id.is_empty() => {
@@ -2303,6 +5818,7 @@ async fn mcp_handler(
                     method: "POST".to_owned(),
                     path_and_query: format!("/api/workflow/runs/{run_id}/cancel"),
                     body: Vec::new(),
+                    principal: principal.clone(),
                 })
             }
             "workflow.run_events" if !run_id.is_empty() => {
@@ -2321,8 +5837,279 @@ async fn mcp_handler(
                         "/api/workflow/runs/{run_id}/events/poll?after_seq={after_seq}&limit={limit}"
                     ),
                     body: Vec::new(),
+                    principal: principal.clone(),
                 })
             }
+            "workflow.run_checkpoint_get" if !run_id.is_empty() => arguments
+                .get("step_seq")
+                .and_then(Value::as_i64)
+                .map(|step_seq| ApiEffectRequest {
+                    contract_version: 1,
+                    method: "GET".to_owned(),
+                    path_and_query: format!("/api/workflow/runs/{run_id}/checkpoints/{step_seq}"),
+                    body: Vec::new(),
+                    principal: principal.clone(),
+                }),
+            "workflow.run_replay" if !run_id.is_empty() => arguments
+                .get("target_step_seq")
+                .and_then(Value::as_i64)
+                .map(|target_step_seq| ApiEffectRequest {
+                    contract_version: 1,
+                    method: "GET".to_owned(),
+                    path_and_query: format!(
+                        "/api/workflow/runs/{run_id}/replay?target_step_seq={target_step_seq}"
+                    ),
+                    body: Vec::new(),
+                    principal: principal.clone(),
+                }),
+            "workflow.run_resume_contract" if !run_id.is_empty() => Some(ApiEffectRequest {
+                contract_version: 1,
+                method: "GET".to_owned(),
+                path_and_query: format!("/api/workflow/runs/{run_id}/resume-contract"),
+                body: Vec::new(),
+                principal: principal.clone(),
+            }),
+            "workflow.run_submit" => Some(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/workflow/runs".to_owned(),
+                body: serde_json::to_vec(&arguments).expect("MCP arguments serialize"),
+                principal: principal.clone(),
+            }),
+            "workflow.run_resume" if !run_id.is_empty() => Some(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: format!("/api/workflow/runs/{run_id}/resume"),
+                body: serde_json::to_vec(&json!({
+                    "suspended_node_id": arguments.get("suspended_node_id"),
+                    "suspended_token_id": arguments.get("suspended_token_id"),
+                    "client_result": arguments.get("client_result"),
+                    "workflow_id": arguments.get("workflow_id"),
+                    "conversation_id": arguments.get("conversation_id"),
+                }))
+                .expect("MCP arguments serialize"),
+                principal: principal.clone(),
+            }),
+            "workflow.budget_snapshot" => Some(ApiEffectRequest {
+                contract_version: 1,
+                method: "GET".to_owned(),
+                path_and_query: "/api/workflow/budget".to_owned(),
+                body: Vec::new(),
+                principal: principal.clone(),
+            }),
+            "workflow.budget_history" => Some(ApiEffectRequest {
+                contract_version: 1,
+                method: "GET".to_owned(),
+                path_and_query: format!(
+                    "/api/workflow/budget/history?limit={}",
+                    arguments
+                        .get("limit")
+                        .and_then(Value::as_i64)
+                        .unwrap_or(200)
+                ),
+                body: Vec::new(),
+                principal: principal.clone(),
+            }),
+            "workflow.operator_dashboard" => Some(ApiEffectRequest {
+                contract_version: 1,
+                method: "GET".to_owned(),
+                path_and_query: format!(
+                    "/api/workflow/operator/dashboard?limit={}",
+                    arguments
+                        .get("limit")
+                        .and_then(Value::as_i64)
+                        .unwrap_or(100)
+                ),
+                body: Vec::new(),
+                principal: principal.clone(),
+            }),
+            "workflow.scheduler_timeline" => {
+                let limit = arguments
+                    .get("limit")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(200);
+                let run_query = arguments
+                    .get("run_id")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty())
+                    .map(|run_id| format!("&run_id={run_id}"))
+                    .unwrap_or_default();
+                Some(ApiEffectRequest {
+                    contract_version: 1,
+                    method: "GET".to_owned(),
+                    path_and_query: format!(
+                        "/api/workflow/scheduler/timeline?limit={limit}{run_query}"
+                    ),
+                    body: Vec::new(),
+                    principal: principal.clone(),
+                })
+            }
+            "workflow.dead_letters" => Some(ApiEffectRequest {
+                contract_version: 1,
+                method: "GET".to_owned(),
+                path_and_query: format!(
+                    "/api/workflow/dead-letters?limit={}",
+                    arguments
+                        .get("limit")
+                        .and_then(Value::as_i64)
+                        .unwrap_or(100)
+                ),
+                body: Vec::new(),
+                principal: principal.clone(),
+            }),
+            "workflow.dead_letter_replay" if !run_id.is_empty() => Some(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: format!("/api/workflow/dead-letters/{run_id}/replay"),
+                body: Vec::new(),
+                principal: principal.clone(),
+            }),
+            "workflow.message_orphans_repair" => {
+                let limit = arguments
+                    .get("limit")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(100);
+                let inbox = arguments
+                    .get("inbox_id")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty())
+                    .map(|value| format!("&inbox_id={value}"))
+                    .unwrap_or_default();
+                Some(ApiEffectRequest {
+                    contract_version: 1,
+                    method: "POST".to_owned(),
+                    path_and_query: format!(
+                        "/api/workflow/messages/repair-orphans?limit={limit}{inbox}"
+                    ),
+                    body: Vec::new(),
+                    principal: principal.clone(),
+                })
+            }
+            "workflow.service_list" => Some(ApiEffectRequest {
+                contract_version: 1,
+                method: "GET".to_owned(),
+                path_and_query: format!(
+                    "/api/workflow/services?limit={}",
+                    arguments
+                        .get("limit")
+                        .and_then(Value::as_i64)
+                        .unwrap_or(200)
+                ),
+                body: Vec::new(),
+                principal: principal.clone(),
+            }),
+            "workflow.service_get" => arguments
+                .get("service_id")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .map(|service_id| ApiEffectRequest {
+                    contract_version: 1,
+                    method: "GET".to_owned(),
+                    path_and_query: format!("/api/workflow/services/{service_id}"),
+                    body: Vec::new(),
+                    principal: principal.clone(),
+                }),
+            "workflow.design_history" => arguments
+                .get("workflow_id")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .map(|workflow_id| ApiEffectRequest {
+                    contract_version: 1,
+                    method: "GET".to_owned(),
+                    path_and_query: format!("/api/workflow/design/{workflow_id}/history"),
+                    body: Vec::new(),
+                    principal: principal.clone(),
+                }),
+            "workflow.design_node_upsert" => arguments
+                .get("workflow_id")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .map(|workflow_id| ApiEffectRequest {
+                    contract_version: 1,
+                    method: "POST".to_owned(),
+                    path_and_query: format!("/api/workflow/design/{workflow_id}/nodes"),
+                    body: serde_json::to_vec(&arguments).expect("MCP arguments serialize"),
+                    principal: principal.clone(),
+                }),
+            "workflow.design_edge_upsert" => arguments
+                .get("workflow_id")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .map(|workflow_id| ApiEffectRequest {
+                    contract_version: 1,
+                    method: "POST".to_owned(),
+                    path_and_query: format!("/api/workflow/design/{workflow_id}/edges"),
+                    body: serde_json::to_vec(&arguments).expect("MCP arguments serialize"),
+                    principal: principal.clone(),
+                }),
+            "workflow.design_node_delete" => arguments
+                .get("workflow_id")
+                .and_then(Value::as_str)
+                .zip(arguments.get("node_id").and_then(Value::as_str))
+                .map(|(workflow_id, node_id)| ApiEffectRequest {
+                    contract_version: 1,
+                    method: "DELETE".to_owned(),
+                    path_and_query: format!("/api/workflow/design/{workflow_id}/nodes/{node_id}"),
+                    body: serde_json::to_vec(&arguments).expect("MCP arguments serialize"),
+                    principal: principal.clone(),
+                }),
+            "workflow.design_edge_delete" => arguments
+                .get("workflow_id")
+                .and_then(Value::as_str)
+                .zip(arguments.get("edge_id").and_then(Value::as_str))
+                .map(|(workflow_id, edge_id)| ApiEffectRequest {
+                    contract_version: 1,
+                    method: "DELETE".to_owned(),
+                    path_and_query: format!("/api/workflow/design/{workflow_id}/edges/{edge_id}"),
+                    body: serde_json::to_vec(&arguments).expect("MCP arguments serialize"),
+                    principal: principal.clone(),
+                }),
+            name @ ("workflow.design_undo" | "workflow.design_redo") => arguments
+                .get("workflow_id")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .map(|workflow_id| ApiEffectRequest {
+                    contract_version: 1,
+                    method: "POST".to_owned(),
+                    path_and_query: format!(
+                        "/api/workflow/design/{workflow_id}/{}",
+                        if name == "workflow.design_undo" {
+                            "undo"
+                        } else {
+                            "redo"
+                        }
+                    ),
+                    body: serde_json::to_vec(&arguments).expect("MCP arguments serialize"),
+                    principal: principal.clone(),
+                }),
+            "workflow.visibility_snapshot" => Some(ApiEffectRequest {
+                contract_version: 1,
+                method: "GET".to_owned(),
+                path_and_query: "/api/workflow/visibility".to_owned(),
+                body: Vec::new(),
+                principal: principal.clone(),
+            }),
+            "workflow.capabilities_snapshot" => Some(ApiEffectRequest {
+                contract_version: 1,
+                method: "GET".to_owned(),
+                path_and_query: "/api/workflow/capabilities".to_owned(),
+                body: Vec::new(),
+                principal: principal.clone(),
+            }),
+            "workflow.capability_approve" => Some(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/workflow/capabilities/approve".to_owned(),
+                body: serde_json::to_vec(&arguments).expect("MCP arguments serialize"),
+                principal: principal.clone(),
+            }),
+            "workflow.capability_revoke" => Some(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/workflow/capabilities/revoke".to_owned(),
+                body: serde_json::to_vec(&arguments).expect("MCP arguments serialize"),
+                principal: principal.clone(),
+            }),
             _ => None,
         };
         let Some(request) = request else {
@@ -2388,6 +6175,7 @@ async fn application_effect_handler(
             method: method.to_string(),
             path_and_query,
             body: body.to_vec(),
+            principal: request_principal(&headers, &state.api.auth),
         })
         .await;
     let status = StatusCode::from_u16(response.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
@@ -2434,13 +6222,24 @@ pub fn router_with_application(
             post(application_effect_handler),
         );
     for &(method, path) in FROZEN_OPENAPI_ROUTES {
-        if method == "GET" && path == "/health" {
+        if (method == "GET"
+            && matches!(
+                path,
+                "/health" | "/api/auth/login" | "/api/auth/callback" | "/api/auth/me"
+            ))
+            || (method == "POST" && matches!(path, "/api/auth/logout" | "/auth/dev-token"))
+        {
             continue;
         }
         router = router.route(path, on(method_filter(method), application_effect_handler));
     }
     router
         .route("/health", get(health_handler))
+        .route("/api/auth/login", get(auth_login_handler))
+        .route("/api/auth/callback", get(auth_callback_handler))
+        .route("/api/auth/me", get(auth_me_handler))
+        .route("/api/auth/logout", post(auth_logout_handler))
+        .route("/auth/dev-token", post(dev_token_handler))
         .route("/openapi.json", get(openapi_handler))
         .with_state(Arc::new(ServerState {
             api: state,
@@ -2458,6 +6257,9 @@ pub async fn serve(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::body::to_bytes;
+    use axum::http::Request;
+    use tower::ServiceExt;
 
     fn snapshot() -> HealthSnapshot {
         HealthSnapshot {
@@ -2503,10 +6305,14 @@ mod tests {
             .unwrap()
             .as_secs();
         let config = AuthConfig {
+            mode: "oidc".to_owned(),
             algorithm: Some("HS256".to_owned()),
             key: Some("test-secret".to_owned()),
+            jwks_json: None,
             issuer: Some("issuer".to_owned()),
             audience: Some("audience".to_owned()),
+            oidc_providers_json: None,
+            auth_db_url: None,
         };
         let token = encode(
             &Header::new(Algorithm::HS256),
@@ -2552,6 +6358,62 @@ mod tests {
             &["ro".to_owned()],
             &config
         ));
+    }
+
+    #[test]
+    fn jwks_kid_selection_supports_rotation_and_rejects_unknown_keys() {
+        use axum::http::HeaderValue;
+        use jsonwebtoken::{EncodingKey, Header, encode};
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let claims = json!({"sub": "user", "role": "ro", "exp": now + 300});
+        let token = |kid: &str, secret: &[u8]| {
+            let mut header = Header::new(Algorithm::HS256);
+            header.kid = Some(kid.to_owned());
+            encode(&header, &claims, &EncodingKey::from_secret(secret)).unwrap()
+        };
+        let config = |jwks_json: Value| AuthConfig {
+            mode: "oidc".to_owned(),
+            algorithm: Some("HS256".to_owned()),
+            key: None,
+            jwks_json: Some(serde_json::to_string(&jwks_json).unwrap()),
+            issuer: None,
+            audience: None,
+            oidc_providers_json: None,
+            auth_db_url: None,
+        };
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "authorization",
+            HeaderValue::from_str(&format!("Bearer {}", token("new", b"new-secret"))).unwrap(),
+        );
+        let rotating = config(json!({
+            "keys": [
+                {"kty": "oct", "kid": "old", "alg": "HS256", "k": "b2xkLXNlY3JldA"},
+                {"kty": "oct", "kid": "new", "alg": "HS256", "k": "bmV3LXNlY3JldA"}
+            ]
+        }));
+        assert_eq!(jwt_roles(&headers, &rotating).unwrap(), vec!["ro"]);
+
+        let old_only = config(json!({
+            "keys": [
+                {"kty": "oct", "kid": "old", "alg": "HS256", "k": "b2xkLXNlY3JldA"}
+            ]
+        }));
+        assert_eq!(
+            jwt_roles(&headers, &old_only),
+            Err("JWT kid is not trusted")
+        );
+
+        headers.insert(
+            "authorization",
+            HeaderValue::from_str(&format!("Bearer {}", token("new", b"forged-secret"))).unwrap(),
+        );
+        assert_eq!(jwt_roles(&headers, &rotating), Err("Invalid bearer token"));
     }
 
     #[test]
@@ -2688,9 +6550,1147 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dev_token_me_and_logout_share_verified_jwt_contract() {
+        use axum::body::{Body, to_bytes};
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        let app = router(ApiState {
+            health: snapshot(),
+            required_roles: Vec::new(),
+            implementation: ImplementationSnapshot::default(),
+            auth: AuthConfig {
+                mode: "dev".to_owned(),
+                algorithm: Some("HS256".to_owned()),
+                key: Some("dev-secret".to_owned()),
+                jwks_json: None,
+                issuer: Some("local".to_owned()),
+                audience: None,
+                oidc_providers_json: None,
+                auth_db_url: None,
+            },
+        });
+        let token_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/auth/dev-token")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"username":"dev@example.com","role":"rw","ns":"docs,workflow","capabilities":"project_view,workflow.run.read"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(token_response.status(), StatusCode::OK);
+        let token_body = to_bytes(token_response.into_body(), 8192).await.unwrap();
+        let token = serde_json::from_slice::<Value>(&token_body).unwrap()["token"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let me = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/auth/me")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(me.status(), StatusCode::OK);
+        let me_body = to_bytes(me.into_body(), 8192).await.unwrap();
+        let me_value = serde_json::from_slice::<Value>(&me_body).unwrap();
+        assert_eq!(me_value["email"], "dev@example.com");
+        assert_eq!(me_value["role"], "rw");
+        assert_eq!(me_value["ns"], json!(["docs", "workflow"]));
+
+        let forged = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/auth/me")
+                    .header("authorization", "Bearer forged")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(forged.status(), StatusCode::UNAUTHORIZED);
+        let logout = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/auth/logout")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(logout.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn oidc_login_preserves_provider_pkce_and_cookie_contract() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tower::ServiceExt;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let discovery_task = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 2048];
+            let size = stream.read(&mut request).await.unwrap();
+            assert!(String::from_utf8_lossy(&request[..size]).starts_with("GET /discovery "));
+            let body = format!(r#"{{"authorization_endpoint":"http://{address}/authorize"}}"#);
+            stream
+                .write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .unwrap();
+        });
+        let app = router(ApiState {
+            health: snapshot(),
+            required_roles: Vec::new(),
+            implementation: ImplementationSnapshot::default(),
+            auth: AuthConfig {
+                mode: "oidc".to_owned(),
+                algorithm: None,
+                key: None,
+                jwks_json: None,
+                issuer: None,
+                audience: None,
+                oidc_providers_json: Some(
+                    json!({
+                        "default_provider": "test",
+                        "providers": {
+                            "test": {
+                                "name": "test",
+                                "discovery_url": format!("http://{address}/discovery"),
+                                "redirect_uri": "http://localhost/api/auth/callback",
+                                "client_id": "client-1",
+                                "client_secret": "secret",
+                                "scopes": ["openid", "email", "profile"],
+                                "allowed": true
+                            }
+                        }
+                    })
+                    .to_string(),
+                ),
+                auth_db_url: None,
+            },
+        });
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/auth/login")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        discovery_task.await.unwrap();
+        assert_eq!(response.status(), StatusCode::TEMPORARY_REDIRECT);
+        let location = response.headers()[header::LOCATION].to_str().unwrap();
+        let authorization_url = url::Url::parse(location).unwrap();
+        assert_eq!(authorization_url.path(), "/authorize");
+        let query = authorization_url
+            .query_pairs()
+            .into_owned()
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(query["client_id"], "client-1");
+        assert_eq!(query["response_type"], "code");
+        assert_eq!(query["scope"], "openid email profile");
+        assert_eq!(query["redirect_uri"], "http://localhost/api/auth/callback");
+        assert_eq!(query["code_challenge_method"], "S256");
+        assert_eq!(query["state"].len(), 64);
+        assert_eq!(query["nonce"].len(), 64);
+        assert!(!query["code_challenge"].contains('='));
+        let cookies = response
+            .headers()
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .map(|value| value.to_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(cookies.len(), 4);
+        for cookie_name in [
+            "auth_state=",
+            "auth_pkce_verifier=",
+            "auth_nonce=",
+            "auth_provider=test",
+        ] {
+            assert!(cookies.iter().any(|cookie| {
+                cookie.starts_with(cookie_name)
+                    && cookie.contains("HttpOnly")
+                    && cookie.contains("Max-Age=600")
+            }));
+        }
+    }
+
+    #[tokio::test]
+    async fn oidc_login_rejects_production_redirect_override_before_network_io() {
+        use axum::body::{Body, to_bytes};
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        let app = router(ApiState {
+            health: snapshot(),
+            required_roles: Vec::new(),
+            implementation: ImplementationSnapshot::default(),
+            auth: AuthConfig {
+                mode: "oidc".to_owned(),
+                oidc_providers_json: Some(r#"{"providers":{}}"#.to_owned()),
+                auth_db_url: None,
+                ..AuthConfig::default()
+            },
+        });
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/auth/login?redirect_uri=https://attacker.example")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(response.into_body(), 4096).await.unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&body).unwrap()["detail"],
+            "redirect_uri override is only allowed when AUTH_MODE=dev"
+        );
+    }
+
+    #[tokio::test]
+    async fn oidc_callback_validates_rs256_and_persists_identity_before_minting() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use std::time::{SystemTime, UNIX_EPOCH};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tower::ServiceExt;
+
+        const PRIVATE_KEY: &str = r#"-----BEGIN PRIVATE KEY-----
+MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDZEMrHkpSKPPCq
+DATB6Q7At9YZVbLq4acttd+yM1ffjpEXfaMfpurxcpHOIoZOO4ddHUDqtDj+cPbH
+T1CyNwrSl1jHLe1o+qZRkhPuuKS5ferI9vB0w2vsTynB7rqR45SPO3+ViCJDPmsq
+x2qsX/pTXC4a9RRkOTXdEYg7t47jDxim822/AIRu2mSjA7GjGLoDpMTFm1/wTotm
+DVb6/hy9iaSf5SO8qd8ROHH1vbRAtY1lcc4Sx/P2+Ngm94QEdKV/tCqQAV5yCPTR
+2OcM5aDjyY7gyTY0kd9Gkw2He0o49INcdsGQSeIVE75ITC/vqommk4OgI2gCtd3g
+MWDWm4dDAgMBAAECggEAPxjpASNkR1zYjm2o8l8XWUD3HO0y8aD/kkOEj43qNMOB
+/KSaRuij8eSeap/Rj6sxOYl35eHWkWvv6Fbve6aRYE77UQbSNMprj1mZrrKAu6TV
+G27gzehClnIajtOg6yiO9iXS+/oTD5300/4czZemshWhF1f3gfy5YhYnFkjQ4cJo
+E1+5FnB8dgQLSk9clD47zVkFySWoSN1H7OOfwojtxfpgr/wN+/wHuJY425gaFc+7
+VmQUg5RGtdciVYmwTV0tQIsqcqeM82/f2e554EzAOck+vX1PKhq3Ll8Z9S0rln57
+o1HADCHBzHQ2APrr518BT/jYwsl+kGQPKI+IcmaE2QKBgQDwIkxejcjHvbg140s4
+PyJ6yq3bthNF8XaXXMoa14lPQtTy316mn+uoNBwL9YFhEm9ByHBJ1aLugv2ZulMj
+sC837+VZye6nl8fCiebGP8Guy4vHFgm4/Lk3HOkbr4Zd2Iwj5A9tlF/iMyjbHkdN
+vAUCmkyhyJNpYk26EKijH0CG2QKBgQDnaE7Rx0/mXqhuNjAL9PypuVpqsA/3j3ZL
+sJP+vrkEL8DoQGeOEFHGHGJlxmK/lgSmHcov34Zt4nhxa04BgpsIcd6C3OCaSJpX
+Cw+KKit1CKPm5Bka2L9XtxaDKHSFH67K9pngc+QPlrEQeXH3xcCKxv0T50SdyZQ+
+HSfvEWyFewKBgHx3OqBT2zr0sjN0QXvA9a0xupXENQ8uzeo8lSD+kNQ9bsUIVDYH
+dA02HUdxlALtnC87pkAO9KmtyabRteAspPzYYkd87C9/83F5Kt2dFFX2eNfTK2zv
+yUywtn68JugjotfDkN+aZWyIWefhNNIs32fu9ENzBD0+T81ebxpFy5tZAoGAG5rb
+3DaUl3yvRwZ70NFW2sBbwuJh5Txd9kWIQhlqZM91ib81G0NjHekA6/cwjH5O66oe
+Fnvpw24CxDTyx0dXSziaPK4wtPb4Qm31WpwRNxLiyoZnYEZ+/O3AZ8EJtV/EMD4e
+uSHaEOn/EWILcG1MvMFkK12pV9FWN9quitxfP8UCgYEAvffs3ep6KgW8zGtQxlWt
+emV55w55nDC3OYHQpvv41roViMihNU5EhxF0YNjus744wLxTSyWc29YgkSqZGRwK
+NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
+6Qv6B43kPAqwE3JgGUyb4Wo=
+-----END PRIVATE KEY-----"#;
+        const JWK: &str = r#"{"kty":"RSA","kid":"test-key","alg":"RS256","use":"sig","n":"2RDKx5KUijzwqgwEwekOwLfWGVWy6uGnLbXfsjNX346RF32jH6bq8XKRziKGTjuHXR1A6rQ4_nD2x09QsjcK0pdYxy3taPqmUZIT7rikuX3qyPbwdMNr7E8pwe66keOUjzt_lYgiQz5rKsdqrF_6U1wuGvUUZDk13RGIO7eO4w8YpvNtvwCEbtpkowOxoxi6A6TExZtf8E6LZg1W-v4cvYmkn-UjvKnfEThx9b20QLWNZXHOEsfz9vjYJveEBHSlf7QqkAFecgj00djnDOWg48mO4Mk2NJHfRpMNh3tKOPSDXHbBkEniFRO-SEwv76qJppODoCNoArXd4DFg1puHQw","e":"AQAB"}"#;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let issuer = format!("http://{address}");
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let mut id_header = Header::new(Algorithm::RS256);
+        id_header.kid = Some("test-key".to_owned());
+        let id_token = encode(
+            &id_header,
+            &json!({
+                "iss": issuer,
+                "aud": "client-1",
+                "sub": "subject-1",
+                "email": "alice@example.com",
+                "name": "Alice",
+                "nonce": "nonce-1",
+                "iat": now,
+                "exp": now + 300,
+            }),
+            &EncodingKey::from_rsa_pem(PRIVATE_KEY.as_bytes()).unwrap(),
+        )
+        .unwrap();
+        let mock_issuer = issuer.clone();
+        let mock = tokio::spawn(async move {
+            for _ in 0..4 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = vec![0_u8; 8192];
+                let size = stream.read(&mut request).await.unwrap();
+                let request = String::from_utf8_lossy(&request[..size]);
+                let (status, content_type, body) = if request.starts_with("GET /discovery ") {
+                    (
+                        "200 OK",
+                        "application/json",
+                        json!({
+                            "issuer": mock_issuer,
+                            "authorization_endpoint": format!("http://{address}/authorize"),
+                            "token_endpoint": format!("http://{address}/token"),
+                            "jwks_uri": format!("http://{address}/jwks"),
+                            "userinfo_endpoint": format!("http://{address}/userinfo"),
+                        })
+                        .to_string(),
+                    )
+                } else if request.starts_with("POST /token ") {
+                    assert!(request.contains("code=auth-code"));
+                    assert!(request.contains("code_verifier=verifier-1"));
+                    (
+                        "200 OK",
+                        "application/json",
+                        json!({"access_token": "access-1", "id_token": id_token}).to_string(),
+                    )
+                } else if request.starts_with("GET /jwks ") {
+                    (
+                        "200 OK",
+                        "application/json",
+                        format!(r#"{{"keys":[{JWK}]}}"#),
+                    )
+                } else if request.starts_with("GET /userinfo ") {
+                    assert!(request.contains("authorization: Bearer access-1"));
+                    (
+                        "200 OK",
+                        "application/json",
+                        json!({"sub": "subject-1", "email": "alice@example.com", "name": "Alice"})
+                            .to_string(),
+                    )
+                } else {
+                    ("404 Not Found", "text/plain", "not found".to_owned())
+                };
+                stream
+                    .write_all(
+                        format!(
+                            "HTTP/1.1 {status}\r\ncontent-type: {content_type}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                            body.len()
+                        )
+                        .as_bytes(),
+                    )
+                    .await
+                    .unwrap();
+            }
+        });
+        let auth_path = std::env::temp_dir().join(format!(
+            "kogwistar-oidc-callback-{}.sqlite3",
+            uuid::Uuid::new_v4()
+        ));
+        let config = AuthConfig {
+            mode: "oidc".to_owned(),
+            algorithm: Some("HS256".to_owned()),
+            key: Some("app-secret".to_owned()),
+            jwks_json: None,
+            issuer: Some("local".to_owned()),
+            audience: None,
+            oidc_providers_json: Some(
+                json!({
+                    "default_provider": "test",
+                    "providers": {
+                        "test": {
+                            "name": "test",
+                            "discovery_url": format!("http://{address}/discovery"),
+                            "redirect_uri": "http://localhost/api/auth/callback",
+                            "issuer": issuer,
+                            "client_id": "client-1",
+                            "client_secret": "secret",
+                            "required_email": true,
+                            "allowed": true,
+                        }
+                    }
+                })
+                .to_string(),
+            ),
+            auth_db_url: Some(format!("sqlite:///{}", auth_path.display())),
+        };
+        let app = router(ApiState {
+            health: snapshot(),
+            required_roles: Vec::new(),
+            implementation: ImplementationSnapshot::default(),
+            auth: config.clone(),
+        });
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/auth/callback?code=auth-code&state=state-1")
+                    .header(
+                        header::COOKIE,
+                        "auth_state=state-1; auth_pkce_verifier=verifier-1; auth_nonce=nonce-1; auth_provider=test",
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        mock.await.unwrap();
+        assert_eq!(response.status(), StatusCode::TEMPORARY_REDIRECT);
+        let location = response.headers()[header::LOCATION].to_str().unwrap();
+        let token = location.split_once("?token=").unwrap().1;
+        let mut token_headers = HeaderMap::new();
+        token_headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {token}")).unwrap(),
+        );
+        let app_claims = jwt_claims(&token_headers, &config).unwrap();
+        assert_eq!(app_claims["email"], "alice@example.com");
+        assert_eq!(app_claims["role"], "ro");
+        assert_eq!(app_claims["ns"], "docs");
+        assert_eq!(
+            response
+                .headers()
+                .get_all(header::SET_COOKIE)
+                .iter()
+                .count(),
+            4
+        );
+        let auth_store = SqliteAuthStore::open(&auth_path).unwrap();
+        let identity = auth_store
+            .external_identity(&issuer, "subject-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(identity.email.as_deref(), Some("alice@example.com"));
+        assert_eq!(
+            auth_store
+                .auth_user(&identity.user_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .display_name
+                .as_deref(),
+            Some("Alice")
+        );
+        drop(auth_store);
+        std::fs::remove_file(auth_path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn sqlite_visibility_and_capabilities_enforce_claims_across_rest_and_mcp() {
+        use axum::body::{Body, to_bytes};
+        use axum::http::Request;
+        use jsonwebtoken::{EncodingKey, Header, encode};
+        use std::time::{SystemTime, UNIX_EPOCH};
+        use tower::ServiceExt;
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("kogwistar-capabilities-{nonce}.sqlite3"));
+        let auth = AuthConfig {
+            mode: "dev".to_owned(),
+            algorithm: Some("HS256".to_owned()),
+            key: Some("capability-secret".to_owned()),
+            jwks_json: None,
+            issuer: Some("local".to_owned()),
+            audience: None,
+            oidc_providers_json: None,
+            auth_db_url: None,
+        };
+        let app = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: Vec::new(),
+                implementation: ImplementationSnapshot::default(),
+                auth,
+            },
+            Arc::new(SqliteRunApplicationService::open(&path).unwrap()),
+        );
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let token = |claims: Value| {
+            encode(
+                &Header::new(Algorithm::HS256),
+                &claims,
+                &EncodingKey::from_secret(b"capability-secret"),
+            )
+            .unwrap()
+        };
+        let read_token = token(json!({
+            "sub": "reader-1",
+            "role": "ro",
+            "ns": ["workflow"],
+            "capabilities": ["project_view", "read_security_scope"],
+            "tenant": "tenant-a",
+            "workspace": "workspace-b",
+            "project": "project-c",
+            "iss": "local",
+            "exp": now + 300,
+        }));
+        let visibility = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/workflow/visibility")
+                    .header("authorization", format!("Bearer {read_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(visibility.status(), StatusCode::OK);
+        let visibility = serde_json::from_slice::<Value>(
+            &to_bytes(visibility.into_body(), 32768).await.unwrap(),
+        )
+        .unwrap();
+        assert_eq!(visibility["current_subject"], "reader-1");
+        assert_eq!(visibility["namespaces"]["execution_namespace"], "workflow");
+        assert_eq!(visibility["security_scope"], "tenant-a");
+        assert_eq!(
+            visibility["storage_security_mapping"]["security_scope_path"],
+            "tenant-a/workspace-b/project-c"
+        );
+
+        let denied_token = token(json!({
+            "sub": "denied",
+            "role": "ro",
+            "ns": ["workflow"],
+            "capabilities": ["workflow.run.read"],
+            "iss": "local",
+            "exp": now + 300,
+        }));
+        let denied = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/workflow/capabilities")
+                    .header("authorization", format!("Bearer {denied_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+
+        let admin_token = token(json!({
+            "sub": "admin-1",
+            "role": "rw",
+            "ns": ["workflow"],
+            "capabilities": ["project_view", "approve_action"],
+            "iss": "local",
+            "exp": now + 300,
+        }));
+        let approve = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/workflow/capabilities/approve")
+                    .header("authorization", format!("Bearer {admin_token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"action":"spawn_process","capabilities":["spawn_process","workflow.run.write"]}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(approve.status(), StatusCode::ACCEPTED);
+        let approve =
+            serde_json::from_slice::<Value>(&to_bytes(approve.into_body(), 32768).await.unwrap())
+                .unwrap();
+        assert!(
+            approve["effective_capabilities"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("spawn_process"))
+        );
+        assert_eq!(
+            approve["audit_log"].as_array().unwrap().last().unwrap()["outcome"],
+            "allow"
+        );
+
+        let revoke = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/workflow/capabilities/revoke")
+                    .header("authorization", format!("Bearer {admin_token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"capability":"spawn_process"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(revoke.status(), StatusCode::ACCEPTED);
+        let revoke =
+            serde_json::from_slice::<Value>(&to_bytes(revoke.into_body(), 32768).await.unwrap())
+                .unwrap();
+        assert!(
+            !revoke["effective_capabilities"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("spawn_process"))
+        );
+
+        let mcp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp/workflow")
+                    .header("authorization", format!("Bearer {read_token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"workflow.visibility_snapshot","arguments":{}}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(mcp.status(), StatusCode::OK);
+        let mcp = serde_json::from_slice::<Value>(&to_bytes(mcp.into_body(), 32768).await.unwrap())
+            .unwrap();
+        assert_eq!(mcp["result"]["current_subject"], "reader-1");
+
+        let syscall_list = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/syscall/v1")
+                    .header("authorization", format!("Bearer {read_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(syscall_list.status(), StatusCode::OK);
+        let syscall_list = serde_json::from_slice::<Value>(
+            &to_bytes(syscall_list.into_body(), 16_384).await.unwrap(),
+        )
+        .unwrap();
+        assert_eq!(syscall_list["version"], "v1");
+        assert!(
+            syscall_list["ops"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("resume"))
+        );
+        let syscall_audit = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/syscall/v1/audit?limit=1")
+                    .header("authorization", format!("Bearer {read_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(syscall_audit.status(), StatusCode::OK);
+        let syscall_audit = serde_json::from_slice::<Value>(
+            &to_bytes(syscall_audit.into_body(), 16_384).await.unwrap(),
+        )
+        .unwrap();
+        assert_eq!(syscall_audit["events"][0]["op"], "list_syscalls");
+
+        let designer = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/designer/capabilities")
+                    .header("authorization", format!("Bearer {read_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(designer.status(), StatusCode::FORBIDDEN);
+        let designer_token = token(json!({
+            "sub": "designer-1",
+            "role": "ro",
+            "ns": ["workflow"],
+            "capabilities": ["workflow.design.inspect"],
+            "iss": "local",
+            "exp": now + 300,
+        }));
+        let designer = app
+            .oneshot(
+                Request::builder()
+                    .uri("/designer/capabilities")
+                    .header("authorization", format!("Bearer {designer_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(designer.status(), StatusCode::OK);
+        let designer =
+            serde_json::from_slice::<Value>(&to_bytes(designer.into_body(), 65_536).await.unwrap())
+                .unwrap();
+        assert_eq!(
+            designer["schema_version"],
+            "workflow-designer-capabilities/v1"
+        );
+        assert_eq!(designer["node_types"][0]["type"], "workflow_node");
+        assert!(
+            designer["node_types"][0]["metadata_schema"]["properties"]
+                .get("wf_join")
+                .is_some()
+        );
+        assert!(
+            designer["edge_types"][0]["metadata_schema"]["properties"]
+                .get("wf_predicate")
+                .is_some()
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn sqlite_design_history_folds_branch_and_repairs_projection() {
+        use axum::body::{Body, to_bytes};
+        use kogwistar_store_sqlite::NewRawEntityEvent;
+        use std::time::{SystemTime, UNIX_EPOCH};
+        use tower::ServiceExt;
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("kogwistar-design-history-{nonce}.sqlite3"));
+        let store = SqliteStore::open(&path).unwrap();
+        let namespace = "wf_design:wf-history";
+        let append = |event_id: &str, op: &str, payload: Value| {
+            store
+                .append_raw_entity_event(
+                    namespace,
+                    NewRawEntityEvent {
+                        event_id: event_id.to_owned(),
+                        entity_kind: "design_control".to_owned(),
+                        entity_id: "wf-history".to_owned(),
+                        op: op.to_owned(),
+                        payload_json: payload.to_string(),
+                    },
+                )
+                .unwrap();
+        };
+        append(
+            "commit-1",
+            "MUTATION_COMMITTED",
+            json!({"version": 1, "prev_version": 0, "target_seq": 1, "ts_ms": 10, "designer_id": "alice", "action": "node_upsert", "entity_id": "n1"}),
+        );
+        append(
+            "commit-2",
+            "MUTATION_COMMITTED",
+            json!({"version": 2, "prev_version": 1, "target_seq": 2, "ts_ms": 20, "designer_id": "alice", "action": "node_upsert", "entity_id": "n2"}),
+        );
+        append(
+            "undo-1",
+            "UNDO_APPLIED",
+            json!({"from_version": 2, "to_version": 1, "ts_ms": 30, "designer_id": "alice"}),
+        );
+        append(
+            "drop-2",
+            "BRANCH_DROPPED",
+            json!({"drop_from_version": 2, "drop_to_version": 2, "drop_from_seq": 2, "drop_to_seq": 2, "ts_ms": 40, "designer_id": "alice"}),
+        );
+        append(
+            "commit-3",
+            "MUTATION_COMMITTED",
+            json!({"version": 3, "prev_version": 1, "target_seq": 5, "ts_ms": 50, "designer_id": "alice", "action": "edge_upsert", "entity_id": "e3"}),
+        );
+        store
+            .replace_named_projection(
+                "workflow_design",
+                "wf-history",
+                NamedProjectionWrite {
+                    payload: json!({"current_version": 999}).as_object().unwrap().clone(),
+                    last_authoritative_seq: 5,
+                    last_materialized_seq: 999,
+                    projection_schema_version: 1,
+                    materialization_status: "ready".to_owned(),
+                },
+            )
+            .unwrap();
+        let service = SqliteRunApplicationService::open(&path).unwrap();
+        let response = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "GET".to_owned(),
+                path_and_query: "/api/workflow/design/wf-history/history".to_owned(),
+                body: Vec::new(),
+                principal: json!({
+                    "sub": "alice",
+                    "role": "ro",
+                    "ns": "workflow",
+                    "capabilities": ["workflow.design.inspect"],
+                }),
+            })
+            .await;
+        assert_eq!(response.status, StatusCode::OK.as_u16());
+        let history = serde_json::from_slice::<Value>(&response.body).unwrap();
+        assert_eq!(history["current_version"], 3);
+        assert_eq!(history["active_tip_version"], 3);
+        assert_eq!(history["allocated_max_version"], 3);
+        assert_eq!(history["current_seq"], 5);
+        assert_eq!(history["can_undo"], true);
+        assert_eq!(history["can_redo"], false);
+        assert_eq!(
+            history["versions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|item| item["version"].as_i64().unwrap())
+                .collect::<Vec<_>>(),
+            [0, 1, 3]
+        );
+        assert_eq!(history["selected_versions"].as_array().unwrap().len(), 3);
+        assert_eq!(history["dropped_ranges"][0]["start_version"], 2);
+        assert_eq!(history["timeline"].as_array().unwrap().len(), 5);
+        let repaired = store
+            .get_named_projection("workflow_design", "wf-history")
+            .unwrap()
+            .unwrap();
+        assert_eq!(repaired.payload["current_version"], 3);
+        assert_eq!(repaired.payload["active_tip_version"], 3);
+        assert_eq!(repaired.last_authoritative_seq, 5);
+        assert_eq!(repaired.last_materialized_seq, 5);
+        assert_eq!(repaired.materialization_status, "rust_event_only");
+        let app = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: vec!["reader".to_owned()],
+                implementation: ImplementationSnapshot::default(),
+                auth: AuthConfig::default(),
+            },
+            Arc::new(service.clone()),
+        );
+        let mcp = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/mcp/workflow")
+                    .header("content-type", "application/json")
+                    .header("x-kogwistar-roles", "reader")
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","id":"history","method":"tools/call","params":{"name":"workflow.design_history","arguments":{"workflow_id":"wf-history"}}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(mcp.status(), StatusCode::OK);
+        let mcp_body = to_bytes(mcp.into_body(), 65_536).await.unwrap();
+        let mcp_value = serde_json::from_slice::<Value>(&mcp_body).unwrap();
+        assert_eq!(mcp_value["result"]["current_version"], 3);
+        drop(service);
+        drop(store);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn sqlite_design_capability_mutates_graph_and_undoes_atomically() {
+        let path = std::env::temp_dir().join(format!(
+            "kogwistar-design-write-{}.sqlite3",
+            uuid::Uuid::new_v4()
+        ));
+        let service = SqliteRunApplicationService::open(&path).unwrap();
+        let store = SqliteStore::open(&path).unwrap();
+        let principal = json!({"sub":"alice","role":"rw","ns":"workflow","capabilities":["workflow.design.write","workflow.design.inspect"]});
+        let call = |method: &str, path: &str, body: Value| {
+            service.execute_sync(ApiEffectRequest {
+                contract_version: 1,
+                method: method.to_owned(),
+                path_and_query: path.to_owned(),
+                body: serde_json::to_vec(&body).unwrap(),
+                principal: principal.clone(),
+            })
+        };
+        for body in [
+            json!({"designer_id":"alice","node_id":"start","label":"Start","op":"start","start":true}),
+            json!({"designer_id":"alice","node_id":"end","label":"End","op":"end","terminal":true}),
+        ] {
+            assert_eq!(
+                call("POST", "/api/workflow/design/wf-write/nodes", body).status,
+                200
+            );
+        }
+        assert_eq!(call("POST", "/api/workflow/design/wf-write/edges", json!({
+            "designer_id":"alice","edge_id":"edge","src":"start","dst":"end","is_default":true
+        })).status, 200);
+        let graph = call("GET", "/api/workflow/design/wf-write/graph", json!({}));
+        let graph: Value = serde_json::from_slice(&graph.body).unwrap();
+        assert_eq!(graph["nodes"].as_array().unwrap().len(), 2);
+        assert_eq!(graph["edges"].as_array().unwrap().len(), 1);
+        let events = store.replay_raw_events("wf_design:wf-write", 0, usize::MAX).unwrap();
+        assert_eq!(
+            events.iter().map(|event| (event.entity_kind.as_str(), event.op.as_str())).collect::<Vec<_>>(),
+            [
+                ("node", "ADD"),
+                ("design_control", "MUTATION_COMMITTED"),
+                ("node", "ADD"),
+                ("design_control", "MUTATION_COMMITTED"),
+                ("edge", "ADD"),
+                ("design_control", "MUTATION_COMMITTED"),
+            ]
+        );
+        let delta = store.get_workflow_design_delta("wf-write", 3, 1).unwrap().unwrap();
+        assert_eq!(delta.target_seq, 5);
+        assert_eq!(serde_json::from_str::<Value>(&delta.forward_json).unwrap()["upsert_edges"][0]["id"], "edge");
+        assert_eq!(store.get_named_projection("workflow_design", "wf-write").unwrap().unwrap().materialization_status, "rust_event_only");
+        assert_eq!(
+            call(
+                "POST",
+                "/api/workflow/design/wf-write/undo",
+                json!({"designer_id":"alice"})
+            )
+            .status,
+            200
+        );
+        let graph = call("GET", "/api/workflow/design/wf-write/graph", json!({}));
+        let graph: Value = serde_json::from_slice(&graph.body).unwrap();
+        assert!(graph["edges"].as_array().unwrap().is_empty());
+        assert_eq!(
+            call(
+                "POST",
+                "/api/workflow/design/wf-write/redo",
+                json!({"designer_id":"alice"})
+            )
+            .status,
+            200
+        );
+        assert_eq!(
+            call(
+                "DELETE",
+                "/api/workflow/design/wf-write/edges/edge",
+                json!({"designer_id":"alice"})
+            )
+            .status,
+            200
+        );
+        let key = "design-secret";
+        let auth = AuthConfig {
+            mode: "jwt".to_owned(),
+            algorithm: Some("HS256".to_owned()),
+            key: Some(key.to_owned()),
+            ..AuthConfig::default()
+        };
+        let claims = json!({"sub":"alice","role":"rw","roles":["reader","rw"],"ns":"workflow","capabilities":["workflow.design.write","workflow.design.inspect"],"exp":4102444800_u64});
+        let token = encode(
+            &Header::new(Algorithm::HS256),
+            &claims,
+            &EncodingKey::from_secret(key.as_bytes()),
+        )
+        .unwrap();
+        let app = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: vec!["reader".to_owned()],
+                implementation: ImplementationSnapshot::default(),
+                auth,
+            },
+            Arc::new(service.clone()),
+        );
+        let mcp = app.oneshot(Request::builder().method("POST").uri("/mcp/workflow")
+            .header("content-type", "application/json").header("authorization", format!("Bearer {token}"))
+            .body(Body::from(r#"{"jsonrpc":"2.0","id":"node","method":"tools/call","params":{"name":"workflow.design_node_upsert","arguments":{"workflow_id":"wf-mcp-design","designer_id":"alice","node_id":"mcp-node","label":"MCP"}}}"#)).unwrap()).await.unwrap();
+        assert_eq!(mcp.status(), StatusCode::OK);
+        let body: Value =
+            serde_json::from_slice(&to_bytes(mcp.into_body(), 65_536).await.unwrap()).unwrap();
+        assert_eq!(body["result"]["node_id"], "mcp-node");
+        drop(service);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn postgres_design_history_folds_and_repairs_projection_when_dsn_available() {
+        use kogwistar_store_postgres::NewRawEntityEvent;
+
+        let Some(dsn) = std::env::var("KOGWISTAR_TEST_PG_DSN").ok() else {
+            return;
+        };
+        let schema = format!("rust_api_design_history_{}", uuid::Uuid::new_v4().simple());
+        let service = PostgresRunApplicationService::from_dsn(&dsn, &schema).unwrap();
+        service.ensure_schema().await.unwrap();
+        for (event_id, op, payload) in [
+            (
+                "commit-1",
+                "MUTATION_COMMITTED",
+                json!({"version": 1, "prev_version": 0, "target_seq": 1, "ts_ms": 10, "designer_id": "alice", "action": "node_upsert", "entity_id": "n1"}),
+            ),
+            (
+                "commit-2",
+                "MUTATION_COMMITTED",
+                json!({"version": 2, "prev_version": 1, "target_seq": 2, "ts_ms": 20, "designer_id": "alice", "action": "edge_upsert", "entity_id": "e2"}),
+            ),
+            (
+                "undo-1",
+                "UNDO_APPLIED",
+                json!({"from_version": 2, "to_version": 1, "ts_ms": 30, "designer_id": "alice"}),
+            ),
+        ] {
+            service
+                .store
+                .append_raw_entity_event(
+                    "wf_design:wf-pg-history",
+                    NewRawEntityEvent {
+                        event_id: event_id.to_owned(),
+                        entity_kind: "design_control".to_owned(),
+                        entity_id: "wf-pg-history".to_owned(),
+                        op: op.to_owned(),
+                        payload_json: payload.to_string(),
+                    },
+                )
+                .await
+                .unwrap();
+        }
+        let response = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "GET".to_owned(),
+                path_and_query: "/api/workflow/design/wf-pg-history/history".to_owned(),
+                body: Vec::new(),
+                principal: json!({
+                    "sub": "alice",
+                    "role": "ro",
+                    "ns": "workflow",
+                    "capabilities": ["workflow.design.inspect"],
+                }),
+            })
+            .await;
+        assert_eq!(response.status, StatusCode::OK.as_u16());
+        let history = serde_json::from_slice::<Value>(&response.body).unwrap();
+        assert_eq!(history["current_version"], 1);
+        assert_eq!(history["active_tip_version"], 2);
+        assert_eq!(history["can_redo"], true);
+        assert_eq!(history["latest_seq"], 3);
+        let projection = service
+            .store
+            .get_named_projection("workflow_design", "wf-pg-history")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(projection.payload["current_version"], 1);
+        assert_eq!(projection.payload["active_tip_version"], 2);
+        assert_eq!(projection.last_authoritative_seq, 3);
+        assert_eq!(projection.last_materialized_seq, 1);
+        drop(service);
+
+        let cleanup_dsn = dsn
+            .strip_prefix("postgresql+psycopg://")
+            .map(|rest| format!("postgresql://{rest}"))
+            .or_else(|| {
+                dsn.strip_prefix("postgresql+psycopg2://")
+                    .map(|rest| format!("postgresql://{rest}"))
+            })
+            .unwrap_or(dsn);
+        let (client, connection) = tokio_postgres::connect(&cleanup_dsn, tokio_postgres::NoTls)
+            .await
+            .unwrap();
+        let connection_task = tokio::spawn(connection);
+        client
+            .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+            .await
+            .unwrap();
+        drop(client);
+        connection_task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn postgres_design_capability_mutates_and_undoes_when_dsn_available() {
+        let Some(dsn) = std::env::var("KOGWISTAR_TEST_PG_DSN").ok() else {
+            return;
+        };
+        let schema = format!("rust_api_design_write_{}", uuid::Uuid::new_v4().simple());
+        let service = PostgresRunApplicationService::from_dsn(&dsn, &schema).unwrap();
+        service.ensure_schema().await.unwrap();
+        let principal = json!({"sub":"alice","role":"rw","ns":"workflow","capabilities":["workflow.design.write","workflow.design.inspect"]});
+        for body in [
+            json!({"designer_id":"alice","node_id":"start","label":"Start","op":"start","start":true}),
+            json!({"designer_id":"alice","node_id":"end","label":"End","op":"end","terminal":true}),
+        ] {
+            let response = service
+                .execute_async(ApiEffectRequest {
+                    contract_version: 1,
+                    method: "POST".to_owned(),
+                    path_and_query: "/api/workflow/design/wf-pg-write/nodes".to_owned(),
+                    body: serde_json::to_vec(&body).unwrap(),
+                    principal: principal.clone(),
+                })
+                .await;
+            assert_eq!(response.status, 200);
+        }
+        let edge = service
+            .execute_async(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/workflow/design/wf-pg-write/edges".to_owned(),
+                body: serde_json::to_vec(
+                    &json!({"designer_id":"alice","edge_id":"edge","src":"start","dst":"end"}),
+                )
+                .unwrap(),
+                principal: principal.clone(),
+            })
+            .await;
+        assert_eq!(edge.status, 200);
+        let undo = service
+            .execute_async(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/workflow/design/wf-pg-write/undo".to_owned(),
+                body: serde_json::to_vec(&json!({"designer_id":"alice"})).unwrap(),
+                principal: principal.clone(),
+            })
+            .await;
+        assert_eq!(undo.status, 200);
+        let graph = service
+            .execute_async(ApiEffectRequest {
+                contract_version: 1,
+                method: "GET".to_owned(),
+                path_and_query: "/api/workflow/design/wf-pg-write/graph".to_owned(),
+                body: Vec::new(),
+                principal,
+            })
+            .await;
+        let graph: Value = serde_json::from_slice(&graph.body).unwrap();
+        assert!(graph["edges"].as_array().unwrap().is_empty());
+        drop(service);
+        let cleanup_dsn = dsn
+            .strip_prefix("postgresql+psycopg://")
+            .map(|rest| format!("postgresql://{rest}"))
+            .or_else(|| {
+                dsn.strip_prefix("postgresql+psycopg2://")
+                    .map(|rest| format!("postgresql://{rest}"))
+            })
+            .unwrap_or(dsn);
+        let (client, connection) = tokio_postgres::connect(&cleanup_dsn, tokio_postgres::NoTls)
+            .await
+            .unwrap();
+        let connection_task = tokio::spawn(connection);
+        client
+            .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+            .await
+            .unwrap();
+        drop(client);
+        connection_task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
     async fn sqlite_run_service_handles_get_events_and_cancel() {
         use axum::body::{Body, to_bytes};
         use axum::http::Request;
+        use kogwistar_store::NamedProjectionWrite;
         use std::time::{SystemTime, UNIX_EPOCH};
         use tower::ServiceExt;
 
@@ -2891,6 +7891,451 @@ mod tests {
                 .state["answer"],
             "worker"
         );
+        for (path, required_keys) in [
+            (
+                "/api/workflow/resources",
+                &[
+                    "scheduler",
+                    "runs",
+                    "cost_ledger",
+                    "budget_model",
+                    "migration",
+                ][..],
+            ),
+            ("/api/workflow/budget", &["cost_ledger", "budget_model"][..]),
+            (
+                "/api/workflow/budget/history?limit=10",
+                &["cost_ledger", "events"][..],
+            ),
+            (
+                "/api/workflow/lane/progress?conversation_id=conversation-submit&limit=10",
+                &["items", "total"][..],
+            ),
+            (
+                "/api/workflow/operator/dashboard?limit=10",
+                &["process_table", "message_queue", "resources"][..],
+            ),
+            (
+                "/api/workflow/scheduler/timeline?limit=10",
+                &["run_id", "events"][..],
+            ),
+            (
+                "/api/workflow/dead-letters?limit=10",
+                &["runs", "limit"][..],
+            ),
+            ("/api/workflow/catalog/ops", &[][..]),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(path)
+                        .header("x-kogwistar-roles", "reader")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{path}");
+            let body = to_bytes(response.into_body(), 65_536).await.unwrap();
+            let value = serde_json::from_slice::<Value>(&body).unwrap();
+            if path == "/api/workflow/catalog/ops" {
+                assert_eq!(value[0]["op"], "start");
+                assert_eq!(value[1]["op"], "llm_call");
+            }
+            for key in required_keys {
+                assert!(value.get(key).is_some(), "{path} lacks {key}: {value}");
+            }
+        }
+        let dead_lane = |message_id: &str, run_id: &str| NewProjectedLaneMessage {
+            message_id: message_id.to_owned(),
+            namespace: "workflow".to_owned(),
+            purpose: "system".to_owned(),
+            inbox_id: "workflow-runtime".to_owned(),
+            conversation_id: "dead-conversation".to_owned(),
+            recipient_id: "python-worker".to_owned(),
+            sender_id: "rust-scheduler".to_owned(),
+            msg_type: "workflow.run.execute".to_owned(),
+            status: "dead-letter".to_owned(),
+            created_at: 1,
+            available_at: 1,
+            run_id: Some(run_id.to_owned()),
+            step_id: Some("start".to_owned()),
+            correlation_id: Some(format!("corr-{run_id}")),
+            payload_json: Some("{}".to_owned()),
+            error_json: Some(r#"{"error":"boom"}"#.to_owned()),
+        };
+        store
+            .project_lane_message(dead_lane("dead-rest-message", "dead-rest-run"))
+            .unwrap();
+        let replay = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/workflow/dead-letters/dead-rest-run/replay")
+                    .header("x-kogwistar-roles", "reader,rw")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(replay.status(), StatusCode::OK);
+        let replay =
+            serde_json::from_slice::<Value>(&to_bytes(replay.into_body(), 16_384).await.unwrap())
+                .unwrap();
+        assert_eq!(replay["replayed"], true);
+        assert_eq!(replay["dead_letter"]["status"], "dead-letter");
+        assert_eq!(
+            store
+                .get_projected_lane_message("dead-rest-message")
+                .unwrap()
+                .unwrap()
+                .status,
+            "pending"
+        );
+        store
+            .update_projected_lane_message_status("dead-rest-message", "completed", None)
+            .unwrap();
+        let missing_replay = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/workflow/dead-letters/missing/replay")
+                    .header("x-kogwistar-roles", "reader,rw")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let missing_replay = serde_json::from_slice::<Value>(
+            &to_bytes(missing_replay.into_body(), 16_384).await.unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            missing_replay,
+            json!({"run_id": "missing", "replayed": false})
+        );
+        for prefix in ["/api/runs", "/api/workflow/runs"] {
+            let steps = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(format!("{prefix}/{submitted_run_id}/steps"))
+                        .header("x-kogwistar-roles", "reader")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(steps.status(), StatusCode::OK);
+            let steps_body = to_bytes(steps.into_body(), 16_384).await.unwrap();
+            let steps_value = serde_json::from_slice::<Value>(&steps_body).unwrap();
+            assert_eq!(steps_value["steps"].as_array().unwrap().len(), 1);
+            assert_eq!(steps_value["steps"][0]["workflow_node_id"], "start");
+            assert_eq!(steps_value["steps"][0]["result"]["answer"], "worker");
+
+            let checkpoints = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(format!("{prefix}/{submitted_run_id}/checkpoints"))
+                        .header("x-kogwistar-roles", "reader")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(checkpoints.status(), StatusCode::OK);
+            let checkpoints_body = to_bytes(checkpoints.into_body(), 16_384).await.unwrap();
+            let checkpoints_value = serde_json::from_slice::<Value>(&checkpoints_body).unwrap();
+            assert_eq!(
+                checkpoints_value["checkpoints"].as_array().unwrap().len(),
+                1
+            );
+            assert_eq!(
+                checkpoints_value["checkpoints"][0]["state"]["answer"],
+                "worker"
+            );
+
+            for suffix in ["checkpoints/0", "replay?target_step_seq=0"] {
+                let response = app
+                    .clone()
+                    .oneshot(
+                        Request::builder()
+                            .uri(format!("{prefix}/{submitted_run_id}/{suffix}"))
+                            .header("x-kogwistar-roles", "reader")
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), StatusCode::OK);
+                let body = to_bytes(response.into_body(), 16_384).await.unwrap();
+                assert_eq!(
+                    serde_json::from_slice::<Value>(&body).unwrap()["state"]["answer"],
+                    "worker"
+                );
+            }
+        }
+        for (tool_name, arguments, expected_key) in [
+            (
+                "workflow.run_checkpoint_get",
+                json!({"run_id": submitted_run_id, "step_seq": 0}),
+                "state",
+            ),
+            (
+                "workflow.run_replay",
+                json!({"run_id": submitted_run_id, "target_step_seq": 0}),
+                "state",
+            ),
+            ("workflow.budget_snapshot", json!({}), "cost_ledger"),
+            (
+                "workflow.operator_dashboard",
+                json!({"limit": 10}),
+                "resources",
+            ),
+            (
+                "workflow.scheduler_timeline",
+                json!({"run_id": submitted_run_id, "limit": 10}),
+                "events",
+            ),
+            ("workflow.dead_letters", json!({"limit": 10}), "runs"),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/mcp/workflow")
+                        .header("content-type", "application/json")
+                        .header("x-kogwistar-roles", "reader")
+                        .body(Body::from(
+                            serde_json::to_vec(&json!({
+                                "jsonrpc": "2.0",
+                                "id": tool_name,
+                                "method": "tools/call",
+                                "params": {"name": tool_name, "arguments": arguments},
+                            }))
+                            .unwrap(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let body = to_bytes(response.into_body(), 65_536).await.unwrap();
+            let value = serde_json::from_slice::<Value>(&body).unwrap();
+            assert!(
+                value["result"].get(expected_key).is_some(),
+                "{tool_name} failed: {value}"
+            );
+        }
+        store
+            .project_lane_message(dead_lane("dead-mcp-message", "dead-mcp-run"))
+            .unwrap();
+        let replay = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp/workflow")
+                    .header("content-type", "application/json")
+                    .header("x-kogwistar-roles", "reader,rw")
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","id":"dead-replay","method":"tools/call","params":{"name":"workflow.dead_letter_replay","arguments":{"run_id":"dead-mcp-run"}}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let replay =
+            serde_json::from_slice::<Value>(&to_bytes(replay.into_body(), 16_384).await.unwrap())
+                .unwrap();
+        assert_eq!(replay["result"]["replayed"], true);
+        assert_eq!(
+            store
+                .get_projected_lane_message("dead-mcp-message")
+                .unwrap()
+                .unwrap()
+                .status,
+            "pending"
+        );
+        store
+            .update_projected_lane_message_status("dead-mcp-message", "completed", None)
+            .unwrap();
+
+        let orphan_lane = |message_id: &str, inbox_id: &str| NewProjectedLaneMessage {
+            message_id: message_id.to_owned(),
+            namespace: "workflow".to_owned(),
+            purpose: "system".to_owned(),
+            inbox_id: inbox_id.to_owned(),
+            conversation_id: "orphan-conversation".to_owned(),
+            recipient_id: "python-worker".to_owned(),
+            sender_id: "rust-scheduler".to_owned(),
+            msg_type: "workflow.run.execute".to_owned(),
+            status: "pending".to_owned(),
+            created_at: 1,
+            available_at: 0,
+            run_id: Some(format!("run-{message_id}")),
+            step_id: Some("start".to_owned()),
+            correlation_id: Some(format!("corr-{message_id}")),
+            payload_json: Some("{}".to_owned()),
+            error_json: None,
+        };
+        store
+            .project_lane_message(orphan_lane("expired-orphan", "repair-rest"))
+            .unwrap();
+        store
+            .project_lane_message(orphan_lane("active-claim", "repair-active"))
+            .unwrap();
+        store
+            .project_lane_message(orphan_lane("mcp-orphan", "repair-mcp"))
+            .unwrap();
+        store
+            .claim_projected_lane_messages("workflow", "repair-rest", "expired-owner", 1, -1)
+            .unwrap();
+        store
+            .claim_projected_lane_messages("workflow", "repair-active", "active-owner", 1, 60)
+            .unwrap();
+        store
+            .claim_projected_lane_messages("workflow", "repair-mcp", "mcp-owner", 1, -1)
+            .unwrap();
+        let repaired = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/workflow/messages/repair-orphans?inbox_id=repair-rest&limit=10")
+                    .header("x-kogwistar-roles", "reader")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(repaired.status(), StatusCode::OK);
+        let repaired =
+            serde_json::from_slice::<Value>(&to_bytes(repaired.into_body(), 16_384).await.unwrap())
+                .unwrap();
+        assert_eq!(repaired["repaired_message_ids"], json!(["expired-orphan"]));
+        assert_eq!(
+            store
+                .get_projected_lane_message("active-claim")
+                .unwrap()
+                .unwrap()
+                .status,
+            "claimed"
+        );
+        let repaired = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp/workflow")
+                    .header("content-type", "application/json")
+                    .header("x-kogwistar-roles", "reader")
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","id":"orphan-repair","method":"tools/call","params":{"name":"workflow.message_orphans_repair","arguments":{"inbox_id":"repair-mcp","limit":10}}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let repaired =
+            serde_json::from_slice::<Value>(&to_bytes(repaired.into_body(), 16_384).await.unwrap())
+                .unwrap();
+        assert_eq!(
+            repaired["result"]["repaired_message_ids"],
+            json!(["mcp-orphan"])
+        );
+        for message_id in ["expired-orphan", "active-claim", "mcp-orphan"] {
+            store
+                .update_projected_lane_message_status(message_id, "completed", None)
+                .unwrap();
+        }
+
+        store
+            .replace_named_projection(
+                "service_registry",
+                "svc-b",
+                NamedProjectionWrite {
+                    payload: serde_json::Map::from_iter([
+                        ("service_id".to_owned(), json!("svc-b")),
+                        ("enabled".to_owned(), json!(true)),
+                        ("health_status".to_owned(), json!("healthy")),
+                    ]),
+                    last_authoritative_seq: 1,
+                    last_materialized_seq: 1,
+                    projection_schema_version: 1,
+                    materialization_status: "ready".to_owned(),
+                },
+            )
+            .unwrap();
+        store
+            .replace_named_projection(
+                "service_registry",
+                "svc-a",
+                NamedProjectionWrite {
+                    payload: serde_json::Map::from_iter([
+                        ("service_id".to_owned(), json!("svc-a")),
+                        ("enabled".to_owned(), json!(false)),
+                        ("health_status".to_owned(), json!("stopped")),
+                    ]),
+                    last_authoritative_seq: 2,
+                    last_materialized_seq: 2,
+                    projection_schema_version: 1,
+                    materialization_status: "ready".to_owned(),
+                },
+            )
+            .unwrap();
+        let services = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/workflow/services?limit=1")
+                    .header("x-kogwistar-roles", "reader,rw")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(services.status(), StatusCode::OK);
+        let services =
+            serde_json::from_slice::<Value>(&to_bytes(services.into_body(), 16_384).await.unwrap())
+                .unwrap();
+        assert_eq!(services["services"][0]["service_id"], "svc-a");
+        let service = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp/workflow")
+                    .header("content-type", "application/json")
+                    .header("x-kogwistar-roles", "reader,rw")
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","id":"service-get","method":"tools/call","params":{"name":"workflow.service_get","arguments":{"service_id":"svc-b"}}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let service =
+            serde_json::from_slice::<Value>(&to_bytes(service.into_body(), 16_384).await.unwrap())
+                .unwrap();
+        assert_eq!(service["result"]["health_status"], "healthy");
+        let missing_service = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/workflow/services/missing")
+                    .header("x-kogwistar-roles", "reader,rw")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(missing_service.status(), StatusCode::NOT_FOUND);
 
         // A non-terminal result must durably schedule exactly one successor.
         let two_step_submit = app
@@ -3822,6 +9267,77 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn sqlite_submit_enforces_atomic_queue_backpressure() {
+        use axum::body::{Body, to_bytes};
+        use axum::http::Request;
+        use std::time::{SystemTime, UNIX_EPOCH};
+        use tower::ServiceExt;
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("kogwistar-backpressure-{nonce}.sqlite3"));
+        let app = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: vec!["reader".to_owned()],
+                implementation: ImplementationSnapshot::default(),
+                auth: AuthConfig::default(),
+            },
+            Arc::new(
+                SqliteRunApplicationService::open(&path)
+                    .unwrap()
+                    .with_max_queue(1),
+            ),
+        );
+        let submit = |priority_class: &str| {
+            Request::builder()
+                .method("POST")
+                .uri("/api/workflow/runs")
+                .header("content-type", "application/json")
+                .header("x-kogwistar-roles", "reader")
+                .body(Body::from(
+                    serde_json::to_vec(&json!({
+                        "workflow_id": "backpressure-wf",
+                        "conversation_id": "backpressure-conv",
+                        "priority_class": priority_class,
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap()
+        };
+        let first = app.clone().oneshot(submit("foreground")).await.unwrap();
+        assert_eq!(first.status(), StatusCode::ACCEPTED);
+        for (priority_class, admission) in [("foreground", "deferred"), ("batch", "rejected")] {
+            let response = app.clone().oneshot(submit(priority_class)).await.unwrap();
+            assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+            let body = to_bytes(response.into_body(), 8192).await.unwrap();
+            let value = serde_json::from_slice::<Value>(&body).unwrap();
+            assert_eq!(value["admission"], admission);
+            assert_eq!(value["reason"], "queue_full");
+            assert_eq!(value["max_queue"], 1);
+        }
+        let store = SqliteStore::open(&path).unwrap();
+        assert_eq!(
+            store.list_server_runs(None, None, None, 10).unwrap().len(),
+            1
+        );
+        assert_eq!(
+            store
+                .list_projected_lane_messages(LaneMessageFilter {
+                    namespace: Some("workflow".to_owned()),
+                    inbox_id: Some("workflow-runtime".to_owned()),
+                    ..LaneMessageFilter::default()
+                })
+                .unwrap()
+                .len(),
+            1
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[tokio::test]
     async fn sqlite_worker_suspend_resume_is_durable_and_scheduler_owned() {
         use axum::body::{Body, to_bytes};
         use axum::http::Request;
@@ -4138,6 +9654,172 @@ mod tests {
         assert_eq!(
             serde_json::from_slice::<Value>(&next_body).unwrap()["work"][0]["step_id"],
             "graph-end"
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn sqlite_predicate_snapshot_accepts_only_graph_valid_worker_selection() {
+        use axum::body::{Body, to_bytes};
+        use axum::http::Request;
+        use kogwistar_store::{NamedProjectionWrite, WorkflowDesignSnapshotWrite};
+        use std::time::{SystemTime, UNIX_EPOCH};
+        use tower::ServiceExt;
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("kogwistar-predicate-route-{nonce}.sqlite3"));
+        let store = SqliteStore::open(&path).unwrap();
+        store
+            .replace_named_projection(
+                "workflow_design",
+                "predicate-wf",
+                NamedProjectionWrite {
+                    payload: serde_json::Map::from_iter([
+                        ("current_version".to_owned(), json!(1)),
+                        ("snapshot_schema_version".to_owned(), json!(1)),
+                    ]),
+                    last_authoritative_seq: 1,
+                    last_materialized_seq: 1,
+                    projection_schema_version: 1,
+                    materialization_status: "ready".to_owned(),
+                },
+            )
+            .unwrap();
+        store
+            .put_workflow_design_snapshot(
+                "predicate-wf",
+                WorkflowDesignSnapshotWrite {
+                    version: 1,
+                    seq: 1,
+                    schema_version: 1,
+                    payload_json: serde_json::to_string(&json!({
+                        "nodes": [
+                            {"id":"gate","metadata":{"wf_start":true}},
+                            {"id":"left","metadata":{"wf_terminal":true}},
+                            {"id":"right","metadata":{"wf_terminal":true}}
+                        ],
+                        "edges": [
+                            {"id":"to-left","source_ids":["gate"],"target_ids":["left"],"metadata":{"wf_predicate":"if_true"}},
+                            {"id":"to-right","source_ids":["gate"],"target_ids":["right"],"metadata":{"wf_predicate":"if_false","wf_is_default":true}}
+                        ]
+                    }))
+                    .unwrap(),
+                },
+            )
+            .unwrap();
+        let app = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: vec!["reader".to_owned()],
+                implementation: ImplementationSnapshot::default(),
+                auth: AuthConfig::default(),
+            },
+            Arc::new(SqliteRunApplicationService::open(&path).unwrap()),
+        );
+        let submit = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/workflow/runs")
+                    .header("content-type", "application/json")
+                    .header("x-kogwistar-roles", "reader")
+                    .body(Body::from(
+                        r#"{"workflow_id":"predicate-wf","conversation_id":"predicate-conv"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(submit.status(), StatusCode::ACCEPTED);
+        let claim = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/internal/runtime/claim")
+                    .header("content-type", "application/json")
+                    .header("x-kogwistar-roles", "reader")
+                    .body(Body::from(
+                        r#"{"claimed_by":"predicate-worker","limit":1,"lease_seconds":60}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let claim_body = to_bytes(claim.into_body(), 16_384).await.unwrap();
+        let work = serde_json::from_slice::<Value>(&claim_body).unwrap()["work"][0].clone();
+        let envelope = |successor: Value| {
+            json!({
+                "handoff": {
+                    "message_id": work["message_id"],
+                    "claimed_by": work["claimed_by"],
+                    "run_id": work["run_id"],
+                    "step_id": work["step_id"],
+                    "correlation_id": work["correlation_id"],
+                },
+                "effect": {
+                    "contract_version": 1,
+                    "effect_id": format!("predicate-{}", work["run_id"].as_str().unwrap()),
+                    "successors": [successor],
+                }
+            })
+        };
+        let forged = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/internal/runtime/results")
+                    .header("content-type", "application/json")
+                    .header("x-kogwistar-roles", "reader")
+                    .body(Body::from(
+                        serde_json::to_vec(&envelope(json!({"node_id":"forged","join_mask":0})))
+                            .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(forged.status(), StatusCode::CONFLICT);
+        let accepted = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/internal/runtime/results")
+                    .header("content-type", "application/json")
+                    .header("x-kogwistar-roles", "reader")
+                    .body(Body::from(
+                        serde_json::to_vec(&envelope(json!({"node_id":"right","join_mask":0})))
+                            .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(accepted.status(), StatusCode::OK);
+        let next = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/internal/runtime/claim")
+                    .header("content-type", "application/json")
+                    .header("x-kogwistar-roles", "reader")
+                    .body(Body::from(
+                        r#"{"claimed_by":"predicate-finisher","limit":1,"lease_seconds":60}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let next_body = to_bytes(next.into_body(), 16_384).await.unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&next_body).unwrap()["work"][0]["step_id"],
+            "right"
         );
         std::fs::remove_file(path).unwrap();
     }

@@ -300,6 +300,201 @@ def _exercise_postgres_transport(
             "workflow.trace.v1"
         ) == 1
 
+        for prefix in ("/api/runs", "/api/workflow/runs"):
+            steps = httpx.get(
+                f"{base}{prefix}/{fanout_run['run_id']}/steps",
+                headers=headers,
+                timeout=10,
+            )
+            steps.raise_for_status()
+            assert [step["workflow_node_id"] for step in steps.json()["steps"]] == [
+                "start",
+                "left",
+                "right",
+                "join",
+            ]
+            checkpoints = httpx.get(
+                f"{base}{prefix}/{fanout_run['run_id']}/checkpoints",
+                headers=headers,
+                timeout=10,
+            )
+            checkpoints.raise_for_status()
+            assert checkpoints.json()["checkpoints"][-1]["state"]["fanout_join"] is True
+            checkpoint = httpx.get(
+                f"{base}{prefix}/{fanout_run['run_id']}/checkpoints/3",
+                headers=headers,
+                timeout=10,
+            )
+            checkpoint.raise_for_status()
+            assert checkpoint.json()["state"]["fanout_join"] is True
+            replay = httpx.get(
+                f"{base}{prefix}/{fanout_run['run_id']}/replay",
+                headers=headers,
+                params={"target_step_seq": 3},
+                timeout=10,
+            )
+            replay.raise_for_status()
+            assert replay.json()["state"]["fanout_join"] is True
+
+        for path, expected_key in (
+            ("/api/workflow/resources", "migration"),
+            ("/api/workflow/budget", "cost_ledger"),
+            ("/api/workflow/budget/history", "events"),
+            (
+                f"/api/workflow/lane/progress?conversation_id=pg-fanout-conversation",
+                "items",
+            ),
+            ("/api/workflow/operator/dashboard", "resources"),
+        ):
+            response = httpx.get(f"{base}{path}", headers=headers, timeout=10)
+            response.raise_for_status()
+            assert expected_key in response.json()
+        resources = httpx.get(
+            f"{base}/api/workflow/resources", headers=headers, timeout=10
+        ).json()
+        assert resources["migration"] == {
+            "implementation_mode": "rust",
+            "contract_version": 1,
+            "schema_version": 1,
+            "parity_mismatch_count": 0,
+            "queue_lag": {
+                "pending_count": 0,
+                "oldest_pending_age_seconds": None,
+            },
+            "replay_lag": {
+                "events_behind": 0,
+                "mode": "transactional_projection",
+            },
+        }
+        visibility = httpx.get(
+            f"{base}/api/workflow/visibility", headers=headers, timeout=10
+        )
+        visibility.raise_for_status()
+        assert visibility.json()["current_role"] == "ro"
+        assert visibility.json()["namespaces"] == {
+            "storage_namespace": "workflow",
+            "execution_namespace": "workflow",
+        }
+        assert {
+            "project_view",
+            "read_security_scope",
+            "workflow.run.read",
+        }.issubset(set(visibility.json()["current_capabilities"]))
+        capabilities = httpx.get(
+            f"{base}/api/workflow/capabilities", headers=headers, timeout=10
+        )
+        capabilities.raise_for_status()
+        assert capabilities.json()["current_subject"] == "anonymous"
+        assert capabilities.json()["audit_log"][-1]["action"] == "project_view"
+        assert capabilities.json()["audit_log"][-1]["outcome"] == "allow"
+        assert httpx.post(
+            f"{base}/mcp/workflow",
+            headers=headers,
+            json={
+                "jsonrpc": "2.0",
+                "id": "pg-mcp-replay",
+                "method": "tools/call",
+                "params": {
+                    "name": "workflow.run_replay",
+                    "arguments": {
+                        "run_id": fanout_run["run_id"],
+                        "target_step_seq": 3,
+                    },
+                },
+            },
+            timeout=10,
+        ).json()["result"]["state"]["fanout_join"] is True
+        mcp_visibility = httpx.post(
+            f"{base}/mcp/workflow",
+            headers=headers,
+            json={
+                "jsonrpc": "2.0",
+                "id": "pg-mcp-visibility",
+                "method": "tools/call",
+                "params": {
+                    "name": "workflow.visibility_snapshot",
+                    "arguments": {},
+                },
+            },
+            timeout=10,
+        )
+        mcp_visibility.raise_for_status()
+        assert mcp_visibility.json()["result"]["security_scope"] == "workflow"
+
+        predicate_run = httpx.post(
+            f"{base}/api/workflow/runs",
+            headers=headers,
+            json={
+                "workflow_id": "pg-predicate-workflow",
+                "conversation_id": "pg-predicate-conversation",
+                "runtime_routes": [
+                    {
+                        "source_node_id": "start",
+                        "target_node_id": "left",
+                        "join_mask": 0,
+                        "predicate": "if_true",
+                    },
+                    {
+                        "source_node_id": "start",
+                        "target_node_id": "right",
+                        "join_mask": 0,
+                        "predicate": "if_false",
+                    },
+                ],
+            },
+            timeout=10,
+        ).json()
+        predicate_claim = httpx.post(
+            f"{base}/internal/runtime/claim",
+            headers=headers,
+            json={"claimed_by": "predicate-worker", "limit": 1, "lease_seconds": 60},
+            timeout=10,
+        )
+        predicate_claim.raise_for_status()
+        predicate_work = predicate_claim.json()["work"][0]
+
+        def predicate_envelope(successor: dict[str, object]) -> dict[str, object]:
+            return {
+                "handoff": {
+                    key: predicate_work[key]
+                    for key in (
+                        "message_id",
+                        "claimed_by",
+                        "run_id",
+                        "step_id",
+                        "correlation_id",
+                    )
+                },
+                "effect": {
+                    "contract_version": 1,
+                    "effect_id": f"predicate-{predicate_run['run_id']}",
+                    "successors": [successor],
+                },
+            }
+
+        forged_predicate = httpx.post(
+            f"{base}/internal/runtime/results",
+            headers=headers,
+            json=predicate_envelope({"node_id": "right", "join_mask": 1}),
+            timeout=10,
+        )
+        assert forged_predicate.status_code == 409, forged_predicate.text
+        accepted_predicate = httpx.post(
+            f"{base}/internal/runtime/results",
+            headers=headers,
+            json=predicate_envelope({"node_id": "right", "join_mask": 0}),
+            timeout=10,
+        )
+        accepted_predicate.raise_for_status()
+        predicate_next = httpx.post(
+            f"{base}/internal/runtime/claim",
+            headers=headers,
+            json={"claimed_by": "predicate-finisher", "limit": 1, "lease_seconds": 60},
+            timeout=10,
+        )
+        predicate_next.raise_for_status()
+        assert predicate_next.json()["work"][0]["step_id"] == "right"
+
         second = httpx.post(
             f"{base}/api/workflow/runs",
             headers=headers,

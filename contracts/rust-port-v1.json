@@ -36,6 +36,11 @@
     "scope": "isolated Rust InMemoryStore read-only shadow inspection: graph list, cosine vector query, event replay, named projection list",
     "gate_status_field": "gate.status"
   },
+  "current_persistent_evidence": {
+    "benchmark_report": "contracts/benchmarks/rust-persistent-sqlite-current-windows.json",
+    "benchmark_command": ".venv/Scripts/python.exe scripts/rust_port_persistent_benchmark.py --items 100 --read-cycles 20 --samples 5 --output-root <runtime-dir> --report contracts/benchmarks/rust-persistent-sqlite-current-windows.json",
+    "scope": "persistent authoritative SQLite event and named-projection capabilities through the shipped Python and PyO3 facades"
+  },
   "reference_application": {
     "name": "kogwistar-llm-wiki",
     "root_environment_variable": "KOGWISTAR_LLM_WIKI_ROOT",
