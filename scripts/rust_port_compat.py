@@ -16,6 +16,15 @@ ROOT: Final = Path(__file__).resolve().parents[1]
 MANIFEST_PATH: Final = ROOT / "contracts" / "rust-port-v1.json"
 _CANDIDATE_SUFFIXES: Final = {".json", ".lock", ".py", ".rs", ".toml"}
 _SERVER_CONFIGURATION: Final = "KOGWISTAR_IMPL_SERVER"
+_IGNORED_TEST_TREE_NAMES: Final = {"__pycache__", ".pytest_cache", "_tmp"}
+_IDENTITY_DIAGNOSTIC_PATH_FIELDS: Final = {
+    "consumer_python_executable",
+    "consumer_resolved_package_file",
+    "layer_interpreters",
+    "python_executable",
+    "resolved_package_file",
+    "rust_extension_file",
+}
 
 
 def _utc_now() -> str:
@@ -27,6 +36,16 @@ def _identity_fingerprint(identity: dict[str, object]) -> str:
         identity, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     ).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
+
+
+def _candidate_identity_fingerprint(identity: dict[str, object]) -> str:
+    """Hash stable candidate/runtime identity, excluding job-local absolute paths."""
+    stable = {
+        key: value
+        for key, value in identity.items()
+        if key not in _IDENTITY_DIAGNOSTIC_PATH_FIELDS and key != "identity_sha256"
+    }
+    return _identity_fingerprint(stable)
 
 
 def _candidate_source_fingerprint() -> str:
@@ -57,6 +76,28 @@ def _candidate_source_fingerprint() -> str:
     return digest.hexdigest()
 
 
+def _suite_test_files(root: Path) -> list[Path]:
+    """List test sources without traversing generated test artifacts."""
+    if not root.is_dir():
+        return []
+    files: list[Path] = []
+    for current, directories, names in os.walk(root):
+        directories[:] = [
+            name
+            for name in directories
+            if not name.startswith(".")
+            and name not in _IGNORED_TEST_TREE_NAMES
+            and not name.startswith("_engine_tmp")
+        ]
+        directory = Path(current)
+        files.extend(
+            directory / name
+            for name in names
+            if name.startswith("test") and name.endswith(".py")
+        )
+    return files
+
+
 def _verification_harness_fingerprint(application_root: Path) -> str:
     """Hash suite-selection code/config so resume cannot cross harness changes."""
     files = [
@@ -79,8 +120,7 @@ def _verification_harness_fingerprint(application_root: Path) -> str:
         application_root / "kg-doc-parser" / "tests",
         application_root / "kogwistar-obsidian-sink" / "tests",
     ):
-        if suite_root.is_dir():
-            files.extend(suite_root.rglob("test*.py"))
+        files.extend(_suite_test_files(suite_root))
     digest = hashlib.sha256()
     for path in sorted(path for path in files if path.is_file()):
         digest.update(str(path.resolve()).encode("utf-8"))
@@ -260,15 +300,29 @@ def _identity(
 ) -> dict[str, object]:
     script = r"""
 import importlib.util
+import importlib.metadata
+import hashlib
 import json
 import pathlib
+import platform
+import sys
+import sysconfig
 import kogwistar
 
 spec = importlib.util.find_spec("kogwistar._rust")
 extension = None if spec is None else __import__("kogwistar._rust", fromlist=["*"])
+packages = sorted(
+    f"{(distribution.metadata.get('Name') or '').lower()}=={distribution.version}"
+    for distribution in importlib.metadata.distributions()
+)
 print(json.dumps({
     "resolved_package_file": str(pathlib.Path(kogwistar.__file__).resolve()),
     "package_version": getattr(kogwistar, "__version__", None),
+    "python_version": platform.python_version(),
+    "python_implementation": platform.python_implementation(),
+    "python_abi": sysconfig.get_config_var("SOABI"),
+    "python_executable": sys.executable,
+    "python_environment_sha256": hashlib.sha256("\n".join(packages).encode()).hexdigest(),
     "rust_extension_file": None if spec is None else spec.origin,
     "rust_extension_version": None if extension is None else getattr(extension, "__version__", None),
     "rust_contract_version": None if extension is None else getattr(extension, "CONTRACT_VERSION", None),
@@ -328,7 +382,12 @@ def _default_consumer_python(application_root: Path, fallback: Path) -> Path:
         application_root / ".venv" / "Scripts" / "python.exe",
         application_root / ".venv" / "bin" / "python",
     ]
-    return next((path.resolve() for path in candidates if path.is_file()), fallback)
+    return next((path for path in candidates if path.is_file()), fallback)
+
+
+def _absolute_path_without_symlink_resolution(path: Path) -> Path:
+    """Make executable paths absolute while preserving venv symlinks."""
+    return Path(os.path.abspath(os.fspath(path.expanduser())))
 
 
 def _marker_expression(layer: str, profile: str) -> str:
@@ -619,11 +678,11 @@ def main() -> int:
     if args.release and args.profile != "feature":
         raise SystemExit("--release cannot be combined with an explicit --profile")
     application_root = _resolve_application_root(args.application_root, manifest)
-    python = Path(args.python).expanduser().resolve()
+    python = _absolute_path_without_symlink_resolution(Path(args.python))
     if not python.is_file():
         raise SystemExit(f"python interpreter does not exist: {python}")
     consumer_python = (
-        Path(args.consumer_python).expanduser().resolve()
+        _absolute_path_without_symlink_resolution(Path(args.consumer_python))
         if args.consumer_python
         else _default_consumer_python(application_root, python)
     )
@@ -674,9 +733,18 @@ def main() -> int:
     identity["consumer_rust_contract_version"] = consumer_identity[
         "rust_contract_version"
     ]
+    identity["consumer_python_version"] = consumer_identity["python_version"]
+    identity["consumer_python_implementation"] = consumer_identity[
+        "python_implementation"
+    ]
+    identity["consumer_python_abi"] = consumer_identity["python_abi"]
+    identity["consumer_python_environment_sha256"] = consumer_identity[
+        "python_environment_sha256"
+    ]
+    identity["consumer_python_executable"] = consumer_identity["python_executable"]
     identity["contract_version"] = manifest["contract_version"]
     identity["test_profile"] = profile
-    fingerprint = _identity_fingerprint(identity)
+    fingerprint = _candidate_identity_fingerprint(identity)
     identity["identity_sha256"] = fingerprint
     print(json.dumps(identity, indent=2, sort_keys=True), flush=True)
 

@@ -69,6 +69,8 @@ def test_load_postgres_container_cls_applies_env_before_import(monkeypatch):
 
 
 def test_pg_container_fixture_starts_and_stops_container(monkeypatch):
+    for name in ("GKE_PG_DSN", "PG_DSN", "DATABASE_URL"):
+        monkeypatch.delenv(name, raising=False)
     fake_pg = MagicMock()
     start_mock = MagicMock(return_value=fake_pg)
     monkeypatch.setenv("GKE_TEST_PG_IMAGE", "postgres:16")
@@ -86,6 +88,8 @@ def test_pg_container_fixture_starts_and_stops_container(monkeypatch):
 
 
 def test_pg_container_fixture_yields_none_on_start_failure(monkeypatch):
+    for name in ("GKE_PG_DSN", "PG_DSN", "DATABASE_URL"):
+        monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(
         test_conf,
         "_start_postgres_container",
@@ -103,6 +107,8 @@ def test_pg_container_fixture_yields_none_on_start_failure(monkeypatch):
 
 
 def test_pg_container_fixture_retries_without_ryuk_on_ryuk_port_failure(monkeypatch):
+    for name in ("GKE_PG_DSN", "PG_DSN", "DATABASE_URL"):
+        monkeypatch.delenv(name, raising=False)
     fake_pg = MagicMock()
     start_mock = MagicMock(
         side_effect=[
@@ -129,6 +135,18 @@ def test_pg_container_fixture_retries_without_ryuk_on_ryuk_port_failure(monkeypa
 
     gen.close()
     fake_pg.stop.assert_called_once_with()
+
+
+def test_pg_container_fixture_skips_testcontainer_when_external_dsn_exists(monkeypatch):
+    monkeypatch.setenv("GKE_PG_DSN", "postgresql://external/test")
+    start_mock = MagicMock()
+    monkeypatch.setattr(test_conf, "_start_postgres_container", start_mock)
+
+    gen = test_conf.pg_container.__wrapped__()
+    assert next(gen) is None
+    with pytest.raises(StopIteration):
+        next(gen)
+    start_mock.assert_not_called()
 
 
 def test_sa_engine_fixture_disposes_engine(monkeypatch):

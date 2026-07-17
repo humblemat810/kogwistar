@@ -113,6 +113,53 @@ pub struct GraphTableNames {
     pub domains: String,
 }
 
+/// One atomic metadata patch for an existing Python pgvector graph row.
+///
+/// Lifecycle updates use merge semantics in Python: keys absent from `patch`
+/// survive in both the serialized document and the projection metadata.  This
+/// request preserves that contract while joining event append to the same
+/// PostgreSQL transaction.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GraphMetadataPatchMutation {
+    pub scope: kogwistar_store::GraphScope,
+    pub table: String,
+    pub entity_kind: String,
+    pub event_id: String,
+    pub op: String,
+    pub entity_id: String,
+    pub document: Option<String>,
+    pub metadata_patch: Map<String, Value>,
+    pub payload: Value,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct GraphDeleteMutation {
+    pub scope: kogwistar_store::GraphScope,
+    pub table: String,
+    pub entity_kind: String,
+    pub event_id: String,
+    pub entity_id: String,
+    pub payload: Value,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct GraphProjectionUpsert {
+    pub scope: kogwistar_store::GraphScope,
+    pub table: String,
+    pub record: GraphRecord,
+    pub embedding_dim: usize,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct GraphProjectionMetadataPatch {
+    pub scope: kogwistar_store::GraphScope,
+    pub table: String,
+    pub entity_id: String,
+    pub document: Option<String>,
+    pub metadata_patch: Map<String, Value>,
+    pub patch_document_metadata: bool,
+}
+
 impl Default for GraphTableNames {
     fn default() -> Self {
         Self {
@@ -128,6 +175,10 @@ impl Default for GraphTableNames {
 struct Tables {
     schema: String,
     quoted_schema: String,
+    global_seq: String,
+    user_seq: String,
+    index_applied_state: String,
+    index_applied_state_key_index: String,
     namespace_seq: String,
     entity_events: String,
     replay_cursors: String,
@@ -159,6 +210,10 @@ impl Tables {
         Ok(Self {
             schema: schema.to_owned(),
             quoted_schema: quoted_schema.clone(),
+            global_seq: qualified(&quoted_schema, "global_seq")?,
+            user_seq: qualified(&quoted_schema, "user_seq")?,
+            index_applied_state: qualified(&quoted_schema, "index_applied_state")?,
+            index_applied_state_key_index: quote_identifier("idx_index_applied_state_key")?,
             namespace_seq: qualified(&quoted_schema, "namespace_seq")?,
             entity_events: qualified(&quoted_schema, "entity_events")?,
             replay_cursors: qualified(&quoted_schema, "replay_cursors")?,
@@ -511,6 +566,67 @@ impl PostgresStore {
             .await
     }
 
+    pub async fn next_global_seq(&self) -> PostgresStoreResult<i64> {
+        self.transaction(|uow| Box::pin(async move { uow.next_global_seq().await }))
+            .await
+    }
+
+    pub async fn current_global_seq(&self) -> PostgresStoreResult<i64> {
+        let client = self.client().await?;
+        current_global_seq(&**client, &self.tables).await
+    }
+
+    pub async fn next_user_seq(&self, user_id: &str) -> PostgresStoreResult<i64> {
+        let user_id = user_id.to_owned();
+        self.transaction(move |uow| Box::pin(async move { uow.next_user_seq(&user_id).await }))
+            .await
+    }
+
+    pub async fn current_user_seq(&self, user_id: &str) -> PostgresStoreResult<i64> {
+        let client = self.client().await?;
+        current_user_seq(&**client, &self.tables, user_id).await
+    }
+
+    pub async fn set_user_seq(&self, user_id: &str, value: i64) -> PostgresStoreResult<()> {
+        let user_id = user_id.to_owned();
+        self.transaction(move |uow| {
+            Box::pin(async move { uow.set_user_seq(&user_id, value).await })
+        })
+        .await
+    }
+
+    pub async fn get_index_applied_fingerprint(
+        &self,
+        namespace: &str,
+        coalesce_key: &str,
+    ) -> PostgresStoreResult<Option<String>> {
+        let client = self.client().await?;
+        get_index_applied_fingerprint(&**client, &self.tables, namespace, coalesce_key).await
+    }
+
+    pub async fn set_index_applied_fingerprint(
+        &self,
+        namespace: &str,
+        coalesce_key: &str,
+        applied_fingerprint: Option<String>,
+        last_job_id: Option<String>,
+    ) -> PostgresStoreResult<()> {
+        let namespace = namespace.to_owned();
+        let coalesce_key = coalesce_key.to_owned();
+        self.transaction(move |uow| {
+            Box::pin(async move {
+                uow.set_index_applied_fingerprint(
+                    &namespace,
+                    &coalesce_key,
+                    applied_fingerprint,
+                    last_job_id,
+                )
+                .await
+            })
+        })
+        .await
+    }
+
     /// Apply graph projection row and authoritative event in one PostgreSQL
     /// transaction.  `gke_*` remains Python's schema; this merely joins it.
     pub async fn apply_graph_mutation(
@@ -519,6 +635,46 @@ impl PostgresStore {
     ) -> PostgresStoreResult<AppliedGraphMutation> {
         self.transaction(move |uow| {
             Box::pin(async move { uow.apply_graph_mutation(mutation).await })
+        })
+        .await
+    }
+
+    pub async fn apply_graph_metadata_patch_mutation(
+        &self,
+        mutation: GraphMetadataPatchMutation,
+    ) -> PostgresStoreResult<Option<AppliedGraphMutation>> {
+        self.transaction(move |uow| {
+            Box::pin(async move { uow.apply_graph_metadata_patch_mutation(mutation).await })
+        })
+        .await
+    }
+
+    pub async fn apply_graph_delete_mutation(
+        &self,
+        mutation: GraphDeleteMutation,
+    ) -> PostgresStoreResult<Option<AppliedGraphMutation>> {
+        self.transaction(move |uow| {
+            Box::pin(async move { uow.apply_graph_delete_mutation(mutation).await })
+        })
+        .await
+    }
+
+    pub async fn upsert_graph_projection(
+        &self,
+        write: GraphProjectionUpsert,
+    ) -> PostgresStoreResult<()> {
+        self.transaction(move |uow| {
+            Box::pin(async move { uow.upsert_graph_projection(write).await })
+        })
+        .await
+    }
+
+    pub async fn patch_graph_projection_metadata(
+        &self,
+        patch: GraphProjectionMetadataPatch,
+    ) -> PostgresStoreResult<bool> {
+        self.transaction(move |uow| {
+            Box::pin(async move { uow.patch_graph_projection_metadata(patch).await })
         })
         .await
     }
@@ -1407,6 +1563,34 @@ impl PostgresUnitOfWork<'_> {
         apply_graph_mutation(&self.transaction, &self.tables, mutation).await
     }
 
+    pub async fn apply_graph_metadata_patch_mutation(
+        &mut self,
+        mutation: GraphMetadataPatchMutation,
+    ) -> PostgresStoreResult<Option<AppliedGraphMutation>> {
+        apply_graph_metadata_patch_mutation(&self.transaction, &self.tables, mutation).await
+    }
+
+    pub async fn apply_graph_delete_mutation(
+        &mut self,
+        mutation: GraphDeleteMutation,
+    ) -> PostgresStoreResult<Option<AppliedGraphMutation>> {
+        apply_graph_delete_mutation(&self.transaction, &self.tables, mutation).await
+    }
+
+    pub async fn upsert_graph_projection(
+        &mut self,
+        write: GraphProjectionUpsert,
+    ) -> PostgresStoreResult<()> {
+        upsert_graph_projection(&self.transaction, &self.tables, write).await
+    }
+
+    pub async fn patch_graph_projection_metadata(
+        &mut self,
+        patch: GraphProjectionMetadataPatch,
+    ) -> PostgresStoreResult<bool> {
+        patch_graph_projection_metadata(&self.transaction, &self.tables, patch).await
+    }
+
     pub async fn graph_projection_records(
         &self,
         read: GraphProjectionRead,
@@ -1663,6 +1847,53 @@ impl PostgresUnitOfWork<'_> {
     pub async fn alloc_event_seq(&mut self, namespace: &str) -> PostgresStoreResult<i64> {
         require_namespace(namespace)?;
         allocate_event_seq(&self.transaction, &self.tables, namespace).await
+    }
+
+    pub async fn next_global_seq(&mut self) -> PostgresStoreResult<i64> {
+        next_global_seq(&self.transaction, &self.tables).await
+    }
+
+    pub async fn current_global_seq(&self) -> PostgresStoreResult<i64> {
+        current_global_seq(&self.transaction, &self.tables).await
+    }
+
+    pub async fn next_user_seq(&mut self, user_id: &str) -> PostgresStoreResult<i64> {
+        next_user_seq(&self.transaction, &self.tables, user_id).await
+    }
+
+    pub async fn current_user_seq(&self, user_id: &str) -> PostgresStoreResult<i64> {
+        current_user_seq(&self.transaction, &self.tables, user_id).await
+    }
+
+    pub async fn set_user_seq(&mut self, user_id: &str, value: i64) -> PostgresStoreResult<()> {
+        set_user_seq(&self.transaction, &self.tables, user_id, value).await
+    }
+
+    pub async fn get_index_applied_fingerprint(
+        &self,
+        namespace: &str,
+        coalesce_key: &str,
+    ) -> PostgresStoreResult<Option<String>> {
+        get_index_applied_fingerprint(&self.transaction, &self.tables, namespace, coalesce_key)
+            .await
+    }
+
+    pub async fn set_index_applied_fingerprint(
+        &mut self,
+        namespace: &str,
+        coalesce_key: &str,
+        applied_fingerprint: Option<String>,
+        last_job_id: Option<String>,
+    ) -> PostgresStoreResult<()> {
+        set_index_applied_fingerprint(
+            &self.transaction,
+            &self.tables,
+            namespace,
+            coalesce_key,
+            applied_fingerprint,
+            last_job_id,
+        )
+        .await
     }
 
     pub async fn append_raw_entity_event(
@@ -2439,6 +2670,144 @@ where
     row.try_get(0).map_err(backend)
 }
 
+async fn next_global_seq<C>(client: &C, tables: &Tables) -> PostgresStoreResult<i64>
+where
+    C: GenericClient + Sync,
+{
+    let row = client
+        .query_one(
+            &format!(
+                "UPDATE {} SET value=value+1 RETURNING value",
+                tables.global_seq
+            ),
+            &[],
+        )
+        .await
+        .map_err(backend)?;
+    row.try_get(0).map_err(backend)
+}
+
+async fn current_global_seq<C>(client: &C, tables: &Tables) -> PostgresStoreResult<i64>
+where
+    C: GenericClient + Sync,
+{
+    client
+        .query_opt(
+            &format!("SELECT value FROM {} LIMIT 1", tables.global_seq),
+            &[],
+        )
+        .await
+        .map_err(backend)?
+        .map(|row| row.try_get(0).map_err(backend))
+        .unwrap_or(Ok(0))
+}
+
+async fn next_user_seq<C>(client: &C, tables: &Tables, user_id: &str) -> PostgresStoreResult<i64>
+where
+    C: GenericClient + Sync,
+{
+    let row = client
+        .query_one(
+            &format!(
+                "INSERT INTO {}(user_id,value) VALUES($1,1) ON CONFLICT(user_id) DO UPDATE SET value={}.value+1 RETURNING value",
+                tables.user_seq, tables.user_seq
+            ),
+            &[&user_id],
+        )
+        .await
+        .map_err(backend)?;
+    row.try_get(0).map_err(backend)
+}
+
+async fn current_user_seq<C>(client: &C, tables: &Tables, user_id: &str) -> PostgresStoreResult<i64>
+where
+    C: GenericClient + Sync,
+{
+    client
+        .query_opt(
+            &format!("SELECT value FROM {} WHERE user_id=$1", tables.user_seq),
+            &[&user_id],
+        )
+        .await
+        .map_err(backend)?
+        .map(|row| row.try_get(0).map_err(backend))
+        .unwrap_or(Ok(0))
+}
+
+async fn set_user_seq<C>(
+    client: &C,
+    tables: &Tables,
+    user_id: &str,
+    value: i64,
+) -> PostgresStoreResult<()>
+where
+    C: GenericClient + Sync,
+{
+    if value < 0 {
+        return Err(PostgresStoreError::Backend(
+            "sequence value must be non-negative".to_owned(),
+        ));
+    }
+    client
+        .execute(
+            &format!(
+                "INSERT INTO {}(user_id,value) VALUES($1,$2) ON CONFLICT(user_id) DO UPDATE SET value=EXCLUDED.value",
+                tables.user_seq
+            ),
+            &[&user_id, &value],
+        )
+        .await
+        .map_err(backend)?;
+    Ok(())
+}
+
+async fn get_index_applied_fingerprint<C>(
+    client: &C,
+    tables: &Tables,
+    namespace: &str,
+    coalesce_key: &str,
+) -> PostgresStoreResult<Option<String>>
+where
+    C: GenericClient + Sync,
+{
+    client
+        .query_opt(
+            &format!(
+                "SELECT applied_fingerprint FROM {} WHERE namespace=$1 AND coalesce_key=$2",
+                tables.index_applied_state
+            ),
+            &[&namespace, &coalesce_key],
+        )
+        .await
+        .map_err(backend)?
+        .map(|row| row.try_get(0).map_err(backend))
+        .transpose()
+}
+
+async fn set_index_applied_fingerprint<C>(
+    client: &C,
+    tables: &Tables,
+    namespace: &str,
+    coalesce_key: &str,
+    applied_fingerprint: Option<String>,
+    last_job_id: Option<String>,
+) -> PostgresStoreResult<()>
+where
+    C: GenericClient + Sync,
+{
+    client
+        .execute(
+            &format!(
+                "INSERT INTO {}(namespace,coalesce_key,applied_fingerprint,applied_at,last_job_id) VALUES($1,$2,$3,NOW(),$4) ON CONFLICT(namespace,coalesce_key) DO UPDATE SET applied_fingerprint=EXCLUDED.applied_fingerprint,applied_at=NOW(),last_job_id=EXCLUDED.last_job_id",
+                tables.index_applied_state
+            ),
+            &[&namespace, &coalesce_key, &applied_fingerprint, &last_job_id],
+        )
+        .await
+        .map_err(backend)?;
+    Ok(())
+}
+
 fn projection_payload_json(
     payload: &serde_json::Map<String, serde_json::Value>,
 ) -> PostgresStoreResult<String> {
@@ -2776,6 +3145,25 @@ fn graph_metadata(
     Ok(materialized)
 }
 
+fn graph_scope_matches_or_legacy_default(
+    scope: &kogwistar_store::GraphScope,
+    metadata: &Map<String, Value>,
+) -> PostgresStoreResult<bool> {
+    let expected = graph_metadata(scope, &Map::new())?;
+    if expected
+        .iter()
+        .all(|(key, value)| metadata.get(key) == Some(value))
+    {
+        return Ok(true);
+    }
+    Ok(scope.namespace == "default"
+        && scope.workspace_id.is_none()
+        && scope.graph_space.is_none()
+        && !metadata.contains_key("namespace")
+        && !metadata.contains_key("workspace_id")
+        && !metadata.contains_key("graph_space"))
+}
+
 fn finite_vector(vector: &[f32]) -> PostgresStoreResult<()> {
     if vector.iter().all(|value| value.is_finite()) {
         Ok(())
@@ -2910,11 +3298,7 @@ where
     {
         let current_json: String = row.try_get(0).map_err(backend)?;
         let current: Map<String, Value> = serde_json::from_str(&current_json)?;
-        let expected_scope = graph_metadata(&mutation.scope, &Map::new())?;
-        if expected_scope
-            .iter()
-            .any(|(key, value)| current.get(key) != Some(value))
-        {
+        if !graph_scope_matches_or_legacy_default(&mutation.scope, &current)? {
             return Err(PostgresStoreError::Backend(
                 "graph record id belongs to a different scope".to_owned(),
             ));
@@ -2944,6 +3328,325 @@ where
         inserted: true,
         mutated: true,
     })
+}
+
+async fn apply_graph_metadata_patch_mutation<C>(
+    client: &C,
+    tables: &Tables,
+    mutation: GraphMetadataPatchMutation,
+) -> PostgresStoreResult<Option<AppliedGraphMutation>>
+where
+    C: GenericClient + Sync,
+{
+    require_namespace(&mutation.scope.namespace)?;
+    if mutation.entity_id.is_empty() {
+        return Err(StoreError::EmptyRecordId.into());
+    }
+    if mutation.event_id.is_empty() {
+        return Err(PostgresStoreError::Backend(
+            "graph metadata patch event id must not be empty".to_owned(),
+        ));
+    }
+    if !matches!(mutation.op.as_str(), "REPLACE" | "TOMBSTONE") {
+        return Err(PostgresStoreError::Backend(
+            "graph metadata patch op must be REPLACE or TOMBSTONE".to_owned(),
+        ));
+    }
+    let table = graph_table(tables, &mutation.table)?;
+    let Some(row) = client
+        .query_opt(
+            &format!("SELECT document, metadata::TEXT FROM {table} WHERE id = $1 FOR UPDATE"),
+            &[&mutation.entity_id],
+        )
+        .await
+        .map_err(backend)?
+    else {
+        return Ok(None);
+    };
+
+    let document: Option<String> = row.try_get(0).map_err(backend)?;
+    let current_metadata_json: String = row.try_get(1).map_err(backend)?;
+    let mut current_metadata: Map<String, Value> = serde_json::from_str(&current_metadata_json)?;
+    if !graph_scope_matches_or_legacy_default(&mutation.scope, &current_metadata)? {
+        return Err(PostgresStoreError::Backend(
+            "graph record id belongs to a different scope".to_owned(),
+        ));
+    }
+
+    let payload_json = serde_json::to_string(&mutation.payload)?;
+    let appended = append_raw_entity_event(
+        client,
+        tables,
+        &mutation.scope.namespace,
+        NewRawEntityEvent {
+            event_id: mutation.event_id,
+            entity_kind: mutation.entity_kind,
+            entity_id: mutation.entity_id.clone(),
+            op: mutation.op,
+            payload_json,
+        },
+    )
+    .await?;
+    let event = raw_to_entity_event(appended.event)?;
+    if !appended.inserted {
+        return Ok(Some(AppliedGraphMutation {
+            event,
+            inserted: false,
+            mutated: false,
+        }));
+    }
+
+    current_metadata = graph_metadata(&mutation.scope, &current_metadata)?;
+    let validated_patch = graph_metadata(&mutation.scope, &mutation.metadata_patch)?;
+    current_metadata.extend(validated_patch);
+    let patched_document = if let Some(replacement) = mutation.document {
+        replacement
+    } else {
+        let mut document_value = document
+            .as_deref()
+            .and_then(|value| serde_json::from_str::<Value>(value).ok())
+            .and_then(|value| value.as_object().cloned())
+            .unwrap_or_default();
+        let mut document_metadata = document_value
+            .remove("metadata")
+            .and_then(|value| value.as_object().cloned())
+            .unwrap_or_default();
+        document_metadata.extend(mutation.metadata_patch);
+        document_value.insert("metadata".to_owned(), Value::Object(document_metadata));
+        serde_json::to_string(&Value::Object(document_value))?
+    };
+    let patched_metadata = serde_json::to_string(&current_metadata)?;
+    client
+        .execute(
+            &format!(
+                "UPDATE {table} SET document = $1, metadata = {}::JSONB, updated_at = NOW() WHERE id = $2",
+                sql_text_literal(&patched_metadata)
+            ),
+            &[&patched_document, &mutation.entity_id],
+        )
+        .await
+        .map_err(|error| {
+            PostgresStoreError::Backend(format!("graph metadata patch failed: {error:?}"))
+        })?;
+    Ok(Some(AppliedGraphMutation {
+        event,
+        inserted: true,
+        mutated: true,
+    }))
+}
+
+async fn apply_graph_delete_mutation<C>(
+    client: &C,
+    tables: &Tables,
+    mutation: GraphDeleteMutation,
+) -> PostgresStoreResult<Option<AppliedGraphMutation>>
+where
+    C: GenericClient + Sync,
+{
+    require_namespace(&mutation.scope.namespace)?;
+    if mutation.entity_id.is_empty() {
+        return Err(StoreError::EmptyRecordId.into());
+    }
+    if mutation.event_id.is_empty() {
+        return Err(PostgresStoreError::Backend(
+            "graph delete event id must not be empty".to_owned(),
+        ));
+    }
+    advisory_lock(client, &mutation.event_id, 0).await?;
+    if let Some(existing) = event_by_id(client, tables, &mutation.event_id).await? {
+        if existing.namespace != mutation.scope.namespace {
+            return Err(PostgresStoreError::EventIdNamespaceCollision {
+                event_id: mutation.event_id,
+                existing_namespace: existing.namespace,
+                requested_namespace: mutation.scope.namespace,
+            });
+        }
+        return Ok(Some(AppliedGraphMutation {
+            event: raw_to_entity_event(existing)?,
+            inserted: false,
+            mutated: false,
+        }));
+    }
+
+    let table = graph_table(tables, &mutation.table)?;
+    let Some(row) = client
+        .query_opt(
+            &format!("SELECT metadata::TEXT FROM {table} WHERE id = $1 FOR UPDATE"),
+            &[&mutation.entity_id],
+        )
+        .await
+        .map_err(backend)?
+    else {
+        return Ok(None);
+    };
+    let current_metadata_json: String = row.try_get(0).map_err(backend)?;
+    let current_metadata: Map<String, Value> = serde_json::from_str(&current_metadata_json)?;
+    if !graph_scope_matches_or_legacy_default(&mutation.scope, &current_metadata)? {
+        return Err(PostgresStoreError::Backend(
+            "graph record id belongs to a different scope".to_owned(),
+        ));
+    }
+
+    let appended = append_raw_entity_event(
+        client,
+        tables,
+        &mutation.scope.namespace,
+        NewRawEntityEvent {
+            event_id: mutation.event_id,
+            entity_kind: mutation.entity_kind,
+            entity_id: mutation.entity_id.clone(),
+            op: "DELETE".to_owned(),
+            payload_json: serde_json::to_string(&mutation.payload)?,
+        },
+    )
+    .await?;
+    let event = raw_to_entity_event(appended.event)?;
+    client
+        .execute(
+            &format!("DELETE FROM {table} WHERE id = $1"),
+            &[&mutation.entity_id],
+        )
+        .await
+        .map_err(|error| {
+            PostgresStoreError::Backend(format!("graph projection delete failed: {error:?}"))
+        })?;
+    Ok(Some(AppliedGraphMutation {
+        event,
+        inserted: true,
+        mutated: true,
+    }))
+}
+
+async fn upsert_graph_projection<C>(
+    client: &C,
+    tables: &Tables,
+    write: GraphProjectionUpsert,
+) -> PostgresStoreResult<()>
+where
+    C: GenericClient + Sync,
+{
+    require_namespace(&write.scope.namespace)?;
+    if write.record.id.is_empty() {
+        return Err(StoreError::EmptyRecordId.into());
+    }
+    let metadata = graph_metadata(&write.scope, &write.record.metadata)?;
+    if let Some(embedding) = &write.record.embedding {
+        finite_vector(embedding)?;
+        if embedding.len() != write.embedding_dim {
+            return Err(StoreError::VectorDimensionMismatch {
+                expected: write.embedding_dim,
+                actual: embedding.len(),
+            }
+            .into());
+        }
+    }
+    let table = graph_table(tables, &write.table)?;
+    if let Some(row) = client
+        .query_opt(
+            &format!("SELECT metadata::TEXT FROM {table} WHERE id = $1 FOR UPDATE"),
+            &[&write.record.id],
+        )
+        .await
+        .map_err(backend)?
+    {
+        let current_json: String = row.try_get(0).map_err(backend)?;
+        let current: Map<String, Value> = serde_json::from_str(&current_json)?;
+        if !graph_scope_matches_or_legacy_default(&write.scope, &current)? {
+            return Err(PostgresStoreError::Backend(
+                "graph record id belongs to a different scope".to_owned(),
+            ));
+        }
+    }
+    let metadata_json = serde_json::to_string(&metadata)?;
+    let embedding_sql = write
+        .record
+        .embedding
+        .as_deref()
+        .map(|vector| format!("{}::vector", sql_text_literal(&vector_literal(vector))))
+        .unwrap_or_else(|| "NULL".to_owned());
+    client
+        .execute(
+            &format!(
+                "INSERT INTO {table}(id, document, metadata, embedding) VALUES ($1, $2, {}::JSONB, {embedding_sql}) \
+                 ON CONFLICT(id) DO UPDATE SET document = EXCLUDED.document, metadata = EXCLUDED.metadata, \
+                 embedding = EXCLUDED.embedding, updated_at = NOW()",
+                sql_text_literal(&metadata_json),
+            ),
+            &[&write.record.id, &write.record.document],
+        )
+        .await
+        .map_err(|error| {
+            PostgresStoreError::Backend(format!("graph projection upsert failed: {error:?}"))
+        })?;
+    Ok(())
+}
+
+async fn patch_graph_projection_metadata<C>(
+    client: &C,
+    tables: &Tables,
+    patch: GraphProjectionMetadataPatch,
+) -> PostgresStoreResult<bool>
+where
+    C: GenericClient + Sync,
+{
+    require_namespace(&patch.scope.namespace)?;
+    if patch.entity_id.is_empty() {
+        return Err(StoreError::EmptyRecordId.into());
+    }
+    let table = graph_table(tables, &patch.table)?;
+    let Some(row) = client
+        .query_opt(
+            &format!("SELECT document, metadata::TEXT FROM {table} WHERE id = $1 FOR UPDATE"),
+            &[&patch.entity_id],
+        )
+        .await
+        .map_err(backend)?
+    else {
+        return Ok(false);
+    };
+    let document: Option<String> = row.try_get(0).map_err(backend)?;
+    let current_metadata_json: String = row.try_get(1).map_err(backend)?;
+    let mut current_metadata: Map<String, Value> = serde_json::from_str(&current_metadata_json)?;
+    if !graph_scope_matches_or_legacy_default(&patch.scope, &current_metadata)? {
+        return Err(PostgresStoreError::Backend(
+            "graph record id belongs to a different scope".to_owned(),
+        ));
+    }
+    current_metadata = graph_metadata(&patch.scope, &current_metadata)?;
+    let validated_patch = graph_metadata(&patch.scope, &patch.metadata_patch)?;
+    current_metadata.extend(validated_patch);
+    let patched_document = if let Some(replacement) = patch.document {
+        replacement
+    } else if !patch.patch_document_metadata {
+        document.unwrap_or_default()
+    } else {
+        let mut document_value = document
+            .as_deref()
+            .and_then(|value| serde_json::from_str::<Value>(value).ok())
+            .and_then(|value| value.as_object().cloned())
+            .unwrap_or_default();
+        let mut document_metadata = document_value
+            .remove("metadata")
+            .and_then(|value| value.as_object().cloned())
+            .unwrap_or_default();
+        document_metadata.extend(patch.metadata_patch);
+        document_value.insert("metadata".to_owned(), Value::Object(document_metadata));
+        serde_json::to_string(&Value::Object(document_value))?
+    };
+    let metadata_json = serde_json::to_string(&current_metadata)?;
+    client
+        .execute(
+            &format!(
+                "UPDATE {table} SET document = $1, metadata = {}::JSONB, updated_at = NOW() WHERE id = $2",
+                sql_text_literal(&metadata_json)
+            ),
+            &[&patched_document, &patch.entity_id],
+        )
+        .await
+        .map_err(|error| {
+            PostgresStoreError::Backend(format!("graph projection patch failed: {error:?}"))
+        })?;
+    Ok(true)
 }
 
 async fn graph_projection_records<C>(
@@ -5073,6 +5776,16 @@ fn qualified(schema: &str, relation: &str) -> PostgresStoreResult<String> {
 fn schema_sql(tables: &Tables) -> String {
     format!(
         "CREATE SCHEMA IF NOT EXISTS {schema};\
+         CREATE TABLE IF NOT EXISTS {global_seq} (value BIGINT NOT NULL);\
+         INSERT INTO {global_seq}(value) SELECT 0 WHERE NOT EXISTS (SELECT 1 FROM {global_seq});\
+         CREATE TABLE IF NOT EXISTS {user_seq} (user_id TEXT PRIMARY KEY, value BIGINT NOT NULL);\
+         CREATE TABLE IF NOT EXISTS {index_applied_state} (\
+            namespace TEXT NOT NULL DEFAULT 'default',coalesce_key TEXT NOT NULL,\
+            applied_fingerprint TEXT NULL,applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),\
+            last_job_id TEXT NULL,PRIMARY KEY(namespace, coalesce_key)\
+         );\
+         CREATE INDEX IF NOT EXISTS {index_applied_state_key_index}\
+            ON {index_applied_state}(coalesce_key);\
          CREATE TABLE IF NOT EXISTS {namespace_seq} (\
             namespace TEXT PRIMARY KEY, next_seq BIGINT NOT NULL\
          );\
@@ -5170,6 +5883,10 @@ fn schema_sql(tables: &Tables) -> String {
          CREATE INDEX IF NOT EXISTS {lane_messages_claim_index} ON {projected_lane_messages}(namespace,inbox_id,status,available_at,lease_until);\
          CREATE INDEX IF NOT EXISTS {lane_messages_conversation_seq_index} ON {projected_lane_messages}(namespace,conversation_id,conversation_seq);",
         schema = tables.quoted_schema,
+        global_seq = tables.global_seq,
+        user_seq = tables.user_seq,
+        index_applied_state = tables.index_applied_state,
+        index_applied_state_key_index = tables.index_applied_state_key_index,
         namespace_seq = tables.namespace_seq,
         entity_events = tables.entity_events,
         aggregate_index = tables.aggregate_index,

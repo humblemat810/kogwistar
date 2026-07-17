@@ -84,7 +84,11 @@ def _postgres_dsn_for_rust(dsn: str | None) -> str:
 
 
 def store_postgres(
-    *, dsn: str | None = None, schema: str, operation: dict[str, Any]
+    *,
+    dsn: str | None = None,
+    schema: str,
+    operation: dict[str, Any],
+    transaction_id: str | None = None,
 ) -> Any:
     """Execute Phase-3 PostgreSQL JSON ABI through native Tokio/Postgres store.
 
@@ -100,6 +104,7 @@ def store_postgres(
                     {
                         "dsn": _postgres_dsn_for_rust(dsn),
                         "schema": schema,
+                        "transaction_id": transaction_id,
                         "operation": operation,
                     },
                     ensure_ascii=False,

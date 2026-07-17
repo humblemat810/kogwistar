@@ -3,6 +3,8 @@
         "kogwistar",
         "tests"
     ],
+    "venvPath": ".",
+    "venv": ".venv",
     "executionEnvironments": [
         {
             "root": ".",

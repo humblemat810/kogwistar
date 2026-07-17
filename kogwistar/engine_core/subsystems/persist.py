@@ -19,13 +19,53 @@ from ..models import (
 )
 from ..async_compat import run_awaitable_blocking
 from ..utils.aliasing import _is_alias, _is_new_edge, _is_new_node, _is_uuid
-from ..utils.refs import merge_refs
 from .base import NamespaceProxy
 
 
 class PersistSubsystem(NamespaceProxy):
     def __init__(self, engine) -> None:
         super().__init__(engine)
+
+    @staticmethod
+    def _merge_groundings(
+        prior_json: str | None, incoming: list[Grounding]
+    ) -> tuple[Grounding, str]:
+        prior: list[Any] = []
+        if prior_json:
+            try:
+                decoded = json.loads(prior_json)
+                if isinstance(decoded, list):
+                    prior = decoded
+            except Exception:
+                prior = []
+
+        spans: list[Span] = []
+        for value in prior:
+            candidates = value.get("spans", []) if isinstance(value, dict) else []
+            for candidate in candidates:
+                spans.append(Span.model_validate(candidate))
+        for grounding in incoming:
+            spans.extend(grounding.spans)
+
+        def identity(span: Span) -> tuple[Any, ...]:
+            return (
+                span.doc_id,
+                span.document_page_url,
+                getattr(span, "start_page", None),
+                span.start_char,
+                getattr(span, "end_page", None),
+                span.end_char,
+            )
+
+        unique: dict[tuple[Any, ...], Span] = {}
+        for span in spans:
+            unique[identity(span)] = span
+        merged = Grounding(spans=list(unique.values()))
+        payload = json.dumps(
+            [merged.model_dump(field_mode="backend")],
+            ensure_ascii=False,
+        )
+        return merged, payload
 
     @staticmethod
     def _promote_llm_entity_payload(obj, *, insertion_method: str) -> dict[str, Any]:
@@ -626,34 +666,37 @@ class PersistSubsystem(NamespaceProxy):
                         ))
                         prior_meta = (prior.get("metadatas") or [None])[0] or {}
                         prior_mentions = cast(str, prior_meta.get("mentions"))
-                        merged_list, merged_json = merge_refs(
+                        mentions, merged_json = self._merge_groundings(
                             prior_mentions, ln.mentions
                         )
                         doc = prior["documents"]
                         if not doc:
                             raise Exception("missing documents")
                         n = Node.model_validate_json(doc[0])
-                        mentions = Grounding(
-                            spans=[Span.model_validate(r) for r in merged_list]
-                        )
                         for sp in mentions.spans:
-                            span_validator.validate_span(span=sp)
+                            span_validator.validate_span(
+                                span=sp, doc=self._e.read.get_document(sp.doc_id)
+                            )
                         n.mentions = [mentions]
-                        run_awaitable_blocking(self._e.backend.node_update(
-                            ids=[rid],
-                            documents=[n.model_dump_json(field_mode="backend")],
-                            metadatas=[
-                                {
-                                    **{
-                                        k: v
-                                        for k, v in prior_meta.items()
-                                        if v is not None
-                                    },
-                                    "references": merged_json,
-                                }
-                            ],
-                        ))
-                        self._e.write.index_node_docs(n)
+                        document = n.model_dump_json(field_mode="backend")
+                        metadata = {
+                            **{k: v for k, v in prior_meta.items() if v is not None},
+                            "mentions": merged_json,
+                        }
+                        native_replaced = self._e.write.rust_postgres_replace_existing(
+                            entity_kind="node",
+                            entity_id=rid,
+                            document=document,
+                            metadata_patch=metadata,
+                            payload=n.model_dump(field_mode="backend", exclude=["embedding"]),
+                        )
+                        if not native_replaced:
+                            run_awaitable_blocking(self._e.backend.node_update(
+                                ids=[rid],
+                                documents=[document],
+                                metadatas=[metadata],
+                            ))
+                            self._e.write.index_node_docs(n)
                     continue
 
                 ln.mentions = self.dealias_span(ln.mentions, doc_id)
@@ -669,35 +712,38 @@ class PersistSubsystem(NamespaceProxy):
                             ids=[rid], include=["documents", "metadatas"]
                         ))
                         prior_meta = (prior.get("metadatas") or [None])[0] or {}
-                        prior_mentions = cast(str, prior_meta.get("mentions"))
-                        merged_list, merged_json = merge_refs(
+                        prior_mentions = cast(str, prior_meta.get("references"))
+                        mentions, merged_json = self._merge_groundings(
                             prior_mentions, le.mentions
                         )
                         doc = prior["documents"]
                         if not doc:
                             raise Exception("missing documents")
                         e = Edge.model_validate_json(doc[0])
-                        mentions = Grounding(
-                            spans=[Span.model_validate(r) for r in merged_list]
-                        )
                         for sp in mentions.spans:
-                            span_validator.validate_span(span=sp)
+                            span_validator.validate_span(
+                                span=sp, doc=self._e.read.get_document(sp.doc_id)
+                            )
                         e.mentions = [mentions]
-                        run_awaitable_blocking(self._e.backend.edge_update(
-                            ids=[rid],
-                            documents=[e.model_dump_json(field_mode="backend")],
-                            metadatas=[
-                                {
-                                    **{
-                                        k: v
-                                        for k, v in prior_meta.items()
-                                        if v is not None
-                                    },
-                                    "references": merged_json,
-                                }
-                            ],
-                        ))
-                        self._e.write.maybe_reindex_edge_refs(e)
+                        document = e.model_dump_json(field_mode="backend")
+                        metadata = {
+                            **{k: v for k, v in prior_meta.items() if v is not None},
+                            "references": merged_json,
+                        }
+                        native_replaced = self._e.write.rust_postgres_replace_existing(
+                            entity_kind="edge",
+                            entity_id=rid,
+                            document=document,
+                            metadata_patch=metadata,
+                            payload=e.model_dump(field_mode="backend", exclude=["embedding"]),
+                        )
+                        if not native_replaced:
+                            run_awaitable_blocking(self._e.backend.edge_update(
+                                ids=[rid],
+                                documents=[document],
+                                metadatas=[metadata],
+                            ))
+                            self._e.write.maybe_reindex_edge_refs(e)
                     continue
 
                 edge = le
@@ -754,7 +800,21 @@ class PersistSubsystem(NamespaceProxy):
                 except Exception:
                     payload = {}
 
-                if repair_backend and op in ("ADD", "REPLACE"):
+                lifecycle_patch = payload.get("lifecycle_patch")
+                if isinstance(lifecycle_patch, dict) and ek in {"node", "edge"}:
+                    self._e.lifecycle.apply_replayed_lifecycle_patch(
+                        entity_kind=ek,
+                        entity_id=str(eid),
+                        lifecycle_patch=lifecycle_patch,
+                    )
+                    last_seq = int(seq)
+                    continue
+
+                if (
+                    repair_backend
+                    and op in ("ADD", "REPLACE")
+                    and not self._e.write.uses_rust_postgres_authority()
+                ):
                     try:
                         if ek == "node":
                             run_awaitable_blocking(self._e.backend.node_delete(ids=[str(eid)]))

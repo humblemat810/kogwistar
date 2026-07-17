@@ -41,8 +41,8 @@
     "benchmark_command": ".venv/Scripts/python.exe scripts/rust_port_persistent_benchmark.py --items 100 --read-cycles 20 --samples 5 --output-root <runtime-dir> --report contracts/benchmarks/rust-persistent-sqlite-current-windows.json",
     "scope": "persistent authoritative SQLite event and named-projection capabilities through the shipped Python and PyO3 facades",
     "gate_status": "passed",
-    "cutover_use": "eligible_after_public-routing",
-    "result": "Persistent Rust handle removed per-call SQLite open/WAL churn. All p95 latency, throughput, peak RSS, and state-digest checks pass; authority remains fail-closed until the public owner flag is routed and verified."
+    "cutover_use": "sqlite-meta-authority-verified",
+    "result": "Persistent Rust handle removed per-call SQLite open/WAL churn. All p95 latency, throughput, peak RSS, and state-digest checks pass. KOGWISTAR_IMPL_META_STORE=rust routes the public SQLite meta facade to one Rust writer; clean-wheel core feature compatibility passed with Python rollback readability verified."
   },
   "runtime_serving_evidence": {
     "benchmark_report": "contracts/benchmarks/rust-runtime-serving-current-windows.json",
@@ -68,6 +68,10 @@
     "candidate_identity_fields": [
       "resolved_package_file",
       "package_version",
+      "python_version",
+      "python_implementation",
+      "python_abi",
+      "python_environment_sha256",
       "implementation_mode",
       "rust_extension_file",
       "rust_extension_version",
@@ -81,6 +85,10 @@
       "storage_root",
       "layer_interpreters",
       "consumer_resolved_package_file",
+      "consumer_python_version",
+      "consumer_python_implementation",
+      "consumer_python_abi",
+      "consumer_python_environment_sha256",
       "candidate_source_sha256",
       "identity_sha256"
     ]
@@ -452,7 +460,7 @@
       "configuration": "KOGWISTAR_IMPL_META_STORE",
       "current_authoritative_writer": "python",
       "target_authoritative_writer": "rust",
-      "rust_cutover_ready": false,
+      "rust_cutover_ready": true,
       "rollback": "stop Rust writer, verify schema compatibility, set KOGWISTAR_IMPL_META_STORE=python"
     },
     {

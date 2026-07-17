@@ -1411,15 +1411,44 @@ class GraphKnowledgeEngine:
             self.meta_sqlite.ensure_initialized()
         elif _is_pgvector_backend_instance(backend):
             from .engine_postgres_meta import EnginePostgresMetaStore
+            from .rust_postgres_session import RustEnginePostgresMetaStore
+            from kogwistar._rust_bridge import (
+                graph_store_implementation_mode,
+                meta_store_implementation_mode,
+            )
 
             if type(backend) is str:
                 raise Exception("unreacheable")
             else:
                 backend2: PgVectorBackend = backend  # let static checker happy
             self.backend: StorageBackend = backend
-            meta_postgre = EnginePostgresMetaStore(
-                engine=backend2.engine, schema=backend2.schema
+            meta_mode = meta_store_implementation_mode()
+            graph_mode = graph_store_implementation_mode()
+            sync_postgres = not getattr(backend2, "_is_async_engine", False)
+            if not sync_postgres and "rust" in (meta_mode, graph_mode):
+                raise ValueError(
+                    "async PostgreSQL Rust graph/meta authority is not available; "
+                    "use python or shadow until the native async facade is ready"
+                )
+            if sync_postgres and (meta_mode == "rust") != (graph_mode == "rust"):
+                raise ValueError(
+                    "sync PostgreSQL Rust authority requires both "
+                    "KOGWISTAR_IMPL_META_STORE=rust and "
+                    "KOGWISTAR_IMPL_GRAPH_STORE=rust so graph/event writes share "
+                    "one transaction"
+                )
+            coordinated_rust_postgres = (
+                meta_mode == "rust" and graph_mode == "rust" and sync_postgres
             )
+            if coordinated_rust_postgres:
+                dsn = backend2.engine.url.render_as_string(hide_password=False)
+                meta_postgre = RustEnginePostgresMetaStore(
+                    dsn=dsn, schema=backend2.schema
+                )
+            else:
+                meta_postgre = EnginePostgresMetaStore(
+                    engine=backend2.engine, schema=backend2.schema
+                )
             meta_postgre.ensure_initialized()
             self.meta_sqlite = meta_postgre
         else:

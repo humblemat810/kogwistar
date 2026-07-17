@@ -55,7 +55,7 @@ def test_capability_overrides_select_one_writer_per_manifest_capability() -> Non
         item["capability"] for item in MANIFEST["capability_ownership"]
     }
     assert writers["deterministic-contracts"] == "rust"
-    assert writers["sqlite-meta"] == "python"
+    assert writers["sqlite-meta"] == "rust"
     assert writers["postgres-sequence-event-log"] == "python"
     assert writers["projections-snapshots-run-registry"] == "python"
     assert writers["queues-leases-lanes"] == "python"
@@ -148,6 +148,39 @@ def test_identity_fingerprint_changes_with_capability_ownership() -> None:
     assert runner._identity_fingerprint(base) != runner._identity_fingerprint(changed)
 
 
+def test_identity_fingerprint_changes_with_python_runtime() -> None:
+    runner = _runner()
+    base = {"python_version": "3.12.0", "python_abi": "cpython-312-x86_64-linux-gnu"}
+    changed = {"python_version": "3.13.0", "python_abi": "cpython-313-x86_64-linux-gnu"}
+
+    assert runner._identity_fingerprint(base) != runner._identity_fingerprint(changed)
+
+
+def test_candidate_identity_ignores_job_local_paths_but_keeps_runtime_abi() -> None:
+    runner = _runner()
+    base = {
+        "candidate_source_sha256": "a" * 64,
+        "python_abi": "cpython-313-x86_64-linux-gnu",
+        "python_executable": "/tmp/job-a/bin/python",
+        "rust_extension_file": "/tmp/job-a/kogwistar/_rust.abi3.so",
+        "layer_interpreters": {"core": "/tmp/job-a/bin/python"},
+    }
+    moved = {
+        **base,
+        "python_executable": "/opt/job-b/bin/python",
+        "rust_extension_file": "/opt/job-b/kogwistar/_rust.abi3.so",
+        "layer_interpreters": {"core": "/opt/job-b/bin/python"},
+    }
+    changed_abi = {**moved, "python_abi": "cpython-312-x86_64-linux-gnu"}
+
+    assert runner._candidate_identity_fingerprint(base) == runner._candidate_identity_fingerprint(
+        moved
+    )
+    assert runner._candidate_identity_fingerprint(base) != runner._candidate_identity_fingerprint(
+        changed_abi
+    )
+
+
 def test_verification_harness_fingerprint_changes_with_runner_or_config(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -165,6 +198,29 @@ def test_verification_harness_fingerprint_changes_with_runner_or_config(
     second = runner._verification_harness_fingerprint(application)
 
     assert first != second
+
+
+def test_suite_test_files_skips_generated_test_trees(tmp_path: Path) -> None:
+    runner = _runner()
+    kept = tmp_path / "tests" / "unit" / "test_kept.py"
+    generated = tmp_path / "tests" / "_tmp" / "test_generated.py"
+    hidden = tmp_path / "tests" / ".tmp_workflow" / "test_hidden.py"
+    for path in (kept, generated, hidden):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("", encoding="utf-8")
+
+    assert runner._suite_test_files(tmp_path / "tests") == [kept]
+
+
+def test_absolute_python_path_preserves_symlink_text(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = _runner()
+    monkeypatch.chdir(tmp_path)
+
+    assert runner._absolute_path_without_symlink_resolution(
+        Path("venv/bin/python")
+    ) == tmp_path / "venv" / "bin" / "python"
 
 
 @pytest.mark.parametrize("layer", ["core", "parser", "application"])

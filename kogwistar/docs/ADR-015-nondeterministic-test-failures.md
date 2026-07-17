@@ -347,6 +347,52 @@ A report containing a failed command is not a green release report, even if the
 same test later passes manually. The failing report may be resumed only under the
 same identity; otherwise a fresh four-layer report is required.
 
+## Case 9: Isolated Chroma lifecycle read failed once, then passed unchanged
+
+### Symptom
+
+`test_search_nodes_as_of_tombstone_and_future_effective[chroma]` failed during
+the backend lifecycle read/update sequence while the fake and PostgreSQL
+variants passed. The exact Chroma nodeid then passed immediately with no source,
+configuration, or dependency change.
+
+### Classification and containment
+
+- Classify this occurrence as an unresolved Chroma/backend transient, not a
+  semantic pass and not evidence against the PostgreSQL Rust slice.
+- Retain the original failure in run history; the one green rerun only shows
+  non-reproduction.
+- Do not add automatic retries or weaken assertions. A fresh candidate-wide
+  compatibility run must pass normally before release evidence is green.
+- If it recurs, capture the full Chroma exception, collection state, temp path,
+  process/container identity, and per-node timing before changing code.
+
+## Case 10: Chroma HNSW segment missing during rollback read
+
+### Symptom
+
+Two Chroma rollback cases failed together while fake and PostgreSQL variants
+passed:
+
+```text
+chromadb.errors.InternalError: Error creating hnsw segment reader: Nothing found on disk
+```
+
+The failure occurred in a direct `Collection.get()` during lifecycle update, not
+in a semantic assertion. The exact two nodeids then passed unchanged in one fresh
+process.
+
+### Classification and containment
+
+- Classify as an unresolved Chroma HNSW persistence/reader transient. The same
+  rollback logic passed against fake and PostgreSQL stores.
+- Preserve the first-run failure; the 2/2 rerun proves only non-reproduction.
+- Do not add retries, sleeps, or assertion changes. Fresh candidate-wide evidence
+  must still pass without retry.
+- On recurrence, retain the temporary Chroma root and capture collection/segment
+  directory inventory, Chroma version, process identity, and the immediately
+  preceding add/get sequence before cleanup.
+
 ## Anti-patterns
 
 Do not:

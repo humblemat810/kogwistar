@@ -1077,6 +1077,10 @@ def pg_container() -> Iterator[Optional["PostgresContainer"]]:
       - Python deps: testcontainers[postgresql], psycopg[binary], sqlalchemy
     """
 
+    if any(os.getenv(name) for name in ("GKE_PG_DSN", "PG_DSN", "DATABASE_URL")):
+        yield None
+        return
+
     image = os.getenv("GKE_TEST_PG_IMAGE", "postgres:16")
     initial_ryuk_disabled = _configure_testcontainers_ryuk_env()
     logger.info(

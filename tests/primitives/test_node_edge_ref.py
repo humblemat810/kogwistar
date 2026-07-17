@@ -93,6 +93,120 @@ def test_node_refs_indexing(engine: GraphKnowledgeEngine):
     )
 
 
+@pytest.mark.parametrize(
+    "backend_kind",
+    [pytest.param("fake", marks=pytest.mark.ci)],
+    indirect=True,
+)
+def test_prune_node_refs_detects_span_change_inside_one_grounding(
+    engine: GraphKnowledgeEngine,
+):
+    first = _mk_span("doc-prune-one", "pytest-manual")
+    second = _mk_span("doc-prune-two", "pytest-manual")
+    node = Node(
+        label="A",
+        type="entity",
+        summary="s",
+        mentions=[Grounding(spans=[first, second])],
+        metadata={},
+        domain_id=None,
+        canonical_entity_id=None,
+        properties=None,
+        embedding=None,
+        doc_id=None,
+    )
+    engine.write.add_node(node)
+
+    assert engine.write.prune_node_refs_for_doc(node.safe_get_id(), "doc-prune-one")
+
+    got = engine.backend.node_get(ids=[node.safe_get_id()], include=["documents"])
+    pruned = Node.model_validate_json(got["documents"][0])
+    assert [span.doc_id for grounding in pruned.mentions for span in grounding.spans] == [
+        "doc-prune-two"
+    ]
+
+
+@pytest.mark.parametrize(
+    "backend_kind",
+    [pytest.param("fake", marks=pytest.mark.ci)],
+    indirect=True,
+)
+def test_rollback_document_extraction_filters_grouped_mentions(
+    engine: GraphKnowledgeEngine,
+):
+    doc = Document(
+        id="doc-extraction-rollback",
+        content="x",
+        type="text",
+        metadata={},
+        domain_id=None,
+        processed=False,
+        embeddings=None,
+        source_map=None,
+    )
+    engine.write.add_document(doc)
+    llm_span = _mk_span(doc.id, "llm_graph_extraction")
+    manual_span = _mk_span(doc.id, "pytest-manual")
+    source = Node(
+        label="source",
+        type="entity",
+        summary="source",
+        mentions=[Grounding(spans=[llm_span, manual_span])],
+        metadata={},
+        doc_id=doc.id,
+    )
+    target = Node(
+        label="target",
+        type="entity",
+        summary="target",
+        mentions=[Grounding(spans=[manual_span.model_copy(deep=True)])],
+        metadata={},
+        doc_id=doc.id,
+    )
+    engine.write.add_node(source)
+    engine.write.add_node(target)
+    edge = Edge(
+        label="edge",
+        type="relationship",
+        summary="edge",
+        source_ids=[source.safe_get_id()],
+        target_ids=[target.safe_get_id()],
+        source_edge_ids=[],
+        target_edge_ids=[],
+        relation="related_to",
+        mentions=[
+            Grounding(
+                spans=[
+                    llm_span.model_copy(deep=True),
+                    manual_span.model_copy(deep=True),
+                ]
+            )
+        ],
+        metadata={},
+        doc_id=doc.id,
+    )
+    engine.write.add_edge(edge)
+
+    result = engine.rollback_document_extraction(doc.id, "llm_graph_extraction")
+
+    assert result["updated_nodes"] == 1
+    assert result["updated_edges"] == 1
+    assert result["deleted_node_refs"] == 1
+    assert result["deleted_edge_refs"] == 1
+    node_row = engine.backend.node_get(
+        ids=[source.safe_get_id()], include=["documents"]
+    )
+    edge_row = engine.backend.edge_get(ids=[edge.safe_get_id()], include=["documents"])
+    updated_node = Node.model_validate_json(node_row["documents"][0])
+    updated_edge = Edge.model_validate_json(edge_row["documents"][0])
+    assert [span.insertion_method for span in iter_span(updated_node)] == [
+        "pytest-manual"
+    ]
+    assert [span.insertion_method for span in iter_span(updated_edge)] == [
+        "pytest-manual"
+    ]
+
+
 def iter_span(n_or_e: Node | Edge):
     for g in n_or_e.mentions:
         for sp in g.spans:

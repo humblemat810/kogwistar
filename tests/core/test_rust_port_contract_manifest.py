@@ -76,7 +76,7 @@ def test_rust_port_manifest_has_required_authority_and_suite_gates() -> None:
     )
 
 
-def test_passing_performance_evidence_cannot_unlock_unrouted_persistent_store() -> None:
+def test_passing_performance_and_public_routing_unlock_sqlite_meta_store() -> None:
     manifest = _manifest()
     persistent = manifest["current_persistent_evidence"]
     runtime = manifest["runtime_serving_evidence"]
@@ -85,14 +85,14 @@ def test_passing_performance_evidence_cannot_unlock_unrouted_persistent_store() 
         (ROOT / persistent["benchmark_report"]).read_text(encoding="utf-8")
     )
     assert persistent["gate_status"] == "passed"
-    assert persistent["cutover_use"] == "eligible_after_public-routing"
+    assert persistent["cutover_use"] == "sqlite-meta-authority-verified"
     assert persistent_report["gate"]["status"] == "passed"
     sqlite_owner = next(
         item
         for item in manifest["capability_ownership"]
         if item["capability"] == "sqlite-meta"
     )
-    assert sqlite_owner["rust_cutover_ready"] is False
+    assert sqlite_owner["rust_cutover_ready"] is True
     runtime_report = json.loads((ROOT / runtime["benchmark_report"]).read_text(encoding="utf-8"))
     assert runtime_report["gate"]["status"] == "passed"
     assert runtime_report["history_multiplier"] == 100

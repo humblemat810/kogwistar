@@ -25,8 +25,9 @@ use std::collections::BTreeMap;
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::pin;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock, mpsc};
 use std::task::{Context, Poll, Waker};
+use std::thread::JoinHandle;
 use tokio::runtime::{Builder as TokioRuntimeBuilder, Runtime as TokioRuntime};
 
 create_exception!(kogwistar._rust, RustContractTypeError, PyTypeError);
@@ -2412,13 +2413,44 @@ fn validate_sqlite_operation(value: &Value) -> Result<(), (&'static str, String)
 struct PostgresStoreRequest {
     dsn: String,
     schema: String,
+    #[serde(default)]
+    transaction_id: Option<String>,
     operation: PostgresStoreOperation,
 }
 
 #[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum PostgresStoreOperation {
+    BeginTransaction,
+    CommitTransaction,
+    RollbackTransaction,
     EnsureSchema,
+    NextGlobalSeq,
+    CurrentGlobalSeq,
+    NextUserSeq {
+        user_id: String,
+    },
+    CurrentUserSeq {
+        user_id: String,
+    },
+    SetUserSeq {
+        user_id: String,
+        value: i64,
+    },
+    GetIndexAppliedFingerprint {
+        #[serde(default = "default_namespace")]
+        namespace: String,
+        coalesce_key: String,
+    },
+    SetIndexAppliedFingerprint {
+        #[serde(default = "default_namespace")]
+        namespace: String,
+        coalesce_key: String,
+        #[serde(default)]
+        applied_fingerprint: Option<String>,
+        #[serde(default)]
+        last_job_id: Option<String>,
+    },
     CreateGraphSchema {
         embedding_dim: usize,
         #[serde(default)]
@@ -2454,6 +2486,60 @@ enum PostgresStoreOperation {
         record: GraphMutationRecord,
         payload: Value,
         embedding_dim: usize,
+    },
+    GraphMetadataPatchMutation {
+        namespace: String,
+        #[serde(default)]
+        workspace_id: Option<String>,
+        #[serde(default)]
+        graph_space: Option<String>,
+        table: String,
+        entity_kind: String,
+        event_id: String,
+        op: String,
+        entity_id: String,
+        #[serde(default)]
+        document: Option<String>,
+        #[serde(default)]
+        metadata_patch: Map<String, Value>,
+        payload: Value,
+    },
+    GraphDeleteMutation {
+        namespace: String,
+        #[serde(default)]
+        workspace_id: Option<String>,
+        #[serde(default)]
+        graph_space: Option<String>,
+        table: String,
+        entity_kind: String,
+        event_id: String,
+        entity_id: String,
+        payload: Value,
+    },
+    UpsertGraphProjection {
+        namespace: String,
+        #[serde(default)]
+        workspace_id: Option<String>,
+        #[serde(default)]
+        graph_space: Option<String>,
+        table: String,
+        record: GraphMutationRecord,
+        embedding_dim: usize,
+    },
+    PatchGraphProjectionMetadata {
+        namespace: String,
+        #[serde(default)]
+        workspace_id: Option<String>,
+        #[serde(default)]
+        graph_space: Option<String>,
+        table: String,
+        entity_id: String,
+        #[serde(default)]
+        document: Option<String>,
+        #[serde(default)]
+        metadata_patch: Map<String, Value>,
+        #[serde(default = "default_true")]
+        patch_document_metadata: bool,
     },
     GraphProjectionRecords {
         namespace: String,
@@ -2919,6 +3005,10 @@ fn graph_mutation_json(applied: kogwistar_store::AppliedGraphMutation) -> Value 
     })
 }
 
+fn optional_graph_mutation_json(applied: Option<kogwistar_store::AppliedGraphMutation>) -> Value {
+    applied.map(graph_mutation_json).unwrap_or(Value::Null)
+}
+
 fn graph_table_names(
     nodes_table: Option<String>,
     edges_table: Option<String>,
@@ -2939,9 +3029,50 @@ async fn postgres_store_operation_json(
     operation: PostgresStoreOperation,
 ) -> Result<Value, PostgresStoreError> {
     match operation {
+        PostgresStoreOperation::BeginTransaction
+        | PostgresStoreOperation::CommitTransaction
+        | PostgresStoreOperation::RollbackTransaction => Err(
+            postgres_session_error("PostgreSQL transaction control cannot be nested as an operation"),
+        ),
         PostgresStoreOperation::EnsureSchema => {
             store.ensure_schema().await?;
             Ok(json!({"initialized": true}))
+        }
+        PostgresStoreOperation::NextGlobalSeq => Ok(json!(store.next_global_seq().await?)),
+        PostgresStoreOperation::CurrentGlobalSeq => Ok(json!(store.current_global_seq().await?)),
+        PostgresStoreOperation::NextUserSeq { user_id } => {
+            Ok(json!(store.next_user_seq(&user_id).await?))
+        }
+        PostgresStoreOperation::CurrentUserSeq { user_id } => {
+            Ok(json!(store.current_user_seq(&user_id).await?))
+        }
+        PostgresStoreOperation::SetUserSeq { user_id, value } => {
+            store.set_user_seq(&user_id, value).await?;
+            Ok(Value::Null)
+        }
+        PostgresStoreOperation::GetIndexAppliedFingerprint {
+            namespace,
+            coalesce_key,
+        } => Ok(json!(
+            store
+                .get_index_applied_fingerprint(&namespace, &coalesce_key)
+                .await?
+        )),
+        PostgresStoreOperation::SetIndexAppliedFingerprint {
+            namespace,
+            coalesce_key,
+            applied_fingerprint,
+            last_job_id,
+        } => {
+            store
+                .set_index_applied_fingerprint(
+                    &namespace,
+                    &coalesce_key,
+                    applied_fingerprint,
+                    last_job_id,
+                )
+                .await?;
+            Ok(Value::Null)
         }
         PostgresStoreOperation::CreateGraphSchema {
             embedding_dim,
@@ -3000,6 +3131,99 @@ async fn postgres_store_operation_json(
                     embedding_dim,
                 })
                 .await?,
+        )),
+        PostgresStoreOperation::GraphMetadataPatchMutation {
+            namespace,
+            workspace_id,
+            graph_space,
+            table,
+            entity_kind,
+            event_id,
+            op,
+            entity_id,
+            document,
+            metadata_patch,
+            payload,
+        } => Ok(optional_graph_mutation_json(
+            store
+                .apply_graph_metadata_patch_mutation(
+                    kogwistar_store_postgres::GraphMetadataPatchMutation {
+                        scope: graph_scope(namespace, workspace_id, graph_space),
+                        table,
+                        entity_kind,
+                        event_id,
+                        op,
+                        entity_id,
+                        document,
+                        metadata_patch,
+                        payload,
+                    },
+                )
+                .await?,
+        )),
+        PostgresStoreOperation::GraphDeleteMutation {
+            namespace,
+            workspace_id,
+            graph_space,
+            table,
+            entity_kind,
+            event_id,
+            entity_id,
+            payload,
+        } => Ok(optional_graph_mutation_json(
+            store
+                .apply_graph_delete_mutation(
+                    kogwistar_store_postgres::GraphDeleteMutation {
+                        scope: graph_scope(namespace, workspace_id, graph_space),
+                        table,
+                        entity_kind,
+                        event_id,
+                        entity_id,
+                        payload,
+                    },
+                )
+                .await?,
+        )),
+        PostgresStoreOperation::UpsertGraphProjection {
+            namespace,
+            workspace_id,
+            graph_space,
+            table,
+            record,
+            embedding_dim,
+        } => {
+            store
+                .upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
+                    scope: graph_scope(namespace, workspace_id, graph_space),
+                    table,
+                    record: graph_mutation_record(record),
+                    embedding_dim,
+                })
+                .await?;
+            Ok(Value::Null)
+        }
+        PostgresStoreOperation::PatchGraphProjectionMetadata {
+            namespace,
+            workspace_id,
+            graph_space,
+            table,
+            entity_id,
+            document,
+            metadata_patch,
+            patch_document_metadata,
+        } => Ok(json!(
+            store
+                .patch_graph_projection_metadata(
+                    kogwistar_store_postgres::GraphProjectionMetadataPatch {
+                        scope: graph_scope(namespace, workspace_id, graph_space),
+                        table,
+                        entity_id,
+                        document,
+                        metadata_patch,
+                        patch_document_metadata,
+                    },
+                )
+                .await?
         )),
         PostgresStoreOperation::GraphProjectionRecords {
             namespace,
@@ -3685,7 +3909,7 @@ async fn postgres_store_operation_json(
                     Box::pin(async move {
                         let mut results = Vec::with_capacity(operations.len());
                         for operation in operations {
-                            results.push(postgres_batch_operation_json(uow, operation).await?);
+                            results.push(postgres_uow_operation_json(uow, operation).await?);
                         }
                         if abort {
                             return Err(PostgresStoreError::TransactionAborted(
@@ -3700,11 +3924,45 @@ async fn postgres_store_operation_json(
     }
 }
 
-async fn postgres_batch_operation_json(
+async fn postgres_uow_operation_json(
     uow: &mut PostgresUnitOfWork<'_>,
     operation: PostgresStoreOperation,
 ) -> Result<Value, PostgresStoreError> {
     match operation {
+        PostgresStoreOperation::NextGlobalSeq => Ok(json!(uow.next_global_seq().await?)),
+        PostgresStoreOperation::CurrentGlobalSeq => Ok(json!(uow.current_global_seq().await?)),
+        PostgresStoreOperation::NextUserSeq { user_id } => {
+            Ok(json!(uow.next_user_seq(&user_id).await?))
+        }
+        PostgresStoreOperation::CurrentUserSeq { user_id } => {
+            Ok(json!(uow.current_user_seq(&user_id).await?))
+        }
+        PostgresStoreOperation::SetUserSeq { user_id, value } => {
+            uow.set_user_seq(&user_id, value).await?;
+            Ok(Value::Null)
+        }
+        PostgresStoreOperation::GetIndexAppliedFingerprint {
+            namespace,
+            coalesce_key,
+        } => Ok(json!(
+            uow.get_index_applied_fingerprint(&namespace, &coalesce_key)
+                .await?
+        )),
+        PostgresStoreOperation::SetIndexAppliedFingerprint {
+            namespace,
+            coalesce_key,
+            applied_fingerprint,
+            last_job_id,
+        } => {
+            uow.set_index_applied_fingerprint(
+                &namespace,
+                &coalesce_key,
+                applied_fingerprint,
+                last_job_id,
+            )
+            .await?;
+            Ok(Value::Null)
+        }
         PostgresStoreOperation::AllocEventSeq { namespace } => {
             Ok(json!(uow.alloc_event_seq(&namespace).await?))
         }
@@ -3745,6 +4003,93 @@ async fn postgres_batch_operation_json(
                 embedding_dim,
             })
             .await?,
+        )),
+        PostgresStoreOperation::GraphMetadataPatchMutation {
+            namespace,
+            workspace_id,
+            graph_space,
+            table,
+            entity_kind,
+            event_id,
+            op,
+            entity_id,
+            document,
+            metadata_patch,
+            payload,
+        } => Ok(optional_graph_mutation_json(
+            uow.apply_graph_metadata_patch_mutation(
+                kogwistar_store_postgres::GraphMetadataPatchMutation {
+                    scope: graph_scope(namespace, workspace_id, graph_space),
+                    table,
+                    entity_kind,
+                    event_id,
+                    op,
+                    entity_id,
+                    document,
+                    metadata_patch,
+                    payload,
+                },
+            )
+            .await?,
+        )),
+        PostgresStoreOperation::GraphDeleteMutation {
+            namespace,
+            workspace_id,
+            graph_space,
+            table,
+            entity_kind,
+            event_id,
+            entity_id,
+            payload,
+        } => Ok(optional_graph_mutation_json(
+            uow.apply_graph_delete_mutation(kogwistar_store_postgres::GraphDeleteMutation {
+                scope: graph_scope(namespace, workspace_id, graph_space),
+                table,
+                entity_kind,
+                event_id,
+                entity_id,
+                payload,
+            })
+            .await?,
+        )),
+        PostgresStoreOperation::UpsertGraphProjection {
+            namespace,
+            workspace_id,
+            graph_space,
+            table,
+            record,
+            embedding_dim,
+        } => {
+            uow.upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
+                scope: graph_scope(namespace, workspace_id, graph_space),
+                table,
+                record: graph_mutation_record(record),
+                embedding_dim,
+            })
+            .await?;
+            Ok(Value::Null)
+        }
+        PostgresStoreOperation::PatchGraphProjectionMetadata {
+            namespace,
+            workspace_id,
+            graph_space,
+            table,
+            entity_id,
+            document,
+            metadata_patch,
+            patch_document_metadata,
+        } => Ok(json!(
+            uow.patch_graph_projection_metadata(
+                kogwistar_store_postgres::GraphProjectionMetadataPatch {
+                    scope: graph_scope(namespace, workspace_id, graph_space),
+                    table,
+                    entity_id,
+                    document,
+                    metadata_patch,
+                    patch_document_metadata,
+                },
+            )
+            .await?
         )),
         PostgresStoreOperation::PruneEntityEventsAfter { namespace, to_seq } => Ok(json!(
             uow.prune_entity_events_after(&namespace, to_seq).await?
@@ -4193,6 +4538,212 @@ fn postgres_runtime() -> Result<TokioRuntime, (&'static str, String)> {
         })
 }
 
+const POSTGRES_EXTERNAL_ROLLBACK: &str = "external PostgreSQL transaction rollback requested";
+
+enum PostgresSessionCommand {
+    Operation {
+        operation: Box<PostgresStoreOperation>,
+        response: mpsc::Sender<Result<Value, PostgresStoreError>>,
+    },
+    Finish {
+        commit: bool,
+    },
+}
+
+struct PostgresSession {
+    dsn: String,
+    schema: String,
+    sender: mpsc::Sender<PostgresSessionCommand>,
+    worker: Option<JoinHandle<Result<(), PostgresStoreError>>>,
+    finishing: bool,
+}
+
+fn postgres_sessions() -> &'static Mutex<BTreeMap<String, PostgresSession>> {
+    static SESSIONS: OnceLock<Mutex<BTreeMap<String, PostgresSession>>> = OnceLock::new();
+    SESSIONS.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+fn postgres_session_error(message: impl Into<String>) -> PostgresStoreError {
+    PostgresStoreError::TransactionAborted(message.into())
+}
+
+fn require_postgres_transaction_id(
+    transaction_id: Option<String>,
+) -> Result<String, PostgresStoreError> {
+    transaction_id
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            postgres_session_error("PostgreSQL transaction control requires transaction_id")
+        })
+}
+
+fn begin_postgres_session(
+    dsn: String,
+    schema: String,
+    transaction_id: String,
+) -> Result<(), PostgresStoreError> {
+    let mut sessions = postgres_sessions()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if sessions.contains_key(&transaction_id) {
+        return Err(postgres_session_error(
+            "PostgreSQL transaction_id is already active",
+        ));
+    }
+    if sessions
+        .values()
+        .any(|session| session.dsn == dsn && session.schema == schema)
+    {
+        return Err(postgres_session_error(
+            "PostgreSQL external transaction is already active for this store",
+        ));
+    }
+
+    let (sender, receiver) = mpsc::channel();
+    let (started_sender, started_receiver) =
+        mpsc::sync_channel::<Result<(), PostgresStoreError>>(1);
+    let worker_dsn = dsn.clone();
+    let worker_schema = schema.clone();
+    let worker = std::thread::spawn(move || {
+        let store = PostgresStore::from_dsn(&worker_dsn, &worker_schema)?;
+        let runtime = postgres_runtime().map_err(|(_, message)| postgres_session_error(message))?;
+        let result = runtime.block_on(store.transaction(move |uow| {
+            Box::pin(async move {
+                let _ = started_sender.send(Ok(()));
+                loop {
+                    let command = receiver.recv().map_err(|_| {
+                        postgres_session_error(
+                            "PostgreSQL transaction owner disconnected before commit or rollback",
+                        )
+                    })?;
+                    match command {
+                        PostgresSessionCommand::Operation {
+                            operation,
+                            response,
+                        } => {
+                            let result = postgres_uow_operation_json(uow, *operation).await;
+                            let _ = response.send(result);
+                        }
+                        PostgresSessionCommand::Finish { commit: true } => return Ok(()),
+                        PostgresSessionCommand::Finish { commit: false } => {
+                            return Err(postgres_session_error(POSTGRES_EXTERNAL_ROLLBACK));
+                        }
+                    }
+                }
+            })
+        }));
+        match result {
+            Err(PostgresStoreError::TransactionAborted(message))
+                if message == POSTGRES_EXTERNAL_ROLLBACK =>
+            {
+                Ok(())
+            }
+            other => other,
+        }
+    });
+    match started_receiver.recv() {
+        Ok(Ok(())) => {
+            sessions.insert(
+                transaction_id,
+                PostgresSession {
+                    dsn,
+                    schema,
+                    sender,
+                    worker: Some(worker),
+                    finishing: false,
+                },
+            );
+            Ok(())
+        }
+        Ok(Err(error)) => Err(error),
+        Err(_) => match worker.join() {
+            Ok(Err(error)) => Err(error),
+            Ok(Ok(())) => Err(postgres_session_error(
+                "PostgreSQL transaction worker exited before startup",
+            )),
+            Err(_) => Err(postgres_session_error(
+                "PostgreSQL transaction worker panicked during startup",
+            )),
+        },
+    }
+}
+
+fn postgres_session_operation(
+    transaction_id: &str,
+    operation: PostgresStoreOperation,
+) -> Result<Value, PostgresStoreError> {
+    let sender = {
+        let sessions = postgres_sessions()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        sessions
+            .get(transaction_id)
+            .map(|session| session.sender.clone())
+            .ok_or_else(|| postgres_session_error("PostgreSQL transaction_id is stale"))?
+    };
+    let (response_sender, response_receiver) = mpsc::channel();
+    sender
+        .send(PostgresSessionCommand::Operation {
+            operation: Box::new(operation),
+            response: response_sender,
+        })
+        .map_err(|_| postgres_session_error("PostgreSQL transaction worker is unavailable"))?;
+    response_receiver
+        .recv()
+        .map_err(|_| postgres_session_error("PostgreSQL transaction worker dropped its response"))?
+}
+
+fn finish_postgres_session(transaction_id: &str, commit: bool) -> Result<(), PostgresStoreError> {
+    let (sender, worker) = {
+        let mut sessions = postgres_sessions()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let session = sessions
+            .get_mut(transaction_id)
+            .ok_or_else(|| postgres_session_error("PostgreSQL transaction_id is stale"))?;
+        if session.finishing {
+            return Err(postgres_session_error(
+                "PostgreSQL transaction is already finishing",
+            ));
+        }
+        session.finishing = true;
+        let worker = session.worker.take().ok_or_else(|| {
+            postgres_session_error("PostgreSQL transaction worker is unavailable")
+        })?;
+        (session.sender.clone(), worker)
+    };
+    sender
+        .send(PostgresSessionCommand::Finish { commit })
+        .map_err(|_| postgres_session_error("PostgreSQL transaction worker is unavailable"))?;
+    let result = match worker.join() {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(error)) => Err(error),
+        Err(_) => Err(postgres_session_error(
+            "PostgreSQL transaction worker panicked",
+        )),
+    };
+    postgres_sessions()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(transaction_id);
+    result
+}
+
+fn require_no_active_postgres_session(dsn: &str, schema: &str) -> Result<(), PostgresStoreError> {
+    let sessions = postgres_sessions()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if sessions
+        .values()
+        .any(|session| session.dsn == dsn && session.schema == schema)
+    {
+        return Err(postgres_session_error(
+            "PostgreSQL operation does not own the active transaction",
+        ));
+    }
+    Ok(())
+}
+
 fn require_postgres_fields(value: &Value, allowed: &[&str]) -> Result<(), (&'static str, String)> {
     let object = value.as_object().ok_or_else(|| {
         (
@@ -4229,7 +4780,22 @@ fn validate_postgres_operation(value: &Value) -> Result<(), (&'static str, Strin
             )
         })?;
     let allowed = match kind {
-        "ensure_schema" => &["kind"][..],
+        "begin_transaction"
+        | "commit_transaction"
+        | "rollback_transaction"
+        | "ensure_schema"
+        | "next_global_seq"
+        | "current_global_seq" => &["kind"][..],
+        "next_user_seq" | "current_user_seq" => &["kind", "user_id"][..],
+        "set_user_seq" => &["kind", "user_id", "value"][..],
+        "get_index_applied_fingerprint" => &["kind", "namespace", "coalesce_key"][..],
+        "set_index_applied_fingerprint" => &[
+            "kind",
+            "namespace",
+            "coalesce_key",
+            "applied_fingerprint",
+            "last_job_id",
+        ][..],
         "create_graph_schema" => &[
             "kind",
             "embedding_dim",
@@ -4260,6 +4826,51 @@ fn validate_postgres_operation(value: &Value) -> Result<(), (&'static str, Strin
             "record",
             "payload",
             "embedding_dim",
+        ][..],
+        "graph_metadata_patch_mutation" => &[
+            "kind",
+            "namespace",
+            "workspace_id",
+            "graph_space",
+            "table",
+            "entity_kind",
+            "event_id",
+            "op",
+            "entity_id",
+            "document",
+            "metadata_patch",
+            "payload",
+        ][..],
+        "graph_delete_mutation" => &[
+            "kind",
+            "namespace",
+            "workspace_id",
+            "graph_space",
+            "table",
+            "entity_kind",
+            "event_id",
+            "entity_id",
+            "payload",
+        ][..],
+        "upsert_graph_projection" => &[
+            "kind",
+            "namespace",
+            "workspace_id",
+            "graph_space",
+            "table",
+            "record",
+            "embedding_dim",
+        ][..],
+        "patch_graph_projection_metadata" => &[
+            "kind",
+            "namespace",
+            "workspace_id",
+            "graph_space",
+            "table",
+            "entity_id",
+            "document",
+            "metadata_patch",
+            "patch_document_metadata",
         ][..],
         "graph_projection_records" => &[
             "kind",
@@ -4517,7 +5128,7 @@ fn validate_postgres_operation(value: &Value) -> Result<(), (&'static str, Strin
 fn postgres_store_json_impl(payload_json: &str) -> Result<String, (&'static str, String)> {
     let value: Value = serde_json::from_str(payload_json)
         .map_err(|error| (STORE_INVALID_JSON, format!("invalid JSON: {error}")))?;
-    require_postgres_fields(&value, &["dsn", "schema", "operation"])?;
+    require_postgres_fields(&value, &["dsn", "schema", "transaction_id", "operation"])?;
     let operation = value.get("operation").ok_or_else(|| {
         (
             STORE_INVALID_PAYLOAD,
@@ -4531,11 +5142,35 @@ fn postgres_store_json_impl(payload_json: &str) -> Result<String, (&'static str,
             format!("invalid PostgreSQL store payload: {error}"),
         )
     })?;
-    let store = PostgresStore::from_dsn(&request.dsn, &request.schema)
-        .map_err(|error| (postgres_store_error_code(&error), error.to_string()))?;
-    let runtime = postgres_runtime()?;
-    runtime
-        .block_on(postgres_store_operation_json(&store, request.operation))
+    let result: Result<Value, PostgresStoreError> = (|| match request.operation {
+        PostgresStoreOperation::BeginTransaction => {
+            let transaction_id = require_postgres_transaction_id(request.transaction_id)?;
+            begin_postgres_session(request.dsn, request.schema, transaction_id)?;
+            Ok(Value::Null)
+        }
+        PostgresStoreOperation::CommitTransaction => {
+            let transaction_id = require_postgres_transaction_id(request.transaction_id)?;
+            finish_postgres_session(&transaction_id, true)?;
+            Ok(Value::Null)
+        }
+        PostgresStoreOperation::RollbackTransaction => {
+            let transaction_id = require_postgres_transaction_id(request.transaction_id)?;
+            finish_postgres_session(&transaction_id, false)?;
+            Ok(Value::Null)
+        }
+        operation => {
+            if let Some(transaction_id) = request.transaction_id {
+                postgres_session_operation(&transaction_id, operation)
+            } else {
+                require_no_active_postgres_session(&request.dsn, &request.schema)?;
+                let store = PostgresStore::from_dsn(&request.dsn, &request.schema)?;
+                let runtime =
+                    postgres_runtime().map_err(|(_, message)| postgres_session_error(message))?;
+                runtime.block_on(postgres_store_operation_json(&store, operation))
+            }
+        }
+    })();
+    result
         .and_then(|value| {
             serde_json::to_string(&value).map_err(|error| {
                 PostgresStoreError::TransactionAborted(format!("cannot encode result: {error}"))
