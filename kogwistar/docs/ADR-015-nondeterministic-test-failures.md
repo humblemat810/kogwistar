@@ -270,10 +270,38 @@ real but independent serving-path defect.
 ### Containment
 
 - Keep the minimum fake smoke cases in normal compatibility profiles.
-- Mark backend and stress cross-products `slow`; milestone/nightly still run them.
+- Mark semantically redundant backend and stress cross-products `slow` without
+  `ci`/`ci_full`; run them only in an explicit slow/nightly job.
 - Do not claim the Rust projection/index fix improves this Python-owned test.
 - Profile or fix `pydantic_extension` stack inference separately; do not weaken
   runtime semantics or replace live backend coverage.
+
+## Case 8: Manual OCR/model-quality matrix leaked into migration CI
+
+### Symptom
+
+The parser milestone invoked real Ollama GLM/Gemma and Gemini OCR cases despite
+the ADR selector excluding `manual`, `llm_real`, and `requires_ollama`. Two PDF
+cases failed after about ten minutes because the live model returned a valid root
+with no semantic children.
+
+### Cause and proof
+
+`test_workflow_first_ocr_manual_matrix` described itself as manual and wrote
+inspection-heavy artifacts, but carried `ci_full` and none of the provider
+markers. Similar live Ollama semantic/page-index smokes also carried `ci_full`.
+These are parser-repository model-choice and output-quality checks, not Rust
+contract/storage/runtime parity checks.
+
+### Containment
+
+- Real-provider tests use `llm_real` or `manual`; Ollama tests additionally use
+  `requires_ollama`.
+- Such tests never carry `ci` or `ci_full`.
+- `kg-doc-parser` now rejects mixed deterministic-CI and real-provider markers at
+  collection time.
+- Deterministic parser CI retains fake/injected OCR, grounding, retry, source-map,
+  and workflow-contract coverage.
 
 ## Case 6: Feature marker cross-product includes slow live embeddings
 

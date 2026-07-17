@@ -37,9 +37,18 @@
     "gate_status_field": "gate.status"
   },
   "current_persistent_evidence": {
-    "benchmark_report": "contracts/benchmarks/rust-persistent-sqlite-current-windows.json",
+    "benchmark_report": "contracts/benchmarks/rust-persistent-sqlite-current-linux.json",
     "benchmark_command": ".venv/Scripts/python.exe scripts/rust_port_persistent_benchmark.py --items 100 --read-cycles 20 --samples 5 --output-root <runtime-dir> --report contracts/benchmarks/rust-persistent-sqlite-current-windows.json",
-    "scope": "persistent authoritative SQLite event and named-projection capabilities through the shipped Python and PyO3 facades"
+    "scope": "persistent authoritative SQLite event and named-projection capabilities through the shipped Python and PyO3 facades",
+    "gate_status": "passed",
+    "cutover_use": "eligible_after_public-routing",
+    "result": "Persistent Rust handle removed per-call SQLite open/WAL churn. All p95 latency, throughput, peak RSS, and state-digest checks pass; authority remains fail-closed until the public owner flag is routed and verified."
+  },
+  "runtime_serving_evidence": {
+    "benchmark_report": "contracts/benchmarks/rust-runtime-serving-current-windows.json",
+    "benchmark_command": ".venv/Scripts/python.exe scripts/rust_runtime_serving_benchmark.py --output-root <runtime-dir> --samples 5 --iterations 200 --report contracts/benchmarks/rust-runtime-serving-current-windows.json",
+    "scope": "indexed exact retry and warm current-state projection lookup",
+    "gate_status_field": "gate.status"
   },
   "reference_application": {
     "name": "kogwistar-llm-wiki",
@@ -435,6 +444,7 @@
       "configuration": "KOGWISTAR_IMPL_CONTRACTS",
       "current_authoritative_writer": "python",
       "target_authoritative_writer": "rust",
+      "rust_cutover_ready": true,
       "rollback": "set KOGWISTAR_IMPL_CONTRACTS=python; no data conversion"
     },
     {
@@ -442,6 +452,7 @@
       "configuration": "KOGWISTAR_IMPL_META_STORE",
       "current_authoritative_writer": "python",
       "target_authoritative_writer": "rust",
+      "rust_cutover_ready": false,
       "rollback": "stop Rust writer, verify schema compatibility, set KOGWISTAR_IMPL_META_STORE=python"
     },
     {
@@ -449,6 +460,7 @@
       "configuration": "KOGWISTAR_IMPL_META_STORE",
       "current_authoritative_writer": "python",
       "target_authoritative_writer": "rust",
+      "rust_cutover_ready": false,
       "rollback": "drain Rust writer, verify committed cursor, set KOGWISTAR_IMPL_META_STORE=python; reuse same event log"
     },
     {
@@ -456,6 +468,7 @@
       "configuration": "KOGWISTAR_IMPL_META_STORE",
       "current_authoritative_writer": "python",
       "target_authoritative_writer": "rust",
+      "rust_cutover_ready": false,
       "rollback": "set KOGWISTAR_IMPL_META_STORE=python and rebuild disposable projections from shared event history"
     },
     {
@@ -463,6 +476,7 @@
       "configuration": "KOGWISTAR_IMPL_META_STORE",
       "current_authoritative_writer": "python",
       "target_authoritative_writer": "rust",
+      "rust_cutover_ready": false,
       "rollback": "stop claims, wait or expire leases, set KOGWISTAR_IMPL_META_STORE=python; preserve durable rows"
     },
     {
@@ -470,6 +484,7 @@
       "configuration": "KOGWISTAR_IMPL_GRAPH_STORE",
       "current_authoritative_writer": "python",
       "target_authoritative_writer": "rust",
+      "rust_cutover_ready": false,
       "rollback": "drain Rust mutations, verify transaction cursor, set KOGWISTAR_IMPL_GRAPH_STORE=python; reuse same PostgreSQL state"
     },
     {
@@ -477,6 +492,7 @@
       "configuration": "KOGWISTAR_IMPL_GRAPH_STORE",
       "current_authoritative_writer": "python",
       "target_authoritative_writer": "python-adapter",
+      "rust_cutover_ready": false,
       "rollback": "retain Python adapter and single-writer store; shadow uses isolated read-only snapshot"
     },
     {

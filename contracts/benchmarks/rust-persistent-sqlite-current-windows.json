@@ -1,0 +1,376 @@
+{
+  "benchmark_version": 1,
+  "dataset": "rust-port-persistent-sqlite-v1",
+  "interpretation": "Includes current Python-to-PyO3 JSON boundary and one SQLite connection per capability call; it measures the shipped facade, not an in-process Rust microbenchmark.",
+  "items": 100,
+  "modes": {
+    "python": {
+      "metrics": {
+        "event_append": {
+          "median_elapsed_ms": 749.1935,
+          "median_throughput_ops_per_sec": 133.476865455987,
+          "p95_elapsed_ms": 890.5909
+        },
+        "event_replay": {
+          "median_elapsed_ms": 34.5439,
+          "median_throughput_ops_per_sec": 57897.34222250528,
+          "p95_elapsed_ms": 72.1389
+        },
+        "projection_list": {
+          "median_elapsed_ms": 30.2342,
+          "median_throughput_ops_per_sec": 66150.25368622289,
+          "p95_elapsed_ms": 56.7732
+        },
+        "projection_replace": {
+          "median_elapsed_ms": 702.9119,
+          "median_throughput_ops_per_sec": 142.26533936898778,
+          "p95_elapsed_ms": 1000.7572
+        }
+      },
+      "sample_count": 5,
+      "samples": [
+        {
+          "database_bytes": 4096,
+          "event_count": 100,
+          "metrics": {
+            "event_append": {
+              "elapsed_ms": 699.1045,
+              "operations": 100,
+              "throughput_ops_per_sec": 143.04013205464992
+            },
+            "event_replay": {
+              "elapsed_ms": 31.8399,
+              "operations": 2000,
+              "throughput_ops_per_sec": 62814.2676327501
+            },
+            "projection_list": {
+              "elapsed_ms": 26.0344,
+              "operations": 2000,
+              "throughput_ops_per_sec": 76821.4362535722
+            },
+            "projection_replace": {
+              "elapsed_ms": 702.9119,
+              "operations": 100,
+              "throughput_ops_per_sec": 142.26533936898778
+            }
+          },
+          "mode": "python",
+          "projection_count": 100,
+          "state_digest": "b5baf92848c7f4698604e72c0af1cc9f5e8fa4efb1106017a98b8c88b3de986f"
+        },
+        {
+          "database_bytes": 4096,
+          "event_count": 100,
+          "metrics": {
+            "event_append": {
+              "elapsed_ms": 761.1007,
+              "operations": 100,
+              "throughput_ops_per_sec": 131.38865855727107
+            },
+            "event_replay": {
+              "elapsed_ms": 34.5439,
+              "operations": 2000,
+              "throughput_ops_per_sec": 57897.34222250528
+            },
+            "projection_list": {
+              "elapsed_ms": 28.197,
+              "operations": 2000,
+              "throughput_ops_per_sec": 70929.53151044437
+            },
+            "projection_replace": {
+              "elapsed_ms": 691.5913,
+              "operations": 100,
+              "throughput_ops_per_sec": 144.59406878021744
+            }
+          },
+          "mode": "python",
+          "projection_count": 100,
+          "state_digest": "b5baf92848c7f4698604e72c0af1cc9f5e8fa4efb1106017a98b8c88b3de986f"
+        },
+        {
+          "database_bytes": 4096,
+          "event_count": 100,
+          "metrics": {
+            "event_append": {
+              "elapsed_ms": 713.4082,
+              "operations": 100,
+              "throughput_ops_per_sec": 140.17220435649605
+            },
+            "event_replay": {
+              "elapsed_ms": 31.0181,
+              "operations": 2000,
+              "throughput_ops_per_sec": 64478.48191862171
+            },
+            "projection_list": {
+              "elapsed_ms": 30.2342,
+              "operations": 2000,
+              "throughput_ops_per_sec": 66150.25368622289
+            },
+            "projection_replace": {
+              "elapsed_ms": 668.8395,
+              "operations": 100,
+              "throughput_ops_per_sec": 149.51270073014527
+            }
+          },
+          "mode": "python",
+          "projection_count": 100,
+          "state_digest": "b5baf92848c7f4698604e72c0af1cc9f5e8fa4efb1106017a98b8c88b3de986f"
+        },
+        {
+          "database_bytes": 4096,
+          "event_count": 100,
+          "metrics": {
+            "event_append": {
+              "elapsed_ms": 749.1935,
+              "operations": 100,
+              "throughput_ops_per_sec": 133.476865455987
+            },
+            "event_replay": {
+              "elapsed_ms": 34.8068,
+              "operations": 2000,
+              "throughput_ops_per_sec": 57460.03654458324
+            },
+            "projection_list": {
+              "elapsed_ms": 40.4088,
+              "operations": 2000,
+              "throughput_ops_per_sec": 49494.169586822674
+            },
+            "projection_replace": {
+              "elapsed_ms": 820.0747,
+              "operations": 100,
+              "throughput_ops_per_sec": 121.94011106549196
+            }
+          },
+          "mode": "python",
+          "projection_count": 100,
+          "state_digest": "b5baf92848c7f4698604e72c0af1cc9f5e8fa4efb1106017a98b8c88b3de986f"
+        },
+        {
+          "database_bytes": 4096,
+          "event_count": 100,
+          "metrics": {
+            "event_append": {
+              "elapsed_ms": 890.5909,
+              "operations": 100,
+              "throughput_ops_per_sec": 112.28500089098148
+            },
+            "event_replay": {
+              "elapsed_ms": 72.1389,
+              "operations": 2000,
+              "throughput_ops_per_sec": 27724.29299587324
+            },
+            "projection_list": {
+              "elapsed_ms": 56.7732,
+              "operations": 2000,
+              "throughput_ops_per_sec": 35227.889215334
+            },
+            "projection_replace": {
+              "elapsed_ms": 1000.7572,
+              "operations": 100,
+              "throughput_ops_per_sec": 99.92433729180264
+            }
+          },
+          "mode": "python",
+          "projection_count": 100,
+          "state_digest": "b5baf92848c7f4698604e72c0af1cc9f5e8fa4efb1106017a98b8c88b3de986f"
+        }
+      ],
+      "state_digest": "b5baf92848c7f4698604e72c0af1cc9f5e8fa4efb1106017a98b8c88b3de986f"
+    },
+    "rust": {
+      "metrics": {
+        "event_append": {
+          "median_elapsed_ms": 949.5207,
+          "median_throughput_ops_per_sec": 105.31629273590349,
+          "p95_elapsed_ms": 1436.7581
+        },
+        "event_replay": {
+          "median_elapsed_ms": 108.9463,
+          "median_throughput_ops_per_sec": 18357.667952009386,
+          "p95_elapsed_ms": 205.2167
+        },
+        "projection_list": {
+          "median_elapsed_ms": 155.7514,
+          "median_throughput_ops_per_sec": 12840.976068272901,
+          "p95_elapsed_ms": 190.3795
+        },
+        "projection_replace": {
+          "median_elapsed_ms": 995.7236,
+          "median_throughput_ops_per_sec": 100.42947661379122,
+          "p95_elapsed_ms": 1270.0239
+        }
+      },
+      "sample_count": 5,
+      "samples": [
+        {
+          "database_bytes": 4096,
+          "event_count": 100,
+          "metrics": {
+            "event_append": {
+              "elapsed_ms": 1436.7581,
+              "operations": 100,
+              "throughput_ops_per_sec": 69.60113884167419
+            },
+            "event_replay": {
+              "elapsed_ms": 205.2167,
+              "operations": 2000,
+              "throughput_ops_per_sec": 9745.795541980746
+            },
+            "projection_list": {
+              "elapsed_ms": 180.4271,
+              "operations": 2000,
+              "throughput_ops_per_sec": 11084.809321881246
+            },
+            "projection_replace": {
+              "elapsed_ms": 1270.0239,
+              "operations": 100,
+              "throughput_ops_per_sec": 78.73867570523673
+            }
+          },
+          "mode": "rust",
+          "projection_count": 100,
+          "state_digest": "b5baf92848c7f4698604e72c0af1cc9f5e8fa4efb1106017a98b8c88b3de986f"
+        },
+        {
+          "database_bytes": 4096,
+          "event_count": 100,
+          "metrics": {
+            "event_append": {
+              "elapsed_ms": 982.9457,
+              "operations": 100,
+              "throughput_ops_per_sec": 101.73501954380593
+            },
+            "event_replay": {
+              "elapsed_ms": 108.9463,
+              "operations": 2000,
+              "throughput_ops_per_sec": 18357.667952009386
+            },
+            "projection_list": {
+              "elapsed_ms": 117.9674,
+              "operations": 2000,
+              "throughput_ops_per_sec": 16953.836398869516
+            },
+            "projection_replace": {
+              "elapsed_ms": 995.7236,
+              "operations": 100,
+              "throughput_ops_per_sec": 100.42947661379122
+            }
+          },
+          "mode": "rust",
+          "projection_count": 100,
+          "state_digest": "b5baf92848c7f4698604e72c0af1cc9f5e8fa4efb1106017a98b8c88b3de986f"
+        },
+        {
+          "database_bytes": 4096,
+          "event_count": 100,
+          "metrics": {
+            "event_append": {
+              "elapsed_ms": 949.5207,
+              "operations": 100,
+              "throughput_ops_per_sec": 105.31629273590349
+            },
+            "event_replay": {
+              "elapsed_ms": 94.5452,
+              "operations": 2000,
+              "throughput_ops_per_sec": 21153.903106662212
+            },
+            "projection_list": {
+              "elapsed_ms": 155.7514,
+              "operations": 2000,
+              "throughput_ops_per_sec": 12840.976068272901
+            },
+            "projection_replace": {
+              "elapsed_ms": 935.3498,
+              "operations": 100,
+              "throughput_ops_per_sec": 106.91187403899589
+            }
+          },
+          "mode": "rust",
+          "projection_count": 100,
+          "state_digest": "b5baf92848c7f4698604e72c0af1cc9f5e8fa4efb1106017a98b8c88b3de986f"
+        },
+        {
+          "database_bytes": 4096,
+          "event_count": 100,
+          "metrics": {
+            "event_append": {
+              "elapsed_ms": 892.6249,
+              "operations": 100,
+              "throughput_ops_per_sec": 112.02914012369585
+            },
+            "event_replay": {
+              "elapsed_ms": 104.4124,
+              "operations": 2000,
+              "throughput_ops_per_sec": 19154.813029870016
+            },
+            "projection_list": {
+              "elapsed_ms": 146.1616,
+              "operations": 2000,
+              "throughput_ops_per_sec": 13683.484581449573
+            },
+            "projection_replace": {
+              "elapsed_ms": 979.2981,
+              "operations": 100,
+              "throughput_ops_per_sec": 102.1139528403047
+            }
+          },
+          "mode": "rust",
+          "projection_count": 100,
+          "state_digest": "b5baf92848c7f4698604e72c0af1cc9f5e8fa4efb1106017a98b8c88b3de986f"
+        },
+        {
+          "database_bytes": 4096,
+          "event_count": 100,
+          "metrics": {
+            "event_append": {
+              "elapsed_ms": 917.8385,
+              "operations": 100,
+              "throughput_ops_per_sec": 108.95162928990231
+            },
+            "event_replay": {
+              "elapsed_ms": 111.1157,
+              "operations": 2000,
+              "throughput_ops_per_sec": 17999.25663070115
+            },
+            "projection_list": {
+              "elapsed_ms": 190.3795,
+              "operations": 2000,
+              "throughput_ops_per_sec": 10505.332769547142
+            },
+            "projection_replace": {
+              "elapsed_ms": 1023.675,
+              "operations": 100,
+              "throughput_ops_per_sec": 97.68725425550102
+            }
+          },
+          "mode": "rust",
+          "projection_count": 100,
+          "state_digest": "b5baf92848c7f4698604e72c0af1cc9f5e8fa4efb1106017a98b8c88b3de986f"
+        }
+      ],
+      "state_digest": "b5baf92848c7f4698604e72c0af1cc9f5e8fa4efb1106017a98b8c88b3de986f"
+    }
+  },
+  "python": "3.13.3 (tags/v3.13.3:6280bb5, Apr  8 2025, 14:47:33) [MSC v.1943 64 bit (AMD64)]",
+  "ratios": {
+    "event_append": {
+      "latency_rust_over_python": 1.267390467215746,
+      "throughput_rust_over_python": 0.7890228196183612
+    },
+    "event_replay": {
+      "latency_rust_over_python": 3.153850607487863,
+      "throughput_rust_over_python": 0.3170727229837085
+    },
+    "projection_list": {
+      "latency_rust_over_python": 5.151497310992187,
+      "throughput_rust_over_python": 0.19411831932168827
+    },
+    "projection_replace": {
+      "latency_rust_over_python": 1.4165695587171026,
+      "throughput_rust_over_python": 0.7059307422260556
+    }
+  },
+  "read_cycles": 20,
+  "samples_per_mode": 5,
+  "scope": "persistent authoritative SQLite event and named-projection capabilities"
+}

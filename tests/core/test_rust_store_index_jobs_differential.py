@@ -50,6 +50,34 @@ def test_sqlite_python_to_rust_and_rust_to_python_queue_contract(tmp_path: Path)
     rows = python.list_index_jobs(namespace="other")
     assert rows[0].job_id == "rust" and rows[0].payload_json == '{"from":"rust"}'
 
+    python.set_index_applied_fingerprint(
+        namespace="ns", coalesce_key="node:n:doc", applied_fingerprint="python-fp"
+    )
+    assert _sqlite(
+        python.db_path,
+        {
+            "kind": "get_index_applied_fingerprint",
+            "namespace": "ns",
+            "coalesce_key": "node:n:doc",
+        },
+    ) == "python-fp"
+    assert _sqlite(
+        python.db_path,
+        {
+            "kind": "set_index_applied_fingerprint",
+            "namespace": "other",
+            "coalesce_key": "node:n:doc",
+            "applied_fingerprint": "rust-fp",
+            "last_job_id": "rust",
+        },
+    ) is None
+    assert (
+        python.get_index_applied_fingerprint(
+            namespace="other", coalesce_key="node:n:doc"
+        )
+        == "rust-fp"
+    )
+
 
 def test_sqlite_coalesce_claim_tokens_retry_tail_namespace_and_rollback(tmp_path: Path) -> None:
     path = tmp_path / "engine.db"

@@ -33,6 +33,41 @@ WORKLOADS = (
 )
 
 
+def _peak_rss_bytes() -> int:
+    if sys.platform == "win32":
+        import ctypes
+        from ctypes import wintypes
+
+        class ProcessMemoryCounters(ctypes.Structure):
+            _fields_ = [
+                ("cb", wintypes.DWORD),
+                ("PageFaultCount", wintypes.DWORD),
+                ("PeakWorkingSetSize", ctypes.c_size_t),
+                ("WorkingSetSize", ctypes.c_size_t),
+                ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                ("PagefileUsage", ctypes.c_size_t),
+                ("PeakPagefileUsage", ctypes.c_size_t),
+            ]
+
+        counters = ProcessMemoryCounters()
+        counters.cb = ctypes.sizeof(counters)
+        if not ctypes.windll.psapi.GetProcessMemoryInfo(
+            ctypes.windll.kernel32.GetCurrentProcess(),
+            ctypes.byref(counters),
+            counters.cb,
+        ):
+            raise OSError("GetProcessMemoryInfo failed")
+        return int(counters.PeakWorkingSetSize)
+
+    import resource
+
+    value = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+    return value if sys.platform == "darwin" else value * 1024
+
+
 def _canonical(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
@@ -72,6 +107,7 @@ def _run_mode(mode: str, path: Path, *, items: int, read_cycles: int) -> dict[st
     projection_namespace = "benchmark_projection"
     python_store = EngineSQLite(path.parent, filename=path.name)
     python_store.ensure_initialized()
+    baseline_peak_rss_bytes = _peak_rss_bytes()
 
     if mode == "python":
         def append_events() -> int:
@@ -153,12 +189,39 @@ def _run_mode(mode: str, path: Path, *, items: int, read_cycles: int) -> dict[st
         "projection_replace": _measure(replace_projections),
         "projection_list": _measure(list_projections),
     }
-    events = list(python_store.iter_entity_events(
-        namespace=namespace, from_seq=1, batch_size=items + 1
-    ))
-    projections = python_store.list_named_projections(projection_namespace)
+    if mode == "python":
+        events = [
+            list(row)
+            for row in python_store.iter_entity_events(
+                namespace=namespace, from_seq=1, batch_size=items + 1
+            )
+        ]
+        projections = python_store.list_named_projections(projection_namespace)
+    else:
+        # Keep each authority benchmark on its own facade. Loading CPython's
+        # `_sqlite3` and a bundled-rusqlite PyO3 extension against the same WAL
+        # in one process is not a supported authority mode and can interpose
+        # SQLite symbols on ELF platforms. Cross-implementation rollback is
+        # verified separately, after the writer process exits.
+        rust_events = call({
+            "kind": "exclusive_raw_replay",
+            "namespace": namespace,
+            "after_seq": 0,
+            "limit": items + 1,
+        })
+        events = [
+            [
+                row["seq"], row["entity_kind"], row["entity_id"],
+                row["op"], row["payload_json"],
+            ]
+            for row in rust_events
+        ]
+        projections = call({
+            "kind": "list_named_projections",
+            "namespace": projection_namespace,
+        })
     canonical_state = {
-        "events": [list(row) for row in events],
+        "events": events,
         "projections": [
             {key: value for key, value in row.items() if key != "updated_at_ms"}
             for row in projections
@@ -171,6 +234,10 @@ def _run_mode(mode: str, path: Path, *, items: int, read_cycles: int) -> dict[st
         "event_count": len(events),
         "projection_count": len(projections),
         "database_bytes": path.stat().st_size,
+        "peak_rss_bytes": _peak_rss_bytes(),
+        "workload_peak_rss_delta_bytes": max(
+            0, _peak_rss_bytes() - baseline_peak_rss_bytes
+        ),
     }
 
 
@@ -204,6 +271,15 @@ def _summary(samples: list[dict[str, Any]]) -> dict[str, Any]:
         "sample_count": len(samples),
         "state_digest": state_digests.pop(),
         "metrics": metrics,
+        "peak_rss_bytes": statistics.median(
+            int(sample["peak_rss_bytes"]) for sample in samples
+        ),
+        "p95_peak_rss_bytes": _percentile(
+            [float(sample["peak_rss_bytes"]) for sample in samples], 0.95
+        ),
+        "workload_peak_rss_delta_bytes": statistics.median(
+            int(sample["workload_peak_rss_delta_bytes"]) for sample in samples
+        ),
         "samples": samples,
     }
 
@@ -227,12 +303,27 @@ def run_benchmark(output_root: Path, *, items: int, read_cycles: int,
                 modes["rust"]["metrics"][workload]["median_throughput_ops_per_sec"]
                 / modes["python"]["metrics"][workload]["median_throughput_ops_per_sec"]
             ),
-            "latency_rust_over_python": (
-                modes["rust"]["metrics"][workload]["median_elapsed_ms"]
-                / modes["python"]["metrics"][workload]["median_elapsed_ms"]
+            "p95_latency_rust_over_python": (
+                modes["rust"]["metrics"][workload]["p95_elapsed_ms"]
+                / modes["python"]["metrics"][workload]["p95_elapsed_ms"]
             ),
         }
         for workload in WORKLOADS
+    }
+    rss_ratio = (
+        modes["rust"]["p95_peak_rss_bytes"]
+        / modes["python"]["p95_peak_rss_bytes"]
+    )
+    gate_checks = {
+        "p95_latency_no_worse_than_110_percent": all(
+            value["p95_latency_rust_over_python"] <= 1.10
+            for value in ratios.values()
+        ),
+        "throughput_at_least_95_percent": all(
+            value["throughput_rust_over_python"] >= 0.95
+            for value in ratios.values()
+        ),
+        "peak_rss_no_worse_than_110_percent": rss_ratio <= 1.10,
     }
     return {
         "benchmark_version": BENCHMARK_VERSION,
@@ -244,9 +335,15 @@ def run_benchmark(output_root: Path, *, items: int, read_cycles: int,
         "python": sys.version,
         "modes": modes,
         "ratios": ratios,
+        "peak_rss_rust_over_python": rss_ratio,
+        "gate": {
+            "checks": gate_checks,
+            "status": "passed" if all(gate_checks.values()) else "failed",
+        },
         "interpretation": (
             "Includes current Python-to-PyO3 JSON boundary and one SQLite connection per "
-            "capability call; it measures the shipped facade, not an in-process Rust microbenchmark."
+            "capability call; each mode verifies state through its own shipped facade. "
+            "Cross-implementation rollback is a separate fresh-process compatibility gate."
         ),
     }
 

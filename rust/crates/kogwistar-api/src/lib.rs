@@ -22,8 +22,8 @@ use kogwistar_runtime::{
 use kogwistar_store::{
     AuthIdentityStore, AuthUser, EntityEvent, LaneMessageFilter, NamedProjection,
     NamedProjectionWrite, NewProjectedLaneMessage, ProjectedLaneMessage, ResolveExternalIdentity,
-    ServerRun, ServerRunCreate, ServerRunEvent, WorkflowDesignDeltaWrite,
-    WorkflowDesignSnapshot, WorkflowDesignSnapshotWrite,
+    ServerRun, ServerRunCreate, ServerRunEvent, WorkflowDesignDeltaWrite, WorkflowDesignSnapshot,
+    WorkflowDesignSnapshotWrite,
 };
 use kogwistar_store_postgres::{
     NewRawEntityEvent as PostgresNewRawEntityEvent, PostgresAuthStore, PostgresStore,
@@ -220,6 +220,117 @@ pub struct ImplementationSnapshot {
     pub server_cutover_ready: bool,
 }
 
+/// Frozen OpenAPI operations still owned by the Python rollback deployment.
+/// Keep this list explicit so health/readiness cannot infer server completion
+/// from transport registration alone.
+pub const PENDING_SERVER_CUTOVER_ROUTES: &[(&str, &str)] = &[
+    ("DELETE", "/admin/doc/{doc_id}"),
+    ("GET", "/api/conversations"),
+    ("GET", "/api/conversations/{conversation_id}"),
+    (
+        "GET",
+        "/api/conversations/{conversation_id}/snapshots/latest",
+    ),
+    ("GET", "/api/conversations/{conversation_id}/turns"),
+    ("GET", "/api/search_index_hybrid"),
+    ("GET", "/api/viz/cytoscape.json"),
+    ("GET", "/api/viz/d3.json"),
+    ("GET", "/api/workflow/services/{service_id}/events"),
+    ("GET", "/api/workflow/tools/audit"),
+    ("GET", "/viz/cytoscape"),
+    ("GET", "/viz/d3"),
+    ("GET", "/viz/d3.bundle"),
+    ("GET", "/viz/go"),
+    ("POST", "/api/add_index_entries"),
+    ("POST", "/api/conversations"),
+    ("POST", "/api/conversations/{conversation_id}/turns:answer"),
+    ("POST", "/api/document"),
+    ("POST", "/api/document.upsert_tree"),
+    ("POST", "/api/document.validate_graph"),
+    ("POST", "/api/graph/upsert"),
+    ("POST", "/api/syscall/v1/{op}"),
+    ("POST", "/api/workflow/services"),
+    ("POST", "/api/workflow/services/repair"),
+    ("POST", "/api/workflow/services/{service_id}/disable"),
+    ("POST", "/api/workflow/services/{service_id}/enable"),
+    ("POST", "/api/workflow/services/{service_id}/heartbeat"),
+    ("POST", "/api/workflow/services/{service_id}/repair"),
+    ("POST", "/api/workflow/services/{service_id}/trigger"),
+];
+
+fn environment(name: &str, default: &str) -> String {
+    std::env::var(name).unwrap_or_else(|_| default.to_owned())
+}
+
+/// Run the packaged Rust server using the same environment contract as the
+/// standalone binary.  PyO3 calls this function so native wheels need not ship
+/// a second platform-specific executable beside the extension module.
+pub async fn run_server_from_environment() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let host = environment("KOGWISTAR_SERVER_HOST", "127.0.0.1");
+    let port = environment("KOGWISTAR_SERVER_PORT", "8000");
+    let listener = tokio::net::TcpListener::bind(format!("{host}:{port}")).await?;
+    let required_roles = environment("KOGWISTAR_SERVER_REQUIRED_ROLES", "")
+        .split(',')
+        .map(str::trim)
+        .filter(|role| !role.is_empty())
+        .map(str::to_owned)
+        .collect();
+    let backend = environment("KOGWISTAR_BACKEND", "in_memory");
+    let state = ApiState {
+        health: HealthSnapshot {
+            backend: backend.clone(),
+            persist_directory: environment("KOGWISTAR_PERSIST_DIRECTORY", ".kogwistar"),
+            conversation_persist_directory: environment(
+                "KOGWISTAR_CONVERSATION_PERSIST_DIRECTORY",
+                ".kogwistar/conversation",
+            ),
+            workflow_persist_directory: environment(
+                "KOGWISTAR_WORKFLOW_PERSIST_DIRECTORY",
+                ".kogwistar/workflow",
+            ),
+            wisdom_persist_directory: environment(
+                "KOGWISTAR_WISDOM_PERSIST_DIRECTORY",
+                ".kogwistar/wisdom",
+            ),
+            pg_schema_base: (backend == "pg")
+                .then(|| environment("KOGWISTAR_PG_SCHEMA_BASE", "kogwistar")),
+        },
+        required_roles,
+        implementation: ImplementationSnapshot::default(),
+        auth: AuthConfig::from_environment(),
+    };
+    let application: Arc<dyn ApplicationService> = if backend == "pg" {
+        match std::env::var("KOGWISTAR_PG_DSN") {
+            Ok(dsn) if !dsn.trim().is_empty() => {
+                let service = PostgresRunApplicationService::from_dsn(
+                    &dsn,
+                    &environment("KOGWISTAR_PG_SCHEMA_BASE", "kogwistar"),
+                )
+                .map_err(std::io::Error::other)?;
+                service
+                    .ensure_schema()
+                    .await
+                    .map_err(std::io::Error::other)?;
+                Arc::new(service)
+            }
+            _ => Arc::new(UnavailableApplicationService),
+        }
+    } else {
+        match std::env::var("KOGWISTAR_META_SQLITE_PATH") {
+            Ok(path) if !path.trim().is_empty() => {
+                Arc::new(SqliteRunApplicationService::open(path).map_err(std::io::Error::other)?)
+            }
+            _ => Arc::new(UnavailableApplicationService),
+        }
+    };
+    axum::serve(listener, router_with_application(state, application))
+        .with_graceful_shutdown(async {
+            let _ = tokio::signal::ctrl_c().await;
+        })
+        .await?;
+    Ok(())
+}
+
 impl Default for ImplementationSnapshot {
     fn default() -> Self {
         Self {
@@ -231,7 +342,9 @@ impl Default for ImplementationSnapshot {
             // resume, resume-contract, steps, checkpoint list/item, and replay;
             // plus poll on the conversation API. Static transport-only
             // /api/events and /mcp are not frozen OpenAPI operations.
-            implemented_route_operations: 53,
+            implemented_route_operations: FROZEN_OPENAPI_ROUTES
+                .len()
+                .saturating_sub(PENDING_SERVER_CUTOVER_ROUTES.len()),
             runtime_cutover_ready: false,
             server_cutover_ready: false,
         }
@@ -1674,14 +1787,22 @@ fn graph_at_version(events: &[EntityEvent], version: i64) -> Value {
         .iter()
         .filter_map(|event| {
             let payload = design_payload(event)?;
-            (event.op == "MUTATION_COMMITTED").then(|| (
-                payload.get("version").and_then(Value::as_i64).unwrap_or(0),
+            (event.op == "MUTATION_COMMITTED").then(|| {
                 (
-                    payload.get("prev_version").and_then(Value::as_i64).unwrap_or(0),
-                    payload.get("target_seq").and_then(Value::as_i64).unwrap_or(0),
-                    payload.get("graph").cloned(),
-                ),
-            ))
+                    payload.get("version").and_then(Value::as_i64).unwrap_or(0),
+                    (
+                        payload
+                            .get("prev_version")
+                            .and_then(Value::as_i64)
+                            .unwrap_or(0),
+                        payload
+                            .get("target_seq")
+                            .and_then(Value::as_i64)
+                            .unwrap_or(0),
+                        payload.get("graph").cloned(),
+                    ),
+                )
+            })
         })
         .collect::<BTreeMap<_, _>>();
     let mut lineage = Vec::new();
@@ -1711,7 +1832,11 @@ fn graph_at_version(events: &[EntityEvent], version: i64) -> Value {
 
 fn apply_design_entity_event(graph: &mut Value, event: &EntityEvent) {
     let object = graph.as_object_mut().expect("graph value is object");
-    let key = if event.entity_kind == "node" { "nodes" } else { "edges" };
+    let key = if event.entity_kind == "node" {
+        "nodes"
+    } else {
+        "edges"
+    };
     let mut records = object
         .remove(key)
         .and_then(|value| value.as_array().cloned())
@@ -1764,16 +1889,53 @@ fn visible_delta(before: &Value, after: &Value) -> Value {
     })
 }
 
-fn design_entity_event(action: &str, entity_id: &str, before: &Value, after: &Value) -> EntityEvent {
+fn design_entity_event(
+    action: &str,
+    entity_id: &str,
+    before: &Value,
+    after: &Value,
+) -> EntityEvent {
     let (entity_kind, op, payload) = match action {
-        "node_upsert" => ("node", "ADD", after["nodes"].as_array().and_then(|items| items.iter().find(|item| item["id"] == entity_id)).cloned().unwrap_or(Value::Null)),
-        "edge_upsert" => ("edge", "ADD", after["edges"].as_array().and_then(|items| items.iter().find(|item| item["id"] == entity_id)).cloned().unwrap_or(Value::Null)),
-        "node_delete" => ("node", "TOMBSTONE", json!({"entity_id": entity_id, "reason": "workflow_design_delete"})),
-        "edge_delete" => ("edge", "TOMBSTONE", json!({"entity_id": entity_id, "reason": "workflow_design_delete"})),
+        "node_upsert" => (
+            "node",
+            "ADD",
+            after["nodes"]
+                .as_array()
+                .and_then(|items| items.iter().find(|item| item["id"] == entity_id))
+                .cloned()
+                .unwrap_or(Value::Null),
+        ),
+        "edge_upsert" => (
+            "edge",
+            "ADD",
+            after["edges"]
+                .as_array()
+                .and_then(|items| items.iter().find(|item| item["id"] == entity_id))
+                .cloned()
+                .unwrap_or(Value::Null),
+        ),
+        "node_delete" => (
+            "node",
+            "TOMBSTONE",
+            json!({"entity_id": entity_id, "reason": "workflow_design_delete"}),
+        ),
+        "edge_delete" => (
+            "edge",
+            "TOMBSTONE",
+            json!({"entity_id": entity_id, "reason": "workflow_design_delete"}),
+        ),
         _ => unreachable!("known design mutation action"),
     };
     let _ = before;
-    EntityEvent { namespace: String::new(), seq: 0, event_id: uuid::Uuid::new_v4().to_string(), entity_kind: entity_kind.to_owned(), entity_id: entity_id.to_owned(), op: op.to_owned(), payload }
+    EntityEvent {
+        namespace: String::new(),
+        seq: 0,
+        event_id: uuid::Uuid::new_v4().to_string(),
+        entity_kind: entity_kind.to_owned(),
+        entity_id: entity_id.to_owned(),
+        op: op.to_owned(),
+        payload,
+    }
 }
 
 fn mutate_design_graph(
@@ -6427,6 +6589,62 @@ mod tests {
     }
 
     #[test]
+    fn sqlite_application_route_inventory_has_no_unclassified_cutover_drift() {
+        let path = std::env::temp_dir().join(format!(
+            "kogwistar-api-route-inventory-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let service = SqliteRunApplicationService::open(&path).unwrap();
+        let transport_routes = [
+            ("GET", "/health"),
+            ("GET", "/api/auth/login"),
+            ("GET", "/api/auth/callback"),
+            ("GET", "/api/auth/me"),
+            ("POST", "/api/auth/logout"),
+            ("POST", "/auth/dev-token"),
+        ];
+        let mut unavailable = Vec::new();
+        for &(method, template) in FROZEN_OPENAPI_ROUTES {
+            if transport_routes.contains(&(method, template)) {
+                continue;
+            }
+            let path_and_query = template
+                .replace("{run_id}", "inventory-run")
+                .replace("{conversation_id}", "inventory-conversation")
+                .replace("{workflow_id}", "inventory-workflow")
+                .replace("{service_id}", "inventory-service")
+                .replace("{step_seq}", "0")
+                .replace("{node_id}", "inventory-node")
+                .replace("{edge_id}", "inventory-edge")
+                .replace("{doc_id}", "inventory-document")
+                .replace("{op}", "checkpoint");
+            let response = service.execute_sync(ApiEffectRequest {
+                contract_version: 1,
+                method: method.to_owned(),
+                path_and_query,
+                body: b"{}".to_vec(),
+                principal: json!({
+                    "sub": "inventory-admin",
+                    "role": "admin",
+                    "capabilities": ["*"]
+                }),
+            });
+            if response.status == StatusCode::NOT_IMPLEMENTED.as_u16() {
+                unavailable.push(format!("{method} {template}"));
+            }
+        }
+        drop(service);
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(
+            unavailable,
+            PENDING_SERVER_CUTOVER_ROUTES
+                .iter()
+                .map(|(method, path)| format!("{method} {path}"))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn frozen_mcp_tools_are_unique_and_versioned() {
         let contract: Value = serde_json::from_str(FROZEN_MCP_TOOLS_JSON).unwrap();
         assert_eq!(contract["contract_version"], "1.0.0");
@@ -7433,9 +7651,14 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
         let graph: Value = serde_json::from_slice(&graph.body).unwrap();
         assert_eq!(graph["nodes"].as_array().unwrap().len(), 2);
         assert_eq!(graph["edges"].as_array().unwrap().len(), 1);
-        let events = store.replay_raw_events("wf_design:wf-write", 0, usize::MAX).unwrap();
+        let events = store
+            .replay_raw_events("wf_design:wf-write", 0, usize::MAX)
+            .unwrap();
         assert_eq!(
-            events.iter().map(|event| (event.entity_kind.as_str(), event.op.as_str())).collect::<Vec<_>>(),
+            events
+                .iter()
+                .map(|event| (event.entity_kind.as_str(), event.op.as_str()))
+                .collect::<Vec<_>>(),
             [
                 ("node", "ADD"),
                 ("design_control", "MUTATION_COMMITTED"),
@@ -7445,10 +7668,23 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
                 ("design_control", "MUTATION_COMMITTED"),
             ]
         );
-        let delta = store.get_workflow_design_delta("wf-write", 3, 1).unwrap().unwrap();
+        let delta = store
+            .get_workflow_design_delta("wf-write", 3, 1)
+            .unwrap()
+            .unwrap();
         assert_eq!(delta.target_seq, 5);
-        assert_eq!(serde_json::from_str::<Value>(&delta.forward_json).unwrap()["upsert_edges"][0]["id"], "edge");
-        assert_eq!(store.get_named_projection("workflow_design", "wf-write").unwrap().unwrap().materialization_status, "rust_event_only");
+        assert_eq!(
+            serde_json::from_str::<Value>(&delta.forward_json).unwrap()["upsert_edges"][0]["id"],
+            "edge"
+        );
+        assert_eq!(
+            store
+                .get_named_projection("workflow_design", "wf-write")
+                .unwrap()
+                .unwrap()
+                .materialization_status,
+            "rust_event_only"
+        );
         assert_eq!(
             call(
                 "POST",

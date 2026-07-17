@@ -17,7 +17,7 @@ from .async_compat import run_awaitable_blocking
 from .chroma_backend import ChromaBackend
 
 
-from .engine_sqlite import EngineSQLite
+from .rust_meta_sqlite import build_sqlite_meta_store
 from .storage_backend import NoopUnitOfWork, StorageBackend
 from ..workers.index_job_worker import IndexJobWorker
 from ..utils.log import bind_log_context
@@ -1335,7 +1335,7 @@ class GraphKnowledgeEngine:
                 raise ValueError("Backend factory and backend can only either be specified")
             self.backend = backend_factory(self)
             if not hasattr(self, "meta_sqlite"):
-                self.meta_sqlite = EngineSQLite(
+                self.meta_sqlite = build_sqlite_meta_store(
                     pathlib.Path(persist_directory or "./chroma_db"), "meta.sqlite"
                 )
             self.meta_sqlite.ensure_initialized()
@@ -1405,7 +1405,7 @@ class GraphKnowledgeEngine:
                 node_refs_collection=self.node_refs_collection,
                 edge_refs_collection=self.edge_refs_collection,
             )
-            self.meta_sqlite = EngineSQLite(
+            self.meta_sqlite = build_sqlite_meta_store(
                 pathlib.Path(persist_directory or "./chroma_db"), "meta.sqlite"
             )
             self.meta_sqlite.ensure_initialized()

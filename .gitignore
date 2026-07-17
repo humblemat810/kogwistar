@@ -40,6 +40,21 @@ kogwistar/scripts/*.bundle.cdc.script.hl3.html
 # Local Codex state. Keep project-scoped .codex/agents/*.toml and config.toml trackable.
 .codex/AGENTS.md
 
+# Reproducible ADR/Codex run output. Keep reusable .codex/*_smoke.py scripts
+# trackable; canonical benchmark and canary evidence lives under contracts/.
+.codex/*.json
+.codex/*.log
+.codex/*.out
+.codex/*.err
+.codex/*.db
+.codex/*.sqlite*
+.codex/*.prof
+.codex/*.py
+.codex/bench-debug/
+.codex/benchmark-runtime*/
+.codex/adr015-runtime-serving-bench/
+.codex/wheelhouse*/
+
 # Local runtime databases and generated tutorial/application state.
 .gke-data/
 doc_chunk*/
@@ -62,5 +77,8 @@ auth.sqlite
 
 # Rust/PyO3 local build outputs (Cargo.lock remains tracked).
 /rust/target/
+/rust/collected_tests.json
 *.pyd
+*.pyd.*
 *.pdb
+*.so

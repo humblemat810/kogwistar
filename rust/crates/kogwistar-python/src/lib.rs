@@ -17,13 +17,15 @@ use kogwistar_store_sqlite::{
     NewRawEntityEvent, RawEntityEvent, SqliteStore, SqliteStoreError, SqliteUnitOfWork,
 };
 use pyo3::create_exception;
-use pyo3::exceptions::{PyAttributeError, PyTypeError, PyValueError};
+use pyo3::exceptions::{PyAttributeError, PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
 use std::future::Future;
+use std::path::PathBuf;
 use std::pin::pin;
+use std::sync::{Mutex, OnceLock};
 use std::task::{Context, Poll, Waker};
 use tokio::runtime::{Builder as TokioRuntimeBuilder, Runtime as TokioRuntime};
 
@@ -668,6 +670,8 @@ fn store_memory_read_json_impl(payload_json: &str) -> Result<String, (&'static s
 #[serde(deny_unknown_fields)]
 struct SqliteStoreRequest {
     path: String,
+    #[serde(default)]
+    transaction_id: Option<String>,
     operation: SqliteStoreOperation,
 }
 
@@ -675,6 +679,9 @@ struct SqliteStoreRequest {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum SqliteStoreOperation {
     OpenInit,
+    BeginTransaction,
+    CommitTransaction,
+    RollbackTransaction,
     CurrentGlobalSeq,
     NextGlobalSeq,
     CurrentUserSeq {
@@ -886,6 +893,20 @@ enum SqliteStoreOperation {
         run_id: String,
         workflow_id: String,
         conversation_id: String,
+    },
+    GetIndexAppliedFingerprint {
+        #[serde(default = "default_namespace")]
+        namespace: String,
+        coalesce_key: String,
+    },
+    SetIndexAppliedFingerprint {
+        #[serde(default = "default_namespace")]
+        namespace: String,
+        coalesce_key: String,
+        #[serde(default)]
+        applied_fingerprint: Option<String>,
+        #[serde(default)]
+        last_job_id: Option<String>,
     },
     EnqueueIndexJob {
         job_id: String,
@@ -1162,6 +1183,11 @@ fn sqlite_store_operation_json(
 ) -> Result<Value, SqliteStoreError> {
     match operation {
         SqliteStoreOperation::OpenInit => Ok(json!({"initialized": true})),
+        SqliteStoreOperation::BeginTransaction
+        | SqliteStoreOperation::CommitTransaction
+        | SqliteStoreOperation::RollbackTransaction => Err(SqliteStoreError::TransactionAborted(
+            "SQLite transaction control must be handled by the session".to_owned(),
+        )),
         SqliteStoreOperation::CurrentGlobalSeq => Ok(json!(store.current_global_seq()?)),
         SqliteStoreOperation::NextGlobalSeq => Ok(json!(store.next_global_seq()?)),
         SqliteStoreOperation::CurrentUserSeq { user_id } => {
@@ -1501,6 +1527,26 @@ fn sqlite_store_operation_json(
             &conversation_id,
         )?)
         .map_err(|error| SqliteStoreError::TransactionAborted(error.to_string())),
+        SqliteStoreOperation::GetIndexAppliedFingerprint {
+            namespace,
+            coalesce_key,
+        } => Ok(json!(
+            store.index_applied_fingerprint(&namespace, &coalesce_key)?
+        )),
+        SqliteStoreOperation::SetIndexAppliedFingerprint {
+            namespace,
+            coalesce_key,
+            applied_fingerprint,
+            last_job_id,
+        } => {
+            store.set_index_applied_fingerprint(
+                &namespace,
+                &coalesce_key,
+                applied_fingerprint.as_deref(),
+                last_job_id.as_deref(),
+            )?;
+            Ok(Value::Null)
+        }
         SqliteStoreOperation::EnqueueIndexJob {
             job_id,
             namespace,
@@ -1977,6 +2023,20 @@ fn sqlite_batch_operation_json(
             uow.request_server_run_cancel(&run_id)?;
             Ok(Value::Null)
         }
+        SqliteStoreOperation::SetIndexAppliedFingerprint {
+            namespace,
+            coalesce_key,
+            applied_fingerprint,
+            last_job_id,
+        } => {
+            uow.set_index_applied_fingerprint(
+                &namespace,
+                &coalesce_key,
+                applied_fingerprint.as_deref(),
+                last_job_id.as_deref(),
+            )?;
+            Ok(Value::Null)
+        }
         SqliteStoreOperation::EnqueueIndexJob {
             job_id,
             namespace,
@@ -2191,9 +2251,57 @@ fn sqlite_store_json_impl(payload_json: &str) -> Result<String, (&'static str, S
             format!("invalid SQLite store payload: {error}"),
         )
     })?;
-    let store = SqliteStore::open(&request.path)
-        .map_err(|error| (STORE_PERSISTENCE_FAILED, error.to_string()))?;
-    sqlite_store_operation_json(&store, request.operation)
+    let entry = cached_sqlite_store(&request.path)?;
+    let mut entry = entry
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let result: Result<Value, SqliteStoreError> = (|| match request.operation {
+        SqliteStoreOperation::BeginTransaction => {
+            let transaction_id = request.transaction_id.ok_or_else(|| {
+                SqliteStoreError::TransactionAborted(
+                    "SQLite begin requires transaction_id".to_owned(),
+                )
+            })?;
+            if entry.transaction_id.is_some() {
+                return Err(SqliteStoreError::TransactionAborted(
+                    "SQLite external transaction is already active".to_owned(),
+                ));
+            }
+            entry.store.begin_external_transaction()?;
+            entry.transaction_id = Some(transaction_id);
+            Ok(Value::Null)
+        }
+        SqliteStoreOperation::CommitTransaction => {
+            require_sqlite_transaction(&entry, request.transaction_id.as_deref())?;
+            entry.store.commit_external_transaction()?;
+            entry.transaction_id = None;
+            Ok(Value::Null)
+        }
+        SqliteStoreOperation::RollbackTransaction => {
+            require_sqlite_transaction(&entry, request.transaction_id.as_deref())?;
+            entry.store.rollback_external_transaction()?;
+            entry.transaction_id = None;
+            Ok(Value::Null)
+        }
+        operation => {
+            match (&entry.transaction_id, request.transaction_id.as_deref()) {
+                (None, None) => {}
+                (Some(active), Some(requested)) if active == requested => {}
+                (Some(_), _) => {
+                    return Err(SqliteStoreError::TransactionAborted(
+                        "SQLite operation does not own the active transaction".to_owned(),
+                    ));
+                }
+                (None, Some(_)) => {
+                    return Err(SqliteStoreError::TransactionAborted(
+                        "SQLite transaction_id is stale".to_owned(),
+                    ));
+                }
+            }
+            sqlite_store_operation_json(&entry.store, operation)
+        }
+    })();
+    result
         .and_then(|value| {
             serde_json::to_string(&value).map_err(|error| {
                 SqliteStoreError::TransactionAborted(format!("cannot encode result: {error}"))
@@ -2227,6 +2335,55 @@ fn sqlite_store_json_impl(payload_json: &str) -> Result<String, (&'static str, S
             };
             (code, error.to_string())
         })
+}
+
+fn require_sqlite_transaction(
+    entry: &CachedSqliteStore,
+    requested: Option<&str>,
+) -> Result<(), SqliteStoreError> {
+    match (&entry.transaction_id, requested) {
+        (Some(active), Some(requested)) if active == requested => Ok(()),
+        _ => Err(SqliteStoreError::TransactionAborted(
+            "SQLite transaction control does not own the active transaction".to_owned(),
+        )),
+    }
+}
+
+/// Cache initialized path handles. Each handle owns one serialized SQLite
+/// connection, avoiding repeated schema discovery and WAL open/teardown while
+/// preserving the store transaction contract.
+struct CachedSqliteStore {
+    store: SqliteStore,
+    transaction_id: Option<String>,
+}
+
+type SharedCachedSqliteStore = std::sync::Arc<Mutex<CachedSqliteStore>>;
+
+fn cached_sqlite_store(path: &str) -> Result<SharedCachedSqliteStore, (&'static str, String)> {
+    static STORES: OnceLock<Mutex<BTreeMap<PathBuf, SharedCachedSqliteStore>>> = OnceLock::new();
+
+    let path = PathBuf::from(path);
+    let stores = STORES.get_or_init(|| Mutex::new(BTreeMap::new()));
+    let mut stores = stores
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    // A caller may remove a temporary database between calls. Evict the old
+    // handle and initialize the recreated file.
+    if path.exists()
+        && let Some(store) = stores.get(&path)
+    {
+        return Ok(store.clone());
+    }
+
+    let store =
+        SqliteStore::open(&path).map_err(|error| (STORE_PERSISTENCE_FAILED, error.to_string()))?;
+    let entry = std::sync::Arc::new(Mutex::new(CachedSqliteStore {
+        store,
+        transaction_id: None,
+    }));
+    stores.insert(path, entry.clone());
+    Ok(entry)
 }
 
 fn validate_sqlite_operation(value: &Value) -> Result<(), (&'static str, String)> {
@@ -4527,6 +4684,18 @@ fn api_cli_health(payload_json: &str) -> PyResult<String> {
         .map_err(|error| RustContractValueError::new_err(error.to_string()))
 }
 
+#[pyfunction]
+fn api_run_server(py: Python<'_>) -> PyResult<()> {
+    py.detach(|| {
+        TokioRuntimeBuilder::new_multi_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| PyRuntimeError::new_err(error.to_string()))?
+            .block_on(kogwistar_api::run_server_from_environment())
+            .map_err(|error| PyRuntimeError::new_err(error.to_string()))
+    })
+}
+
 /// Build an isolated Rust in-memory store from a JSON snapshot, then inspect it.
 /// This boundary has no handle to Python-owned backend or meta-store state.
 #[pyfunction]
@@ -4585,6 +4754,7 @@ fn _rust(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(api_sse_frame, module)?)?;
     module.add_function(wrap_pyfunction!(api_mcp_result, module)?)?;
     module.add_function(wrap_pyfunction!(api_cli_health, module)?)?;
+    module.add_function(wrap_pyfunction!(api_run_server, module)?)?;
     module.add_function(wrap_pyfunction!(store_memory_read_json, module)?)?;
     module.add_function(wrap_pyfunction!(store_sqlite_json, module)?)?;
     module.add_function(wrap_pyfunction!(store_postgres_json, module)?)?;

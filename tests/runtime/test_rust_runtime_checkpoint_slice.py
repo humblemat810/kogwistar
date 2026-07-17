@@ -340,6 +340,96 @@ def test_sqlite_mixed_python_rust_restart_preserves_sequence_and_projections(
     assert len(python_v2.list_server_run_events("run-1")) == 4
 
 
+def test_sqlite_upgrade_python_rollback_rebuilds_disposable_runtime_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Rehearse Rust upgrade, Python rollback, and event-backed recovery."""
+    python_before = EngineSQLite(tmp_path, filename="upgrade-rollback.sqlite")
+    python_before.ensure_initialized()
+    path = python_before.db_path
+
+    started = _apply(path, _start())
+    step = _transition(
+        "recorded_step_success",
+        "rollback-step",
+        started["event_seq"],
+        0,
+        state_update=[["u", {"answer": "survives-rollback"}]],
+        result={"answer": "survives-rollback"},
+        frontier={
+            "pending": [["node-2", 0, "token-1", None]],
+            "suspended": [],
+            "join_node_ids": [],
+            "join_outstanding": [],
+            "join_waiters": {},
+        },
+    )
+    stepped = _apply(path, step)
+
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "python")
+    python_after = EngineSQLite(tmp_path, filename="upgrade-rollback.sqlite")
+    python_after.ensure_initialized()
+    events_before = python_after.list_server_run_events("run-1")
+    assert [event["seq"] for event in events_before] == [1, 2]
+    assert python_after.get_server_run("run-1")["status"] == "running"
+    assert python_after.get_named_projection(
+        "workflow_runtime_current_state", "run-1"
+    )["payload"]["state"]["answer"] == "survives-rollback"
+
+    # Serving projection is new Rust-owned cache, never sole truth. Python can
+    # discard it during rollback without converting event history.
+    python_after.clear_named_projection("workflow_runtime_current_state", "run-1")
+    assert python_after.get_named_projection(
+        "workflow_runtime_current_state", "run-1"
+    ) is None
+    replayed = read_recorded_runtime_state(
+        path=path,
+        run_id="run-1",
+        workflow_id="wf-1",
+        conversation_id="conv-1",
+    )
+    assert replayed == stepped["state"]
+    assert python_after.list_server_run_events("run-1") == events_before
+
+    # Exact retry stays idempotent after cache loss; no duplicate event appears.
+    duplicate = _apply(path, copy.deepcopy(step))
+    assert duplicate["idempotent"] is True
+    assert duplicate["event_seq"] == stepped["event_seq"]
+    assert python_after.list_server_run_events("run-1") == events_before
+
+    # Re-entering Rust authority from shared history materializes a fresh cache
+    # and preserves contiguous sequencing visible to the Python rollback facade.
+    completed = _apply(
+        path,
+        _transition(
+            "complete",
+            "rollback-complete",
+            stepped["event_seq"],
+            0,
+            frontier={
+                "pending": [],
+                "suspended": [],
+                "join_node_ids": [],
+                "join_outstanding": [],
+                "join_waiters": {},
+            },
+        ),
+    )
+    assert completed["event_seq"] == 3
+    assert [event["seq"] for event in python_after.list_server_run_events("run-1")] == [
+        1,
+        2,
+        3,
+    ]
+    rebuilt = python_after.get_named_projection(
+        "workflow_runtime_current_state", "run-1"
+    )
+    assert rebuilt is not None
+    assert rebuilt["last_authoritative_seq"] == 3
+    assert rebuilt["payload"]["state"]["answer"] == "survives-rollback"
+
+
 def test_linear_checkpoint_complete_matches_independent_oracle(tmp_path: Path) -> None:
     path = tmp_path / "runtime.sqlite"
     start = _start()

@@ -203,7 +203,9 @@ def _active_writers(
         if not isinstance(capability, str) or not isinstance(configuration, str):
             continue
         mode = capability_modes[configuration]
-        rust_cutover_ready = ownership.get("rust_cutover_ready", True)
+        # Readiness must be explicit. Missing metadata can never promote an
+        # authoritative writer during a strangler migration.
+        rust_cutover_ready = ownership.get("rust_cutover_ready", False)
         writer_key = (
             "target_authoritative_writer"
             if mode == "rust" and rust_cutover_ready is True

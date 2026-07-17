@@ -76,6 +76,28 @@ def test_rust_port_manifest_has_required_authority_and_suite_gates() -> None:
     )
 
 
+def test_passing_performance_evidence_cannot_unlock_unrouted_persistent_store() -> None:
+    manifest = _manifest()
+    persistent = manifest["current_persistent_evidence"]
+    runtime = manifest["runtime_serving_evidence"]
+
+    persistent_report = json.loads(
+        (ROOT / persistent["benchmark_report"]).read_text(encoding="utf-8")
+    )
+    assert persistent["gate_status"] == "passed"
+    assert persistent["cutover_use"] == "eligible_after_public-routing"
+    assert persistent_report["gate"]["status"] == "passed"
+    sqlite_owner = next(
+        item
+        for item in manifest["capability_ownership"]
+        if item["capability"] == "sqlite-meta"
+    )
+    assert sqlite_owner["rust_cutover_ready"] is False
+    runtime_report = json.loads((ROOT / runtime["benchmark_report"]).read_text(encoding="utf-8"))
+    assert runtime_report["gate"]["status"] == "passed"
+    assert runtime_report["history_multiplier"] == 100
+
+
 def test_each_authoritative_capability_has_owner_and_rollback() -> None:
     manifest = _manifest()
     capabilities = manifest["capability_ownership"]
@@ -96,6 +118,7 @@ def test_each_authoritative_capability_has_owner_and_rollback() -> None:
         assert item["configuration"].startswith("KOGWISTAR_IMPL_")
         assert item["current_authoritative_writer"]
         assert item["target_authoritative_writer"]
+        assert isinstance(item.get("rust_cutover_ready"), bool)
         assert item["rollback"]
 
 

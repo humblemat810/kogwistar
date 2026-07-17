@@ -55,7 +55,12 @@ def test_capability_overrides_select_one_writer_per_manifest_capability() -> Non
         item["capability"] for item in MANIFEST["capability_ownership"]
     }
     assert writers["deterministic-contracts"] == "rust"
-    assert writers["chroma-adapter"] == "python-adapter"
+    assert writers["sqlite-meta"] == "python"
+    assert writers["postgres-sequence-event-log"] == "python"
+    assert writers["projections-snapshots-run-registry"] == "python"
+    assert writers["queues-leases-lanes"] == "python"
+    assert writers["graph-pgvector"] == "python"
+    assert writers["chroma-adapter"] == "python"
     assert writers["workflow-runtime"] == "python"
     assert writers["server-rest-sse-mcp-cli"] == "python"
 
@@ -77,6 +82,24 @@ def test_active_writers_only_cut_over_when_manifest_marks_rust_ready() -> None:
     assert runner._active_writers(manifest, modes)["workflow-runtime"] == "python"
     ownership["rust_cutover_ready"] = True
     assert runner._active_writers(manifest, modes)["workflow-runtime"] == "rust"
+
+
+def test_missing_cutover_readiness_is_fail_closed() -> None:
+    runner = _runner()
+    manifest = json.loads(json.dumps(MANIFEST))
+    ownership = next(
+        item
+        for item in manifest["capability_ownership"]
+        if item["capability"] == "deterministic-contracts"
+    )
+    ownership.pop("rust_cutover_ready")
+    modes = runner._capability_modes(
+        manifest=manifest,
+        implementation_mode="rust",
+        overrides={key: None for key in runner._capability_configurations(manifest)},
+    )
+
+    assert runner._active_writers(manifest, modes)["deterministic-contracts"] == "python"
 
 
 def test_environment_exports_global_and_coarse_capability_modes(tmp_path: Path) -> None:

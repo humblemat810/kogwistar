@@ -24,15 +24,13 @@ use kogwistar_store::{
     WorkflowDesignHistoryReadStore, WorkflowDesignHistoryWriteStore, WorkflowDesignSnapshot,
     WorkflowDesignSnapshotWrite, validate_entity_rebuild_request, validate_entity_recovery_request,
 };
-use rusqlite::{
-    Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior, params,
-};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
@@ -103,12 +101,13 @@ pub struct AppendedRawEvent {
     pub inserted: bool,
 }
 
-/// Cloneable durable store handle. Each operation opens a configured SQLite
-/// connection, so handles are `Send + Sync` and no connection crosses an async
-/// boundary.
+/// Cloneable durable store handle. Clones share one serialized SQLite
+/// connection; SQLite is a single-writer store and repeated open/WAL teardown
+/// otherwise dominates short authoritative operations.
 #[derive(Clone, Debug)]
 pub struct SqliteStore {
     path: Arc<PathBuf>,
+    connection: Arc<Mutex<Connection>>,
 }
 
 /// Independent Python-compatible `AUTH_DB_URL=sqlite:///...` store. Opening
@@ -276,12 +275,12 @@ impl SqliteStore {
         {
             fs::create_dir_all(parent)?;
         }
-        let store = Self {
-            path: Arc::new(path),
-        };
-        let conn = store.connection()?;
+        let conn = configured_connection(&path)?;
         initialize_schema(&conn)?;
-        Ok(store)
+        Ok(Self {
+            path: Arc::new(path),
+            connection: Arc::new(Mutex::new(conn)),
+        })
     }
 
     pub fn path(&self) -> &Path {
@@ -294,16 +293,85 @@ impl SqliteStore {
     where
         F: FnOnce(&mut SqliteUnitOfWork<'_>) -> SqliteStoreResult<T>,
     {
-        let mut conn = self.connection()?;
-        let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let mut uow = SqliteUnitOfWork { transaction };
-        match operation(&mut uow) {
-            Ok(value) => {
-                uow.transaction.commit()?;
-                Ok(value)
+        let mut conn = self
+            .connection
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if conn.is_autocommit() {
+            let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let result = {
+                let mut uow = SqliteUnitOfWork {
+                    transaction: &transaction,
+                };
+                operation(&mut uow)
+            };
+            match result {
+                Ok(value) => {
+                    transaction.commit()?;
+                    Ok(value)
+                }
+                Err(error) => Err(error),
             }
-            Err(error) => Err(error),
+        } else {
+            let savepoint = conn.savepoint()?;
+            let result = {
+                let mut uow = SqliteUnitOfWork {
+                    transaction: &savepoint,
+                };
+                operation(&mut uow)
+            };
+            match result {
+                Ok(value) => {
+                    savepoint.commit()?;
+                    Ok(value)
+                }
+                Err(error) => Err(error),
+            }
         }
+    }
+
+    /// Begin a Python-facade unit of work on the cached connection. Calls made
+    /// before commit/rollback join it through per-operation savepoints.
+    pub fn begin_external_transaction(&self) -> SqliteStoreResult<()> {
+        let conn = self
+            .connection
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !conn.is_autocommit() {
+            return Err(SqliteStoreError::TransactionAborted(
+                "SQLite external transaction is already active".to_owned(),
+            ));
+        }
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        Ok(())
+    }
+
+    pub fn commit_external_transaction(&self) -> SqliteStoreResult<()> {
+        let conn = self
+            .connection
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if conn.is_autocommit() {
+            return Err(SqliteStoreError::TransactionAborted(
+                "SQLite external transaction is not active".to_owned(),
+            ));
+        }
+        conn.execute_batch("COMMIT")?;
+        Ok(())
+    }
+
+    pub fn rollback_external_transaction(&self) -> SqliteStoreResult<()> {
+        let conn = self
+            .connection
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if conn.is_autocommit() {
+            return Err(SqliteStoreError::TransactionAborted(
+                "SQLite external transaction is not active".to_owned(),
+            ));
+        }
+        conn.execute_batch("ROLLBACK")?;
+        Ok(())
     }
 
     /// Alias for `immediate_transaction`; all store UoWs are immediate.
@@ -417,6 +485,39 @@ impl SqliteStore {
         consumer: &str,
     ) -> SqliteStoreResult<ReplayCursor> {
         self.with_connection(|conn| replay_cursor(conn, namespace, consumer))
+    }
+
+    pub fn index_applied_fingerprint(
+        &self,
+        namespace: &str,
+        coalesce_key: &str,
+    ) -> SqliteStoreResult<Option<String>> {
+        self.with_connection(|conn| {
+            conn.query_row(
+                "SELECT applied_fingerprint FROM index_applied_state WHERE namespace=?1 AND coalesce_key=?2",
+                params![namespace, coalesce_key],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(Into::into)
+        })
+    }
+
+    pub fn set_index_applied_fingerprint(
+        &self,
+        namespace: &str,
+        coalesce_key: &str,
+        applied_fingerprint: Option<&str>,
+        last_job_id: Option<&str>,
+    ) -> SqliteStoreResult<()> {
+        self.immediate_transaction(|uow| {
+            uow.set_index_applied_fingerprint(
+                namespace,
+                coalesce_key,
+                applied_fingerprint,
+                last_job_id,
+            )
+        })
     }
 
     /// Bounded operator-triggered recovery. Event history remains authoritative;
@@ -629,7 +730,7 @@ impl SqliteStore {
         let token_id = token_id.to_owned();
         self.immediate_transaction(|uow| {
             let current = read_recorded_runtime_state(
-                &uow.transaction,
+                uow.transaction,
                 &run_id,
                 &workflow_id,
                 &conversation_id,
@@ -651,7 +752,7 @@ impl SqliteStore {
                 &token_id,
                 parent.as_deref(),
             )?;
-            let expected_event_seq = latest_server_run_event_seq(&uow.transaction, &run_id)?;
+            let expected_event_seq = latest_server_run_event_seq(uow.transaction, &run_id)?;
             let result = uow.apply_recorded_runtime_transition(
                 RecordedRuntimeTransition {
                     contract_version: RECORDED_RUNTIME_CONTRACT_VERSION,
@@ -931,50 +1032,67 @@ impl SqliteStore {
         })
     }
 
-    fn connection(&self) -> SqliteStoreResult<Connection> {
-        let conn = Connection::open_with_flags(
-            self.path.as_ref(),
-            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE,
-        )?;
-        conn.busy_timeout(std::time::Duration::from_millis(BUSY_TIMEOUT_MS))?;
-        conn.execute_batch(
-            "PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;",
-        )?;
-        Ok(conn)
-    }
-
     fn with_connection<T>(
         &self,
         operation: impl FnOnce(&Connection) -> SqliteStoreResult<T>,
     ) -> SqliteStoreResult<T> {
-        let conn = self.connection()?;
+        let conn = self
+            .connection
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         operation(&conn)
     }
 }
 
+fn configured_connection(path: &Path) -> SqliteStoreResult<Connection> {
+    let conn = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE,
+    )?;
+    conn.busy_timeout(std::time::Duration::from_millis(BUSY_TIMEOUT_MS))?;
+    conn.execute_batch(
+        "PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;",
+    )?;
+    Ok(conn)
+}
+
 /// Operations sharing one `BEGIN IMMEDIATE` transaction.
 pub struct SqliteUnitOfWork<'connection> {
-    transaction: Transaction<'connection>,
+    transaction: &'connection Connection,
 }
 
 impl SqliteUnitOfWork<'_> {
+    pub fn set_index_applied_fingerprint(
+        &mut self,
+        namespace: &str,
+        coalesce_key: &str,
+        applied_fingerprint: Option<&str>,
+        last_job_id: Option<&str>,
+    ) -> SqliteStoreResult<()> {
+        self.transaction.execute(
+            "INSERT INTO index_applied_state(namespace,coalesce_key,applied_fingerprint,applied_at,last_job_id) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(namespace,coalesce_key) DO UPDATE SET applied_fingerprint=excluded.applied_fingerprint,applied_at=excluded.applied_at,last_job_id=excluded.last_job_id",
+            params![namespace, coalesce_key, applied_fingerprint, unix_epoch_seconds(), last_job_id],
+        )?;
+        Ok(())
+    }
+
     pub fn project_lane_message(&mut self, row: NewProjectedLaneMessage) -> SqliteStoreResult<()> {
-        project_lane_message(&self.transaction, row)
+        project_lane_message(self.transaction, row)
     }
     pub fn get_projected_lane_message(
         &self,
         message_id: &str,
     ) -> SqliteStoreResult<Option<ProjectedLaneMessage>> {
-        projected_lane_message(&self.transaction, message_id)
+        projected_lane_message(self.transaction, message_id)
     }
     pub fn get_server_run(&self, run_id: &str) -> SqliteStoreResult<Option<ServerRun>> {
-        server_run(&self.transaction, run_id)
+        server_run(self.transaction, run_id)
     }
     pub fn list_projected_lane_messages(
         &self,
         filter: &LaneMessageFilter,
     ) -> SqliteStoreResult<Vec<ProjectedLaneMessage>> {
-        list_projected_lane_messages(&self.transaction, filter)
+        list_projected_lane_messages(self.transaction, filter)
     }
     pub fn update_projected_lane_message_status(
         &mut self,
@@ -982,7 +1100,7 @@ impl SqliteUnitOfWork<'_> {
         status: &str,
         error_json: Option<String>,
     ) -> SqliteStoreResult<()> {
-        update_projected_lane_message_status(&self.transaction, message_id, status, error_json)
+        update_projected_lane_message_status(self.transaction, message_id, status, error_json)
     }
     pub fn update_projected_lane_message_links(
         &mut self,
@@ -993,7 +1111,7 @@ impl SqliteUnitOfWork<'_> {
         conversation_tail: Option<String>,
     ) -> SqliteStoreResult<()> {
         update_projected_lane_message_links(
-            &self.transaction,
+            self.transaction,
             message_id,
             prev,
             next,
@@ -1018,7 +1136,7 @@ impl SqliteUnitOfWork<'_> {
         Ok(())
     }
     pub fn clear_projected_lane_messages(&mut self, namespace: &str) -> SqliteStoreResult<u64> {
-        clear_projected_lane_messages(&self.transaction, namespace)
+        clear_projected_lane_messages(self.transaction, namespace)
     }
     pub fn claim_projected_lane_messages(
         &mut self,
@@ -1029,7 +1147,7 @@ impl SqliteUnitOfWork<'_> {
         lease_seconds: i64,
     ) -> SqliteStoreResult<Vec<ProjectedLaneMessage>> {
         claim_projected_lane_messages(
-            &self.transaction,
+            self.transaction,
             namespace,
             inbox_id,
             claimed_by,
@@ -1042,7 +1160,7 @@ impl SqliteUnitOfWork<'_> {
         message_id: &str,
         claimed_by: &str,
     ) -> SqliteStoreResult<()> {
-        ack_projected_lane_message(&self.transaction, message_id, claimed_by)
+        ack_projected_lane_message(self.transaction, message_id, claimed_by)
     }
     pub fn requeue_projected_lane_message(
         &mut self,
@@ -1052,7 +1170,7 @@ impl SqliteUnitOfWork<'_> {
         delay_seconds: i64,
     ) -> SqliteStoreResult<()> {
         requeue_projected_lane_message(
-            &self.transaction,
+            self.transaction,
             message_id,
             claimed_by,
             error_json,
@@ -1065,7 +1183,7 @@ impl SqliteUnitOfWork<'_> {
         claimed_by: &str,
         error_json: Option<String>,
     ) -> SqliteStoreResult<()> {
-        dead_letter_projected_lane_message(&self.transaction, message_id, claimed_by, error_json)
+        dead_letter_projected_lane_message(self.transaction, message_id, claimed_by, error_json)
     }
     pub fn repair_orphaned_claimed_lane_messages(
         &mut self,
@@ -1073,10 +1191,10 @@ impl SqliteUnitOfWork<'_> {
         inbox_id: Option<&str>,
         limit: usize,
     ) -> SqliteStoreResult<Vec<String>> {
-        repair_orphaned_claimed_lane_messages(&self.transaction, namespace, inbox_id, limit)
+        repair_orphaned_claimed_lane_messages(self.transaction, namespace, inbox_id, limit)
     }
     pub fn enqueue_index_job(&mut self, job: NewIndexJob) -> SqliteStoreResult<String> {
-        enqueue_index_job(&self.transaction, job)
+        enqueue_index_job(self.transaction, job)
     }
     pub fn claim_index_jobs(
         &mut self,
@@ -1084,14 +1202,14 @@ impl SqliteUnitOfWork<'_> {
         lease_seconds: i64,
         namespace: Option<&str>,
     ) -> SqliteStoreResult<Vec<IndexJob>> {
-        claim_index_jobs(&self.transaction, limit, lease_seconds, namespace)
+        claim_index_jobs(self.transaction, limit, lease_seconds, namespace)
     }
     pub fn mark_index_job_done(
         &mut self,
         job_id: &str,
         claim_token: Option<&str>,
     ) -> SqliteStoreResult<bool> {
-        mark_index_job_done(&self.transaction, job_id, claim_token)
+        mark_index_job_done(self.transaction, job_id, claim_token)
     }
     pub fn mark_index_job_failed(
         &mut self,
@@ -1100,7 +1218,7 @@ impl SqliteUnitOfWork<'_> {
         final_: bool,
         claim_token: Option<&str>,
     ) -> SqliteStoreResult<()> {
-        mark_index_job_failed(&self.transaction, job_id, error, final_, claim_token)
+        mark_index_job_failed(self.transaction, job_id, error, final_, claim_token)
     }
     pub fn bump_retry_and_requeue(
         &mut self,
@@ -1109,7 +1227,7 @@ impl SqliteUnitOfWork<'_> {
         delay_seconds: i64,
         claim_token: Option<&str>,
     ) -> SqliteStoreResult<()> {
-        bump_retry_and_requeue(&self.transaction, job_id, error, delay_seconds, claim_token)
+        bump_retry_and_requeue(self.transaction, job_id, error, delay_seconds, claim_token)
     }
     pub fn renew_index_job_lease(
         &mut self,
@@ -1117,7 +1235,7 @@ impl SqliteUnitOfWork<'_> {
         claim_token: &str,
         lease_seconds: i64,
     ) -> SqliteStoreResult<bool> {
-        renew_index_job_lease(&self.transaction, job_id, claim_token, lease_seconds)
+        renew_index_job_lease(self.transaction, job_id, claim_token, lease_seconds)
     }
     pub fn requeue_index_job_at_tail(
         &mut self,
@@ -1127,7 +1245,7 @@ impl SqliteUnitOfWork<'_> {
         claim_token: Option<&str>,
     ) -> SqliteStoreResult<()> {
         requeue_index_job_at_tail(
-            &self.transaction,
+            self.transaction,
             job_id,
             payload_json,
             delay_seconds,
@@ -1145,7 +1263,7 @@ impl SqliteUnitOfWork<'_> {
     }
 
     pub fn current_global_seq(&self) -> SqliteStoreResult<i64> {
-        current_global_seq(&self.transaction)
+        current_global_seq(self.transaction)
     }
 
     pub fn next_user_seq(&mut self, user_id: &str) -> SqliteStoreResult<i64> {
@@ -1161,7 +1279,7 @@ impl SqliteUnitOfWork<'_> {
     }
 
     pub fn current_user_seq(&self, user_id: &str) -> SqliteStoreResult<i64> {
-        current_user_seq(&self.transaction, user_id)
+        current_user_seq(self.transaction, user_id)
     }
 
     pub fn set_user_seq(&mut self, user_id: &str, value: i64) -> SqliteStoreResult<()> {
@@ -1205,7 +1323,7 @@ impl SqliteUnitOfWork<'_> {
         namespace: &str,
         event: NewRawEntityEvent,
     ) -> SqliteStoreResult<AppendedRawEvent> {
-        append_raw_entity_event(&self.transaction, namespace, event)
+        append_raw_entity_event(self.transaction, namespace, event)
     }
 
     pub fn replay_raw_events(
@@ -1214,11 +1332,11 @@ impl SqliteUnitOfWork<'_> {
         after_seq: i64,
         limit: usize,
     ) -> SqliteStoreResult<Vec<RawEntityEvent>> {
-        replay_raw_events(&self.transaction, namespace, after_seq, limit)
+        replay_raw_events(self.transaction, namespace, after_seq, limit)
     }
 
     pub fn latest_retained_event_seq(&self, namespace: &str) -> SqliteStoreResult<i64> {
-        latest_retained_event_seq(&self.transaction, namespace)
+        latest_retained_event_seq(self.transaction, namespace)
     }
 
     pub fn prune_entity_events_after(
@@ -1226,7 +1344,7 @@ impl SqliteUnitOfWork<'_> {
         namespace: &str,
         to_seq: i64,
     ) -> SqliteStoreResult<u64> {
-        prune_entity_events_after(&self.transaction, namespace, to_seq)
+        prune_entity_events_after(self.transaction, namespace, to_seq)
     }
 
     pub fn replay_cursor(
@@ -1234,7 +1352,7 @@ impl SqliteUnitOfWork<'_> {
         namespace: &str,
         consumer: &str,
     ) -> SqliteStoreResult<ReplayCursor> {
-        replay_cursor(&self.transaction, namespace, consumer)
+        replay_cursor(self.transaction, namespace, consumer)
     }
 
     pub fn recover_entity_projection(
@@ -1257,7 +1375,7 @@ impl SqliteUnitOfWork<'_> {
         consumer: &str,
         last_seq: i64,
     ) -> SqliteStoreResult<ReplayCursor> {
-        strict_advance_replay_cursor(&self.transaction, namespace, consumer, last_seq)
+        strict_advance_replay_cursor(self.transaction, namespace, consumer, last_seq)
     }
 
     pub fn set_replay_cursor_legacy(
@@ -1266,7 +1384,7 @@ impl SqliteUnitOfWork<'_> {
         consumer: &str,
         last_seq: i64,
     ) -> SqliteStoreResult<ReplayCursor> {
-        set_replay_cursor_legacy(&self.transaction, namespace, consumer, last_seq)
+        set_replay_cursor_legacy(self.transaction, namespace, consumer, last_seq)
     }
 
     pub fn replace_named_projection(
@@ -1275,7 +1393,7 @@ impl SqliteUnitOfWork<'_> {
         key: &str,
         projection: NamedProjectionWrite,
     ) -> SqliteStoreResult<()> {
-        replace_named_projection(&self.transaction, namespace, key, projection)
+        replace_named_projection(self.transaction, namespace, key, projection)
     }
 
     pub fn compare_and_swap_named_projection(
@@ -1287,7 +1405,7 @@ impl SqliteUnitOfWork<'_> {
         projection: NamedProjectionWrite,
     ) -> SqliteStoreResult<bool> {
         compare_and_swap_named_projection(
-            &self.transaction,
+            self.transaction,
             namespace,
             key,
             expected_last_authoritative_seq,
@@ -1297,11 +1415,11 @@ impl SqliteUnitOfWork<'_> {
     }
 
     pub fn clear_named_projection(&mut self, namespace: &str, key: &str) -> SqliteStoreResult<()> {
-        clear_named_projection(&self.transaction, namespace, key)
+        clear_named_projection(self.transaction, namespace, key)
     }
 
     pub fn clear_projection_namespace(&mut self, namespace: &str) -> SqliteStoreResult<()> {
-        clear_projection_namespace(&self.transaction, namespace)
+        clear_projection_namespace(self.transaction, namespace)
     }
 
     pub fn put_workflow_design_snapshot(
@@ -1309,7 +1427,7 @@ impl SqliteUnitOfWork<'_> {
         workflow_id: &str,
         snapshot: WorkflowDesignSnapshotWrite,
     ) -> SqliteStoreResult<()> {
-        put_workflow_design_snapshot(&self.transaction, workflow_id, snapshot)
+        put_workflow_design_snapshot(self.transaction, workflow_id, snapshot)
     }
 
     pub fn get_workflow_design_snapshot(
@@ -1318,11 +1436,11 @@ impl SqliteUnitOfWork<'_> {
         max_version: i64,
         schema_version: i64,
     ) -> SqliteStoreResult<Option<WorkflowDesignSnapshot>> {
-        workflow_design_snapshot(&self.transaction, workflow_id, max_version, schema_version)
+        workflow_design_snapshot(self.transaction, workflow_id, max_version, schema_version)
     }
 
     pub fn clear_workflow_design_snapshots(&mut self, workflow_id: &str) -> SqliteStoreResult<()> {
-        clear_workflow_design_snapshots(&self.transaction, workflow_id)
+        clear_workflow_design_snapshots(self.transaction, workflow_id)
     }
 
     pub fn put_workflow_design_delta(
@@ -1330,7 +1448,7 @@ impl SqliteUnitOfWork<'_> {
         workflow_id: &str,
         delta: WorkflowDesignDeltaWrite,
     ) -> SqliteStoreResult<()> {
-        put_workflow_design_delta(&self.transaction, workflow_id, delta)
+        put_workflow_design_delta(self.transaction, workflow_id, delta)
     }
 
     pub fn get_workflow_design_delta(
@@ -1339,15 +1457,15 @@ impl SqliteUnitOfWork<'_> {
         version: i64,
         schema_version: i64,
     ) -> SqliteStoreResult<Option<WorkflowDesignDelta>> {
-        workflow_design_delta(&self.transaction, workflow_id, version, schema_version)
+        workflow_design_delta(self.transaction, workflow_id, version, schema_version)
     }
 
     pub fn clear_workflow_design_deltas(&mut self, workflow_id: &str) -> SqliteStoreResult<()> {
-        clear_workflow_design_deltas(&self.transaction, workflow_id)
+        clear_workflow_design_deltas(self.transaction, workflow_id)
     }
 
     pub fn create_server_run(&mut self, run: ServerRunCreate) -> SqliteStoreResult<()> {
-        create_server_run(&self.transaction, run)
+        create_server_run(self.transaction, run)
     }
     pub fn append_server_run_event(
         &mut self,
@@ -1355,17 +1473,17 @@ impl SqliteUnitOfWork<'_> {
         event_type: &str,
         payload_json: String,
     ) -> SqliteStoreResult<ServerRunEvent> {
-        append_server_run_event(&self.transaction, run_id, event_type, payload_json)
+        append_server_run_event(self.transaction, run_id, event_type, payload_json)
     }
     pub fn update_server_run(
         &mut self,
         run_id: &str,
         update: ServerRunUpdate,
     ) -> SqliteStoreResult<()> {
-        update_server_run(&self.transaction, run_id, update)
+        update_server_run(self.transaction, run_id, update)
     }
     pub fn request_server_run_cancel(&mut self, run_id: &str) -> SqliteStoreResult<()> {
-        request_server_run_cancel(&self.transaction, run_id)
+        request_server_run_cancel(self.transaction, run_id)
     }
 
     pub fn apply_recorded_runtime_transition(
@@ -1373,7 +1491,7 @@ impl SqliteUnitOfWork<'_> {
         transition: RecordedRuntimeTransition,
         abort_after_writes: bool,
     ) -> SqliteStoreResult<RecordedTransitionResult> {
-        apply_recorded_runtime_transition(&self.transaction, transition, abort_after_writes)
+        apply_recorded_runtime_transition(self.transaction, transition, abort_after_writes)
     }
 
     pub fn apply_claimed_recorded_runtime_transition(
@@ -1383,7 +1501,7 @@ impl SqliteUnitOfWork<'_> {
         abort_after_writes: bool,
     ) -> SqliteStoreResult<RecordedTransitionResult> {
         apply_claimed_recorded_runtime_transition(
-            &self.transaction,
+            self.transaction,
             handoff,
             transition,
             abort_after_writes,
@@ -1395,7 +1513,7 @@ impl SqliteUnitOfWork<'_> {
         handoff: RecordedWorkerHandoff,
         effect: RecordedWorkerSuccessEffect,
     ) -> SqliteStoreResult<RecordedTransitionResult> {
-        apply_claimed_recorded_worker_effect(&self.transaction, handoff, effect)
+        apply_claimed_recorded_worker_effect(self.transaction, handoff, effect)
     }
 }
 
@@ -1904,6 +2022,16 @@ fn initialize_schema(conn: &Connection) -> SqliteStoreResult<()> {
             updated_at INTEGER NOT NULL,
             claim_token TEXT
         );
+        CREATE TABLE IF NOT EXISTS index_applied_state (
+            namespace TEXT NOT NULL DEFAULT 'default',
+            coalesce_key TEXT NOT NULL,
+            applied_fingerprint TEXT,
+            applied_at INTEGER NOT NULL,
+            last_job_id TEXT,
+            PRIMARY KEY(namespace, coalesce_key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_index_applied_state_key
+        ON index_applied_state(coalesce_key);
         CREATE TABLE IF NOT EXISTS projected_lane_messages (
             message_id TEXT PRIMARY KEY, namespace TEXT NOT NULL DEFAULT 'default', purpose TEXT NOT NULL DEFAULT 'user_visible',
             inbox_id TEXT NOT NULL, conversation_id TEXT NOT NULL, recipient_id TEXT NOT NULL, sender_id TEXT NOT NULL,
@@ -2672,7 +2800,7 @@ fn recover_entity_projection_uow(
         .replay_cursor(&request.namespace, &request.consumer)?
         .last_seq;
     let current = named_projection(
-        &uow.transaction,
+        uow.transaction,
         &request.projection_namespace,
         &request.projection_key,
     )?;
@@ -2684,19 +2812,19 @@ fn recover_entity_projection_uow(
         .into());
     }
     let events = replay_raw_events(
-        &uow.transaction,
+        uow.transaction,
         &request.namespace,
         prior_cursor,
         request.batch_limit,
     )?;
-    let latest_authoritative_seq = latest_retained_event_seq(&uow.transaction, &request.namespace)?;
+    let latest_authoritative_seq = latest_retained_event_seq(uow.transaction, &request.namespace)?;
     for raw in &events {
         projection.fold(&raw_to_entity_event(raw.clone())?)?;
     }
     let projection_changed = !events.is_empty() || current.is_none();
     if projection_changed {
         replace_named_projection(
-            &uow.transaction,
+            uow.transaction,
             &request.projection_namespace,
             &request.projection_key,
             recovery_projection_write(&projection, latest_authoritative_seq),
@@ -2730,14 +2858,14 @@ fn rebuild_entity_projection_uow(
     let prior_cursor = uow
         .replay_cursor(&request.namespace, &request.consumer)?
         .last_seq;
-    let events = replay_raw_events(&uow.transaction, &request.namespace, 0, usize::MAX)?;
-    let latest_authoritative_seq = latest_retained_event_seq(&uow.transaction, &request.namespace)?;
+    let events = replay_raw_events(uow.transaction, &request.namespace, 0, usize::MAX)?;
+    let latest_authoritative_seq = latest_retained_event_seq(uow.transaction, &request.namespace)?;
     let mut projection = EntityProjection::empty();
     for raw in &events {
         projection.fold(&raw_to_entity_event(raw.clone())?)?;
     }
     replace_named_projection(
-        &uow.transaction,
+        uow.transaction,
         &request.projection_namespace,
         &request.projection_key,
         recovery_projection_write(&projection, latest_authoritative_seq),
@@ -4281,6 +4409,7 @@ mod tests {
             vec![
                 "entity_events",
                 "global_seq",
+                "index_applied_state",
                 "index_jobs",
                 "named_projections",
                 "namespace_seq",
@@ -4710,6 +4839,31 @@ mod tests {
                 .iter()
                 .all(|event| event.event_id != "rolled-back")
         );
+        drop(store);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn external_transaction_joins_operations_and_commits_or_rolls_back() {
+        let (store, path) = store("external-uow");
+        store.begin_external_transaction().unwrap();
+        assert_eq!(store.next_global_seq().unwrap(), 1);
+        store
+            .append_raw_entity_event("ns", raw_event("commit", "{}"))
+            .unwrap();
+        store.commit_external_transaction().unwrap();
+        assert_eq!(store.current_global_seq().unwrap(), 1);
+        assert_eq!(store.replay_raw_events("ns", 0, 10).unwrap().len(), 1);
+
+        store.begin_external_transaction().unwrap();
+        assert_eq!(store.next_global_seq().unwrap(), 2);
+        store
+            .append_raw_entity_event("ns", raw_event("rollback", "{}"))
+            .unwrap();
+        store.rollback_external_transaction().unwrap();
+        assert_eq!(store.current_global_seq().unwrap(), 1);
+        assert_eq!(store.replay_raw_events("ns", 0, 10).unwrap().len(), 1);
+
         drop(store);
         fs::remove_file(path).unwrap();
     }

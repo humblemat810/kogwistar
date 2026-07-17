@@ -18,7 +18,12 @@ class RustParityError(RuntimeError):
     """Raised when Python and Rust contract implementations disagree."""
 
 
-def store_sqlite(*, path: str | os.PathLike[str], operation: dict[str, Any]) -> Any:
+def store_sqlite(
+    *,
+    path: str | os.PathLike[str],
+    operation: dict[str, Any],
+    transaction_id: str | None = None,
+) -> Any:
     """Execute stable Phase-3 SQLite JSON ABI against actual database path.
 
     This is an explicit test/integration bridge. It does not select an authority
@@ -42,7 +47,11 @@ def store_sqlite(*, path: str | os.PathLike[str], operation: dict[str, Any]) -> 
         return json.loads(
             extension.store_sqlite_json(
                 json.dumps(
-                    {"path": os.fspath(path), "operation": operation},
+                    {
+                        "path": os.fspath(path),
+                        "transaction_id": transaction_id,
+                        "operation": operation,
+                    },
                     ensure_ascii=False,
                     separators=(",", ":"),
                 )

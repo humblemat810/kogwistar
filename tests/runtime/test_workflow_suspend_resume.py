@@ -457,17 +457,13 @@ def _make_engine(
 
 
 BACKEND_PARAMS = [
-    pytest.param("fake", id="fake", marks=[pytest.mark.ci_full, pytest.mark.slow]),
-    pytest.param(
-        "chroma", id="chroma", marks=[pytest.mark.ci_full, pytest.mark.slow]
-    ),
+    pytest.param("fake", id="fake", marks=pytest.mark.ci_full),
+    pytest.param("chroma", id="chroma", marks=pytest.mark.slow),
 ]
 
 ASYNC_BACKEND_PARAMS = [
-    pytest.param(
-        "chroma", id="async-chroma", marks=[pytest.mark.ci_full, pytest.mark.slow]
-    ),
-    pytest.param("pg", id="async-pg", marks=[pytest.mark.ci_full, pytest.mark.slow]),
+    pytest.param("chroma", id="async-chroma", marks=pytest.mark.slow),
+    pytest.param("pg", id="async-pg", marks=pytest.mark.slow),
 ]
 
 
@@ -2599,11 +2595,9 @@ def test_resume_run_can_resuspend_same_token_with_updated_payload(
 @pytest.mark.parametrize(
     "backend_kind",
     [
-        pytest.param("fake", id="fake", marks=[pytest.mark.ci_full, pytest.mark.slow]),
-        pytest.param(
-            "chroma", id="chroma", marks=[pytest.mark.ci_full, pytest.mark.slow]
-        ),
-        pytest.param("pg", id="pg", marks=[pytest.mark.ci_full, pytest.mark.slow]),
+        pytest.param("fake", id="fake", marks=pytest.mark.ci_full),
+        pytest.param("chroma", id="chroma", marks=pytest.mark.slow),
+        pytest.param("pg", id="pg", marks=pytest.mark.slow),
     ],
 )
 def test_workflow_suspend_with_join_waiter_returns_suspended_when_idle(

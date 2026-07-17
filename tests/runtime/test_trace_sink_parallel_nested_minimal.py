@@ -285,31 +285,20 @@ def _run_fake_fanout_join_deadlock_child(tmp_dir: str, result_q) -> None:
 
 
 @pytest.mark.parametrize(
-    "backend_kind",
+    ("backend_kind", "tags", "iterations"),
     [
-        pytest.param("fake", id="fake", marks=pytest.mark.ci_full),
-        pytest.param(
-            "chroma", id="chroma", marks=[pytest.mark.ci_full, pytest.mark.slow]
-        ),
-        pytest.param("pg", id="pg", marks=[pytest.mark.ci_full, pytest.mark.slow]),
-    ],
-)
-@pytest.mark.parametrize(
-    "tags",
-    [
-        pytest.param(["a"], id="a"),
-        pytest.param(
-            ["a", "b", "c", "d"],
-            id="abcd",
-            marks=[pytest.mark.ci_full, pytest.mark.slow],
-        ),
-    ],
-)
-@pytest.mark.parametrize(
-    "iterations",
-    [
-        pytest.param(1, id="1"),
-        pytest.param(5, id="5", marks=[pytest.mark.ci_full, pytest.mark.slow]),
+        pytest.param("fake", ["a"], 1, id="1-a-fake", marks=pytest.mark.ci_full),
+        pytest.param("chroma", ["a"], 1, id="1-a-chroma", marks=pytest.mark.slow),
+        pytest.param("pg", ["a"], 1, id="1-a-pg", marks=pytest.mark.slow),
+        pytest.param("fake", ["a", "b", "c", "d"], 1, id="1-abcd-fake", marks=pytest.mark.slow),
+        pytest.param("chroma", ["a", "b", "c", "d"], 1, id="1-abcd-chroma", marks=pytest.mark.slow),
+        pytest.param("pg", ["a", "b", "c", "d"], 1, id="1-abcd-pg", marks=pytest.mark.slow),
+        pytest.param("fake", ["a"], 5, id="5-a-fake", marks=pytest.mark.slow),
+        pytest.param("chroma", ["a"], 5, id="5-a-chroma", marks=pytest.mark.slow),
+        pytest.param("pg", ["a"], 5, id="5-a-pg", marks=pytest.mark.slow),
+        pytest.param("fake", ["a", "b", "c", "d"], 5, id="5-abcd-fake", marks=pytest.mark.slow),
+        pytest.param("chroma", ["a", "b", "c", "d"], 5, id="5-abcd-chroma", marks=pytest.mark.slow),
+        pytest.param("pg", ["a", "b", "c", "d"], 5, id="5-abcd-pg", marks=pytest.mark.slow),
     ],
 )
 def test_trace_sink_parallel_and_nested_minimal_sync(
@@ -571,9 +560,7 @@ def test_trace_sink_parallel_and_nested_minimal_sync(
     "backend_kind",
     [
         pytest.param("fake", id="fake"),
-        pytest.param(
-            "chroma", id="chroma", marks=[pytest.mark.ci_full, pytest.mark.slow]
-        ),
+        pytest.param("chroma", id="chroma", marks=pytest.mark.slow),
     ],
 )
 def test_trace_sink_fanout_quiescence_regression_sync(
