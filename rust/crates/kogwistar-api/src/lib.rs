@@ -44,6 +44,9 @@ use axum::{
 include!(concat!(env!("OUT_DIR"), "/frozen_routes.rs"));
 pub const FROZEN_OPENAPI_JSON: &str = include_str!(concat!(env!("OUT_DIR"), "/openapi.json"));
 pub const FROZEN_MCP_TOOLS_JSON: &str = include_str!(concat!(env!("OUT_DIR"), "/mcp-tools.json"));
+const CYTOSCAPE_TEMPLATE: &str = include_str!(concat!(env!("OUT_DIR"), "/cytoscape.html"));
+const D3_TEMPLATE: &str = include_str!(concat!(env!("OUT_DIR"), "/d3.html"));
+const GO_TEMPLATE: &str = include_str!(concat!(env!("OUT_DIR"), "/go.html"));
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -235,27 +238,25 @@ pub const PENDING_SERVER_CUTOVER_ROUTES: &[(&str, &str)] = &[
     ("GET", "/api/search_index_hybrid"),
     ("GET", "/api/viz/cytoscape.json"),
     ("GET", "/api/viz/d3.json"),
-    ("GET", "/api/workflow/services/{service_id}/events"),
     ("GET", "/api/workflow/tools/audit"),
-    ("GET", "/viz/cytoscape"),
-    ("GET", "/viz/d3"),
     ("GET", "/viz/d3.bundle"),
-    ("GET", "/viz/go"),
     ("POST", "/api/add_index_entries"),
     ("POST", "/api/conversations"),
     ("POST", "/api/conversations/{conversation_id}/turns:answer"),
     ("POST", "/api/document"),
     ("POST", "/api/document.upsert_tree"),
-    ("POST", "/api/document.validate_graph"),
     ("POST", "/api/graph/upsert"),
-    ("POST", "/api/syscall/v1/{op}"),
-    ("POST", "/api/workflow/services"),
-    ("POST", "/api/workflow/services/repair"),
-    ("POST", "/api/workflow/services/{service_id}/disable"),
-    ("POST", "/api/workflow/services/{service_id}/enable"),
-    ("POST", "/api/workflow/services/{service_id}/heartbeat"),
-    ("POST", "/api/workflow/services/{service_id}/repair"),
-    ("POST", "/api/workflow/services/{service_id}/trigger"),
+];
+
+/// Syscall sub-operations which still require conversation/tool authority.
+/// OpenAPI freezes these behind one parameterized route, so keep sub-route
+/// readiness explicit instead of classifying the whole dispatcher as absent.
+pub const PENDING_SYSCALL_CUTOVER_OPS: &[&str] = &[
+    "send_message",
+    "receive_message",
+    "mount_memory",
+    "project_view",
+    "invoke_tool",
 ];
 
 fn environment(name: &str, default: &str) -> String {
@@ -633,6 +634,66 @@ struct RuntimeGraphPlan {
     join_node_ids: Vec<String>,
     start_join_mask: i64,
     routes: Vec<kogwistar_runtime::RuntimeStaticRoute>,
+    node_ops: std::collections::BTreeMap<String, String>,
+}
+
+fn default_runtime_priority_class() -> String {
+    "foreground".to_owned()
+}
+
+fn default_runtime_kind() -> String {
+    "sync".to_owned()
+}
+
+#[derive(Deserialize)]
+struct RuntimeSubmitRun {
+    #[serde(default)]
+    run_id: Option<String>,
+    workflow_id: String,
+    conversation_id: String,
+    #[serde(default)]
+    turn_node_id: Option<String>,
+    #[serde(default)]
+    user_id: Option<String>,
+    #[serde(default)]
+    initial_state: serde_json::Map<String, Value>,
+    #[serde(default = "default_runtime_priority_class")]
+    priority_class: String,
+    #[serde(default)]
+    token_budget: Option<i64>,
+    #[serde(default)]
+    time_budget_ms: Option<i64>,
+    #[serde(default = "default_runtime_kind")]
+    runtime_kind: String,
+    #[serde(default)]
+    join_node_ids: Vec<String>,
+    #[serde(default)]
+    start_join_mask: i64,
+    #[serde(default)]
+    runtime_routes: Vec<kogwistar_runtime::RuntimeStaticRoute>,
+    #[serde(default)]
+    start_node_id: Option<String>,
+    #[serde(default)]
+    node_ops: BTreeMap<String, String>,
+}
+
+fn default_runtime_claim_limit() -> usize {
+    1
+}
+
+fn default_runtime_claim_lease() -> i64 {
+    60
+}
+
+#[derive(Deserialize)]
+struct RuntimeClaimRequest {
+    claimed_by: String,
+    #[serde(default = "default_runtime_claim_limit")]
+    limit: usize,
+    #[serde(default = "default_runtime_claim_lease")]
+    lease_seconds: i64,
+    #[serde(default)]
+    run_id: Option<String>,
 }
 
 fn string_list(value: &Value) -> Vec<String> {
@@ -658,6 +719,35 @@ fn runtime_graph_plan_from_snapshot(payload_json: &str) -> Option<RuntimeGraphPl
         .find(|node| node["metadata"]["wf_start"].as_bool() == Some(true))?["id"]
         .as_str()?
         .to_owned();
+    let node_ops = nodes
+        .iter()
+        .filter_map(|node| {
+            let node_id = node["id"].as_str()?;
+            let op = node["metadata"]["wf_op"]
+                .as_str()
+                .or_else(|| node["metadata"]["op"].as_str())
+                .unwrap_or("noop");
+            Some((node_id.to_owned(), op.to_owned()))
+        })
+        .collect();
+    let node_aliases = nodes
+        .iter()
+        .filter_map(|node| {
+            let node_id = node["id"].as_str()?;
+            let mut aliases = vec![
+                node_id.to_owned(),
+                node_id.split('|').next_back().unwrap_or(node_id).to_owned(),
+            ];
+            for alias in [node["label"].as_str(), node["metadata"]["wf_op"].as_str()] {
+                if let Some(alias) = alias.filter(|value| !value.is_empty()) {
+                    aliases.push(alias.to_owned());
+                }
+            }
+            aliases.sort();
+            aliases.dedup();
+            Some((node_id.to_owned(), aliases))
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
     let mut join_node_ids = nodes
         .iter()
         .filter(|node| node["metadata"]["wf_join"].as_bool() == Some(true))
@@ -675,6 +765,7 @@ fn runtime_graph_plan_from_snapshot(payload_json: &str) -> Option<RuntimeGraphPl
     let mut topology_edges = Vec::new();
     let mut route_metadata = Vec::new();
     for edge in edges {
+        let edge_id = edge["id"].as_str().unwrap_or_default().to_owned();
         let predicate = edge["metadata"]["wf_predicate"]
             .as_str()
             .filter(|predicate| !predicate.is_empty())
@@ -683,14 +774,25 @@ fn runtime_graph_plan_from_snapshot(payload_json: &str) -> Option<RuntimeGraphPl
             .as_str()
             .unwrap_or("one")
             .to_owned();
+        let is_default = edge["metadata"]["wf_is_default"].as_bool().unwrap_or(false);
+        let priority = edge["metadata"]["wf_priority"].as_i64().unwrap_or(100);
         for source in string_list(&edge["source_ids"]) {
             for target in string_list(&edge["target_ids"]) {
                 topology_edges.push([source.clone(), target.clone()]);
                 route_metadata.push((
+                    edge_id.clone(),
                     source.clone(),
-                    target,
+                    target.clone(),
+                    node_aliases.get(&target).cloned().unwrap_or_else(|| {
+                        vec![
+                            target.clone(),
+                            target.split('|').next_back().unwrap_or(&target).to_owned(),
+                        ]
+                    }),
                     predicate.clone(),
                     multiplicity.clone(),
+                    is_default,
+                    priority,
                     fanout_nodes.contains(&source),
                 ));
             }
@@ -718,13 +820,27 @@ fn runtime_graph_plan_from_snapshot(payload_json: &str) -> Option<RuntimeGraphPl
     let routes = route_metadata
         .into_iter()
         .map(
-            |(source_node_id, target_node_id, predicate, multiplicity, source_fanout)| {
+            |(
+                edge_id,
+                source_node_id,
+                target_node_id,
+                target_aliases,
+                predicate,
+                multiplicity,
+                is_default,
+                priority,
+                source_fanout,
+            )| {
                 kogwistar_runtime::RuntimeStaticRoute {
+                    edge_id,
                     source_node_id,
                     join_mask: mask(&target_node_id),
                     target_node_id,
+                    aliases: target_aliases,
                     predicate,
                     multiplicity,
+                    is_default,
+                    priority,
                     source_fanout,
                 }
             },
@@ -735,6 +851,7 @@ fn runtime_graph_plan_from_snapshot(payload_json: &str) -> Option<RuntimeGraphPl
         start_node_id,
         join_node_ids,
         routes,
+        node_ops,
     })
 }
 
@@ -761,6 +878,90 @@ fn json_effect(status: StatusCode, value: Value) -> ApiEffectResponse {
         content_type: "application/json".to_owned(),
         body: serde_json::to_vec(&value).expect("JSON value always serializes"),
     }
+}
+
+fn html_effect(body: String) -> ApiEffectResponse {
+    ApiEffectResponse {
+        status: StatusCode::OK.as_u16(),
+        content_type: "text/html; charset=utf-8".to_owned(),
+        body: body.into_bytes(),
+    }
+}
+
+fn html_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+}
+
+fn visualization_shell_effect(request: &ApiEffectRequest) -> Option<ApiEffectResponse> {
+    if request.method != "GET" {
+        return None;
+    }
+    let path = request.path_and_query.split('?').next()?;
+    let template = match path {
+        "/viz/cytoscape" => CYTOSCAPE_TEMPLATE,
+        "/viz/d3" => D3_TEMPLATE,
+        "/viz/go" => GO_TEMPLATE,
+        _ => return None,
+    };
+    let doc_id = query_string(&request.path_and_query, "doc_id").unwrap_or_default();
+    let mode = query_string(&request.path_and_query, "mode").unwrap_or_else(|| "reify".to_owned());
+    let insertion_method = query_string(&request.path_and_query, "insertion_method");
+    if path == "/viz/go" {
+        return Some(html_effect(template.to_owned()));
+    }
+    let doc_html = html_escape(&doc_id);
+    let mode_html = html_escape(&mode);
+    let insertion_html = html_escape(insertion_method.as_deref().unwrap_or_default());
+    let insertion_json = serde_json::to_string(&insertion_method).expect("query value serializes");
+    let mut body = template
+        .replace("{{ doc_id or '' }}", &doc_html)
+        .replace("{{ mode }}", &mode_html)
+        .replace("{{ insertion_method or '' }}", &insertion_html)
+        .replace("{{ (insertion_method or none) | tojson }}", &insertion_json)
+        .replace(
+            "{{ insertion_method | tojson if insertion_method is not none else 'null' }}",
+            &insertion_json,
+        )
+        .replace(
+            "{% if is_bundle %}&nbsp;|&nbsp;<b>bundle</b>=<code>true</code>{% endif %}",
+            "",
+        )
+        .replace(
+            "{{ embedded_data | safe if embedded_data is defined else \"null\" }}",
+            "null",
+        )
+        .replace(
+            "{{ bundle_meta | safe if bundle_meta is defined else \"null\" }}",
+            "null",
+        )
+        .replace(
+            "{{ bundle_graph_type | safe if bundle_graph_type is defined else \"null\" }}",
+            "null",
+        )
+        .replace(
+            "{{ cdc_enabled | safe if cdc_enabled is defined else \"false\" }}",
+            "false",
+        )
+        .replace(
+            "{{ cdc_ws_url | safe if cdc_ws_url is defined else \"null\" }}",
+            "null",
+        );
+    // Fail closed if template evolution introduces an unhandled executable
+    // expression; never serve raw Jinja into JavaScript.
+    if body.contains("{{") || body.contains("{%") {
+        return Some(effect_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "KOGWISTAR_TEMPLATE_DRIFT",
+            format!("Unhandled visualization template expression in {path}"),
+        ));
+    }
+    body.shrink_to_fit();
+    Some(html_effect(body))
 }
 
 fn effect_error(
@@ -1195,6 +1396,414 @@ const SYSCALL_OPS: &[&str] = &[
     "resume",
     "request_approval",
 ];
+
+#[derive(Clone, Debug, Deserialize)]
+struct SyscallInput {
+    #[serde(default = "default_syscall_version")]
+    version: String,
+    #[serde(default)]
+    op: String,
+    #[serde(default)]
+    args: serde_json::Map<String, Value>,
+}
+
+fn default_syscall_version() -> String {
+    "v1".to_owned()
+}
+
+fn syscall_operation(path_and_query: &str) -> Option<String> {
+    let path = path_and_query.split('?').next().unwrap_or(path_and_query);
+    path.strip_prefix("/api/syscall/v1/")
+        .filter(|value| !value.is_empty() && !value.contains('/'))
+        .map(|value| value.trim().to_ascii_lowercase())
+}
+
+fn syscall_input(
+    request: &ApiEffectRequest,
+    path_op: &str,
+) -> Result<SyscallInput, ApiEffectResponse> {
+    let mut input: SyscallInput = serde_json::from_slice(&request.body).map_err(|error| {
+        effect_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "KOGWISTAR_INVALID_REQUEST",
+            error.to_string(),
+        )
+    })?;
+    input.version = input.version.trim().to_owned();
+    if input.version.is_empty() {
+        input.version = default_syscall_version();
+    }
+    input.op = path_op.to_owned();
+    Ok(input)
+}
+
+fn syscall_result(version: &str, op: &str, response: ApiEffectResponse) -> ApiEffectResponse {
+    if !(200..300).contains(&response.status) {
+        return response;
+    }
+    let result = serde_json::from_slice::<Value>(&response.body).unwrap_or_else(|_| json!({}));
+    json_effect(
+        StatusCode::OK,
+        json!({"version": version, "op": op, "status": "ok", "result": result}),
+    )
+}
+
+fn syscall_audit(shared: &SharedCapabilityState, version: &str, op: &str, status: &str) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|value| value.as_millis() as u64)
+        .unwrap_or_default();
+    shared
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .syscall_audit
+        .push(json!({"ts_ms": now, "version": version, "op": op, "status": status}));
+}
+
+fn syscall_audit_status(response: &ApiEffectResponse) -> &'static str {
+    if response.status >= 400 {
+        return "error";
+    }
+    match serde_json::from_slice::<Value>(&response.body)
+        .ok()
+        .and_then(|value| value["status"].as_str().map(str::to_owned))
+        .as_deref()
+    {
+        Some("blocked") => "blocked",
+        _ => "ok",
+    }
+}
+
+fn syscall_allowed(
+    request: &ApiEffectRequest,
+    shared: &SharedCapabilityState,
+    op: &str,
+    write: bool,
+    required: &[&str],
+) -> bool {
+    let role = principal_role(&request.principal);
+    let role_allowed = !write || role == "rw";
+    let namespace_allowed = principal_strings(&request.principal, "ns")
+        .into_iter()
+        .any(|namespace| namespace == "workflow" || namespace == "*");
+    role_allowed && namespace_allowed && capability_allowed(request, shared, op, required)
+}
+
+fn syscall_forbidden(op: &str) -> ApiEffectResponse {
+    effect_error(
+        StatusCode::FORBIDDEN,
+        "KOGWISTAR_CAPABILITY_FORBIDDEN",
+        format!("Syscall {op} requires workflow namespace, role, and capability"),
+    )
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct DocumentGraphProposalInput {
+    doc_id: String,
+    #[serde(default = "default_document_insertion_method")]
+    insertion_method: String,
+    nodes: Vec<serde_json::Map<String, Value>>,
+    #[serde(default)]
+    edges: Vec<serde_json::Map<String, Value>>,
+}
+
+fn default_document_insertion_method() -> String {
+    "document_parser_v1".to_owned()
+}
+
+fn graph_validation_error(message: impl Into<String>) -> String {
+    json!([{"type":"value_error","msg":message.into()}]).to_string()
+}
+
+fn validate_graph_span(value: &Value) -> Result<(), String> {
+    let Some(span) = value.as_object() else {
+        return Err("mention span must be an object".to_owned());
+    };
+    for name in [
+        "collection_page_url",
+        "document_page_url",
+        "doc_id",
+        "insertion_method",
+    ] {
+        if !span.get(name).is_some_and(Value::is_string) {
+            return Err(format!("mention span {name} must be a string"));
+        }
+    }
+    let start = span
+        .get("start_char")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| "mention span start_char must be an integer".to_owned())?;
+    let end = span
+        .get("end_char")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| "mention span end_char must be an integer".to_owned())?;
+    if start < 0 {
+        return Err("mention span start_char must be >= 0".to_owned());
+    }
+    if end != -1 && end <= start {
+        return Err("mention span end_char must be > start_char".to_owned());
+    }
+    Ok(())
+}
+
+fn validate_graph_mentions(value: Option<&Value>) -> Result<(), String> {
+    let mentions = value
+        .and_then(Value::as_array)
+        .filter(|values| !values.is_empty())
+        .ok_or_else(|| "at least one mention is required".to_owned())?;
+    for mention in mentions {
+        if mention.get("spans").is_none()
+            && (mention.get("document_page_url").is_some() || mention.get("doc_id").is_some())
+        {
+            validate_graph_span(mention)?;
+            continue;
+        }
+        let spans = mention
+            .get("spans")
+            .and_then(Value::as_array)
+            .filter(|values| !values.is_empty())
+            .ok_or_else(|| "grounding spans must be a non-empty array".to_owned())?;
+        for span in spans {
+            validate_graph_span(span)?;
+        }
+    }
+    Ok(())
+}
+
+fn lift_graph_pointer_mentions(
+    entity: &mut serde_json::Map<String, Value>,
+    doc_id: &str,
+    insertion_method: &str,
+) -> Result<(), String> {
+    if entity.contains_key("mentions") {
+        return Ok(());
+    }
+    let pointers = entity
+        .get("metadata")
+        .and_then(|metadata| metadata.get("pointers"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if pointers.is_empty() {
+        return Ok(());
+    }
+    let mut mentions = Vec::with_capacity(pointers.len());
+    for pointer in pointers {
+        let source_cluster_id = pointer["source_cluster_id"]
+            .as_str()
+            .ok_or_else(|| "pointer source_cluster_id must be a string".to_owned())?;
+        let start_char = pointer["start_char"]
+            .as_i64()
+            .ok_or_else(|| "pointer start_char must be an integer".to_owned())?;
+        let end_char = pointer["end_char"]
+            .as_i64()
+            .ok_or_else(|| "pointer end_char must be an integer".to_owned())?;
+        mentions.push(json!({
+            "doc_id": doc_id,
+            "collection_page_url": format!("doc://{doc_id}"),
+            "document_page_url": format!("doc://{doc_id}#{source_cluster_id}"),
+            "insertion_method": insertion_method,
+            "start_char": start_char,
+            "end_char": if end_char == -1 { 1_000_000_000_i64 } else { end_char },
+            "excerpt": pointer["verbatim_text"].as_str().unwrap_or_default().chars().take(400).collect::<String>(),
+        }));
+    }
+    entity.insert("mentions".to_owned(), Value::Array(mentions));
+    Ok(())
+}
+
+fn validate_graph_entity(
+    entity: &mut serde_json::Map<String, Value>,
+    doc_id: &str,
+    insertion_method: &str,
+    edge: bool,
+) -> Result<(), String> {
+    lift_graph_pointer_mentions(entity, doc_id, insertion_method)?;
+    for name in ["label", "summary"] {
+        if !entity.get(name).is_some_and(Value::is_string) {
+            return Err(format!("{name} must be a string"));
+        }
+    }
+    if !entity
+        .get("type")
+        .and_then(Value::as_str)
+        .is_some_and(|value| matches!(value, "entity" | "relationship" | "reference_pointer"))
+    {
+        return Err("type must be entity, relationship, or reference_pointer".to_owned());
+    }
+    validate_graph_mentions(entity.get("mentions"))?;
+    if edge {
+        if !entity.get("relation").is_some_and(Value::is_string) {
+            return Err("relation must be a string".to_owned());
+        }
+        for name in ["source_ids", "target_ids"] {
+            if !entity
+                .get(name)
+                .and_then(Value::as_array)
+                .is_some_and(|values| values.iter().all(Value::is_string))
+            {
+                return Err(format!("{name} must be an array of strings"));
+            }
+        }
+        for name in ["source_edge_ids", "target_edge_ids"] {
+            let valid = entity.get(name).is_some_and(|value| {
+                value.is_null()
+                    || value
+                        .as_array()
+                        .is_some_and(|values| values.iter().all(Value::is_string))
+            });
+            if !valid {
+                return Err(format!("{name} must be null or an array of strings"));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn document_graph_validation_effect(request: &ApiEffectRequest) -> Option<ApiEffectResponse> {
+    if request.method != "POST"
+        || request.path_and_query.split('?').next() != Some("/api/document.validate_graph")
+    {
+        return None;
+    }
+    let mut input: DocumentGraphProposalInput = match serde_json::from_slice(&request.body) {
+        Ok(value) => value,
+        Err(error) => {
+            return Some(effect_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "KOGWISTAR_INVALID_REQUEST",
+                error.to_string(),
+            ));
+        }
+    };
+    let mut node_errors = serde_json::Map::new();
+    for node in &mut input.nodes {
+        let key = node
+            .get("id")
+            .or_else(|| node.get("label"))
+            .and_then(Value::as_str)
+            .unwrap_or("unknown")
+            .to_owned();
+        if let Err(error) =
+            validate_graph_entity(node, &input.doc_id, &input.insertion_method, false)
+        {
+            node_errors.insert(key, json!(graph_validation_error(error)));
+        }
+    }
+    let mut edge_errors = serde_json::Map::new();
+    for edge in &mut input.edges {
+        let key = edge
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown-edge")
+            .to_owned();
+        if let Err(error) =
+            validate_graph_entity(edge, &input.doc_id, &input.insertion_method, true)
+        {
+            edge_errors.insert(key, json!(graph_validation_error(error)));
+        }
+    }
+    Some(json_effect(
+        StatusCode::OK,
+        json!({
+            "ok": node_errors.is_empty() && edge_errors.is_empty(),
+            "node_errors": node_errors,
+            "edge_errors": edge_errors,
+        }),
+    ))
+}
+
+fn request_approval_syscall(
+    request: &ApiEffectRequest,
+    shared: &SharedCapabilityState,
+    input: &SyscallInput,
+) -> ApiEffectResponse {
+    let action = input.args["action"]
+        .as_str()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    if action.is_empty() {
+        return effect_error(
+            StatusCode::BAD_REQUEST,
+            "KOGWISTAR_INVALID_REQUEST",
+            "action is required",
+        );
+    }
+    if action == "deny" {
+        return json_effect(
+            StatusCode::OK,
+            json!({
+                "version": input.version,
+                "op": input.op,
+                "status": "blocked",
+                "result": {},
+                "error": {"reason": input.args["reason"].as_str().unwrap_or("request denied")},
+            }),
+        );
+    }
+    if !matches!(action.as_str(), "grant" | "revoke") {
+        return json_effect(
+            StatusCode::OK,
+            json!({
+                "version": input.version,
+                "op": input.op,
+                "status": "ok",
+                "result": {"status":"requested", "reason": input.args["reason"].as_str().unwrap_or("approval pending")},
+            }),
+        );
+    }
+    let capability = input.args["capability"]
+        .as_str()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    if capability.is_empty() {
+        return effect_error(
+            StatusCode::BAD_REQUEST,
+            "KOGWISTAR_INVALID_REQUEST",
+            format!("capability is required for {action}"),
+        );
+    }
+    let subject = input.args["subject"]
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_else(|| principal_subject(&request.principal));
+    let mut state = shared
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let payload = if action == "grant" {
+        let approval_action = input.args["approval_action"]
+            .as_str()
+            .unwrap_or("request_approval")
+            .to_ascii_lowercase();
+        state
+            .approvals
+            .entry((subject.clone(), approval_action.clone()))
+            .or_default()
+            .insert(capability.clone());
+        json!({
+            "status":"approved",
+            "approval": {"subject":subject,"action":approval_action,"capabilities":[capability]},
+        })
+    } else {
+        state
+            .revoked
+            .entry(subject.clone())
+            .or_default()
+            .insert(capability.clone());
+        json!({
+            "status":"revoked",
+            "revocation": {"subject":subject,"capability":capability},
+        })
+    };
+    json_effect(
+        StatusCode::OK,
+        json!({"version":input.version,"op":input.op,"status":"ok","result":payload}),
+    )
+}
 
 fn syscall_read_effect(
     request: &ApiEffectRequest,
@@ -1679,10 +2288,692 @@ fn dead_letter_replay_run_id(path_and_query: &str) -> Option<String> {
     (!run_id.is_empty() && !run_id.contains('/')).then(|| run_id.to_owned())
 }
 
-fn service_get_id(path_and_query: &str) -> Option<String> {
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum ServiceRoute {
+    Get,
+    Events,
+    Repair,
+}
+
+fn service_route(path_and_query: &str) -> Option<(String, ServiceRoute)> {
     let path = path_and_query.split('?').next().unwrap_or(path_and_query);
-    let service_id = path.strip_prefix("/api/workflow/services/")?;
-    (!service_id.is_empty() && !service_id.contains('/')).then(|| service_id.to_owned())
+    let rest = path.strip_prefix("/api/workflow/services/")?;
+    let mut segments = rest.split('/');
+    let service_id = segments.next()?;
+    if service_id.is_empty() {
+        return None;
+    }
+    let route = match segments.collect::<Vec<_>>().as_slice() {
+        [] => ServiceRoute::Get,
+        ["events"] => ServiceRoute::Events,
+        ["repair"] => ServiceRoute::Repair,
+        _ => return None,
+    };
+    Some((service_id.to_owned(), route))
+}
+
+fn service_repair_route(path_and_query: &str) -> Option<Option<String>> {
+    let path = path_and_query.split('?').next().unwrap_or(path_and_query);
+    if path == "/api/workflow/services/repair" {
+        return Some(None);
+    }
+    let (service_id, route) = service_route(path_and_query)?;
+    (route == ServiceRoute::Repair).then_some(Some(service_id))
+}
+
+fn service_enabled_route(path_and_query: &str) -> Option<(String, bool)> {
+    let path = path_and_query.split('?').next().unwrap_or(path_and_query);
+    let rest = path.strip_prefix("/api/workflow/services/")?;
+    let (service_id, action) = rest.split_once('/')?;
+    if service_id.is_empty() || action.contains('/') {
+        return None;
+    }
+    match action {
+        "enable" => Some((service_id.to_owned(), true)),
+        "disable" => Some((service_id.to_owned(), false)),
+        _ => None,
+    }
+}
+
+fn latest_service_definition(
+    events: impl IntoIterator<Item = (i64, String, String, String, String)>,
+    service_id: &str,
+) -> Option<Value> {
+    let mut current = BTreeMap::<String, (i64, Value)>::new();
+    for (seq, entity_kind, entity_id, op, payload_json) in events {
+        if entity_kind != "node" {
+            continue;
+        }
+        match op.to_ascii_uppercase().as_str() {
+            "DELETE" | "TOMBSTONE" | "REMOVE" => {
+                current.remove(&entity_id);
+                continue;
+            }
+            "ADD" | "REPLACE" | "UPSERT" => {}
+            _ => continue,
+        }
+        let Ok(payload) = serde_json::from_str::<Value>(&payload_json) else {
+            continue;
+        };
+        if payload.is_object() {
+            current.insert(entity_id, (seq, payload));
+        }
+    }
+    current
+        .into_values()
+        .filter(|(_, payload)| {
+            payload["metadata"]["entity_type"].as_str() == Some("service_definition")
+                && payload["metadata"]["service_id"].as_str() == Some(service_id)
+        })
+        .max_by_key(|(seq, payload)| {
+            (
+                payload["metadata"]["updated_at_ms"]
+                    .as_i64()
+                    .or_else(|| payload["properties"]["updated_at_ms"].as_i64())
+                    .unwrap_or_default(),
+                *seq,
+            )
+        })
+        .map(|(_, payload)| payload)
+}
+
+fn service_enabled_nodes(
+    mut definition: Value,
+    service_id: &str,
+    enabled: bool,
+    timestamp: u64,
+) -> Result<(String, Value, String, Value), String> {
+    let definition_id = format!(
+        "service_def:{service_id}:{timestamp}:{}",
+        uuid::Uuid::new_v4().simple()
+    );
+    let definition_object = definition
+        .as_object_mut()
+        .ok_or_else(|| "service definition must be an object".to_owned())?;
+    definition_object.insert("id".to_owned(), json!(definition_id));
+    let metadata = definition_object
+        .get_mut("metadata")
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| "service definition metadata must be an object".to_owned())?;
+    metadata.insert("enabled".to_owned(), json!(enabled));
+    metadata.insert("updated_at_ms".to_owned(), json!(timestamp));
+    let properties = definition_object
+        .get_mut("properties")
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| "service definition properties must be an object".to_owned())?;
+    properties.insert("enabled".to_owned(), json!(enabled));
+    properties.insert("updated_at_ms".to_owned(), json!(timestamp));
+
+    let event_type = if enabled {
+        "service.enabled"
+    } else {
+        "service.stopped"
+    };
+    let event_id = format!(
+        "service_evt:{service_id}:{timestamp}:{}",
+        uuid::Uuid::new_v4().simple()
+    );
+    let event = json!({
+        "id": event_id,
+        "label": format!("service_event:{event_type}"),
+        "type": "entity",
+        "summary": format!("Service event {event_type} for {service_id}"),
+        "mentions": [{"spans": [{
+            "collection_page_url": format!("workflow/_wf:{service_id}"),
+            "context_after": "",
+            "context_before": "",
+            "doc_id": format!("_wf:{service_id}"),
+            "document_page_url": format!("workflow/_wf:{service_id}"),
+            "end_char": 1,
+            "excerpt": "",
+            "page_number": 1,
+            "source_cluster_id": Value::Null,
+            "start_char": 0,
+        }]}],
+        "properties": {
+            "payload_json": json!({"enabled": enabled}).to_string(),
+            "enabled": enabled,
+        },
+        "metadata": {
+            "entity_type": "service_event",
+            "artifact_kind": "service_event",
+            "service_id": service_id,
+            "service_event_type": event_type,
+            "ts_ms": timestamp,
+            "in_conversation_chain": false,
+            "lifecycle_status": "active",
+            "redirect_to_id": Value::Null,
+        },
+    });
+    Ok((definition_id, definition, event_id, event))
+}
+
+fn service_event_node(
+    service_id: &str,
+    event_type: &str,
+    payload: &Value,
+    timestamp: u64,
+) -> (String, Value) {
+    let event_id = format!(
+        "service_evt:{service_id}:{timestamp}:{}",
+        uuid::Uuid::new_v4().simple()
+    );
+    (
+        event_id.clone(),
+        json!({
+            "id": event_id,
+            "label": format!("service_event:{event_type}"),
+            "type": "entity",
+            "summary": format!("Service event {event_type} for {service_id}"),
+            "mentions": [{"spans": [{
+                "collection_page_url": format!("workflow/_wf:{service_id}"),
+                "context_after": "",
+                "context_before": "",
+                "doc_id": format!("_wf:{service_id}"),
+                "document_page_url": format!("workflow/_wf:{service_id}"),
+                "end_char": 1,
+                "excerpt": "",
+                "page_number": 1,
+                "source_cluster_id": Value::Null,
+                "start_char": 0,
+            }]}],
+            "properties": {"payload_json": payload.to_string()},
+            "metadata": {
+                "entity_type": "service_event",
+                "artifact_kind": "service_event",
+                "service_id": service_id,
+                "service_event_type": event_type,
+                "ts_ms": timestamp,
+                "in_conversation_chain": false,
+                "lifecycle_status": "active",
+                "redirect_to_id": Value::Null,
+            },
+        }),
+    )
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct ServiceDeclareInput {
+    service_id: String,
+    #[serde(default = "default_service_kind")]
+    service_kind: String,
+    #[serde(default = "default_service_target_kind")]
+    target_kind: String,
+    target_ref: String,
+    #[serde(default)]
+    target_config: serde_json::Map<String, Value>,
+    #[serde(default = "default_true")]
+    enabled: bool,
+    #[serde(default)]
+    autostart: bool,
+    #[serde(default)]
+    restart_policy: serde_json::Map<String, Value>,
+    #[serde(default = "default_heartbeat_ttl_ms")]
+    heartbeat_ttl_ms: i64,
+    #[serde(default)]
+    trigger_specs: Vec<Value>,
+}
+
+fn default_service_kind() -> String {
+    "daemon".to_owned()
+}
+
+fn default_service_target_kind() -> String {
+    "workflow".to_owned()
+}
+
+fn default_heartbeat_ttl_ms() -> i64 {
+    60_000
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct ServiceTriggerInput {
+    trigger_type: String,
+    #[serde(default)]
+    payload: serde_json::Map<String, Value>,
+}
+
+fn service_trigger_route(path_and_query: &str) -> Option<String> {
+    let path = path_and_query.split('?').next().unwrap_or(path_and_query);
+    let rest = path.strip_prefix("/api/workflow/services/")?;
+    let (service_id, action) = rest.split_once('/')?;
+    (!service_id.is_empty() && action == "trigger").then(|| service_id.to_owned())
+}
+
+fn validate_service_trigger(input: &mut ServiceTriggerInput) -> Result<(), &'static str> {
+    input.trigger_type = input.trigger_type.trim().to_ascii_lowercase();
+    if matches!(
+        input.trigger_type.as_str(),
+        "schedule"
+            | "message arrival"
+            | "graph change"
+            | "external event"
+            | "autostart"
+            | "restart"
+    ) {
+        Ok(())
+    } else {
+        Err("unsupported trigger_type")
+    }
+}
+
+fn service_definition_runtime(definition: &Value) -> Result<(String, Value), &'static str> {
+    let properties = definition
+        .get("properties")
+        .and_then(Value::as_object)
+        .ok_or("service definition properties must be an object")?;
+    let target_kind = properties
+        .get("target_kind")
+        .and_then(Value::as_str)
+        .unwrap_or("workflow")
+        .to_owned();
+    let target_config = properties
+        .get("target_config_json")
+        .and_then(Value::as_str)
+        .and_then(|value| serde_json::from_str::<Value>(value).ok())
+        .filter(Value::is_object)
+        .unwrap_or_else(|| json!({}));
+    Ok((target_kind, target_config))
+}
+
+fn service_trigger_is_suppressed(
+    definition: &Value,
+    projection: &Value,
+    trigger_type: &str,
+    timestamp_ms: u64,
+) -> bool {
+    let properties = &definition["properties"];
+    if properties["enabled"].as_bool() == Some(false) {
+        return true;
+    }
+    let trigger_specs = properties["trigger_specs_json"]
+        .as_str()
+        .and_then(|raw| serde_json::from_str::<Vec<Value>>(raw).ok())
+        .unwrap_or_default();
+    let matching = trigger_specs.into_iter().find(|spec| {
+        spec["type"]
+            .as_str()
+            .is_some_and(|value| value.trim().eq_ignore_ascii_case(trigger_type))
+    });
+    let Some(spec) = matching else {
+        return false;
+    };
+    if spec["enabled"].as_bool() == Some(false) {
+        return true;
+    }
+    let cooldown_ms = spec["cooldown_ms"].as_u64().unwrap_or_default();
+    let debounce_ms = spec["debounce_ms"].as_u64().unwrap_or_default();
+    let not_before_ms = cooldown_ms.max(debounce_ms);
+    let last_triggered_at_ms = projection["last_triggered_at_ms"]
+        .as_u64()
+        .unwrap_or_default();
+    not_before_ms > 0
+        && last_triggered_at_ms > 0
+        && timestamp_ms.saturating_sub(last_triggered_at_ms) < not_before_ms
+}
+
+fn validate_service_declare(input: &mut ServiceDeclareInput) -> Result<(), &'static str> {
+    input.service_id = input.service_id.trim().to_owned();
+    input.service_kind = input.service_kind.trim().to_owned();
+    input.target_kind = input.target_kind.trim().to_owned();
+    input.target_ref = input.target_ref.trim().to_owned();
+    if input.service_id.is_empty()
+        || input.service_kind.is_empty()
+        || input.target_kind.is_empty()
+        || input.target_ref.is_empty()
+    {
+        return Err("service_id, service_kind, target_kind, and target_ref are required");
+    }
+    input.heartbeat_ttl_ms = input.heartbeat_ttl_ms.max(1);
+    for spec in &input.trigger_specs {
+        let Some(kind) = spec.get("type").and_then(Value::as_str) else {
+            return Err("trigger_specs[].type is required");
+        };
+        if kind.trim().is_empty() {
+            return Err("trigger_specs[].type is required");
+        }
+    }
+    Ok(())
+}
+
+fn service_definition_node(input: &ServiceDeclareInput, timestamp: u64) -> (String, Value) {
+    let service_id = &input.service_id;
+    let entity_id = format!(
+        "service_def:{service_id}:{timestamp}:{}",
+        uuid::Uuid::new_v4().simple()
+    );
+    (
+        entity_id.clone(),
+        json!({
+            "id": entity_id,
+            "label": format!("service_definition:{service_id}"),
+            "type": "entity",
+            "summary": format!("Service definition {service_id}"),
+            "mentions": [{"spans": [{
+                "collection_page_url": format!("workflow/_wf:{service_id}"),
+                "context_after": "",
+                "context_before": "",
+                "doc_id": format!("_wf:{service_id}"),
+                "document_page_url": format!("workflow/_wf:{service_id}"),
+                "end_char": 1,
+                "excerpt": "",
+                "page_number": 1,
+                "source_cluster_id": Value::Null,
+                "start_char": 0,
+            }]}],
+            "properties": {
+                "service_id": service_id,
+                "service_kind": input.service_kind,
+                "target_kind": input.target_kind,
+                "target_ref": input.target_ref,
+                "target_config_json": Value::Object(input.target_config.clone()).to_string(),
+                "enabled": input.enabled,
+                "autostart": input.autostart,
+                "restart_policy_json": Value::Object(input.restart_policy.clone()).to_string(),
+                "heartbeat_ttl_ms": input.heartbeat_ttl_ms,
+                "trigger_specs_json": Value::Array(input.trigger_specs.clone()).to_string(),
+                "security_scope": "workflow",
+                "storage_namespace": "workflow",
+                "execution_namespace": "workflow",
+                "created_at_ms": timestamp,
+                "updated_at_ms": timestamp,
+            },
+            "metadata": {
+                "entity_type": "service_definition",
+                "artifact_kind": "service_definition",
+                "service_id": service_id,
+                "service_kind": input.service_kind,
+                "target_kind": input.target_kind,
+                "target_ref": input.target_ref,
+                "enabled": input.enabled,
+                "updated_at_ms": timestamp,
+                "created_at_ms": timestamp,
+                "in_conversation_chain": false,
+                "lifecycle_status": "active",
+                "redirect_to_id": Value::Null,
+            },
+        }),
+    )
+}
+
+fn service_event_values(
+    events: impl IntoIterator<Item = (i64, String, String, String, String)>,
+    service_id: &str,
+    limit: usize,
+) -> Vec<Value> {
+    let mut current = BTreeMap::<String, (i64, Value)>::new();
+    for (seq, entity_kind, entity_id, op, payload_json) in events {
+        if entity_kind != "node" {
+            continue;
+        }
+        match op.to_ascii_uppercase().as_str() {
+            "DELETE" | "TOMBSTONE" | "REMOVE" => {
+                current.remove(&entity_id);
+                continue;
+            }
+            "ADD" | "REPLACE" | "UPSERT" => {}
+            _ => continue,
+        }
+        let Ok(payload) = serde_json::from_str::<Value>(&payload_json) else {
+            continue;
+        };
+        if !payload.is_object() {
+            continue;
+        }
+        current.insert(entity_id, (seq, payload));
+    }
+
+    let mut values = current
+        .into_iter()
+        .filter_map(|(entity_id, (seq, payload))| {
+            let metadata = payload.get("metadata")?.as_object()?;
+            if metadata.get("entity_type").and_then(Value::as_str) != Some("service_event")
+                || metadata.get("service_id").and_then(Value::as_str) != Some(service_id)
+            {
+                return None;
+            }
+            let event_type = metadata
+                .get("service_event_type")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let ts_ms = metadata
+                .get("ts_ms")
+                .and_then(Value::as_i64)
+                .unwrap_or_default();
+            let properties = payload.get("properties").and_then(Value::as_object);
+            let event_payload = properties
+                .and_then(|value| value.get("payload_json"))
+                .and_then(Value::as_str)
+                .and_then(|value| serde_json::from_str::<Value>(value).ok())
+                .filter(Value::is_object)
+                .unwrap_or_else(|| json!({}));
+            let event_id = payload
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or(&entity_id)
+                .to_owned();
+            Some((
+                ts_ms,
+                seq,
+                json!({
+                    "event_id": event_id,
+                    "service_id": service_id,
+                    "event_type": event_type,
+                    "ts_ms": ts_ms,
+                    "payload": event_payload,
+                }),
+            ))
+        })
+        .collect::<Vec<_>>();
+    values.sort_by(|left, right| (left.0, left.1).cmp(&(right.0, right.1)));
+    values.truncate(limit);
+    values.into_iter().map(|(_, _, value)| value).collect()
+}
+
+fn service_projection_values(
+    events: impl IntoIterator<Item = (i64, String, String, String, String)>,
+) -> Result<BTreeMap<String, (i64, Value)>, String> {
+    let mut current = BTreeMap::<String, (i64, Value)>::new();
+    let mut latest_seq = 0_i64;
+    for (seq, entity_kind, entity_id, op, payload_json) in events {
+        latest_seq = latest_seq.max(seq);
+        if entity_kind != "node" {
+            continue;
+        }
+        match op.to_ascii_uppercase().as_str() {
+            "DELETE" | "TOMBSTONE" | "REMOVE" => {
+                current.remove(&entity_id);
+                continue;
+            }
+            "ADD" | "REPLACE" | "UPSERT" => {}
+            _ => continue,
+        }
+        let Ok(payload) = serde_json::from_str::<Value>(&payload_json) else {
+            continue;
+        };
+        if payload.is_object() {
+            current.insert(entity_id, (seq, payload));
+        }
+    }
+
+    let mut definitions = BTreeMap::<String, (i64, i64, Value)>::new();
+    let mut service_events = BTreeMap::<String, Vec<(i64, Value)>>::new();
+    for (_entity_id, (seq, payload)) in current {
+        let Some(metadata) = payload.get("metadata").and_then(Value::as_object) else {
+            continue;
+        };
+        let Some(service_id) = metadata.get("service_id").and_then(Value::as_str) else {
+            continue;
+        };
+        match metadata.get("entity_type").and_then(Value::as_str) {
+            Some("service_definition") => {
+                let updated_at_ms = metadata
+                    .get("updated_at_ms")
+                    .and_then(Value::as_i64)
+                    .unwrap_or_default();
+                let replace =
+                    definitions
+                        .get(service_id)
+                        .is_none_or(|(current_updated, current_seq, _)| {
+                            (updated_at_ms, seq) > (*current_updated, *current_seq)
+                        });
+                if replace {
+                    definitions.insert(service_id.to_owned(), (updated_at_ms, seq, payload));
+                }
+            }
+            Some("service_event") => service_events
+                .entry(service_id.to_owned())
+                .or_default()
+                .push((seq, payload)),
+            _ => {}
+        }
+    }
+
+    let mut projections = BTreeMap::new();
+    for (service_id, (_updated_at_ms, _definition_seq, definition)) in definitions {
+        let metadata = definition["metadata"]
+            .as_object()
+            .ok_or_else(|| "service definition metadata must be an object".to_owned())?;
+        let properties = definition["properties"]
+            .as_object()
+            .ok_or_else(|| "service definition properties must be an object".to_owned())?;
+        let json_property = |name: &str, fallback: Value| {
+            properties
+                .get(name)
+                .and_then(Value::as_str)
+                .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+                .unwrap_or(fallback)
+        };
+        let enabled = properties
+            .get("enabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
+        let created_at_ms = properties
+            .get("created_at_ms")
+            .and_then(Value::as_i64)
+            .or_else(|| metadata.get("created_at_ms").and_then(Value::as_i64))
+            .unwrap_or_default();
+        let updated_at_ms = properties
+            .get("updated_at_ms")
+            .and_then(Value::as_i64)
+            .or_else(|| metadata.get("updated_at_ms").and_then(Value::as_i64))
+            .unwrap_or(created_at_ms);
+        let mut projection = json!({
+            "service_id": service_id,
+            "service_kind": properties.get("service_kind").and_then(Value::as_str).unwrap_or("service"),
+            "target_kind": properties.get("target_kind").and_then(Value::as_str).unwrap_or("workflow"),
+            "target_ref": properties.get("target_ref").and_then(Value::as_str).unwrap_or_default(),
+            "enabled": enabled,
+            "autostart": properties.get("autostart").and_then(Value::as_bool).unwrap_or(false),
+            "storage_namespace": properties.get("storage_namespace").and_then(Value::as_str).unwrap_or("workflow"),
+            "execution_namespace": properties.get("execution_namespace").and_then(Value::as_str).unwrap_or("workflow"),
+            "security_scope": properties.get("security_scope").and_then(Value::as_str).unwrap_or("workflow"),
+            "lifecycle_status": if enabled { "degraded" } else { "stopped" },
+            "health_status": if enabled { "degraded" } else { "stopped" },
+            "last_heartbeat_ms": Value::Null,
+            "restart_count": 0,
+            "current_child_run_id": Value::Null,
+            "current_child_status": Value::Null,
+            "current_child_started_at_ms": Value::Null,
+            "last_handled_child_run_id": Value::Null,
+            "last_trigger_type": Value::Null,
+            "last_triggered_at_ms": Value::Null,
+            "heartbeat_ttl_ms": properties.get("heartbeat_ttl_ms").and_then(Value::as_i64).unwrap_or(60_000).max(1),
+            "restart_policy": json_property("restart_policy_json", json!({})),
+            "trigger_specs": json_property("trigger_specs_json", json!([])),
+            "last_message_seen_ms": 0,
+            "last_graph_event_seq": 0,
+            "next_due_at_ms": Value::Null,
+            "restart_not_before_ms": Value::Null,
+            "created_at_ms": created_at_ms,
+            "updated_at_ms": updated_at_ms,
+        });
+        let mut history = service_events.remove(&service_id).unwrap_or_default();
+        history.sort_by_key(|(seq, _)| *seq);
+        for (seq, event) in history {
+            let metadata = &event["metadata"];
+            let event_type = metadata["service_event_type"].as_str().unwrap_or_default();
+            let ts_ms = metadata["ts_ms"].as_i64().unwrap_or_default();
+            let payload = event["properties"]["payload_json"]
+                .as_str()
+                .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+                .unwrap_or_else(|| json!({}));
+            projection["updated_at_ms"] = json!(
+                projection["updated_at_ms"]
+                    .as_i64()
+                    .unwrap_or_default()
+                    .max(ts_ms)
+            );
+            match event_type {
+                "service.heartbeat" => projection["last_heartbeat_ms"] = json!(ts_ms),
+                "service.enabled" => {
+                    projection["enabled"] = json!(payload["enabled"].as_bool().unwrap_or(true));
+                }
+                "service.triggered" => {
+                    projection["last_trigger_type"] = payload["trigger_type"].clone();
+                    projection["last_triggered_at_ms"] = json!(ts_ms);
+                    projection["lifecycle_status"] = json!("starting");
+                }
+                "service.starting" => {
+                    projection["lifecycle_status"] = json!("starting");
+                    projection["health_status"] = json!("healthy");
+                }
+                "service.healthy" => {
+                    projection["lifecycle_status"] = json!("healthy");
+                    projection["health_status"] =
+                        json!(payload["health_status"].as_str().unwrap_or("healthy"));
+                }
+                "service.degraded" => {
+                    projection["lifecycle_status"] = json!("degraded");
+                    projection["health_status"] =
+                        json!(payload["health_status"].as_str().unwrap_or("degraded"));
+                }
+                "service.run_spawned" => {
+                    projection["current_child_run_id"] = payload["run_id"].clone();
+                    projection["current_child_started_at_ms"] = json!(ts_ms);
+                    projection["current_child_status"] = json!("queued");
+                    projection["lifecycle_status"] = json!("starting");
+                }
+                "service.restarting" => {
+                    projection["lifecycle_status"] = json!("restarting");
+                    projection["health_status"] = json!("degraded");
+                    projection["restart_not_before_ms"] = payload["restart_not_before_ms"].clone();
+                    projection["restart_count"] =
+                        json!(payload["restart_count"].as_i64().unwrap_or_else(|| {
+                            projection["restart_count"].as_i64().unwrap_or_default()
+                        }));
+                }
+                "service.stopped" => {
+                    let still_enabled = payload["enabled"]
+                        .as_bool()
+                        .unwrap_or_else(|| projection["enabled"].as_bool().unwrap_or(false));
+                    projection["enabled"] = json!(still_enabled);
+                    if !still_enabled {
+                        projection["lifecycle_status"] = json!("stopped");
+                        projection["health_status"] = json!("stopped");
+                    }
+                }
+                "service.run_failed" => {
+                    projection["current_child_status"] = payload["status"].clone();
+                    projection["last_handled_child_run_id"] = payload["run_id"].clone();
+                }
+                _ => {}
+            }
+            let _ = seq;
+        }
+        projections.insert(service_id, (latest_seq, projection));
+    }
+    Ok(projections)
+}
+
+fn service_projection_write(last_seq: i64, projection: &Value) -> NamedProjectionWrite {
+    NamedProjectionWrite {
+        payload: projection.as_object().cloned().unwrap_or_default(),
+        last_authoritative_seq: last_seq,
+        last_materialized_seq: last_seq,
+        projection_schema_version: 1,
+        materialization_status: "ready".to_owned(),
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -2607,14 +3898,14 @@ impl SqliteRunApplicationService {
             .split('?')
             .next()
             .unwrap_or(&request.path_and_query);
-        if path != "/api/workflow/services" && service_get_id(&request.path_and_query).is_none() {
+        if path != "/api/workflow/services" && service_route(&request.path_and_query).is_none() {
             return None;
         }
         if !capability_allowed(
             request,
             &self.capabilities,
             "service.inspect",
-            &["service.inspect"],
+            &["service.inspect", "project_view"],
         ) {
             return Some(effect_error(
                 StatusCode::FORBIDDEN,
@@ -2648,7 +3939,38 @@ impl SqliteRunApplicationService {
                 },
             );
         }
-        let service_id = service_get_id(&request.path_and_query).expect("validated service route");
+        let (service_id, route) =
+            service_route(&request.path_and_query).expect("validated service route");
+        if route == ServiceRoute::Events {
+            let limit =
+                query_integer(&request.path_and_query, "limit", 500).clamp(1, 10_000) as usize;
+            return Some(
+                match self.store.replay_raw_events("workflow", 0, usize::MAX) {
+                    Ok(events) => json_effect(
+                        StatusCode::OK,
+                        json!({
+                            "service_id": service_id,
+                            "events": service_event_values(
+                                events.into_iter().map(|event| (
+                                    event.seq,
+                                    event.entity_kind,
+                                    event.entity_id,
+                                    event.op,
+                                    event.payload_json,
+                                )),
+                                &service_id,
+                                limit,
+                            ),
+                        }),
+                    ),
+                    Err(error) => effect_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "KOGWISTAR_STORE_ERROR",
+                        error.to_string(),
+                    ),
+                },
+            );
+        }
         Some(
             match self
                 .store
@@ -2814,40 +4136,7 @@ impl SqliteRunApplicationService {
     }
 
     fn submit_run(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
-        #[derive(Deserialize)]
-        struct SubmitRun {
-            workflow_id: String,
-            conversation_id: String,
-            #[serde(default)]
-            turn_node_id: Option<String>,
-            #[serde(default)]
-            user_id: Option<String>,
-            #[serde(default)]
-            initial_state: serde_json::Map<String, Value>,
-            #[serde(default = "default_priority_class")]
-            priority_class: String,
-            #[serde(default)]
-            token_budget: Option<i64>,
-            #[serde(default)]
-            time_budget_ms: Option<i64>,
-            #[serde(default = "default_runtime_kind")]
-            runtime_kind: String,
-            #[serde(default)]
-            join_node_ids: Vec<String>,
-            #[serde(default)]
-            start_join_mask: i64,
-            #[serde(default)]
-            runtime_routes: Vec<kogwistar_runtime::RuntimeStaticRoute>,
-        }
-
-        fn default_priority_class() -> String {
-            "foreground".to_owned()
-        }
-        fn default_runtime_kind() -> String {
-            "sync".to_owned()
-        }
-
-        let input: SubmitRun = match serde_json::from_slice(&request.body) {
+        let input: RuntimeSubmitRun = match serde_json::from_slice(&request.body) {
             Ok(value) => value,
             Err(error) => {
                 return effect_error(
@@ -2866,7 +4155,13 @@ impl SqliteRunApplicationService {
                 "workflow_id and conversation_id are required",
             );
         }
-        let run_id = uuid::Uuid::new_v4().to_string();
+        let run_id = input
+            .run_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         let turn_node_id = input
             .turn_node_id
             .as_deref()
@@ -2880,7 +4175,7 @@ impl SqliteRunApplicationService {
             .map(|value| value.as_secs() as i64)
             .unwrap_or(0);
         let priority_class = if input.priority_class.is_empty() {
-            default_priority_class()
+            default_runtime_priority_class()
         } else {
             input.priority_class
         };
@@ -2922,12 +4217,31 @@ impl SqliteRunApplicationService {
         let effective_start_node_id = graph_plan
             .as_ref()
             .map(|plan| plan.start_node_id.clone())
+            .or_else(|| {
+                input
+                    .start_node_id
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_owned)
+            })
             .unwrap_or_else(|| "start".to_owned());
+        let effective_node_ops = graph_plan
+            .as_ref()
+            .map(|plan| plan.node_ops.clone())
+            .unwrap_or(input.node_ops);
+        let effective_start_op = effective_node_ops.get(&effective_start_node_id).cloned();
         let mut initial_state = input.initial_state.clone();
         if !effective_routes.is_empty() {
             initial_state.insert(
                 "_rt_routes".to_owned(),
                 serde_json::to_value(&effective_routes).expect("static runtime routes serialize"),
+            );
+        }
+        if !effective_node_ops.is_empty() {
+            initial_state.insert(
+                "_rt_node_ops".to_owned(),
+                serde_json::to_value(&effective_node_ops).expect("runtime node ops serialize"),
             );
         }
         if let Some(token_budget) = input.token_budget {
@@ -2952,6 +4266,8 @@ impl SqliteRunApplicationService {
             "join_node_ids": effective_join_node_ids,
             "start_join_mask": effective_start_join_mask,
             "start_node_id": effective_start_node_id,
+            "op": effective_start_op,
+            "runtime_routes": effective_routes,
         });
         let max_queue = self.max_queue;
         let outcome = self.store.immediate_transaction(|uow| {
@@ -3046,21 +4362,7 @@ impl SqliteRunApplicationService {
     }
 
     fn claim_runtime_work(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
-        #[derive(Deserialize)]
-        struct ClaimRequest {
-            claimed_by: String,
-            #[serde(default = "default_limit")]
-            limit: usize,
-            #[serde(default = "default_lease")]
-            lease_seconds: i64,
-        }
-        fn default_limit() -> usize {
-            1
-        }
-        fn default_lease() -> i64 {
-            60
-        }
-        let input: ClaimRequest = match serde_json::from_slice(&request.body) {
+        let input: RuntimeClaimRequest = match serde_json::from_slice(&request.body) {
             Ok(value) => value,
             Err(error) => {
                 return effect_error(
@@ -3078,13 +4380,24 @@ impl SqliteRunApplicationService {
             );
         }
         let outcome = self.store.immediate_transaction(|uow| {
-            let claimed = uow.claim_projected_lane_messages(
-                "workflow",
-                "workflow-runtime",
-                &input.claimed_by,
-                input.limit,
-                input.lease_seconds,
-            )?;
+            let claimed = if let Some(run_id) = input.run_id.as_deref() {
+                uow.claim_projected_lane_messages_for_run(
+                    "workflow",
+                    "workflow-runtime",
+                    run_id,
+                    &input.claimed_by,
+                    input.limit,
+                    input.lease_seconds,
+                )?
+            } else {
+                uow.claim_projected_lane_messages(
+                    "workflow",
+                    "workflow-runtime",
+                    &input.claimed_by,
+                    input.limit,
+                    input.lease_seconds,
+                )?
+            };
             let mut values = Vec::new();
             for lane in claimed {
                 let payload: Value =
@@ -3330,6 +4643,7 @@ impl SqliteRunApplicationService {
                     if uow.get_projected_lane_message(&message_id)?.is_some() {
                         continue;
                     }
+                    let op = applied.reduced.state.state["_rt_node_ops"][node_id].clone();
                     uow.project_lane_message(NewProjectedLaneMessage {
                         message_id,
                         namespace: "workflow".to_owned(),
@@ -3352,6 +4666,8 @@ impl SqliteRunApplicationService {
                             "workflow_id": transition.workflow_id,
                             "conversation_id": transition.conversation_id,
                             "node_id": node_id,
+                            "op": op,
+                            "runtime_routes": applied.reduced.state.static_routes,
                             "join_mask": join_mask,
                             "token_id": token_id,
                             "parent_token_id": parent_token_id,
@@ -3445,6 +4761,1033 @@ pub struct PostgresRunApplicationService {
 }
 
 impl PostgresRunApplicationService {
+    async fn syscall_effect(&self, request: &ApiEffectRequest, op: &str) -> ApiEffectResponse {
+        let input = match syscall_input(request, op) {
+            Ok(input) => input,
+            Err(response) => return response,
+        };
+        let response = match op {
+            "spawn_process" => {
+                if !syscall_allowed(
+                    request,
+                    &self.capabilities,
+                    op,
+                    true,
+                    &["spawn_process", "workflow.run.write"],
+                ) {
+                    syscall_forbidden(op)
+                } else {
+                    let nested = ApiEffectRequest {
+                        contract_version: request.contract_version,
+                        method: "POST".to_owned(),
+                        path_and_query: "/api/workflow/runs".to_owned(),
+                        body: serde_json::to_vec(&input.args).expect("syscall args serialize"),
+                        principal: request.principal.clone(),
+                    };
+                    syscall_result(&input.version, op, self.submit_run(&nested).await)
+                }
+            }
+            "terminate_process" => {
+                if !syscall_allowed(
+                    request,
+                    &self.capabilities,
+                    op,
+                    true,
+                    &["workflow.run.write"],
+                ) {
+                    syscall_forbidden(op)
+                } else if let Some(run_id) = input.args["run_id"].as_str() {
+                    match self.store.request_server_run_cancel(run_id).await {
+                        Ok(()) => match self.store.get_server_run(run_id).await {
+                            Ok(Some(run)) => syscall_result(
+                                &input.version,
+                                op,
+                                json_effect(StatusCode::ACCEPTED, server_run_value(run)),
+                            ),
+                            Ok(None) => effect_error(
+                                StatusCode::NOT_FOUND,
+                                "KOGWISTAR_RUN_NOT_FOUND",
+                                format!("Unknown run_id: {run_id}"),
+                            ),
+                            Err(error) => effect_error(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                "KOGWISTAR_STORE_ERROR",
+                                error.to_string(),
+                            ),
+                        },
+                        Err(error) => effect_error(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "KOGWISTAR_STORE_ERROR",
+                            error.to_string(),
+                        ),
+                    }
+                } else {
+                    effect_error(
+                        StatusCode::BAD_REQUEST,
+                        "KOGWISTAR_INVALID_REQUEST",
+                        "run_id is required",
+                    )
+                }
+            }
+            "checkpoint" => {
+                if !syscall_allowed(
+                    request,
+                    &self.capabilities,
+                    op,
+                    false,
+                    &["workflow.run.read"],
+                ) {
+                    syscall_forbidden(op)
+                } else if let (Some(run_id), Some(step_seq)) = (
+                    input.args["run_id"].as_str(),
+                    input.args["step_seq"].as_i64(),
+                ) {
+                    match self.store.list_server_run_events(run_id, 0, 100_000).await {
+                        Ok(events) => syscall_result(
+                            &input.version,
+                            op,
+                            runtime_inspection_effect(
+                                request,
+                                run_id,
+                                &["checkpoints", &step_seq.to_string()],
+                                events,
+                            ),
+                        ),
+                        Err(error) => effect_error(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "KOGWISTAR_STORE_ERROR",
+                            error.to_string(),
+                        ),
+                    }
+                } else {
+                    effect_error(
+                        StatusCode::BAD_REQUEST,
+                        "KOGWISTAR_INVALID_REQUEST",
+                        "run_id and integer step_seq are required",
+                    )
+                }
+            }
+            "resume" => {
+                if !syscall_allowed(
+                    request,
+                    &self.capabilities,
+                    op,
+                    true,
+                    &["workflow.run.write"],
+                ) {
+                    syscall_forbidden(op)
+                } else if let Some(run_id) = input.args["run_id"].as_str() {
+                    let nested = ApiEffectRequest {
+                        contract_version: request.contract_version,
+                        method: "POST".to_owned(),
+                        path_and_query: format!("/api/workflow/runs/{run_id}/resume"),
+                        body: serde_json::to_vec(&input.args).expect("syscall args serialize"),
+                        principal: request.principal.clone(),
+                    };
+                    syscall_result(
+                        &input.version,
+                        op,
+                        self.resume_runtime_run(run_id, &nested).await,
+                    )
+                } else {
+                    effect_error(
+                        StatusCode::BAD_REQUEST,
+                        "KOGWISTAR_INVALID_REQUEST",
+                        "run_id is required",
+                    )
+                }
+            }
+            "request_approval" => {
+                if !syscall_allowed(request, &self.capabilities, op, true, &["approve_action"]) {
+                    syscall_forbidden(op)
+                } else {
+                    request_approval_syscall(request, &self.capabilities, &input)
+                }
+            }
+            _ => unavailable_effect(request.clone()),
+        };
+        syscall_audit(
+            &self.capabilities,
+            &input.version,
+            op,
+            syscall_audit_status(&response),
+        );
+        response
+    }
+
+    async fn trigger_service(
+        &self,
+        request: &ApiEffectRequest,
+        service_id: &str,
+    ) -> ApiEffectResponse {
+        if !capability_allowed(
+            request,
+            &self.capabilities,
+            "service.manage",
+            &["service.manage"],
+        ) {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                "Triggering service requires service.manage capability",
+            );
+        }
+        let mut input: ServiceTriggerInput = match serde_json::from_slice(&request.body) {
+            Ok(value) => value,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    error.to_string(),
+                );
+            }
+        };
+        if let Err(error) = validate_service_trigger(&mut input) {
+            return effect_error(StatusCode::BAD_REQUEST, "KOGWISTAR_INVALID_REQUEST", error);
+        }
+        let timestamp = now_ms();
+        let now_seconds = (timestamp / 1000) as i64;
+        let max_queue = self.max_queue;
+        let service_id_owned = service_id.to_owned();
+        let outcome = self
+            .store
+            .transaction(move |uow| {
+                Box::pin(async move {
+                    let current = uow
+                        .lock_named_projection("service_registry", &service_id_owned)
+                        .await?
+                        .ok_or_else(|| {
+                            kogwistar_store_postgres::PostgresStoreError::TransactionAborted(
+                                "KOGWISTAR_SERVICE_NOT_FOUND".to_owned(),
+                            )
+                        })?;
+                    let current_value = Value::Object(current.payload);
+                    if let Some(run_id) = current_value["current_child_run_id"]
+                        .as_str()
+                        .filter(|value| !value.is_empty())
+                        && let Some(run) = uow.get_server_run(run_id).await?
+                        && !matches!(run.status.as_str(), "succeeded" | "failed" | "cancelled")
+                    {
+                        return Ok(Some(current_value));
+                    }
+                    let history = uow.replay_raw_events("workflow", 0, usize::MAX).await?;
+                    let definition = latest_service_definition(
+                        history.into_iter().map(|event| {
+                            (
+                                event.seq,
+                                event.entity_kind,
+                                event.entity_id,
+                                event.op,
+                                event.payload_json,
+                            )
+                        }),
+                        &service_id_owned,
+                    )
+                    .ok_or_else(|| {
+                        kogwistar_store_postgres::PostgresStoreError::TransactionAborted(
+                            "KOGWISTAR_SERVICE_NOT_FOUND".to_owned(),
+                        )
+                    })?;
+                    if service_trigger_is_suppressed(
+                        &definition,
+                        &current_value,
+                        &input.trigger_type,
+                        timestamp,
+                    ) {
+                        return Ok(Some(current_value));
+                    }
+                    let (target_kind, target_config) = service_definition_runtime(&definition)
+                        .map_err(|message| {
+                            kogwistar_store_postgres::PostgresStoreError::TransactionAborted(
+                                message.to_owned(),
+                            )
+                        })?;
+                    let target_ref = definition["properties"]["target_ref"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_owned();
+                    let mut run_id = None;
+                    if target_kind == "workflow" {
+                        uow.lock_runtime_queue_admission().await?;
+                        let pending = uow
+                            .list_projected_lane_messages(&LaneMessageFilter {
+                                namespace: Some("workflow".to_owned()),
+                                inbox_id: Some("workflow-runtime".to_owned()),
+                                status: Some("pending".to_owned()),
+                                limit: max_queue,
+                                ..LaneMessageFilter::default()
+                            })
+                            .await?;
+                        let claimed = uow
+                            .list_projected_lane_messages(&LaneMessageFilter {
+                                namespace: Some("workflow".to_owned()),
+                                inbox_id: Some("workflow-runtime".to_owned()),
+                                status: Some("claimed".to_owned()),
+                                limit: max_queue,
+                                ..LaneMessageFilter::default()
+                            })
+                            .await?;
+                        if pending.len() + claimed.len() >= max_queue {
+                            return Ok(None);
+                        }
+                        let target = target_config.as_object().cloned().unwrap_or_default();
+                        let conversation_id = input
+                            .payload
+                            .get("conversation_id")
+                            .and_then(Value::as_str)
+                            .or_else(|| target.get("conversation_id").and_then(Value::as_str))
+                            .map(str::to_owned)
+                            .unwrap_or_else(|| format!("svc:{service_id_owned}"));
+                        let turn_node_id = input
+                            .payload
+                            .get("turn_node_id")
+                            .and_then(Value::as_str)
+                            .or_else(|| target.get("turn_node_id").and_then(Value::as_str))
+                            .map(str::to_owned)
+                            .unwrap_or_else(|| format!("wf_turn|{}", uuid::Uuid::new_v4()));
+                        let user_id = input
+                            .payload
+                            .get("user_id")
+                            .and_then(Value::as_str)
+                            .or_else(|| target.get("user_id").and_then(Value::as_str))
+                            .map(str::to_owned);
+                        let mut initial_state = target
+                            .get("initial_state")
+                            .and_then(Value::as_object)
+                            .cloned()
+                            .unwrap_or_default();
+                        if let Some(overrides) = input
+                            .payload
+                            .get("initial_state")
+                            .and_then(Value::as_object)
+                        {
+                            initial_state.extend(overrides.clone());
+                        }
+                        let created_run_id = uuid::Uuid::new_v4().to_string();
+                        let message_id = format!("lane|{}", uuid::Uuid::new_v4());
+                        let graph_plan = exact_runtime_graph_plan(
+                            uow.get_named_projection("workflow_design", &target_ref)
+                                .await?,
+                            uow.get_workflow_design_snapshot(&target_ref, i64::MAX, 1)
+                                .await?,
+                        );
+                        let runtime_routes = graph_plan
+                            .as_ref()
+                            .map(|plan| plan.routes.clone())
+                            .unwrap_or_default();
+                        let join_node_ids = graph_plan
+                            .as_ref()
+                            .map(|plan| plan.join_node_ids.clone())
+                            .unwrap_or_default();
+                        let start_join_mask = graph_plan
+                            .as_ref()
+                            .map(|plan| plan.start_join_mask)
+                            .unwrap_or_default();
+                        let start_node_id = graph_plan
+                            .as_ref()
+                            .map(|plan| plan.start_node_id.clone())
+                            .unwrap_or_else(|| "start".to_owned());
+                        let node_ops = graph_plan
+                            .as_ref()
+                            .map(|plan| plan.node_ops.clone())
+                            .unwrap_or_default();
+                        let start_op = node_ops.get(&start_node_id).cloned();
+                        if !runtime_routes.is_empty() {
+                            initial_state.insert(
+                                "_rt_routes".to_owned(),
+                                serde_json::to_value(&runtime_routes)
+                                    .expect("static runtime routes serialize"),
+                            );
+                        }
+                        if !node_ops.is_empty() {
+                            initial_state.insert(
+                                "_rt_node_ops".to_owned(),
+                                serde_json::to_value(&node_ops)
+                                    .expect("runtime node ops serialize"),
+                            );
+                        }
+                        uow.create_server_run(ServerRunCreate {
+                            run_id: created_run_id.clone(),
+                            conversation_id: conversation_id.clone(),
+                            workflow_id: target_ref.clone(),
+                            user_id: user_id.clone(),
+                            user_turn_node_id: turn_node_id.clone(),
+                            status: "queued".to_owned(),
+                        })
+                        .await?;
+                        let created = uow
+                            .append_server_run_event(
+                                &created_run_id,
+                                "run.created",
+                                json!({
+                                    "run_id": created_run_id,
+                                    "run_kind": "workflow_runtime",
+                                    "conversation_id": conversation_id,
+                                    "workflow_id": target_ref,
+                                    "status": "queued",
+                                    "turn_node_id": turn_node_id,
+                                })
+                                .to_string(),
+                            )
+                            .await?;
+                        let priority_class = target
+                            .get("priority_class")
+                            .and_then(Value::as_str)
+                            .unwrap_or("background");
+                        let payload = json!({
+                            "contract_version": 1,
+                            "kind": "workflow.run.execute",
+                            "run_id": created_run_id,
+                            "workflow_id": target_ref,
+                            "conversation_id": conversation_id,
+                            "turn_node_id": turn_node_id,
+                            "user_id": user_id,
+                            "initial_state": initial_state,
+                            "priority_class": priority_class,
+                            "token_budget": target.get("token_budget"),
+                            "time_budget_ms": target.get("time_budget_ms"),
+                            "runtime_kind": target.get("runtime_kind").and_then(Value::as_str).unwrap_or("sync"),
+                            "join_node_ids": join_node_ids,
+                            "start_join_mask": start_join_mask,
+                            "start_node_id": start_node_id,
+                            "op": start_op,
+                            "runtime_routes": runtime_routes,
+                            "expected_event_seq": created.seq,
+                        });
+                        uow.project_lane_message(NewProjectedLaneMessage {
+                            message_id,
+                            namespace: "workflow".to_owned(),
+                            purpose: "system".to_owned(),
+                            inbox_id: "workflow-runtime".to_owned(),
+                            conversation_id,
+                            recipient_id: "python-worker".to_owned(),
+                            sender_id: "rust-scheduler".to_owned(),
+                            msg_type: "workflow.run.execute".to_owned(),
+                            status: "pending".to_owned(),
+                            created_at: now_seconds,
+                            available_at: now_seconds,
+                            run_id: Some(created_run_id.clone()),
+                            step_id: Some(start_node_id),
+                            correlation_id: Some(created_run_id.clone()),
+                            payload_json: Some(payload.to_string()),
+                            error_json: None,
+                        })
+                        .await?;
+                        run_id = Some(created_run_id);
+                    }
+                    let mut triggered_payload = input.payload.clone();
+                    triggered_payload.insert(
+                        "trigger_type".to_owned(),
+                        json!(input.trigger_type),
+                    );
+                    for (event_type, payload) in [
+                        (
+                            "service.starting",
+                            json!({"trigger_type": input.trigger_type}),
+                        ),
+                        ("service.triggered", Value::Object(triggered_payload)),
+                    ] {
+                        let (entity_id, event) = service_event_node(
+                            &service_id_owned,
+                            event_type,
+                            &payload,
+                            timestamp,
+                        );
+                        uow.append_raw_entity_event(
+                            "workflow",
+                            PostgresNewRawEntityEvent {
+                                event_id: uuid::Uuid::new_v4().to_string(),
+                                entity_kind: "node".to_owned(),
+                                entity_id,
+                                op: "ADD".to_owned(),
+                                payload_json: event.to_string(),
+                            },
+                        )
+                        .await?;
+                    }
+                    if let Some(run_id) = &run_id {
+                        let (entity_id, event) = service_event_node(
+                            &service_id_owned,
+                            "service.run_spawned",
+                            &json!({
+                                "trigger_type": input.trigger_type,
+                                "run_id": run_id,
+                                "workflow_id": target_ref,
+                            }),
+                            timestamp,
+                        );
+                        uow.append_raw_entity_event(
+                            "workflow",
+                            PostgresNewRawEntityEvent {
+                                event_id: uuid::Uuid::new_v4().to_string(),
+                                entity_kind: "node".to_owned(),
+                                entity_id,
+                                op: "ADD".to_owned(),
+                                payload_json: event.to_string(),
+                            },
+                        )
+                        .await?;
+                    }
+                    let history = uow.replay_raw_events("workflow", 0, usize::MAX).await?;
+                    let projections = service_projection_values(history.into_iter().map(|event| {
+                        (
+                            event.seq,
+                            event.entity_kind,
+                            event.entity_id,
+                            event.op,
+                            event.payload_json,
+                        )
+                    }))
+                    .map_err(
+                        kogwistar_store_postgres::PostgresStoreError::TransactionAborted,
+                    )?;
+                    let (last_seq, projection) = projections.get(&service_id_owned).ok_or_else(|| {
+                        kogwistar_store_postgres::PostgresStoreError::TransactionAborted(
+                            "KOGWISTAR_SERVICE_TRIGGER_INVALID".to_owned(),
+                        )
+                    })?;
+                    uow.replace_named_projection(
+                        "service_registry",
+                        &service_id_owned,
+                        service_projection_write(*last_seq, projection),
+                    )
+                    .await?;
+                    Ok(Some(projection.clone()))
+                })
+            })
+            .await;
+        match outcome {
+            Ok(Some(projection)) => json_effect(StatusCode::OK, projection),
+            Ok(None) => effect_error(
+                StatusCode::TOO_MANY_REQUESTS,
+                "KOGWISTAR_QUEUE_FULL",
+                "workflow runtime queue is full",
+            ),
+            Err(error) if error.to_string().contains("KOGWISTAR_SERVICE_NOT_FOUND") => {
+                effect_error(
+                    StatusCode::NOT_FOUND,
+                    "KOGWISTAR_SERVICE_NOT_FOUND",
+                    format!("Unknown service_id: {service_id}"),
+                )
+            }
+            Err(error) => effect_error(
+                StatusCode::CONFLICT,
+                "KOGWISTAR_SERVICE_TRIGGER_CONFLICT",
+                error.to_string(),
+            ),
+        }
+    }
+
+    async fn declare_service(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
+        if !capability_allowed(
+            request,
+            &self.capabilities,
+            "service.manage",
+            &["service.manage"],
+        ) {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                "Declaring service requires service.manage capability",
+            );
+        }
+        let mut input: ServiceDeclareInput = match serde_json::from_slice(&request.body) {
+            Ok(value) => value,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    error.to_string(),
+                );
+            }
+        };
+        if let Err(error) = validate_service_declare(&mut input) {
+            return effect_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "KOGWISTAR_INVALID_REQUEST",
+                error,
+            );
+        }
+        let timestamp = now_ms();
+        let service_id = input.service_id.clone();
+        let outcome = self
+            .store
+            .transaction(move |uow| {
+                Box::pin(async move {
+                    let (definition_id, definition) = service_definition_node(&input, timestamp);
+                    uow.append_raw_entity_event(
+                        "workflow",
+                        PostgresNewRawEntityEvent {
+                            event_id: uuid::Uuid::new_v4().to_string(),
+                            entity_kind: "node".to_owned(),
+                            entity_id: definition_id,
+                            op: "ADD".to_owned(),
+                            payload_json: definition.to_string(),
+                        },
+                    )
+                    .await?;
+                    let lifecycle_type = if input.enabled {
+                        "service.enabled"
+                    } else {
+                        "service.stopped"
+                    };
+                    let (event_id, event) = service_event_node(
+                        &service_id,
+                        lifecycle_type,
+                        &json!({"enabled": input.enabled, "autostart": input.autostart}),
+                        timestamp,
+                    );
+                    uow.append_raw_entity_event(
+                        "workflow",
+                        PostgresNewRawEntityEvent {
+                            event_id: uuid::Uuid::new_v4().to_string(),
+                            entity_kind: "node".to_owned(),
+                            entity_id: event_id,
+                            op: "ADD".to_owned(),
+                            payload_json: event.to_string(),
+                        },
+                    )
+                    .await?;
+                    if input.enabled {
+                        let (event_id, event) = service_event_node(
+                            &service_id,
+                            "service.degraded",
+                            &json!({"health_status": "degraded"}),
+                            timestamp,
+                        );
+                        uow.append_raw_entity_event(
+                            "workflow",
+                            PostgresNewRawEntityEvent {
+                                event_id: uuid::Uuid::new_v4().to_string(),
+                                entity_kind: "node".to_owned(),
+                                entity_id: event_id,
+                                op: "ADD".to_owned(),
+                                payload_json: event.to_string(),
+                            },
+                        )
+                        .await?;
+                    }
+                    let history = uow.replay_raw_events("workflow", 0, usize::MAX).await?;
+                    let projections = service_projection_values(history.into_iter().map(|event| {
+                        (
+                            event.seq,
+                            event.entity_kind,
+                            event.entity_id,
+                            event.op,
+                            event.payload_json,
+                        )
+                    }))
+                    .map_err(kogwistar_store_postgres::PostgresStoreError::TransactionAborted)?;
+                    let (last_seq, projection) = projections.get(&service_id).ok_or_else(|| {
+                        kogwistar_store_postgres::PostgresStoreError::TransactionAborted(
+                            "KOGWISTAR_SERVICE_DECLARATION_INVALID".to_owned(),
+                        )
+                    })?;
+                    uow.replace_named_projection(
+                        "service_registry",
+                        &service_id,
+                        service_projection_write(*last_seq, projection),
+                    )
+                    .await?;
+                    Ok(projection.clone())
+                })
+            })
+            .await;
+        match outcome {
+            Ok(projection) => json_effect(StatusCode::OK, projection),
+            Err(error) => effect_error(
+                StatusCode::CONFLICT,
+                "KOGWISTAR_SERVICE_DECLARATION_CONFLICT",
+                error.to_string(),
+            ),
+        }
+    }
+
+    async fn record_service_heartbeat(
+        &self,
+        request: &ApiEffectRequest,
+        service_id: &str,
+    ) -> ApiEffectResponse {
+        #[derive(Deserialize)]
+        struct HeartbeatInput {
+            instance_id: String,
+            #[serde(default)]
+            payload: serde_json::Map<String, Value>,
+        }
+        if !capability_allowed(
+            request,
+            &self.capabilities,
+            "service.heartbeat",
+            &["service.heartbeat", "service.manage"],
+        ) {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                "Recording service heartbeat requires service.heartbeat capability",
+            );
+        }
+        let input: HeartbeatInput = match serde_json::from_slice::<HeartbeatInput>(&request.body) {
+            Ok(value) if !value.instance_id.trim().is_empty() => value,
+            Ok(_) => {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    "instance_id must not be empty",
+                );
+            }
+            Err(error) => {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    error.to_string(),
+                );
+            }
+        };
+        let timestamp = now_ms();
+        let service_id_owned = service_id.to_owned();
+        let outcome = self
+            .store
+            .transaction(move |uow| {
+                Box::pin(async move {
+                    let current = uow
+                        .get_named_projection("service_registry", &service_id_owned)
+                        .await?
+                        .ok_or_else(|| {
+                            kogwistar_store_postgres::PostgresStoreError::TransactionAborted(
+                                "KOGWISTAR_SERVICE_NOT_FOUND".to_owned(),
+                            )
+                        })?;
+                    let mut projection = Value::Object(current.payload);
+                    let previous_health = projection["health_status"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_owned();
+                    let previous_error = projection["last_error"].clone();
+                    let next_error = input
+                        .payload
+                        .get("last_error")
+                        .cloned()
+                        .unwrap_or(Value::Null);
+                    projection["instance_id"] = json!(input.instance_id);
+                    projection["last_heartbeat_ms"] = json!(timestamp);
+                    projection["lifecycle_status"] = json!("healthy");
+                    projection["health_status"] = json!("healthy");
+                    projection["updated_at_ms"] = json!(timestamp);
+                    projection["last_error"] = if next_error.is_null() {
+                        Value::Null
+                    } else {
+                        json!(next_error.as_str().unwrap_or_default())
+                    };
+                    let mut last_seq = current.last_authoritative_seq;
+                    if matches!(previous_health.as_str(), "degraded" | "failed" | "stopped") {
+                        let (entity_id, event) = service_event_node(
+                            &service_id_owned,
+                            "service.healthy",
+                            &json!({
+                                "health_status": "healthy",
+                                "instance_id": input.instance_id,
+                            }),
+                            timestamp,
+                        );
+                        last_seq = uow
+                            .append_raw_entity_event(
+                                "workflow",
+                                PostgresNewRawEntityEvent {
+                                    event_id: uuid::Uuid::new_v4().to_string(),
+                                    entity_kind: "node".to_owned(),
+                                    entity_id,
+                                    op: "ADD".to_owned(),
+                                    payload_json: event.to_string(),
+                                },
+                            )
+                            .await?
+                            .event
+                            .seq;
+                    }
+                    if previous_error != projection["last_error"]
+                        && !projection["last_error"].is_null()
+                    {
+                        let (entity_id, event) = service_event_node(
+                            &service_id_owned,
+                            "service.error_changed",
+                            &json!({
+                                "instance_id": input.instance_id,
+                                "last_error": projection["last_error"],
+                            }),
+                            timestamp,
+                        );
+                        last_seq = uow
+                            .append_raw_entity_event(
+                                "workflow",
+                                PostgresNewRawEntityEvent {
+                                    event_id: uuid::Uuid::new_v4().to_string(),
+                                    entity_kind: "node".to_owned(),
+                                    entity_id,
+                                    op: "ADD".to_owned(),
+                                    payload_json: event.to_string(),
+                                },
+                            )
+                            .await?
+                            .event
+                            .seq;
+                    }
+                    uow.replace_named_projection(
+                        "service_registry",
+                        &service_id_owned,
+                        service_projection_write(last_seq, &projection),
+                    )
+                    .await?;
+                    Ok(projection)
+                })
+            })
+            .await;
+        match outcome {
+            Ok(projection) => json_effect(StatusCode::OK, projection),
+            Err(error) if error.to_string().contains("KOGWISTAR_SERVICE_NOT_FOUND") => {
+                effect_error(
+                    StatusCode::NOT_FOUND,
+                    "KOGWISTAR_SERVICE_NOT_FOUND",
+                    format!("Unknown service_id: {service_id}"),
+                )
+            }
+            Err(error) => effect_error(
+                StatusCode::CONFLICT,
+                "KOGWISTAR_SERVICE_HEARTBEAT_CONFLICT",
+                error.to_string(),
+            ),
+        }
+    }
+
+    async fn set_service_enabled(
+        &self,
+        request: &ApiEffectRequest,
+        service_id: &str,
+        enabled: bool,
+    ) -> ApiEffectResponse {
+        if !capability_allowed(
+            request,
+            &self.capabilities,
+            "service.manage",
+            &["service.manage"],
+        ) {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                "Changing service lifecycle requires service.manage capability",
+            );
+        }
+        let timestamp = now_ms();
+        let service_id_owned = service_id.to_owned();
+        let outcome = self
+            .store
+            .transaction(move |uow| {
+                Box::pin(async move {
+                    let history = uow.replay_raw_events("workflow", 0, usize::MAX).await?;
+                    let definition = latest_service_definition(
+                        history.into_iter().map(|event| {
+                            (
+                                event.seq,
+                                event.entity_kind,
+                                event.entity_id,
+                                event.op,
+                                event.payload_json,
+                            )
+                        }),
+                        &service_id_owned,
+                    )
+                    .ok_or_else(|| {
+                        kogwistar_store_postgres::PostgresStoreError::TransactionAborted(
+                            "KOGWISTAR_SERVICE_NOT_FOUND".to_owned(),
+                        )
+                    })?;
+                    let (definition_id, definition, event_id, event) =
+                        service_enabled_nodes(definition, &service_id_owned, enabled, timestamp)
+                            .map_err(
+                                kogwistar_store_postgres::PostgresStoreError::TransactionAborted,
+                            )?;
+                    uow.append_raw_entity_event(
+                        "workflow",
+                        PostgresNewRawEntityEvent {
+                            event_id: uuid::Uuid::new_v4().to_string(),
+                            entity_kind: "node".to_owned(),
+                            entity_id: definition_id,
+                            op: "ADD".to_owned(),
+                            payload_json: definition.to_string(),
+                        },
+                    )
+                    .await?;
+                    uow.append_raw_entity_event(
+                        "workflow",
+                        PostgresNewRawEntityEvent {
+                            event_id: uuid::Uuid::new_v4().to_string(),
+                            entity_kind: "node".to_owned(),
+                            entity_id: event_id,
+                            op: "ADD".to_owned(),
+                            payload_json: event.to_string(),
+                        },
+                    )
+                    .await?;
+                    let history = uow.replay_raw_events("workflow", 0, usize::MAX).await?;
+                    let projections = service_projection_values(history.into_iter().map(|event| {
+                        (
+                            event.seq,
+                            event.entity_kind,
+                            event.entity_id,
+                            event.op,
+                            event.payload_json,
+                        )
+                    }))
+                    .map_err(kogwistar_store_postgres::PostgresStoreError::TransactionAborted)?;
+                    let (last_seq, projection) =
+                        projections.get(&service_id_owned).ok_or_else(|| {
+                            kogwistar_store_postgres::PostgresStoreError::TransactionAborted(
+                                "KOGWISTAR_SERVICE_NOT_FOUND".to_owned(),
+                            )
+                        })?;
+                    uow.replace_named_projection(
+                        "service_registry",
+                        &service_id_owned,
+                        service_projection_write(*last_seq, projection),
+                    )
+                    .await?;
+                    Ok(projection.clone())
+                })
+            })
+            .await;
+        match outcome {
+            Ok(projection) => json_effect(StatusCode::OK, projection),
+            Err(error) if error.to_string().contains("KOGWISTAR_SERVICE_NOT_FOUND") => {
+                effect_error(
+                    StatusCode::NOT_FOUND,
+                    "KOGWISTAR_SERVICE_NOT_FOUND",
+                    format!("Unknown service_id: {service_id}"),
+                )
+            }
+            Err(error) => effect_error(
+                StatusCode::CONFLICT,
+                "KOGWISTAR_SERVICE_MUTATION_CONFLICT",
+                error.to_string(),
+            ),
+        }
+    }
+
+    async fn repair_service_projections(
+        &self,
+        request: &ApiEffectRequest,
+        service_id: Option<&str>,
+    ) -> ApiEffectResponse {
+        if !capability_allowed(
+            request,
+            &self.capabilities,
+            "service.manage",
+            &["service.manage"],
+        ) {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                "Repairing service projections requires service.manage capability",
+            );
+        }
+        let events = match self
+            .store
+            .replay_raw_events("workflow", 0, usize::MAX)
+            .await
+        {
+            Ok(events) => events,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_STORE_ERROR",
+                    error.to_string(),
+                );
+            }
+        };
+        let projections = match service_projection_values(events.into_iter().map(|event| {
+            (
+                event.seq,
+                event.entity_kind,
+                event.entity_id,
+                event.op,
+                event.payload_json,
+            )
+        })) {
+            Ok(value) => value,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_SERVICE_HISTORY_INVALID",
+                    error,
+                );
+            }
+        };
+        if let Some(service_id) = service_id {
+            let Some((last_seq, projection)) = projections.get(service_id) else {
+                return effect_error(
+                    StatusCode::NOT_FOUND,
+                    "KOGWISTAR_SERVICE_NOT_FOUND",
+                    format!("Unknown service_id: {service_id}"),
+                );
+            };
+            return match self
+                .store
+                .replace_named_projection(
+                    "service_registry",
+                    service_id,
+                    service_projection_write(*last_seq, projection),
+                )
+                .await
+            {
+                Ok(()) => json_effect(
+                    StatusCode::OK,
+                    json!({"service_id": service_id, "projection": projection}),
+                ),
+                Err(error) => effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_STORE_ERROR",
+                    error.to_string(),
+                ),
+            };
+        }
+        let limit = query_integer(&request.path_and_query, "limit", 10_000).clamp(0, 10_000);
+        let selected = projections
+            .into_iter()
+            .take(limit as usize)
+            .collect::<Vec<_>>();
+        let writes = selected.clone();
+        let outcome = self
+            .store
+            .transaction(move |uow| {
+                Box::pin(async move {
+                    for (service_id, (last_seq, projection)) in &writes {
+                        uow.replace_named_projection(
+                            "service_registry",
+                            service_id,
+                            service_projection_write(*last_seq, projection),
+                        )
+                        .await?;
+                    }
+                    Ok(())
+                })
+            })
+            .await;
+        match outcome {
+            Ok(()) => json_effect(
+                StatusCode::OK,
+                json!({
+                    "repaired_service_ids": selected
+                        .into_iter()
+                        .map(|(service_id, _)| service_id)
+                        .collect::<Vec<_>>(),
+                }),
+            ),
+            Err(error) => effect_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "KOGWISTAR_STORE_ERROR",
+                error.to_string(),
+            ),
+        }
+    }
+
     async fn design_events(&self, workflow_id: &str) -> Result<Vec<EntityEvent>, String> {
         let namespace = format!("wf_design:{workflow_id}");
         self.store
@@ -3697,14 +6040,14 @@ impl PostgresRunApplicationService {
             .split('?')
             .next()
             .unwrap_or(&request.path_and_query);
-        if path != "/api/workflow/services" && service_get_id(&request.path_and_query).is_none() {
+        if path != "/api/workflow/services" && service_route(&request.path_and_query).is_none() {
             return None;
         }
         if !capability_allowed(
             request,
             &self.capabilities,
             "service.inspect",
-            &["service.inspect"],
+            &["service.inspect", "project_view"],
         ) {
             return Some(effect_error(
                 StatusCode::FORBIDDEN,
@@ -3738,7 +6081,42 @@ impl PostgresRunApplicationService {
                 },
             );
         }
-        let service_id = service_get_id(&request.path_and_query).expect("validated service route");
+        let (service_id, route) =
+            service_route(&request.path_and_query).expect("validated service route");
+        if route == ServiceRoute::Events {
+            let limit =
+                query_integer(&request.path_and_query, "limit", 500).clamp(1, 10_000) as usize;
+            return Some(
+                match self
+                    .store
+                    .replay_raw_events("workflow", 0, usize::MAX)
+                    .await
+                {
+                    Ok(events) => json_effect(
+                        StatusCode::OK,
+                        json!({
+                            "service_id": service_id,
+                            "events": service_event_values(
+                                events.into_iter().map(|event| (
+                                    event.seq,
+                                    event.entity_kind,
+                                    event.entity_id,
+                                    event.op,
+                                    event.payload_json,
+                                )),
+                                &service_id,
+                                limit,
+                            ),
+                        }),
+                    ),
+                    Err(error) => effect_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "KOGWISTAR_STORE_ERROR",
+                        error.to_string(),
+                    ),
+                },
+            );
+        }
         Some(
             match self
                 .store
@@ -3883,32 +6261,7 @@ impl PostgresRunApplicationService {
     }
 
     async fn submit_run(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
-        #[derive(Deserialize)]
-        struct SubmitRun {
-            workflow_id: String,
-            conversation_id: String,
-            #[serde(default)]
-            turn_node_id: Option<String>,
-            #[serde(default)]
-            user_id: Option<String>,
-            #[serde(default)]
-            initial_state: serde_json::Map<String, Value>,
-            #[serde(default)]
-            priority_class: String,
-            #[serde(default)]
-            token_budget: Option<i64>,
-            #[serde(default)]
-            time_budget_ms: Option<i64>,
-            #[serde(default)]
-            runtime_kind: String,
-            #[serde(default)]
-            join_node_ids: Vec<String>,
-            #[serde(default)]
-            start_join_mask: i64,
-            #[serde(default)]
-            runtime_routes: Vec<kogwistar_runtime::RuntimeStaticRoute>,
-        }
-        let input: SubmitRun = match serde_json::from_slice(&request.body) {
+        let input: RuntimeSubmitRun = match serde_json::from_slice(&request.body) {
             Ok(value) => value,
             Err(error) => {
                 return effect_error(
@@ -3927,7 +6280,13 @@ impl PostgresRunApplicationService {
                 "workflow_id and conversation_id are required",
             );
         }
-        let run_id = uuid::Uuid::new_v4().to_string();
+        let run_id = input
+            .run_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         let turn_node_id = input
             .turn_node_id
             .as_deref()
@@ -3976,12 +6335,31 @@ impl PostgresRunApplicationService {
         let effective_start_node_id = graph_plan
             .as_ref()
             .map(|plan| plan.start_node_id.clone())
+            .or_else(|| {
+                input
+                    .start_node_id
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_owned)
+            })
             .unwrap_or_else(|| "start".to_owned());
+        let effective_node_ops = graph_plan
+            .as_ref()
+            .map(|plan| plan.node_ops.clone())
+            .unwrap_or(input.node_ops);
+        let effective_start_op = effective_node_ops.get(&effective_start_node_id).cloned();
         let mut initial_state = input.initial_state;
         if !effective_routes.is_empty() {
             initial_state.insert(
                 "_rt_routes".to_owned(),
                 serde_json::to_value(&effective_routes).expect("static runtime routes serialize"),
+            );
+        }
+        if !effective_node_ops.is_empty() {
+            initial_state.insert(
+                "_rt_node_ops".to_owned(),
+                serde_json::to_value(&effective_node_ops).expect("runtime node ops serialize"),
             );
         }
         if let Some(value) = input.token_budget {
@@ -4074,6 +6452,8 @@ impl PostgresRunApplicationService {
                         "join_node_ids": effective_join_node_ids,
                         "start_join_mask": effective_start_join_mask,
                         "start_node_id": effective_start_node_id,
+                        "op": effective_start_op,
+                        "runtime_routes": effective_routes,
                         "expected_event_seq": created.seq,
                     });
                     uow.project_lane_message(NewProjectedLaneMessage {
@@ -4118,21 +6498,7 @@ impl PostgresRunApplicationService {
     }
 
     async fn claim_runtime_work(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
-        #[derive(Deserialize)]
-        struct ClaimRequest {
-            claimed_by: String,
-            #[serde(default = "default_limit")]
-            limit: usize,
-            #[serde(default = "default_lease")]
-            lease_seconds: i64,
-        }
-        fn default_limit() -> usize {
-            1
-        }
-        fn default_lease() -> i64 {
-            60
-        }
-        let input: ClaimRequest = match serde_json::from_slice(&request.body) {
+        let input: RuntimeClaimRequest = match serde_json::from_slice(&request.body) {
             Ok(value) => value,
             Err(error) => {
                 return effect_error(
@@ -4153,15 +6519,26 @@ impl PostgresRunApplicationService {
             .store
             .transaction(|uow| {
                 Box::pin(async move {
-                    let claimed = uow
-                        .claim_projected_lane_messages(
+                    let claimed = if let Some(run_id) = input.run_id.as_deref() {
+                        uow.claim_projected_lane_messages_for_run(
+                            "workflow",
+                            "workflow-runtime",
+                            run_id,
+                            &input.claimed_by,
+                            input.limit,
+                            input.lease_seconds,
+                        )
+                        .await?
+                    } else {
+                        uow.claim_projected_lane_messages(
                             "workflow",
                             "workflow-runtime",
                             &input.claimed_by,
                             input.limit,
                             input.lease_seconds,
                         )
-                        .await?;
+                        .await?
+                    };
                     let mut values = Vec::new();
                     for lane in claimed {
                         let mut payload: Value =
@@ -4366,6 +6743,7 @@ impl PostgresRunApplicationService {
                             if uow.get_projected_lane_message(&message_id).await?.is_some() {
                                 continue;
                             }
+                            let op = state.state["_rt_node_ops"][node_id].clone();
                             uow.project_lane_message(NewProjectedLaneMessage {
                                 message_id,
                                 namespace: "workflow".to_owned(),
@@ -4388,6 +6766,8 @@ impl PostgresRunApplicationService {
                                     "workflow_id": state.workflow_id,
                                     "conversation_id": state.conversation_id,
                                     "node_id": node_id,
+                                    "op": op,
+                                    "runtime_routes": state.static_routes,
                                     "join_mask": join_mask,
                                     "token_id": token_id,
                                     "parent_token_id": parent_token_id,
@@ -4527,11 +6907,22 @@ impl PostgresRunApplicationService {
     }
 
     async fn execute_async(&self, request: ApiEffectRequest) -> ApiEffectResponse {
+        if let Some(response) = visualization_shell_effect(&request) {
+            return response;
+        }
+        if let Some(response) = document_graph_validation_effect(&request) {
+            return response;
+        }
         if let Some(response) = capability_effect(&request, &self.capabilities) {
             return response;
         }
         if let Some(response) = syscall_read_effect(&request, &self.capabilities) {
             return response;
+        }
+        if request.method == "POST"
+            && let Some(op) = syscall_operation(&request.path_and_query)
+        {
+            return self.syscall_effect(&request, &op).await;
         }
         if let Some(response) = designer_capabilities_effect(&request, &self.capabilities) {
             return response;
@@ -4543,6 +6934,41 @@ impl PostgresRunApplicationService {
         }
         if let Some(response) = self.service_read(&request).await {
             return response;
+        }
+        if request.method == "POST"
+            && request.path_and_query.split('?').next() == Some("/api/workflow/services")
+        {
+            return self.declare_service(&request).await;
+        }
+        if request.method == "POST"
+            && let Some(service_id) = service_trigger_route(&request.path_and_query)
+        {
+            return self.trigger_service(&request, &service_id).await;
+        }
+        if request.method == "POST"
+            && let Some(service_id) = service_repair_route(&request.path_and_query)
+        {
+            return self
+                .repair_service_projections(&request, service_id.as_deref())
+                .await;
+        }
+        if request.method == "POST"
+            && let Some((service_id, enabled)) = service_enabled_route(&request.path_and_query)
+        {
+            return self
+                .set_service_enabled(&request, &service_id, enabled)
+                .await;
+        }
+        if request.method == "POST"
+            && let Some((service_id, action)) = request
+                .path_and_query
+                .split('?')
+                .next()
+                .and_then(|path| path.strip_prefix("/api/workflow/services/"))
+                .and_then(|rest| rest.split_once('/'))
+            && action == "heartbeat"
+        {
+            return self.record_service_heartbeat(&request, service_id).await;
         }
         if request.method == "POST"
             && let Some(run_id) = dead_letter_replay_run_id(&request.path_and_query)
@@ -4787,12 +7213,968 @@ impl ApplicationService for SqliteRunApplicationService {
 }
 
 impl SqliteRunApplicationService {
+    fn syscall_effect(&self, request: &ApiEffectRequest, op: &str) -> ApiEffectResponse {
+        let input = match syscall_input(request, op) {
+            Ok(input) => input,
+            Err(response) => return response,
+        };
+        let response = match op {
+            "spawn_process" => {
+                if !syscall_allowed(
+                    request,
+                    &self.capabilities,
+                    op,
+                    true,
+                    &["spawn_process", "workflow.run.write"],
+                ) {
+                    syscall_forbidden(op)
+                } else {
+                    let nested = ApiEffectRequest {
+                        contract_version: request.contract_version,
+                        method: "POST".to_owned(),
+                        path_and_query: "/api/workflow/runs".to_owned(),
+                        body: serde_json::to_vec(&input.args).expect("syscall args serialize"),
+                        principal: request.principal.clone(),
+                    };
+                    syscall_result(&input.version, op, self.submit_run(&nested))
+                }
+            }
+            "terminate_process" => {
+                if !syscall_allowed(
+                    request,
+                    &self.capabilities,
+                    op,
+                    true,
+                    &["workflow.run.write"],
+                ) {
+                    syscall_forbidden(op)
+                } else if let Some(run_id) = input.args["run_id"].as_str() {
+                    match self.store.request_server_run_cancel(run_id) {
+                        Ok(()) => match self.store.get_server_run(run_id) {
+                            Ok(Some(run)) => syscall_result(
+                                &input.version,
+                                op,
+                                json_effect(StatusCode::ACCEPTED, server_run_value(run)),
+                            ),
+                            Ok(None) => effect_error(
+                                StatusCode::NOT_FOUND,
+                                "KOGWISTAR_RUN_NOT_FOUND",
+                                format!("Unknown run_id: {run_id}"),
+                            ),
+                            Err(error) => effect_error(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                "KOGWISTAR_STORE_ERROR",
+                                error.to_string(),
+                            ),
+                        },
+                        Err(error) => effect_error(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "KOGWISTAR_STORE_ERROR",
+                            error.to_string(),
+                        ),
+                    }
+                } else {
+                    effect_error(
+                        StatusCode::BAD_REQUEST,
+                        "KOGWISTAR_INVALID_REQUEST",
+                        "run_id is required",
+                    )
+                }
+            }
+            "checkpoint" => {
+                if !syscall_allowed(
+                    request,
+                    &self.capabilities,
+                    op,
+                    false,
+                    &["workflow.run.read"],
+                ) {
+                    syscall_forbidden(op)
+                } else if let (Some(run_id), Some(step_seq)) = (
+                    input.args["run_id"].as_str(),
+                    input.args["step_seq"].as_i64(),
+                ) {
+                    match self.store.list_server_run_events(run_id, 0, 100_000) {
+                        Ok(events) => syscall_result(
+                            &input.version,
+                            op,
+                            runtime_inspection_effect(
+                                request,
+                                run_id,
+                                &["checkpoints", &step_seq.to_string()],
+                                events,
+                            ),
+                        ),
+                        Err(error) => effect_error(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "KOGWISTAR_STORE_ERROR",
+                            error.to_string(),
+                        ),
+                    }
+                } else {
+                    effect_error(
+                        StatusCode::BAD_REQUEST,
+                        "KOGWISTAR_INVALID_REQUEST",
+                        "run_id and integer step_seq are required",
+                    )
+                }
+            }
+            "resume" => {
+                if !syscall_allowed(
+                    request,
+                    &self.capabilities,
+                    op,
+                    true,
+                    &["workflow.run.write"],
+                ) {
+                    syscall_forbidden(op)
+                } else if let Some(run_id) = input.args["run_id"].as_str() {
+                    let nested = ApiEffectRequest {
+                        contract_version: request.contract_version,
+                        method: "POST".to_owned(),
+                        path_and_query: format!("/api/workflow/runs/{run_id}/resume"),
+                        body: serde_json::to_vec(&input.args).expect("syscall args serialize"),
+                        principal: request.principal.clone(),
+                    };
+                    syscall_result(&input.version, op, self.resume_runtime_run(run_id, &nested))
+                } else {
+                    effect_error(
+                        StatusCode::BAD_REQUEST,
+                        "KOGWISTAR_INVALID_REQUEST",
+                        "run_id is required",
+                    )
+                }
+            }
+            "request_approval" => {
+                if !syscall_allowed(request, &self.capabilities, op, true, &["approve_action"]) {
+                    syscall_forbidden(op)
+                } else {
+                    request_approval_syscall(request, &self.capabilities, &input)
+                }
+            }
+            _ => unavailable_effect(request.clone()),
+        };
+        syscall_audit(
+            &self.capabilities,
+            &input.version,
+            op,
+            syscall_audit_status(&response),
+        );
+        response
+    }
+
+    fn trigger_service(&self, request: &ApiEffectRequest, service_id: &str) -> ApiEffectResponse {
+        if !capability_allowed(
+            request,
+            &self.capabilities,
+            "service.manage",
+            &["service.manage"],
+        ) {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                "Triggering service requires service.manage capability",
+            );
+        }
+        let mut input: ServiceTriggerInput = match serde_json::from_slice(&request.body) {
+            Ok(value) => value,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    error.to_string(),
+                );
+            }
+        };
+        if let Err(error) = validate_service_trigger(&mut input) {
+            return effect_error(StatusCode::BAD_REQUEST, "KOGWISTAR_INVALID_REQUEST", error);
+        }
+        let timestamp = now_ms();
+        let now_seconds = (timestamp / 1000) as i64;
+        let max_queue = self.max_queue;
+        let outcome = self.store.transaction(|uow| {
+            let current = uow
+                .get_named_projection("service_registry", service_id)?
+                .ok_or_else(|| {
+                    kogwistar_store_sqlite::SqliteStoreError::TransactionAborted(
+                        "KOGWISTAR_SERVICE_NOT_FOUND".to_owned(),
+                    )
+                })?;
+            let current_value = Value::Object(current.payload);
+            if let Some(run_id) = current_value["current_child_run_id"]
+                .as_str()
+                .filter(|value| !value.is_empty())
+                && let Some(run) = uow.get_server_run(run_id)?
+                && !matches!(run.status.as_str(), "succeeded" | "failed" | "cancelled")
+            {
+                return Ok(Some(current_value));
+            }
+            let history = uow.replay_raw_events("workflow", 0, usize::MAX)?;
+            let definition = latest_service_definition(
+                history.into_iter().map(|event| {
+                    (
+                        event.seq,
+                        event.entity_kind,
+                        event.entity_id,
+                        event.op,
+                        event.payload_json,
+                    )
+                }),
+                service_id,
+            )
+            .ok_or_else(|| {
+                kogwistar_store_sqlite::SqliteStoreError::TransactionAborted(
+                    "KOGWISTAR_SERVICE_NOT_FOUND".to_owned(),
+                )
+            })?;
+            if service_trigger_is_suppressed(
+                &definition,
+                &current_value,
+                &input.trigger_type,
+                timestamp,
+            ) {
+                return Ok(Some(current_value));
+            }
+            let (target_kind, target_config) = service_definition_runtime(&definition).map_err(
+                |message| {
+                    kogwistar_store_sqlite::SqliteStoreError::TransactionAborted(
+                        message.to_owned(),
+                    )
+                },
+            )?;
+            let target_ref = definition["properties"]["target_ref"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned();
+            let mut run_id = None;
+            if target_kind == "workflow" {
+                let active_count = ["pending", "claimed"]
+                    .into_iter()
+                    .map(|status| {
+                        uow.list_projected_lane_messages(&LaneMessageFilter {
+                            namespace: Some("workflow".to_owned()),
+                            inbox_id: Some("workflow-runtime".to_owned()),
+                            status: Some(status.to_owned()),
+                            limit: max_queue,
+                            ..LaneMessageFilter::default()
+                        })
+                        .map(|lanes| lanes.len())
+                    })
+                    .collect::<Result<Vec<_>, _>>()?
+                    .into_iter()
+                    .sum::<usize>();
+                if active_count >= max_queue {
+                    return Ok(None);
+                }
+                let target = target_config.as_object().cloned().unwrap_or_default();
+                let conversation_id = input
+                    .payload
+                    .get("conversation_id")
+                    .and_then(Value::as_str)
+                    .or_else(|| target.get("conversation_id").and_then(Value::as_str))
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| format!("svc:{service_id}"));
+                let turn_node_id = input
+                    .payload
+                    .get("turn_node_id")
+                    .and_then(Value::as_str)
+                    .or_else(|| target.get("turn_node_id").and_then(Value::as_str))
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| format!("wf_turn|{}", uuid::Uuid::new_v4()));
+                let user_id = input
+                    .payload
+                    .get("user_id")
+                    .and_then(Value::as_str)
+                    .or_else(|| target.get("user_id").and_then(Value::as_str))
+                    .map(str::to_owned);
+                let mut initial_state = target
+                    .get("initial_state")
+                    .and_then(Value::as_object)
+                    .cloned()
+                    .unwrap_or_default();
+                if let Some(overrides) = input
+                    .payload
+                    .get("initial_state")
+                    .and_then(Value::as_object)
+                {
+                    initial_state.extend(overrides.clone());
+                }
+                let created_run_id = uuid::Uuid::new_v4().to_string();
+                let message_id = format!("lane|{}", uuid::Uuid::new_v4());
+                let graph_plan = exact_runtime_graph_plan(
+                    uow.get_named_projection("workflow_design", &target_ref)?,
+                    uow.get_workflow_design_snapshot(&target_ref, i64::MAX, 1)?,
+                );
+                let runtime_routes = graph_plan
+                    .as_ref()
+                    .map(|plan| plan.routes.clone())
+                    .unwrap_or_default();
+                let join_node_ids = graph_plan
+                    .as_ref()
+                    .map(|plan| plan.join_node_ids.clone())
+                    .unwrap_or_default();
+                let start_join_mask = graph_plan
+                    .as_ref()
+                    .map(|plan| plan.start_join_mask)
+                    .unwrap_or_default();
+                let start_node_id = graph_plan
+                    .as_ref()
+                    .map(|plan| plan.start_node_id.clone())
+                    .unwrap_or_else(|| "start".to_owned());
+                let node_ops = graph_plan
+                    .as_ref()
+                    .map(|plan| plan.node_ops.clone())
+                    .unwrap_or_default();
+                let start_op = node_ops.get(&start_node_id).cloned();
+                if !runtime_routes.is_empty() {
+                    initial_state.insert(
+                        "_rt_routes".to_owned(),
+                        serde_json::to_value(&runtime_routes)
+                            .expect("static runtime routes serialize"),
+                    );
+                }
+                if !node_ops.is_empty() {
+                    initial_state.insert(
+                        "_rt_node_ops".to_owned(),
+                        serde_json::to_value(&node_ops).expect("runtime node ops serialize"),
+                    );
+                }
+                uow.create_server_run(ServerRunCreate {
+                    run_id: created_run_id.clone(),
+                    conversation_id: conversation_id.clone(),
+                    workflow_id: target_ref.clone(),
+                    user_id: user_id.clone(),
+                    user_turn_node_id: turn_node_id.clone(),
+                    status: "queued".to_owned(),
+                })?;
+                let created = uow.append_server_run_event(
+                    &created_run_id,
+                    "run.created",
+                    json!({
+                        "run_id": created_run_id,
+                        "run_kind": "workflow_runtime",
+                        "conversation_id": conversation_id,
+                        "workflow_id": target_ref,
+                        "status": "queued",
+                        "turn_node_id": turn_node_id,
+                    })
+                    .to_string(),
+                )?;
+                let priority_class = target
+                    .get("priority_class")
+                    .and_then(Value::as_str)
+                    .unwrap_or("background");
+                let payload = json!({
+                    "contract_version": 1,
+                    "kind": "workflow.run.execute",
+                    "run_id": created_run_id,
+                    "workflow_id": target_ref,
+                    "conversation_id": conversation_id,
+                    "turn_node_id": turn_node_id,
+                    "user_id": user_id,
+                    "initial_state": initial_state,
+                    "priority_class": priority_class,
+                    "token_budget": target.get("token_budget"),
+                    "time_budget_ms": target.get("time_budget_ms"),
+                    "runtime_kind": target.get("runtime_kind").and_then(Value::as_str).unwrap_or("sync"),
+                    "join_node_ids": join_node_ids,
+                    "start_join_mask": start_join_mask,
+                    "start_node_id": start_node_id,
+                    "op": start_op,
+                    "runtime_routes": runtime_routes,
+                    "expected_event_seq": created.seq,
+                });
+                uow.project_lane_message(NewProjectedLaneMessage {
+                    message_id,
+                    namespace: "workflow".to_owned(),
+                    purpose: "system".to_owned(),
+                    inbox_id: "workflow-runtime".to_owned(),
+                    conversation_id,
+                    recipient_id: "python-worker".to_owned(),
+                    sender_id: "rust-scheduler".to_owned(),
+                    msg_type: "workflow.run.execute".to_owned(),
+                    status: "pending".to_owned(),
+                    created_at: now_seconds,
+                    available_at: now_seconds,
+                    run_id: Some(created_run_id.clone()),
+                    step_id: Some(start_node_id),
+                    correlation_id: Some(created_run_id.clone()),
+                    payload_json: Some(payload.to_string()),
+                    error_json: None,
+                })?;
+                run_id = Some(created_run_id);
+            }
+            let mut triggered_payload = input.payload.clone();
+            triggered_payload.insert(
+                "trigger_type".to_owned(),
+                json!(input.trigger_type),
+            );
+            for (event_type, payload) in [
+                (
+                    "service.starting",
+                    json!({"trigger_type": input.trigger_type}),
+                ),
+                ("service.triggered", Value::Object(triggered_payload)),
+            ] {
+                let (entity_id, event) =
+                    service_event_node(service_id, event_type, &payload, timestamp);
+                uow.append_raw_entity_event(
+                    "workflow",
+                    SqliteNewRawEntityEvent {
+                        event_id: uuid::Uuid::new_v4().to_string(),
+                        entity_kind: "node".to_owned(),
+                        entity_id,
+                        op: "ADD".to_owned(),
+                        payload_json: event.to_string(),
+                    },
+                )?;
+            }
+            if let Some(run_id) = &run_id {
+                let (entity_id, event) = service_event_node(
+                    service_id,
+                    "service.run_spawned",
+                    &json!({
+                        "trigger_type": input.trigger_type,
+                        "run_id": run_id,
+                        "workflow_id": target_ref,
+                    }),
+                    timestamp,
+                );
+                uow.append_raw_entity_event(
+                    "workflow",
+                    SqliteNewRawEntityEvent {
+                        event_id: uuid::Uuid::new_v4().to_string(),
+                        entity_kind: "node".to_owned(),
+                        entity_id,
+                        op: "ADD".to_owned(),
+                        payload_json: event.to_string(),
+                    },
+                )?;
+            }
+            let history = uow.replay_raw_events("workflow", 0, usize::MAX)?;
+            let projections = service_projection_values(history.into_iter().map(|event| {
+                (
+                    event.seq,
+                    event.entity_kind,
+                    event.entity_id,
+                    event.op,
+                    event.payload_json,
+                )
+            }))
+            .map_err(kogwistar_store_sqlite::SqliteStoreError::TransactionAborted)?;
+            let (last_seq, projection) = projections.get(service_id).ok_or_else(|| {
+                kogwistar_store_sqlite::SqliteStoreError::TransactionAborted(
+                    "KOGWISTAR_SERVICE_TRIGGER_INVALID".to_owned(),
+                )
+            })?;
+            uow.replace_named_projection(
+                "service_registry",
+                service_id,
+                service_projection_write(*last_seq, projection),
+            )?;
+            Ok(Some(projection.clone()))
+        });
+        match outcome {
+            Ok(Some(projection)) => json_effect(StatusCode::OK, projection),
+            Ok(None) => effect_error(
+                StatusCode::TOO_MANY_REQUESTS,
+                "KOGWISTAR_QUEUE_FULL",
+                "workflow runtime queue is full",
+            ),
+            Err(error) if error.to_string().contains("KOGWISTAR_SERVICE_NOT_FOUND") => {
+                effect_error(
+                    StatusCode::NOT_FOUND,
+                    "KOGWISTAR_SERVICE_NOT_FOUND",
+                    format!("Unknown service_id: {service_id}"),
+                )
+            }
+            Err(error) => effect_error(
+                StatusCode::CONFLICT,
+                "KOGWISTAR_SERVICE_TRIGGER_CONFLICT",
+                error.to_string(),
+            ),
+        }
+    }
+
+    fn declare_service(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
+        if !capability_allowed(
+            request,
+            &self.capabilities,
+            "service.manage",
+            &["service.manage"],
+        ) {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                "Declaring service requires service.manage capability",
+            );
+        }
+        let mut input: ServiceDeclareInput = match serde_json::from_slice(&request.body) {
+            Ok(value) => value,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    error.to_string(),
+                );
+            }
+        };
+        if let Err(error) = validate_service_declare(&mut input) {
+            return effect_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "KOGWISTAR_INVALID_REQUEST",
+                error,
+            );
+        }
+        let timestamp = now_ms();
+        let service_id = input.service_id.clone();
+        let outcome = self.store.transaction(|uow| {
+            let (definition_id, definition) = service_definition_node(&input, timestamp);
+            uow.append_raw_entity_event(
+                "workflow",
+                SqliteNewRawEntityEvent {
+                    event_id: uuid::Uuid::new_v4().to_string(),
+                    entity_kind: "node".to_owned(),
+                    entity_id: definition_id,
+                    op: "ADD".to_owned(),
+                    payload_json: definition.to_string(),
+                },
+            )?;
+            let lifecycle_type = if input.enabled {
+                "service.enabled"
+            } else {
+                "service.stopped"
+            };
+            let (event_id, event) = service_event_node(
+                &service_id,
+                lifecycle_type,
+                &json!({"enabled": input.enabled, "autostart": input.autostart}),
+                timestamp,
+            );
+            uow.append_raw_entity_event(
+                "workflow",
+                SqliteNewRawEntityEvent {
+                    event_id: uuid::Uuid::new_v4().to_string(),
+                    entity_kind: "node".to_owned(),
+                    entity_id: event_id,
+                    op: "ADD".to_owned(),
+                    payload_json: event.to_string(),
+                },
+            )?;
+            if input.enabled {
+                let (event_id, event) = service_event_node(
+                    &service_id,
+                    "service.degraded",
+                    &json!({"health_status": "degraded"}),
+                    timestamp,
+                );
+                uow.append_raw_entity_event(
+                    "workflow",
+                    SqliteNewRawEntityEvent {
+                        event_id: uuid::Uuid::new_v4().to_string(),
+                        entity_kind: "node".to_owned(),
+                        entity_id: event_id,
+                        op: "ADD".to_owned(),
+                        payload_json: event.to_string(),
+                    },
+                )?;
+            }
+            let history = uow.replay_raw_events("workflow", 0, usize::MAX)?;
+            let projections = service_projection_values(history.into_iter().map(|event| {
+                (
+                    event.seq,
+                    event.entity_kind,
+                    event.entity_id,
+                    event.op,
+                    event.payload_json,
+                )
+            }))
+            .map_err(kogwistar_store_sqlite::SqliteStoreError::TransactionAborted)?;
+            let (last_seq, projection) = projections.get(&service_id).ok_or_else(|| {
+                kogwistar_store_sqlite::SqliteStoreError::TransactionAborted(
+                    "KOGWISTAR_SERVICE_DECLARATION_INVALID".to_owned(),
+                )
+            })?;
+            uow.replace_named_projection(
+                "service_registry",
+                &service_id,
+                service_projection_write(*last_seq, projection),
+            )?;
+            Ok(projection.clone())
+        });
+        match outcome {
+            Ok(projection) => json_effect(StatusCode::OK, projection),
+            Err(error) => effect_error(
+                StatusCode::CONFLICT,
+                "KOGWISTAR_SERVICE_DECLARATION_CONFLICT",
+                error.to_string(),
+            ),
+        }
+    }
+
+    fn record_service_heartbeat(
+        &self,
+        request: &ApiEffectRequest,
+        service_id: &str,
+    ) -> ApiEffectResponse {
+        #[derive(Deserialize)]
+        struct HeartbeatInput {
+            instance_id: String,
+            #[serde(default)]
+            payload: serde_json::Map<String, Value>,
+        }
+        if !capability_allowed(
+            request,
+            &self.capabilities,
+            "service.heartbeat",
+            &["service.heartbeat", "service.manage"],
+        ) {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                "Recording service heartbeat requires service.heartbeat capability",
+            );
+        }
+        let input: HeartbeatInput = match serde_json::from_slice::<HeartbeatInput>(&request.body) {
+            Ok(value) if !value.instance_id.trim().is_empty() => value,
+            Ok(_) => {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    "instance_id must not be empty",
+                );
+            }
+            Err(error) => {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    error.to_string(),
+                );
+            }
+        };
+        let timestamp = now_ms();
+        let outcome = self.store.transaction(|uow| {
+            let current = uow
+                .get_named_projection("service_registry", service_id)?
+                .ok_or_else(|| {
+                    kogwistar_store_sqlite::SqliteStoreError::TransactionAborted(
+                        "KOGWISTAR_SERVICE_NOT_FOUND".to_owned(),
+                    )
+                })?;
+            let mut projection = Value::Object(current.payload);
+            let previous_health = projection["health_status"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned();
+            let previous_error = projection["last_error"].clone();
+            let next_error = input
+                .payload
+                .get("last_error")
+                .cloned()
+                .unwrap_or(Value::Null);
+            projection["instance_id"] = json!(input.instance_id);
+            projection["last_heartbeat_ms"] = json!(timestamp);
+            projection["lifecycle_status"] = json!("healthy");
+            projection["health_status"] = json!("healthy");
+            projection["updated_at_ms"] = json!(timestamp);
+            projection["last_error"] = if next_error.is_null() {
+                Value::Null
+            } else {
+                json!(next_error.as_str().unwrap_or_default())
+            };
+            let mut last_seq = current.last_authoritative_seq;
+            if matches!(previous_health.as_str(), "degraded" | "failed" | "stopped") {
+                let (entity_id, event) = service_event_node(
+                    service_id,
+                    "service.healthy",
+                    &json!({
+                        "health_status": "healthy",
+                        "instance_id": input.instance_id,
+                    }),
+                    timestamp,
+                );
+                last_seq = uow
+                    .append_raw_entity_event(
+                        "workflow",
+                        SqliteNewRawEntityEvent {
+                            event_id: uuid::Uuid::new_v4().to_string(),
+                            entity_kind: "node".to_owned(),
+                            entity_id,
+                            op: "ADD".to_owned(),
+                            payload_json: event.to_string(),
+                        },
+                    )?
+                    .event
+                    .seq;
+            }
+            if previous_error != projection["last_error"] && !projection["last_error"].is_null() {
+                let (entity_id, event) = service_event_node(
+                    service_id,
+                    "service.error_changed",
+                    &json!({
+                        "instance_id": input.instance_id,
+                        "last_error": projection["last_error"],
+                    }),
+                    timestamp,
+                );
+                last_seq = uow
+                    .append_raw_entity_event(
+                        "workflow",
+                        SqliteNewRawEntityEvent {
+                            event_id: uuid::Uuid::new_v4().to_string(),
+                            entity_kind: "node".to_owned(),
+                            entity_id,
+                            op: "ADD".to_owned(),
+                            payload_json: event.to_string(),
+                        },
+                    )?
+                    .event
+                    .seq;
+            }
+            uow.replace_named_projection(
+                "service_registry",
+                service_id,
+                service_projection_write(last_seq, &projection),
+            )?;
+            Ok(projection)
+        });
+        match outcome {
+            Ok(projection) => json_effect(StatusCode::OK, projection),
+            Err(error) if error.to_string().contains("KOGWISTAR_SERVICE_NOT_FOUND") => {
+                effect_error(
+                    StatusCode::NOT_FOUND,
+                    "KOGWISTAR_SERVICE_NOT_FOUND",
+                    format!("Unknown service_id: {service_id}"),
+                )
+            }
+            Err(error) => effect_error(
+                StatusCode::CONFLICT,
+                "KOGWISTAR_SERVICE_HEARTBEAT_CONFLICT",
+                error.to_string(),
+            ),
+        }
+    }
+
+    fn set_service_enabled(
+        &self,
+        request: &ApiEffectRequest,
+        service_id: &str,
+        enabled: bool,
+    ) -> ApiEffectResponse {
+        if !capability_allowed(
+            request,
+            &self.capabilities,
+            "service.manage",
+            &["service.manage"],
+        ) {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                "Changing service lifecycle requires service.manage capability",
+            );
+        }
+        let timestamp = now_ms();
+        let outcome = self.store.transaction(|uow| {
+            let history = uow.replay_raw_events("workflow", 0, usize::MAX)?;
+            let definition = latest_service_definition(
+                history.into_iter().map(|event| {
+                    (
+                        event.seq,
+                        event.entity_kind,
+                        event.entity_id,
+                        event.op,
+                        event.payload_json,
+                    )
+                }),
+                service_id,
+            )
+            .ok_or_else(|| {
+                kogwistar_store_sqlite::SqliteStoreError::TransactionAborted(
+                    "KOGWISTAR_SERVICE_NOT_FOUND".to_owned(),
+                )
+            })?;
+            let (definition_id, definition, event_id, event) =
+                service_enabled_nodes(definition, service_id, enabled, timestamp)
+                    .map_err(kogwistar_store_sqlite::SqliteStoreError::TransactionAborted)?;
+            uow.append_raw_entity_event(
+                "workflow",
+                SqliteNewRawEntityEvent {
+                    event_id: uuid::Uuid::new_v4().to_string(),
+                    entity_kind: "node".to_owned(),
+                    entity_id: definition_id,
+                    op: "ADD".to_owned(),
+                    payload_json: definition.to_string(),
+                },
+            )?;
+            uow.append_raw_entity_event(
+                "workflow",
+                SqliteNewRawEntityEvent {
+                    event_id: uuid::Uuid::new_v4().to_string(),
+                    entity_kind: "node".to_owned(),
+                    entity_id: event_id,
+                    op: "ADD".to_owned(),
+                    payload_json: event.to_string(),
+                },
+            )?;
+            let history = uow.replay_raw_events("workflow", 0, usize::MAX)?;
+            let projections = service_projection_values(history.into_iter().map(|event| {
+                (
+                    event.seq,
+                    event.entity_kind,
+                    event.entity_id,
+                    event.op,
+                    event.payload_json,
+                )
+            }))
+            .map_err(kogwistar_store_sqlite::SqliteStoreError::TransactionAborted)?;
+            let (last_seq, projection) = projections.get(service_id).ok_or_else(|| {
+                kogwistar_store_sqlite::SqliteStoreError::TransactionAborted(
+                    "KOGWISTAR_SERVICE_NOT_FOUND".to_owned(),
+                )
+            })?;
+            uow.replace_named_projection(
+                "service_registry",
+                service_id,
+                service_projection_write(*last_seq, projection),
+            )?;
+            Ok(projection.clone())
+        });
+        match outcome {
+            Ok(projection) => json_effect(StatusCode::OK, projection),
+            Err(error) if error.to_string().contains("KOGWISTAR_SERVICE_NOT_FOUND") => {
+                effect_error(
+                    StatusCode::NOT_FOUND,
+                    "KOGWISTAR_SERVICE_NOT_FOUND",
+                    format!("Unknown service_id: {service_id}"),
+                )
+            }
+            Err(error) => effect_error(
+                StatusCode::CONFLICT,
+                "KOGWISTAR_SERVICE_MUTATION_CONFLICT",
+                error.to_string(),
+            ),
+        }
+    }
+
+    fn repair_service_projections(
+        &self,
+        request: &ApiEffectRequest,
+        service_id: Option<&str>,
+    ) -> ApiEffectResponse {
+        if !capability_allowed(
+            request,
+            &self.capabilities,
+            "service.manage",
+            &["service.manage"],
+        ) {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                "Repairing service projections requires service.manage capability",
+            );
+        }
+        let events = match self.store.replay_raw_events("workflow", 0, usize::MAX) {
+            Ok(events) => events,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_STORE_ERROR",
+                    error.to_string(),
+                );
+            }
+        };
+        let projections = match service_projection_values(events.into_iter().map(|event| {
+            (
+                event.seq,
+                event.entity_kind,
+                event.entity_id,
+                event.op,
+                event.payload_json,
+            )
+        })) {
+            Ok(value) => value,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_SERVICE_HISTORY_INVALID",
+                    error,
+                );
+            }
+        };
+        if let Some(service_id) = service_id {
+            let Some((last_seq, projection)) = projections.get(service_id) else {
+                return effect_error(
+                    StatusCode::NOT_FOUND,
+                    "KOGWISTAR_SERVICE_NOT_FOUND",
+                    format!("Unknown service_id: {service_id}"),
+                );
+            };
+            return match self.store.replace_named_projection(
+                "service_registry",
+                service_id,
+                service_projection_write(*last_seq, projection),
+            ) {
+                Ok(()) => json_effect(
+                    StatusCode::OK,
+                    json!({"service_id": service_id, "projection": projection}),
+                ),
+                Err(error) => effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_STORE_ERROR",
+                    error.to_string(),
+                ),
+            };
+        }
+        let limit = query_integer(&request.path_and_query, "limit", 10_000).clamp(0, 10_000);
+        let selected = projections
+            .into_iter()
+            .take(limit as usize)
+            .collect::<Vec<_>>();
+        let outcome = self.store.transaction(|uow| {
+            for (service_id, (last_seq, projection)) in &selected {
+                uow.replace_named_projection(
+                    "service_registry",
+                    service_id,
+                    service_projection_write(*last_seq, projection),
+                )?;
+            }
+            Ok(())
+        });
+        match outcome {
+            Ok(()) => json_effect(
+                StatusCode::OK,
+                json!({
+                    "repaired_service_ids": selected
+                        .into_iter()
+                        .map(|(service_id, _)| service_id)
+                        .collect::<Vec<_>>(),
+                }),
+            ),
+            Err(error) => effect_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "KOGWISTAR_STORE_ERROR",
+                error.to_string(),
+            ),
+        }
+    }
+
     fn execute_sync(&self, request: ApiEffectRequest) -> ApiEffectResponse {
+        if let Some(response) = visualization_shell_effect(&request) {
+            return response;
+        }
+        if let Some(response) = document_graph_validation_effect(&request) {
+            return response;
+        }
         if let Some(response) = capability_effect(&request, &self.capabilities) {
             return response;
         }
         if let Some(response) = syscall_read_effect(&request, &self.capabilities) {
             return response;
+        }
+        if request.method == "POST"
+            && let Some(op) = syscall_operation(&request.path_and_query)
+        {
+            return self.syscall_effect(&request, &op);
         }
         if let Some(response) = designer_capabilities_effect(&request, &self.capabilities) {
             return response;
@@ -4802,6 +8184,37 @@ impl SqliteRunApplicationService {
         }
         if let Some(response) = self.service_read(&request) {
             return response;
+        }
+        if request.method == "POST"
+            && request.path_and_query.split('?').next() == Some("/api/workflow/services")
+        {
+            return self.declare_service(&request);
+        }
+        if request.method == "POST"
+            && let Some(service_id) = service_trigger_route(&request.path_and_query)
+        {
+            return self.trigger_service(&request, &service_id);
+        }
+        if request.method == "POST"
+            && let Some(service_id) = service_repair_route(&request.path_and_query)
+        {
+            return self.repair_service_projections(&request, service_id.as_deref());
+        }
+        if request.method == "POST"
+            && let Some((service_id, enabled)) = service_enabled_route(&request.path_and_query)
+        {
+            return self.set_service_enabled(&request, &service_id, enabled);
+        }
+        if request.method == "POST"
+            && let Some((service_id, action)) = request
+                .path_and_query
+                .split('?')
+                .next()
+                .and_then(|path| path.strip_prefix("/api/workflow/services/"))
+                .and_then(|rest| rest.split_once('/'))
+            && action == "heartbeat"
+        {
+            return self.record_service_heartbeat(&request, service_id);
         }
         if request.method == "POST"
             && let Some(run_id) = dead_letter_replay_run_id(&request.path_and_query)
@@ -6171,6 +9584,102 @@ async fn mcp_handler(
                     body: Vec::new(),
                     principal: principal.clone(),
                 }),
+            "workflow.service_events" => arguments
+                .get("service_id")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .map(|service_id| ApiEffectRequest {
+                    contract_version: 1,
+                    method: "GET".to_owned(),
+                    path_and_query: format!(
+                        "/api/workflow/services/{service_id}/events?limit={}",
+                        arguments
+                            .get("limit")
+                            .and_then(Value::as_i64)
+                            .unwrap_or(500)
+                    ),
+                    body: Vec::new(),
+                    principal: principal.clone(),
+                }),
+            "workflow.service_repair" => arguments
+                .get("service_id")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .map(|service_id| ApiEffectRequest {
+                    contract_version: 1,
+                    method: "POST".to_owned(),
+                    path_and_query: format!("/api/workflow/services/{service_id}/repair"),
+                    body: Vec::new(),
+                    principal: principal.clone(),
+                }),
+            name @ ("workflow.service_enable" | "workflow.service_disable") => arguments
+                .get("service_id")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .map(|service_id| ApiEffectRequest {
+                    contract_version: 1,
+                    method: "POST".to_owned(),
+                    path_and_query: format!(
+                        "/api/workflow/services/{service_id}/{}",
+                        if name == "workflow.service_enable" {
+                            "enable"
+                        } else {
+                            "disable"
+                        }
+                    ),
+                    body: Vec::new(),
+                    principal: principal.clone(),
+                }),
+            "workflow.service_heartbeat" => arguments
+                .get("service_id")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .map(|service_id| ApiEffectRequest {
+                    contract_version: 1,
+                    method: "POST".to_owned(),
+                    path_and_query: format!("/api/workflow/services/{service_id}/heartbeat"),
+                    body: serde_json::to_vec(&arguments).expect("MCP arguments serialize"),
+                    principal: principal.clone(),
+                }),
+            "workflow.service_trigger" => arguments
+                .get("service_id")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .map(|service_id| ApiEffectRequest {
+                    contract_version: 1,
+                    method: "POST".to_owned(),
+                    path_and_query: format!("/api/workflow/services/{service_id}/trigger"),
+                    body: serde_json::to_vec(&json!({
+                        "trigger_type": arguments.get("trigger_type").cloned(),
+                        "payload": arguments
+                            .get("payload")
+                            .filter(|value| value.is_object())
+                            .cloned()
+                            .unwrap_or_else(|| json!({})),
+                    }))
+                    .expect("MCP arguments serialize"),
+                    principal: principal.clone(),
+                }),
+            "workflow.service_declare" => Some(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/workflow/services".to_owned(),
+                body: serde_json::to_vec(&arguments).expect("MCP arguments serialize"),
+                principal: principal.clone(),
+            }),
+            "workflow.services_repair" => Some(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: format!(
+                    "/api/workflow/services/repair?limit={}",
+                    arguments
+                        .get("limit")
+                        .and_then(Value::as_i64)
+                        .unwrap_or(10_000)
+                ),
+                body: Vec::new(),
+                principal: principal.clone(),
+            }),
             "workflow.design_history" => arguments
                 .get("workflow_id")
                 .and_then(Value::as_str)
@@ -7405,6 +10914,46 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
                 .unwrap()
                 .contains(&json!("resume"))
         );
+        let blocked_approval = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/syscall/v1/request_approval")
+                    .header("authorization", format!("Bearer {admin_token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"version":"v1","op":"request_approval","args":{"action":"deny","reason":"manual deny"}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(blocked_approval.status(), StatusCode::OK);
+        let blocked_approval = serde_json::from_slice::<Value>(
+            &to_bytes(blocked_approval.into_body(), 16_384)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(blocked_approval["status"], "blocked");
+        assert_eq!(blocked_approval["error"]["reason"], "manual deny");
+        let unsupported = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/syscall/v1/send_message")
+                    .header("authorization", format!("Bearer {admin_token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"version":"v1","op":"send_message","args":{}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unsupported.status(), StatusCode::NOT_IMPLEMENTED);
         let syscall_audit = app
             .clone()
             .oneshot(
@@ -7421,7 +10970,8 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
             &to_bytes(syscall_audit.into_body(), 16_384).await.unwrap(),
         )
         .unwrap();
-        assert_eq!(syscall_audit["events"][0]["op"], "list_syscalls");
+        assert_eq!(syscall_audit["events"][0]["op"], "send_message");
+        assert_eq!(syscall_audit["events"][0]["status"], "error");
 
         let designer = app
             .clone()
@@ -7844,6 +11394,182 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
     }
 
     #[tokio::test]
+    async fn postgres_service_events_fold_authoritative_history_when_dsn_available() {
+        use kogwistar_store_postgres::NewRawEntityEvent;
+
+        let Some(dsn) = std::env::var("KOGWISTAR_TEST_PG_DSN").ok() else {
+            return;
+        };
+        let schema = format!("rust_api_service_events_{}", uuid::Uuid::new_v4().simple());
+        let service = PostgresRunApplicationService::from_dsn(&dsn, &schema).unwrap();
+        service.ensure_schema().await.unwrap();
+        for (event_id, entity_id, op, payload) in [
+            (
+                "service-event-1",
+                "service_evt:svc-pg:1",
+                "ADD",
+                json!({
+                    "id": "service_evt:svc-pg:1",
+                    "metadata": {
+                        "entity_type": "service_event",
+                        "service_id": "svc-pg",
+                        "service_event_type": "service.starting",
+                        "ts_ms": 20,
+                    },
+                    "properties": {"payload_json": r#"{"phase":"old"}"#},
+                }),
+            ),
+            (
+                "service-event-2",
+                "service_evt:svc-pg:1",
+                "REPLACE",
+                json!({
+                    "id": "service_evt:svc-pg:1",
+                    "metadata": {
+                        "entity_type": "service_event",
+                        "service_id": "svc-pg",
+                        "service_event_type": "service.started",
+                        "ts_ms": 20,
+                    },
+                    "properties": {"payload_json": r#"{"phase":"new"}"#},
+                }),
+            ),
+            (
+                "service-event-other",
+                "service_evt:other:1",
+                "ADD",
+                json!({
+                    "id": "service_evt:other:1",
+                    "metadata": {
+                        "entity_type": "service_event",
+                        "service_id": "other",
+                        "service_event_type": "service.healthy",
+                        "ts_ms": 1,
+                    },
+                    "properties": {"payload_json": "{}"},
+                }),
+            ),
+        ] {
+            service
+                .store
+                .append_raw_entity_event(
+                    "workflow",
+                    NewRawEntityEvent {
+                        event_id: event_id.to_owned(),
+                        entity_kind: "node".to_owned(),
+                        entity_id: entity_id.to_owned(),
+                        op: op.to_owned(),
+                        payload_json: payload.to_string(),
+                    },
+                )
+                .await
+                .unwrap();
+        }
+        let response = service
+            .execute_async(ApiEffectRequest {
+                contract_version: 1,
+                method: "GET".to_owned(),
+                path_and_query: "/api/workflow/services/svc-pg/events?limit=10".to_owned(),
+                body: Vec::new(),
+                principal: json!({
+                    "sub": "alice",
+                    "role": "ro",
+                    "ns": "workflow",
+                    "capabilities": ["service.inspect", "project_view"],
+                }),
+            })
+            .await;
+        assert_eq!(response.status, StatusCode::OK.as_u16());
+        let body = serde_json::from_slice::<Value>(&response.body).unwrap();
+        assert_eq!(body["service_id"], "svc-pg");
+        assert_eq!(body["events"].as_array().unwrap().len(), 1);
+        assert_eq!(body["events"][0]["event_type"], "service.started");
+        assert_eq!(body["events"][0]["payload"]["phase"], "new");
+        let principal = json!({
+            "sub": "operator",
+            "role": "rw",
+            "ns": "workflow",
+            "capabilities": ["service.manage", "service.inspect", "project_view"],
+        });
+        let declared = service
+            .execute_async(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/workflow/services".to_owned(),
+                body: serde_json::to_vec(&json!({
+                    "service_id": "svc-pg-trigger",
+                    "target_kind": "workflow",
+                    "target_ref": "wf-pg-trigger",
+                    "target_config": {"conversation_id":"conv-pg-trigger"},
+                }))
+                .unwrap(),
+                principal: principal.clone(),
+            })
+            .await;
+        assert_eq!(declared.status, StatusCode::OK.as_u16());
+        let trigger = || ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/workflow/services/svc-pg-trigger/trigger".to_owned(),
+            body: serde_json::to_vec(&json!({
+                "trigger_type": "external event",
+                "payload": {"source":"postgres-live"},
+            }))
+            .unwrap(),
+            principal: principal.clone(),
+        };
+        let service_clone = service.clone();
+        let (first, second) = tokio::join!(
+            service.execute_async(trigger()),
+            service_clone.execute_async(trigger()),
+        );
+        assert_eq!(first.status, StatusCode::OK.as_u16());
+        assert_eq!(second.status, StatusCode::OK.as_u16());
+        let first = serde_json::from_slice::<Value>(&first.body).unwrap();
+        let second = serde_json::from_slice::<Value>(&second.body).unwrap();
+        let run_id = first["current_child_run_id"].as_str().unwrap();
+        assert_eq!(second["current_child_run_id"], run_id);
+        assert!(
+            service
+                .store
+                .get_server_run(run_id)
+                .await
+                .unwrap()
+                .is_some()
+        );
+        let lanes = service
+            .store
+            .list_projected_lane_messages(LaneMessageFilter {
+                correlation_id: Some(run_id.to_owned()),
+                limit: 10,
+                ..LaneMessageFilter::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(lanes.len(), 1);
+        drop(service);
+
+        let cleanup_dsn = dsn
+            .strip_prefix("postgresql+psycopg://")
+            .map(|rest| format!("postgresql://{rest}"))
+            .or_else(|| {
+                dsn.strip_prefix("postgresql+psycopg2://")
+                    .map(|rest| format!("postgresql://{rest}"))
+            })
+            .unwrap_or(dsn);
+        let (client, connection) = tokio_postgres::connect(&cleanup_dsn, tokio_postgres::NoTls)
+            .await
+            .unwrap();
+        let connection_task = tokio::spawn(connection);
+        client
+            .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+            .await
+            .unwrap();
+        drop(client);
+        connection_task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
     async fn postgres_design_capability_mutates_and_undoes_when_dsn_available() {
         let Some(dsn) = std::env::var("KOGWISTAR_TEST_PG_DSN").ok() else {
             return;
@@ -7923,6 +11649,632 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
     }
 
     #[tokio::test]
+    async fn sqlite_service_events_fold_authoritative_history_for_rest_and_mcp() {
+        use axum::body::{Body, to_bytes};
+        use axum::http::Request;
+        use kogwistar_store_sqlite::NewRawEntityEvent;
+        use std::time::{SystemTime, UNIX_EPOCH};
+        use tower::ServiceExt;
+
+        fn node(
+            id: &str,
+            service_id: &str,
+            event_type: &str,
+            ts_ms: i64,
+            event_payload_json: &str,
+        ) -> Value {
+            json!({
+                "id": id,
+                "metadata": {
+                    "entity_type": "service_event",
+                    "service_id": service_id,
+                    "service_event_type": event_type,
+                    "ts_ms": ts_ms,
+                },
+                "properties": {"payload_json": event_payload_json},
+            })
+        }
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("kogwistar-service-events-{nonce}.sqlite3"));
+        let store = SqliteStore::open(&path).unwrap();
+        let append = |event_id: &str, entity_id: &str, op: &str, payload: Value| {
+            store
+                .append_raw_entity_event(
+                    "workflow",
+                    NewRawEntityEvent {
+                        event_id: event_id.to_owned(),
+                        entity_kind: "node".to_owned(),
+                        entity_id: entity_id.to_owned(),
+                        op: op.to_owned(),
+                        payload_json: payload.to_string(),
+                    },
+                )
+                .unwrap();
+        };
+        append(
+            "e1-add",
+            "service_evt:svc-a:1",
+            "ADD",
+            node(
+                "service_evt:svc-a:1",
+                "svc-a",
+                "service.starting",
+                20,
+                r#"{"phase":"old"}"#,
+            ),
+        );
+        append(
+            "e2-replace",
+            "service_evt:svc-a:1",
+            "REPLACE",
+            node(
+                "service_evt:svc-a:1",
+                "svc-a",
+                "service.started",
+                20,
+                r#"{"phase":"new"}"#,
+            ),
+        );
+        append(
+            "e3-other",
+            "service_evt:svc-b:1",
+            "ADD",
+            node("service_evt:svc-b:1", "svc-b", "service.healthy", 1, "{}"),
+        );
+        append(
+            "e4-earlier",
+            "service_evt:svc-a:2",
+            "ADD",
+            node(
+                "service_evt:svc-a:2",
+                "svc-a",
+                "service.healthy",
+                10,
+                "not-json",
+            ),
+        );
+        append("e5-delete", "service_evt:svc-a:2", "DELETE", json!({}));
+        append(
+            "e6-unrelated",
+            "node-a",
+            "ADD",
+            json!({"id":"node-a","metadata":{"entity_type":"node"}}),
+        );
+
+        let service = SqliteRunApplicationService::open(&path).unwrap();
+        let app = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: Vec::new(),
+                implementation: ImplementationSnapshot::default(),
+                auth: AuthConfig::default(),
+            },
+            Arc::new(service.clone()),
+        );
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/workflow/services/svc-a/events?limit=1")
+                    .header("x-kogwistar-roles", "reader,rw")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body =
+            serde_json::from_slice::<Value>(&to_bytes(response.into_body(), 16_384).await.unwrap())
+                .unwrap();
+        assert_eq!(body["service_id"], "svc-a");
+        assert_eq!(body["events"].as_array().unwrap().len(), 1);
+        assert_eq!(body["events"][0]["event_type"], "service.started");
+        assert_eq!(body["events"][0]["payload"]["phase"], "new");
+
+        let missing = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/workflow/services/missing/events")
+                    .header("x-kogwistar-roles", "reader,rw")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(missing.status(), StatusCode::OK);
+        let missing =
+            serde_json::from_slice::<Value>(&to_bytes(missing.into_body(), 16_384).await.unwrap())
+                .unwrap();
+        assert_eq!(missing["events"], json!([]));
+
+        let forbidden = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "GET".to_owned(),
+                path_and_query: "/api/workflow/services/svc-a/events".to_owned(),
+                body: Vec::new(),
+                principal: json!({"sub":"alice","role":"ro","capabilities":[]}),
+            })
+            .await;
+        assert_eq!(forbidden.status, StatusCode::FORBIDDEN.as_u16());
+
+        let mcp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp/workflow")
+                    .header("content-type", "application/json")
+                    .header("x-kogwistar-roles", "reader,rw")
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","id":"service-events","method":"tools/call","params":{"name":"workflow.service_events","arguments":{"service_id":"svc-a","limit":10}}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(mcp.status(), StatusCode::OK);
+        let mcp =
+            serde_json::from_slice::<Value>(&to_bytes(mcp.into_body(), 16_384).await.unwrap())
+                .unwrap();
+        assert_eq!(mcp["result"]["events"][0]["event_type"], "service.started");
+
+        drop(service);
+        drop(store);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn sqlite_service_repair_rebuilds_disposable_projection_for_rest_and_mcp() {
+        use axum::body::{Body, to_bytes};
+        use axum::http::Request;
+        use kogwistar_store_sqlite::NewRawEntityEvent;
+        use std::time::{SystemTime, UNIX_EPOCH};
+        use tower::ServiceExt;
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("kogwistar-service-repair-{nonce}.sqlite3"));
+        let store = SqliteStore::open(&path).unwrap();
+        let definition = json!({
+            "id": "service_def:svc-repair:1",
+            "metadata": {
+                "entity_type": "service_definition",
+                "service_id": "svc-repair",
+                "updated_at_ms": 10,
+                "created_at_ms": 10,
+            },
+            "properties": {
+                "service_id": "svc-repair",
+                "service_kind": "daemon",
+                "target_kind": "workflow",
+                "target_ref": "wf-repair",
+                "target_config_json": "{}",
+                "enabled": true,
+                "autostart": false,
+                "restart_policy_json": "{}",
+                "heartbeat_ttl_ms": 60000,
+                "trigger_specs_json": "[]",
+                "security_scope": "workflow",
+                "storage_namespace": "workflow",
+                "execution_namespace": "workflow",
+                "created_at_ms": 10,
+                "updated_at_ms": 10,
+            },
+        });
+        store
+            .append_raw_entity_event(
+                "workflow",
+                NewRawEntityEvent {
+                    event_id: "definition".to_owned(),
+                    entity_kind: "node".to_owned(),
+                    entity_id: "service_def:svc-repair:1".to_owned(),
+                    op: "ADD".to_owned(),
+                    payload_json: definition.to_string(),
+                },
+            )
+            .unwrap();
+        store
+            .append_raw_entity_event(
+                "workflow",
+                NewRawEntityEvent {
+                    event_id: "disabled".to_owned(),
+                    entity_kind: "node".to_owned(),
+                    entity_id: "service_evt:svc-repair:2".to_owned(),
+                    op: "ADD".to_owned(),
+                    payload_json: json!({
+                        "id": "service_evt:svc-repair:2",
+                        "metadata": {
+                            "entity_type": "service_event",
+                            "service_id": "svc-repair",
+                            "service_event_type": "service.stopped",
+                            "ts_ms": 20,
+                        },
+                        "properties": {"payload_json": r#"{"enabled":false}"#},
+                    })
+                    .to_string(),
+                },
+            )
+            .unwrap();
+        let service = SqliteRunApplicationService::open(&path).unwrap();
+        let principal = json!({
+            "sub": "operator",
+            "role": "rw",
+            "ns": "workflow",
+            "capabilities": ["service.manage", "service.inspect", "project_view"],
+        });
+        let declared = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/workflow/services".to_owned(),
+                body: serde_json::to_vec(&json!({
+                    "service_id": "svc-declared",
+                    "service_kind": "daemon",
+                    "target_kind": "workflow",
+                    "target_ref": "wf-declared",
+                    "target_config": {"conversation_id": "conv-declared"},
+                    "enabled": true,
+                    "autostart": true,
+                    "heartbeat_ttl_ms": 1234,
+                    "trigger_specs": [{"type":"external event","enabled":true}],
+                }))
+                .unwrap(),
+                principal: principal.clone(),
+            })
+            .await;
+        assert_eq!(declared.status, StatusCode::OK.as_u16());
+        let declared = serde_json::from_slice::<Value>(&declared.body).unwrap();
+        assert_eq!(declared["service_id"], "svc-declared");
+        assert_eq!(declared["target_ref"], "wf-declared");
+        assert_eq!(declared["autostart"], true);
+        assert_eq!(declared["health_status"], "degraded");
+        assert_eq!(declared["heartbeat_ttl_ms"], 1234);
+        let triggered = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/workflow/services/svc-declared/trigger".to_owned(),
+                body: serde_json::to_vec(&json!({
+                    "trigger_type": "external event",
+                    "payload": {"source": "test"},
+                }))
+                .unwrap(),
+                principal: principal.clone(),
+            })
+            .await;
+        assert_eq!(triggered.status, StatusCode::OK.as_u16());
+        let triggered = serde_json::from_slice::<Value>(&triggered.body).unwrap();
+        let run_id = triggered["current_child_run_id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert_eq!(triggered["last_trigger_type"], "external event");
+        assert_eq!(triggered["current_child_status"], "queued");
+        assert!(store.get_server_run(&run_id).unwrap().is_some());
+        let lanes = store
+            .list_projected_lane_messages(kogwistar_store::LaneMessageFilter {
+                correlation_id: Some(run_id.clone()),
+                limit: 10,
+                ..kogwistar_store::LaneMessageFilter::default()
+            })
+            .unwrap();
+        assert_eq!(lanes.len(), 1);
+        let retriggered = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/workflow/services/svc-declared/trigger".to_owned(),
+                body: serde_json::to_vec(&json!({
+                    "trigger_type": "external event",
+                    "payload": {},
+                }))
+                .unwrap(),
+                principal: principal.clone(),
+            })
+            .await;
+        let retriggered = serde_json::from_slice::<Value>(&retriggered.body).unwrap();
+        assert_eq!(retriggered["current_child_run_id"], run_id);
+        assert_eq!(
+            store
+                .list_projected_lane_messages(kogwistar_store::LaneMessageFilter {
+                    correlation_id: Some(run_id.clone()),
+                    limit: 10,
+                    ..kogwistar_store::LaneMessageFilter::default()
+                })
+                .unwrap()
+                .len(),
+            1
+        );
+        let repaired = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/workflow/services/svc-repair/repair".to_owned(),
+                body: Vec::new(),
+                principal: principal.clone(),
+            })
+            .await;
+        assert_eq!(repaired.status, StatusCode::OK.as_u16());
+        let body = serde_json::from_slice::<Value>(&repaired.body).unwrap();
+        assert_eq!(body["projection"]["service_id"], "svc-repair");
+        assert_eq!(body["projection"]["enabled"], false);
+        assert_eq!(body["projection"]["lifecycle_status"], "stopped");
+        store
+            .clear_named_projection("service_registry", "svc-repair")
+            .unwrap();
+
+        let app = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: Vec::new(),
+                implementation: ImplementationSnapshot::default(),
+                auth: AuthConfig::default(),
+            },
+            Arc::new(service.clone()),
+        );
+        let mcp_trigger = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp/workflow")
+                    .header("content-type", "application/json")
+                    .header("x-kogwistar-roles", "reader,rw")
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","id":"trigger","method":"tools/call","params":{"name":"workflow.service_trigger","arguments":{"service_id":"svc-declared","trigger_type":"external event","payload":{"source":"mcp"}}}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(mcp_trigger.status(), StatusCode::OK);
+        let mcp_trigger = serde_json::from_slice::<Value>(
+            &to_bytes(mcp_trigger.into_body(), 16_384).await.unwrap(),
+        )
+        .unwrap();
+        assert_eq!(mcp_trigger["result"]["current_child_run_id"], run_id);
+        let mcp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp/workflow")
+                    .header("content-type", "application/json")
+                    .header("x-kogwistar-roles", "reader,rw")
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","id":"repair","method":"tools/call","params":{"name":"workflow.service_repair","arguments":{"service_id":"svc-repair"}}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(mcp.status(), StatusCode::OK);
+        let mcp =
+            serde_json::from_slice::<Value>(&to_bytes(mcp.into_body(), 16_384).await.unwrap())
+                .unwrap();
+        assert_eq!(mcp["result"]["projection"]["enabled"], false);
+        let forbidden = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/workflow/services/repair".to_owned(),
+                body: Vec::new(),
+                principal: json!({"sub":"reader","role":"ro","capabilities":["service.inspect"]}),
+            })
+            .await;
+        assert_eq!(forbidden.status, StatusCode::FORBIDDEN.as_u16());
+        let disabled = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/workflow/services/svc-repair/disable".to_owned(),
+                body: Vec::new(),
+                principal: principal.clone(),
+            })
+            .await;
+        assert_eq!(disabled.status, StatusCode::OK.as_u16());
+        let disabled = serde_json::from_slice::<Value>(&disabled.body).unwrap();
+        assert_eq!(disabled["enabled"], false);
+        assert_eq!(disabled["lifecycle_status"], "stopped");
+        let enabled = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/workflow/services/svc-repair/enable".to_owned(),
+                body: Vec::new(),
+                principal,
+            })
+            .await;
+        assert_eq!(enabled.status, StatusCode::OK.as_u16());
+        let enabled = serde_json::from_slice::<Value>(&enabled.body).unwrap();
+        assert_eq!(enabled["enabled"], true);
+        // Python rebuild keeps the prior stopped lifecycle until the next
+        // supervisor health tick emits a new lifecycle event.
+        assert_eq!(enabled["lifecycle_status"], "stopped");
+        let heartbeat = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/workflow/services/svc-repair/heartbeat".to_owned(),
+                body: serde_json::to_vec(&json!({
+                    "instance_id": "worker-1",
+                    "payload": {"last_error": "recovering"},
+                }))
+                .unwrap(),
+                principal: json!({
+                    "sub": "worker",
+                    "role": "rw",
+                    "capabilities": ["service.heartbeat", "service.manage"],
+                }),
+            })
+            .await;
+        assert_eq!(heartbeat.status, StatusCode::OK.as_u16());
+        let heartbeat = serde_json::from_slice::<Value>(&heartbeat.body).unwrap();
+        assert_eq!(heartbeat["instance_id"], "worker-1");
+        assert_eq!(heartbeat["health_status"], "healthy");
+        assert_eq!(heartbeat["last_error"], "recovering");
+        let history = store.replay_raw_events("workflow", 0, usize::MAX).unwrap();
+        assert!(history.iter().any(|event| {
+            event.payload_json.contains("service.enabled")
+                && event.entity_id.starts_with("service_evt:svc-repair:")
+        }));
+        assert!(history.iter().any(|event| {
+            event.payload_json.contains("service.error_changed")
+                && event.entity_id.starts_with("service_evt:svc-repair:")
+        }));
+        drop(service);
+        drop(store);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn service_route_and_event_fold_reject_unrelated_inputs() {
+        assert_eq!(
+            service_route("/api/workflow/services/svc/events?limit=1"),
+            Some(("svc".to_owned(), ServiceRoute::Events))
+        );
+        assert_eq!(service_route("/api/workflow/services/svc/unknown"), None);
+        assert_eq!(
+            service_repair_route("/api/workflow/services/repair?limit=2"),
+            Some(None)
+        );
+        assert_eq!(
+            service_repair_route("/api/workflow/services/svc/repair"),
+            Some(Some("svc".to_owned()))
+        );
+        assert_eq!(
+            service_enabled_route("/api/workflow/services/svc/disable"),
+            Some(("svc".to_owned(), false))
+        );
+        assert!(
+            service_event_values(
+                [(
+                    1,
+                    "node".to_owned(),
+                    "bad".to_owned(),
+                    "ADD".to_owned(),
+                    "not-json".to_owned(),
+                )],
+                "svc",
+                10,
+            )
+            .is_empty()
+        );
+        let projection = json!({"last_triggered_at_ms": 900});
+        assert!(service_trigger_is_suppressed(
+            &json!({"properties":{"enabled":false,"trigger_specs_json":"[]"}}),
+            &projection,
+            "external event",
+            1_000,
+        ));
+        assert!(service_trigger_is_suppressed(
+            &json!({"properties":{"enabled":true,"trigger_specs_json":r#"[{"type":"external event","enabled":true,"cooldown_ms":200}]"#}}),
+            &projection,
+            "external event",
+            1_000,
+        ));
+        assert!(!service_trigger_is_suppressed(
+            &json!({"properties":{"enabled":true,"trigger_specs_json":r#"[{"type":"graph change","enabled":false}]"#}}),
+            &projection,
+            "external event",
+            1_000,
+        ));
+        assert_eq!(PENDING_SYSCALL_CUTOVER_OPS.len(), 5);
+        assert!(PENDING_SYSCALL_CUTOVER_OPS.contains(&"invoke_tool"));
+        assert!(!PENDING_SYSCALL_CUTOVER_OPS.contains(&"spawn_process"));
+    }
+
+    #[test]
+    fn document_graph_validation_matches_provenance_and_pointer_contract() {
+        let request = |body: Value| ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/document.validate_graph".to_owned(),
+            body: serde_json::to_vec(&body).unwrap(),
+            principal: json!({}),
+        };
+        let valid = document_graph_validation_effect(&request(json!({
+            "doc_id":"doc-validate",
+            "insertion_method":"pytest",
+            "nodes":[{
+                "id":"node-1",
+                "label":"Node",
+                "type":"entity",
+                "summary":"Valid node",
+                "metadata":{"pointers":[{
+                    "source_cluster_id":"cluster-1",
+                    "start_char":0,
+                    "end_char":4,
+                    "verbatim_text":"Node",
+                }]},
+            }],
+            "edges":[{
+                "id":"edge-1",
+                "label":"Edge",
+                "type":"relationship",
+                "summary":"Valid edge",
+                "relation":"links",
+                "source_ids":["node-1"],
+                "target_ids":["node-1"],
+                "source_edge_ids":[],
+                "target_edge_ids":[],
+                "mentions":[{"spans":[{
+                    "collection_page_url":"doc://doc-validate",
+                    "document_page_url":"doc://doc-validate#cluster-1",
+                    "doc_id":"doc-validate",
+                    "insertion_method":"pytest",
+                    "start_char":0,
+                    "end_char":4,
+                }]}],
+            }],
+        })))
+        .unwrap();
+        let valid = serde_json::from_slice::<Value>(&valid.body).unwrap();
+        assert_eq!(valid, json!({"ok":true,"node_errors":{},"edge_errors":{}}));
+
+        let invalid = document_graph_validation_effect(&request(json!({
+            "doc_id":"doc-invalid",
+            "nodes":[{"id":"node-bad","label":"Bad","type":"entity","summary":"","mentions":[]}],
+            "edges":[{"id":"edge-bad","label":"Bad","type":"relationship","summary":"","mentions":[],"relation":"links","source_ids":[],"target_ids":[],"source_edge_ids":[],"target_edge_ids":[]}],
+        })))
+        .unwrap();
+        let invalid = serde_json::from_slice::<Value>(&invalid.body).unwrap();
+        assert_eq!(invalid["ok"], false);
+        assert!(invalid["node_errors"]["node-bad"].is_string());
+        assert!(invalid["edge_errors"]["edge-bad"].is_string());
+    }
+
+    #[test]
+    fn visualization_shells_embed_packaged_templates_without_jinja_drift() {
+        for (path, marker) in [
+            ("/viz/cytoscape?doc_id=doc-1&mode=graph", "Cytoscape"),
+            ("/viz/d3?doc_id=doc-1&mode=graph", "D3 graph viewer"),
+            ("/viz/go?doc_id=doc-1&mode=graph", "GoJS"),
+        ] {
+            let response = visualization_shell_effect(&ApiEffectRequest {
+                contract_version: 1,
+                method: "GET".to_owned(),
+                path_and_query: path.to_owned(),
+                body: Vec::new(),
+                principal: json!({}),
+            })
+            .unwrap();
+            assert_eq!(response.status, StatusCode::OK.as_u16());
+            assert_eq!(response.content_type, "text/html; charset=utf-8");
+            let body = String::from_utf8(response.body).unwrap();
+            assert!(body.contains(marker));
+            assert!(!body.contains("{{"));
+            assert!(!body.contains("{%"));
+        }
+    }
+
+    #[tokio::test]
     async fn sqlite_run_service_handles_get_events_and_cancel() {
         use axum::body::{Body, to_bytes};
         use axum::http::Request;
@@ -7968,7 +12320,7 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
                     .header("content-type", "application/json")
                     .header("x-kogwistar-roles", "reader")
                     .body(Body::from(
-                        r#"{"workflow_id":"workflow-submit","conversation_id":"conversation-submit","initial_state":{"seed":1},"priority_class":"foreground","runtime_kind":"sync"}"#,
+                        r#"{"run_id":"caller-run-id","workflow_id":"workflow-submit","conversation_id":"conversation-submit","initial_state":{"seed":1},"priority_class":"foreground","runtime_kind":"sync","start_node_id":"entry","node_ops":{"entry":"begin"}}"#,
                     ))
                     .unwrap(),
             )
@@ -7978,6 +12330,7 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
         let submit_body = to_bytes(submit.into_body(), 8192).await.unwrap();
         let submitted = serde_json::from_slice::<Value>(&submit_body).unwrap();
         let submitted_run_id = submitted["run_id"].as_str().unwrap();
+        assert_eq!(submitted_run_id, "caller-run-id");
         assert_eq!(
             store
                 .get_server_run(submitted_run_id)
@@ -8032,6 +12385,9 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
         let claim_value = serde_json::from_slice::<Value>(&claim_body).unwrap();
         let work = &claim_value["work"][0];
         assert_eq!(work["run_id"], submitted_run_id);
+        assert_eq!(work["step_id"], "entry");
+        assert_eq!(work["payload"]["start_node_id"], "entry");
+        assert_eq!(work["payload"]["op"], "begin");
         let result_payload = json!({
             "handoff": {
                 "message_id": work["message_id"],
@@ -8049,7 +12405,7 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
                 "workflow_id": "workflow-submit",
                 "conversation_id": "conversation-submit",
                 "step_seq": 0,
-                "node_id": "start",
+                "node_id": "entry",
                 "token_id": submitted_run_id,
                 "parent_token_id": null,
                 "state_update": [["u", {"answer": "worker"}]],
@@ -9570,6 +13926,72 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
                 .len(),
             1
         );
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn sqlite_syscall_spawn_and_terminate_use_authoritative_run_service() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("kogwistar-syscall-{nonce}.sqlite3"));
+        let service = SqliteRunApplicationService::open(&path).unwrap();
+        let principal = json!({
+            "sub":"operator",
+            "role":"rw",
+            "ns":"workflow",
+            "capabilities":["spawn_process","workflow.run.write","workflow.run.read"],
+        });
+        let spawned = service.execute_sync(ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/syscall/v1/spawn_process".to_owned(),
+            body: serde_json::to_vec(&json!({
+                "version":"v1",
+                "op":"spawn_process",
+                "args":{
+                    "workflow_id":"wf-syscall",
+                    "conversation_id":"conv-syscall",
+                    "initial_state":{"source":"syscall"},
+                },
+            }))
+            .unwrap(),
+            principal: principal.clone(),
+        });
+        assert_eq!(spawned.status, StatusCode::OK.as_u16());
+        let spawned = serde_json::from_slice::<Value>(&spawned.body).unwrap();
+        assert_eq!(spawned["version"], "v1");
+        assert_eq!(spawned["op"], "spawn_process");
+        assert_eq!(spawned["status"], "ok");
+        let run_id = spawned["result"]["run_id"].as_str().unwrap();
+        assert!(service.store.get_server_run(run_id).unwrap().is_some());
+        let terminated = service.execute_sync(ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/syscall/v1/terminate_process".to_owned(),
+            body: serde_json::to_vec(&json!({
+                "version":"v1",
+                "op":"terminate_process",
+                "args":{"run_id":run_id},
+            }))
+            .unwrap(),
+            principal,
+        });
+        assert_eq!(terminated.status, StatusCode::OK.as_u16());
+        let terminated = serde_json::from_slice::<Value>(&terminated.body).unwrap();
+        assert_eq!(terminated["result"]["cancel_requested"], true);
+        assert!(
+            service
+                .store
+                .get_server_run(run_id)
+                .unwrap()
+                .unwrap()
+                .cancel_requested
+        );
+        drop(service);
         std::fs::remove_file(path).unwrap();
     }
 

@@ -10,17 +10,23 @@ the stable lane ``message_id`` idempotency key.
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import os
+import queue
 import sqlite3
 from collections.abc import Callable, Mapping
 from contextlib import closing
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
 
 from kogwistar.id_provider import stable_id
+
+if TYPE_CHECKING:
+    from kogwistar.runtime.runtime import StepContext
 
 
 class RustWorkerError(RuntimeError):
@@ -29,6 +35,332 @@ class RustWorkerError(RuntimeError):
 
 class AmbiguousWorkerExecution(RustWorkerError):
     """Callback began before restart, but no durable result was recorded."""
+
+
+@dataclass(frozen=True)
+class _FrozenWorkerRoute:
+    edge_id: str
+    source_ids: tuple[str, ...]
+    target_ids: tuple[str, ...]
+    predicate: str | None
+    priority: int
+    is_default: bool
+    multiplicity: str
+    source_fanout: bool
+    join_mask: int
+    label: str
+    aliases: tuple[str, ...]
+    metadata: Mapping[str, Any]
+
+    @property
+    def id(self) -> str:
+        return self.edge_id
+
+
+def _json_copy(value: Any, *, field: str) -> Any:
+    try:
+        return json.loads(_canonical(value))
+    except (TypeError, ValueError) as error:
+        raise RustWorkerError(f"{field} must be JSON-only: {error}") from error
+
+
+def _durable_state(value: Mapping[str, Any], *, field: str) -> dict[str, Any]:
+    copied = _json_copy(dict(value), field=field)
+    return {
+        key: item
+        for key, item in copied.items()
+        if key not in {"_deps", "dream_deps"}
+    }
+
+
+class RustStepResolverAdapter:
+    """Map one frozen Rust lane request onto an existing sync Python resolver."""
+
+    def __init__(
+        self,
+        step_resolver: Callable[[str], Callable[[StepContext], Any]],
+        *,
+        predicate_registry: Mapping[str, Callable[..., Any]] | None = None,
+        dependency_provider: Callable[[Mapping[str, Any]], Mapping[str, Any]]
+        | None = None,
+        cache_dir: str | os.PathLike[str] | None = None,
+    ) -> None:
+        if not callable(step_resolver):
+            raise TypeError("step_resolver must be callable")
+        self.step_resolver = step_resolver
+        self.predicate_registry = dict(predicate_registry or {})
+        self.dependency_provider = dependency_provider
+        self.cache_dir = os.fspath(cache_dir) if cache_dir is not None else None
+
+    def _routes(self, payload: Mapping[str, Any], node_id: str) -> list[_FrozenWorkerRoute]:
+        raw_routes = payload.get("runtime_routes", [])
+        if not isinstance(raw_routes, list):
+            raise RustWorkerError("claimed work runtime_routes must be an array")
+        routes: list[_FrozenWorkerRoute] = []
+        missing_predicates: set[str] = set()
+        for index, raw in enumerate(raw_routes):
+            if not isinstance(raw, dict):
+                raise RustWorkerError(f"runtime_routes[{index}] must be an object")
+            source = str(raw.get("source_node_id") or "")
+            target = str(raw.get("target_node_id") or "")
+            if not source or not target:
+                raise RustWorkerError(
+                    f"runtime_routes[{index}] requires source_node_id and target_node_id"
+                )
+            if source != node_id:
+                continue
+            predicate_value = raw.get("predicate")
+            predicate = (
+                str(predicate_value)
+                if predicate_value is not None and str(predicate_value)
+                else None
+            )
+            if predicate is not None and predicate not in self.predicate_registry:
+                missing_predicates.add(predicate)
+            edge_id = str(raw.get("edge_id") or f"{source}->{target}")
+            aliases = [str(value) for value in (raw.get("aliases") or [])]
+            label = aliases[0] if aliases else target.rsplit("|", 1)[-1]
+            priority = int(raw.get("priority", 100))
+            is_default = bool(raw.get("is_default", False))
+            multiplicity = str(raw.get("multiplicity") or "one")
+            routes.append(
+                _FrozenWorkerRoute(
+                    edge_id=edge_id,
+                    source_ids=(source,),
+                    target_ids=(target,),
+                    predicate=predicate,
+                    priority=priority,
+                    is_default=is_default,
+                    multiplicity=multiplicity,
+                    source_fanout=bool(raw.get("source_fanout", False)),
+                    join_mask=int(raw.get("join_mask", 0)),
+                    label=label,
+                    aliases=tuple(aliases),
+                    metadata={
+                        "wf_predicate": predicate,
+                        "wf_priority": priority,
+                        "wf_is_default": is_default,
+                        "wf_multiplicity": multiplicity,
+                    },
+                )
+            )
+        if missing_predicates:
+            raise RustWorkerError(
+                f"frozen workflow uses unregistered predicates: {sorted(missing_predicates)!r}"
+            )
+        return routes
+
+    def _reject_unsupported_op(self, op: str) -> None:
+        for attribute, capability in [
+            ("nested_ops", "nested workflow"),
+            ("sandboxed_ops", "sandbox"),
+        ]:
+            values = getattr(self.step_resolver, attribute, ())
+            if op in values:
+                raise RustWorkerError(
+                    f"Rust worker protocol does not yet represent {capability} op {op!r}"
+                )
+
+    def __call__(self, work: dict[str, Any]) -> dict[str, Any]:
+        from kogwistar.runtime.base_runtime import apply_state_update_inplace
+        from kogwistar.runtime.models import (
+            RunFailure,
+            RunSuccess,
+            RunSuspended,
+            get_route_next_names,
+        )
+        from kogwistar.runtime.routing import compute_route_next
+        from kogwistar.runtime.runtime import StepContext
+
+        payload = work.get("payload")
+        if not isinstance(payload, dict):
+            raise RustWorkerError("claimed work payload must be an object")
+        op = str(payload.get("op") or "")
+        node_id = str(payload.get("node_id") or work.get("step_id") or "")
+        if not op or not node_id:
+            raise RustWorkerError("claimed work requires frozen op and node_id")
+        self._reject_unsupported_op(op)
+        routes = self._routes(payload, node_id)
+
+        raw_state = payload.get("state", payload.get("initial_state", {}))
+        if not isinstance(raw_state, dict):
+            raise RustWorkerError("claimed work state must be an object")
+        state = _durable_state(raw_state, field="claimed work state")
+        before = _json_copy(state, field="claimed work state")
+        if self.dependency_provider is not None:
+            dependencies = self.dependency_provider(work)
+            if not isinstance(dependencies, Mapping):
+                raise RustWorkerError("dependency_provider must return a mapping")
+            state["_deps"] = dict(dependencies)
+
+        try:
+            resolver = self.step_resolver(op)
+        except Exception as error:
+            raise RustWorkerError(f"cannot resolve frozen op {op!r}: {error}") from error
+        if not callable(resolver):
+            raise RustWorkerError(f"step_resolver({op!r}) returned a non-callable")
+        if inspect.iscoroutinefunction(resolver):
+            raise RustWorkerError("async resolver callbacks are not in worker contract v1")
+        message_queue: queue.Queue[dict[str, Any]] = queue.Queue()
+        lane_message_attempts: list[dict[str, Any]] = []
+
+        def record_lane_message(**kwargs: Any) -> dict[str, str]:
+            lane_message_attempts.append(dict(kwargs))
+            return {"message_id": ""}
+
+        ctx = StepContext(
+            run_id=str(payload.get("run_id") or work.get("run_id") or ""),
+            workflow_id=str(payload.get("workflow_id") or ""),
+            workflow_node_id=node_id,
+            op=op,
+            token_id=str(payload.get("token_id") or work.get("run_id") or ""),
+            attempt=int(payload.get("attempt", 1)),
+            step_seq=int(payload.get("step_seq", 0)),
+            cache_dir=self.cache_dir,
+            conversation_id=str(payload.get("conversation_id") or "") or None,
+            turn_node_id=str(payload.get("turn_node_id") or "") or None,
+            message_queue=message_queue,
+            lane_message_sender=record_lane_message,
+            state=state,
+        )
+        try:
+            result = resolver(ctx)
+        except RustWorkerError:
+            raise
+        except Exception as error:
+            import traceback
+
+            result = RunFailure(
+                conversation_node_id=node_id,
+                state_update=[],
+                errors=[str(error), traceback.format_exc()],
+            )
+        if inspect.isawaitable(result):
+            raise RustWorkerError("async resolver callbacks are not in worker contract v1")
+        if lane_message_attempts:
+            raise RustWorkerError("ctx.send_lane_message is not in worker contract v1")
+        if not isinstance(result, (RunSuccess, RunFailure, RunSuspended)):
+            raise RustWorkerError("resolver must return RunSuccess, RunFailure, or RunSuspended")
+        if not message_queue.empty():
+            raise RustWorkerError("ctx.publish is not in worker contract v1")
+        if isinstance(result, RunSuccess) and result.workflow_invocations:
+            raise RustWorkerError("nested workflow invocations are not in worker contract v1")
+
+        after = _durable_state(state, field="resolver state")
+        for key in set(before).union(after):
+            if key.startswith("_rt_") and before.get(key) != after.get(key):
+                raise RustWorkerError(f"resolver may not mutate scheduler state key {key!r}")
+        changed = {
+            key: value
+            for key, value in after.items()
+            if key not in before or before[key] != value
+        }
+        deleted = before.keys() - after.keys()
+        if deleted:
+            raise RustWorkerError(
+                "direct resolver state deletion is not in the runtime state-update contract: "
+                f"{sorted(deleted)!r}"
+            )
+        state_update: list[Any] = []
+        if changed:
+            state_update.append(["u", changed])
+        state_schema = _json_copy(
+            getattr(self.step_resolver, "_state_schema", {}) or {},
+            field="resolver state schema",
+        )
+        result_state_update = _json_copy(
+            result.state_update, field="result.state_update"
+        )
+        result_update = _json_copy(result.update, field="result.update")
+        result_keys = {
+            str(key)
+            for item in result_state_update
+            if isinstance(item, list) and len(item) == 2 and isinstance(item[1], dict)
+            for key in item[1]
+        }
+        if isinstance(result_update, dict):
+            result_keys.update(str(key) for key in result_update)
+        forbidden_result_keys = sorted(
+            key
+            for key in result_keys
+            if key in {"_deps", "dream_deps"} or key.startswith("_rt_")
+        )
+        if forbidden_result_keys:
+            raise RustWorkerError(
+                "resolver result may not persist runtime plumbing keys: "
+                f"{forbidden_result_keys!r}"
+            )
+        if result_update and result_state_update:
+            raise RustWorkerError("result may use either update or state_update, not both")
+        if result_update:
+            normalized: dict[str, dict[str, Any]] = {"u": {}, "e": {}}
+            for key, value in result_update.items():
+                mode = "e" if str(state_schema.get(key) or "u") == "a" else "u"
+                if mode not in normalized:
+                    raise RustWorkerError(
+                        f"resolver state schema has unsupported mode {mode!r} for {key!r}"
+                    )
+                normalized[mode][key] = value
+            result_state_update.extend(
+                [mode, values] for mode, values in normalized.items() if values
+            )
+        state_update.extend(result_state_update)
+        predicted_state = _json_copy(before, field="claimed work state")
+        apply_state_update_inplace(
+            predicted_state,
+            state_update,
+            None,
+            state_schema=state_schema,
+        )
+        computed = compute_route_next(
+            edges=routes,
+            state=predicted_state,
+            last_result=result,
+            fanout=any(route.source_fanout for route in routes),
+            predicate_registry=self.predicate_registry,
+            _native_disabled=True,
+        )
+        route_by_target = {route.target_ids[0]: route for route in routes}
+        successors = [
+            {
+                "node_id": target,
+                "join_mask": route_by_target[target].join_mask,
+            }
+            for target in computed.next_node_ids
+        ]
+        status = {
+            "success": "success",
+            "suspended": "suspended",
+            "failure": "failed",
+        }[result.status]
+        workflow_status = {
+            "success": "succeeded",
+            "suspended": "suspended",
+            "failure": "failed",
+        }[result.status]
+        effect: dict[str, Any] = {
+            "status": status,
+            "state_update": state_update,
+            "state_schema": state_schema,
+            "successors": successors,
+            "route_next": get_route_next_names(result),
+            "result": {
+                "workflow_status": workflow_status,
+                "final_state": predicted_state,
+            },
+        }
+        if isinstance(result, RunFailure):
+            effect["errors"] = list(result.errors)
+        if isinstance(result, RunSuspended):
+            effect["wait_reason"] = result.wait_reason
+            effect["resume_payload"] = _json_copy(
+                result.resume_payload, field="result.resume_payload"
+            )
+        for field in ("usage", "trace_events"):
+            value = getattr(result, field, None)
+            if value is not None:
+                effect[field] = _json_copy(value, field=f"result.{field}")
+        return effect
 
 
 def _canonical(value: Any) -> str:
@@ -149,6 +481,37 @@ class RustRuntimeWorker:
             base_url=base_url.rstrip("/"), headers=dict(headers or {}), timeout=timeout
         )
 
+    @classmethod
+    def from_step_resolver(
+        cls,
+        *,
+        base_url: str,
+        worker_id: str,
+        journal_path: str | os.PathLike[str],
+        step_resolver: Callable[[str], Callable[[Any], Any]],
+        predicate_registry: Mapping[str, Callable[..., Any]] | None = None,
+        dependency_provider: Callable[[Mapping[str, Any]], Mapping[str, Any]]
+        | None = None,
+        cache_dir: str | os.PathLike[str] | None = None,
+        headers: Mapping[str, str] | None = None,
+        timeout: float = 30.0,
+        client: httpx.Client | None = None,
+    ) -> RustRuntimeWorker:
+        return cls(
+            base_url=base_url,
+            worker_id=worker_id,
+            journal_path=journal_path,
+            execute=RustStepResolverAdapter(
+                step_resolver,
+                predicate_registry=predicate_registry,
+                dependency_provider=dependency_provider,
+                cache_dir=cache_dir,
+            ),
+            headers=headers,
+            timeout=timeout,
+            client=client,
+        )
+
     def close(self) -> None:
         if self._owns_client:
             self.client.close()
@@ -170,16 +533,27 @@ class RustRuntimeWorker:
             raise RustWorkerError(f"{path} returned non-object JSON")
         return value
 
-    def claim(self, *, limit: int = 1, lease_seconds: int = 60) -> list[dict[str, Any]]:
+    def claim(
+        self,
+        *,
+        limit: int = 1,
+        lease_seconds: int = 60,
+        run_id: str | None = None,
+    ) -> list[dict[str, Any]]:
         if limit <= 0 or lease_seconds <= 0:
             raise ValueError("limit and lease_seconds must be positive")
+        if run_id is not None and not run_id.strip():
+            raise ValueError("run_id must not be empty")
+        payload: dict[str, Any] = {
+            "claimed_by": self.worker_id,
+            "limit": limit,
+            "lease_seconds": lease_seconds,
+        }
+        if run_id is not None:
+            payload["run_id"] = run_id
         value = self._post(
             "/internal/runtime/claim",
-            {
-                "claimed_by": self.worker_id,
-                "limit": limit,
-                "lease_seconds": lease_seconds,
-            },
+            payload,
         )
         work = value.get("work")
         if not isinstance(work, list) or not all(isinstance(item, dict) for item in work):
@@ -241,6 +615,7 @@ class RustRuntimeWorker:
             "update",
             "state_schema",
             "successors",
+            "route_next",
             "result",
             "errors",
             "wait_reason",
@@ -275,6 +650,14 @@ class RustRuntimeWorker:
         message_id = str(work.get("message_id") or "")
         if not message_id:
             raise RustWorkerError("claimed work missing message_id")
+        payload = work.get("payload")
+        if not isinstance(payload, dict):
+            raise RustWorkerError("claimed work payload must be an object")
+        op = payload.get("op")
+        if not isinstance(op, str) or not op.strip():
+            raise RustWorkerError(
+                "claimed work lacks frozen workflow op; refusing node-id resolver guess"
+            )
         digest = _work_digest(work)
         envelope = self.journal.begin(message_id=message_id, work_digest=digest)
         if envelope is None:
@@ -290,8 +673,18 @@ class RustRuntimeWorker:
             handoff["claimed_by"] = work.get("claimed_by")
         return self._post("/internal/runtime/results", envelope)
 
-    def poll_once(self, *, limit: int = 1, lease_seconds: int = 60) -> int:
-        work = self.claim(limit=limit, lease_seconds=lease_seconds)
+    def poll_once(
+        self,
+        *,
+        limit: int = 1,
+        lease_seconds: int = 60,
+        run_id: str | None = None,
+    ) -> int:
+        work = self.claim(
+            limit=limit,
+            lease_seconds=lease_seconds,
+            run_id=run_id,
+        )
         for item in work:
             self.process(item)
         return len(work)
@@ -300,6 +693,7 @@ class RustRuntimeWorker:
 __all__ = [
     "AmbiguousWorkerExecution",
     "RustRuntimeWorker",
+    "RustStepResolverAdapter",
     "RustWorkerError",
     "WorkerResultJournal",
 ]

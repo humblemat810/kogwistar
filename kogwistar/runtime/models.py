@@ -1,4 +1,4 @@
-from typing import Any, ClassVar, Literal, Optional, TypeAlias, TypedDict, Union, NotRequired
+from typing import Any, ClassVar, Literal, NotRequired, Optional, TypeAlias, TypedDict
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from ..engine_core.models import Edge, Node, Span
@@ -139,7 +139,8 @@ class WorkflowEdge(Edge):
 
     @property
     def priority(self):
-        return int(self.metadata.get("wf_priority")) # type: ignore  ok here, metadata validated at seem
+        value = self.metadata.get("wf_priority", 100)
+        return int(value if value is not None else 100)
 
 
 class WorkflowDesignArtifact(BaseModel):
@@ -223,10 +224,12 @@ class WorkflowState(TypedDict):
     _rt_join: NotRequired[dict[str, Any]]
 
 
-StateAppendUpdate = tuple[Literal["u"], Any]
-StateOverwriteUpdate = tuple[Literal["a"], Any]
-
-StateUpdate = Union[StateAppendUpdate, StateOverwriteUpdate]
+StateOverwriteUpdate: TypeAlias = tuple[Literal["u"], dict[str, Any]]
+StateAppendUpdate: TypeAlias = tuple[Literal["a"], dict[str, Any]]
+StateExtendUpdate: TypeAlias = tuple[Literal["e"], dict[str, Any]]
+StateUpdate: TypeAlias = (
+    StateOverwriteUpdate | StateAppendUpdate | StateExtendUpdate
+)
 
 
 def get_route_next_names(result: Any) -> list[str]:

@@ -50,6 +50,18 @@
     "scope": "indexed exact retry and warm current-state projection lookup",
     "gate_status_field": "gate.status"
   },
+  "test_parallelism_evidence": {
+    "benchmark_report": "contracts/benchmarks/adr015-test-parallelism-current-windows.json",
+    "container_default": {
+      "shards": 3,
+      "pytest_xdist_workers": 0
+    },
+    "controlled_results": {
+      "application_container_speedup": 1.424948,
+      "core_pytest_xdist_speedup": 0.723518
+    },
+    "gate_status": "passed"
+  },
   "reference_application": {
     "name": "kogwistar-llm-wiki",
     "root_environment_variable": "KOGWISTAR_LLM_WIKI_ROOT",

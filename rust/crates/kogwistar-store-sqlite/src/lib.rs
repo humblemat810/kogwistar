@@ -798,6 +798,7 @@ impl SqliteStore {
                 )
             );
             let now = unix_epoch_seconds();
+            let op = result.reduced.state.state["_rt_node_ops"][&node_id].clone();
             uow.project_lane_message(NewProjectedLaneMessage {
                 message_id,
                 namespace: "workflow".to_owned(),
@@ -820,6 +821,8 @@ impl SqliteStore {
                     "workflow_id": workflow_id,
                     "conversation_id": conversation_id,
                     "node_id": node_id,
+                    "op": op,
+                    "runtime_routes": result.reduced.state.static_routes,
                     "join_mask": result.reduced.state.frontier.pending
                         .iter()
                         .find(|(_, _, token, _)| token == &token_id)
@@ -1119,6 +1122,25 @@ impl SqliteUnitOfWork<'_> {
             conversation_tail,
         )
     }
+    pub fn claim_projected_lane_messages_for_run(
+        &mut self,
+        namespace: &str,
+        inbox_id: &str,
+        run_id: &str,
+        claimed_by: &str,
+        limit: usize,
+        lease_seconds: i64,
+    ) -> SqliteStoreResult<Vec<ProjectedLaneMessage>> {
+        claim_projected_lane_messages_for_run(
+            self.transaction,
+            namespace,
+            inbox_id,
+            run_id,
+            claimed_by,
+            limit,
+            lease_seconds,
+        )
+    }
     pub fn update_projected_lane_message_payload(
         &mut self,
         message_id: &str,
@@ -1394,6 +1416,14 @@ impl SqliteUnitOfWork<'_> {
         projection: NamedProjectionWrite,
     ) -> SqliteStoreResult<()> {
         replace_named_projection(self.transaction, namespace, key, projection)
+    }
+
+    pub fn get_named_projection(
+        &mut self,
+        namespace: &str,
+        key: &str,
+    ) -> SqliteStoreResult<Option<NamedProjection>> {
+        named_projection(self.transaction, namespace, key)
     }
 
     pub fn compare_and_swap_named_projection(
@@ -2430,6 +2460,40 @@ fn claim_projected_lane_messages(
         }
     }
     Ok(out)
+}
+fn claim_projected_lane_messages_for_run(
+    conn: &Connection,
+    namespace: &str,
+    inbox: &str,
+    run_id: &str,
+    owner: &str,
+    limit: usize,
+    lease: i64,
+) -> SqliteStoreResult<Vec<ProjectedLaneMessage>> {
+    if limit == 0 {
+        return Ok(vec![]);
+    }
+    let now = unix_epoch_seconds();
+    let until = now + lease;
+    let mut stmt=conn.prepare("SELECT message_id FROM projected_lane_messages WHERE namespace=?1 AND inbox_id=?2 AND run_id=?3 AND ((status='pending' AND available_at<=?4) OR (status='claimed' AND lease_until IS NOT NULL AND lease_until<?4)) ORDER BY seq ASC,created_at ASC LIMIT ?5")?;
+    let ids = stmt
+        .query_map(
+            params![
+                namespace,
+                inbox,
+                run_id,
+                now,
+                i64::try_from(limit).unwrap_or(i64::MAX)
+            ],
+            |row| row.get::<_, String>(0),
+        )?
+        .collect::<Result<Vec<_>, _>>()?;
+    for id in &ids {
+        conn.execute("UPDATE projected_lane_messages SET status='claimed',claimed_by=?1,lease_until=?2 WHERE message_id=?3",params![owner,until,id])?;
+    }
+    ids.into_iter()
+        .filter_map(|id| projected_lane_message(conn, &id).transpose())
+        .collect()
 }
 fn ack_projected_lane_message(conn: &Connection, id: &str, owner: &str) -> SqliteStoreResult<()> {
     conn.execute("UPDATE projected_lane_messages SET status='completed',claimed_by=NULL,lease_until=NULL WHERE message_id=?1 AND status NOT IN ('completed','failed','cancelled','dead-letter') AND (claimed_by IS NULL OR claimed_by=?2)",params![id,owner])?;
@@ -3536,11 +3600,29 @@ fn apply_claimed_recorded_worker_effect(
     }
     let expected_event_seq = latest_server_run_event_seq(conn, &handoff.run_id)?;
     let step_seq = current.last_step_seq.saturating_add(1);
-    let authoritative_successors = kogwistar_runtime::authoritative_runtime_successors(
-        &current.static_routes,
-        &handoff.step_id,
-        &effect.successors,
-    )?;
+    let authoritative_successors = match effect.status {
+        RuntimeWorkerEffectStatus::Success => {
+            kogwistar_runtime::authoritative_runtime_successors_for_result(
+                &current.static_routes,
+                &handoff.step_id,
+                &effect.successors,
+                &effect.route_next,
+                false,
+            )?
+        }
+        RuntimeWorkerEffectStatus::Suspended => Vec::new(),
+        RuntimeWorkerEffectStatus::Failed => {
+            kogwistar_runtime::authoritative_runtime_successors_for_result(
+                &current.static_routes,
+                &handoff.step_id,
+                &effect.successors,
+                &effect.route_next,
+                true,
+            )?
+        }
+    };
+    let terminal_failure =
+        effect.status == RuntimeWorkerEffectStatus::Failed && authoritative_successors.is_empty();
     let next_frontier = match effect.status {
         RuntimeWorkerEffectStatus::Success => frontier_after_worker_success(
             &current.frontier,
@@ -3558,6 +3640,17 @@ fn apply_claimed_recorded_worker_effect(
             token_id,
             parent_token_id,
         )?,
+        RuntimeWorkerEffectStatus::Failed if terminal_failure => RuntimeFrontier::default(),
+        RuntimeWorkerEffectStatus::Failed => frontier_after_worker_success(
+            &current.frontier,
+            &handoff.step_id,
+            token_id,
+            parent_token_id,
+            step_seq,
+            &kogwistar_runtime::RuntimeWorkerSuccessEffect {
+                successors: authoritative_successors,
+            },
+        )?,
     };
     let transition = RecordedRuntimeTransition {
         contract_version: RECORDED_RUNTIME_CONTRACT_VERSION,
@@ -3569,6 +3662,12 @@ fn apply_claimed_recorded_worker_effect(
             }
             RuntimeWorkerEffectStatus::Suspended => {
                 kogwistar_runtime::RecordedTransitionKind::Suspend
+            }
+            RuntimeWorkerEffectStatus::Failed if terminal_failure => {
+                kogwistar_runtime::RecordedTransitionKind::Fail
+            }
+            RuntimeWorkerEffectStatus::Failed => {
+                kogwistar_runtime::RecordedTransitionKind::RecordedStepSuccess
             }
         },
         run_id: handoff.run_id.clone(),
@@ -4157,6 +4256,123 @@ mod tests {
         .unwrap()
     }
 
+    fn runtime_failure_start(run_id: &str, transition_id: &str) -> RecordedRuntimeTransition {
+        let mut start = runtime_start(run_id, transition_id);
+        start.initial_state.as_mut().unwrap().insert(
+            "_rt_routes".to_owned(),
+            serde_json::json!([{
+                "edge_id": "recover-edge",
+                "source_node_id": "step-1",
+                "target_node_id": "recover",
+                "aliases": ["recover"],
+                "join_mask": 0,
+                "predicate": "on_failure",
+                "multiplicity": "one",
+                "is_default": false,
+                "priority": 100,
+                "source_fanout": false
+            }]),
+        );
+        start
+    }
+
+    fn runtime_worker_lane(run_id: &str, message_id: &str) -> NewProjectedLaneMessage {
+        NewProjectedLaneMessage {
+            message_id: message_id.to_owned(),
+            namespace: "runtime".to_owned(),
+            purpose: "system".to_owned(),
+            inbox_id: "python-workers".to_owned(),
+            conversation_id: "conv-1".to_owned(),
+            recipient_id: "python-worker".to_owned(),
+            sender_id: "rust-runtime".to_owned(),
+            msg_type: "workflow.worker.request.v1".to_owned(),
+            status: "pending".to_owned(),
+            created_at: 1,
+            available_at: 0,
+            run_id: Some(run_id.to_owned()),
+            step_id: Some("step-1".to_owned()),
+            correlation_id: Some(run_id.to_owned()),
+            payload_json: Some(
+                serde_json::json!({
+                    "workflow_id": "wf-1",
+                    "conversation_id": "conv-1",
+                    "token_id": "token-1",
+                    "parent_token_id": null
+                })
+                .to_string(),
+            ),
+            error_json: None,
+        }
+    }
+
+    fn runtime_worker_handoff(
+        run_id: &str,
+        message_id: &str,
+        owner: &str,
+    ) -> RecordedWorkerHandoff {
+        RecordedWorkerHandoff {
+            message_id: message_id.to_owned(),
+            claimed_by: owner.to_owned(),
+            run_id: run_id.to_owned(),
+            step_id: "step-1".to_owned(),
+            correlation_id: run_id.to_owned(),
+        }
+    }
+
+    #[test]
+    fn targeted_lane_claim_does_not_take_earlier_other_run() {
+        let (store, path) = store("targeted-runtime-claim");
+        store
+            .project_lane_message(runtime_worker_lane("run-decoy", "lane-decoy"))
+            .unwrap();
+        store
+            .project_lane_message(runtime_worker_lane("run-target", "lane-target"))
+            .unwrap();
+
+        let claimed = store
+            .immediate_transaction(|uow| {
+                uow.claim_projected_lane_messages_for_run(
+                    "runtime",
+                    "python-workers",
+                    "run-target",
+                    "target-worker",
+                    1,
+                    60,
+                )
+            })
+            .unwrap();
+
+        assert_eq!(claimed.len(), 1);
+        assert_eq!(claimed[0].message_id, "lane-target");
+        assert_eq!(
+            store
+                .get_projected_lane_message("lane-decoy")
+                .unwrap()
+                .unwrap()
+                .status,
+            "pending"
+        );
+        fs::remove_file(path).unwrap();
+    }
+
+    fn runtime_failure_effect(
+        effect_id: &str,
+        route_next: &[&str],
+        successors: Value,
+    ) -> RecordedWorkerSuccessEffect {
+        serde_json::from_value(serde_json::json!({
+            "contract_version": 1,
+            "effect_id": effect_id,
+            "status": "failed",
+            "state_update": [["u", {"attempted": true}]],
+            "successors": successors,
+            "route_next": route_next,
+            "result": {"workflow_status": "failed"},
+            "errors": ["boom"]
+        }))
+        .unwrap()
+    }
+
     #[test]
     fn auth_store_opens_python_schema_and_resolves_identity_atomically() {
         let path = database_path("auth");
@@ -4564,6 +4780,116 @@ mod tests {
                 .unwrap(),
             result.reduced.state
         );
+        drop(store);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn worker_failure_routing_is_atomic_handled_terminal_and_retry_safe() {
+        let (store, path) = store("runtime-worker-failure");
+        let setup = |run_id: &str, message_id: &str, owner: &str| {
+            store
+                .apply_recorded_runtime_transition(
+                    runtime_failure_start(run_id, &format!("start-{run_id}")),
+                    false,
+                )
+                .unwrap();
+            store
+                .project_lane_message(runtime_worker_lane(run_id, message_id))
+                .unwrap();
+            assert_eq!(
+                store
+                    .claim_projected_lane_messages("runtime", "python-workers", owner, 1, 30,)
+                    .unwrap()
+                    .len(),
+                1
+            );
+        };
+
+        setup("handled", "handled-request", "handled-worker");
+        let handled_handoff =
+            runtime_worker_handoff("handled", "handled-request", "handled-worker");
+        let handled_effect =
+            runtime_failure_effect("handled-effect", &["recover"], serde_json::json!([]));
+        let handled = store
+            .apply_claimed_recorded_worker_effect(handled_handoff.clone(), handled_effect.clone())
+            .unwrap();
+        let handled_retry = store
+            .apply_claimed_recorded_worker_effect(handled_handoff, handled_effect)
+            .unwrap();
+        assert!(!handled.idempotent && handled_retry.idempotent);
+        assert_eq!(handled.event_seq, handled_retry.event_seq);
+        assert_eq!(
+            handled.reduced.state.status,
+            kogwistar_runtime::RecordedRunStatus::Running
+        );
+        assert_eq!(handled.reduced.state.frontier.pending[0].0, "recover");
+        assert_eq!(
+            store
+                .get_projected_lane_message("handled-request")
+                .unwrap()
+                .unwrap()
+                .status,
+            "completed"
+        );
+        assert_eq!(
+            store
+                .list_server_run_events("handled", 0, 20)
+                .unwrap()
+                .len(),
+            2
+        );
+
+        setup("unhandled", "unhandled-request", "unhandled-worker");
+        let unhandled = store
+            .apply_claimed_recorded_worker_effect(
+                runtime_worker_handoff("unhandled", "unhandled-request", "unhandled-worker"),
+                runtime_failure_effect("unhandled-effect", &[], serde_json::json!([])),
+            )
+            .unwrap();
+        assert_eq!(
+            unhandled.reduced.state.status,
+            kogwistar_runtime::RecordedRunStatus::Failed
+        );
+        assert!(unhandled.reduced.state.frontier.pending.is_empty());
+        assert_eq!(
+            store.get_server_run("unhandled").unwrap().unwrap().status,
+            "failed"
+        );
+
+        setup("forged", "forged-request", "forged-worker");
+        assert!(matches!(
+            store.apply_claimed_recorded_worker_effect(
+                runtime_worker_handoff("forged", "forged-request", "forged-worker"),
+                runtime_failure_effect(
+                    "forged-effect",
+                    &[],
+                    serde_json::json!([{"node_id": "forged", "join_mask": 0}]),
+                ),
+            ),
+            Err(SqliteStoreError::RecordedRuntime(_))
+        ));
+        assert_eq!(
+            store.list_server_run_events("forged", 0, 20).unwrap().len(),
+            1
+        );
+        assert_eq!(
+            store
+                .get_projected_lane_message("forged-request")
+                .unwrap()
+                .unwrap()
+                .status,
+            "claimed"
+        );
+        assert_eq!(
+            store
+                .read_recorded_runtime_state("forged", "wf-1", "conv-1")
+                .unwrap()
+                .unwrap()
+                .state["answer"],
+            "seed"
+        );
+
         drop(store);
         fs::remove_file(path).unwrap();
     }

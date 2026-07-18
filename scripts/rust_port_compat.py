@@ -6,15 +6,20 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import statistics
 import subprocess
 import sys
 import time
 from typing import Callable, Final
 
+try:
+    from adr015_source_identity import candidate_source_fingerprint
+except ModuleNotFoundError:  # imported as a repository module in unit tests
+    from scripts.adr015_source_identity import candidate_source_fingerprint
+
 
 ROOT: Final = Path(__file__).resolve().parents[1]
 MANIFEST_PATH: Final = ROOT / "contracts" / "rust-port-v1.json"
-_CANDIDATE_SUFFIXES: Final = {".json", ".lock", ".py", ".rs", ".toml"}
 _SERVER_CONFIGURATION: Final = "KOGWISTAR_IMPL_SERVER"
 _IGNORED_TEST_TREE_NAMES: Final = {"__pycache__", ".pytest_cache", "_tmp"}
 _IDENTITY_DIAGNOSTIC_PATH_FIELDS: Final = {
@@ -49,31 +54,8 @@ def _candidate_identity_fingerprint(identity: dict[str, object]) -> str:
 
 
 def _candidate_source_fingerprint() -> str:
-    """Hash executable candidate source, contracts, and built native artifact."""
-    files: set[Path] = {ROOT / "pyproject.toml"}
-    for root in (ROOT / "kogwistar", ROOT / "rust" / "crates", ROOT / "contracts"):
-        files.update(
-            path
-            for path in root.rglob("*")
-            if path.is_file()
-            and path.suffix.lower() in _CANDIDATE_SUFFIXES
-            and "__pycache__" not in path.parts
-        )
-    for path in (ROOT / "rust" / "Cargo.toml", ROOT / "rust" / "Cargo.lock"):
-        if path.is_file():
-            files.add(path)
-    native = ROOT / "kogwistar" / "_rust.pyd"
-    if native.is_file():
-        files.add(native)
-
-    digest = hashlib.sha256()
-    for path in sorted(files):
-        relative = path.relative_to(ROOT).as_posix().encode("utf-8")
-        digest.update(relative)
-        digest.update(b"\0")
-        digest.update(path.read_bytes())
-        digest.update(b"\0")
-    return digest.hexdigest()
+    """Hash executable candidate source and contracts, excluding build outputs."""
+    return candidate_source_fingerprint(ROOT)[0]
 
 
 def _suite_test_files(root: Path) -> list[Path]:
@@ -102,10 +84,18 @@ def _verification_harness_fingerprint(application_root: Path) -> str:
     """Hash suite-selection code/config so resume cannot cross harness changes."""
     files = [
         Path(__file__).resolve(),
+        ROOT / "scripts" / "adr015_candidate_identity.py",
+        ROOT / "scripts" / "adr015_source_identity.py",
+        ROOT / "scripts" / "adr015_container_worker.sh",
+        ROOT / "scripts" / "adr015_native_path.py",
+        ROOT / "scripts" / "adr015_pytest_bootstrap.py",
+        ROOT / ".github" / "workflows" / "ci.yml",
         ROOT / "pytest.ini",
         ROOT / "tests" / "conftest.py",
         application_root / "pytest.ini",
         application_root / "pyproject.toml",
+        application_root / ".env.example",
+        application_root / ".vscode" / "launch.json",
         application_root / "tests" / "conftest.py",
         application_root / "kg-doc-parser" / "pytest.ini",
         application_root / "kg-doc-parser" / "pyproject.toml",
@@ -180,10 +170,7 @@ def _capability_configurations(manifest: dict) -> tuple[str, ...]:
     configurations: list[str] = []
     for ownership in manifest.get("capability_ownership", []):
         configuration = ownership.get("configuration")
-        if (
-            isinstance(configuration, str)
-            and configuration not in configurations
-        ):
+        if isinstance(configuration, str) and configuration not in configurations:
             configurations.append(configuration)
     if not configurations:
         raise ValueError("manifest has no capability ownership configurations")
@@ -232,9 +219,7 @@ def _capability_modes(
     return modes
 
 
-def _active_writers(
-    manifest: dict, capability_modes: dict[str, str]
-) -> dict[str, str]:
+def _active_writers(manifest: dict, capability_modes: dict[str, str]) -> dict[str, str]:
     """Resolve ADR-015's current versus target writer for every capability."""
     writers: dict[str, str] = {}
     for ownership in manifest.get("capability_ownership", []):
@@ -297,39 +282,16 @@ def _identity(
     active_writers: dict[str, str],
     backend: str,
     storage_root: str,
+    commit_provenance: dict[str, str | None] | None = None,
 ) -> dict[str, object]:
-    script = r"""
-import importlib.util
-import importlib.metadata
-import hashlib
-import json
-import pathlib
-import platform
-import sys
-import sysconfig
-import kogwistar
-
-spec = importlib.util.find_spec("kogwistar._rust")
-extension = None if spec is None else __import__("kogwistar._rust", fromlist=["*"])
-packages = sorted(
-    f"{(distribution.metadata.get('Name') or '').lower()}=={distribution.version}"
-    for distribution in importlib.metadata.distributions()
-)
-print(json.dumps({
-    "resolved_package_file": str(pathlib.Path(kogwistar.__file__).resolve()),
-    "package_version": getattr(kogwistar, "__version__", None),
-    "python_version": platform.python_version(),
-    "python_implementation": platform.python_implementation(),
-    "python_abi": sysconfig.get_config_var("SOABI"),
-    "python_executable": sys.executable,
-    "python_environment_sha256": hashlib.sha256("\n".join(packages).encode()).hexdigest(),
-    "rust_extension_file": None if spec is None else spec.origin,
-    "rust_extension_version": None if extension is None else getattr(extension, "__version__", None),
-    "rust_contract_version": None if extension is None else getattr(extension, "CONTRACT_VERSION", None),
-}, sort_keys=True))
-"""
+    expected = (ROOT / "kogwistar" / "__init__.py").resolve()
     result = subprocess.run(
-        [str(python), "-P", "-c", script],
+        [
+            str(python),
+            "-P",
+            str(ROOT / "scripts" / "adr015_candidate_identity.py"),
+            str(expected),
+        ],
         cwd=ROOT,
         env=_environment(application_root, mode, capability_modes),
         check=True,
@@ -338,35 +300,41 @@ print(json.dumps({
     )
     identity = json.loads(result.stdout.strip().splitlines()[-1])
     resolved = Path(str(identity["resolved_package_file"]))
-    expected = (ROOT / "kogwistar" / "__init__.py").resolve()
     if resolved != expected:
         raise SystemExit(
-            "candidate import mismatch: "
-            f"expected {expected}, resolved {resolved}"
+            f"candidate import mismatch: expected {expected}, resolved {resolved}"
         )
 
-    nested = {
+    detected_commits = {
+        "core_commit": _git_commit(ROOT),
         "application_commit": _git_commit(application_root),
         "parser_commit": _git_commit(application_root / "kg-doc-parser"),
         "sink_commit": _git_commit(application_root / "kogwistar-obsidian-sink"),
         "application_core_pin_commit": _git_commit(application_root / "kogwistar"),
     }
+    commits = _resolved_commit_provenance(detected_commits, commit_provenance)
     identity.update(
         {
             "implementation_mode": mode,
             "capability_modes": capability_modes,
             "active_writers": active_writers,
-            "core_commit": _git_commit(ROOT),
             "backend": backend,
             "storage_root": storage_root,
             "candidate_source_sha256": _candidate_source_fingerprint(),
             "verification_harness_sha256": _verification_harness_fingerprint(
                 application_root
             ),
-            **nested,
+            **commits,
         }
     )
     return identity
+
+
+def _resolved_commit_provenance(
+    detected: dict[str, str | None], supplied: dict[str, str | None] | None
+) -> dict[str, str | None]:
+    """Prefer immutable-stage provenance supplied by its host orchestrator."""
+    return {key: (supplied or {}).get(key) or value for key, value in detected.items()}
 
 
 def _layer_paths(manifest: dict, application_root: Path) -> dict[str, Path]:
@@ -390,10 +358,13 @@ def _absolute_path_without_symlink_resolution(path: Path) -> Path:
     return Path(os.path.abspath(os.fspath(path.expanduser())))
 
 
+def _pytest_args(values: list[str]) -> list[str]:
+    """Remove argparse's option terminator before forwarding to pytest."""
+    return values[1:] if values[:1] == ["--"] else values
+
+
 def _marker_expression(layer: str, profile: str) -> str:
-    exclusions = (
-        "not manual and not llm_real and not legacy and not requires_ollama"
-    )
+    exclusions = "not manual and not llm_real and not legacy and not requires_ollama"
     if profile == "feature":
         if layer == "sink":
             # Sink marker debt: retain its deterministic unmarked suite until
@@ -426,19 +397,94 @@ def _marker_expression(layer: str, profile: str) -> str:
     raise ValueError(f"unknown test profile: {profile}")
 
 
+def _target_group_key(tests_path: Path, targets: list[Path]) -> str:
+    """Return a stable, workspace-independent identity for one pytest group."""
+    values: list[str] = []
+    for target in targets:
+        try:
+            values.append(target.relative_to(tests_path).as_posix() or ".")
+        except ValueError:
+            values.append(target.as_posix())
+    return "|".join(values)
+
+
+def _shard_assignments(
+    group_keys: list[str],
+    *,
+    shard_count: int,
+    shard_offset: int = 0,
+    timing_estimates: dict[str, float] | None = None,
+) -> list[int]:
+    """Assign every group once using deterministic longest-processing-time order."""
+    if shard_count < 1:
+        raise ValueError("shard_count must be at least 1")
+    estimates = timing_estimates or {}
+    weighted = [
+        (index, key, max(float(estimates.get(key, 1.0)), 0.0))
+        for index, key in enumerate(group_keys)
+    ]
+    weighted.sort(key=lambda item: (-item[2], item[1], item[0]))
+    loads = [0.0] * shard_count
+    assignments = [0] * len(group_keys)
+    for index, _key, duration in weighted:
+        shard = min(
+            range(shard_count),
+            key=lambda value: (
+                loads[value],
+                (value - shard_offset) % shard_count,
+            ),
+        )
+        assignments[index] = shard
+        loads[shard] += duration
+    return assignments
+
+
+def _timing_history(paths: list[Path]) -> dict[str, dict[str, float]]:
+    """Read median group wall times; timing data never enters candidate identity."""
+    samples: dict[str, dict[str, list[float]]] = {}
+    for path in paths:
+        if not path.is_file():
+            raise SystemExit(f"timing history does not exist: {path}")
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        layers = payload.get("layers", []) if isinstance(payload, dict) else []
+        for layer in layers:
+            if not isinstance(layer, dict) or not isinstance(layer.get("name"), str):
+                continue
+            layer_samples = samples.setdefault(layer["name"], {})
+            for run in layer.get("runs", []):
+                if not isinstance(run, dict):
+                    continue
+                key = run.get("group_key")
+                duration = run.get("duration_seconds")
+                if isinstance(key, str) and isinstance(duration, (int, float)):
+                    layer_samples.setdefault(key, []).append(float(duration))
+    return {
+        layer: {key: statistics.median(values) for key, values in groups.items()}
+        for layer, groups in samples.items()
+    }
+
+
 # Full core coverage mixes embedded Chroma clients, subprocess Chroma servers,
 # testcontainers, MCP/ASGI servers, and context-global auth state.  On Windows,
 # even small cross-file batches can leak native handles or global clients into
 # the next file.  One file per process is the release evidence boundary.
 _FILE_ISOLATED_RELEASE_LAYERS: Final = frozenset({"core", "parser"})
+_ALWAYS_FILE_ISOLATED_LAYERS: Final = frozenset({"parser"})
+_XDIST_SAFE_LAYERS: Final = frozenset({"core"})
 _RELEASE_GROUP_SIZE: Final = 1
+_LAYER_SHARD_OFFSETS: Final = {
+    "core": 0,
+    "parser": 1,
+    "sink": 2,
+    "application": 0,
+}
 
 
-def _target_groups(
-    *, layer: str, tests_path: Path, profile: str
-) -> list[list[Path]]:
+def _target_groups(*, layer: str, tests_path: Path, profile: str) -> list[list[Path]]:
     """Return deterministic pytest process boundaries for one suite layer."""
-    if layer in _FILE_ISOLATED_RELEASE_LAYERS and profile == "milestone":
+    if layer in _ALWAYS_FILE_ISOLATED_LAYERS or (
+        layer in _FILE_ISOLATED_RELEASE_LAYERS and profile == "milestone"
+    ):
         tests = sorted(
             (path for path in tests_path.rglob("test*.py") if path.is_file()),
             key=lambda path: path.relative_to(tests_path).as_posix(),
@@ -470,10 +516,15 @@ def _command_succeeded(*, layer: str, profile: str, returncode: int) -> bool:
     # File-isolated release commands legitimately return pytest code 5
     # when every item in that file is outside ci/ci_full. Coverage is proven by
     # `_target_groups`; the raw code remains in the report for auditability.
-    return returncode == 0 or (profile == "regression" and returncode == 5) or (
-        layer in _FILE_ISOLATED_RELEASE_LAYERS
-        and profile == "milestone"
-        and returncode == 5
+    return (
+        returncode == 0
+        or (profile == "regression" and returncode == 5)
+        or (layer in _ALWAYS_FILE_ISOLATED_LAYERS and returncode == 5)
+        or (
+            layer in _FILE_ISOLATED_RELEASE_LAYERS
+            and profile == "milestone"
+            and returncode == 5
+        )
     )
 
 
@@ -509,35 +560,62 @@ def _run_layer(
     extra_pytest_args: list[str],
     dry_run: bool,
     identity_fingerprint: str,
+    shard_index: int = 0,
+    shard_count: int = 1,
+    pytest_workers: int = 0,
+    timing_estimates: dict[str, float] | None = None,
     prior_runs: list[dict[str, object]] | None = None,
     progress: Callable[[dict[str, object]], None] | None = None,
 ) -> dict[str, object]:
     expression = _marker_expression(layer, profile)
-    bootstrap = (
-        "import pathlib, pytest, kogwistar; "
-        f"expected=pathlib.Path({str((ROOT / 'kogwistar' / '__init__.py').resolve())!r}); "
-        "resolved=pathlib.Path(kogwistar.__file__).resolve(); "
-        "assert resolved == expected, "
-        "f'candidate import mismatch before pytest: expected {expected}, resolved {resolved}'; "
-        "raise SystemExit(pytest.console_main())"
-    )
-    target_groups = _target_groups(
-        layer=layer, tests_path=tests_path, profile=profile
-    )
+    bootstrap = ROOT / "scripts" / "adr015_pytest_bootstrap.py"
+    expected_package = (ROOT / "kogwistar" / "__init__.py").resolve()
+    target_groups = _target_groups(layer=layer, tests_path=tests_path, profile=profile)
 
-    commands = [
+    group_keys = [_target_group_key(tests_path, targets) for targets in target_groups]
+    assignments = _shard_assignments(
+        group_keys,
+        shard_count=shard_count,
+        shard_offset=_LAYER_SHARD_OFFSETS[layer] % shard_count,
+        timing_estimates=timing_estimates,
+    )
+    selected_indexes = [
+        index for index, shard in enumerate(assignments) if shard == shard_index
+    ]
+    effective_pytest_workers = (
+        pytest_workers if layer in _XDIST_SAFE_LAYERS and profile != "milestone" else 0
+    )
+    xdist_args = (
+        ["-n", str(pytest_workers), "--dist", "loadfile", "--max-worker-restart", "0"]
+        if effective_pytest_workers > 0
+        else []
+    )
+    all_commands = [
         [
             str(python),
             "-P",
-            "-c",
-            bootstrap,
+            str(bootstrap),
+            str(expected_package),
+            "--",
             *(str(target) for target in targets),
             "-m",
             expression,
             "-q",
+            *xdist_args,
             *extra_pytest_args,
         ]
         for targets in target_groups
+    ]
+    commands = [all_commands[index] for index in selected_indexes]
+    selected_metadata = [
+        {
+            "group_index": index,
+            "group_key": group_keys[index],
+            "estimated_duration_seconds": float(
+                (timing_estimates or {}).get(group_keys[index], 1.0)
+            ),
+        }
+        for index in selected_indexes
     ]
     record: dict[str, object] = {
         "name": layer,
@@ -547,6 +625,13 @@ def _run_layer(
         "marker_expression": expression,
         "test_profile": profile,
         "commands": commands,
+        "target_group_count": len(target_groups),
+        "selected_group_indexes": selected_indexes,
+        "group_assignments": assignments,
+        "shard_index": shard_index,
+        "shard_count": shard_count,
+        "pytest_workers": effective_pytest_workers,
+        "requested_pytest_workers": pytest_workers,
         "candidate_identity_sha256": identity_fingerprint,
         "capability_modes": capability_modes,
         "active_writers": active_writers,
@@ -566,7 +651,7 @@ def _run_layer(
     started = time.perf_counter()
     runs: list[dict[str, object]] = []
     returncode = 0
-    for command in commands:
+    for command, metadata in zip(commands, selected_metadata, strict=True):
         reusable = _reusable_run(
             command=command,
             prior_runs=prior_runs or [],
@@ -574,7 +659,7 @@ def _run_layer(
             profile=profile,
         )
         if reusable is not None:
-            runs.append(reusable)
+            runs.append({**reusable, **metadata})
             record["runs"] = runs
             if progress is not None:
                 progress(record)
@@ -592,6 +677,7 @@ def _run_layer(
                 "command": command,
                 "returncode": result.returncode,
                 "duration_seconds": round(time.perf_counter() - run_started, 6),
+                **metadata,
             }
         )
         record["runs"] = runs
@@ -647,6 +733,17 @@ def _parse_args(manifest: dict | None = None) -> argparse.Namespace:
         )
     parser.add_argument("--backend", default="unspecified")
     parser.add_argument("--storage-root", default="unspecified")
+    for name in (
+        "core",
+        "application",
+        "parser",
+        "sink",
+        "application-core-pin",
+    ):
+        parser.add_argument(
+            f"--{name}-commit",
+            help="Commit provenance supplied by an outer immutable-stage harness.",
+        )
     parser.add_argument(
         "--profile",
         choices=("feature", "regression", "milestone"),
@@ -666,6 +763,31 @@ def _parse_args(manifest: dict | None = None) -> argparse.Namespace:
         action="store_true",
         help="Reuse passed layers from --report when candidate identity is unchanged.",
     )
+    parser.add_argument(
+        "--shard-count",
+        type=int,
+        default=1,
+        help="Deterministically divide each layer's existing process groups.",
+    )
+    parser.add_argument(
+        "--shard-index",
+        type=int,
+        default=0,
+        help="Zero-based shard to execute.",
+    )
+    parser.add_argument(
+        "--pytest-workers",
+        type=int,
+        default=0,
+        help="pytest-xdist workers inside each selected pytest process; 0 disables.",
+    )
+    parser.add_argument(
+        "--timing-history",
+        action="append",
+        type=Path,
+        default=[],
+        help="Prior report used only for median LPT shard balancing; repeatable.",
+    )
     parser.add_argument("--report")
     parser.add_argument("pytest_args", nargs=argparse.REMAINDER)
     return parser.parse_args()
@@ -675,8 +797,15 @@ def main() -> int:
     manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
     args = _parse_args(manifest)
     profile = "milestone" if args.release else args.profile
+    pytest_args = _pytest_args(args.pytest_args)
     if args.release and args.profile != "feature":
         raise SystemExit("--release cannot be combined with an explicit --profile")
+    if args.shard_count < 1:
+        raise SystemExit("--shard-count must be at least 1")
+    if not 0 <= args.shard_index < args.shard_count:
+        raise SystemExit("--shard-index must be in [0, --shard-count)")
+    if args.pytest_workers < 0:
+        raise SystemExit("--pytest-workers cannot be negative")
     application_root = _resolve_application_root(args.application_root, manifest)
     python = _absolute_path_without_symlink_resolution(Path(args.python))
     if not python.is_file():
@@ -687,7 +816,9 @@ def main() -> int:
         else _default_consumer_python(application_root, python)
     )
     if not consumer_python.is_file():
-        raise SystemExit(f"consumer python interpreter does not exist: {consumer_python}")
+        raise SystemExit(
+            f"consumer python interpreter does not exist: {consumer_python}"
+        )
 
     report_path = Path(args.report).expanduser().resolve() if args.report else None
     started_at = _utc_now()
@@ -708,6 +839,13 @@ def main() -> int:
         active_writers=active_writers,
         backend=args.backend,
         storage_root=args.storage_root,
+        commit_provenance={
+            "core_commit": args.core_commit,
+            "application_commit": args.application_commit,
+            "parser_commit": args.parser_commit,
+            "sink_commit": args.sink_commit,
+            "application_core_pin_commit": args.application_core_pin_commit,
+        },
     )
     consumer_identity = _identity(
         python=consumer_python,
@@ -717,6 +855,13 @@ def main() -> int:
         active_writers=active_writers,
         backend=args.backend,
         storage_root=args.storage_root,
+        commit_provenance={
+            "core_commit": args.core_commit,
+            "application_commit": args.application_commit,
+            "parser_commit": args.parser_commit,
+            "sink_commit": args.sink_commit,
+            "application_core_pin_commit": args.application_core_pin_commit,
+        },
     )
     identity["layer_interpreters"] = {
         "core": str(python),
@@ -746,15 +891,19 @@ def main() -> int:
     identity["test_profile"] = profile
     fingerprint = _candidate_identity_fingerprint(identity)
     identity["identity_sha256"] = fingerprint
+    timing_history = _timing_history(
+        [path.expanduser().resolve() for path in args.timing_history]
+    )
     print(json.dumps(identity, indent=2, sort_keys=True), flush=True)
 
     report: dict[str, object]
     if args.resume and report_path is not None and report_path.is_file():
         report = json.loads(report_path.read_text(encoding="utf-8"))
         prior_candidate = report.get("candidate")
-        if not isinstance(prior_candidate, dict) or prior_candidate.get(
-            "identity_sha256"
-        ) != fingerprint:
+        if (
+            not isinstance(prior_candidate, dict)
+            or prior_candidate.get("identity_sha256") != fingerprint
+        ):
             raise SystemExit("cannot resume: report candidate identity has changed")
         prior_layers = report.get("layers")
         if not isinstance(prior_layers, list):
@@ -777,12 +926,16 @@ def main() -> int:
             "status": "running",
             "layers": [],
         }
+    report["execution"] = {
+        "shard_index": args.shard_index,
+        "shard_count": args.shard_count,
+        "pytest_workers": args.pytest_workers,
+        "timing_history": [str(path) for path in args.timing_history],
+    }
     _write_report(report_path, report)
 
     if args.identity_only:
-        report.update(
-            {"status": "identity-only", "finished_at_utc": _utc_now()}
-        )
+        report.update({"status": "identity-only", "finished_at_utc": _utc_now()})
         _write_report(report_path, report)
         return 0
 
@@ -805,6 +958,10 @@ def main() -> int:
                 and item.get("name") == layer
                 and item.get("status") == "passed"
                 and item.get("candidate_identity_sha256") == fingerprint
+                and item.get("shard_index") == args.shard_index
+                and item.get("shard_count") == args.shard_count
+                and item.get("requested_pytest_workers", item.get("pytest_workers"))
+                == args.pytest_workers
             ),
             None,
         )
@@ -849,9 +1006,13 @@ def main() -> int:
             tests_path=tests_path,
             cwd=layer_cwds[layer],
             profile=profile,
-            extra_pytest_args=args.pytest_args,
+            extra_pytest_args=pytest_args,
             dry_run=args.dry_run,
             identity_fingerprint=fingerprint,
+            shard_index=args.shard_index,
+            shard_count=args.shard_count,
+            pytest_workers=args.pytest_workers,
+            timing_estimates=timing_history.get(layer, {}),
             prior_runs=(
                 prior_record.get("runs", [])
                 if args.resume and isinstance(prior_record, dict)

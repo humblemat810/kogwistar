@@ -13,6 +13,8 @@ MANIFEST = json.loads(
     (ROOT / "contracts" / "rust-port-v1.json").read_text(encoding="utf-8")
 )
 
+pytestmark = pytest.mark.regression
+
 
 def _runner():
     spec = importlib.util.spec_from_file_location("rust_port_compat", SCRIPT)
@@ -99,7 +101,9 @@ def test_missing_cutover_readiness_is_fail_closed() -> None:
         overrides={key: None for key in runner._capability_configurations(manifest)},
     )
 
-    assert runner._active_writers(manifest, modes)["deterministic-contracts"] == "python"
+    assert (
+        runner._active_writers(manifest, modes)["deterministic-contracts"] == "python"
+    )
 
 
 def test_environment_exports_global_and_coarse_capability_modes(tmp_path: Path) -> None:
@@ -173,12 +177,12 @@ def test_candidate_identity_ignores_job_local_paths_but_keeps_runtime_abi() -> N
     }
     changed_abi = {**moved, "python_abi": "cpython-312-x86_64-linux-gnu"}
 
-    assert runner._candidate_identity_fingerprint(base) == runner._candidate_identity_fingerprint(
-        moved
-    )
-    assert runner._candidate_identity_fingerprint(base) != runner._candidate_identity_fingerprint(
-        changed_abi
-    )
+    assert runner._candidate_identity_fingerprint(
+        base
+    ) == runner._candidate_identity_fingerprint(moved)
+    assert runner._candidate_identity_fingerprint(
+        base
+    ) != runner._candidate_identity_fingerprint(changed_abi)
 
 
 def test_verification_harness_fingerprint_changes_with_runner_or_config(
@@ -200,6 +204,18 @@ def test_verification_harness_fingerprint_changes_with_runner_or_config(
     assert first != second
 
 
+def test_outer_harness_commit_provenance_overrides_missing_stage_git() -> None:
+    runner = _runner()
+
+    assert runner._resolved_commit_provenance(
+        {"core_commit": None, "application_commit": "detected"},
+        {"core_commit": "a" * 40, "application_commit": None},
+    ) == {
+        "core_commit": "a" * 40,
+        "application_commit": "detected",
+    }
+
+
 def test_suite_test_files_skips_generated_test_trees(tmp_path: Path) -> None:
     runner = _runner()
     kept = tmp_path / "tests" / "unit" / "test_kept.py"
@@ -218,9 +234,17 @@ def test_absolute_python_path_preserves_symlink_text(
     runner = _runner()
     monkeypatch.chdir(tmp_path)
 
-    assert runner._absolute_path_without_symlink_resolution(
-        Path("venv/bin/python")
-    ) == tmp_path / "venv" / "bin" / "python"
+    assert (
+        runner._absolute_path_without_symlink_resolution(Path("venv/bin/python"))
+        == tmp_path / "venv" / "bin" / "python"
+    )
+
+
+def test_pytest_option_terminator_is_not_forwarded() -> None:
+    runner = _runner()
+
+    assert runner._pytest_args(["--", "-k", "focused"]) == ["-k", "focused"]
+    assert runner._pytest_args(["-k", "focused"]) == ["-k", "focused"]
 
 
 @pytest.mark.parametrize("layer", ["core", "parser", "application"])
@@ -281,8 +305,12 @@ def test_release_core_groups_cover_every_test_file_once_and_are_bounded(
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("", encoding="utf-8")
 
-    first = runner._target_groups(layer="core", tests_path=tmp_path, profile="milestone")
-    second = runner._target_groups(layer="core", tests_path=tmp_path, profile="milestone")
+    first = runner._target_groups(
+        layer="core", tests_path=tmp_path, profile="milestone"
+    )
+    second = runner._target_groups(
+        layer="core", tests_path=tmp_path, profile="milestone"
+    )
     flattened = [path for group in first for path in group]
     expected = sorted(
         tmp_path.rglob("test*.py"),
@@ -306,13 +334,15 @@ def test_release_parser_groups_cover_every_test_file_once(tmp_path: Path) -> Non
     for path in expected:
         path.write_text("", encoding="utf-8")
 
-    groups = runner._target_groups(layer="parser", tests_path=tmp_path, profile="milestone")
+    groups = runner._target_groups(
+        layer="parser", tests_path=tmp_path, profile="milestone"
+    )
 
     assert [path for group in groups for path in group] == expected
     assert all(len(group) == 1 for group in groups)
     assert runner._target_groups(
         layer="parser", tests_path=tmp_path, profile="feature"
-    ) == [[tmp_path]]
+    ) == [[expected[0]], [expected[1]]]
 
 
 def test_release_core_groups_split_at_bound_and_normal_core_stays_one_group(
@@ -342,6 +372,7 @@ def test_release_core_groups_split_at_bound_and_normal_core_stays_one_group(
         ("core", "milestone", 1, False),
         ("core", "feature", 5, False),
         ("parser", "milestone", 5, True),
+        ("parser", "feature", 5, True),
         ("parser", "milestone", 1, False),
         ("application", "regression", 5, True),
     ],
@@ -351,9 +382,10 @@ def test_no_selected_tests_is_success_only_for_file_isolated_release_layers(
 ) -> None:
     runner = _runner()
 
-    assert runner._command_succeeded(
-        layer=layer, profile=profile, returncode=returncode
-    ) is expected
+    assert (
+        runner._command_succeeded(layer=layer, profile=profile, returncode=returncode)
+        is expected
+    )
 
 
 def test_release_core_resume_reuses_only_matching_successful_commands() -> None:
@@ -388,9 +420,200 @@ def test_release_core_resume_accepts_recorded_code_five_only_in_release() -> Non
     command = ["python", "unmarked.py"]
     prior = [{"command": command, "returncode": 5, "duration_seconds": 0.1}]
 
-    assert runner._reusable_run(
-        command=command, prior_runs=prior, layer="core", profile="milestone"
-    ) is not None
-    assert runner._reusable_run(
-        command=command, prior_runs=prior, layer="core", profile="feature"
-    ) is None
+    assert (
+        runner._reusable_run(
+            command=command, prior_runs=prior, layer="core", profile="milestone"
+        )
+        is not None
+    )
+    assert (
+        runner._reusable_run(
+            command=command, prior_runs=prior, layer="core", profile="feature"
+        )
+        is None
+    )
+
+
+def test_shard_assignments_are_stable_balanced_and_complete() -> None:
+    runner = _runner()
+    keys = ["slow.py", "medium.py", "fast-a.py", "fast-b.py"]
+    timings = {"slow.py": 8.0, "medium.py": 4.0, "fast-a.py": 2.0, "fast-b.py": 2.0}
+
+    first = runner._shard_assignments(keys, shard_count=2, timing_estimates=timings)
+    second = runner._shard_assignments(keys, shard_count=2, timing_estimates=timings)
+
+    assert first == second == [0, 1, 1, 1]
+    assert sorted(
+        index
+        for shard in range(2)
+        for index, value in enumerate(first)
+        if value == shard
+    ) == list(range(len(keys)))
+
+    rotated = runner._shard_assignments(["one.py"], shard_count=3, shard_offset=2)
+    assert rotated == [2]
+
+
+def test_target_group_keys_do_not_depend_on_workspace_root(tmp_path: Path) -> None:
+    runner = _runner()
+    tests = tmp_path / "tests"
+    targets = [tests / "unit" / "test_a.py", tests / "unit" / "test_b.py"]
+
+    assert runner._target_group_key(tests, targets) == "unit/test_a.py|unit/test_b.py"
+
+
+def test_timing_history_uses_median_group_duration(tmp_path: Path) -> None:
+    runner = _runner()
+    reports = []
+    for index, duration in enumerate((1.0, 9.0, 3.0)):
+        path = tmp_path / f"report-{index}.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "layers": [
+                        {
+                            "name": "core",
+                            "runs": [
+                                {
+                                    "group_key": "unit/test_a.py",
+                                    "duration_seconds": duration,
+                                }
+                            ],
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        reports.append(path)
+
+    assert runner._timing_history(reports) == {"core": {"unit/test_a.py": 3.0}}
+
+
+def test_run_layer_shards_existing_boundaries_and_enables_xdist(
+    tmp_path: Path,
+) -> None:
+    runner = _runner()
+    for name in ("test_a.py", "test_b.py", "test_c.py"):
+        (tmp_path / name).write_text("", encoding="utf-8")
+
+    record = runner._run_layer(
+        python=Path(__import__("sys").executable),
+        application_root=ROOT,
+        mode="python",
+        capability_modes={},
+        active_writers={},
+        layer="core",
+        tests_path=tmp_path,
+        cwd=ROOT,
+        profile="feature",
+        extra_pytest_args=[],
+        dry_run=True,
+        identity_fingerprint="candidate",
+        shard_index=1,
+        shard_count=2,
+        pytest_workers=2,
+    )
+
+    assert record["selected_group_indexes"] == []
+    assert record["target_group_count"] == 1
+    assert len(record["commands"]) == 0
+    record = runner._run_layer(
+        python=Path(__import__("sys").executable),
+        application_root=ROOT,
+        mode="python",
+        capability_modes={},
+        active_writers={},
+        layer="core",
+        tests_path=tmp_path,
+        cwd=ROOT,
+        profile="feature",
+        extra_pytest_args=[],
+        dry_run=True,
+        identity_fingerprint="candidate",
+        shard_index=0,
+        shard_count=2,
+        pytest_workers=2,
+    )
+    assert len(record["commands"]) == 1
+    command = record["commands"][0]
+    assert command[command.index("-n") + 1] == "2"
+    assert "--dist" in command
+    bootstrap = Path(command[2])
+    assert bootstrap.name == "adr015_pytest_bootstrap.py"
+    source = bootstrap.read_text(encoding="utf-8")
+    assert "pytest.main(args)" in source
+    assert "console_main" not in source
+
+
+def test_parser_is_file_isolated_and_xdist_is_disabled(tmp_path: Path) -> None:
+    runner = _runner()
+    for name in ("test_a.py", "test_b.py"):
+        (tmp_path / name).write_text("", encoding="utf-8")
+
+    record = runner._run_layer(
+        python=Path(__import__("sys").executable),
+        application_root=ROOT,
+        mode="python",
+        capability_modes={},
+        active_writers={},
+        layer="parser",
+        tests_path=tmp_path,
+        cwd=ROOT,
+        profile="feature",
+        extra_pytest_args=[],
+        dry_run=True,
+        identity_fingerprint="candidate",
+        shard_index=0,
+        shard_count=1,
+        pytest_workers=2,
+    )
+
+    assert record["target_group_count"] == 2
+    assert record["pytest_workers"] == 0
+    assert record["requested_pytest_workers"] == 2
+    assert all("-n" not in command for command in record["commands"])
+
+
+def test_tiny_suite_serial_and_xdist_cover_same_tests(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = _runner()
+    tests_path = tmp_path / "tests"
+    tests_path.mkdir()
+    for name in ("a", "b", "c"):
+        (tests_path / f"test_{name}.py").write_text(
+            "import os, pathlib, pytest\n"
+            "@pytest.mark.ci\n"
+            f"def test_{name}():\n"
+            f"    pathlib.Path(os.environ['ADR015_TINY_OUT']).joinpath('{name}').touch()\n",
+            encoding="utf-8",
+        )
+
+    def run(workers: int, output: Path) -> dict[str, object]:
+        output.mkdir()
+        monkeypatch.setenv("ADR015_TINY_OUT", str(output))
+        return runner._run_layer(
+            python=Path(__import__("sys").executable),
+            application_root=ROOT,
+            mode="python",
+            capability_modes={},
+            active_writers={},
+            layer="core",
+            tests_path=tests_path,
+            cwd=ROOT,
+            profile="feature",
+            extra_pytest_args=[],
+            dry_run=False,
+            identity_fingerprint="candidate",
+            pytest_workers=workers,
+        )
+
+    serial_output = tmp_path / "serial"
+    parallel_output = tmp_path / "parallel"
+    serial = run(0, serial_output)
+    parallel = run(2, parallel_output)
+
+    assert serial["status"] == parallel["status"] == "passed"
+    assert {path.name for path in serial_output.iterdir()} == {"a", "b", "c"}
+    assert {path.name for path in parallel_output.iterdir()} == {"a", "b", "c"}

@@ -11,8 +11,12 @@ import pytest
 from kogwistar.runtime.rust_worker import (
     AmbiguousWorkerExecution,
     RustRuntimeWorker,
+    RustStepResolverAdapter,
+    RustWorkerError,
     WorkerResultJournal,
 )
+from kogwistar.runtime.models import RunFailure, RunSuccess, RunSuspended
+from kogwistar.runtime.resolvers import MappingStepResolver
 
 
 pytestmark = [pytest.mark.ci, pytest.mark.runtime]
@@ -29,6 +33,7 @@ def _work(*, owner: str = "worker-1") -> dict[str, Any]:
         "payload": {
             "workflow_id": "wf-1",
             "conversation_id": "conv-1",
+            "op": "start",
             "step_seq": 0,
             "token_id": "run-1",
             "parent_token_id": None,
@@ -43,6 +48,217 @@ def _effect() -> dict[str, Any]:
         "successors": [],
         "result": {"answer": "worker"},
     }
+
+
+def _adapter_work(
+    *,
+    state: dict[str, Any] | None = None,
+    routes: list[dict[str, Any]] | None = None,
+    op: str = "start",
+) -> dict[str, Any]:
+    work = _work()
+    work["payload"].update(
+        {
+            "node_id": "start",
+            "turn_node_id": "turn-1",
+            "state": dict(state or {"seed": 1}),
+            "runtime_routes": list(routes or []),
+            "op": op,
+        }
+    )
+    return work
+
+
+def _route(
+    target: str,
+    *,
+    predicate: str | None = None,
+    aliases: list[str] | None = None,
+    is_default: bool = False,
+    source_fanout: bool = False,
+    join_mask: int = 0,
+) -> dict[str, Any]:
+    return {
+        "edge_id": f"start->{target}",
+        "source_node_id": "start",
+        "target_node_id": target,
+        "aliases": list(aliases or [target]),
+        "predicate": predicate,
+        "priority": 100,
+        "is_default": is_default,
+        "multiplicity": "one",
+        "source_fanout": source_fanout,
+        "join_mask": join_mask,
+    }
+
+
+def test_step_resolver_adapter_maps_context_mutation_update_and_explicit_route() -> None:
+    resolver = MappingStepResolver()
+
+    @resolver.register("start")
+    def execute(ctx):
+        assert (ctx.run_id, ctx.workflow_id, ctx.workflow_node_id, ctx.op) == (
+            "run-1",
+            "wf-1",
+            "start",
+            "start",
+        )
+        assert ctx.turn_node_id == "turn-1"
+        assert ctx.state_view["_deps"]["injected"] == 7
+        with ctx.state_write as state:
+            state["direct"] = "kept"
+        return RunSuccess(
+            conversation_node_id=None,
+            state_update=[("a", {"items": "result"})],
+            _route_next=["go"],
+        )
+
+    effect = RustStepResolverAdapter(
+        resolver,
+        dependency_provider=lambda _work: {"injected": 7},
+    )(
+        _adapter_work(
+            state={"seed": 1, "items": []},
+            routes=[_route("next", aliases=["go", "next"])],
+        )
+    )
+
+    assert effect["status"] == "success"
+    assert effect["state_update"] == [
+        ["u", {"direct": "kept"}],
+        ["a", {"items": "result"}],
+    ]
+    assert effect["successors"] == [{"node_id": "next", "join_mask": 0}]
+    assert effect["route_next"] == ["go"]
+    assert effect["result"] == {
+        "workflow_status": "succeeded",
+        "final_state": {"seed": 1, "items": ["result"], "direct": "kept"},
+    }
+
+
+def test_step_resolver_adapter_maps_suspend() -> None:
+    resolver = MappingStepResolver()
+
+    @resolver.register("start")
+    def execute(_ctx):
+        return RunSuspended(
+            conversation_node_id=None,
+            state_update=[("u", {"parked": True})],
+            wait_reason="approval",
+            resume_payload={"request_id": "r1"},
+        )
+
+    effect = RustStepResolverAdapter(resolver)(_adapter_work())
+    assert effect["status"] == "suspended"
+    assert effect["successors"] == []
+    assert effect["wait_reason"] == "approval"
+    assert effect["resume_payload"] == {"request_id": "r1"}
+    assert effect["result"]["workflow_status"] == "suspended"
+
+
+@pytest.mark.parametrize("handled", [False, True], ids=["unhandled", "handled"])
+def test_step_resolver_adapter_maps_failure_routing(handled: bool) -> None:
+    resolver = MappingStepResolver()
+
+    @resolver.register("start")
+    def execute(_ctx):
+        return RunFailure(
+            conversation_node_id=None,
+            state_update=[("u", {"attempted": True})],
+            errors=["boom"],
+        )
+
+    route = _route("recover", predicate="on_failure", join_mask=4)
+    adapter = RustStepResolverAdapter(
+        resolver,
+        predicate_registry={"on_failure": lambda _edge, _state, _result: handled},
+    )
+    effect = adapter(_adapter_work(routes=[route]))
+    assert effect["status"] == "failed"
+    assert effect["errors"] == ["boom"]
+    assert effect["result"]["workflow_status"] == "failed"
+    assert effect["successors"] == (
+        [{"node_id": "recover", "join_mask": 4}] if handled else []
+    )
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (lambda state: state.pop("seed"), "direct resolver state deletion"),
+        (lambda state: state.__setitem__("_rt_join", {"pending": []}), "scheduler state key"),
+    ],
+)
+def test_step_resolver_adapter_rejects_state_semantic_drift(mutate, message: str) -> None:
+    resolver = MappingStepResolver()
+
+    @resolver.register("start")
+    def execute(ctx):
+        with ctx.state_write as state:
+            mutate(state)
+        return RunSuccess(conversation_node_id=None, state_update=[])
+
+    with pytest.raises(RustWorkerError, match=message):
+        RustStepResolverAdapter(resolver)(
+            _adapter_work(state={"seed": 1, "_rt_join": {"pending": ["original"]}})
+        )
+
+
+@pytest.mark.parametrize("key", ["_deps", "dream_deps", "_rt_join"])
+def test_step_resolver_adapter_rejects_result_runtime_plumbing(key: str) -> None:
+    resolver = MappingStepResolver()
+
+    @resolver.register("start")
+    def execute(_ctx):
+        return RunSuccess(
+            conversation_node_id=None,
+            state_update=[("u", {key: {"must": "not persist"}})],
+        )
+
+    with pytest.raises(RustWorkerError, match="runtime plumbing keys"):
+        RustStepResolverAdapter(resolver)(_adapter_work())
+
+
+def test_step_resolver_adapter_rejects_unrepresented_callbacks() -> None:
+    resolver = MappingStepResolver()
+
+    @resolver.register("nested", is_nested=True)
+    def nested(_ctx):
+        pytest.fail("nested callback must not execute")
+
+    with pytest.raises(RustWorkerError, match="nested workflow"):
+        RustStepResolverAdapter(resolver)(_adapter_work(op="nested"))
+
+    @resolver.register("publish")
+    def publish(ctx):
+        ctx.publish({"type": "not-durable"})
+        return RunSuccess(conversation_node_id=None, state_update=[])
+
+    with pytest.raises(RustWorkerError, match="ctx.publish"):
+        RustStepResolverAdapter(resolver)(_adapter_work(op="publish"))
+
+    @resolver.register("lane")
+    def lane(ctx):
+        ctx.send_lane_message(msg_type="unsupported")
+        return RunSuccess(conversation_node_id=None, state_update=[])
+
+    with pytest.raises(RustWorkerError, match="ctx.send_lane_message"):
+        RustStepResolverAdapter(resolver)(_adapter_work(op="lane"))
+
+
+def test_step_resolver_adapter_rejects_missing_op_and_predicate() -> None:
+    resolver = MappingStepResolver()
+    with pytest.raises(RustWorkerError, match="cannot resolve frozen op 'missing'"):
+        RustStepResolverAdapter(resolver)(_adapter_work(op="missing"))
+
+    @resolver.register("start")
+    def execute(_ctx):
+        return RunSuccess(conversation_node_id=None, state_update=[])
+
+    with pytest.raises(RustWorkerError, match="unregistered predicates"):
+        RustStepResolverAdapter(resolver)(
+            _adapter_work(routes=[_route("next", predicate="unknown")])
+        )
 
 
 def test_worker_journals_callback_before_send_and_replays_after_restart(
@@ -132,11 +348,16 @@ def test_worker_claim_and_scheduler_identity_are_validated(tmp_path: Path) -> No
         execute=lambda _item: _effect(),
         client=httpx.Client(transport=httpx.MockTransport(handler), base_url="http://rust"),
     ) as worker:
-        assert worker.poll_once(lease_seconds=45) == 1
+        assert worker.poll_once(lease_seconds=45, run_id="run-1") == 1
 
     assert requests[0] == (
         "/internal/runtime/claim",
-        {"claimed_by": "worker-1", "limit": 1, "lease_seconds": 45},
+        {
+            "claimed_by": "worker-1",
+            "limit": 1,
+            "lease_seconds": 45,
+            "run_id": "run-1",
+        },
     )
     assert requests[1][0] == "/internal/runtime/results"
     assert requests[1][1]["effect"]["successors"] == []
@@ -152,6 +373,24 @@ def test_worker_claim_and_scheduler_identity_are_validated(tmp_path: Path) -> No
     ) as worker:
         with pytest.raises(Exception, match=r"may not override scheduler fields: \['run_id'\]"):
             worker.process(_work())
+
+
+def test_worker_rejects_claim_without_frozen_workflow_op(tmp_path: Path) -> None:
+    work = _work()
+    work["payload"].pop("op")
+    worker = RustRuntimeWorker(
+        base_url="http://test",
+        worker_id="worker-1",
+        journal_path=tmp_path / "journal.sqlite",
+        execute=lambda _work: _effect(),
+        client=httpx.Client(
+            transport=httpx.MockTransport(
+                lambda _request: pytest.fail("no request expected")
+            )
+        ),
+    )
+    with worker, pytest.raises(RustWorkerError, match="lacks frozen workflow op"):
+        worker.process(work)
 
 
 def test_out_of_order_result_retries_without_reexecuting_callback(tmp_path: Path) -> None:

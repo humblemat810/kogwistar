@@ -134,6 +134,22 @@ class RustEnginePostgresMetaStore(RustEngineSQLite):
     def patch_graph_projection_metadata(self, **values: Any) -> bool:
         return bool(self._call("patch_graph_projection_metadata", **values))
 
+    def graph_projection_records(self, **values: Any) -> list[dict[str, Any]]:
+        result = self._call("graph_projection_records", **values)
+        if not isinstance(result, list) or not all(
+            isinstance(record, dict) for record in result
+        ):
+            raise RuntimeError("native graph projection read returned invalid records")
+        return [dict(record) for record in result]
+
+    def graph_projection_vector_query(self, **values: Any) -> list[dict[str, Any]]:
+        result = self._call("graph_projection_vector_query", **values)
+        if not isinstance(result, list) or not all(
+            isinstance(match, dict) for match in result
+        ):
+            raise RuntimeError("native graph vector query returned invalid matches")
+        return [dict(match) for match in result]
+
     def ensure_initialized(self) -> None:
         self.session.ensure_initialized()
 

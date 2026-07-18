@@ -1,10 +1,111 @@
 # ADR-015 implementation status
 
-Updated: 2026-07-17
+Updated: 2026-07-19
 
 ADR-015 is not complete as a production migration. Local implementation and
 compatibility work is substantially complete, but authoritative ownership and
 production rollout remain intentionally fail-closed.
+
+## Scope-locked completion ledger
+
+This ledger replaces percentage-complete estimates. Percentages mixed local
+implementation effort with production rollout gates and therefore overstated
+completion. No new capability may be added to this ledger. A defect may enter
+the active slice only when an existing item below exposes it; unrelated ideas
+are deferred to a later ADR/release.
+
+### Test execution acceleration
+
+- [x] Persist feature/regression/milestone profiles and exclude `slow`, manual,
+  real-provider, Ollama, and parser-repository model-selection tests as documented.
+- [x] Persist candidate build, identity, bootstrap, Dockerfiles, container worker,
+  timing comparison, and report merge scripts; no executable temp script remains.
+- [x] Provide opt-in pytest-xdist and measure it without making it the default.
+- [x] Provide three ordinary-container LPT shards with private writable roots,
+  exact group coverage, one candidate identity, cleanup, and resumable reports.
+- [x] Record controlled timings and the decision to prefer container sharding.
+
+The test-harness work is complete. Further test-runner optimization is outside
+ADR-015 unless a listed release gate cannot be executed with this harness.
+
+### Capability authority ledger
+
+The authoritative machine-readable source is `contracts/rust-port-v1.json`.
+
+- [x] `deterministic-contracts`: Rust cutover ready.
+- [x] `sqlite-meta`: Rust cutover ready, rollback-readable by Python.
+- [ ] `postgres-sequence-event-log`: readiness remains false.
+- [ ] `projections-snapshots-run-registry`: readiness remains false.
+- [ ] `queues-leases-lanes`: readiness remains false.
+- [ ] `graph-pgvector`: readiness remains false.
+- [ ] `workflow-runtime`: readiness remains false.
+- [ ] `server-rest-sse-mcp-cli`: readiness remains false.
+
+`chroma-adapter` is intentionally Python-owned and is not a Rust-port blocker.
+LLM SDKs, OCR, LangGraph conversion, and user-authored Python callback bodies
+remain integrations/workers as allowed by ADR-015; they are not to be rewritten
+for language purity.
+
+### Closed local implementation and evidence backlog
+
+Only these local items remain in scope before production rollout:
+
+- [ ] Phase 3: run fake/memory, SQLite, and PostgreSQL contract gates from the
+  current candidate; prove fault rollback, lease/CAS/sequence concurrency,
+  Python/Rust mutual readability, rebuild equality, and update/tombstone replay.
+- [ ] Phase 3: promote each of the four pending durable-store capabilities only
+  when its capability-specific evidence and rollback evidence pass. Do not flip
+  one broad store flag from a narrow test.
+- [ ] Phase 4: finish the already-bounded recorded runtime cutover. Existing
+  reducer, frontier, serving projection, indexed dedup, frozen route validation,
+  lane transaction, and Python worker adapter stay within this item.
+- [ ] Phase 4: pass existing sync, async, bridge-parity, suspend/resume, and
+  terminal suites; recorded state/event/terminal-result parity; crash/restart;
+  cancellation/backpressure; and Python-worker restart gates.
+- [ ] Phase 4: route the public runtime owner through the proven Rust durable
+  scheduler while keeping dynamic Python callbacks behind the versioned worker
+  boundary. Unsupported nested/sandbox/async/side-effect protocol features stay
+  fail-closed; no new runtime-state operation may be invented.
+- [ ] Phase 5: complete or explicitly version/defer the 14 currently frozen
+  Python-owned server operations listed by `PENDING_SERVER_CUTOVER_ROUTES`:
+  document delete/upsert, conversation list/get/create/turns/answer/snapshot,
+  hybrid search, Cytoscape/D3 data, workflow tool audit, graph upsert, and index
+  entry add.
+- [ ] Phase 5: complete or explicitly version/defer the five conversation/tool
+  syscall sub-operations listed by `PENDING_SYSCALL_CUTOVER_OPS`: send/receive
+  message, mount memory, project view, and invoke tool.
+- [ ] Phase 5: pass route/auth/capability/error/SSE-resume/MCP conformance,
+  frozen OpenAPI/MCP no-drift, mixed-version/rolling-upgrade, and operational
+  implementation/parity/queue/replay/schema telemetry gates.
+- [ ] Build one fresh candidate after all local code changes and run all four
+  compatibility layers (core, parser, sink, application) under one verified
+  identity. Older green reports are historical, not proof for changed source.
+- [ ] Re-run the release-readiness report and require no local implementation,
+  compatibility, performance, schema, or rollback blocker before canarying.
+
+Fields such as continuation provenance are not independent scope additions.
+They are changed only if an existing Phase 4 parity/interoperability gate proves
+a concrete mismatch. Performance improvements beyond recorded thresholds and
+test-framework changes beyond the completed harness are deferred.
+
+### External rollout and elapsed-release gates
+
+These cannot be satisfied by more local unit-test implementation:
+
+- [ ] Run production `internal/test`, `1%`, `10%`, `50%`, and `100%` capability
+  canaries with real observation windows, zero unexplained mismatch, and tested
+  rollback. The committed rehearsal proves shape only and cannot promote ownership.
+- [ ] Make the ready Rust capabilities default only after production evidence.
+- [ ] Complete one full compatibility release with Python rollback retained.
+- [ ] Then satisfy Phase 6: default graph/storage/runtime/server behavior in
+  Rust, Python API tests against Rust, no default legacy-core request path,
+  upgrade/rollback survival, all consumer/E2E gates, and classification of all
+  retained Python as SDK, bridge, integration, or worker code.
+
+Current objective facts: 2 of 8 Rust-target capability flags are ready; 6 are
+not ready; production canary stages completed are 0 of 5; the required full
+compatibility release has not elapsed. These counts, not a floating percentage,
+govern ADR completion.
 
 ## Completed local gates
 
@@ -64,6 +165,43 @@ production rollout remain intentionally fail-closed.
   coverage passed; two Chroma rollback cases first hit an HNSW segment-reader
   transient and then passed unchanged, recorded as Case 10 in the nondeterminism
   log. That rerun is diagnostic only and is not fresh release evidence.
+- Rust server now serves `GET /api/workflow/services/{service_id}/events`
+  through REST and MCP by folding authoritative workflow entity events rather
+  than trusting disposable graph projections. SQLite tests cover replacement,
+  deletion, filtering, limits, missing services, and capability denial;
+  PostgreSQL live coverage is compiled and runs when
+  `KOGWISTAR_TEST_PG_DSN` is available. The API crate currently passes 26
+  tests and Clippy with warnings denied on Linux. Focused Python contract,
+  frozen OpenAPI/MCP, health, and capability tests pass 88/88.
+- Rust server also owns per-service and bulk service-projection repair over
+  REST and MCP. Repair folds authoritative service-definition/event nodes and
+  atomically replaces disposable `service_registry` projections in SQLite or
+  PostgreSQL. Atomic enable/disable writes a new authoritative definition and
+  lifecycle event before replacing the projection. Heartbeat updates lock and
+  read the current projection in the same unit of work as health/error events
+  and projection replacement. Service reads preserve Python's combined
+  `service.inspect + project_view` requirement. Service declaration now writes
+  definition, initial lifecycle/health events, and registry projection in one
+  transaction. Service trigger now validates Python's trigger vocabulary,
+  honors disabled/spec cooldown/debounce suppression, freezes the exact graph
+  plan, and atomically creates the run/lane plus authoritative lifecycle events
+  and projection. Active-child retries are idempotent; PostgreSQL locks the
+  service projection against concurrent duplicate spawn. REST and MCP share
+  this path. Rust syscall dispatch now owns spawn/terminate process,
+  checkpoint, resume, and approval branches over existing authoritative run
+  and capability services. Conversation/tool-dependent syscall branches remain
+  explicitly fail-closed in `PENDING_SYSCALL_CUTOVER_OPS`. The
+  graph-validation route now validates frozen Node/Edge provenance shape and
+  preserves Python's metadata-pointer lift without touching storage. Three
+  visualization HTML shells are embedded from the existing packaged templates;
+  unresolved Jinja drift fails closed. The data-bearing D3 bundle remains
+  Python-owned until graph reads cut over. API coverage is 30/30; 14
+  frozen server operations remain Python-owned.
+- Focused execution exposed and fixed a pre-existing capability regression:
+  capability snapshots again require both `project_view` and
+  `read_security_scope`. The capability contract file now imports its fixture
+  explicitly, so IDE and isolated-file pytest execution work without relying
+  on collection order.
 
 ## Performance evidence
 
@@ -93,8 +231,17 @@ now unlock the `sqlite-meta` capability only.
   node-ref/endpoint tables remain disposable Python adapters driven by native
   index jobs. `graph-pgvector` remains not ready pending fresh four-layer evidence
   and production canaries. Chroma remains a Python single-writer adapter.
+- Coordinated sync PostgreSQL now routes exact singleton base node/edge/document reads
+  through the native projection ABI. Rust projection reads accept legacy Python
+  default-scope rows lacking scope metadata. Single-vector node/edge queries
+  with exact-equality metadata filters also use the native projection ABI;
+  multi-row gets, complex-filter queries, and derived-index reads remain Python
+  adapters pending ordering and filter contract cutover.
 - Rust runtime owns recorded durable reducer/scheduler slices, not the full
   public `WorkflowRuntime` resolver and side-effect lifecycle.
+  `ADR-015-runtime-semantics-contract.md` now freezes the bounded Python
+  routing/failure/join/worker behavior required for that cutover and names its
+  executable evidence; implementation and fresh four-layer proof remain pending.
 - Rust server binary and application services exist, but server and runtime
   cutover readiness remain false.
 - `index_applied_state` has native SQLite schema/API parity; graph and derived
@@ -114,25 +261,21 @@ ownership promotion.
    observation windows and zero unexplained correctness mismatches.
 3. Keep one full compatibility release before Phase 6 default/removal work.
 
-## Next-release maintenance
+## Test execution acceleration
 
-- Replace the compatibility-runner bootstrap's deprecated
-  `pytest.console_main()` call with `pytest.main()`. Reverify subprocess return
-  codes, report persistence, and resume behavior before removing the warning.
-- Evaluate bounded parallel execution of isolated application unit groups.
-  Preserve per-group temporary storage, deterministic report ordering, progress
-  persistence, and the existing native-handle isolation before enabling it.
-  Prefer a small standard-library orchestrator over pytest-xdist: build one
-  immutable candidate image, distribute `_target_groups()` across 2-3 ordinary
-  pytest containers, mount source read-only, give each shard distinct temp/cache,
-  database namespace, ports, and report, then merge only reports with identical
-  candidate/dependency identities. Unit-test no-loss/no-dup grouping, stable
-  ordering, failure/resume, identity rejection, and deterministic merge; compare
-  serial and sharded tiny-suite results before making sharding a release gate.
-  Emit machine-readable per-file/group timing history for either container
-  sharding or a later pytest-xdist evaluation: wall time, setup/call/teardown
-  where available, outcome, shard/mode, and candidate/harness/dependency plus
-  OS/Python/CPU-class identity. Balance with a recent median-based longest-first
-  schedule; retain raw runs as CI artifacts and only a stable aggregate baseline
-  in source control. Timing history must not affect candidate identity.
-Investigate the use of pytest-xdist to speed up test
+The next-release test-harness work is implemented. The compatibility bootstrap
+uses persisted `pytest.main()` code, a cached immutable candidate image, three
+ordinary container shards, deterministic LPT scheduling from optional timing
+history, private writable workspaces, resumable per-group reports, fail-closed
+identity merge, and exact no-loss/no-dup group checks. Inline image,
+worker, and bootstrap code moved to inspectable `.Dockerfile`, `.sh`, and `.py`
+files. Current-source wheel construction likewise uses a persisted host builder,
+pinned Dockerfile, and shell entry point. Native-extension discovery is a
+persisted Python helper rather than an inline `python -c` payload.
+
+Controlled equal-coverage measurements found application container sharding
+1.425x faster (251.12s to 176.23s). Core pytest-xdist with two workers was only
+0.724x as fast as serial (124.53s to 172.12s), so xdist remains opt-in and is
+off by default. Parser is file-isolated because its module-global SQLite logger
+and provider state are not xdist-safe. See `ADR-015-test-harness.md` and
+`contracts/benchmarks/adr015-test-parallelism-current-windows.json`.

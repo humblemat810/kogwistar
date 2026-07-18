@@ -1163,6 +1163,7 @@ impl PostgresStore {
                     .find(|(_, _, token, _)| token == &token_id)
                     .map(|(_, mask, _, _)| *mask)
                     .unwrap_or(0);
+                let op = result.reduced.state.state["_rt_node_ops"][&node_id].clone();
                 uow.project_lane_message(NewProjectedLaneMessage {
                     message_id,
                     namespace: "workflow".to_owned(),
@@ -1185,6 +1186,8 @@ impl PostgresStore {
                         "workflow_id": workflow_id,
                         "conversation_id": conversation_id,
                         "node_id": node_id,
+                        "op": op,
+                        "runtime_routes": result.reduced.state.static_routes,
                         "join_mask": join_mask,
                         "token_id": token_id,
                         "parent_token_id": parent,
@@ -1702,6 +1705,27 @@ impl PostgresUnitOfWork<'_> {
         )
         .await
     }
+    pub async fn claim_projected_lane_messages_for_run(
+        &mut self,
+        namespace: &str,
+        inbox: &str,
+        run_id: &str,
+        owner: &str,
+        limit: usize,
+        lease: i64,
+    ) -> PostgresStoreResult<Vec<ProjectedLaneMessage>> {
+        claim_projected_lane_messages_for_run(
+            &self.transaction,
+            &self.tables,
+            namespace,
+            inbox,
+            run_id,
+            owner,
+            limit,
+            lease,
+        )
+        .await
+    }
     pub async fn ack_projected_lane_message(
         &mut self,
         id: &str,
@@ -2012,6 +2036,22 @@ impl PostgresUnitOfWork<'_> {
         projection: NamedProjectionWrite,
     ) -> PostgresStoreResult<()> {
         replace_named_projection(&self.transaction, &self.tables, namespace, key, projection).await
+    }
+
+    pub async fn get_named_projection(
+        &mut self,
+        namespace: &str,
+        key: &str,
+    ) -> PostgresStoreResult<Option<NamedProjection>> {
+        named_projection(&self.transaction, &self.tables, namespace, key).await
+    }
+
+    pub async fn lock_named_projection(
+        &mut self,
+        namespace: &str,
+        key: &str,
+    ) -> PostgresStoreResult<Option<NamedProjection>> {
+        named_projection_for_update(&self.transaction, &self.tables, namespace, key).await
     }
 
     pub async fn compare_and_swap_named_projection(
@@ -2870,6 +2910,21 @@ where
     ).await.map_err(backend)?.map(|row| projection_from_row(&row)).transpose()
 }
 
+async fn named_projection_for_update<C>(
+    client: &C,
+    tables: &Tables,
+    namespace: &str,
+    key: &str,
+) -> PostgresStoreResult<Option<NamedProjection>>
+where
+    C: GenericClient + Sync,
+{
+    client.query_opt(
+        &format!("SELECT namespace, key, payload_json, last_authoritative_seq, last_materialized_seq, projection_schema_version, materialization_status, updated_at_ms FROM {} WHERE namespace = $1 AND key = $2 FOR UPDATE", tables.named_projections),
+        &[&namespace, &key],
+    ).await.map_err(backend)?.map(|row| projection_from_row(&row)).transpose()
+}
+
 async fn named_projections<C>(
     client: &C,
     tables: &Tables,
@@ -3208,22 +3263,29 @@ fn graph_filter_sql(
     filter: &kogwistar_store::MetadataFilter,
     start: usize,
 ) -> PostgresStoreResult<(String, Vec<String>)> {
-    let mut pairs = graph_scope_pairs(scope)?;
-    pairs.extend(
-        filter
-            .equals
-            .iter()
-            .map(|(key, value)| (key.clone(), value.clone())),
-    );
-    let mut clauses = Vec::with_capacity(pairs.len());
-    let mut values = Vec::with_capacity(pairs.len());
-    for (index, (key, value)) in pairs.into_iter().enumerate() {
+    let scope_pairs = graph_scope_pairs(scope)?;
+    let legacy_default =
+        scope.namespace == "default" && scope.workspace_id.is_none() && scope.graph_space.is_none();
+    let filter_pairs = filter
+        .equals
+        .iter()
+        .map(|(key, value)| (key.clone(), value.clone()));
+    let mut clauses = Vec::with_capacity(scope_pairs.len() + filter.equals.len());
+    let mut values = Vec::with_capacity(scope_pairs.len() + filter.equals.len());
+    for (index, (key, value)) in scope_pairs.into_iter().chain(filter_pairs).enumerate() {
         let key_index = start + index;
         let value_json = serde_json::to_string(&value).expect("JSON value serializes");
-        clauses.push(format!(
+        let exact = format!(
             "metadata -> ${key_index}::TEXT = {}::JSONB",
             sql_text_literal(&value_json)
-        ));
+        );
+        if legacy_default && index == 0 && key == "namespace" {
+            clauses.push(format!(
+                "({exact} OR (NOT (metadata ? 'namespace') AND NOT (metadata ? 'workspace_id') AND NOT (metadata ? 'graph_space')))"
+            ));
+        } else {
+            clauses.push(exact);
+        }
         values.push(key);
     }
     Ok((clauses.join(" AND "), values))
@@ -4886,11 +4948,29 @@ where
     }
     let expected_event_seq = latest_server_run_event_seq(client, tables, &handoff.run_id).await?;
     let step_seq = current.last_step_seq.saturating_add(1);
-    let authoritative_successors = kogwistar_runtime::authoritative_runtime_successors(
-        &current.static_routes,
-        &handoff.step_id,
-        &effect.successors,
-    )?;
+    let authoritative_successors = match effect.status {
+        RuntimeWorkerEffectStatus::Success => {
+            kogwistar_runtime::authoritative_runtime_successors_for_result(
+                &current.static_routes,
+                &handoff.step_id,
+                &effect.successors,
+                &effect.route_next,
+                false,
+            )?
+        }
+        RuntimeWorkerEffectStatus::Suspended => Vec::new(),
+        RuntimeWorkerEffectStatus::Failed => {
+            kogwistar_runtime::authoritative_runtime_successors_for_result(
+                &current.static_routes,
+                &handoff.step_id,
+                &effect.successors,
+                &effect.route_next,
+                true,
+            )?
+        }
+    };
+    let terminal_failure =
+        effect.status == RuntimeWorkerEffectStatus::Failed && authoritative_successors.is_empty();
     let frontier = match effect.status {
         RuntimeWorkerEffectStatus::Success => frontier_after_worker_success(
             &current.frontier,
@@ -4908,6 +4988,17 @@ where
             token_id,
             parent_token_id,
         )?,
+        RuntimeWorkerEffectStatus::Failed if terminal_failure => RuntimeFrontier::default(),
+        RuntimeWorkerEffectStatus::Failed => frontier_after_worker_success(
+            &current.frontier,
+            &handoff.step_id,
+            token_id,
+            parent_token_id,
+            step_seq,
+            &kogwistar_runtime::RuntimeWorkerSuccessEffect {
+                successors: authoritative_successors,
+            },
+        )?,
     };
     let transition = RecordedRuntimeTransition {
         contract_version: RECORDED_RUNTIME_CONTRACT_VERSION,
@@ -4919,6 +5010,12 @@ where
             }
             RuntimeWorkerEffectStatus::Suspended => {
                 kogwistar_runtime::RecordedTransitionKind::Suspend
+            }
+            RuntimeWorkerEffectStatus::Failed if terminal_failure => {
+                kogwistar_runtime::RecordedTransitionKind::Fail
+            }
+            RuntimeWorkerEffectStatus::Failed => {
+                kogwistar_runtime::RecordedTransitionKind::RecordedStepSuccess
             }
         },
         run_id: handoff.run_id.clone(),
@@ -5545,6 +5642,27 @@ where
     let rows=c.query(&format!("WITH picked AS (SELECT message_id FROM {} WHERE namespace=$1 AND inbox_id=$2 AND ((status='pending' AND available_at<=EXTRACT(EPOCH FROM NOW())::BIGINT) OR (status='claimed' AND lease_until IS NOT NULL AND lease_until<NOW())) ORDER BY seq ASC,created_at ASC LIMIT $3 FOR UPDATE SKIP LOCKED) UPDATE {} x SET status='claimed',claimed_by=$4,lease_until=NOW()+($5::TEXT||' seconds')::interval FROM picked WHERE x.message_id=picked.message_id RETURNING {}",t.projected_lane_messages,t.projected_lane_messages,LANE_RETURNING),&[&namespace,&inbox,&limit,&owner,&lease]).await.map_err(backend)?;
     rows.iter().map(lane_from_row).collect()
 }
+async fn claim_projected_lane_messages_for_run<C>(
+    c: &C,
+    t: &Tables,
+    namespace: &str,
+    inbox: &str,
+    run_id: &str,
+    owner: &str,
+    limit: usize,
+    lease: i64,
+) -> PostgresStoreResult<Vec<ProjectedLaneMessage>>
+where
+    C: GenericClient + Sync,
+{
+    if limit == 0 {
+        return Ok(vec![]);
+    }
+    let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+    let lease = lease.to_string();
+    let rows=c.query(&format!("WITH picked AS (SELECT message_id FROM {} WHERE namespace=$1 AND inbox_id=$2 AND run_id=$3 AND ((status='pending' AND available_at<=EXTRACT(EPOCH FROM NOW())::BIGINT) OR (status='claimed' AND lease_until IS NOT NULL AND lease_until<NOW())) ORDER BY seq ASC,created_at ASC LIMIT $4 FOR UPDATE SKIP LOCKED) UPDATE {} x SET status='claimed',claimed_by=$5,lease_until=NOW()+($6::TEXT||' seconds')::interval FROM picked WHERE x.message_id=picked.message_id RETURNING {}",t.projected_lane_messages,t.projected_lane_messages,LANE_RETURNING),&[&namespace,&inbox,&run_id,&limit,&owner,&lease]).await.map_err(backend)?;
+    rows.iter().map(lane_from_row).collect()
+}
 async fn ack_projected_lane_message<C>(
     c: &C,
     t: &Tables,
@@ -6000,6 +6118,26 @@ mod tests {
         .unwrap()
     }
 
+    fn runtime_failure_start(run_id: &str, transition_id: &str) -> RecordedRuntimeTransition {
+        let mut start = runtime_start(run_id, transition_id);
+        start.initial_state.as_mut().unwrap().insert(
+            "_rt_routes".to_owned(),
+            serde_json::json!([{
+                "edge_id": "recover-edge",
+                "source_node_id": "step-1",
+                "target_node_id": "recover",
+                "aliases": ["recover"],
+                "join_mask": 0,
+                "predicate": "on_failure",
+                "multiplicity": "one",
+                "is_default": false,
+                "priority": 100,
+                "source_fanout": false
+            }]),
+        );
+        start
+    }
+
     fn runtime_lane(run_id: &str, message_id: &str) -> NewProjectedLaneMessage {
         NewProjectedLaneMessage {
             message_id: message_id.to_owned(),
@@ -6031,6 +6169,49 @@ mod tests {
         }
     }
 
+    fn runtime_worker_lane(run_id: &str, message_id: &str) -> NewProjectedLaneMessage {
+        let mut lane = runtime_lane(run_id, message_id);
+        lane.correlation_id = Some(run_id.to_owned());
+        lane.payload_json = Some(
+            serde_json::json!({
+                "workflow_id": "wf-1",
+                "conversation_id": "conv-1",
+                "token_id": "token-1",
+                "parent_token_id": null
+            })
+            .to_string(),
+        );
+        lane
+    }
+
+    fn runtime_worker_handoff(
+        run_id: &str,
+        message_id: &str,
+        owner: &str,
+    ) -> RecordedWorkerHandoff {
+        let mut handoff = runtime_handoff(run_id, message_id, owner);
+        handoff.correlation_id = run_id.to_owned();
+        handoff
+    }
+
+    fn runtime_failure_effect(
+        effect_id: &str,
+        route_next: &[&str],
+        successors: Value,
+    ) -> RecordedWorkerSuccessEffect {
+        serde_json::from_value(serde_json::json!({
+            "contract_version": 1,
+            "effect_id": effect_id,
+            "status": "failed",
+            "state_update": [["u", {"attempted": true}]],
+            "successors": successors,
+            "route_next": route_next,
+            "result": {"workflow_status": "failed"},
+            "errors": ["boom"]
+        }))
+        .unwrap()
+    }
+
     #[test]
     fn identifier_validation_and_qualification_are_strict() {
         assert_eq!(quote_identifier("Mixed_Name9").unwrap(), "\"Mixed_Name9\"");
@@ -6043,6 +6224,34 @@ mod tests {
         let tables = Tables::new("CamelCase").unwrap();
         assert_eq!(tables.entity_events, "\"CamelCase\".\"entity_events\"");
         assert!(!tables.entity_events.contains("search_path"));
+    }
+
+    #[test]
+    fn graph_read_filter_accepts_only_legacy_default_scope_rows() {
+        let default_scope = kogwistar_store::GraphScope {
+            namespace: "default".to_owned(),
+            workspace_id: None,
+            graph_space: None,
+        };
+        let (sql, values) = graph_filter_sql(
+            &default_scope,
+            &kogwistar_store::MetadataFilter::default(),
+            1,
+        )
+        .unwrap();
+        assert_eq!(values, vec!["namespace"]);
+        assert!(sql.contains("metadata -> $1::TEXT"));
+        assert!(sql.contains("NOT (metadata ? 'namespace')"));
+
+        let scoped = kogwistar_store::GraphScope {
+            namespace: "default".to_owned(),
+            workspace_id: Some("workspace".to_owned()),
+            graph_space: None,
+        };
+        let (sql, values) =
+            graph_filter_sql(&scoped, &kogwistar_store::MetadataFilter::default(), 1).unwrap();
+        assert_eq!(values, vec!["namespace", "workspace_id"]);
+        assert!(!sql.contains("NOT (metadata"));
     }
 
     #[test]
@@ -6435,6 +6644,100 @@ mod tests {
                 .await,
             Err(PostgresStoreError::RecordedRuntimeConflict(_))
         ));
+
+        for (run_id, message_id, owner) in [
+            ("handled", "handled-request", "handled-worker"),
+            ("unhandled", "unhandled-request", "unhandled-worker"),
+            ("forged", "forged-request", "forged-worker"),
+        ] {
+            store
+                .apply_recorded_runtime_transition(
+                    runtime_failure_start(run_id, &format!("start-{run_id}")),
+                    false,
+                )
+                .await?;
+            store
+                .project_lane_message(runtime_worker_lane(run_id, message_id))
+                .await?;
+            assert_eq!(
+                store
+                    .claim_projected_lane_messages("runtime", "python-workers", owner, 1, 30,)
+                    .await?
+                    .len(),
+                1
+            );
+        }
+
+        let handled_handoff =
+            runtime_worker_handoff("handled", "handled-request", "handled-worker");
+        let handled_effect =
+            runtime_failure_effect("handled-effect", &["recover"], serde_json::json!([]));
+        let handled = store
+            .apply_claimed_recorded_worker_effect(handled_handoff.clone(), handled_effect.clone())
+            .await?;
+        let handled_retry = store
+            .apply_claimed_recorded_worker_effect(handled_handoff, handled_effect)
+            .await?;
+        assert!(!handled.idempotent && handled_retry.idempotent);
+        assert_eq!(handled.event_seq, handled_retry.event_seq);
+        assert_eq!(
+            handled.reduced.state.status,
+            kogwistar_runtime::RecordedRunStatus::Running
+        );
+        assert_eq!(handled.reduced.state.frontier.pending[0].0, "recover");
+        assert_eq!(
+            store
+                .get_projected_lane_message("handled-request")
+                .await?
+                .unwrap()
+                .status,
+            "completed"
+        );
+
+        let unhandled = store
+            .apply_claimed_recorded_worker_effect(
+                runtime_worker_handoff("unhandled", "unhandled-request", "unhandled-worker"),
+                runtime_failure_effect("unhandled-effect", &[], serde_json::json!([])),
+            )
+            .await?;
+        assert_eq!(
+            unhandled.reduced.state.status,
+            kogwistar_runtime::RecordedRunStatus::Failed
+        );
+        assert!(unhandled.reduced.state.frontier.pending.is_empty());
+        assert_eq!(
+            store.get_server_run("unhandled").await?.unwrap().status,
+            "failed"
+        );
+
+        assert!(matches!(
+            store
+                .apply_claimed_recorded_worker_effect(
+                    runtime_worker_handoff("forged", "forged-request", "forged-worker"),
+                    runtime_failure_effect(
+                        "forged-effect",
+                        &[],
+                        serde_json::json!([{"node_id": "forged", "join_mask": 0}]),
+                    ),
+                )
+                .await,
+            Err(PostgresStoreError::RecordedRuntime(_))
+        ));
+        assert_eq!(
+            store
+                .list_server_run_events("forged", 0, usize::MAX)
+                .await?
+                .len(),
+            1
+        );
+        assert_eq!(
+            store
+                .get_projected_lane_message("forged-request")
+                .await?
+                .unwrap()
+                .status,
+            "claimed"
+        );
 
         store
             .client()

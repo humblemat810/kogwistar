@@ -106,7 +106,7 @@ def apply_state_update_inplace(
     *,
     state_schema: dict[str, Any] | None = None,
 ):
-    """Apply runtime state delta in place.
+    """Apply a workflow-runtime state delta in place.
 
     Single reducer for sync runtime, async runtime, and replay.
     """

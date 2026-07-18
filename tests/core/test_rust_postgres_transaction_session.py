@@ -358,6 +358,24 @@ def test_public_rust_postgres_node_add_is_atomic_with_event_and_jobs(
     python = EnginePostgresMetaStore(engine=sa_engine, schema=schema)
     row = backend.node_get(ids=["public-committed"], include=["documents"])
     assert row["ids"] == ["public-committed"]
+
+    def reject_python_read(**_values: Any) -> None:
+        raise AssertionError("exact singleton Rust graph read used Python backend")
+
+    with monkeypatch.context() as native_read_guard:
+        native_read_guard.setattr(backend, "node_get", reject_python_read)
+        native_nodes = engine.read.get_nodes(ids=["public-committed"])
+        assert [item.id for item in native_nodes] == ["public-committed"]
+
+    with monkeypatch.context() as native_query_guard:
+        native_query_guard.setattr(backend, "node_query", reject_python_read)
+        native_matches = engine.read.query_nodes(
+            query_embeddings=[[1.0, 0.0, 0.0]],
+            where={"doc_id": "doc"},
+            n_results=5,
+        )
+        assert [item.id for item in native_matches[0]] == ["public-committed"]
+
     events = list(python.iter_entity_events(namespace=engine.namespace))
     assert [(kind, entity_id, op) for _, kind, entity_id, op, _ in events] == [
         ("node", "public-committed", "ADD")
@@ -680,6 +698,15 @@ def test_public_rust_postgres_document_and_domain_add_are_event_atomic(
     assert backend.document_get(ids=[document.id], include=["documents"])[
         "documents"
     ] == ["document body"]
+    with monkeypatch.context() as native_read_guard:
+        native_read_guard.setattr(
+            backend,
+            "document_get",
+            lambda **_values: (_ for _ in ()).throw(
+                AssertionError("exact document Rust read used Python backend")
+            ),
+        )
+        assert engine.get_document(document.id).content == "document body"
     assert backend.domain_get(ids=[domain.id], include=["documents"])["ids"] == [
         domain.id
     ]

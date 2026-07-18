@@ -104,6 +104,12 @@ fn default_route_priority() -> i64 {
     100
 }
 
+fn default_legacy_source_fanout() -> bool {
+    // Old snapshots represented static fanout as multiple routes. Rich
+    // snapshots always serialize this field, so only legacy payloads use it.
+    true
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RuntimeRouteRequest {
@@ -317,8 +323,12 @@ pub struct RuntimeSuccessor {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RuntimeStaticRoute {
+    #[serde(default)]
+    pub edge_id: String,
     pub source_node_id: String,
     pub target_node_id: String,
+    #[serde(default)]
+    pub aliases: Vec<String>,
     #[serde(default)]
     pub join_mask: i64,
     #[serde(default)]
@@ -326,6 +336,10 @@ pub struct RuntimeStaticRoute {
     #[serde(default = "default_route_multiplicity")]
     pub multiplicity: String,
     #[serde(default)]
+    pub is_default: bool,
+    #[serde(default = "default_route_priority")]
+    pub priority: i64,
+    #[serde(default = "default_legacy_source_fanout")]
     pub source_fanout: bool,
 }
 
@@ -340,55 +354,126 @@ pub fn authoritative_runtime_successors(
     source_node_id: &str,
     worker_selected: &[RuntimeSuccessor],
 ) -> Result<Vec<RuntimeSuccessor>, RecordedRuntimeError> {
+    authoritative_runtime_successors_for_result(
+        static_routes,
+        source_node_id,
+        worker_selected,
+        &[],
+        false,
+    )
+}
+
+pub fn authoritative_runtime_successors_for_result(
+    static_routes: &[RuntimeStaticRoute],
+    source_node_id: &str,
+    worker_selected: &[RuntimeSuccessor],
+    explicit_next: &[String],
+    failure_only: bool,
+) -> Result<Vec<RuntimeSuccessor>, RecordedRuntimeError> {
     if static_routes.is_empty() {
         return Ok(worker_selected.to_vec());
     }
-    let outgoing = static_routes
+    let mut outgoing = static_routes
         .iter()
         .filter(|route| route.source_node_id == source_node_id)
         .collect::<Vec<_>>();
-    if !outgoing.iter().any(|route| route.predicate.is_some()) {
-        return Ok(outgoing
-            .into_iter()
-            .map(|route| RuntimeSuccessor {
-                node_id: route.target_node_id.clone(),
-                join_mask: route.join_mask,
-            })
-            .collect());
-    }
-
-    let mut selected_routes = Vec::with_capacity(worker_selected.len());
-    for successor in worker_selected {
-        let Some(route) = outgoing.iter().find(|route| {
-            route.target_node_id == successor.node_id && route.join_mask == successor.join_mask
-        }) else {
-            return Err(RecordedRuntimeError::InvalidSuccessorSelection(format!(
-                "source {source_node_id:?} has no route to {:?} with join mask {}",
-                successor.node_id, successor.join_mask
-            )));
-        };
-        if selected_routes
-            .iter()
-            .any(|selected: &&RuntimeStaticRoute| selected.target_node_id == route.target_node_id)
-        {
-            return Err(RecordedRuntimeError::InvalidSuccessorSelection(format!(
-                "source {source_node_id:?} selected target {:?} more than once",
-                route.target_node_id
-            )));
+    outgoing.sort_by_key(|route| route.priority);
+    if outgoing.is_empty() {
+        if worker_selected.is_empty() && explicit_next.is_empty() {
+            return Ok(Vec::new());
         }
-        selected_routes.push(*route);
-    }
-    if selected_routes.len() > 1
-        && !selected_routes.iter().any(|route| route.source_fanout)
-        && !selected_routes
-            .iter()
-            .all(|route| route.multiplicity == "many")
-    {
         return Err(RecordedRuntimeError::InvalidSuccessorSelection(format!(
-            "source {source_node_id:?} selected multiple non-fanout routes"
+            "source {source_node_id:?} has no outgoing frozen routes"
         )));
     }
-    Ok(worker_selected.to_vec())
+
+    let delegates_predicates =
+        explicit_next.is_empty() && outgoing.iter().any(|route| route.predicate.is_some());
+    if delegates_predicates {
+        let mut selected_routes = Vec::with_capacity(worker_selected.len());
+        for successor in worker_selected {
+            let Some(route) = outgoing.iter().find(|route| {
+                route.target_node_id == successor.node_id && route.join_mask == successor.join_mask
+            }) else {
+                return Err(RecordedRuntimeError::InvalidSuccessorSelection(format!(
+                    "source {source_node_id:?} has no route to {:?} with join mask {}",
+                    successor.node_id, successor.join_mask
+                )));
+            };
+            if selected_routes
+                .iter()
+                .any(|selected: &&RuntimeStaticRoute| {
+                    selected.target_node_id == route.target_node_id
+                })
+            {
+                return Err(RecordedRuntimeError::InvalidSuccessorSelection(format!(
+                    "source {source_node_id:?} selected target {:?} more than once",
+                    route.target_node_id
+                )));
+            }
+            selected_routes.push(*route);
+        }
+        if selected_routes.len() > 1
+            && !selected_routes.iter().any(|route| route.source_fanout)
+            && !selected_routes
+                .iter()
+                .all(|route| route.multiplicity == "many")
+        {
+            return Err(RecordedRuntimeError::InvalidSuccessorSelection(format!(
+                "source {source_node_id:?} selected multiple non-fanout routes"
+            )));
+        }
+    }
+
+    let edges = outgoing
+        .iter()
+        .map(|route| RuntimeRouteEdge {
+            edge_id: if route.edge_id.is_empty() {
+                format!("{}->{}", route.source_node_id, route.target_node_id)
+            } else {
+                route.edge_id.clone()
+            },
+            target_ids: vec![route.target_node_id.clone()],
+            aliases: if route.aliases.is_empty() {
+                vec![
+                    route.target_node_id.clone(),
+                    route
+                        .target_node_id
+                        .split('|')
+                        .next_back()
+                        .unwrap_or(&route.target_node_id)
+                        .to_owned(),
+                ]
+            } else {
+                route.aliases.clone()
+            },
+            predicate: route.predicate.clone(),
+            multiplicity: route.multiplicity.clone(),
+            is_default: route.is_default,
+            priority: route.priority,
+            predicate_result: route.predicate.as_ref().map(|_| {
+                worker_selected.iter().any(|successor| {
+                    successor.node_id == route.target_node_id
+                        && successor.join_mask == route.join_mask
+                })
+            }),
+            base_result: route.predicate.is_none().then_some(true),
+        })
+        .collect();
+    let decision = select_runtime_route(&RuntimeRouteRequest {
+        edges,
+        explicit_next: explicit_next.to_vec(),
+        fanout: outgoing.iter().any(|route| route.source_fanout),
+        failure_only,
+    });
+    Ok(decision
+        .selected_edge_indices
+        .into_iter()
+        .map(|index| RuntimeSuccessor {
+            node_id: outgoing[index].target_node_id.clone(),
+            join_mask: outgoing[index].join_mask,
+        })
+        .collect())
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -504,6 +589,8 @@ pub struct RecordedWorkerSuccessEffect {
     #[serde(default)]
     pub successors: Vec<RuntimeSuccessor>,
     #[serde(default)]
+    pub route_next: Vec<String>,
+    #[serde(default)]
     pub result: Option<Value>,
     #[serde(default)]
     pub errors: Vec<String>,
@@ -523,6 +610,7 @@ pub enum RuntimeWorkerEffectStatus {
     #[default]
     Success,
     Suspended,
+    Failed,
 }
 
 pub fn worker_effect_digest(
@@ -1970,11 +2058,15 @@ mod tests {
     fn authoritative_successors_delegate_only_predicate_choice_with_graph_validation() {
         let route = |target: &str, predicate: Option<&str>, multiplicity: &str, fanout: bool| {
             RuntimeStaticRoute {
+                edge_id: format!("edge-{target}"),
                 source_node_id: "gate".to_owned(),
                 target_node_id: target.to_owned(),
+                aliases: vec![target.to_owned()],
                 join_mask: if target == "join" { 1 } else { 0 },
                 predicate: predicate.map(str::to_owned),
                 multiplicity: multiplicity.to_owned(),
+                is_default: false,
+                priority: 100,
                 source_fanout: fanout,
             }
         };
@@ -2036,6 +2128,89 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn authoritative_successors_preserve_python_static_explicit_and_failure_routing() {
+        let route = |edge: &str,
+                     target: &str,
+                     aliases: &[&str],
+                     predicate: Option<&str>,
+                     priority: i64,
+                     is_default: bool| RuntimeStaticRoute {
+            edge_id: edge.to_owned(),
+            source_node_id: "gate".to_owned(),
+            target_node_id: target.to_owned(),
+            aliases: aliases.iter().map(|value| (*value).to_owned()).collect(),
+            join_mask: if target == "join" { 1 } else { 0 },
+            predicate: predicate.map(str::to_owned),
+            multiplicity: "one".to_owned(),
+            is_default,
+            priority,
+            source_fanout: false,
+        };
+
+        let static_routes = vec![
+            route("first", "left", &["left", "choose-left"], None, 10, false),
+            route(
+                "second",
+                "right",
+                &["right", "choose-right"],
+                None,
+                20,
+                true,
+            ),
+        ];
+        assert_eq!(
+            authoritative_runtime_successors_for_result(&static_routes, "gate", &[], &[], false,)
+                .unwrap()
+                .into_iter()
+                .map(|successor| successor.node_id)
+                .collect::<Vec<_>>(),
+            vec!["left"]
+        );
+        assert_eq!(
+            authoritative_runtime_successors_for_result(
+                &static_routes,
+                "gate",
+                &[],
+                &["choose-right".to_owned()],
+                false,
+            )
+            .unwrap()[0]
+                .node_id,
+            "right"
+        );
+        assert!(
+            authoritative_runtime_successors_for_result(&static_routes, "gate", &[], &[], true,)
+                .unwrap()
+                .is_empty()
+        );
+
+        let failure_routes = vec![
+            route(
+                "recover",
+                "join",
+                &["recover"],
+                Some("on_failure"),
+                10,
+                false,
+            ),
+            route("fallback", "right", &["right"], None, 20, true),
+        ];
+        let handled = authoritative_runtime_successors_for_result(
+            &failure_routes,
+            "gate",
+            &[RuntimeSuccessor {
+                node_id: "join".to_owned(),
+                join_mask: 1,
+            }],
+            &[],
+            true,
+        )
+        .unwrap();
+        assert_eq!(handled[0].node_id, "join");
+        assert_eq!(handled[0].join_mask, 1);
     }
 
     #[test]

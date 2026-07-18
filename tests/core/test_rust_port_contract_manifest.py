@@ -28,6 +28,15 @@ def test_ci_full_uses_postgres_image_with_pgvector_extension() -> None:
     assert 'GKE_TEST_PG_IMAGE: "pgvector/pgvector:pg16"' in workflow
 
 
+def test_ci_uses_persisted_inspectable_python_smoke_scripts() -> None:
+    workflow = CI_WORKFLOW_PATH.read_text(encoding="utf-8")
+
+    assert "python scripts/adr015_package_import_smoke.py" in workflow
+    assert "python scripts/adr015_native_wheel_smoke.py --wheelhouse wheelhouse" in workflow
+    assert "python -c" not in workflow
+    assert "python -P -c" not in workflow
+
+
 def test_rust_port_manifest_has_required_authority_and_suite_gates() -> None:
     manifest = _manifest()
 
@@ -96,6 +105,20 @@ def test_passing_performance_and_public_routing_unlock_sqlite_meta_store() -> No
     runtime_report = json.loads((ROOT / runtime["benchmark_report"]).read_text(encoding="utf-8"))
     assert runtime_report["gate"]["status"] == "passed"
     assert runtime_report["history_multiplier"] == 100
+
+
+def test_test_parallelism_evidence_keeps_xdist_opt_in() -> None:
+    manifest = _manifest()
+    evidence = manifest["test_parallelism_evidence"]
+    report = json.loads((ROOT / evidence["benchmark_report"]).read_text())
+
+    assert evidence["gate_status"] == report["status"] == "passed"
+    assert evidence["container_default"] == {
+        "shards": 3,
+        "pytest_xdist_workers": 0,
+    }
+    assert report["results"]["application_container_shards"]["speedup"] > 1
+    assert report["results"]["core_pytest_xdist"]["speedup"] < 1
 
 
 def test_each_authoritative_capability_has_owner_and_rollback() -> None:

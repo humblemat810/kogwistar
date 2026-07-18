@@ -43,7 +43,7 @@ jobs:
           python -m pip install -e ".[test,server,full]"
       - name: Verify package import
         run: |
-          python -c "import kogwistar; import kogwistar.utils; import kogwistar.utils.log; print(kogwistar.__file__); print(kogwistar.utils.__file__)"
+          python scripts/adr015_package_import_smoke.py
       - name: Show CI working directory and tree
         run: |
           echo "PWD=$(pwd)"
@@ -225,9 +225,7 @@ jobs:
           python -m maturin build --release --locked --out wheelhouse
 
       - name: Install and smoke native wheel
-        run: |
-          python -c "import pathlib, subprocess, sys; wheel=next(pathlib.Path('wheelhouse').glob('*.whl')); subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--force-reinstall', str(wheel)])"
-          python -P -c "import kogwistar; from kogwistar import _rust; assert _rust.CONTRACT_VERSION == '1.0.0'; assert _rust.stable_id_json('[\"node\",\"golden\"]'); print(kogwistar.__file__, _rust.__file__)"
+        run: python scripts/adr015_native_wheel_smoke.py --wheelhouse wheelhouse
 
   ci_full:
     if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.full == true)

@@ -74,6 +74,7 @@ def compute_route_next(
 
     def _edge_aliases(edge: Any, target_id: str) -> set[str]:
         aliases = _target_aliases(target_id)
+        aliases.update(str(value) for value in (getattr(edge, "aliases", None) or []))
         label = getattr(edge, "label", None)
         if label:
             aliases.add(str(label))
