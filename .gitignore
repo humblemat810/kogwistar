@@ -54,6 +54,7 @@ kogwistar/scripts/*.bundle.cdc.script.hl3.html
 .codex/benchmark-runtime*/
 .codex/adr015-runtime-serving-bench/
 .codex/wheelhouse*/
+.codex/host-native-wheel/
 
 # Local runtime databases and generated tutorial/application state.
 .gke-data/

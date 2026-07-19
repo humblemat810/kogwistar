@@ -1,6 +1,6 @@
 # ADR-015 compatibility test harness
 
-Updated: 2026-07-18
+Updated: 2026-07-20
 
 The persisted test harness is:
 
@@ -69,6 +69,12 @@ complete shard indexes, and exactly-once group coverage. Interrupted or failed
 workers are cleaned up by container name. Each container receives a private
 writable workspace and `/tmp`; source staging is read-only and includes current
 tracked-dirty plus non-ignored untracked source. Secret `.env` is never copied.
+
+The `Rust Port Compatibility` GitHub workflow builds one current Linux wheel,
+then runs both `feature` and `regression` through this three-container harness.
+Its release dispatch runs `milestone` through the same harness. `pytest-xdist`
+is intentionally omitted from all three workflow paths: it remains an explicit
+experiment only, because controlled core evidence measured it slower.
 
 ## Commands
 

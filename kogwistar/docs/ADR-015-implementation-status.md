@@ -66,7 +66,7 @@ Only these local items remain in scope before production rollout:
   scheduler while keeping dynamic Python callbacks behind the versioned worker
   boundary. Unsupported nested/sandbox/async/side-effect protocol features stay
   fail-closed; no new runtime-state operation may be invented.
-- [ ] Phase 5: complete or explicitly version/defer the 14 currently frozen
+- [ ] Phase 5: complete or explicitly version/defer the 16 currently frozen
   Python-owned server operations listed by `PENDING_SERVER_CUTOVER_ROUTES`:
   document delete/upsert, conversation list/get/create/turns/answer/snapshot,
   hybrid search, Cytoscape/D3 data, workflow tool audit, graph upsert, and index
@@ -209,7 +209,7 @@ capability flag until its listed evidence passes.
   preserves Python's metadata-pointer lift without touching storage. Three
   visualization HTML shells are embedded from the existing packaged templates;
   unresolved Jinja drift fails closed. The data-bearing D3 bundle remains
-  Python-owned until graph reads cut over. API coverage is 30/30; 14
+  Python-owned until graph reads cut over. API coverage is 30/30; 16
   frozen server operations remain Python-owned.
 - Focused execution exposed and fixed a pre-existing capability regression:
   capability snapshots again require both `project_view` and

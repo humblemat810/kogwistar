@@ -13,8 +13,10 @@ import time
 from typing import Callable, Final
 
 try:
-    from adr015_source_identity import candidate_source_fingerprint
-except ModuleNotFoundError:  # imported as a repository module in unit tests
+    # Direct script execution places this file's directory on sys.path.
+    # The package fallback keeps importlib-based test loading supported.
+    from adr015_source_identity import candidate_source_fingerprint  # type: ignore[import-not-found]
+except ModuleNotFoundError:
     from scripts.adr015_source_identity import candidate_source_fingerprint
 
 
@@ -478,7 +480,6 @@ _LAYER_SHARD_OFFSETS: Final = {
     "sink": 2,
     "application": 0,
 }
-
 
 def _target_groups(*, layer: str, tests_path: Path, profile: str) -> list[list[Path]]:
     """Return deterministic pytest process boundaries for one suite layer."""

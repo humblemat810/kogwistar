@@ -44,6 +44,14 @@ def test_container_harness_uses_dual_venv_and_cleans_native_bridge() -> None:
     assert "${WHEEL_NAME}[test,chroma]" in dockerfile
     assert "candidate.whl" not in dockerfile
     assert "pytest-xdist>=3.8,<4" in dockerfile
+    assert "ghcr.io/astral-sh/uv:0.10.10" in dockerfile
+    assert "UV_HTTP_TIMEOUT=60" in dockerfile
+    assert "UV_HTTP_RETRIES=2" in dockerfile
+    assert "--mount=type=cache,target=/root/.cache/uv" in dockerfile
+    assert "uv pip install --python /opt/core/bin/python" in dockerfile
+    assert "uv pip install --python /opt/consumer/bin/python" in dockerfile
+    assert "/opt/core/bin/pip install" not in dockerfile
+    assert "/opt/consumer/bin/pip install" not in dockerfile
 
     native_path_helper = ROOT / "scripts" / "adr015_native_path.py"
     assert native_path_helper.is_file()

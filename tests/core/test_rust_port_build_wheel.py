@@ -64,6 +64,9 @@ def test_wheel_builder_source_fingerprint_tracks_dirty_and_untracked_inputs(
     package = tmp_path / "kogwistar"
     package.mkdir()
     (package / "new.py").write_text("VALUE = 1\n")
+    contracts = tmp_path / "contracts"
+    contracts.mkdir()
+    (contracts / "contract.json").write_text('{"version": 1}\n')
     (tmp_path / ".gitignore").write_text("ignored.txt\n")
     (tmp_path / "ignored.txt").write_text("ignore me\n")
 
@@ -77,7 +80,7 @@ def test_wheel_builder_source_fingerprint_tracks_dirty_and_untracked_inputs(
     (package / "new.py").write_text("VALUE = 2\n")
     second, second_count = module._source_sha256(tmp_path)
 
-    assert count == second_count == 3
+    assert count == second_count == 4
     assert (staged_hash, staged_count) == (first, count)
     assert first != second
 

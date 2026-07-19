@@ -14,8 +14,10 @@ import time
 from typing import Final
 
 try:
-    from adr015_source_identity import candidate_source_fingerprint
-except ModuleNotFoundError:  # imported as a repository module in unit tests
+    # Direct script execution places this file's directory on sys.path.
+    # The package fallback keeps importlib-based test loading supported.
+    from adr015_source_identity import candidate_source_fingerprint  # type: ignore[import-not-found]
+except ModuleNotFoundError:
     from scripts.adr015_source_identity import candidate_source_fingerprint
 
 
@@ -583,14 +585,17 @@ def main() -> int:
     except (OSError, ValueError, KeyError, json.JSONDecodeError) as error:
         print(f"shard merge failed: {error}", flush=True)
         return 1
-    merged["execution"]["orchestrator_wall_seconds"] = round(
+    execution = merged["execution"]
+    if not isinstance(execution, dict):
+        raise RuntimeError("merged compatibility report execution is invalid")
+    execution["orchestrator_wall_seconds"] = round(
         time.perf_counter() - orchestrator_started, 6
     )
-    merged["execution"]["container_orchestrator_sha256"] = metadata[
+    execution["container_orchestrator_sha256"] = metadata[
         "container_orchestrator_sha256"
     ]
-    merged["execution"]["wheel_sha256"] = metadata["wheel_sha256"]
-    merged["execution"]["wheel_build_report"] = metadata["wheel_build_report"]
+    execution["wheel_sha256"] = metadata["wheel_sha256"]
+    execution["wheel_build_report"] = metadata["wheel_build_report"]
     report.write_text(
         json.dumps(merged, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )

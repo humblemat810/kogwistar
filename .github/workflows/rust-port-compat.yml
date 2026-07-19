@@ -68,42 +68,54 @@ jobs:
         with:
           toolchain: 1.91.1
 
-      - name: Build coordinated environment
-        shell: bash
-        run: |
-          python -m venv kogwistar-llm-wiki/.venv
-          PY=kogwistar-llm-wiki/.venv/bin/python
-          "$PY" -m pip install --upgrade pip maturin
-          "$PY" -m pip install -e "./candidate[test,server,full,rust]"
-          "$PY" -m pip install -e ./kogwistar-llm-wiki/kg-doc-parser
-          "$PY" -m pip install -e ./kogwistar-llm-wiki/kogwistar-obsidian-sink --no-deps
-          "$PY" -m pip install -e ./kogwistar-llm-wiki --no-deps
-          VIRTUAL_ENV="$GITHUB_WORKSPACE/kogwistar-llm-wiki/.venv" \
-            "$PY" -m maturin develop --release \
-              --manifest-path candidate/rust/crates/kogwistar-python/Cargo.toml
-
-      - name: Run four explicit compatibility layers
+      - name: Build current Linux candidate wheel
         working-directory: candidate
         shell: bash
         run: |
-          ARGS=()
+          python scripts/rust_port_build_wheel.py \
+            --output ../wheelhouse-adr015-current
+
+      - name: Run fast feature and regression compatibility layers
+        if: inputs.release != true
+        working-directory: candidate
+        shell: bash
+        run: |
+          WHEEL="$(find ../wheelhouse-adr015-current -maxdepth 1 -name 'kogwistar-*.whl' -print -quit)"
+          test -n "$WHEEL"
+          for PROFILE in feature regression; do
+            python scripts/rust_port_container_compat.py \
+              --application-root ../kogwistar-llm-wiki \
+              --wheel "$WHEEL" \
+              --implementation-mode "${{ inputs.implementation-mode }}" \
+              --meta-store-mode "${{ inputs.implementation-mode }}" \
+              --profile "$PROFILE" \
+              --shards 3 \
+              --report "../rust-port-compat-$PROFILE.json"
+          done
+
+      - name: Run milestone compatibility layers
+        if: inputs.release == true
+        working-directory: candidate
+        shell: bash
+        run: |
+          WHEEL="$(find ../wheelhouse-adr015-current -maxdepth 1 -name 'kogwistar-*.whl' -print -quit)"
+          test -n "$WHEEL"
           if [[ "${{ inputs.release }}" == "true" ]]; then
-            ARGS+=(--release)
+            PROFILE=milestone
           fi
-          ../kogwistar-llm-wiki/.venv/bin/python scripts/rust_port_compat.py \
+          python scripts/rust_port_container_compat.py \
             --application-root ../kogwistar-llm-wiki \
-            --python ../kogwistar-llm-wiki/.venv/bin/python \
-            --consumer-python ../kogwistar-llm-wiki/.venv/bin/python \
+            --wheel "$WHEEL" \
             --implementation-mode "${{ inputs.implementation-mode }}" \
-            --backend coordinated-ci \
-            --storage-root isolated-ci \
-            --report ../rust-port-compat-report.json \
-            "${ARGS[@]}"
+            --meta-store-mode "${{ inputs.implementation-mode }}" \
+            --profile "$PROFILE" \
+            --shards 3 \
+            --report ../rust-port-compat-milestone.json
 
       - name: Upload compatibility evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: rust-port-compat-${{ inputs.implementation-mode }}
-          path: rust-port-compat-report.json
+          path: rust-port-compat-*.json
           if-no-files-found: error

@@ -4,6 +4,7 @@ import importlib
 import hashlib
 import json
 from pathlib import Path
+import re
 
 import pytest
 
@@ -119,6 +120,38 @@ def test_test_parallelism_evidence_keeps_xdist_opt_in() -> None:
     }
     assert report["results"]["application_container_shards"]["speedup"] > 1
     assert report["results"]["core_pytest_xdist"]["speedup"] < 1
+
+
+def test_four_layer_ci_uses_persisted_three_container_fast_profiles() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "rust-port-compat.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "scripts/rust_port_build_wheel.py" in workflow
+    assert workflow.count("scripts/rust_port_container_compat.py") == 2
+    assert 'for PROFILE in feature regression; do' in workflow
+    assert '--profile "$PROFILE"' in workflow
+    assert workflow.count("--shards 3") == 2
+    assert "--pytest-workers" not in workflow
+
+
+def test_server_cutover_ledger_count_matches_rust_frozen_route_inventory() -> None:
+    rust_api = (
+        ROOT / "rust" / "crates" / "kogwistar-api" / "src" / "lib.rs"
+    ).read_text(encoding="utf-8")
+    pending = re.search(
+        r"pub const PENDING_SERVER_CUTOVER_ROUTES:.*?= &\[(.*?)\];",
+        rust_api,
+        flags=re.DOTALL,
+    )
+    assert pending is not None
+    pending_count = len(re.findall(r'"(?:DELETE|GET|POST)",', pending.group(1)))
+    status = (ROOT / "kogwistar" / "docs" / "ADR-015-implementation-status.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert pending_count == 16
+    assert f"the {pending_count} currently frozen" in status
 
 
 def test_each_authoritative_capability_has_owner_and_rollback() -> None:

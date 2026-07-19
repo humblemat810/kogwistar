@@ -57,7 +57,10 @@ def candidate_source_files(root: Path) -> list[Path]:
     missing = [path for path in files if not path.is_file()]
     if missing:
         raise FileNotFoundError(f"candidate source input is missing: {missing[0]}")
-    return files
+    # A Docker source stage deliberately omits `.git`.  Never let its fallback
+    # filesystem/absolute-path ordering change the identity of byte-identical
+    # candidate inputs compared with a Git worktree.
+    return sorted(files, key=lambda path: path.relative_to(root).as_posix())
 
 
 def candidate_source_fingerprint(root: Path) -> tuple[str, int]:

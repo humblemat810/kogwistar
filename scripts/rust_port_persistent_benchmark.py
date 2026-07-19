@@ -71,7 +71,7 @@ def _peak_rss_bytes() -> int:
         except (AttributeError, OSError, ValueError):
             pass
         try:
-            import psutil
+            import psutil  # type: ignore[import-untyped]
 
             return int(psutil.Process(os.getpid()).memory_info().rss)
         except (ImportError, OSError):
