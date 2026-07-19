@@ -8,6 +8,33 @@ use thiserror::Error;
 pub type StoreResult<T> = Result<T, StoreError>;
 pub type EntityEvent = EntityEventEnvelope;
 
+/// Shared ADR-015 serving-projection shape. Both durable stores must emit the
+/// same namespace, cursor metadata, and schema version for a reduced runtime.
+pub const RUNTIME_CURRENT_STATE_NAMESPACE: &str = "workflow_runtime_current_state";
+pub const RUNTIME_PROJECTION_SCHEMA_VERSION: i64 = 1;
+
+pub fn runtime_checkpoint_namespace(conversation_id: &str) -> String {
+    format!("{conversation_id}:workflow_checkpoint_latest")
+}
+
+pub fn runtime_status_namespace(conversation_id: &str) -> String {
+    format!("{conversation_id}:workflow_run_status")
+}
+
+pub fn runtime_projection_write(
+    payload: Map<String, Value>,
+    seq: i64,
+    materialization_status: impl Into<String>,
+) -> NamedProjectionWrite {
+    NamedProjectionWrite {
+        payload,
+        last_authoritative_seq: seq,
+        last_materialized_seq: seq,
+        projection_schema_version: RUNTIME_PROJECTION_SCHEMA_VERSION,
+        materialization_status: materialization_status.into(),
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AuthUser {
     pub user_id: String,
@@ -1063,5 +1090,29 @@ impl<S: ProjectionReadStore + Send + Sync> ProjectionReadStore for ShadowInspect
     }
     async fn named_projections(&self, namespace: &str) -> StoreResult<Vec<NamedProjection>> {
         self.inner.named_projections(namespace).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn runtime_projection_contract_has_one_stable_shape() {
+        let mut payload = Map::new();
+        payload.insert("status".to_owned(), Value::String("running".to_owned()));
+        let projection = runtime_projection_write(payload, 7, "ready");
+        assert_eq!(
+            runtime_checkpoint_namespace("conv"),
+            "conv:workflow_checkpoint_latest"
+        );
+        assert_eq!(runtime_status_namespace("conv"), "conv:workflow_run_status");
+        assert_eq!(projection.last_authoritative_seq, 7);
+        assert_eq!(projection.last_materialized_seq, 7);
+        assert_eq!(
+            projection.projection_schema_version,
+            RUNTIME_PROJECTION_SCHEMA_VERSION
+        );
+        assert_eq!(projection.materialization_status, "ready");
     }
 }

@@ -54,13 +54,28 @@ def _peak_rss_bytes() -> int:
 
         counters = ProcessMemoryCounters()
         counters.cb = ctypes.sizeof(counters)
-        if not ctypes.windll.psapi.GetProcessMemoryInfo(
-            ctypes.windll.kernel32.GetCurrentProcess(),
-            ctypes.byref(counters),
-            counters.cb,
-        ):
-            raise OSError("GetProcessMemoryInfo failed")
-        return int(counters.PeakWorkingSetSize)
+        try:
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            psapi = ctypes.WinDLL("psapi", use_last_error=True)
+            kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+            psapi.GetProcessMemoryInfo.argtypes = [
+                wintypes.HANDLE,
+                ctypes.POINTER(ProcessMemoryCounters),
+                wintypes.DWORD,
+            ]
+            psapi.GetProcessMemoryInfo.restype = wintypes.BOOL
+            if psapi.GetProcessMemoryInfo(
+                kernel32.GetCurrentProcess(), ctypes.byref(counters), counters.cb
+            ):
+                return int(counters.PeakWorkingSetSize)
+        except (AttributeError, OSError, ValueError):
+            pass
+        try:
+            import psutil
+
+            return int(psutil.Process(os.getpid()).memory_info().rss)
+        except (ImportError, OSError):
+            raise RuntimeError("no supported Windows RSS collector is available") from None
 
     import resource
 

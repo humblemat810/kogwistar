@@ -65,12 +65,15 @@ def _json_copy(value: Any, *, field: str) -> Any:
 
 
 def _durable_state(value: Mapping[str, Any], *, field: str) -> dict[str, Any]:
-    copied = _json_copy(dict(value), field=field)
-    return {
+    durable = {
         key: item
-        for key, item in copied.items()
+        for key, item in value.items()
         if key not in {"_deps", "dream_deps"}
     }
+    copied = _json_copy(durable, field=field)
+    if not isinstance(copied, dict):
+        raise RustWorkerError(f"{field} must be a JSON object")
+    return copied
 
 
 class RustStepResolverAdapter:
@@ -175,6 +178,19 @@ class RustStepResolverAdapter:
         payload = work.get("payload")
         if not isinstance(payload, dict):
             raise RustWorkerError("claimed work payload must be an object")
+        resume_effect = payload.get("resume_effect")
+        if resume_effect is not None:
+            copied_effect = _json_copy(resume_effect, field="claimed resume effect")
+            if not isinstance(copied_effect, dict):
+                raise RustWorkerError("claimed resume effect must be an object")
+            if str(copied_effect.get("status") or "") not in {
+                "success",
+                "failed",
+            }:
+                raise RustWorkerError(
+                    "claimed resume effect status must be success or failed"
+                )
+            return copied_effect
         op = str(payload.get("op") or "")
         node_id = str(payload.get("node_id") or work.get("step_id") or "")
         if not op or not node_id:
@@ -191,7 +207,7 @@ class RustStepResolverAdapter:
             dependencies = self.dependency_provider(work)
             if not isinstance(dependencies, Mapping):
                 raise RustWorkerError("dependency_provider must return a mapping")
-            state["_deps"] = dict(dependencies)
+            state["_deps"] = dependencies
 
         try:
             resolver = self.step_resolver(op)

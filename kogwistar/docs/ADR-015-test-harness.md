@@ -20,6 +20,9 @@ The persisted test harness is:
   wheel construction and four-layer evidence; source drift fails closed.
 - `scripts/rust_port_build_wheel.py`: host orchestrator for a current-source
   Linux candidate wheel.
+- `scripts/adr015_build_host_native.py` and
+  `scripts/adr015_native_extension_smoke.py`: host-native exact-Python-ABI
+  builder and smoke gate for focused Windows/local tests.
 - `scripts/adr015_wheel_builder.Dockerfile` and
   `scripts/adr015_build_wheel.sh`: inspectable pinned Rust/maturin build image
   and entry point; no inline build script is generated.
@@ -30,6 +33,11 @@ No executable test logic is stored in `.codex` or generated temporary scripts.
 No inline shell, Python, or Dockerfile is hidden inside orchestrator code.
 `.codex` contains local raw reports only. Canonical aggregate evidence is in
 `contracts/benchmarks/adr015-test-parallelism-current-windows.json`.
+
+The host-native builder atomically refreshes the ignored source-tree extension,
+writes source/wheel/extension digests, and verifies the `transaction_id` store
+ABI before pytest. This prevents a stale local `.pyd` from impersonating current
+Rust source during host gates.
 
 ## Profiles
 

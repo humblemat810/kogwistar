@@ -13,6 +13,73 @@ use thiserror::Error;
 
 pub const RECORDED_RUNTIME_CONTRACT_VERSION: u32 = 1;
 
+/// Scheduler-owned payload for one Python worker step.  Keeping this wire DTO
+/// beside the reducer prevents SQLite, PostgreSQL, and API schedulers from
+/// independently hand-copying its fields.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeStepExecutePayload {
+    pub contract_version: u32,
+    pub kind: String,
+    pub run_id: String,
+    pub workflow_id: String,
+    pub conversation_id: String,
+    #[serde(default)]
+    pub turn_node_id: Option<String>,
+    pub node_id: String,
+    pub op: Value,
+    #[serde(default)]
+    pub runtime_routes: Vec<RuntimeStaticRoute>,
+    pub join_mask: i64,
+    pub token_id: String,
+    #[serde(default)]
+    pub parent_token_id: Option<String>,
+    pub step_seq: i64,
+    pub expected_event_seq: i64,
+    #[serde(default)]
+    pub state: Map<String, Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume_effect: Option<Value>,
+}
+
+#[derive(Clone, Debug)]
+pub struct RuntimeStepExecuteRequest {
+    pub node_id: String,
+    pub op: Value,
+    pub join_mask: i64,
+    pub token_id: String,
+    pub parent_token_id: Option<String>,
+    pub step_seq: i64,
+    pub expected_event_seq: i64,
+    pub resume_effect: Option<Value>,
+}
+
+impl RuntimeStepExecutePayload {
+    pub fn from_recorded_state(
+        state: &RecordedRuntimeState,
+        request: RuntimeStepExecuteRequest,
+    ) -> Self {
+        Self {
+            contract_version: RECORDED_RUNTIME_CONTRACT_VERSION,
+            kind: "workflow.step.execute".to_owned(),
+            run_id: state.run_id.clone(),
+            workflow_id: state.workflow_id.clone(),
+            conversation_id: state.conversation_id.clone(),
+            turn_node_id: state.user_turn_node_id.clone(),
+            node_id: request.node_id,
+            op: request.op,
+            runtime_routes: state.static_routes.clone(),
+            join_mask: request.join_mask,
+            token_id: request.token_id,
+            parent_token_id: request.parent_token_id,
+            step_seq: request.step_seq,
+            expected_event_seq: request.expected_event_seq,
+            state: state.state.clone(),
+            resume_effect: request.resume_effect,
+        }
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum RecordedRuntimeError {
     #[error("unsupported recorded runtime contract version {got}; expected {expected}")]
@@ -1376,6 +1443,8 @@ pub struct RecordedRuntimeState {
     pub run_id: String,
     pub workflow_id: String,
     pub conversation_id: String,
+    #[serde(default)]
+    pub user_turn_node_id: Option<String>,
     pub status: RecordedRunStatus,
     pub last_step_seq: i64,
     pub state: Map<String, Value>,
@@ -1485,6 +1554,7 @@ pub fn reduce_recorded_transition(
         static_routes,
         wait_reason,
         resume_payload,
+        user_turn_node_id,
     ) = match current {
         None => {
             if transition.kind != RecordedTransitionKind::Start {
@@ -1506,6 +1576,7 @@ pub fn reduce_recorded_transition(
                 static_routes,
                 None,
                 None,
+                transition.user_turn_node_id.clone(),
             )
         }
         Some(current) => {
@@ -1532,6 +1603,7 @@ pub fn reduce_recorded_transition(
                 current.static_routes.clone(),
                 current.wait_reason.clone(),
                 current.resume_payload.clone(),
+                current.user_turn_node_id.clone(),
             )
         }
     };
@@ -1612,6 +1684,7 @@ pub fn reduce_recorded_transition(
         run_id: transition.run_id.clone(),
         workflow_id: transition.workflow_id.clone(),
         conversation_id: transition.conversation_id.clone(),
+        user_turn_node_id,
         status: next_status,
         last_step_seq: match transition.kind {
             RecordedTransitionKind::Start => -1,
@@ -1976,6 +2049,43 @@ mod tests {
             resume_payload: None,
             errors: Vec::new(),
         }
+    }
+
+    #[test]
+    fn step_execute_payload_preserves_runtime_identity_and_resume_effect() {
+        let mut start = transition(RecordedTransitionKind::Start, "start", 0, 0);
+        let mut initial_state = Map::new();
+        initial_state.insert("seed".to_owned(), json!(1));
+        start.initial_state = Some(initial_state);
+        start.frontier = Some(RuntimeFrontier {
+            pending: vec![("node".to_owned(), 3, "token".to_owned(), None)],
+            ..RuntimeFrontier::default()
+        });
+        let reduced = reduce_recorded_transition(None, &start).unwrap();
+        let payload = RuntimeStepExecutePayload::from_recorded_state(
+            &reduced.state,
+            RuntimeStepExecuteRequest {
+                node_id: "node".to_owned(),
+                op: json!("op"),
+                join_mask: 3,
+                token_id: "token".to_owned(),
+                parent_token_id: None,
+                step_seq: 1,
+                expected_event_seq: 9,
+                resume_effect: Some(json!({"status": "success"})),
+            },
+        );
+        assert_eq!(payload.turn_node_id.as_deref(), Some("turn"));
+        assert_eq!(payload.expected_event_seq, 9);
+        assert_eq!(payload.resume_effect.as_ref().unwrap()["status"], "success");
+        assert_eq!(
+            serde_json::from_value::<RuntimeStepExecutePayload>(
+                serde_json::to_value(payload).unwrap()
+            )
+            .unwrap()
+            .state["seed"],
+            1
+        );
     }
 
     fn route_edge(

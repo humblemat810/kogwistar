@@ -10,9 +10,10 @@ use kogwistar_engine::EntityProjection;
 use kogwistar_runtime::{
     PersistedRecordedTransition, RECORDED_RUNTIME_CONTRACT_VERSION, RecordedRuntimeError,
     RecordedRuntimeState, RecordedRuntimeTransition, RecordedTransitionResult,
-    RecordedWorkerHandoff, RecordedWorkerSuccessEffect, RuntimeFrontier, RuntimeWorkerEffectStatus,
-    frontier_after_worker_resume, frontier_after_worker_success, frontier_after_worker_suspend,
-    reduce_recorded_transition, transition_digest, worker_effect_digest,
+    RecordedWorkerHandoff, RecordedWorkerSuccessEffect, RuntimeFrontier, RuntimeStepExecutePayload,
+    RuntimeStepExecuteRequest, RuntimeWorkerEffectStatus, frontier_after_worker_resume,
+    frontier_after_worker_success, frontier_after_worker_suspend, reduce_recorded_transition,
+    transition_digest, worker_effect_digest,
 };
 use kogwistar_store::{
     AppendedEvent, AppliedGraphMutation, AuthIdentityStore, AuthUser, EntityEvent,
@@ -21,12 +22,13 @@ use kogwistar_store::{
     GraphProjectionRead, GraphProjectionVectorQuery, GraphRecord, IndexJob, IndexJobReadStore,
     IndexJobWriteStore, LaneMessageFilter, LaneMessageReadStore, LaneMessageWriteStore,
     NamedProjection, NamedProjectionWrite, NewEntityEvent, NewIndexJob, NewProjectedLaneMessage,
-    ProjectedLaneMessage, ProjectionReadStore, ProjectionWriteStore, ReplayCursor,
-    ResolveExternalIdentity, ServerRun, ServerRunCreate, ServerRunEvent, ServerRunReadStore,
-    ServerRunUpdate, ServerRunWriteStore, StoreError, StoreResult, VectorMatch,
-    WorkflowDesignDelta, WorkflowDesignDeltaWrite, WorkflowDesignHistoryReadStore,
-    WorkflowDesignHistoryWriteStore, WorkflowDesignSnapshot, WorkflowDesignSnapshotWrite,
-    validate_entity_rebuild_request, validate_entity_recovery_request,
+    ProjectedLaneMessage, ProjectionReadStore, ProjectionWriteStore,
+    RUNTIME_CURRENT_STATE_NAMESPACE, ReplayCursor, ResolveExternalIdentity, ServerRun,
+    ServerRunCreate, ServerRunEvent, ServerRunReadStore, ServerRunUpdate, ServerRunWriteStore,
+    StoreError, StoreResult, VectorMatch, WorkflowDesignDelta, WorkflowDesignDeltaWrite,
+    WorkflowDesignHistoryReadStore, WorkflowDesignHistoryWriteStore, WorkflowDesignSnapshot,
+    WorkflowDesignSnapshotWrite, runtime_checkpoint_namespace, runtime_projection_write,
+    runtime_status_namespace, validate_entity_rebuild_request, validate_entity_recovery_request,
 };
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
@@ -35,8 +37,6 @@ use std::pin::Pin;
 use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 use tokio_postgres::{Config, GenericClient, NoTls, Row, Transaction};
-
-const RUNTIME_CURRENT_STATE_NAMESPACE: &str = "workflow_runtime_current_state";
 
 /// Future accepted by [`PostgresStore::transaction`].  The lifetime is tied
 /// to the UoW borrow, so a pooled client cannot escape its transaction.
@@ -1163,7 +1163,28 @@ impl PostgresStore {
                     .find(|(_, _, token, _)| token == &token_id)
                     .map(|(_, mask, _, _)| *mask)
                     .unwrap_or(0);
-                let op = result.reduced.state.state["_rt_node_ops"][&node_id].clone();
+                let op = result
+                    .reduced
+                    .state
+                    .state
+                    .get("_rt_node_ops")
+                    .and_then(Value::as_object)
+                    .and_then(|ops| ops.get(&node_id))
+                    .cloned()
+                    .unwrap_or_else(|| Value::String("noop".to_owned()));
+                let payload = RuntimeStepExecutePayload::from_recorded_state(
+                    &result.reduced.state,
+                    RuntimeStepExecuteRequest {
+                        node_id: node_id.clone(),
+                        op,
+                        join_mask,
+                        token_id: token_id.clone(),
+                        parent_token_id: parent.clone(),
+                        step_seq: result.reduced.state.last_step_seq.saturating_add(1),
+                        expected_event_seq: result.event_seq,
+                        resume_effect: result.reduced.state.resume_payload.clone(),
+                    },
+                );
                 uow.project_lane_message(NewProjectedLaneMessage {
                     message_id,
                     namespace: "workflow".to_owned(),
@@ -1179,23 +1200,7 @@ impl PostgresStore {
                     run_id: Some(run_id.clone()),
                     step_id: Some(node_id.clone()),
                     correlation_id: Some(run_id.clone()),
-                    payload_json: Some(serde_json::to_string(&serde_json::json!({
-                        "contract_version": 1,
-                        "kind": "workflow.step.execute",
-                        "run_id": run_id,
-                        "workflow_id": workflow_id,
-                        "conversation_id": conversation_id,
-                        "node_id": node_id,
-                        "op": op,
-                        "runtime_routes": result.reduced.state.static_routes,
-                        "join_mask": join_mask,
-                        "token_id": token_id,
-                        "parent_token_id": parent,
-                        "step_seq": result.reduced.state.last_step_seq.saturating_add(1),
-                        "expected_event_seq": result.event_seq,
-                        "state": result.reduced.state.state,
-                        "resume_payload": result.reduced.state.resume_payload,
-                    }))?),
+                    payload_json: Some(serde_json::to_string(&payload)?),
                     error_json: None,
                 })
                 .await?;
@@ -4467,15 +4472,6 @@ where
 }
 
 const RECORDED_RUNTIME_EVENT_TYPE: &str = "workflow.recorded_transition.v1";
-const RUNTIME_PROJECTION_SCHEMA_VERSION: i64 = 1;
-
-fn runtime_checkpoint_namespace(conversation_id: &str) -> String {
-    format!("{conversation_id}:workflow_checkpoint_latest")
-}
-
-fn runtime_status_namespace(conversation_id: &str) -> String {
-    format!("{conversation_id}:workflow_run_status")
-}
 
 fn parse_runtime_event_payload(payload_json: &str) -> Option<PersistedRecordedTransition> {
     serde_json::from_str::<PersistedRecordedTransition>(payload_json)
@@ -4527,20 +4523,6 @@ where
         .map_err(backend)
 }
 
-fn recorded_runtime_projection(
-    payload: Map<String, Value>,
-    seq: i64,
-    materialization_status: String,
-) -> NamedProjectionWrite {
-    NamedProjectionWrite {
-        payload,
-        last_authoritative_seq: seq,
-        last_materialized_seq: seq,
-        projection_schema_version: RUNTIME_PROJECTION_SCHEMA_VERSION,
-        materialization_status,
-    }
-}
-
 fn runtime_json_object<T: serde::Serialize>(value: &T) -> PostgresStoreResult<Map<String, Value>> {
     serde_json::to_value(value)?
         .as_object()
@@ -4566,7 +4548,7 @@ where
         tables,
         RUNTIME_CURRENT_STATE_NAMESPACE,
         &persisted.reduced.state.run_id,
-        recorded_runtime_projection(
+        runtime_projection_write(
             runtime_json_object(&persisted.reduced.state)?,
             event_seq,
             "ready".to_owned(),
@@ -5175,7 +5157,7 @@ where
         tables,
         &runtime_checkpoint_namespace(&transition.conversation_id),
         &transition.run_id,
-        recorded_runtime_projection(
+        runtime_projection_write(
             reduced.checkpoint.clone(),
             event_seq,
             reduced.state.status.server_status().to_owned(),
@@ -5195,7 +5177,7 @@ where
         tables,
         &runtime_status_namespace(&transition.conversation_id),
         &transition.run_id,
-        recorded_runtime_projection(
+        runtime_projection_write(
             reduced.run_status.clone(),
             event_seq,
             status_materialization,
@@ -5642,6 +5624,7 @@ where
     let rows=c.query(&format!("WITH picked AS (SELECT message_id FROM {} WHERE namespace=$1 AND inbox_id=$2 AND ((status='pending' AND available_at<=EXTRACT(EPOCH FROM NOW())::BIGINT) OR (status='claimed' AND lease_until IS NOT NULL AND lease_until<NOW())) ORDER BY seq ASC,created_at ASC LIMIT $3 FOR UPDATE SKIP LOCKED) UPDATE {} x SET status='claimed',claimed_by=$4,lease_until=NOW()+($5::TEXT||' seconds')::interval FROM picked WHERE x.message_id=picked.message_id RETURNING {}",t.projected_lane_messages,t.projected_lane_messages,LANE_RETURNING),&[&namespace,&inbox,&limit,&owner,&lease]).await.map_err(backend)?;
     rows.iter().map(lane_from_row).collect()
 }
+#[allow(clippy::too_many_arguments)]
 async fn claim_projected_lane_messages_for_run<C>(
     c: &C,
     t: &Tables,

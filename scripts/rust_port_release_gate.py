@@ -7,6 +7,12 @@ import json
 from pathlib import Path
 from typing import Any
 
+try:
+    # Script entry point imports its sibling without package qualification.
+    from adr015_source_identity import candidate_source_fingerprint  # type: ignore[import-not-found]
+except ModuleNotFoundError:  # imported as a repository module in unit tests
+    from scripts.adr015_source_identity import candidate_source_fingerprint
+
 
 ROOT = Path(__file__).resolve().parents[1]
 LAYERS = ("core", "parser", "sink", "application")
@@ -48,10 +54,15 @@ def evaluate_release_gate(
     blockers: list[dict[str, str]] = []
     by_layer: dict[str, dict[str, Any]] = {}
     identities: set[str] = set()
+    source_identities: set[str] = set()
     for report in compatibility_reports:
         candidate = report.get("candidate")
         if isinstance(candidate, dict) and isinstance(candidate.get("identity_sha256"), str):
             identities.add(candidate["identity_sha256"])
+        if isinstance(candidate, dict) and isinstance(
+            candidate.get("candidate_source_sha256"), str
+        ):
+            source_identities.add(candidate["candidate_source_sha256"])
         for layer in report.get("layers", []):
             if isinstance(layer, dict) and layer.get("name") in LAYERS:
                 by_layer[str(layer["name"])] = layer
@@ -64,6 +75,14 @@ def evaluate_release_gate(
     if len(identities) != 1:
         blockers.append(
             {"gate": "compatibility", "detail": "four layers do not share one candidate identity"}
+        )
+    current_source_sha256, _ = candidate_source_fingerprint(ROOT)
+    if source_identities != {current_source_sha256}:
+        blockers.append(
+            {
+                "gate": "compatibility",
+                "detail": "four layers lack current candidate source identity",
+            }
         )
 
     performance_status = runtime_performance.get("gate", {}).get("status")
@@ -103,6 +122,9 @@ def evaluate_release_gate(
     return {
         "status": "passed" if not blockers else "blocked",
         "candidate_identity_sha256": next(iter(identities)) if len(identities) == 1 else None,
+        "candidate_source_sha256": (
+            next(iter(source_identities)) if len(source_identities) == 1 else None
+        ),
         "compatibility_layers": {
             layer: by_layer.get(layer, {}).get("status", "missing") for layer in LAYERS
         },

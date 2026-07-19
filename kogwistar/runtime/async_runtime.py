@@ -155,6 +155,12 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
         _resume_step_seq: int | None = None,
         _resume_last_exec_node: Any | None = None,
     ) -> RunResult:
+        from .rust_runtime_authority import rust_runtime_authority_url
+
+        if rust_runtime_authority_url() is not None:
+            raise NotImplementedError(
+                "Rust worker contract v1 does not represent async resolver callbacks"
+            )
         if _resume_step_seq is not None or _resume_last_exec_node is not None:
             raise NotImplementedError(
                 "AsyncWorkflowRuntime does not support resume-marker delegation"

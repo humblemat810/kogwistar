@@ -18,6 +18,7 @@ use jsonwebtoken::{
 use kogwistar_runtime::{
     RECORDED_RUNTIME_CONTRACT_VERSION, RecordedRuntimeState, RecordedRuntimeTransition,
     RecordedTransitionKind, RecordedWorkerHandoff, RecordedWorkerSuccessEffect, RuntimeFrontier,
+    RuntimeStepExecutePayload, RuntimeStepExecuteRequest,
 };
 use kogwistar_store::{
     AuthIdentityStore, AuthUser, EntityEvent, LaneMessageFilter, NamedProjection,
@@ -606,6 +607,11 @@ fn is_runtime_inspection_tail(tail: &[&str]) -> bool {
 }
 
 fn resume_contract_value(state: RecordedRuntimeState) -> Value {
+    let node_ops = state
+        .state
+        .get("_rt_node_ops")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
     json!({
         "run_id": state.run_id,
         "status": state.status,
@@ -613,6 +619,8 @@ fn resume_contract_value(state: RecordedRuntimeState) -> Value {
         "resume_payload": state.resume_payload,
         "suspended": state.frontier.suspended,
         "last_step_seq": state.last_step_seq,
+        "runtime_routes": state.static_routes,
+        "node_ops": node_ops,
     })
 }
 
@@ -628,13 +636,54 @@ fn active_runtime_lane_covers_token(lanes: &[ProjectedLaneMessage], token_id: &s
     })
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct RuntimeGraphPlan {
     start_node_id: String,
     join_node_ids: Vec<String>,
     start_join_mask: i64,
     routes: Vec<kogwistar_runtime::RuntimeStaticRoute>,
     node_ops: std::collections::BTreeMap<String, String>,
+}
+
+fn submitted_runtime_graph_conflicts(
+    graph_plan: &RuntimeGraphPlan,
+    input: &RuntimeSubmitRun,
+) -> bool {
+    let Some(start_node_id) = input
+        .start_node_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return false;
+    };
+    if input.node_ops.is_empty() {
+        return false;
+    }
+    let canonical_routes = |routes: &[kogwistar_runtime::RuntimeStaticRoute]| {
+        let mut values = routes
+            .iter()
+            .cloned()
+            .map(|mut route| {
+                route.aliases.sort();
+                route.aliases.dedup();
+                serde_json::to_string(&route).expect("runtime route serializes")
+            })
+            .collect::<Vec<_>>();
+        values.sort();
+        values
+    };
+    graph_plan.start_node_id != start_node_id
+        || graph_plan.join_node_ids != input.join_node_ids
+        || graph_plan.start_join_mask != input.start_join_mask
+        || canonical_routes(&graph_plan.routes) != canonical_routes(&input.runtime_routes)
+        || graph_plan.node_ops != input.node_ops
+}
+
+fn runtime_join_outstanding(join_count: usize, start_join_mask: i64) -> Vec<i64> {
+    (0..join_count)
+        .map(|index| i64::from(start_join_mask & (1_i64 << index) != 0))
+        .collect()
 }
 
 fn default_runtime_priority_class() -> String {
@@ -645,7 +694,8 @@ fn default_runtime_kind() -> String {
     "sync".to_owned()
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct RuntimeSubmitRun {
     #[serde(default)]
     run_id: Option<String>,
@@ -685,7 +735,8 @@ fn default_runtime_claim_lease() -> i64 {
     60
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct RuntimeClaimRequest {
     claimed_by: String,
     #[serde(default = "default_runtime_claim_limit")]
@@ -694,6 +745,156 @@ struct RuntimeClaimRequest {
     lease_seconds: i64,
     #[serde(default)]
     run_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct RuntimeWorkerResultRequest {
+    handoff: RecordedWorkerHandoff,
+    #[serde(default)]
+    transition: Option<RecordedRuntimeTransition>,
+    #[serde(default)]
+    effect: Option<RecordedWorkerSuccessEffect>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct RuntimeResumeRequest {
+    suspended_node_id: String,
+    suspended_token_id: String,
+    #[serde(default)]
+    client_result: Value,
+    workflow_id: String,
+    conversation_id: String,
+    #[serde(default)]
+    turn_node_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct RuntimeClaimedWork {
+    message_id: String,
+    claimed_by: String,
+    run_id: String,
+    step_id: Option<String>,
+    correlation_id: Option<String>,
+    payload: Value,
+    expected_event_seq: i64,
+    lease_until: Option<Value>,
+}
+
+fn runtime_claimed_work(
+    lane: ProjectedLaneMessage,
+    claimed_by: &str,
+    run_id: String,
+    payload: Value,
+    expected_event_seq: i64,
+) -> RuntimeClaimedWork {
+    RuntimeClaimedWork {
+        message_id: lane.message_id,
+        claimed_by: claimed_by.to_owned(),
+        run_id,
+        step_id: lane.step_id,
+        correlation_id: lane.correlation_id,
+        payload,
+        expected_event_seq,
+        lease_until: lane.lease_until,
+    }
+}
+
+fn runtime_start_transition(payload: &Value, run_id: &str) -> RecordedRuntimeTransition {
+    let start_node_id = payload["start_node_id"].as_str().unwrap_or("start");
+    let join_node_ids = string_list(&payload["join_node_ids"]);
+    let start_join_mask = payload["start_join_mask"].as_i64().unwrap_or_default();
+    RecordedRuntimeTransition {
+        contract_version: RECORDED_RUNTIME_CONTRACT_VERSION,
+        transition_id: format!("start-{run_id}"),
+        expected_event_seq: payload["expected_event_seq"].as_i64().unwrap_or_default(),
+        kind: RecordedTransitionKind::Start,
+        run_id: run_id.to_owned(),
+        workflow_id: payload["workflow_id"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned(),
+        conversation_id: payload["conversation_id"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned(),
+        user_id: payload["user_id"].as_str().map(str::to_owned),
+        user_turn_node_id: payload["turn_node_id"].as_str().map(str::to_owned),
+        step_seq: 0,
+        node_id: Some(start_node_id.to_owned()),
+        token_id: Some(run_id.to_owned()),
+        parent_token_id: None,
+        initial_state: Some(
+            payload["initial_state"]
+                .as_object()
+                .cloned()
+                .unwrap_or_default(),
+        ),
+        state_update: Vec::new(),
+        update: None,
+        state_schema: serde_json::Map::new(),
+        frontier: Some(RuntimeFrontier {
+            pending: vec![(
+                start_node_id.to_owned(),
+                start_join_mask,
+                run_id.to_owned(),
+                None,
+            )],
+            join_outstanding: runtime_join_outstanding(join_node_ids.len(), start_join_mask),
+            join_waiters: join_node_ids
+                .iter()
+                .cloned()
+                .map(|node_id| (node_id, Vec::new()))
+                .collect(),
+            join_node_ids,
+            ..RuntimeFrontier::default()
+        }),
+        result: None,
+        wait_reason: None,
+        resume_payload: None,
+        errors: Vec::new(),
+    }
+}
+
+fn runtime_submit_retry_response(
+    existing: &ServerRun,
+    lanes: &[ProjectedLaneMessage],
+    expected_worker_payload: &Value,
+) -> Result<Option<Value>, String> {
+    let Some(lane) = lanes.iter().find(|lane| {
+        lane.run_id.as_deref() == Some(existing.run_id.as_str())
+            && lane.msg_type == "workflow.run.execute"
+    }) else {
+        return Ok(None);
+    };
+    let mut persisted: Value =
+        serde_json::from_str(lane.payload_json.as_deref().unwrap_or("{}"))
+            .map_err(|error| format!("existing runtime admission payload is invalid: {error}"))?;
+    if let Some(object) = persisted.as_object_mut() {
+        object.remove("expected_event_seq");
+        object.remove("runtime_started");
+    }
+    if &persisted != expected_worker_payload {
+        return Err(format!(
+            "run_id {:?} already belongs to a different runtime admission",
+            existing.run_id
+        ));
+    }
+    Ok(Some(json!({
+        "run_id": existing.run_id,
+        "conversation_id": existing.conversation_id,
+        "workflow_id": existing.workflow_id,
+        "turn_node_id": existing.user_turn_node_id,
+        "status": existing.status,
+        "priority_class": expected_worker_payload["priority_class"],
+        "token_budget": expected_worker_payload["token_budget"],
+        "time_budget_ms": expected_worker_payload["time_budget_ms"],
+        "admission": "accepted",
+        "idempotent": true,
+        "lane_message_id": lane.message_id,
+    })))
 }
 
 fn string_list(value: &Value) -> Vec<String> {
@@ -766,6 +967,10 @@ fn runtime_graph_plan_from_snapshot(payload_json: &str) -> Option<RuntimeGraphPl
     let mut route_metadata = Vec::new();
     for edge in edges {
         let edge_id = edge["id"].as_str().unwrap_or_default().to_owned();
+        let edge_label = edge["label"]
+            .as_str()
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned);
         let predicate = edge["metadata"]["wf_predicate"]
             .as_str()
             .filter(|predicate| !predicate.is_empty())
@@ -779,16 +984,24 @@ fn runtime_graph_plan_from_snapshot(payload_json: &str) -> Option<RuntimeGraphPl
         for source in string_list(&edge["source_ids"]) {
             for target in string_list(&edge["target_ids"]) {
                 topology_edges.push([source.clone(), target.clone()]);
+                let mut aliases = node_aliases.get(&target).cloned().unwrap_or_else(|| {
+                    vec![
+                        target.clone(),
+                        target.split('|').next_back().unwrap_or(&target).to_owned(),
+                    ]
+                });
+                if let Some(label) = edge_label.as_ref()
+                    && !aliases.contains(label)
+                {
+                    aliases.push(label.clone());
+                }
+                aliases.sort();
+                aliases.dedup();
                 route_metadata.push((
                     edge_id.clone(),
                     source.clone(),
                     target.clone(),
-                    node_aliases.get(&target).cloned().unwrap_or_else(|| {
-                        vec![
-                            target.clone(),
-                            target.split('|').next_back().unwrap_or(&target).to_owned(),
-                        ]
-                    }),
+                    aliases,
                     predicate.clone(),
                     multiplicity.clone(),
                     is_default,
@@ -4075,16 +4288,7 @@ impl SqliteRunApplicationService {
     }
 
     fn resume_runtime_run(&self, run_id: &str, request: &ApiEffectRequest) -> ApiEffectResponse {
-        #[derive(Deserialize)]
-        struct ResumeRun {
-            suspended_node_id: String,
-            suspended_token_id: String,
-            #[serde(default)]
-            client_result: Value,
-            workflow_id: String,
-            conversation_id: String,
-        }
-        let input: ResumeRun = match serde_json::from_slice(&request.body) {
+        let input: RuntimeResumeRequest = match serde_json::from_slice(&request.body) {
             Ok(value) => value,
             Err(error) => {
                 return effect_error(
@@ -4168,7 +4372,7 @@ impl SqliteRunApplicationService {
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(str::to_owned)
-            .unwrap_or_else(|| format!("wf_turn|{}", uuid::Uuid::new_v4()));
+            .unwrap_or_else(|| format!("wf_turn|{run_id}"));
         let message_id = format!("lane|{}", uuid::Uuid::new_v4());
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -4177,12 +4381,12 @@ impl SqliteRunApplicationService {
         let priority_class = if input.priority_class.is_empty() {
             default_runtime_priority_class()
         } else {
-            input.priority_class
+            input.priority_class.clone()
         };
         let runtime_kind = if input.runtime_kind.is_empty() {
             default_runtime_kind()
         } else {
-            input.runtime_kind
+            input.runtime_kind.clone()
         };
         let event_payload = json!({
             "run_id": run_id,
@@ -4202,6 +4406,16 @@ impl SqliteRunApplicationService {
                 .ok()
                 .flatten(),
         );
+        if graph_plan
+            .as_ref()
+            .is_some_and(|plan| submitted_runtime_graph_conflicts(plan, &input))
+        {
+            return effect_error(
+                StatusCode::CONFLICT,
+                "KOGWISTAR_RUNTIME_GRAPH_CONFLICT",
+                "submitted frozen runtime graph differs from authoritative workflow design",
+            );
+        }
         let effective_routes = graph_plan
             .as_ref()
             .map(|plan| plan.routes.clone())
@@ -4230,7 +4444,14 @@ impl SqliteRunApplicationService {
             .as_ref()
             .map(|plan| plan.node_ops.clone())
             .unwrap_or(input.node_ops);
-        let effective_start_op = effective_node_ops.get(&effective_start_node_id).cloned();
+        // Even a bare transport-level submission must hand the Python worker a
+        // frozen operation.  Later continuation lanes already use this same
+        // no-op fallback; leaving the admission lane as JSON null made the
+        // worker correctly reject an otherwise valid durable run.
+        let effective_start_op = effective_node_ops
+            .get(&effective_start_node_id)
+            .cloned()
+            .unwrap_or_else(|| "noop".to_owned());
         let mut initial_state = input.initial_state.clone();
         if !effective_routes.is_empty() {
             initial_state.insert(
@@ -4269,6 +4490,26 @@ impl SqliteRunApplicationService {
             "op": effective_start_op,
             "runtime_routes": effective_routes,
         });
+        if let Ok(Some(existing)) = self.store.get_server_run(&run_id) {
+            let lanes = self
+                .store
+                .list_projected_lane_messages(LaneMessageFilter {
+                    namespace: Some("workflow".to_owned()),
+                    inbox_id: Some("workflow-runtime".to_owned()),
+                    correlation_id: Some(run_id.clone()),
+                    limit: 10,
+                    ..LaneMessageFilter::default()
+                })
+                .unwrap_or_default();
+            return match runtime_submit_retry_response(&existing, &lanes, &worker_payload) {
+                Ok(Some(value)) => json_effect(StatusCode::ACCEPTED, value),
+                Ok(None) | Err(_) => effect_error(
+                    StatusCode::CONFLICT,
+                    "KOGWISTAR_RUNTIME_ADMISSION_CONFLICT",
+                    format!("run_id {run_id:?} already exists with different admission state"),
+                ),
+            };
+        }
         let max_queue = self.max_queue;
         let outcome = self.store.immediate_transaction(|uow| {
             let active_count = ["pending", "claimed"]
@@ -4410,73 +4651,11 @@ impl SqliteRunApplicationService {
                     uow.update_projected_lane_message_status(&lane.message_id, "cancelled", None)?;
                     continue;
                 }
-                let workflow_id = payload["workflow_id"].as_str().unwrap_or_default();
-                let conversation_id = payload["conversation_id"].as_str().unwrap_or_default();
                 let starts_runtime = lane.msg_type == "workflow.run.execute"
                     && payload["runtime_started"].as_bool() != Some(true);
                 let expected_event_seq = if starts_runtime {
-                    let start_node_id = payload["start_node_id"].as_str().unwrap_or("start");
-                    let turn_node_id = payload["turn_node_id"].as_str().unwrap_or_default();
-                    let initial_state = payload["initial_state"]
-                        .as_object()
-                        .cloned()
-                        .unwrap_or_default();
                     uow.apply_recorded_runtime_transition(
-                        RecordedRuntimeTransition {
-                            contract_version: RECORDED_RUNTIME_CONTRACT_VERSION,
-                            transition_id: format!("start-{run_id}"),
-                            expected_event_seq: payload["expected_event_seq"]
-                                .as_i64()
-                                .unwrap_or_default(),
-                            kind: RecordedTransitionKind::Start,
-                            run_id: run_id.clone(),
-                            workflow_id: workflow_id.to_owned(),
-                            conversation_id: conversation_id.to_owned(),
-                            user_id: payload["user_id"].as_str().map(str::to_owned),
-                            user_turn_node_id: Some(turn_node_id.to_owned()),
-                            step_seq: 0,
-                            node_id: Some(start_node_id.to_owned()),
-                            token_id: Some(run_id.clone()),
-                            parent_token_id: None,
-                            initial_state: Some(initial_state),
-                            state_update: Vec::new(),
-                            update: None,
-                            state_schema: serde_json::Map::new(),
-                            frontier: Some(RuntimeFrontier {
-                                pending: vec![(
-                                    start_node_id.to_owned(),
-                                    payload["start_join_mask"].as_i64().unwrap_or_default(),
-                                    run_id.clone(),
-                                    None,
-                                )],
-                                join_outstanding: vec![
-                                    1;
-                                    payload["join_node_ids"]
-                                        .as_array()
-                                        .map(Vec::len)
-                                        .unwrap_or_default()
-                                ],
-                                join_waiters: payload["join_node_ids"]
-                                    .as_array()
-                                    .into_iter()
-                                    .flatten()
-                                    .filter_map(Value::as_str)
-                                    .map(|node_id| (node_id.to_owned(), Vec::new()))
-                                    .collect(),
-                                join_node_ids: payload["join_node_ids"]
-                                    .as_array()
-                                    .into_iter()
-                                    .flatten()
-                                    .filter_map(Value::as_str)
-                                    .map(str::to_owned)
-                                    .collect(),
-                                ..RuntimeFrontier::default()
-                            }),
-                            result: None,
-                            wait_reason: None,
-                            resume_payload: None,
-                            errors: Vec::new(),
-                        },
+                        runtime_start_transition(&payload, &run_id),
                         false,
                     )?
                     .event_seq
@@ -4497,16 +4676,13 @@ impl SqliteRunApplicationService {
                     &lane.message_id,
                     serde_json::to_string(&claimed_payload)?,
                 )?;
-                values.push(json!({
-                    "message_id": lane.message_id,
-                    "claimed_by": input.claimed_by,
-                    "run_id": run_id,
-                    "step_id": lane.step_id,
-                    "correlation_id": lane.correlation_id,
-                    "payload": claimed_payload,
-                    "expected_event_seq": expected_event_seq,
-                    "lease_until": lane.lease_until,
-                }));
+                values.push(runtime_claimed_work(
+                    lane,
+                    &input.claimed_by,
+                    run_id,
+                    claimed_payload,
+                    expected_event_seq,
+                ));
             }
             Ok(values)
         });
@@ -4521,16 +4697,7 @@ impl SqliteRunApplicationService {
     }
 
     fn apply_runtime_result(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
-        #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct WorkerResultRequest {
-            handoff: RecordedWorkerHandoff,
-            #[serde(default)]
-            transition: Option<RecordedRuntimeTransition>,
-            #[serde(default)]
-            effect: Option<RecordedWorkerSuccessEffect>,
-        }
-        let input: WorkerResultRequest = match serde_json::from_slice(&request.body) {
+        let input: RuntimeWorkerResultRequest = match serde_json::from_slice(&request.body) {
             Ok(value) => value,
             Err(error) => {
                 return effect_error(
@@ -4643,7 +4810,28 @@ impl SqliteRunApplicationService {
                     if uow.get_projected_lane_message(&message_id)?.is_some() {
                         continue;
                     }
-                    let op = applied.reduced.state.state["_rt_node_ops"][node_id].clone();
+                    let op = applied
+                        .reduced
+                        .state
+                        .state
+                        .get("_rt_node_ops")
+                        .and_then(Value::as_object)
+                        .and_then(|ops| ops.get(node_id))
+                        .cloned()
+                        .unwrap_or_else(|| Value::String("noop".to_owned()));
+                    let payload = RuntimeStepExecutePayload::from_recorded_state(
+                        &applied.reduced.state,
+                        RuntimeStepExecuteRequest {
+                            node_id: node_id.clone(),
+                            op,
+                            join_mask: *join_mask,
+                            token_id: token_id.clone(),
+                            parent_token_id: parent_token_id.clone(),
+                            step_seq: next_step_seq,
+                            expected_event_seq: applied.event_seq,
+                            resume_effect: None,
+                        },
+                    );
                     uow.project_lane_message(NewProjectedLaneMessage {
                         message_id,
                         namespace: "workflow".to_owned(),
@@ -4659,22 +4847,7 @@ impl SqliteRunApplicationService {
                         run_id: Some(transition.run_id.clone()),
                         step_id: Some(node_id.clone()),
                         correlation_id: Some(transition.run_id.clone()),
-                        payload_json: Some(serde_json::to_string(&json!({
-                            "contract_version": 1,
-                            "kind": "workflow.step.execute",
-                            "run_id": transition.run_id,
-                            "workflow_id": transition.workflow_id,
-                            "conversation_id": transition.conversation_id,
-                            "node_id": node_id,
-                            "op": op,
-                            "runtime_routes": applied.reduced.state.static_routes,
-                            "join_mask": join_mask,
-                            "token_id": token_id,
-                            "parent_token_id": parent_token_id,
-                            "step_seq": next_step_seq,
-                            "expected_event_seq": applied.event_seq,
-                            "state": applied.reduced.state.state,
-                        }))?),
+                        payload_json: Some(serde_json::to_string(&payload)?),
                         error_json: None,
                     })?;
                 }
@@ -6293,7 +6466,7 @@ impl PostgresRunApplicationService {
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(str::to_owned)
-            .unwrap_or_else(|| format!("wf_turn|{}", uuid::Uuid::new_v4()));
+            .unwrap_or_else(|| format!("wf_turn|{run_id}"));
         let message_id = format!("lane|{}", uuid::Uuid::new_v4());
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -6302,12 +6475,12 @@ impl PostgresRunApplicationService {
         let priority_class = if input.priority_class.is_empty() {
             "foreground".to_owned()
         } else {
-            input.priority_class
+            input.priority_class.clone()
         };
         let runtime_kind = if input.runtime_kind.is_empty() {
             "sync".to_owned()
         } else {
-            input.runtime_kind
+            input.runtime_kind.clone()
         };
         let graph_plan = match (
             self.store
@@ -6320,6 +6493,16 @@ impl PostgresRunApplicationService {
             (Ok(projection), Ok(snapshot)) => exact_runtime_graph_plan(projection, snapshot),
             _ => None,
         };
+        if graph_plan
+            .as_ref()
+            .is_some_and(|plan| submitted_runtime_graph_conflicts(plan, &input))
+        {
+            return effect_error(
+                StatusCode::CONFLICT,
+                "KOGWISTAR_RUNTIME_GRAPH_CONFLICT",
+                "submitted frozen runtime graph differs from authoritative workflow design",
+            );
+        }
         let effective_routes = graph_plan
             .as_ref()
             .map(|plan| plan.routes.clone())
@@ -6348,7 +6531,13 @@ impl PostgresRunApplicationService {
             .as_ref()
             .map(|plan| plan.node_ops.clone())
             .unwrap_or(input.node_ops);
-        let effective_start_op = effective_node_ops.get(&effective_start_node_id).cloned();
+        // Keep PostgreSQL admission wire-identical to SQLite: the worker must
+        // receive a frozen operation, never a null value requiring a node-id
+        // resolver guess.
+        let effective_start_op = effective_node_ops
+            .get(&effective_start_node_id)
+            .cloned()
+            .unwrap_or_else(|| "noop".to_owned());
         let mut initial_state = input.initial_state;
         if !effective_routes.is_empty() {
             initial_state.insert(
@@ -6380,6 +6569,47 @@ impl PostgresRunApplicationService {
             "admission": "accepted",
             "lane_message_id": message_id,
         });
+        if let Ok(Some(existing)) = self.store.get_server_run(&run_id).await {
+            let lanes = self
+                .store
+                .list_projected_lane_messages(LaneMessageFilter {
+                    namespace: Some("workflow".to_owned()),
+                    inbox_id: Some("workflow-runtime".to_owned()),
+                    correlation_id: Some(run_id.clone()),
+                    limit: 10,
+                    ..LaneMessageFilter::default()
+                })
+                .await
+                .unwrap_or_default();
+            let expected_worker_payload = json!({
+                "contract_version": 1,
+                "kind": "workflow.run.execute",
+                "run_id": run_id,
+                "workflow_id": workflow_id,
+                "conversation_id": conversation_id,
+                "turn_node_id": turn_node_id,
+                "user_id": input.user_id,
+                "initial_state": initial_state,
+                "priority_class": priority_class,
+                "token_budget": input.token_budget,
+                "time_budget_ms": input.time_budget_ms,
+                "runtime_kind": runtime_kind,
+                "join_node_ids": effective_join_node_ids,
+                "start_join_mask": effective_start_join_mask,
+                "start_node_id": effective_start_node_id,
+                "op": effective_start_op,
+                "runtime_routes": effective_routes,
+            });
+            return match runtime_submit_retry_response(&existing, &lanes, &expected_worker_payload)
+            {
+                Ok(Some(value)) => json_effect(StatusCode::ACCEPTED, value),
+                Ok(None) | Err(_) => effect_error(
+                    StatusCode::CONFLICT,
+                    "KOGWISTAR_RUNTIME_ADMISSION_CONFLICT",
+                    format!("run_id {run_id:?} already exists with different admission state"),
+                ),
+            };
+        }
         let max_queue = self.max_queue;
         let queued_priority_class = priority_class.clone();
         let queue_full_admission = if matches!(priority_class.as_str(), "background" | "batch") {
@@ -6560,82 +6790,21 @@ impl PostgresRunApplicationService {
                         let starts_runtime = lane.msg_type == "workflow.run.execute"
                             && payload["runtime_started"].as_bool() != Some(true);
                         let expected_event_seq = if starts_runtime {
-                            let start_node_id =
-                                payload["start_node_id"].as_str().unwrap_or("start");
-                            let initial_state = payload["initial_state"]
-                                .as_object()
-                                .cloned()
-                                .unwrap_or_default();
                             uow.apply_recorded_runtime_transition(
-                                RecordedRuntimeTransition {
-                                    contract_version: RECORDED_RUNTIME_CONTRACT_VERSION,
-                                    transition_id: format!("start-{run_id}"),
-                                    expected_event_seq: payload["expected_event_seq"]
-                                        .as_i64()
-                                        .unwrap_or_default(),
-                                    kind: RecordedTransitionKind::Start,
-                                    run_id: run_id.clone(),
-                                    workflow_id: payload["workflow_id"]
-                                        .as_str()
-                                        .unwrap_or_default()
-                                        .to_owned(),
-                                    conversation_id: payload["conversation_id"]
-                                        .as_str()
-                                        .unwrap_or_default()
-                                        .to_owned(),
-                                    user_id: payload["user_id"].as_str().map(str::to_owned),
-                                    user_turn_node_id: payload["turn_node_id"]
-                                        .as_str()
-                                        .map(str::to_owned),
-                                    step_seq: 0,
-                                    node_id: Some(start_node_id.to_owned()),
-                                    token_id: Some(run_id.clone()),
-                                    parent_token_id: None,
-                                    initial_state: Some(initial_state),
-                                    state_update: Vec::new(),
-                                    update: None,
-                                    state_schema: serde_json::Map::new(),
-                                    frontier: Some(RuntimeFrontier {
-                                        pending: vec![(
-                                            start_node_id.to_owned(),
-                                            payload["start_join_mask"].as_i64().unwrap_or_default(),
-                                            run_id.clone(),
-                                            None,
-                                        )],
-                                        join_outstanding: vec![
-                                            1;
-                                            payload["join_node_ids"]
-                                                .as_array()
-                                                .map(Vec::len)
-                                                .unwrap_or_default()
-                                        ],
-                                        join_waiters: payload["join_node_ids"]
-                                            .as_array()
-                                            .into_iter()
-                                            .flatten()
-                                            .filter_map(Value::as_str)
-                                            .map(|node_id| (node_id.to_owned(), Vec::new()))
-                                            .collect(),
-                                        join_node_ids: payload["join_node_ids"]
-                                            .as_array()
-                                            .into_iter()
-                                            .flatten()
-                                            .filter_map(Value::as_str)
-                                            .map(str::to_owned)
-                                            .collect(),
-                                        ..RuntimeFrontier::default()
-                                    }),
-                                    result: None,
-                                    wait_reason: None,
-                                    resume_payload: None,
-                                    errors: Vec::new(),
-                                },
+                                runtime_start_transition(&payload, &run_id),
                                 false,
                             )
                             .await?
                             .event_seq
                         } else {
-                            payload["expected_event_seq"].as_i64().unwrap_or_default()
+                            payload["expected_event_seq"].as_i64().ok_or_else(|| {
+                                kogwistar_store_postgres::PostgresStoreError::RecordedRuntimeConflict(
+                                    format!(
+                                        "continuation lane message {:?} lacks expected_event_seq",
+                                        lane.message_id
+                                    ),
+                                )
+                            })?
                         };
                         payload["expected_event_seq"] = json!(expected_event_seq);
                         if lane.msg_type == "workflow.run.execute" {
@@ -6646,16 +6815,13 @@ impl PostgresRunApplicationService {
                             serde_json::to_string(&payload)?,
                         )
                         .await?;
-                        values.push(json!({
-                            "message_id": lane.message_id,
-                            "claimed_by": input.claimed_by,
-                            "run_id": run_id,
-                            "step_id": lane.step_id,
-                            "correlation_id": lane.correlation_id,
-                            "payload": payload,
-                            "expected_event_seq": expected_event_seq,
-                            "lease_until": lane.lease_until,
-                        }));
+                        values.push(runtime_claimed_work(
+                            lane,
+                            &input.claimed_by,
+                            run_id,
+                            payload,
+                            expected_event_seq,
+                        ));
                     }
                     Ok(values)
                 })
@@ -6672,13 +6838,7 @@ impl PostgresRunApplicationService {
     }
 
     async fn apply_runtime_result(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
-        #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct WorkerResultRequest {
-            handoff: RecordedWorkerHandoff,
-            effect: RecordedWorkerSuccessEffect,
-        }
-        let input: WorkerResultRequest = match serde_json::from_slice(&request.body) {
+        let input: RuntimeWorkerResultRequest = match serde_json::from_slice(&request.body) {
             Ok(value) => value,
             Err(error) => {
                 return effect_error(
@@ -6688,18 +6848,39 @@ impl PostgresRunApplicationService {
                 );
             }
         };
+        if input.transition.is_some() == input.effect.is_some() {
+            return effect_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "KOGWISTAR_INVALID_REQUEST",
+                "exactly one of transition or effect is required",
+            );
+        }
         let outcome = self
             .store
             .transaction(|uow| {
                 Box::pin(async move {
                     let handoff = input.handoff;
-                    let effect_id = input.effect.effect_id.clone();
-                    let terminal_result = input.effect.result.clone();
-                    let usage = input.effect.usage.clone();
-                    let trace_events = input.effect.trace_events.clone();
-                    let applied = uow
-                        .apply_claimed_recorded_worker_effect(handoff, input.effect)
-                        .await?;
+                    let (applied, effect_id, terminal_result, usage, trace_events) =
+                        if let Some(transition) = input.transition {
+                            let effect_id = transition.transition_id.clone();
+                            let terminal_result = transition.result.clone();
+                            let applied = uow
+                                .apply_claimed_recorded_runtime_transition(
+                                    handoff, transition, false,
+                                )
+                                .await?;
+                            (applied, effect_id, terminal_result, None, Vec::new())
+                        } else {
+                            let effect = input.effect.expect("effect checked above");
+                            let effect_id = effect.effect_id.clone();
+                            let terminal_result = effect.result.clone();
+                            let usage = effect.usage.clone();
+                            let trace_events = effect.trace_events.clone();
+                            let applied = uow
+                                .apply_claimed_recorded_worker_effect(handoff, effect)
+                                .await?;
+                            (applied, effect_id, terminal_result, usage, trace_events)
+                        };
                     let state = applied.reduced.state.clone();
                     let frontier = &state.frontier;
                     let unfinished = !frontier.pending.is_empty()
@@ -6743,7 +6924,26 @@ impl PostgresRunApplicationService {
                             if uow.get_projected_lane_message(&message_id).await?.is_some() {
                                 continue;
                             }
-                            let op = state.state["_rt_node_ops"][node_id].clone();
+                            let op = state
+                                .state
+                                .get("_rt_node_ops")
+                                .and_then(Value::as_object)
+                                .and_then(|ops| ops.get(node_id))
+                                .cloned()
+                                .unwrap_or_else(|| Value::String("noop".to_owned()));
+                            let payload = RuntimeStepExecutePayload::from_recorded_state(
+                                &state,
+                                RuntimeStepExecuteRequest {
+                                    node_id: node_id.clone(),
+                                    op,
+                                    join_mask: *join_mask,
+                                    token_id: token_id.clone(),
+                                    parent_token_id: parent_token_id.clone(),
+                                    step_seq: next_step_seq,
+                                    expected_event_seq: applied.event_seq,
+                                    resume_effect: None,
+                                },
+                            );
                             uow.project_lane_message(NewProjectedLaneMessage {
                                 message_id,
                                 namespace: "workflow".to_owned(),
@@ -6759,22 +6959,7 @@ impl PostgresRunApplicationService {
                                 run_id: Some(state.run_id.clone()),
                                 step_id: Some(node_id.clone()),
                                 correlation_id: Some(state.run_id.clone()),
-                                payload_json: Some(serde_json::to_string(&json!({
-                                    "contract_version": 1,
-                                    "kind": "workflow.step.execute",
-                                    "run_id": state.run_id,
-                                    "workflow_id": state.workflow_id,
-                                    "conversation_id": state.conversation_id,
-                                    "node_id": node_id,
-                                    "op": op,
-                                    "runtime_routes": state.static_routes,
-                                    "join_mask": join_mask,
-                                    "token_id": token_id,
-                                    "parent_token_id": parent_token_id,
-                                    "step_seq": next_step_seq,
-                                    "expected_event_seq": applied.event_seq,
-                                    "state": state.state,
-                                }))?),
+                                payload_json: Some(serde_json::to_string(&payload)?),
                                 error_json: None,
                             })
                             .await?;
@@ -6863,16 +7048,7 @@ impl PostgresRunApplicationService {
         run_id: &str,
         request: &ApiEffectRequest,
     ) -> ApiEffectResponse {
-        #[derive(Deserialize)]
-        struct ResumeRun {
-            suspended_node_id: String,
-            suspended_token_id: String,
-            #[serde(default)]
-            client_result: Value,
-            workflow_id: String,
-            conversation_id: String,
-        }
-        let input: ResumeRun = match serde_json::from_slice(&request.body) {
+        let input: RuntimeResumeRequest = match serde_json::from_slice(&request.body) {
             Ok(value) => value,
             Err(error) => {
                 return effect_error(
@@ -9932,6 +10108,20 @@ mod tests {
     use axum::http::Request;
     use tower::ServiceExt;
 
+    fn remove_test_sqlite(path: &std::path::Path) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        loop {
+            match std::fs::remove_file(path) {
+                Ok(()) => return,
+                Err(error) if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    let _ = error;
+                }
+                Err(error) => panic!("failed to remove test SQLite file {path:?}: {error}"),
+            }
+        }
+    }
+
     fn snapshot() -> HealthSnapshot {
         HealthSnapshot {
             backend: "pg".to_owned(),
@@ -11296,6 +11486,7 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
             serde_json::from_slice(&to_bytes(mcp.into_body(), 65_536).await.unwrap()).unwrap();
         assert_eq!(body["result"]["node_id"], "mcp-node");
         drop(service);
+        drop(store);
         std::fs::remove_file(path).unwrap();
     }
 
@@ -12274,6 +12465,82 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
         }
     }
 
+    #[test]
+    fn runtime_start_tracks_only_reachable_join_obligations() {
+        assert_eq!(runtime_join_outstanding(4, 0b0101), vec![1, 0, 1, 0]);
+    }
+
+    #[test]
+    fn python_runtime_wire_vectors_round_trip_through_rust_dtos() {
+        let vectors: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/adr015-runtime-wire-v1.json"
+        )))
+        .unwrap();
+        let submit: RuntimeSubmitRun = serde_json::from_value(vectors["submit"].clone()).unwrap();
+        let claim: RuntimeClaimRequest = serde_json::from_value(vectors["claim"].clone()).unwrap();
+        let result: RuntimeWorkerResultRequest =
+            serde_json::from_value(vectors["result_effect"].clone()).unwrap();
+        let transition_result: RuntimeWorkerResultRequest =
+            serde_json::from_value(vectors["result_transition"].clone()).unwrap();
+        let resume: RuntimeResumeRequest =
+            serde_json::from_value(vectors["resume"].clone()).unwrap();
+        let sqlite_work: RuntimeClaimedWork =
+            serde_json::from_value(vectors["claimed_work_sqlite"].clone()).unwrap();
+        let postgres_work: RuntimeClaimedWork =
+            serde_json::from_value(vectors["claimed_work_postgres"].clone()).unwrap();
+        let step_execute: kogwistar_runtime::RuntimeStepExecutePayload =
+            serde_json::from_value(vectors["step_execute"].clone()).unwrap();
+        assert_eq!(serde_json::to_value(submit).unwrap(), vectors["submit"]);
+        assert_eq!(serde_json::to_value(claim).unwrap(), vectors["claim"]);
+        assert_eq!(
+            serde_json::to_value(result).unwrap(),
+            vectors["result_effect"]
+        );
+        assert_eq!(
+            serde_json::to_value(transition_result).unwrap(),
+            vectors["result_transition"]
+        );
+        assert_eq!(serde_json::to_value(resume).unwrap(), vectors["resume"]);
+        assert_eq!(
+            serde_json::to_value(sqlite_work).unwrap(),
+            vectors["claimed_work_sqlite"]
+        );
+        assert_eq!(
+            serde_json::to_value(postgres_work).unwrap(),
+            vectors["claimed_work_postgres"]
+        );
+        assert_eq!(
+            serde_json::to_value(step_execute).unwrap(),
+            vectors["step_execute"]
+        );
+    }
+
+    #[test]
+    fn runtime_start_builder_preserves_all_python_wire_identity() {
+        let vectors: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/adr015-runtime-wire-v1.json"
+        )))
+        .unwrap();
+        let mut payload = vectors["submit"].clone();
+        payload["expected_event_seq"] = json!(7);
+        let transition = runtime_start_transition(&payload, "run-1");
+        assert_eq!(transition.run_id, "run-1");
+        assert_eq!(transition.workflow_id, "wf-1");
+        assert_eq!(transition.conversation_id, "conv-1");
+        assert_eq!(transition.user_id.as_deref(), Some("user-1"));
+        assert_eq!(transition.user_turn_node_id, None);
+        assert_eq!(transition.node_id.as_deref(), Some("entry"));
+        assert_eq!(transition.token_id.as_deref(), Some("run-1"));
+        assert_eq!(transition.expected_event_seq, 7);
+        let frontier = transition.frontier.unwrap();
+        assert_eq!(frontier.pending[0].0, "entry");
+        assert_eq!(frontier.pending[0].1, 1);
+        assert_eq!(frontier.join_node_ids, vec!["join"]);
+        assert_eq!(frontier.join_outstanding, vec![1]);
+    }
+
     #[tokio::test]
     async fn sqlite_run_service_handles_get_events_and_cancel() {
         use axum::body::{Body, to_bytes};
@@ -12331,6 +12598,45 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
         let submitted = serde_json::from_slice::<Value>(&submit_body).unwrap();
         let submitted_run_id = submitted["run_id"].as_str().unwrap();
         assert_eq!(submitted_run_id, "caller-run-id");
+        let retried_submit = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/workflow/runs")
+                    .header("content-type", "application/json")
+                    .header("x-kogwistar-roles", "reader")
+                    .body(Body::from(
+                        r#"{"run_id":"caller-run-id","workflow_id":"workflow-submit","conversation_id":"conversation-submit","initial_state":{"seed":1},"priority_class":"foreground","runtime_kind":"sync","start_node_id":"entry","node_ops":{"entry":"begin"}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(retried_submit.status(), StatusCode::ACCEPTED);
+        let retried_submit = serde_json::from_slice::<Value>(
+            &to_bytes(retried_submit.into_body(), 8192).await.unwrap(),
+        )
+        .unwrap();
+        assert_eq!(retried_submit["idempotent"], true);
+        assert_eq!(retried_submit["run_id"], "caller-run-id");
+
+        let conflicting_submit = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/workflow/runs")
+                    .header("content-type", "application/json")
+                    .header("x-kogwistar-roles", "reader")
+                    .body(Body::from(
+                        r#"{"run_id":"caller-run-id","workflow_id":"workflow-submit","conversation_id":"conversation-submit","initial_state":{"seed":2},"priority_class":"foreground","runtime_kind":"sync","start_node_id":"entry","node_ops":{"entry":"begin"}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(conflicting_submit.status(), StatusCode::CONFLICT);
         assert_eq!(
             store
                 .get_server_run(submitted_run_id)
@@ -12625,7 +12931,7 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
             let steps_body = to_bytes(steps.into_body(), 16_384).await.unwrap();
             let steps_value = serde_json::from_slice::<Value>(&steps_body).unwrap();
             assert_eq!(steps_value["steps"].as_array().unwrap().len(), 1);
-            assert_eq!(steps_value["steps"][0]["workflow_node_id"], "start");
+            assert_eq!(steps_value["steps"][0]["workflow_node_id"], "entry");
             assert_eq!(steps_value["steps"][0]["result"]["answer"], "worker");
 
             let checkpoints = app
@@ -13729,6 +14035,7 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
         );
         assert!(claimed_cancel_state.state.get("must_not_apply").is_none());
 
+        drop(app);
         let app = router_with_application(
             ApiState {
                 health: snapshot(),
@@ -13837,6 +14144,7 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
         assert_eq!(mcp_value["result"]["run_id"], "run-1");
 
         let mcp_events = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .method("POST")
@@ -13855,7 +14163,9 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
             serde_json::from_slice::<Value>(&mcp_event_body).unwrap()["result"]["events"][0]["event_type"],
             "run.started"
         );
-        std::fs::remove_file(path).unwrap();
+        drop(app);
+        drop(store);
+        remove_test_sqlite(&path);
     }
 
     #[tokio::test]
@@ -13901,6 +14211,26 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
         };
         let first = app.clone().oneshot(submit("foreground")).await.unwrap();
         assert_eq!(first.status(), StatusCode::ACCEPTED);
+        let claimed = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/internal/runtime/claim")
+                    .header("content-type", "application/json")
+                    .header("x-kogwistar-roles", "reader")
+                    .body(Body::from(
+                        r#"{"claimed_by":"backpressure-worker","limit":1,"lease_seconds":60}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(claimed.status(), StatusCode::OK);
+        let claimed =
+            serde_json::from_slice::<Value>(&to_bytes(claimed.into_body(), 8192).await.unwrap())
+                .unwrap();
+        assert_eq!(claimed["work"][0]["payload"]["op"], "noop");
         for (priority_class, admission) in [("foreground", "deferred"), ("batch", "rejected")] {
             let response = app.clone().oneshot(submit(priority_class)).await.unwrap();
             assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
@@ -13926,6 +14256,8 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
                 .len(),
             1
         );
+        drop(store);
+        drop(app);
         std::fs::remove_file(path).unwrap();
     }
 
@@ -14044,7 +14376,7 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
             app.clone(),
             "POST",
             "/api/workflow/runs".to_owned(),
-            json!({"workflow_id":"resume-wf","conversation_id":"resume-conv"}),
+            json!({"workflow_id":"resume-wf","conversation_id":"resume-conv","turn_node_id":"turn-original"}),
         )
         .await;
         assert_eq!(status, StatusCode::ACCEPTED);
@@ -14099,11 +14431,19 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
         assert_eq!(status, StatusCode::OK);
         assert_eq!(contract["wait_reason"], "approval");
         assert_eq!(contract["suspended"][0][0], "start");
+        assert_eq!(contract["runtime_routes"], json!([]));
+        assert_eq!(contract["node_ops"], json!({}));
         let token_id = contract["suspended"][0][2].as_str().unwrap().to_owned();
         let resume_body = json!({
             "suspended_node_id": "start",
             "suspended_token_id": token_id,
-            "client_result": {"approved": true},
+            "client_result": {
+                "status": "success",
+                "state_update": [["u", {"approved": true}]],
+                "successors": [],
+                "route_next": [],
+                "result": {"workflow_status": "succeeded"}
+            },
             "workflow_id": "resume-wf",
             "conversation_id": "resume-conv",
             "turn_node_id": "unused-compatible-field",
@@ -14129,7 +14469,12 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
         .await;
         let work = &claimed["work"][0];
         assert_eq!(work["step_id"], "start");
-        assert_eq!(work["payload"]["resume_payload"]["approved"], true);
+        assert_eq!(work["payload"]["turn_node_id"], "turn-original");
+        assert_eq!(work["payload"]["resume_effect"]["status"], "success");
+        assert_eq!(
+            work["payload"]["resume_effect"]["state_update"][0][1]["approved"],
+            true
+        );
         let (status, _) = call(
             app.clone(),
             "POST",
@@ -14313,6 +14658,7 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
             serde_json::from_slice::<Value>(&next_body).unwrap()["work"][0]["step_id"],
             "graph-end"
         );
+        drop(store);
         std::fs::remove_file(path).unwrap();
     }
 
@@ -14479,6 +14825,7 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
             serde_json::from_slice::<Value>(&next_body).unwrap()["work"][0]["step_id"],
             "right"
         );
+        drop(store);
         std::fs::remove_file(path).unwrap();
     }
 

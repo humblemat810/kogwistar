@@ -70,6 +70,11 @@ def _exercise_postgres_transport(
         ) as worker:
             work = worker.claim()
             assert len(work) == 1
+            # A raw public submission has no Python-side frozen graph plan,
+            # but the durable server must still send an explicit worker op.
+            # Null would make the worker (correctly) reject an unsafe
+            # node-id resolver guess.
+            assert work[0]["payload"]["op"] == "noop"
             first = worker.process(work[0])
             retry = worker.process(work[0])
             assert retry["event_seq"] == first["event_seq"]
@@ -141,7 +146,13 @@ def _exercise_postgres_transport(
                 "conversation_id": "pg-resume-conversation",
                 "suspended_node_id": "start",
                 "suspended_token_id": suspended_token_id,
-                "client_result": {"approved": True},
+                "client_result": {
+                    "status": "success",
+                    "state_update": [["u", {"approved": True}]],
+                    "successors": [],
+                    "route_next": [],
+                    "result": {"workflow_status": "succeeded"},
+                },
             },
             timeout=10,
         )
@@ -151,7 +162,10 @@ def _exercise_postgres_transport(
         def finish(work: dict[str, object]) -> dict[str, object]:
             payload = work["payload"]
             assert isinstance(payload, dict)
-            assert payload["resume_payload"] == {"approved": True}
+            assert payload["resume_effect"]["status"] == "success"
+            assert payload["resume_effect"]["state_update"] == [
+                ["u", {"approved": True}]
+            ]
             return {
                 "state_update": [["u", {"after_resume": True}]],
                 "successors": [],

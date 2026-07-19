@@ -393,6 +393,37 @@ def test_worker_rejects_claim_without_frozen_workflow_op(tmp_path: Path) -> None
         worker.process(work)
 
 
+def test_resume_effect_bypasses_suspended_resolver_callback() -> None:
+    calls = 0
+
+    def resolve(_op: str):
+        def execute(_ctx):
+            nonlocal calls
+            calls += 1
+            raise AssertionError("suspended resolver must not run again")
+
+        return execute
+
+    effect = RustStepResolverAdapter(resolve)(
+        _adapter_work()
+        | {
+            "payload": _adapter_work()["payload"]
+            | {
+                "resume_effect": {
+                    "status": "success",
+                    "state_update": [["u", {"approved": True}]],
+                    "successors": [],
+                    "route_next": [],
+                    "result": {"workflow_status": "succeeded"},
+                }
+            }
+        }
+    )
+
+    assert calls == 0
+    assert effect["state_update"] == [["u", {"approved": True}]]
+
+
 def test_out_of_order_result_retries_without_reexecuting_callback(tmp_path: Path) -> None:
     calls = {"callback": 0, "result": 0}
 

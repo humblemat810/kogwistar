@@ -107,6 +107,20 @@ not ready; production canary stages completed are 0 of 5; the required full
 compatibility release has not elapsed. These counts, not a floating percentage,
 govern ADR completion.
 
+### Current candidate estimate and validation
+
+As of 2026-07-19, the rough effort estimate is **56% complete**. This is a
+communication estimate only: the scope-locked ledger and the authority/canary
+counts above remain the completion criteria.
+
+The current candidate adds two unpromoted correctness changes: raw workflow
+submission with no declared `node_ops` now persists the explicit frozen
+operation `"noop"` in SQLite and PostgreSQL, and the release gate rejects
+four-layer reports whose candidate source digest is absent or differs from the
+current source. Focused host validation passes; fresh Linux four-layer and
+Docker-backed PostgreSQL evidence remain required. Neither change advances a
+capability flag until its listed evidence passes.
+
 ## Completed local gates
 
 - Rust contract, memory, SQLite, PostgreSQL, pgvector, queue/lease/lane,
@@ -202,6 +216,58 @@ govern ADR completion.
   `read_security_scope`. The capability contract file now imports its fixture
   explicitly, so IDE and isolated-file pytest execution work without relying
   on collection order.
+- The bounded public sync-runtime authority now freezes the validated workflow,
+  submits caller run identity, claims only that run, executes dynamic callbacks
+  through the Python worker, and returns Rust-persisted terminal state. Exact
+  admission retry after response loss, cancellation propagation, a fresh facade
+  continuing durable work after scheduler restart, and process-local dependency
+  restoration have focused executable coverage.
+- Public sync resume now validates the exact parked token and maps the external
+  `RunSuccess`/`RunFailure` through the existing `u`/`a`/`e` reducer and routing
+  semantics into a data-only `resume_effect`. SQLite and PostgreSQL enqueue the
+  same effect shape; the worker consumes it without re-running the suspended
+  callback. The resume contract exposes the run's frozen routes and node ops;
+  current-workflow drift and reserved runtime-state injection fail before a
+  resume mutates durable state. Current focused authority/worker coverage passes
+  29/29, sync and
+  async bijection pass 32/32 each, bridge parity passes 17/17, and focused mypy
+  reports no issues. Runtime readiness remains false until native candidate and
+  full Phase 4 exit evidence pass.
+- Current-source native Windows gates now pass after loading the MSVC/Windows SDK
+  environment: the Rust workspace executes 96 tests with one explicit manual
+  scale probe ignored, the API crate passes 33/33, and workspace Clippy passes
+  with warnings denied. These are local current-source results, not the required
+  fresh Linux candidate or PostgreSQL-live evidence.
+- A Python-generated runtime wire golden now round-trips through strict Rust
+  DTOs for submit, claim, SQLite/PostgreSQL claimed work, worker effect, legacy
+  transition result, and resume. SQLite and PostgreSQL share request DTOs,
+  claimed-work serialization, and one start-transition builder. This gate
+  exposed and fixed a missing resume `turn_node_id`, a `None` versus empty-string
+  start identity drift, PostgreSQL's continuation sequence default-to-zero, and
+  an effect-only PostgreSQL result request shape. The existing committed-golden
+  drift test regenerates this fixture from Python and fails on missing, renamed,
+  null/default, or unknown wire fields.
+- Runtime continuation lanes now use one strict `RuntimeStepExecutePayload`
+  builder in SQLite, PostgreSQL, and both API schedulers. The payload carries
+  `turn_node_id` from recorded runtime state, including resume lanes. Current
+  Python authority/worker/golden coverage passes 31/31; focused native wire,
+  lane, and projection-contract tests pass; workspace Clippy remains warning-free.
+  Serving projection namespace/cursor/schema metadata also comes from one shared
+  store-contract helper, preventing backend-local projection field drift.
+- Current-source Phase 4 runtime evidence is green: sync/async bijection
+  68/68, bridge parity 17/17, non-slow suspend/terminal coverage 23/23, and
+  SQLite/PostgreSQL checkpoint, fault rollback, restart, claimed-worker, and
+  handoff coverage 37/37 (the PostgreSQL cases used a live pgvector container).
+  A current native extension was rebuilt before the latter gate; an initial
+  34-failure run was diagnosed as the stale ignored local `_rust.pyd` rejecting
+  the newer `transaction_id` ABI field, not a runtime semantic regression.
+  Rebuilt current Rust server then passed the real TCP SQLite authority E2E.
+- Host-native focused verification now has a persisted exact-ABI build and smoke
+  path. It builds a wheel for the selected Python interpreter, atomically
+  refreshes the ignored source-tree extension, records source/wheel/extension
+  digests, and requires the current `transaction_id` store ABI before tests.
+  This turns stale local native binaries into an immediate provenance failure
+  rather than a misleading durable-runtime failure cascade.
 
 ## Performance evidence
 

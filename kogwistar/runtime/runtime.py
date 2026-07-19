@@ -782,6 +782,31 @@ class WorkflowRuntime(BaseRuntime):
         1. A checkpoint exists for the suspended state.
         2. The suspended step was saved in _rt_join_snapshot as pending with mask logic intact.
         """
+        from .rust_runtime_authority import (
+            RustRuntimeAuthority,
+            rust_runtime_authority_url,
+        )
+
+        authority_url = rust_runtime_authority_url()
+        if authority_url is not None:
+            authority = RustRuntimeAuthority(
+                runtime=self,
+                base_url=authority_url,
+                cache_dir=cache_dir,
+            )
+            try:
+                return authority.resume(
+                    run_id=str(run_id),
+                    suspended_node_id=str(suspended_node_id),
+                    suspended_token_id=str(suspended_token_id),
+                    client_result=client_result,
+                    workflow_id=str(workflow_id),
+                    conversation_id=str(conversation_id),
+                    turn_node_id=str(turn_node_id),
+                )
+            finally:
+                authority.close()
+
         # Load the latest checkpoint for the run to reconstruct initial_state.
         # Runtime-maintained named projections are the serving path; graph scans
         # are retained for older stores and projection repair scenarios.
@@ -1268,6 +1293,26 @@ class WorkflowRuntime(BaseRuntime):
             validate_initial_state(initial_state)
 
             run_id = run_id or f"run|{uuid.uuid4()}"
+            from .rust_runtime_authority import (
+                run_with_rust_authority,
+                rust_runtime_authority_url,
+            )
+
+            if rust_runtime_authority_url() is not None:
+                if _resume_step_seq is not None or _resume_last_exec_node is not None:
+                    raise NotImplementedError(
+                        "Rust runtime authority uses the versioned resume endpoint; "
+                        "Python resume markers are unsupported"
+                    )
+                return run_with_rust_authority(
+                    self,
+                    workflow_id=str(workflow_id),
+                    conversation_id=str(conversation_id),
+                    turn_node_id=(str(turn_node_id) if turn_node_id is not None else None),
+                    initial_state=initial_state,
+                    run_id=str(run_id),
+                    cache_dir=cache_dir,
+                )
             self.state_lock[str(run_id)] = Lock()
 
             # an interworker, orchestrator message channel
