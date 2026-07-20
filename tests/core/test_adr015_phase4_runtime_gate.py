@@ -26,7 +26,7 @@ def test_phase4_gate_is_persisted_and_declares_async_rust_boundary() -> None:
     assert "test_rust_runtime_python_worker.py" in source
     assert "test_runtime_parity_bridge_contract.py" in source
     assert "test_rust_runtime_postgres.py" in source
-    assert "fail-closed-worker-contract-v1" in source
+    assert "async-v2-worker-protocol" in source
     assert "live_postgres_required" in source
     assert 'counts["skipped"] == 0' in source
     assert "not slow and not manual" in source

@@ -1,9 +1,9 @@
-"""Run ADR-015 Phase-4 runtime evidence against current native source.
+"""Run reproducible ADR-015 Phase-5 local server-contract evidence.
 
-Async callbacks use the explicit ``async-v2`` Python worker protocol. The
-durable reducer/effect DTO remains shared with sync-v1; unsupported callback
-features still fail closed. This gate rejects a skipped or silently downgraded
-async path rather than treating Python fallback as Rust authority.
+This proves the current Python-owned REST, auth, SSE, syscall, and MCP serving
+baseline before a later Rust server authority promotion.  It deliberately does
+not claim a mixed-version rolling upgrade or a production canary: those need a
+real deployment and remain separate release gates.
 """
 
 from __future__ import annotations
@@ -23,64 +23,60 @@ except ModuleNotFoundError:  # imported as a repository module in tests
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_NATIVE_REPORT = ROOT / ".codex" / "adr015-host-native-report.json"
-DEFAULT_REPORT = ROOT / ".codex" / "adr015-phase4-runtime-gate.json"
-NON_SLOW_MARKERS = "not slow and not manual and not llm_real and not requires_ollama"
+DEFAULT_REPORT = ROOT / ".codex" / "adr015-phase5-server-gate.json"
+NON_MODEL_MARKERS = "not slow and not manual and not llm_real and not requires_ollama"
 
 GROUPS: dict[str, tuple[tuple[str, ...], bool]] = {
-    "durable-worker": (
+    "rest-sse": (
         (
-            "tests/runtime/test_rust_runtime_authority.py",
-            "tests/runtime/test_rust_runtime_python_worker.py",
-            "tests/runtime/test_rust_runtime_worker_handoff.py",
-            "tests/runtime/test_rust_runtime_checkpoint_slice.py",
+            "tests/server/test_chat_server_api.py::test_chat_rest_submit_and_sse",
+            "tests/server/test_chat_server_api.py::test_chat_rest_sse_reconnects_cleanly_after_terminal_run",
+            "tests/server/test_chat_server_api.py::test_runtime_rest_submit_and_sse",
+            "tests/server/test_chat_server_api.py::test_runtime_rest_cancel",
         ),
         False,
     ),
-    "bijection": (
+    "auth-syscall": (
         (
-            "tests/runtime/test_sync_runtime_bijection_contract.py",
-            "tests/runtime/test_async_runtime_bijection_contract.py",
+            "tests/server/test_auth_integration.py",
+            "tests/server/test_mcp_role_middleware.py",
+            "tests/server/test_syscall_api.py",
+            "tests/server/test_capability_kernel_contract.py",
         ),
         False,
     ),
-    "bridge": (("tests/runtime/test_runtime_parity_bridge_contract.py",), False),
-    "suspend-terminal": (
+    "mcp": (
         (
-            "tests/runtime/test_workflow_suspend_resume.py",
-            "tests/runtime/test_workflow_terminal_status.py",
+            "tests/mcp/test_chat_mcp_tools.py",
+            "tests/server/test_mcp_tool_registry_contract.py",
         ),
         False,
     ),
-    "postgres": (("tests/runtime/test_rust_runtime_postgres.py",), True),
+    "frozen-contracts": (
+        (
+            "tests/core/test_rust_port_contract_manifest.py::test_committed_openapi_golden_has_no_drift",
+            "tests/server/test_mcp_tool_registry_contract.py::test_committed_mcp_tool_schema_matches_live_registry",
+            "tests/core/test_rust_port_contract_manifest.py::test_versioned_server_and_syscall_deferrals_match_rust_frozen_inventory",
+        ),
+        False,
+    ),
+    "async-sse": (
+        (
+            "tests/server/test_chat_server_async_events.py::test_chat_rest_events_poll_sees_live_updates_for_async_backends",
+            "tests/server/test_chat_server_async_events.py::test_mcp_run_events_sees_live_updates_for_async_backends",
+            "tests/server/test_chat_server_async_events.py::test_workflow_runtime_sse_cancel_after_sleep_ticks_for_async_backends",
+        ),
+        True,
+    ),
 }
 
 
 def _args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--python", type=Path, default=Path(sys.executable))
-    parser.add_argument("--native-report", type=Path, default=DEFAULT_NATIVE_REPORT)
     parser.add_argument("--report", type=Path, default=DEFAULT_REPORT)
     parser.add_argument("--group", action="append", choices=tuple(GROUPS))
     return parser.parse_args()
-
-
-def _load_native_report(path: Path, source_sha256: str) -> dict[str, Any]:
-    if not path.is_file():
-        raise RuntimeError(
-            "missing current native report; run scripts/adr015_build_host_native.py first"
-        )
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(payload, dict) or payload.get("schema") != "adr015-host-native/v1":
-        raise RuntimeError("native report schema is unsupported")
-    if payload.get("candidate_source_sha256") != source_sha256:
-        raise RuntimeError("native report does not match current candidate source")
-    extension = payload.get("extension")
-    if not isinstance(extension, str) or not Path(extension).is_file():
-        raise RuntimeError("native report extension does not exist")
-    if payload.get("smoke", {}).get("sqlite_transaction_id_abi") is not True:
-        raise RuntimeError("native report lacks current SQLite transaction ABI smoke")
-    return payload
 
 
 def _junit_counts(path: Path) -> dict[str, int]:
@@ -93,12 +89,9 @@ def _junit_counts(path: Path) -> dict[str, int]:
     if totals["tests"] == 0:
         for case in root.iter("testcase"):
             totals["tests"] += 1
-            if case.find("failure") is not None:
-                totals["failures"] += 1
-            if case.find("error") is not None:
-                totals["errors"] += 1
-            if case.find("skipped") is not None:
-                totals["skipped"] += 1
+            totals["failures"] += case.find("failure") is not None
+            totals["errors"] += case.find("error") is not None
+            totals["skipped"] += case.find("skipped") is not None
     return totals
 
 
@@ -108,7 +101,7 @@ def _run_group(
     name: str,
     tests: tuple[str, ...],
     output_root: Path,
-    live_postgres: bool,
+    live_async_sse: bool,
 ) -> dict[str, Any]:
     junit = output_root / f"{name}.junit.xml"
     command = [
@@ -117,7 +110,7 @@ def _run_group(
         "pytest",
         "-q",
         "-m",
-        NON_SLOW_MARKERS,
+        NON_MODEL_MARKERS,
         f"--junitxml={junit}",
         *tests,
     ]
@@ -139,12 +132,12 @@ def _run_group(
         and counts["tests"] > 0
         and counts["failures"] == 0
         and counts["errors"] == 0
-        and (not live_postgres or counts["skipped"] == 0)
+        and (not live_async_sse or counts["skipped"] == 0)
     )
     return {
         "name": name,
         "tests": list(tests),
-        "live_postgres_required": live_postgres,
+        "live_async_sse_required": live_async_sse,
         "command": command,
         "returncode": completed.returncode,
         "junit": str(junit),
@@ -154,14 +147,9 @@ def _run_group(
 
 
 def run_gate(
-    *,
-    python: Path,
-    native_report: Path,
-    output_root: Path,
-    groups: tuple[str, ...],
+    *, python: Path, output_root: Path, groups: tuple[str, ...]
 ) -> dict[str, Any]:
     source_sha256, source_file_count = candidate_source_fingerprint(ROOT)
-    native = _load_native_report(native_report, source_sha256)
     output_root.mkdir(parents=True, exist_ok=True)
     reports = [
         _run_group(
@@ -169,17 +157,16 @@ def run_gate(
             name=name,
             tests=GROUPS[name][0],
             output_root=output_root,
-            live_postgres=GROUPS[name][1],
+            live_async_sse=GROUPS[name][1],
         )
         for name in groups
     ]
     return {
-        "schema": "adr015-phase4-runtime-gate/v1",
+        "schema": "adr015-phase5-server-gate/v1",
         "candidate_source_sha256": source_sha256,
         "candidate_source_file_count": source_file_count,
-        "native_extension": native["extension"],
-        "native_extension_sha256": native["extension_sha256"],
-        "async_rust_authority": "async-v2-worker-protocol",
+        "server_authority": "python-baseline-before-rust-cutover",
+        "production_rolling_upgrade": "not-proven-local",
         "groups": reports,
         "status": "passed" if all(group["status"] == "passed" for group in reports) else "failed",
     }
@@ -190,13 +177,11 @@ def main() -> int:
     python = args.python.expanduser().resolve()
     if not python.is_file():
         raise SystemExit(f"Python interpreter does not exist: {python}")
-    selected = tuple(args.group or tuple(GROUPS))
     report_path = args.report.expanduser().resolve()
     result = run_gate(
         python=python,
-        native_report=args.native_report.expanduser().resolve(),
-        output_root=report_path.parent / "adr015-phase4-runtime-gate",
-        groups=selected,
+        output_root=report_path.parent / "adr015-phase5-server-gate",
+        groups=tuple(args.group or tuple(GROUPS)),
     )
     encoded = json.dumps(result, indent=2, sort_keys=True) + "\n"
     report_path.parent.mkdir(parents=True, exist_ok=True)

@@ -1,6 +1,6 @@
 # ADR-015 runtime semantics contract
 
-Updated: 2026-07-18
+Updated: 2026-07-21
 
 This document freezes the Python runtime behavior that the ADR-015 durable Rust
 runtime must preserve. It is intentionally narrower than a full description of
@@ -35,11 +35,32 @@ logic is the `status == "failure"` branch in `WorkflowRuntime.run`: explicit or
 predicate routing handles a failure; otherwise `_enter_failed()` drains pending
 and join work before terminal persistence.
 
-Nested `workflow_invocations`, sandboxed resolver execution, async callbacks,
-lane-message sends, and direct trace/event emission are not silently degraded.
-Until each has a versioned worker protocol representation, the Rust worker
-adapter must reject it before executing the callback (when discoverable from the
-resolver) or reject the returned effect before persistence.
+Nested `workflow_invocations`, sandboxed resolver execution, lane-message
+sends, and direct trace/event emission are not silently degraded. Until each
+has a versioned worker protocol representation, the Rust worker adapter must
+reject it before executing the callback (when discoverable from the resolver)
+or reject the returned effect before persistence.
+
+Async callbacks are represented by `worker_protocol="async-v2"`. This changes
+only Python callback execution: the callback is awaited outside the store
+transaction, then submits the same restricted durable worker-effect DTO as
+`sync-v1`. The local SQLite worker journal is still the side-effect boundary:
+a restart finding `executing` fails closed rather than awaiting the callback
+again. A `sync-v1` worker rejects `async-v2`, and an async worker rejects any
+other protocol. This permits no new runtime-state operation.
+
+## State shape and process-local dependencies
+
+`WorkflowState` is an open `dict[str, Any]`: workflow authors may add arbitrary
+user keys. `ConversationWorkflowState` is separately a narrow JSON-friendly
+checkpoint DTO. Do not make the generic runtime state a closed DTO merely
+because one conversation workflow has known fields.
+
+`_deps` and `dream_deps` are process-local runtime plumbing, never persisted
+state. Pydantic treats underscore attributes as private, so an orchestrator
+must attach `_deps` only after `WorkflowStateModel.model_dump()` and before
+runtime admission. Checkpoint serialization drops it. This preserves live
+resolver dependencies without serializing engines, callbacks, or clients.
 
 ## Routing
 

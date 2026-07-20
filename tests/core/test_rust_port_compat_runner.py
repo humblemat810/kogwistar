@@ -86,6 +86,51 @@ def test_active_writers_only_cut_over_when_manifest_marks_rust_ready() -> None:
     assert runner._active_writers(manifest, modes)["workflow-runtime"] == "rust"
 
 
+def test_global_rust_compatibility_run_enables_only_ready_configurations() -> None:
+    runner = _runner()
+    overrides: dict[str, str | None] = {
+        key: None for key in runner._capability_configurations(MANIFEST)
+    }
+
+    effective, requested = runner._compatibility_capability_modes(
+        manifest=MANIFEST,
+        implementation_mode="rust",
+        overrides=overrides,
+    )
+
+    assert requested == {
+        "KOGWISTAR_IMPL_CONTRACTS": "rust",
+        "KOGWISTAR_IMPL_META_STORE": "rust",
+        "KOGWISTAR_IMPL_GRAPH_STORE": "rust",
+        "KOGWISTAR_IMPL_RUNTIME": "rust",
+        "KOGWISTAR_IMPL_SERVER": "rust",
+    }
+    assert effective == {
+        "KOGWISTAR_IMPL_CONTRACTS": "rust",
+        "KOGWISTAR_IMPL_META_STORE": "rust",
+        "KOGWISTAR_IMPL_GRAPH_STORE": "python",
+        "KOGWISTAR_IMPL_RUNTIME": "python",
+        "KOGWISTAR_IMPL_SERVER": "python",
+    }
+
+
+def test_explicit_unready_runtime_boundary_probe_is_not_clamped() -> None:
+    runner = _runner()
+    overrides: dict[str, str | None] = {
+        key: None for key in runner._capability_configurations(MANIFEST)
+    }
+    overrides["KOGWISTAR_IMPL_RUNTIME"] = "rust"
+
+    effective, requested = runner._compatibility_capability_modes(
+        manifest=MANIFEST,
+        implementation_mode="rust",
+        overrides=overrides,
+    )
+
+    assert requested["KOGWISTAR_IMPL_RUNTIME"] == "rust"
+    assert effective["KOGWISTAR_IMPL_RUNTIME"] == "rust"
+
+
 def test_missing_cutover_readiness_is_fail_closed() -> None:
     runner = _runner()
     manifest = json.loads(json.dumps(MANIFEST))
@@ -125,7 +170,7 @@ def test_environment_exports_global_and_coarse_capability_modes(tmp_path: Path) 
 def test_server_override_rejects_shadow() -> None:
     runner = _runner()
     configurations = runner._capability_configurations(MANIFEST)
-    overrides = {key: None for key in configurations}
+    overrides: dict[str, str | None] = {key: None for key in configurations}
     overrides["KOGWISTAR_IMPL_SERVER"] = "shadow"
 
     with pytest.raises(ValueError, match="KOGWISTAR_IMPL_SERVER"):
@@ -278,6 +323,24 @@ def test_milestone_treats_file_with_no_selected_items_as_covered() -> None:
 
     assert runner._command_succeeded(layer="core", profile="milestone", returncode=5)
     assert not runner._command_succeeded(layer="core", profile="milestone", returncode=1)
+
+
+def test_process_exit_uses_same_profile_aware_success_rule_as_layer() -> None:
+    """A passing milestone layer with pytest code 5 must not fail its container."""
+    runner = _runner()
+
+    assert runner._layer_returncode_succeeded(
+        layer="core", profile="milestone", returncode=5
+    )
+    assert runner._layer_returncode_succeeded(
+        layer="parser", profile="feature", returncode=5
+    )
+    assert not runner._layer_returncode_succeeded(
+        layer="core", profile="feature", returncode=5
+    )
+    assert not runner._layer_returncode_succeeded(
+        layer="core", profile="milestone", returncode=1
+    )
 
 
 @pytest.mark.parametrize("layer", ["core", "parser", "application"])

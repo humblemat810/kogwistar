@@ -694,6 +694,14 @@ fn default_runtime_kind() -> String {
     "sync".to_owned()
 }
 
+fn worker_protocol_for_runtime_kind(runtime_kind: &str) -> &'static str {
+    if runtime_kind == "async" {
+        kogwistar_runtime::WORKER_PROTOCOL_ASYNC_V2
+    } else {
+        kogwistar_runtime::WORKER_PROTOCOL_SYNC_V1
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct RuntimeSubmitRun {
@@ -4388,6 +4396,7 @@ impl SqliteRunApplicationService {
         } else {
             input.runtime_kind.clone()
         };
+        let worker_protocol = worker_protocol_for_runtime_kind(&runtime_kind);
         let event_payload = json!({
             "run_id": run_id,
             "run_kind": "workflow_runtime",
@@ -4465,6 +4474,10 @@ impl SqliteRunApplicationService {
                 serde_json::to_value(&effective_node_ops).expect("runtime node ops serialize"),
             );
         }
+        initial_state.insert(
+            "_rt_worker_protocol".to_owned(),
+            Value::String(worker_protocol.to_owned()),
+        );
         if let Some(token_budget) = input.token_budget {
             initial_state.insert("token_budget".to_owned(), json!(token_budget));
         }
@@ -4484,6 +4497,7 @@ impl SqliteRunApplicationService {
             "token_budget": input.token_budget,
             "time_budget_ms": input.time_budget_ms,
             "runtime_kind": runtime_kind,
+            "worker_protocol": worker_protocol,
             "join_node_ids": effective_join_node_ids,
             "start_join_mask": effective_start_join_mask,
             "start_node_id": effective_start_node_id,
@@ -5279,6 +5293,15 @@ impl PostgresRunApplicationService {
                                     .expect("runtime node ops serialize"),
                             );
                         }
+                        let runtime_kind = target
+                            .get("runtime_kind")
+                            .and_then(Value::as_str)
+                            .unwrap_or("sync");
+                        let worker_protocol = worker_protocol_for_runtime_kind(runtime_kind);
+                        initial_state.insert(
+                            "_rt_worker_protocol".to_owned(),
+                            Value::String(worker_protocol.to_owned()),
+                        );
                         uow.create_server_run(ServerRunCreate {
                             run_id: created_run_id.clone(),
                             conversation_id: conversation_id.clone(),
@@ -5319,7 +5342,8 @@ impl PostgresRunApplicationService {
                             "priority_class": priority_class,
                             "token_budget": target.get("token_budget"),
                             "time_budget_ms": target.get("time_budget_ms"),
-                            "runtime_kind": target.get("runtime_kind").and_then(Value::as_str).unwrap_or("sync"),
+                            "runtime_kind": runtime_kind,
+                            "worker_protocol": worker_protocol,
                             "join_node_ids": join_node_ids,
                             "start_join_mask": start_join_mask,
                             "start_node_id": start_node_id,
@@ -6482,6 +6506,7 @@ impl PostgresRunApplicationService {
         } else {
             input.runtime_kind.clone()
         };
+        let worker_protocol = worker_protocol_for_runtime_kind(&runtime_kind);
         let graph_plan = match (
             self.store
                 .get_named_projection("workflow_design", &workflow_id)
@@ -6551,6 +6576,10 @@ impl PostgresRunApplicationService {
                 serde_json::to_value(&effective_node_ops).expect("runtime node ops serialize"),
             );
         }
+        initial_state.insert(
+            "_rt_worker_protocol".to_owned(),
+            Value::String(worker_protocol.to_owned()),
+        );
         if let Some(value) = input.token_budget {
             initial_state.insert("token_budget".to_owned(), json!(value));
         }
@@ -6594,6 +6623,7 @@ impl PostgresRunApplicationService {
                 "token_budget": input.token_budget,
                 "time_budget_ms": input.time_budget_ms,
                 "runtime_kind": runtime_kind,
+                "worker_protocol": worker_protocol,
                 "join_node_ids": effective_join_node_ids,
                 "start_join_mask": effective_start_join_mask,
                 "start_node_id": effective_start_node_id,
@@ -6679,6 +6709,7 @@ impl PostgresRunApplicationService {
                         "token_budget": input.token_budget,
                         "time_budget_ms": input.time_budget_ms,
                         "runtime_kind": runtime_kind,
+                        "worker_protocol": worker_protocol,
                         "join_node_ids": effective_join_node_ids,
                         "start_join_mask": effective_start_join_mask,
                         "start_node_id": effective_start_node_id,
@@ -7715,6 +7746,15 @@ impl SqliteRunApplicationService {
                         serde_json::to_value(&node_ops).expect("runtime node ops serialize"),
                     );
                 }
+                let runtime_kind = target
+                    .get("runtime_kind")
+                    .and_then(Value::as_str)
+                    .unwrap_or("sync");
+                let worker_protocol = worker_protocol_for_runtime_kind(runtime_kind);
+                initial_state.insert(
+                    "_rt_worker_protocol".to_owned(),
+                    Value::String(worker_protocol.to_owned()),
+                );
                 uow.create_server_run(ServerRunCreate {
                     run_id: created_run_id.clone(),
                     conversation_id: conversation_id.clone(),
@@ -7752,7 +7792,8 @@ impl SqliteRunApplicationService {
                     "priority_class": priority_class,
                     "token_budget": target.get("token_budget"),
                     "time_budget_ms": target.get("time_budget_ms"),
-                    "runtime_kind": target.get("runtime_kind").and_then(Value::as_str).unwrap_or("sync"),
+                    "runtime_kind": runtime_kind,
+                    "worker_protocol": worker_protocol,
                     "join_node_ids": join_node_ids,
                     "start_join_mask": start_join_mask,
                     "start_node_id": start_node_id,
@@ -11691,7 +11732,10 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
                     "service_id": "svc-pg-trigger",
                     "target_kind": "workflow",
                     "target_ref": "wf-pg-trigger",
-                    "target_config": {"conversation_id":"conv-pg-trigger"},
+                    "target_config": {
+                        "conversation_id":"conv-pg-trigger",
+                        "runtime_kind":"async"
+                    },
                 }))
                 .unwrap(),
                 principal: principal.clone(),
@@ -11738,6 +11782,12 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
             .await
             .unwrap();
         assert_eq!(lanes.len(), 1);
+        let payload: Value = serde_json::from_str(
+            lanes[0].payload_json.as_deref().expect("service lane payload"),
+        )
+        .unwrap();
+        assert_eq!(payload["worker_protocol"], "async-v2");
+        assert_eq!(payload["initial_state"]["_rt_worker_protocol"], "async-v2");
         drop(service);
 
         let cleanup_dsn = dsn
@@ -12110,7 +12160,10 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
                     "service_kind": "daemon",
                     "target_kind": "workflow",
                     "target_ref": "wf-declared",
-                    "target_config": {"conversation_id": "conv-declared"},
+                    "target_config": {
+                        "conversation_id": "conv-declared",
+                        "runtime_kind": "async"
+                    },
                     "enabled": true,
                     "autostart": true,
                     "heartbeat_ttl_ms": 1234,
@@ -12157,6 +12210,12 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
             })
             .unwrap();
         assert_eq!(lanes.len(), 1);
+        let payload: Value = serde_json::from_str(
+            lanes[0].payload_json.as_deref().expect("service lane payload"),
+        )
+        .unwrap();
+        assert_eq!(payload["worker_protocol"], "async-v2");
+        assert_eq!(payload["initial_state"]["_rt_worker_protocol"], "async-v2");
         let retriggered = service
             .execute(ApiEffectRequest {
                 contract_version: 1,
@@ -12574,6 +12633,56 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
         assert_eq!(frontier.pending[0].1, 1);
         assert_eq!(frontier.join_node_ids, vec!["join"]);
         assert_eq!(frontier.join_outstanding, vec![1]);
+    }
+
+    #[test]
+    fn worker_protocol_tracks_runtime_kind_and_service_payload_state() {
+        assert_eq!(worker_protocol_for_runtime_kind("sync"), "sync-v1");
+        assert_eq!(worker_protocol_for_runtime_kind("async"), "async-v2");
+        assert_eq!(worker_protocol_for_runtime_kind("unknown"), "sync-v1");
+
+        let mut state = serde_json::Map::new();
+        state.insert(
+            "_rt_worker_protocol".to_owned(),
+            Value::String(worker_protocol_for_runtime_kind("async").to_owned()),
+        );
+        let recorded = kogwistar_runtime::RecordedRuntimeState {
+            contract_version: kogwistar_runtime::RECORDED_RUNTIME_CONTRACT_VERSION,
+            run_id: "run".to_owned(),
+            workflow_id: "workflow".to_owned(),
+            conversation_id: "conversation".to_owned(),
+            user_turn_node_id: None,
+            state,
+            static_routes: Vec::new(),
+            frontier: kogwistar_runtime::RuntimeFrontier {
+                pending: Vec::new(),
+                suspended: Vec::new(),
+                join_node_ids: Vec::new(),
+                join_outstanding: Vec::new(),
+                join_waiters: BTreeMap::new(),
+            },
+            status: kogwistar_runtime::RecordedRunStatus::Running,
+            last_step_seq: 0,
+            wait_reason: None,
+            resume_payload: None,
+            last_node_id: None,
+            last_token_id: None,
+            last_parent_token_id: None,
+        };
+        let payload = kogwistar_runtime::RuntimeStepExecutePayload::from_recorded_state(
+            &recorded,
+            kogwistar_runtime::RuntimeStepExecuteRequest {
+                node_id: "node".to_owned(),
+                op: json!("op"),
+                join_mask: 0,
+                token_id: "token".to_owned(),
+                parent_token_id: None,
+                step_seq: 1,
+                expected_event_seq: 1,
+                resume_effect: None,
+            },
+        );
+        assert_eq!(payload.worker_protocol, "async-v2");
     }
 
     #[tokio::test]

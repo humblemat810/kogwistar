@@ -28,6 +28,26 @@ REQUIRED_RUST_OWNERS = {
     "workflow-runtime",
     "server-rest-sse-mcp-cli",
 }
+REQUIRED_PHASE5_GROUPS = {
+    "rest-sse",
+    "auth-syscall",
+    "mcp",
+    "frozen-contracts",
+    "async-sse",
+}
+REQUIRED_PHASE3_CAPABILITY_GROUPS = {
+    "postgres-sequence-event-log",
+    "projections-snapshots-run-registry",
+    "queues-leases-lanes",
+    "graph-pgvector",
+}
+REQUIRED_PHASE4_RUNTIME_GROUPS = {
+    "durable-worker",
+    "bijection",
+    "bridge",
+    "suspend-terminal",
+    "postgres",
+}
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -123,6 +143,153 @@ def validate_server_operation_deferrals(manifest: dict[str, Any]) -> list[str]:
     return errors
 
 
+def validate_phase5_server_evidence(
+    evidence: dict[str, Any], *, current_source_sha256: str
+) -> list[str]:
+    """Require current local serving evidence without mistaking it for rollout.
+
+    This is deliberately independent of Rust authority flags and production
+    canary evidence.  A later server promotion must have both the proven Python
+    baseline and its real deployment evidence.
+    """
+    errors: list[str] = []
+    if evidence.get("schema") != "adr015-phase5-server-gate/v1":
+        errors.append("Phase-5 server evidence has an unsupported schema")
+    if evidence.get("candidate_source_sha256") != current_source_sha256:
+        errors.append("Phase-5 server evidence does not match current candidate source")
+    if evidence.get("status") != "passed":
+        errors.append("Phase-5 server evidence has not passed")
+    if evidence.get("server_authority") != "python-baseline-before-rust-cutover":
+        errors.append("Phase-5 server evidence does not declare Python baseline authority")
+    if evidence.get("production_rolling_upgrade") != "not-proven-local":
+        errors.append("Phase-5 local evidence must not claim production rolling upgrade")
+    groups = evidence.get("groups")
+    if not isinstance(groups, list):
+        return [*errors, "Phase-5 server evidence groups must be an array"]
+    by_name = {
+        item.get("name"): item
+        for item in groups
+        if isinstance(item, dict) and isinstance(item.get("name"), str)
+    }
+    if set(by_name) != REQUIRED_PHASE5_GROUPS:
+        errors.append("Phase-5 server evidence must cover exactly the required groups")
+    for name in REQUIRED_PHASE5_GROUPS:
+        group = by_name.get(name)
+        if not isinstance(group, dict):
+            continue
+        counts = group.get("counts")
+        if group.get("status") != "passed" or group.get("returncode") != 0:
+            errors.append(f"Phase-5 group {name} has not passed")
+        if not isinstance(counts, dict) or counts.get("tests", 0) <= 0:
+            errors.append(f"Phase-5 group {name} lacks test evidence")
+        elif counts.get("failures") != 0 or counts.get("errors") != 0:
+            errors.append(f"Phase-5 group {name} has failures or errors")
+        if name == "async-sse" and (
+            group.get("live_async_sse_required") is not True
+            or not isinstance(counts, dict)
+            or counts.get("skipped") != 0
+        ):
+            errors.append("Phase-5 async-sse evidence must be live and unskipped")
+    return errors
+
+
+def validate_phase3_capability_evidence(
+    evidence: dict[str, Any], *, current_source_sha256: str
+) -> list[str]:
+    """Require separate live-PostgreSQL proof for each pending store capability.
+
+    Local evidence proves only implementation readiness; authority remains
+    Python-owned until the matching same-candidate production canary succeeds.
+    """
+    errors: list[str] = []
+    if evidence.get("schema") != "adr015-phase3-capability-gate/v1":
+        errors.append("Phase-3 capability evidence has an unsupported schema")
+    if evidence.get("candidate_source_sha256") != current_source_sha256:
+        errors.append("Phase-3 capability evidence does not match current candidate source")
+    if evidence.get("status") != "passed":
+        errors.append("Phase-3 capability evidence has not passed")
+    if evidence.get("production_authority") != "not-promoted-local-evidence-only":
+        errors.append("Phase-3 local evidence must not claim production authority")
+    groups = evidence.get("groups")
+    if not isinstance(groups, list):
+        return [*errors, "Phase-3 capability evidence groups must be an array"]
+    by_name = {
+        item.get("name"): item
+        for item in groups
+        if isinstance(item, dict) and isinstance(item.get("name"), str)
+    }
+    if set(by_name) != REQUIRED_PHASE3_CAPABILITY_GROUPS:
+        errors.append("Phase-3 capability evidence must cover exactly the required groups")
+    for name in REQUIRED_PHASE3_CAPABILITY_GROUPS:
+        group = by_name.get(name)
+        if not isinstance(group, dict):
+            continue
+        counts = group.get("counts")
+        if group.get("status") != "passed" or group.get("returncode") != 0:
+            errors.append(f"Phase-3 capability group {name} has not passed")
+        if group.get("live_postgres_required") is not True:
+            errors.append(f"Phase-3 capability group {name} must require live PostgreSQL")
+        if not isinstance(counts, dict) or counts.get("tests", 0) <= 0:
+            errors.append(f"Phase-3 capability group {name} lacks test evidence")
+        elif (
+            counts.get("failures") != 0
+            or counts.get("errors") != 0
+            or counts.get("skipped") != 0
+        ):
+            errors.append(
+                f"Phase-3 capability group {name} has failures, errors, or skips"
+            )
+    return errors
+
+
+def validate_phase4_runtime_evidence(
+    evidence: dict[str, Any], *, current_source_sha256: str
+) -> list[str]:
+    """Require current durable runtime proof before a runtime promotion.
+
+    Four-layer compatibility normally runs with the public Python runtime owner.
+    It therefore cannot replace the dedicated Rust reducer/worker/restart/live
+    PostgreSQL evidence captured by the Phase-4 gate.
+    """
+    errors: list[str] = []
+    if evidence.get("schema") != "adr015-phase4-runtime-gate/v1":
+        errors.append("Phase-4 runtime evidence has an unsupported schema")
+    if evidence.get("candidate_source_sha256") != current_source_sha256:
+        errors.append("Phase-4 runtime evidence does not match current candidate source")
+    if evidence.get("status") != "passed":
+        errors.append("Phase-4 runtime evidence has not passed")
+    if evidence.get("async_rust_authority") != "async-v2-worker-protocol":
+        errors.append("Phase-4 runtime evidence has an unexpected async authority boundary")
+    groups = evidence.get("groups")
+    if not isinstance(groups, list):
+        return [*errors, "Phase-4 runtime evidence groups must be an array"]
+    by_name = {
+        item.get("name"): item
+        for item in groups
+        if isinstance(item, dict) and isinstance(item.get("name"), str)
+    }
+    if set(by_name) != REQUIRED_PHASE4_RUNTIME_GROUPS:
+        errors.append("Phase-4 runtime evidence must cover exactly the required groups")
+    for name in REQUIRED_PHASE4_RUNTIME_GROUPS:
+        group = by_name.get(name)
+        if not isinstance(group, dict):
+            continue
+        counts = group.get("counts")
+        if group.get("status") != "passed" or group.get("returncode") != 0:
+            errors.append(f"Phase-4 runtime group {name} has not passed")
+        if not isinstance(counts, dict) or counts.get("tests", 0) <= 0:
+            errors.append(f"Phase-4 runtime group {name} lacks test evidence")
+        elif (
+            counts.get("failures") != 0
+            or counts.get("errors") != 0
+            or counts.get("skipped") != 0
+        ):
+            errors.append(f"Phase-4 runtime group {name} has failures, errors, or skips")
+        if name == "postgres" and group.get("live_postgres_required") is not True:
+            errors.append("Phase-4 runtime postgres group must require live PostgreSQL")
+    return errors
+
+
 def _validate_deferred_group(group: dict[str, Any], prefix: str, errors: list[str]) -> None:
     if group.get("owner") != "python":
         errors.append(f"{prefix}.owner must be python")
@@ -142,6 +309,9 @@ def evaluate_release_gate(
     manifest: dict[str, Any],
     compatibility_reports: list[dict[str, Any]],
     runtime_performance: dict[str, Any],
+    phase3_capability_evidence: dict[str, Any],
+    phase4_runtime_evidence: dict[str, Any],
+    phase5_server_evidence: dict[str, Any],
     canary_evidence: dict[str, Any],
 ) -> dict[str, Any]:
     blockers: list[dict[str, str]] = []
@@ -178,6 +348,21 @@ def evaluate_release_gate(
             }
         )
 
+    for detail in validate_phase3_capability_evidence(
+        phase3_capability_evidence, current_source_sha256=current_source_sha256
+    ):
+        blockers.append({"gate": "store-local", "detail": detail})
+
+    for detail in validate_phase4_runtime_evidence(
+        phase4_runtime_evidence, current_source_sha256=current_source_sha256
+    ):
+        blockers.append({"gate": "runtime-local", "detail": detail})
+
+    for detail in validate_phase5_server_evidence(
+        phase5_server_evidence, current_source_sha256=current_source_sha256
+    ):
+        blockers.append({"gate": "server-local", "detail": detail})
+
     performance_status = runtime_performance.get("gate", {}).get("status")
     if performance_status != "passed":
         blockers.append(
@@ -206,12 +391,17 @@ def evaluate_release_gate(
             {"gate": "authority", "detail": f"{capability} is not Rust-cutover-ready"}
         )
 
-    canary = _readiness_module().validate_canary_evidence(canary_evidence)
+    expected_identity = next(iter(identities)) if len(identities) == 1 else None
+    canary = _readiness_module().validate_canary_evidence_set(
+        canary_evidence,
+        required_capabilities=REQUIRED_RUST_OWNERS,
+        expected_candidate_identity_sha256=expected_identity,
+    )
     if not canary["production_complete"]:
         blockers.append(
             {
                 "gate": "canary",
-                "detail": "production internal/test -> 1% -> 10% -> 50% -> 100% evidence is incomplete",
+                "detail": "per-capability production internal/test -> 1% -> 10% -> 50% -> 100% evidence is incomplete",
             }
         )
 
@@ -228,6 +418,35 @@ def evaluate_release_gate(
         "server_operation_deferrals": {
             "status": "passed" if not validate_server_operation_deferrals(manifest) else "blocked"
         },
+        "phase5_server_evidence": {
+            "status": (
+                "passed"
+                if not validate_phase5_server_evidence(
+                    phase5_server_evidence, current_source_sha256=current_source_sha256
+                )
+                else "blocked"
+            )
+        },
+        "phase3_capability_evidence": {
+            "status": (
+                "passed"
+                if not validate_phase3_capability_evidence(
+                    phase3_capability_evidence,
+                    current_source_sha256=current_source_sha256,
+                )
+                else "blocked"
+            )
+        },
+        "phase4_runtime_evidence": {
+            "status": (
+                "passed"
+                if not validate_phase4_runtime_evidence(
+                    phase4_runtime_evidence,
+                    current_source_sha256=current_source_sha256,
+                )
+                else "blocked"
+            )
+        },
         "canary": canary,
         "rust_cutover_ready_capabilities": sorted(value for value in active_rust if isinstance(value, str)),
         "blockers": blockers,
@@ -243,7 +462,27 @@ def _args() -> argparse.Namespace:
         type=Path,
         default=ROOT / "contracts" / "benchmarks" / "rust-runtime-serving-current-windows.json",
     )
-    parser.add_argument("--canary-evidence", type=Path, required=True)
+    parser.add_argument(
+        "--canary-evidence",
+        type=Path,
+        required=True,
+        help="Schema-v2 same-candidate canary set, one five-stage record per Rust capability.",
+    )
+    parser.add_argument(
+        "--phase3-capability-evidence",
+        type=Path,
+        default=ROOT / ".codex" / "adr015-phase3-capability-gate.json",
+    )
+    parser.add_argument(
+        "--phase4-runtime-evidence",
+        type=Path,
+        default=ROOT / ".codex" / "adr015-phase4-runtime-gate.json",
+    )
+    parser.add_argument(
+        "--phase5-server-evidence",
+        type=Path,
+        default=ROOT / ".codex" / "adr015-phase5-server-gate.json",
+    )
     parser.add_argument("--report", type=Path)
     return parser.parse_args()
 
@@ -254,6 +493,9 @@ def main() -> int:
         manifest=_load_json(args.manifest),
         compatibility_reports=[_load_json(path) for path in args.compat_report],
         runtime_performance=_load_json(args.runtime_performance),
+        phase3_capability_evidence=_load_json(args.phase3_capability_evidence),
+        phase4_runtime_evidence=_load_json(args.phase4_runtime_evidence),
+        phase5_server_evidence=_load_json(args.phase5_server_evidence),
         canary_evidence=_load_json(args.canary_evidence),
     )
     encoded = json.dumps(result, indent=2, sort_keys=True) + "\n"

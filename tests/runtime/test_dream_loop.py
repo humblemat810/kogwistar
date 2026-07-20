@@ -6,6 +6,11 @@ import pytest
 
 from kogwistar.policy import DefaultDreamLoopPolicy
 from kogwistar.runtime.base_runtime import checkpointable_state_copy
+from kogwistar.runtime.base_runtime import validate_initial_state
+from kogwistar.conversation.conversation_state_contracts import (
+    PrevTurnMetaSummaryModel,
+    WorkflowStateModel,
+)
 from kogwistar.runtime.serialize import try_serialize_with_ref
 from kogwistar.wisdom.dream_loop import (
     collect_dream_loop_evidence,
@@ -34,6 +39,35 @@ def test_checkpointable_state_copy_drops_di_plumbing_keys():
     assert "dream_deps" not in out
     assert out["_rt_join"] == {"pending": ["tok-1"]}
     assert out["answer"] == "ok"
+
+
+def test_workflow_state_remains_open_while_conversation_checkpoint_is_narrow():
+    """User workflow keys stay legal; process-local deps never enter a dump."""
+    state = {"seed": 1, "async_answer": "ok"}
+    validate_initial_state(state)
+    assert checkpointable_state_copy(state) == state
+
+    conversation = WorkflowStateModel.model_construct(
+        conversation_id="c1",
+        user_id="u1",
+        turn_node_id="t1",
+        turn_index=0,
+        mem_id="m1",
+        self_span=None,
+        role="user",
+        user_text="hi",
+        embedding=None,
+        prev_turn_meta_summary=PrevTurnMetaSummaryModel(
+            prev_node_char_distance_from_last_summary=0,
+            prev_node_distance_from_last_summary=0,
+            tail_turn_index=0,
+        ),
+    ).dump_state()
+    runtime_state = dict(conversation)
+    runtime_state["_deps"] = {"engine": object()}
+
+    assert "_deps" not in conversation
+    assert "_deps" not in checkpointable_state_copy(runtime_state)
 
 
 def test_serializer_raises_on_deps_plumbing_key():

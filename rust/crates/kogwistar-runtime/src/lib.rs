@@ -12,6 +12,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use thiserror::Error;
 
 pub const RECORDED_RUNTIME_CONTRACT_VERSION: u32 = 1;
+pub const WORKER_PROTOCOL_SYNC_V1: &str = "sync-v1";
+pub const WORKER_PROTOCOL_ASYNC_V2: &str = "async-v2";
 
 /// Scheduler-owned payload for one Python worker step.  Keeping this wire DTO
 /// beside the reducer prevents SQLite, PostgreSQL, and API schedulers from
@@ -21,6 +23,12 @@ pub const RECORDED_RUNTIME_CONTRACT_VERSION: u32 = 1;
 pub struct RuntimeStepExecutePayload {
     pub contract_version: u32,
     pub kind: String,
+    /// Versioned Python callback execution protocol. This is lane metadata,
+    /// not reducer state: both protocols submit the same restricted durable
+    /// worker-effect DTO. Keeping it in every claimed payload prevents a
+    /// sync-v1 worker from accidentally accepting an async-v2 continuation.
+    #[serde(default = "default_worker_protocol")]
+    pub worker_protocol: String,
     pub run_id: String,
     pub workflow_id: String,
     pub conversation_id: String,
@@ -62,6 +70,7 @@ impl RuntimeStepExecutePayload {
         Self {
             contract_version: RECORDED_RUNTIME_CONTRACT_VERSION,
             kind: "workflow.step.execute".to_owned(),
+            worker_protocol: worker_protocol_from_state(&state.state).to_owned(),
             run_id: state.run_id.clone(),
             workflow_id: state.workflow_id.clone(),
             conversation_id: state.conversation_id.clone(),
@@ -77,6 +86,21 @@ impl RuntimeStepExecutePayload {
             state: state.state.clone(),
             resume_effect: request.resume_effect,
         }
+    }
+}
+
+fn default_worker_protocol() -> String {
+    WORKER_PROTOCOL_SYNC_V1.to_owned()
+}
+
+fn worker_protocol_from_state(state: &Map<String, Value>) -> &str {
+    match state
+        .get("_rt_worker_protocol")
+        .and_then(Value::as_str)
+        .map(str::trim)
+    {
+        Some(WORKER_PROTOCOL_ASYNC_V2) => WORKER_PROTOCOL_ASYNC_V2,
+        _ => WORKER_PROTOCOL_SYNC_V1,
     }
 }
 

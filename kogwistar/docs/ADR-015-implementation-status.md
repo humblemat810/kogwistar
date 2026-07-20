@@ -1,6 +1,6 @@
 # ADR-015 implementation status
 
-Updated: 2026-07-20
+Updated: 2026-07-21
 
 ADR-015 is not complete as a production migration. Local implementation and
 compatibility work is substantially complete, but authoritative ownership and
@@ -32,6 +32,24 @@ ADR-015 unless a listed release gate cannot be executed with this harness.
 
 The authoritative machine-readable source is `contracts/rust-port-v1.json`.
 
+`rust_cutover_ready` is a release-evidence ledger flag, not a process-local
+environment interlock. Runtime selection remains explicit through
+`KOGWISTAR_IMPL_*` (and, for coordinated PostgreSQL graph/meta writes,
+`KOGWISTAR_IMPL_POSTGRES_AUTHORITY=rust`). Operators must not treat a false
+ledger flag as an automatic refusal of a manually forced environment setting;
+the release gate and production change-control process are what authorize such
+a setting. Unsupported async PostgreSQL authority and async Rust worker
+callbacks do fail closed in the public facades.
+
+The four-layer compatibility harness applies that ledger differently: global
+`--implementation-mode rust` enables only configurations with a ready Rust
+target, while retaining the requested modes in its candidate identity. An
+explicit coarse `--runtime-mode rust`, `--graph-store-mode rust`, or equivalent
+remains an intentional boundary probe and is never silently clamped. Thus a
+generic compatibility pass cannot accidentally represent the unready public
+runtime/server owners as proven; their fail-closed and capability-specific
+gates remain separate evidence.
+
 - [x] `deterministic-contracts`: Rust cutover ready.
 - [x] `sqlite-meta`: Rust cutover ready, rollback-readable by Python.
 - [ ] `postgres-sequence-event-log`: readiness remains false.
@@ -55,32 +73,42 @@ Only these local items remain in scope before production rollout:
   Python/Rust mutual readability, rebuild equality, and update/tombstone replay.
   `scripts/adr015_phase3_store_gate.py` produced
   `.codex/adr015-phase3-store-gate.json` for source
-  `6e2dfbd8c855d83667a1840a73a959604b0946167a2083a8ca8b4419f107fba3`:
+  `e69f1f2c71d4c39e97aff2de8523270cf9f58e3ca6fb5179b564583f0daa22d9`:
   memory 17, SQLite 27, and live pgvector PostgreSQL 36 all passed with zero
   failures, errors, or skips. The gate rejects a skipped PostgreSQL group.
 - [ ] Phase 3: promote each of the four pending durable-store capabilities only
   when its capability-specific evidence and rollback evidence pass. Do not flip
-  one broad store flag from a narrow test.
+  one broad store flag from a narrow test. Current-source local evidence is
+  now separately recorded by `scripts/adr015_phase3_capability_gate.py` in
+  `.codex/adr015-phase3-capability-gate.json`: PostgreSQL sequence/event-log
+  4, projection/snapshot/run-registry 6, queue/lease/lane 3, and graph/pgvector
+  23 all passed with zero failures, errors, or skips for source
+  `6008c548d3ce7bcd8da367a2b7638f8286ae4cfd43eb8729cc2bedf5d32fa6d0`.
+  This proves each local slice; each `rust_cutover_ready` remains false until
+  its same-candidate production canary and rollback evidence exists.
 - [x] Phase 4: finish the already-bounded recorded runtime cutover. Existing
   reducer, frontier, serving projection, indexed dedup, frozen route validation,
   lane transaction, and Python worker adapter stay within this item. Current
   native evidence is `.codex/adr015-phase4-runtime-gate.json` for source
-  `6e2dfbd8c855d83667a1840a73a959604b0946167a2083a8ca8b4419f107fba3`.
+  `6008c548d3ce7bcd8da367a2b7638f8286ae4cfd43eb8729cc2bedf5d32fa6d0`.
 - [x] Phase 4: pass existing sync, async, bridge-parity, suspend/resume, and
   terminal suites; recorded state/event/terminal-result parity; crash/restart;
   cancellation/backpressure; and Python-worker restart gates. The persisted
-  gate passed durable-worker 55, sync/async bijection 64, bridge parity 17,
+  gate passed durable-worker 61, sync/async bijection 64, bridge parity 17,
   suspend/terminal 23, and live PostgreSQL 10 tests, all with zero failures,
-  errors, or skips. Rust async authority remains deliberately fail-closed under
-  worker contract v1; this is tested rather than silently delegated.
+  errors, or skips. Async authority now has a bounded `async-v2` callback
+  worker protocol, evidenced separately below; it was intentionally
+  fail-closed under the earlier `sync-v1` worker protocol.
 - [ ] Phase 4: route the public runtime owner through the proven Rust durable
   scheduler while keeping dynamic Python callbacks behind the versioned worker
-  boundary. Unsupported nested/sandbox/async/side-effect protocol features stay
+  boundary. Unsupported nested/sandbox/side-effect protocol features stay
   fail-closed; no new runtime-state operation may be invented. Local routing now
   fails closed when `KOGWISTAR_IMPL_RUNTIME=rust` lacks an authority URL (it no
-  longer silently falls back to Python), and Rust worker contract v1 explicitly
-  rejects async callbacks. The current native boundary subset passed
-  durable-worker 57 plus sync/async bijection 64. This line remains unchecked:
+  longer silently falls back to Python). The worker boundary now has bounded
+  async-v2 callback authority: explicit lane protocol,
+  sync/async cross-rejection, replay-safe local journal, and live Rust SQLite
+  scheduler round trip; service-triggered SQLite/PostgreSQL runs preserve the
+  same protocol. This line remains unchecked:
   public authority promotion still requires its capability canary and the
   explicit `workflow-runtime` readiness decision.
 - [x] Phase 5: explicitly version/defer the 16 currently frozen Python-owned
@@ -92,25 +120,38 @@ Only these local items remain in scope before production rollout:
   sub-operations listed by `PENDING_SYSCALL_CUTOVER_OPS`. The same versioned
   manifest entry records Python rollback ownership, the required worker/runtime
   protocol authority, and required exit evidence.
-- [ ] Phase 5: pass route/auth/capability/error/SSE-resume/MCP conformance,
-  frozen OpenAPI/MCP no-drift, mixed-version/rolling-upgrade, and operational
-  implementation/parity/queue/replay/schema telemetry gates.
+- [x] Phase 5: pass current-candidate local route/auth/capability/error,
+  SSE-resume, MCP, and frozen OpenAPI/MCP no-drift conformance. Persisted
+  `scripts/adr015_phase5_server_gate.py` produced
+  `.codex/adr015-phase5-server-gate.json` for source
+  `6008c548d3ce7bcd8da367a2b7638f8286ae4cfd43eb8729cc2bedf5d32fa6d0`:
+  REST/SSE 4, auth/syscall 41, MCP 13, frozen contracts 3, and live async
+  Chroma/PostgreSQL SSE 6 passed with zero failures, errors, or skips.
+- [ ] Phase 5: pass mixed-version/rolling-upgrade and operational
+  implementation/parity/queue/replay/schema telemetry gates in a production
+  canary. Local gate deliberately records this as unproven rather than
+  substituting a test deployment for rollout evidence.
 - [x] Build one fresh candidate after all local code changes and run all four
   compatibility layers (core, parser, sink, application) under one verified
-  identity. Report `adr015-milestone-uv-final.json` passed on 2026-07-20 under
-  identity `fe22d92e51a9e023a742cd85ec088eed1c74254397ddf7c17c4cb37779e71b1b`.
+  identity. `.codex/adr015-container-final.json` passed on 2026-07-21 under
+  identity `77a4b711cd93a3498187b6d169f7814f051d52e4426be32fd48bc6ae677ab36d`,
+  source `6008c548d3ce7bcd8da367a2b7638f8286ae4cfd43eb8729cc2bedf5d32fa6d0`,
+  and Linux wheel SHA-256
+  `096e4aa88c3d8afd87de5b1a40e31cba29aa28d4ae3925a98a1a4377cd53b3e2`.
 - [x] Re-run the frozen Phase 3/4 candidate through the same four Linux layers.
-  `.codex/adr015-phase34-milestone-container.json` passed on 2026-07-20 with
-  wheel SHA-256 `ec08c4484e22fbda209b59945b99e24099e123139815065814293b78d9e4d071`,
-  source digest `3710bb6b960df4330f41289695940552119d7dbb21a9c1a20b1028b71af612d1`,
-  three ordinary Docker shards, zero xdist workers, exact layer coverage, and
-  1010.21 seconds orchestration wall time. PostgreSQL fixture skips inside
-  isolated workers remain intentionally non-evidence; the no-skip live
-  PostgreSQL Phase 3/4 gates remain the authoritative proof for that backend.
+  The same final report used three ordinary Docker shards, zero xdist workers,
+  exact layer coverage, and 907.03 seconds orchestration wall time. PostgreSQL
+  fixture skips inside isolated workers remain intentionally non-evidence; the
+  no-skip live PostgreSQL Phase 3/4 gates remain authoritative for that backend.
 - [x] Re-run the release-readiness report. Current candidate has no
-  compatibility or recorded performance blocker; the report correctly remains
-  blocked only by six explicitly unready authority capabilities and absent
-  production canary evidence.
+  compatibility, recorded performance, server-deferral, Phase-3, Phase-4, or
+  Phase-5 local baseline blocker. `.codex/adr015-release-final.json` for source
+  `6008c548d3ce7bcd8da367a2b7638f8286ae4cfd43eb8729cc2bedf5d32fa6d0`
+  correctly remains blocked only by six explicitly unready authority
+  capabilities and absent production canary evidence. The release gate now
+  independently requires current Phase-3 per-capability PostgreSQL evidence,
+  Phase-4 durable runtime/live-PostgreSQL evidence, and Phase-5 server evidence;
+  four-layer Python-owner compatibility cannot substitute for any of them.
 
 Fields such as continuation provenance are not independent scope additions.
 They are changed only if an existing Phase 4 parity/interoperability gate proves
@@ -121,9 +162,14 @@ test-framework changes beyond the completed harness are deferred.
 
 These cannot be satisfied by more local unit-test implementation:
 
-- [ ] Run production `internal/test`, `1%`, `10%`, `50%`, and `100%` capability
-  canaries with real observation windows, zero unexplained mismatch, and tested
-  rollback. The committed rehearsal proves shape only and cannot promote ownership.
+- [ ] Run one same-candidate production canary for each Rust-target capability,
+  each through `internal/test`, `1%`, `10%`, `50%`, and `100%`, with real
+  observation windows, zero unexplained mismatch, and tested rollback. The
+  schema-v2 rehearsal set proves required evidence shape only; neither it nor a
+  successful canary for one capability can promote another capability.
+  `contracts/canary/adr015-capability-canary-set-v2.json` is the committed
+  rehearsal template; its all-zero identity and `rehearsal` kind deliberately
+  fail a release promotion.
 - [ ] Make the ready Rust capabilities default only after production evidence.
 - [ ] Complete one full compatibility release with Python rollback retained.
 - [ ] Then satisfy Phase 6: default graph/storage/runtime/server behavior in
@@ -132,9 +178,9 @@ These cannot be satisfied by more local unit-test implementation:
   retained Python as SDK, bridge, integration, or worker code.
 
 Current objective facts: 2 of 8 Rust-target capability flags are ready; 6 are
-not ready; production canary stages completed are 0 of 5; the required full
-compatibility release has not elapsed. These counts, not a floating percentage,
-govern ADR completion.
+not ready; completed production capability canaries are 0 of 8 (0 of 40
+capability-stage observations); the required full compatibility release has not
+elapsed. These counts, not a floating percentage, govern ADR completion.
 
 ### Current candidate estimate and validation
 
@@ -165,6 +211,12 @@ wheel SHA-256 `9dc4bca9cdbc9638d8a1c7978c9978903890032b42039c65492fd1da76215809`
 The milestone used three ordinary containers, zero xdist workers, and completed
 in 1075.24 seconds. It proves the lifecycle contract on the candidate; it does
 not alter any false readiness flag or substitute for production canaries.
+It also predates the later public `KOGWISTAR_IMPL_RUNTIME=rust` fail-closed
+selection change. It must therefore not be read as proof that arbitrary public
+sync or async callback suites ran under a Rust runtime owner. The current
+four-layer harness records both requested and effective capability modes and
+clamps only implicit, unready global-Rust selections to their ledger owner;
+explicit unready-mode probes remain separately fail-closed evidence.
 
 On 2026-07-20, a disposable host `pgvector/pgvector:pg16` instance supplied
 the previously unavailable PostgreSQL live evidence. Rust/Python event-log

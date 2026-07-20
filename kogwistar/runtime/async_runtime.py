@@ -7,7 +7,7 @@ import queue
 import time
 import uuid
 from contextlib import nullcontext
-from typing import Any, Awaitable, Callable, TypeAlias
+from typing import Any, Awaitable, Callable, ContextManager, TypeAlias, cast
 
 from ..id_provider import stable_id
 from .models import RunFailure, StepRunResult, WorkflowState
@@ -46,7 +46,10 @@ def _as_sync_step_fn(fn: Callable[[StepContext], Any]) -> SyncStepFn:
     def _wrapped(ctx: StepContext) -> StepRunResult:
         out = fn(ctx)
         if inspect.isawaitable(out):
-            return asyncio.run(out)
+            async def _await_result(awaitable: Awaitable[StepRunResult]) -> StepRunResult:
+                return await awaitable
+
+            return asyncio.run(_await_result(out))
         return out
 
     return _wrapped
@@ -134,7 +137,7 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
         self.step_result_type = StepRunResult
         self.terminal_status_values: set[TerminalStatus] = {
             "succeeded",
-            "failed",
+            "failure",
             "cancelled",
             "suspended",
         }
@@ -155,11 +158,24 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
         _resume_step_seq: int | None = None,
         _resume_last_exec_node: Any | None = None,
     ) -> RunResult:
-        from .rust_runtime_authority import rust_runtime_authority_selected
+        from .rust_runtime_authority import (
+            run_with_rust_authority_async,
+            rust_runtime_authority_selected,
+        )
 
         if rust_runtime_authority_selected():
-            raise NotImplementedError(
-                "Rust worker contract v1 does not represent async resolver callbacks"
+            if _resume_step_seq is not None or _resume_last_exec_node is not None:
+                raise NotImplementedError(
+                    "AsyncWorkflowRuntime does not support resume-marker delegation"
+                )
+            return await run_with_rust_authority_async(
+                self,
+                workflow_id=workflow_id,
+                conversation_id=conversation_id,
+                turn_node_id=turn_node_id,
+                initial_state=initial_state,
+                run_id=run_id or f"run|{uuid.uuid4()}",
+                cache_dir=cache_dir,
             )
         if _resume_step_seq is not None or _resume_last_exec_node is not None:
             raise NotImplementedError(
@@ -174,14 +190,14 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
             cache_dir=cache_dir,
         )
 
-    def _resolve_async_step_fn(self, op: str):
+    def _resolve_async_step_fn(self, op: str) -> AsyncStepFn:
         resolver = self._raw_step_resolver
         resolve_async = getattr(resolver, "resolve_async", None)
         if callable(resolve_async):
-            return resolve_async(op)
+            return cast(AsyncStepFn, resolve_async(op))
         fn = resolver(op)
         if inspect.iscoroutinefunction(fn):
-            return fn
+            return cast(AsyncStepFn, fn)
 
         async def _wrapped(ctx: StepContext):
             return fn(ctx)
@@ -531,13 +547,19 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
                 )
             except Exception:
                 use_step_uow = False
-            uow_ctx = (
-                maybe_step_uow()
+            uow_ctx: ContextManager[Any] = (
+                cast(ContextManager[Any], maybe_step_uow())
                 if use_step_uow and callable(maybe_step_uow)
                 else nullcontext()
             )
             started_at = time.perf_counter()
             trace_status = "ok"
+            out: StepRunResult = RunFailure(
+                conversation_node_id=None,
+                status="failure",
+                errors=["step execution did not return a result"],
+                state_update=[],
+            )
             if trace_emitter is not None:
                 step_started = getattr(trace_emitter, "step_started", None)
                 if callable(step_started):

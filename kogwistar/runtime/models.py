@@ -1,7 +1,7 @@
-from typing import Any, ClassVar, Literal, NotRequired, Optional, TypeAlias, TypedDict
+from typing import Any, ClassVar, Literal, Optional, TypeAlias
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from ..engine_core.models import Edge, Node, Span
+from ..engine_core.models import Edge, Node
 
 
 class WorkflowNodeMetadata(BaseModel):
@@ -202,26 +202,12 @@ class WorkflowInvocationRequest(BaseModel):
 #     summary_node_id: Optional[str]
 
 
-class WorkflowState(TypedDict):
-    conversation_id: str
-    user_id: str
-    turn_node_id: NotRequired[str]
-    turn_index: NotRequired[int]
-    role: NotRequired[str]
-    user_text: NotRequired[str]
-    mem_id: NotRequired[str]
-    self_span: NotRequired[Span]
-    embedding: NotRequired[Any]
-    memory: NotRequired[Any]
-    memory_raw: NotRequired[Any]
-    kg: NotRequired[Any]
-    memory_pin: NotRequired[Any]
-    kg_pin: NotRequired[Any]
-    answer: NotRequired[Any]
-    # summary: SummaryStateDict
-    # prev_turn_meta_summary: PrevTurnMetaSummaryDict
-    _deps: NotRequired[dict[str, Any]]
-    _rt_join: NotRequired[dict[str, Any]]
+# Runtime workflow state is deliberately open.  Workflow definitions contribute
+# application-specific keys (for example ``seed`` or ``async_answer``), so a
+# closed TypedDict here would make the public runtime contract falsely reject
+# valid state at type-check time.  Persisted conversation state keeps its
+# narrower structural TypedDict in ``conversation_state_contracts``.
+WorkflowState: TypeAlias = dict[str, Any]
 
 
 StateOverwriteUpdate: TypeAlias = tuple[Literal["u"], dict[str, Any]]

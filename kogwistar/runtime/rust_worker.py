@@ -9,6 +9,7 @@ the stable lane ``message_id`` idempotency key.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import inspect
 import json
@@ -165,19 +166,19 @@ class RustStepResolverAdapter:
                 )
 
     def __call__(self, work: dict[str, Any]) -> dict[str, Any]:
-        from kogwistar.runtime.base_runtime import apply_state_update_inplace
-        from kogwistar.runtime.models import (
-            RunFailure,
-            RunSuccess,
-            RunSuspended,
-            get_route_next_names,
-        )
-        from kogwistar.runtime.routing import compute_route_next
+        # Keep these imports local: this module deliberately avoids importing
+        # the public runtime while its protocol helpers are imported.
+        from kogwistar.runtime.models import RunFailure
         from kogwistar.runtime.runtime import StepContext
 
         payload = work.get("payload")
         if not isinstance(payload, dict):
             raise RustWorkerError("claimed work payload must be an object")
+        protocol = str(payload.get("worker_protocol") or "sync-v1")
+        if protocol != "sync-v1":
+            raise RustWorkerError(
+                f"sync Python worker cannot execute worker protocol {protocol!r}"
+            )
         resume_effect = payload.get("resume_effect")
         if resume_effect is not None:
             copied_effect = _json_copy(resume_effect, field="claimed resume effect")
@@ -253,6 +254,37 @@ class RustStepResolverAdapter:
             )
         if inspect.isawaitable(result):
             raise RustWorkerError("async resolver callbacks are not in worker contract v1")
+        return self._effect_from_result(
+            result=result,
+            state=state,
+            before=before,
+            routes=routes,
+            node_id=node_id,
+            message_queue=message_queue,
+            lane_message_attempts=lane_message_attempts,
+        )
+
+    def _effect_from_result(
+        self,
+        *,
+        result: Any,
+        state: dict[str, Any],
+        before: Any,
+        routes: list[_FrozenWorkerRoute],
+        node_id: str,
+        message_queue: queue.Queue[dict[str, Any]],
+        lane_message_attempts: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Apply v1 result restrictions shared by sync-v1 and async-v2 workers."""
+        from kogwistar.runtime.base_runtime import apply_state_update_inplace
+        from kogwistar.runtime.models import (
+            RunFailure,
+            RunSuccess,
+            RunSuspended,
+            get_route_next_names,
+        )
+        from kogwistar.runtime.routing import compute_route_next
+
         if lane_message_attempts:
             raise RustWorkerError("ctx.send_lane_message is not in worker contract v1")
         if not isinstance(result, (RunSuccess, RunFailure, RunSuspended)):
@@ -261,7 +293,6 @@ class RustStepResolverAdapter:
             raise RustWorkerError("ctx.publish is not in worker contract v1")
         if isinstance(result, RunSuccess) and result.workflow_invocations:
             raise RustWorkerError("nested workflow invocations are not in worker contract v1")
-
         after = _durable_state(state, field="resolver state")
         for key in set(before).union(after):
             if key.startswith("_rt_") and before.get(key) != after.get(key):
@@ -377,6 +408,107 @@ class RustStepResolverAdapter:
             if value is not None:
                 effect[field] = _json_copy(value, field=f"result.{field}")
         return effect
+
+
+class AsyncRustStepResolverAdapter(RustStepResolverAdapter):
+    """Await `async-v2` callbacks while preserving the v1 durable effect DTO.
+
+    The protocol changes callback execution ownership only. Result mapping,
+    frontier validation, journal semantics, and Rust reducer input remain the
+    exact restricted worker-effect contract shared with sync-v1.
+    """
+
+    async def execute(self, work: dict[str, Any]) -> dict[str, Any]:
+        from kogwistar.runtime.models import RunFailure
+        from kogwistar.runtime.runtime import StepContext
+
+        payload = work.get("payload")
+        if not isinstance(payload, dict):
+            raise RustWorkerError("claimed work payload must be an object")
+        if str(payload.get("worker_protocol") or "") != "async-v2":
+            raise RustWorkerError(
+                "async Python worker requires worker_protocol='async-v2'"
+            )
+        resume_effect = payload.get("resume_effect")
+        if resume_effect is not None:
+            copied_effect = _json_copy(resume_effect, field="claimed resume effect")
+            if not isinstance(copied_effect, dict):
+                raise RustWorkerError("claimed resume effect must be an object")
+            if str(copied_effect.get("status") or "") not in {"success", "failed"}:
+                raise RustWorkerError(
+                    "claimed resume effect status must be success or failed"
+                )
+            return copied_effect
+        op = str(payload.get("op") or "")
+        node_id = str(payload.get("node_id") or work.get("step_id") or "")
+        if not op or not node_id:
+            raise RustWorkerError("claimed work requires frozen op and node_id")
+        self._reject_unsupported_op(op)
+        routes = self._routes(payload, node_id)
+        raw_state = payload.get("state", payload.get("initial_state", {}))
+        if not isinstance(raw_state, dict):
+            raise RustWorkerError("claimed work state must be an object")
+        state = _durable_state(raw_state, field="claimed work state")
+        before = _json_copy(state, field="claimed work state")
+        if self.dependency_provider is not None:
+            dependencies = self.dependency_provider(work)
+            if not isinstance(dependencies, Mapping):
+                raise RustWorkerError("dependency_provider must return a mapping")
+            state["_deps"] = dependencies
+        try:
+            resolve_async = getattr(self.step_resolver, "resolve_async", None)
+            resolver = (
+                resolve_async(op) if callable(resolve_async) else self.step_resolver(op)
+            )
+        except Exception as error:
+            raise RustWorkerError(f"cannot resolve frozen op {op!r}: {error}") from error
+        if not callable(resolver):
+            raise RustWorkerError(f"step_resolver({op!r}) returned a non-callable")
+        message_queue: queue.Queue[dict[str, Any]] = queue.Queue()
+        lane_message_attempts: list[dict[str, Any]] = []
+
+        def record_lane_message(**kwargs: Any) -> dict[str, str]:
+            lane_message_attempts.append(dict(kwargs))
+            return {"message_id": ""}
+
+        ctx = StepContext(
+            run_id=str(payload.get("run_id") or work.get("run_id") or ""),
+            workflow_id=str(payload.get("workflow_id") or ""),
+            workflow_node_id=node_id,
+            op=op,
+            token_id=str(payload.get("token_id") or work.get("run_id") or ""),
+            attempt=int(payload.get("attempt", 1)),
+            step_seq=int(payload.get("step_seq", 0)),
+            cache_dir=self.cache_dir,
+            conversation_id=str(payload.get("conversation_id") or "") or None,
+            turn_node_id=str(payload.get("turn_node_id") or "") or None,
+            message_queue=message_queue,
+            lane_message_sender=record_lane_message,
+            state=state,
+        )
+        try:
+            result = resolver(ctx)
+            if inspect.isawaitable(result):
+                result = await result
+        except RustWorkerError:
+            raise
+        except Exception as error:
+            import traceback
+
+            result = RunFailure(
+                conversation_node_id=node_id,
+                state_update=[],
+                errors=[str(error), traceback.format_exc()],
+            )
+        return self._effect_from_result(
+            result=result,
+            state=state,
+            before=before,
+            routes=routes,
+            node_id=node_id,
+            message_queue=message_queue,
+            lane_message_attempts=lane_message_attempts,
+        )
 
 
 def _canonical(value: Any) -> str:
@@ -706,8 +838,156 @@ class RustRuntimeWorker:
         return len(work)
 
 
+class AsyncRustRuntimeWorker:
+    """Async counterpart of :class:`RustRuntimeWorker` for ``async-v2``.
+
+    Callback execution may await, but journal ownership remains a short,
+    synchronous SQLite transaction.  Cancellation or process loss between
+    ``begin`` and ``complete`` therefore leaves ``executing`` and a later
+    worker fails closed rather than replaying an unknown side effect.
+    """
+
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        worker_id: str,
+        journal_path: str | os.PathLike[str],
+        execute: Callable[[dict[str, Any]], Any],
+        headers: Mapping[str, str] | None = None,
+        timeout: float = 30.0,
+        client: httpx.AsyncClient | None = None,
+    ) -> None:
+        if not worker_id.strip():
+            raise ValueError("worker_id must not be empty")
+        self.worker_id = worker_id
+        self.execute = execute
+        self.journal = WorkerResultJournal(journal_path)
+        self._owns_client = client is None
+        self.client = client or httpx.AsyncClient(
+            base_url=base_url.rstrip("/"), headers=dict(headers or {}), timeout=timeout
+        )
+
+    @classmethod
+    def from_step_resolver(
+        cls,
+        *,
+        base_url: str,
+        worker_id: str,
+        journal_path: str | os.PathLike[str],
+        step_resolver: Callable[[str], Callable[[Any], Any]],
+        predicate_registry: Mapping[str, Callable[..., Any]] | None = None,
+        dependency_provider: Callable[[Mapping[str, Any]], Mapping[str, Any]]
+        | None = None,
+        cache_dir: str | os.PathLike[str] | None = None,
+        headers: Mapping[str, str] | None = None,
+        timeout: float = 30.0,
+        client: httpx.AsyncClient | None = None,
+    ) -> "AsyncRustRuntimeWorker":
+        return cls(
+            base_url=base_url,
+            worker_id=worker_id,
+            journal_path=journal_path,
+            execute=AsyncRustStepResolverAdapter(
+                step_resolver,
+                predicate_registry=predicate_registry,
+                dependency_provider=dependency_provider,
+                cache_dir=cache_dir,
+            ).execute,
+            headers=headers,
+            timeout=timeout,
+            client=client,
+        )
+
+    async def aclose(self) -> None:
+        if self._owns_client:
+            await self.client.aclose()
+
+    async def _post(self, path: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+        try:
+            response = await self.client.post(path, json=dict(payload))
+            response.raise_for_status()
+        except httpx.HTTPError as error:
+            raise RustWorkerError(str(error)) from error
+        value = response.json()
+        if not isinstance(value, dict):
+            raise RustWorkerError(f"{path} returned non-object JSON")
+        return value
+
+    async def claim(
+        self,
+        *,
+        limit: int = 1,
+        lease_seconds: int = 60,
+        run_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        if limit <= 0 or lease_seconds <= 0:
+            raise ValueError("limit and lease_seconds must be positive")
+        if run_id is not None and not run_id.strip():
+            raise ValueError("run_id must not be empty")
+        payload: dict[str, Any] = {
+            "claimed_by": self.worker_id,
+            "limit": limit,
+            "lease_seconds": lease_seconds,
+        }
+        if run_id is not None:
+            payload["run_id"] = run_id
+        value = await self._post("/internal/runtime/claim", payload)
+        work = value.get("work")
+        if not isinstance(work, list) or not all(isinstance(item, dict) for item in work):
+            raise RustWorkerError("runtime claim response has invalid work list")
+        return work
+
+    async def process(self, work: dict[str, Any]) -> dict[str, Any]:
+        message_id = str(work.get("message_id") or "")
+        if not message_id:
+            raise RustWorkerError("claimed work missing message_id")
+        payload = work.get("payload")
+        if not isinstance(payload, dict):
+            raise RustWorkerError("claimed work payload must be an object")
+        op = payload.get("op")
+        if not isinstance(op, str) or not op.strip():
+            raise RustWorkerError(
+                "claimed work lacks frozen workflow op; refusing node-id resolver guess"
+            )
+        digest = _work_digest(work)
+        envelope = self.journal.begin(message_id=message_id, work_digest=digest)
+        if envelope is None:
+            effect = self.execute(dict(work))
+            if inspect.isawaitable(effect):
+                effect = await effect
+            if not isinstance(effect, Mapping):
+                raise RustWorkerError("worker callback must return an object")
+            envelope = RustRuntimeWorker._result_envelope(work, effect)
+            self.journal.complete(message_id=message_id, result=envelope)
+        else:
+            handoff = envelope.get("handoff")
+            if not isinstance(handoff, dict):
+                raise RustWorkerError("journaled result lacks handoff object")
+            handoff["claimed_by"] = work.get("claimed_by")
+        return await self._post("/internal/runtime/results", envelope)
+
+    async def poll_once(
+        self,
+        *,
+        limit: int = 1,
+        lease_seconds: int = 60,
+        run_id: str | None = None,
+    ) -> int:
+        work = await self.claim(
+            limit=limit,
+            lease_seconds=lease_seconds,
+            run_id=run_id,
+        )
+        for item in work:
+            await self.process(item)
+        return len(work)
+
+
 __all__ = [
     "AmbiguousWorkerExecution",
+    "AsyncRustRuntimeWorker",
+    "AsyncRustStepResolverAdapter",
     "RustRuntimeWorker",
     "RustStepResolverAdapter",
     "RustWorkerError",

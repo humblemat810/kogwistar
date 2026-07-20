@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import sqlite3
 from pathlib import Path
@@ -10,6 +11,8 @@ import pytest
 
 from kogwistar.runtime.rust_worker import (
     AmbiguousWorkerExecution,
+    AsyncRustRuntimeWorker,
+    AsyncRustStepResolverAdapter,
     RustRuntimeWorker,
     RustStepResolverAdapter,
     RustWorkerError,
@@ -453,3 +456,105 @@ def test_out_of_order_result_retries_without_reexecuting_callback(tmp_path: Path
         assert worker.process(_work())["event_seq"] == 4
 
     assert calls == {"callback": 1, "result": 2}
+
+
+def test_async_step_resolver_adapter_awaits_callback_and_rejects_sync_protocol() -> None:
+    from kogwistar.runtime.resolvers import AsyncMappingStepResolver
+
+    resolver = AsyncMappingStepResolver()
+
+    @resolver.register("start")
+    async def execute(ctx):
+        await asyncio.sleep(0)
+        with ctx.state_write as state:
+            state["async"] = True
+        return RunSuccess(conversation_node_id=None, state_update=[])
+
+    work = _adapter_work()
+    work["payload"]["worker_protocol"] = "async-v2"
+    effect = asyncio.run(AsyncRustStepResolverAdapter(resolver).execute(work))
+    assert effect["result"]["final_state"] == {"seed": 1, "async": True}
+
+    with pytest.raises(RustWorkerError, match="cannot execute"):
+        RustStepResolverAdapter(resolver)(work)
+
+    work["payload"]["worker_protocol"] = "sync-v1"
+    with pytest.raises(RustWorkerError, match="requires worker_protocol"):
+        asyncio.run(AsyncRustStepResolverAdapter(resolver).execute(work))
+
+
+def test_async_worker_journals_awaited_callback_before_response_retry(tmp_path: Path) -> None:
+    calls = {"callback": 0, "result": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["result"] += 1
+        if calls["result"] == 1:
+            raise httpx.ReadError("response lost", request=request)
+        return httpx.Response(200, json={"event_seq": 3}, request=request)
+
+    async def execute(_work: dict[str, Any]) -> dict[str, Any]:
+        calls["callback"] += 1
+        await asyncio.sleep(0)
+        return _effect()
+
+    async def invoke() -> None:
+        journal = tmp_path / "async-worker.sqlite"
+        first = AsyncRustRuntimeWorker(
+            base_url="http://rust",
+            worker_id="worker-1",
+            journal_path=journal,
+            execute=execute,
+            client=httpx.AsyncClient(
+                transport=httpx.MockTransport(handler), base_url="http://rust"
+            ),
+        )
+        with pytest.raises(RustWorkerError, match="response lost"):
+            await first.process(_work())
+        await first.aclose()
+        second = AsyncRustRuntimeWorker(
+            base_url="http://rust",
+            worker_id="worker-2",
+            journal_path=journal,
+            execute=execute,
+            client=httpx.AsyncClient(
+                transport=httpx.MockTransport(handler), base_url="http://rust"
+            ),
+        )
+        assert (await second.process(_work(owner="worker-2")))["event_seq"] == 3
+        await second.aclose()
+
+    asyncio.run(invoke())
+    assert calls == {"callback": 1, "result": 2}
+
+
+def test_async_worker_cancellation_leaves_ambiguous_journal_row(tmp_path: Path) -> None:
+    async def cancelled(_work: dict[str, Any]) -> dict[str, Any]:
+        raise asyncio.CancelledError()
+
+    async def invoke() -> None:
+        journal = tmp_path / "async-cancelled.sqlite"
+        no_post = httpx.MockTransport(
+            lambda _request: pytest.fail("cancelled callback must not post an effect")
+        )
+        first = AsyncRustRuntimeWorker(
+            base_url="http://rust",
+            worker_id="worker-1",
+            journal_path=journal,
+            execute=cancelled,
+            client=httpx.AsyncClient(transport=no_post, base_url="http://rust"),
+        )
+        with pytest.raises(asyncio.CancelledError):
+            await first.process(_work())
+        await first.aclose()
+        restarted = AsyncRustRuntimeWorker(
+            base_url="http://rust",
+            worker_id="worker-2",
+            journal_path=journal,
+            execute=cancelled,
+            client=httpx.AsyncClient(transport=no_post, base_url="http://rust"),
+        )
+        with pytest.raises(AmbiguousWorkerExecution, match="may already have run"):
+            await restarted.process(_work(owner="worker-2"))
+        await restarted.aclose()
+
+    asyncio.run(invoke())

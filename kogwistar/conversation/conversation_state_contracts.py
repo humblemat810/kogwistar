@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 from typing import Any, Optional, TypedDict, cast
+from typing_extensions import NotRequired
 from pydantic import BaseModel, ConfigDict, Field
 
 from ..engine_core.models import Span
-from kogwistar.runtime.models import WorkflowState
 
 Json = Any
 
@@ -59,7 +59,9 @@ class WorkflowStateModel(BaseModel):
     summary: SummaryStateModel = Field(default_factory=SummaryStateModel)
     budget: BudgetStateModel = Field(default_factory=BudgetStateModel)
     prev_turn_meta_summary: PrevTurnMetaSummaryModel
-    _deps: dict[str, Any]
+    # Runtime dependencies are process-local and deliberately absent here.
+    # Pydantic treats leading-underscore attributes as private, so they must be
+    # attached after ``model_dump`` at the runtime admission boundary.
 
     def dump_state(self) -> ConversationWorkflowState:
         return cast(ConversationWorkflowState, self.model_dump(exclude=set(["_deps"])))
@@ -89,7 +91,31 @@ class ConversationBudgetStateDict(TypedDict):
 
 
 # ---- Persisted / checkpointed state (JSON-friendly) ----
-class ConversationWorkflowState(WorkflowState):
+class ConversationWorkflowState(TypedDict):
+    """Narrow JSON-friendly persisted shape for conversation workflows.
+
+    Generic runtime state is intentionally an open ``dict[str, Any]`` because
+    user workflows may define arbitrary state keys.  This TypedDict describes
+    only conversation's persisted/checkpointed contract.
+    """
+
+    conversation_id: str
+    user_id: str
+    turn_node_id: NotRequired[str]
+    turn_index: NotRequired[int]
+    role: NotRequired[str]
+    user_text: NotRequired[str]
+    mem_id: NotRequired[str]
+    self_span: NotRequired[Span]
+    embedding: NotRequired[Any]
+    memory: NotRequired[Any]
+    memory_raw: NotRequired[Any]
+    kg: NotRequired[Any]
+    memory_pin: NotRequired[Any]
+    kg_pin: NotRequired[Any]
+    answer: NotRequired[Any]
+    _rt_join: NotRequired[dict[str, Any]]
+
     # identity
     # conversation_id: str
     # user_id: str

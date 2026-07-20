@@ -93,6 +93,16 @@ def test_container_harness_defaults_xdist_off_after_controlled_slowdown(
     assert harness._args().pytest_workers == 0
 
 
+def test_container_harness_does_not_implicitly_promote_meta_store(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = _harness()
+    monkeypatch.setattr("sys.argv", ["rust_port_container_compat.py"])
+
+    assert harness._args().implementation_mode == "python"
+    assert harness._args().meta_store_mode is None
+
+
 def test_container_harness_does_not_forward_argparse_terminator() -> None:
     harness = _harness()
 

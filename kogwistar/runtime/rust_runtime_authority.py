@@ -7,6 +7,7 @@ checkpoints while this facade waits for the public synchronous result shape.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import queue
@@ -19,7 +20,7 @@ from typing import TYPE_CHECKING, Any
 import httpx
 
 from .design import validate_workflow_design
-from .rust_worker import RustRuntimeWorker
+from .rust_worker import AsyncRustRuntimeWorker, RustRuntimeWorker
 
 if TYPE_CHECKING:
     from .runtime import RunResult, WorkflowRuntime
@@ -79,7 +80,7 @@ def _aliases(edge: Any, target: Any, target_id: str) -> list[str]:
     return aliases
 
 
-def freeze_runtime_plan(runtime: WorkflowRuntime, workflow_id: str) -> dict[str, Any]:
+def freeze_runtime_plan(runtime: Any, workflow_id: str) -> dict[str, Any]:
     """Freeze the validated Python graph into the Rust worker contract."""
     from .runtime import _compute_may_reach_join_bitsets
 
@@ -146,7 +147,7 @@ class RustRuntimeAuthority:
     def __init__(
         self,
         *,
-        runtime: WorkflowRuntime,
+        runtime: Any,
         base_url: str,
         cache_dir: str | os.PathLike[str] | None,
         client: httpx.Client | None = None,
@@ -313,10 +314,11 @@ class RustRuntimeAuthority:
         state_update = json.loads(
             json.dumps(client_result.state_update, ensure_ascii=False)
         )
+        normalized_update = dict(update) if isinstance(update, Mapping) else None
         apply_state_update_inplace(
             predicted_state,
             state_update,
-            update,
+            normalized_update,
             state_schema=state_schema,
         )
         edges = list(adjacency.get(suspended_node_id, []))
@@ -565,11 +567,270 @@ def run_with_rust_authority(
         authority.close()
 
 
+class AsyncRustRuntimeAuthority:
+    """Async facade over same Rust durable scheduler and worker-effect DTO.
+
+    This deliberately admits only ``runtime_kind=async``.  It does not adapt
+    callbacks through a nested event loop; ``async-v2`` is an explicit lane
+    protocol and Python remains the callback executor at that boundary.
+    """
+
+    def __init__(
+        self,
+        *,
+        runtime: Any,
+        base_url: str,
+        cache_dir: str | os.PathLike[str] | None,
+        client: httpx.AsyncClient | None = None,
+    ) -> None:
+        self.runtime = runtime
+        self.base_url = base_url.rstrip("/")
+        self._owns_client = client is None
+        headers: dict[str, str] = {}
+        token = os.getenv("KOGWISTAR_RUST_RUNTIME_TOKEN", "").strip()
+        if token:
+            headers["authorization"] = f"Bearer {token}"
+        request_timeout = float(
+            os.getenv("KOGWISTAR_RUST_RUNTIME_REQUEST_TIMEOUT_SECONDS", "30")
+        )
+        self.client = client or httpx.AsyncClient(
+            base_url=self.base_url,
+            headers=headers,
+            timeout=request_timeout,
+        )
+        journal_root = Path(
+            os.getenv("KOGWISTAR_RUST_RUNTIME_JOURNAL_DIR", "").strip()
+            or cache_dir
+            or Path(tempfile.gettempdir()) / "kogwistar-runtime-worker"
+        )
+        journal_root.mkdir(parents=True, exist_ok=True)
+        worker_id = f"python-async-facade-{os.getpid()}-{id(runtime):x}"
+        self.worker = AsyncRustRuntimeWorker.from_step_resolver(
+            base_url=self.base_url,
+            worker_id=worker_id,
+            journal_path=journal_root / "async-results.sqlite3",
+            step_resolver=runtime.step_resolver,
+            predicate_registry=runtime.predicate_registry,
+            dependency_provider=self._dependencies,
+            cache_dir=cache_dir,
+            headers=headers,
+            client=self.client,
+        )
+        self._live_dependencies: Mapping[str, Any] = {}
+
+    def _dependencies(self, _work: Mapping[str, Any]) -> Mapping[str, Any]:
+        return self._live_dependencies
+
+    async def aclose(self) -> None:
+        await self.worker.aclose()
+        if self._owns_client:
+            await self.client.aclose()
+
+    async def _request_json(
+        self, method: str, path: str, **kwargs: Any
+    ) -> dict[str, Any]:
+        try:
+            response = await self.client.request(method, path, **kwargs)
+            response.raise_for_status()
+        except httpx.HTTPError as error:
+            raise RustRuntimeAuthorityError(str(error)) from error
+        value = response.json()
+        if not isinstance(value, dict):
+            raise RustRuntimeAuthorityError(f"{path} returned non-object JSON")
+        return value
+
+    async def _submit_run(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        last_error: httpx.TransportError | None = None
+        for _attempt in range(2):
+            try:
+                response = await self.client.post(
+                    "/api/workflow/runs", json=dict(payload)
+                )
+                response.raise_for_status()
+            except httpx.TransportError as error:
+                last_error = error
+                continue
+            except httpx.HTTPError as error:
+                raise RustRuntimeAuthorityError(str(error)) from error
+            value = response.json()
+            if not isinstance(value, dict):
+                raise RustRuntimeAuthorityError(
+                    "/api/workflow/runs returned non-object JSON"
+                )
+            return value
+        assert last_error is not None
+        raise RustRuntimeAuthorityError(str(last_error)) from last_error
+
+    async def _final_state(
+        self,
+        *,
+        run_id: str,
+        durable_initial: Mapping[str, Any],
+        dependencies: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        value = await self._request_json(
+            "GET", f"/api/workflow/runs/{run_id}/checkpoints"
+        )
+        raw = value.get("checkpoints")
+        checkpoints = raw if isinstance(raw, list) else []
+        candidates = [item for item in checkpoints if isinstance(item, dict)]
+        latest = max(
+            candidates,
+            key=lambda item: (
+                int(item.get("step_seq", -1)),
+                int(item.get("event_seq", -1)),
+            ),
+            default=None,
+        )
+        state = dict(durable_initial)
+        if latest is not None:
+            latest_state = latest.get("state")
+            if not isinstance(latest_state, dict):
+                raise RustRuntimeAuthorityError("Rust checkpoint state is not an object")
+            state = dict(latest_state)
+        state.pop("_rt_routes", None)
+        state.pop("_rt_node_ops", None)
+        if dependencies:
+            state["_deps"] = dependencies
+        return state
+
+    async def _pump_existing_run(
+        self,
+        *,
+        run_id: str,
+        durable_initial: Mapping[str, Any],
+        dependencies: Mapping[str, Any],
+    ) -> "RunResult":
+        from .runtime import RunResult
+
+        deadline = time.monotonic() + float(
+            os.getenv("KOGWISTAR_RUST_RUNTIME_RUN_TIMEOUT_SECONDS", "300")
+        )
+        cancelled = False
+        status_value: dict[str, Any] = {}
+        while time.monotonic() < deadline:
+            status_value = await self._request_json("GET", f"/api/workflow/runs/{run_id}")
+            status = str(status_value.get("status") or "")
+            if status in {"succeeded", "failed", "cancelled", "suspended"}:
+                break
+            if (
+                not cancelled
+                and self.runtime.cancel_requested is not None
+                and self.runtime.cancel_requested(run_id)
+            ):
+                await self._request_json("POST", f"/api/workflow/runs/{run_id}/cancel")
+                cancelled = True
+            processed = await self.worker.poll_once(
+                limit=max(1, int(self.runtime.max_workers)),
+                lease_seconds=60,
+                run_id=run_id,
+            )
+            if processed == 0:
+                await asyncio.sleep(0.01)
+        else:
+            raise RustRuntimeAuthorityError(
+                f"Rust runtime run {run_id!r} exceeded configured timeout"
+            )
+
+        final_state = await self._final_state(
+            run_id=run_id,
+            durable_initial=durable_initial,
+            dependencies=dependencies,
+        )
+        server_status = str(status_value.get("status") or "failed")
+        status = "failure" if server_status == "failed" else server_status
+        raw_error = status_value.get("error")
+        if isinstance(raw_error, list):
+            errors = [str(value) for value in raw_error]
+        elif raw_error in (None, {}, ""):
+            errors = []
+        else:
+            errors = [str(raw_error)]
+        return RunResult(
+            run_id=run_id,
+            final_state=final_state,
+            mq=queue.Queue(maxsize=10_000),
+            status=status,
+            errors=errors,
+        )
+
+    async def run(
+        self,
+        *,
+        workflow_id: str,
+        conversation_id: str,
+        turn_node_id: str | None,
+        initial_state: Mapping[str, Any],
+        run_id: str,
+    ) -> "RunResult":
+        if initial_state.get("dream_deps"):
+            raise RustRuntimeAuthorityError(
+                "dream_deps is not represented by Rust worker contract v1"
+            )
+        dependencies = initial_state.get("_deps") or {}
+        if not isinstance(dependencies, Mapping):
+            raise RustRuntimeAuthorityError("initial_state['_deps'] must be a mapping")
+        self._live_dependencies = dependencies
+        durable_initial = _json_state(initial_state)
+        plan = freeze_runtime_plan(self.runtime, workflow_id)
+        payload = {
+            "run_id": run_id,
+            "workflow_id": workflow_id,
+            "conversation_id": conversation_id,
+            "turn_node_id": turn_node_id,
+            "initial_state": durable_initial,
+            "runtime_kind": "async",
+            **plan,
+        }
+        submitted = await self._submit_run(payload)
+        if submitted.get("run_id") != run_id or submitted.get("admission") != "accepted":
+            raise RustRuntimeAuthorityError(
+                f"Rust scheduler returned invalid admission: {submitted!r}"
+            )
+        return await self._pump_existing_run(
+            run_id=run_id,
+            durable_initial=durable_initial,
+            dependencies=dependencies,
+        )
+
+
+async def run_with_rust_authority_async(
+    runtime: Any,
+    *,
+    workflow_id: str,
+    conversation_id: str,
+    turn_node_id: str | None,
+    initial_state: Mapping[str, Any],
+    run_id: str,
+    cache_dir: str | os.PathLike[str] | None,
+) -> "RunResult":
+    url = rust_runtime_authority_url()
+    if url is None:
+        raise RustRuntimeAuthorityError("Rust runtime authority URL is not configured")
+    authority = AsyncRustRuntimeAuthority(
+        runtime=runtime,
+        base_url=url,
+        cache_dir=cache_dir,
+    )
+    try:
+        return await authority.run(
+            workflow_id=workflow_id,
+            conversation_id=conversation_id,
+            turn_node_id=turn_node_id,
+            initial_state=initial_state,
+            run_id=run_id,
+        )
+    finally:
+        await authority.aclose()
+
+
 __all__ = [
+    "AsyncRustRuntimeAuthority",
     "RustRuntimeAuthority",
     "RustRuntimeAuthorityError",
     "freeze_runtime_plan",
     "run_with_rust_authority",
+    "run_with_rust_authority_async",
     "rust_runtime_authority_selected",
     "rust_runtime_authority_url",
 ]

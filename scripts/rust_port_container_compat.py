@@ -89,7 +89,9 @@ def _args() -> argparse.Namespace:
         "--implementation-mode", choices=("python", "shadow", "rust"), default="python"
     )
     parser.add_argument(
-        "--meta-store-mode", choices=("python", "shadow", "rust"), default="rust"
+        "--meta-store-mode",
+        choices=("python", "shadow", "rust"),
+        help="Optional explicit meta-store boundary probe; otherwise inherit --implementation-mode.",
     )
     parser.add_argument("--graph-store-mode", choices=("python", "shadow", "rust"))
     parser.add_argument("--runtime-mode", choices=("python", "shadow", "rust"))
@@ -478,8 +480,6 @@ def main() -> int:
     common_args = [
         "--implementation-mode",
         args.implementation_mode,
-        "--meta-store-mode",
-        args.meta_store_mode,
         "--profile",
         args.profile,
         "--backend",
@@ -491,6 +491,8 @@ def main() -> int:
         "--pytest-workers",
         str(pytest_workers),
     ]
+    if args.meta_store_mode is not None:
+        common_args.extend(("--meta-store-mode", args.meta_store_mode))
     provenance = _commit_provenance(application)
     for name, value in provenance.items():
         if value is not None:

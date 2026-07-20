@@ -10,7 +10,7 @@ import statistics
 import subprocess
 import sys
 import time
-from typing import Callable, Final
+from typing import Any, Callable, Final, cast
 
 try:
     # Direct script execution places this file's directory on sys.path.
@@ -228,6 +228,48 @@ def _capability_modes(
             raise ValueError(f"{configuration} must be one of: {choices}; got {mode!r}")
         modes[configuration] = mode
     return modes
+
+
+def _compatibility_capability_modes(
+    *, manifest: dict, implementation_mode: str, overrides: dict[str, str | None]
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Select safe compatibility modes while preserving explicit boundary probes.
+
+    ``rust_cutover_ready`` is not a production environment interlock: an
+    operator can still force an unready capability with its explicit
+    ``--*-mode rust`` flag.  A four-layer compatibility rehearsal, however,
+    must not silently claim that generic Python callback tests prove an
+    unready public Rust owner.  Therefore a *global* ``--implementation-mode
+    rust`` enables only configurations that contain at least one ready Rust
+    target.  Explicit per-configuration flags remain literal requests.
+
+    The first return value is the effective environment; the second records
+    the unmodified request for report identity and auditability.
+    """
+    requested = _capability_modes(
+        manifest=manifest,
+        implementation_mode=implementation_mode,
+        overrides=overrides,
+    )
+    effective = dict(requested)
+    if implementation_mode != "rust":
+        return effective, requested
+
+    ready_configurations = {
+        item["configuration"]
+        for item in manifest.get("capability_ownership", [])
+        if item.get("target_authoritative_writer") == "rust"
+        and item.get("rust_cutover_ready") is True
+        and isinstance(item.get("configuration"), str)
+    }
+    for configuration, requested_mode in requested.items():
+        # A coarse flag is deliberate: use it for a bounded fail-closed or
+        # candidate-authority probe even while the release ledger is false.
+        if overrides.get(configuration) is not None:
+            continue
+        if requested_mode == "rust" and configuration not in ready_configurations:
+            effective[configuration] = "python"
+    return effective, requested
 
 
 def _active_writers(manifest: dict, capability_modes: dict[str, str]) -> dict[str, str]:
@@ -535,6 +577,21 @@ def _command_succeeded(*, layer: str, profile: str, returncode: int) -> bool:
     )
 
 
+def _layer_returncode_succeeded(
+    *, layer: str, profile: str, returncode: object
+) -> bool:
+    """Apply profile-aware pytest success rules at the process exit boundary.
+
+    A file-isolated command can return pytest's code 5 after all tests are
+    excluded by its profile. ``_run_layer`` already records that as a passing
+    layer; the top-level process must use the same rule or Docker workers exit
+    non-zero after writing an otherwise valid passing shard report.
+    """
+    return isinstance(returncode, int) and _command_succeeded(
+        layer=layer, profile=profile, returncode=returncode
+    )
+
+
 def _reusable_run(
     *,
     command: list[str],
@@ -720,9 +777,10 @@ def _run_layer(
     return record
 
 
-def _parse_args(manifest: dict | None = None) -> argparse.Namespace:
+def _parse_args(manifest: dict[str, Any] | None = None) -> argparse.Namespace:
     if manifest is None:
         manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+    assert manifest is not None
     parser = argparse.ArgumentParser(
         description="Run ADR-015 compatibility suites against one core candidate."
     )
@@ -843,13 +901,14 @@ def main() -> int:
 
     report_path = Path(args.report).expanduser().resolve() if args.report else None
     started_at = _utc_now()
-    capability_modes = _capability_modes(
+    overrides = {
+        configuration: getattr(args, f"capability_mode_{configuration}")
+        for configuration in _capability_configurations(manifest)
+    }
+    capability_modes, requested_capability_modes = _compatibility_capability_modes(
         manifest=manifest,
         implementation_mode=args.implementation_mode,
-        overrides={
-            configuration: getattr(args, f"capability_mode_{configuration}")
-            for configuration in _capability_configurations(manifest)
-        },
+        overrides=overrides,
     )
     active_writers = _active_writers(manifest, capability_modes)
     identity = _identity(
@@ -868,6 +927,7 @@ def main() -> int:
             "application_core_pin_commit": args.application_core_pin_commit,
         },
     )
+    identity["requested_capability_modes"] = requested_capability_modes
     consumer_identity = _identity(
         python=consumer_python,
         application_root=application_root,
@@ -969,8 +1029,7 @@ def main() -> int:
         "application": application_root,
     }
     for layer in layers:
-        layer_records = report["layers"]
-        assert isinstance(layer_records, list)
+        layer_records = cast(list[dict[str, object]], report["layers"])
         prior_pass = next(
             (
                 item
@@ -1017,6 +1076,13 @@ def main() -> int:
             layer_records.append(record)
             _write_report(report_path, report)
 
+        prior_runs: list[dict[str, object]] = []
+        if args.resume and isinstance(prior_record, dict):
+            raw_prior_runs = prior_record.get("runs")
+            if isinstance(raw_prior_runs, list):
+                prior_runs = [
+                    item for item in raw_prior_runs if isinstance(item, dict)
+                ]
         layer_record = _run_layer(
             python=python if layer == "core" else consumer_python,
             application_root=application_root,
@@ -1034,20 +1100,18 @@ def main() -> int:
             shard_count=args.shard_count,
             pytest_workers=args.pytest_workers,
             timing_estimates=timing_history.get(layer, {}),
-            prior_runs=(
-                prior_record.get("runs", [])
-                if args.resume and isinstance(prior_record, dict)
-                else []
-            ),
+            prior_runs=prior_runs,
             progress=persist_progress,
         )
         persist_progress(layer_record)
         _write_report(report_path, report)
         returncode = layer_record["returncode"]
-        if isinstance(returncode, int) and returncode != 0:
+        if not _layer_returncode_succeeded(
+            layer=layer, profile=profile, returncode=returncode
+        ):
             report.update({"status": "failed", "finished_at_utc": _utc_now()})
             _write_report(report_path, report)
-            return returncode
+            return int(returncode) if isinstance(returncode, int) else 1
     report.update(
         {
             "status": "planned" if args.dry_run else "passed",

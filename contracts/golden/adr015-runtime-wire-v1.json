@@ -26,6 +26,7 @@
       "step_seq": 0,
       "token_id": "token-1",
       "turn_node_id": null,
+      "worker_protocol": "sync-v1",
       "workflow_id": "wf-1"
     },
     "run_id": "run-1",
@@ -52,6 +53,7 @@
       "step_seq": 0,
       "token_id": "token-1",
       "turn_node_id": null,
+      "worker_protocol": "sync-v1",
       "workflow_id": "wf-1"
     },
     "run_id": "run-1",
@@ -291,6 +293,7 @@
     "step_seq": 1,
     "token_id": "token-1",
     "turn_node_id": "turn-1",
+    "worker_protocol": "sync-v1",
     "workflow_id": "wf-1"
   },
   "submit": {

@@ -277,6 +277,7 @@ def _runtime_wire_contract() -> dict[str, Any]:
         "correlation_id": "run-1",
         "payload": {
             "contract_version": 1,
+            "worker_protocol": "sync-v1",
             "kind": "workflow.step.execute",
             "run_id": "run-1",
             "workflow_id": "wf-1",
@@ -296,6 +297,7 @@ def _runtime_wire_contract() -> dict[str, Any]:
     step_execute = {
         "contract_version": 1,
         "kind": "workflow.step.execute",
+        "worker_protocol": "sync-v1",
         "run_id": "run-1",
         "workflow_id": "wf-1",
         "conversation_id": "conv-1",

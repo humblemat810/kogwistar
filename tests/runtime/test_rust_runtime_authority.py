@@ -17,6 +17,7 @@ from kogwistar.runtime.models import RunFailure, RunSuccess
 from kogwistar.runtime.resolvers import MappingStepResolver
 from kogwistar.runtime.runtime import RunResult, WorkflowRuntime
 from kogwistar.runtime.rust_runtime_authority import (
+    AsyncRustRuntimeAuthority,
     RustRuntimeAuthority,
     RustRuntimeAuthorityError,
     freeze_runtime_plan,
@@ -53,7 +54,7 @@ def test_public_sync_runtime_dispatches_to_configured_rust_authority(
         "kogwistar.runtime.rust_runtime_authority.run_with_rust_authority",
         dispatch,
     )
-    runtime = WorkflowRuntime.__new__(WorkflowRuntime)
+    runtime: Any = WorkflowRuntime.__new__(WorkflowRuntime)
     runtime.step_resolver = SimpleNamespace(_state_schema={})
 
     result = runtime.run(
@@ -83,7 +84,7 @@ def test_public_sync_runtime_rust_mode_without_authority_url_fails_closed(
 ) -> None:
     monkeypatch.setenv("KOGWISTAR_IMPL_RUNTIME", "rust")
     monkeypatch.delenv("KOGWISTAR_RUST_RUNTIME_URL", raising=False)
-    runtime = WorkflowRuntime.__new__(WorkflowRuntime)
+    runtime: Any = WorkflowRuntime.__new__(WorkflowRuntime)
     runtime.step_resolver = SimpleNamespace(_state_schema={})
 
     with pytest.raises(RustRuntimeAuthorityError, match="URL is not configured"):
@@ -280,7 +281,7 @@ def test_public_authority_runs_through_real_rust_sqlite_server(
             state_update=[("u", {"answer": 42})],
         )
 
-    runtime = WorkflowRuntime.__new__(WorkflowRuntime)
+    runtime: Any = WorkflowRuntime.__new__(WorkflowRuntime)
     runtime.workflow_engine = object()
     runtime.step_resolver = resolver
     runtime.predicate_registry = {}
@@ -347,6 +348,123 @@ def test_public_authority_runs_through_real_rust_sqlite_server(
         status = httpx.get(f"{base_url}/api/workflow/runs/run-live", timeout=10)
         assert status.status_code == 200
         assert status.json()["status"] == "succeeded"
+    finally:
+        process.terminate()
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=10)
+
+
+@pytest.mark.integration
+def test_async_authority_runs_async_v2_through_real_rust_sqlite_server(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    """Admission and continuation lanes retain async-v2 through real SQLite."""
+    from kogwistar.runtime.resolvers import AsyncMappingStepResolver
+
+    if not RUST_SERVER.exists():
+        pytest.skip("build kogwistar-server before live authority test")
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = int(sock.getsockname()[1])
+    node = SimpleNamespace(
+        id="entry",
+        label="Entry",
+        op="start",
+        fanout=False,
+        metadata={"wf_start": True, "wf_op": "start"},
+    )
+    monkeypatch.setattr(
+        "kogwistar.runtime.rust_runtime_authority.validate_workflow_design",
+        lambda **_kwargs: (node, {"entry": node}, {"entry": []}),
+    )
+    monkeypatch.setattr(
+        "kogwistar.runtime.runtime._compute_may_reach_join_bitsets",
+        lambda **_kwargs: {"entry": 0},
+    )
+    resolver = AsyncMappingStepResolver()
+
+    @resolver.register("start")
+    async def start(ctx):
+        await asyncio.sleep(0)
+        assert ctx.state_view["seed"] == 1
+        return RunSuccess(
+            conversation_node_id=None,
+            state_update=[("u", {"async_answer": 42})],
+        )
+
+    runtime = SimpleNamespace(
+        workflow_engine=object(),
+        step_resolver=resolver,
+        predicate_registry={},
+        max_workers=1,
+        cancel_requested=None,
+    )
+    sqlite_path = tmp_path / "async-authority.sqlite3"
+    env = os.environ.copy()
+    for name in ("JWT_SECRET", "JWT_ALG", "JWT_ISS", "JWT_AUD"):
+        env.pop(name, None)
+    env.update(
+        {
+            "KOGWISTAR_BACKEND": "sqlite",
+            "KOGWISTAR_META_SQLITE_PATH": str(sqlite_path),
+            "KOGWISTAR_SERVER_HOST": "127.0.0.1",
+            "KOGWISTAR_SERVER_PORT": str(port),
+            "KOGWISTAR_SERVER_REQUIRED_ROLES": "",
+        }
+    )
+    process = subprocess.Popen(
+        [str(RUST_SERVER)],
+        cwd=ROOT,
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    base_url = f"http://127.0.0.1:{port}"
+    try:
+        for _ in range(100):
+            if process.poll() is not None:
+                stderr = process.stderr.read() if process.stderr is not None else ""
+                raise AssertionError(f"Rust server exited before ready: {stderr}")
+            try:
+                if httpx.get(f"{base_url}/health", timeout=0.5).status_code == 200:
+                    break
+            except httpx.HTTPError:
+                time.sleep(0.05)
+        else:
+            raise AssertionError("Rust SQLite server did not become ready")
+
+        async def invoke() -> RunResult:
+            authority = AsyncRustRuntimeAuthority(
+                runtime=runtime,
+                base_url=base_url,
+                cache_dir=tmp_path,
+            )
+            try:
+                return await authority.run(
+                    workflow_id="wf-async-live",
+                    conversation_id="conv-async-live",
+                    turn_node_id="turn-async-live",
+                    initial_state={"seed": 1},
+                    run_id="run-async-live",
+                )
+            finally:
+                await authority.aclose()
+
+        result = asyncio.run(invoke())
+        assert result.status == "succeeded"
+        assert result.final_state["async_answer"] == 42
+        claimed = httpx.post(
+            f"{base_url}/internal/runtime/claim",
+            json={"claimed_by": "inspection", "limit": 1, "lease_seconds": 1},
+            timeout=10,
+        )
+        assert claimed.status_code == 200
+        assert claimed.json()["work"] == []
     finally:
         process.terminate()
         try:
@@ -651,7 +769,7 @@ def test_freeze_runtime_plan_preserves_route_alias_fanout_and_join_mask(
     ]
 
 
-def test_async_runtime_fails_closed_when_rust_authority_is_selected(
+def test_async_runtime_dispatches_to_async_rust_authority_when_selected(
     monkeypatch,
 ) -> None:
     from kogwistar.runtime.async_runtime import AsyncWorkflowRuntime
@@ -659,21 +777,41 @@ def test_async_runtime_fails_closed_when_rust_authority_is_selected(
     monkeypatch.setenv("KOGWISTAR_IMPL_RUNTIME", "rust")
     monkeypatch.setenv("KOGWISTAR_RUST_RUNTIME_URL", "http://rust")
     runtime = AsyncWorkflowRuntime.__new__(AsyncWorkflowRuntime)
+    expected = RunResult(
+        run_id="run-1", final_state={"answer": 42}, mq=__import__("queue").Queue()
+    )
+    calls: list[dict[str, Any]] = []
 
-    async def invoke() -> None:
-        await runtime.run(
+    async def dispatch(_runtime: Any, **kwargs: Any) -> RunResult:
+        calls.append(kwargs)
+        return expected
+
+    monkeypatch.setattr(
+        "kogwistar.runtime.rust_runtime_authority.run_with_rust_authority_async",
+        dispatch,
+    )
+
+    async def invoke() -> RunResult:
+        return await runtime.run(
             workflow_id="wf-1",
             conversation_id="conv-1",
             turn_node_id="turn-1",
-            initial_state={},
+            initial_state={"seed": 1},
+            run_id="run-1",
+            cache_dir="cache",
         )
 
-    try:
-        asyncio.run(invoke())
-    except NotImplementedError as error:
-        assert "async resolver callbacks" in str(error)
-    else:
-        raise AssertionError("async Rust authority must fail closed")
+    assert asyncio.run(invoke()) is expected
+    assert calls == [
+        {
+            "workflow_id": "wf-1",
+            "conversation_id": "conv-1",
+            "turn_node_id": "turn-1",
+            "initial_state": {"seed": 1},
+            "run_id": "run-1",
+            "cache_dir": "cache",
+        }
+    ]
 
 
 def test_async_runtime_rust_mode_without_authority_url_fails_closed(
@@ -693,7 +831,7 @@ def test_async_runtime_rust_mode_without_authority_url_fails_closed(
             initial_state={},
         )
 
-    with pytest.raises(NotImplementedError, match="async resolver callbacks"):
+    with pytest.raises(RustRuntimeAuthorityError, match="URL is not configured"):
         asyncio.run(invoke())
 
 
