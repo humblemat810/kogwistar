@@ -453,6 +453,153 @@
       "path": "tests"
     }
   ],
+  "server_operation_deferrals": {
+    "contract_version": 1,
+    "status": "versioned-intentionally-deferred",
+    "owner": "python-rollback-deployment",
+    "rule": "A deferred operation must remain listed in Rust's PENDING_SERVER_CUTOVER_ROUTES or PENDING_SYSCALL_CUTOVER_OPS, fail closed when sent directly to the Rust application service, and retain the Python rollback route. Removing an entry requires its listed authority and exit evidence; transport registration alone is insufficient.",
+    "route_groups": [
+      {
+        "name": "document-and-graph-mutations",
+        "owner": "python",
+        "status": "intentionally-deferred",
+        "required_authority": [
+          "graph-pgvector",
+          "queues-leases-lanes"
+        ],
+        "exit_evidence": "native graph mutation/read parity, derived-index admission/replay, rollback, and public route conformance",
+        "operations": [
+          {
+            "method": "DELETE",
+            "path": "/admin/doc/{doc_id}"
+          },
+          {
+            "method": "POST",
+            "path": "/api/document"
+          },
+          {
+            "method": "POST",
+            "path": "/api/document.upsert_tree"
+          },
+          {
+            "method": "POST",
+            "path": "/api/graph/upsert"
+          }
+        ]
+      },
+      {
+        "name": "conversation-serving-and-turns",
+        "owner": "python",
+        "status": "intentionally-deferred",
+        "required_authority": [
+          "workflow-runtime",
+          "graph-pgvector"
+        ],
+        "exit_evidence": "conversation graph projection/read parity, security-scope checks, turn idempotency, snapshot replay, and REST/MCP conformance",
+        "operations": [
+          {
+            "method": "GET",
+            "path": "/api/conversations"
+          },
+          {
+            "method": "GET",
+            "path": "/api/conversations/{conversation_id}"
+          },
+          {
+            "method": "GET",
+            "path": "/api/conversations/{conversation_id}/snapshots/latest"
+          },
+          {
+            "method": "GET",
+            "path": "/api/conversations/{conversation_id}/turns"
+          },
+          {
+            "method": "POST",
+            "path": "/api/conversations"
+          },
+          {
+            "method": "POST",
+            "path": "/api/conversations/{conversation_id}/turns:answer"
+          }
+        ]
+      },
+      {
+        "name": "graph-query-and-visualization-data",
+        "owner": "python",
+        "status": "intentionally-deferred",
+        "required_authority": [
+          "graph-pgvector"
+        ],
+        "exit_evidence": "graph ordering/filter/query parity, scope authorization, data-bearing visualization parity, and frozen OpenAPI/MCP conformance",
+        "operations": [
+          {
+            "method": "GET",
+            "path": "/api/search_index_hybrid"
+          },
+          {
+            "method": "GET",
+            "path": "/api/viz/cytoscape.json"
+          },
+          {
+            "method": "GET",
+            "path": "/api/viz/d3.json"
+          },
+          {
+            "method": "GET",
+            "path": "/viz/d3.bundle"
+          }
+        ]
+      },
+      {
+        "name": "tool-audit-read",
+        "owner": "python",
+        "status": "intentionally-deferred",
+        "required_authority": [
+          "workflow-runtime",
+          "graph-pgvector"
+        ],
+        "exit_evidence": "conversation tool-call/result read parity, security-scope enforcement, audit ordering, and REST/MCP conformance",
+        "operations": [
+          {
+            "method": "GET",
+            "path": "/api/workflow/tools/audit"
+          }
+        ]
+      },
+      {
+        "name": "derived-index-admission",
+        "owner": "python",
+        "status": "intentionally-deferred",
+        "required_authority": [
+          "graph-pgvector",
+          "queues-leases-lanes"
+        ],
+        "exit_evidence": "derived-index fingerprint/reconcile parity, lease/retry/replay, rollback, and public route conformance",
+        "operations": [
+          {
+            "method": "POST",
+            "path": "/api/add_index_entries"
+          }
+        ]
+      }
+    ],
+    "syscall_group": {
+      "owner": "python",
+      "status": "intentionally-deferred",
+      "required_authority": [
+        "workflow-runtime",
+        "graph-pgvector"
+      ],
+      "exit_evidence": "versioned worker protocol plus conversation/tool security, idempotency, restart, and REST/MCP conformance",
+      "operations": [
+        "send_message",
+        "receive_message",
+        "mount_memory",
+        "project_view",
+        "invoke_tool"
+      ]
+    }
+  },
   "ownership": {
     "core": "kogwistar-rust-port-owner",
     "consumer_fixtures": "consumer-repository-owner",

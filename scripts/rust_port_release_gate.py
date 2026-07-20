@@ -16,6 +16,8 @@ except ModuleNotFoundError:  # imported as a repository module in unit tests
 
 ROOT = Path(__file__).resolve().parents[1]
 LAYERS = ("core", "parser", "sink", "application")
+SERVER_DEFERRAL_ROUTE_COUNT_V1 = 16
+SERVER_DEFERRAL_SYSCALL_COUNT_V1 = 5
 REQUIRED_RUST_OWNERS = {
     "deterministic-contracts",
     "sqlite-meta",
@@ -42,6 +44,97 @@ def _readiness_module():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def validate_server_operation_deferrals(manifest: dict[str, Any]) -> list[str]:
+    """Validate Phase-5 Python rollback deferrals before release promotion.
+
+    Rust's frozen inventories are checked against this manifest in the contract
+    suite. This release-side check independently prevents a malformed or
+    incomplete manifest from satisfying a readiness report merely because all
+    capability flags and canaries were changed to green.
+    """
+    errors: list[str] = []
+    deferrals = manifest.get("server_operation_deferrals")
+    if not isinstance(deferrals, dict):
+        return ["server_operation_deferrals is required"]
+    if deferrals.get("contract_version") != 1:
+        errors.append("contract_version must be 1")
+    if deferrals.get("status") != "versioned-intentionally-deferred":
+        errors.append("status must be versioned-intentionally-deferred")
+    if deferrals.get("owner") != "python-rollback-deployment":
+        errors.append("owner must be python-rollback-deployment")
+    if not isinstance(deferrals.get("rule"), str) or not deferrals["rule"].strip():
+        errors.append("rule must be non-empty")
+
+    routes: set[tuple[str, str]] = set()
+    route_groups = deferrals.get("route_groups")
+    if not isinstance(route_groups, list) or not route_groups:
+        errors.append("route_groups must be a non-empty array")
+        route_groups = []
+    for index, group in enumerate(route_groups):
+        prefix = f"route_groups[{index}]"
+        if not isinstance(group, dict):
+            errors.append(f"{prefix} must be an object")
+            continue
+        _validate_deferred_group(group, prefix, errors)
+        operations = group.get("operations")
+        if not isinstance(operations, list) or not operations:
+            errors.append(f"{prefix}.operations must be a non-empty array")
+            continue
+        for operation_index, operation in enumerate(operations):
+            operation_prefix = f"{prefix}.operations[{operation_index}]"
+            if not isinstance(operation, dict):
+                errors.append(f"{operation_prefix} must be an object")
+                continue
+            method = operation.get("method")
+            path = operation.get("path")
+            if not isinstance(method, str) or not method:
+                errors.append(f"{operation_prefix}.method must be non-empty")
+                continue
+            if not isinstance(path, str) or not path.startswith("/"):
+                errors.append(f"{operation_prefix}.path must start with /")
+                continue
+            key = (method, path)
+            if key in routes:
+                errors.append(f"duplicate deferred route {method} {path}")
+            routes.add(key)
+    if len(routes) != SERVER_DEFERRAL_ROUTE_COUNT_V1:
+        errors.append(
+            f"route_groups must contain {SERVER_DEFERRAL_ROUTE_COUNT_V1} unique operations"
+        )
+
+    syscall_group = deferrals.get("syscall_group")
+    if not isinstance(syscall_group, dict):
+        errors.append("syscall_group must be an object")
+        return errors
+    _validate_deferred_group(syscall_group, "syscall_group", errors)
+    syscalls = syscall_group.get("operations")
+    if not isinstance(syscalls, list) or not all(
+        isinstance(operation, str) and operation for operation in syscalls
+    ):
+        errors.append("syscall_group.operations must be non-empty strings")
+    elif len(set(syscalls)) != len(syscalls):
+        errors.append("syscall_group.operations must not contain duplicates")
+    elif len(syscalls) != SERVER_DEFERRAL_SYSCALL_COUNT_V1:
+        errors.append(
+            f"syscall_group must contain {SERVER_DEFERRAL_SYSCALL_COUNT_V1} operations"
+        )
+    return errors
+
+
+def _validate_deferred_group(group: dict[str, Any], prefix: str, errors: list[str]) -> None:
+    if group.get("owner") != "python":
+        errors.append(f"{prefix}.owner must be python")
+    if group.get("status") != "intentionally-deferred":
+        errors.append(f"{prefix}.status must be intentionally-deferred")
+    authority = group.get("required_authority")
+    if not isinstance(authority, list) or not all(
+        isinstance(capability, str) and capability for capability in authority
+    ):
+        errors.append(f"{prefix}.required_authority must be non-empty strings")
+    if not isinstance(group.get("exit_evidence"), str) or not group["exit_evidence"].strip():
+        errors.append(f"{prefix}.exit_evidence must be non-empty")
 
 
 def evaluate_release_gate(
@@ -99,6 +192,9 @@ def evaluate_release_gate(
             }
         )
 
+    for detail in validate_server_operation_deferrals(manifest):
+        blockers.append({"gate": "server-deferral", "detail": detail})
+
     ownership = manifest.get("capability_ownership", [])
     active_rust = {
         item.get("capability")
@@ -129,6 +225,9 @@ def evaluate_release_gate(
             layer: by_layer.get(layer, {}).get("status", "missing") for layer in LAYERS
         },
         "runtime_performance_status": performance_status,
+        "server_operation_deferrals": {
+            "status": "passed" if not validate_server_operation_deferrals(manifest) else "blocked"
+        },
         "canary": canary,
         "rust_cutover_ready_capabilities": sorted(value for value in active_rust if isinstance(value, str)),
         "blockers": blockers,

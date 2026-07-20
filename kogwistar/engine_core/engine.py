@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from contextlib import contextmanager
 import contextvars
@@ -151,6 +151,7 @@ PageLike = Union[str, Dict[str, Any]]
 NodeOrEdge: TypeAlias = Node | Edge
 
 if TYPE_CHECKING:
+    from .engine_sqlite import EngineSQLite
     from .engine_postgres_meta import EnginePostgresMetaStore
     from .postgres_backend import PgVectorBackend
 

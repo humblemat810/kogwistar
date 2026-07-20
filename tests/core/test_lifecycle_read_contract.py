@@ -40,7 +40,10 @@ class _CountingEmbeddingFunction:
 @pytest.mark.ci_full
 @pytest.mark.parametrize("backend_kind", ("fake", "chroma", "pgvector"))
 def test_lifecycle_patch_is_metadata_only_and_preserves_embedding(
-    monkeypatch: pytest.MonkeyPatch, tmp_path, backend_kind: str, request: pytest.FixtureRequest
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+    backend_kind: str,
+    request: pytest.FixtureRequest,
 ) -> None:
     """Lifecycle must preserve vectors and fail fast on accidental re-embedding."""
     embedder = _CountingEmbeddingFunction()

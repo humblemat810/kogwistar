@@ -2088,6 +2088,54 @@ mod tests {
         );
     }
 
+    #[test]
+    fn public_runtime_json_helpers_reject_unknown_root_and_nested_dto_fields() {
+        let cases = [
+            (
+                r#"{"edges":[],"explicit_next":[],"fanout":false,"failure_only":false,"unexpected":true}"#,
+                select_runtime_route_from_str as fn(&str) -> Result<String, serde_json::Error>,
+            ),
+            (
+                r#"{"token_id":"token","step_seq":1,"current_join_mask":0,"join_outstanding":[],"successors":[],"unexpected":true}"#,
+                plan_runtime_successors_from_str,
+            ),
+            (
+                r#"{"join_index":0,"join_outstanding":[],"arrival":{"join_mask":0,"token_id":"token"},"unexpected":true}"#,
+                apply_runtime_join_arrival_from_str,
+            ),
+            (
+                r#"{"retry_budget":1,"attempt_number":0,"unexpected":true}"#,
+                decide_runtime_retry_from_str,
+            ),
+            (
+                r#"{"parent_run_id":"parent","workflow_id":"workflow","parent_conversation_id":"conversation","parent_turn_node_id":"turn","unexpected":true}"#,
+                plan_runtime_nested_invocation_from_str,
+            ),
+            (
+                r#"{"max_workers":1,"inflight":0,"pending":0,"unexpected":true}"#,
+                decide_runtime_dispatch_from_str,
+            ),
+            (
+                r#"{"token_budget":0,"token_used":0,"time_budget_ms":0,"time_used_ms":0,"rate_limit":0,"rate_used":0,"step_budget":0,"step_used":0,"call_budget":0,"call_used":0,"cost_budget":0.0,"cost_used":0.0,"unexpected":true}"#,
+                decide_runtime_budget_suspend_from_str,
+            ),
+            (
+                r#"{"pending":[],"inflight":0,"max_workers":1,"unexpected":true}"#,
+                tick_runtime_scheduler_from_str,
+            ),
+        ];
+        for (payload, helper) in cases {
+            let error = helper(payload).unwrap_err();
+            assert!(error.to_string().contains("unknown field"), "{error}");
+        }
+
+        let error = select_runtime_route_from_str(
+            r#"{"edges":[{"edge_id":"edge","unexpected":true}],"explicit_next":[]}"#,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("unknown field"), "{error}");
+    }
+
     fn route_edge(
         edge_id: &str,
         target: &str,

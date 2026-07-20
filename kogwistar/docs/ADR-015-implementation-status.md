@@ -50,30 +50,48 @@ for language purity.
 
 Only these local items remain in scope before production rollout:
 
-- [ ] Phase 3: run fake/memory, SQLite, and PostgreSQL contract gates from the
+- [x] Phase 3: run fake/memory, SQLite, and PostgreSQL contract gates from the
   current candidate; prove fault rollback, lease/CAS/sequence concurrency,
   Python/Rust mutual readability, rebuild equality, and update/tombstone replay.
+  `scripts/adr015_phase3_store_gate.py` produced
+  `.codex/adr015-phase3-store-gate.json` for source
+  `6e2dfbd8c855d83667a1840a73a959604b0946167a2083a8ca8b4419f107fba3`:
+  memory 17, SQLite 27, and live pgvector PostgreSQL 36 all passed with zero
+  failures, errors, or skips. The gate rejects a skipped PostgreSQL group.
 - [ ] Phase 3: promote each of the four pending durable-store capabilities only
   when its capability-specific evidence and rollback evidence pass. Do not flip
   one broad store flag from a narrow test.
-- [ ] Phase 4: finish the already-bounded recorded runtime cutover. Existing
+- [x] Phase 4: finish the already-bounded recorded runtime cutover. Existing
   reducer, frontier, serving projection, indexed dedup, frozen route validation,
-  lane transaction, and Python worker adapter stay within this item.
-- [ ] Phase 4: pass existing sync, async, bridge-parity, suspend/resume, and
+  lane transaction, and Python worker adapter stay within this item. Current
+  native evidence is `.codex/adr015-phase4-runtime-gate.json` for source
+  `6e2dfbd8c855d83667a1840a73a959604b0946167a2083a8ca8b4419f107fba3`.
+- [x] Phase 4: pass existing sync, async, bridge-parity, suspend/resume, and
   terminal suites; recorded state/event/terminal-result parity; crash/restart;
-  cancellation/backpressure; and Python-worker restart gates.
+  cancellation/backpressure; and Python-worker restart gates. The persisted
+  gate passed durable-worker 55, sync/async bijection 64, bridge parity 17,
+  suspend/terminal 23, and live PostgreSQL 10 tests, all with zero failures,
+  errors, or skips. Rust async authority remains deliberately fail-closed under
+  worker contract v1; this is tested rather than silently delegated.
 - [ ] Phase 4: route the public runtime owner through the proven Rust durable
   scheduler while keeping dynamic Python callbacks behind the versioned worker
   boundary. Unsupported nested/sandbox/async/side-effect protocol features stay
-  fail-closed; no new runtime-state operation may be invented.
-- [ ] Phase 5: complete or explicitly version/defer the 16 currently frozen
-  Python-owned server operations listed by `PENDING_SERVER_CUTOVER_ROUTES`:
-  document delete/upsert, conversation list/get/create/turns/answer/snapshot,
-  hybrid search, Cytoscape/D3 data, workflow tool audit, graph upsert, and index
-  entry add.
-- [ ] Phase 5: complete or explicitly version/defer the five conversation/tool
-  syscall sub-operations listed by `PENDING_SYSCALL_CUTOVER_OPS`: send/receive
-  message, mount memory, project view, and invoke tool.
+  fail-closed; no new runtime-state operation may be invented. Local routing now
+  fails closed when `KOGWISTAR_IMPL_RUNTIME=rust` lacks an authority URL (it no
+  longer silently falls back to Python), and Rust worker contract v1 explicitly
+  rejects async callbacks. The current native boundary subset passed
+  durable-worker 57 plus sync/async bijection 64. This line remains unchecked:
+  public authority promotion still requires its capability canary and the
+  explicit `workflow-runtime` readiness decision.
+- [x] Phase 5: explicitly version/defer the 16 currently frozen Python-owned
+  server operations listed by `PENDING_SERVER_CUTOVER_ROUTES`. The manifest
+  records grouped Python rollback ownership, prerequisite Rust authorities, and
+  exit evidence; its exact operation set is bidirectionally checked against the
+  Rust fail-closed inventory.
+- [x] Phase 5: explicitly version/defer the five conversation/tool syscall
+  sub-operations listed by `PENDING_SYSCALL_CUTOVER_OPS`. The same versioned
+  manifest entry records Python rollback ownership, the required worker/runtime
+  protocol authority, and required exit evidence.
 - [ ] Phase 5: pass route/auth/capability/error/SSE-resume/MCP conformance,
   frozen OpenAPI/MCP no-drift, mixed-version/rolling-upgrade, and operational
   implementation/parity/queue/replay/schema telemetry gates.
@@ -81,6 +99,14 @@ Only these local items remain in scope before production rollout:
   compatibility layers (core, parser, sink, application) under one verified
   identity. Report `adr015-milestone-uv-final.json` passed on 2026-07-20 under
   identity `fe22d92e51a9e023a742cd85ec088eed1c74254397ddf7c17c4cb37779e71b1b`.
+- [x] Re-run the frozen Phase 3/4 candidate through the same four Linux layers.
+  `.codex/adr015-phase34-milestone-container.json` passed on 2026-07-20 with
+  wheel SHA-256 `ec08c4484e22fbda209b59945b99e24099e123139815065814293b78d9e4d071`,
+  source digest `3710bb6b960df4330f41289695940552119d7dbb21a9c1a20b1028b71af612d1`,
+  three ordinary Docker shards, zero xdist workers, exact layer coverage, and
+  1010.21 seconds orchestration wall time. PostgreSQL fixture skips inside
+  isolated workers remain intentionally non-evidence; the no-skip live
+  PostgreSQL Phase 3/4 gates remain the authoritative proof for that backend.
 - [x] Re-run the release-readiness report. Current candidate has no
   compatibility or recorded performance blocker; the report correctly remains
   blocked only by six explicitly unready authority capabilities and absent
@@ -129,6 +155,16 @@ requirement: the Docker compatibility workers deliberately do not reach the
 host Docker daemon, so PostgreSQL fixtures correctly skip there rather than
 creating a false environmental pass. Neither result advances a capability flag
 until its listed capability-specific evidence and production canary pass.
+
+The later metadata-only lifecycle candidate also passed the full current-source
+host selector (`505 passed, 4 skipped, 1182 deselected`) and all four isolated
+Linux layers. Its report is `.codex/adr015-lifecycle-milestone-current.json`:
+candidate identity `fc17840955c4f2261b9f878890c41815f9d06985fec8df1c42f8219c9706e095`,
+source digest `c2d93e57d1cfd0ba31d95e0aaf3abe6c41bb022d19758fa90a4f9edc8f6badce`,
+wheel SHA-256 `9dc4bca9cdbc9638d8a1c7978c9978903890032b42039c65492fd1da76215809`.
+The milestone used three ordinary containers, zero xdist workers, and completed
+in 1075.24 seconds. It proves the lifecycle contract on the candidate; it does
+not alter any false readiness flag or substitute for production canaries.
 
 On 2026-07-20, a disposable host `pgvector/pgvector:pg16` instance supplied
 the previously unavailable PostgreSQL live evidence. Rust/Python event-log
@@ -350,6 +386,13 @@ now unlock the `sqlite-meta` capability only.
   executable evidence; implementation and fresh four-layer proof remain pending.
 - Rust server binary and application services exist, but server and runtime
   cutover readiness remain false.
+- The 16 frozen server routes and five frozen conversation/tool syscalls are
+  now versioned Python-roll-back deferrals in `server_operation_deferrals` in
+  `contracts/rust-port-v1.json`. Each records a prerequisite authority and
+  capability-specific exit evidence; a contract test requires an exact,
+  duplicate-free match with Rust's direct fail-closed inventories. This closes
+  their classification task only, not their Rust authority or Phase 5
+  conformance gates.
 - `index_applied_state` has native SQLite schema/API parity; graph and derived
   index authority nevertheless remain Python-owned until graph-store cutover.
 - Production internal/test, 1%, 10%, 50%, and 100% canaries have not occurred.

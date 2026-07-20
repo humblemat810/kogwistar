@@ -188,6 +188,74 @@ def test_runtime_state_reducer_preserves_python_object_identity(
     assert state["items"][1] is extended
 
 
+@pytest.mark.parametrize(
+    ("native_name", "payload"),
+    [
+        ("runtime_select_route", {"edges": []}),
+        (
+            "runtime_plan_successors",
+            {
+                "token_id": "token",
+                "step_seq": 1,
+                "current_join_mask": 0,
+                "join_outstanding": [],
+                "successors": [],
+            },
+        ),
+        (
+            "runtime_apply_join_arrival",
+            {
+                "join_index": 0,
+                "join_outstanding": [],
+                "arrival": {"join_mask": 0, "token_id": "token"},
+            },
+        ),
+        ("runtime_decide_retry", {"retry_budget": 1, "attempt_number": 0}),
+        (
+            "runtime_plan_nested_invocation",
+            {
+                "parent_run_id": "parent",
+                "workflow_id": "workflow",
+                "parent_conversation_id": "conversation",
+                "parent_turn_node_id": "turn",
+            },
+        ),
+        (
+            "runtime_decide_dispatch",
+            {"max_workers": 1, "inflight": 0, "pending": 0},
+        ),
+        (
+            "runtime_decide_budget_suspend",
+            {
+                "token_budget": 0,
+                "token_used": 0,
+                "time_budget_ms": 0,
+                "time_used_ms": 0,
+                "rate_limit": 0,
+                "rate_used": 0,
+                "step_budget": 0,
+                "step_used": 0,
+                "call_budget": 0,
+                "call_used": 0,
+                "cost_budget": 0.0,
+                "cost_used": 0.0,
+            },
+        ),
+        (
+            "runtime_scheduler_tick",
+            {"pending": [], "inflight": 0, "max_workers": 1},
+        ),
+    ],
+)
+def test_native_runtime_json_boundary_rejects_unknown_dto_fields(
+    _native_extension, native_name: str, payload: dict[str, Any]
+) -> None:
+    payload = {**payload, "unexpected": True}
+
+    with pytest.raises(ValueError, match="unknown field"):
+        getattr(_native_extension, native_name)(json.dumps(payload))
+
+
 def test_entity_event_replay_golden_and_error_taxonomy(_native_extension) -> None:
     fixture = json.loads((ROOT / "contracts" / "golden" / "event-replay.json").read_text())
     result = json.loads(_native_extension.replay_entity_events(json.dumps({"events": fixture["events"]})))

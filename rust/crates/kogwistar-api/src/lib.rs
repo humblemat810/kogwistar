@@ -12517,6 +12517,41 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
     }
 
     #[test]
+    fn runtime_wire_dtos_reject_unknown_root_and_nested_fields() {
+        let vectors: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/adr015-runtime-wire-v1.json"
+        )))
+        .unwrap();
+        macro_rules! assert_unknown_field_rejected {
+            ($dto:ty, $value:expr) => {{
+                let mut value = $value;
+                value["unexpected"] = json!(true);
+                let error = serde_json::from_value::<$dto>(value).unwrap_err();
+                assert!(error.to_string().contains("unknown field"));
+            }};
+        }
+
+        assert_unknown_field_rejected!(RuntimeSubmitRun, vectors["submit"].clone());
+        assert_unknown_field_rejected!(RuntimeClaimRequest, vectors["claim"].clone());
+        assert_unknown_field_rejected!(
+            RuntimeWorkerResultRequest,
+            vectors["result_effect"].clone()
+        );
+        assert_unknown_field_rejected!(RuntimeResumeRequest, vectors["resume"].clone());
+        assert_unknown_field_rejected!(RuntimeClaimedWork, vectors["claimed_work_sqlite"].clone());
+        assert_unknown_field_rejected!(
+            kogwistar_runtime::RuntimeStepExecutePayload,
+            vectors["step_execute"].clone()
+        );
+
+        let mut nested_route = vectors["submit"].clone();
+        nested_route["runtime_routes"][0]["unexpected"] = json!(true);
+        let error = serde_json::from_value::<RuntimeSubmitRun>(nested_route).unwrap_err();
+        assert!(error.to_string().contains("unknown field"));
+    }
+
+    #[test]
     fn runtime_start_builder_preserves_all_python_wire_identity() {
         let vectors: Value = serde_json::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),

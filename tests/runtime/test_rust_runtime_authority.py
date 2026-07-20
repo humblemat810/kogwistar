@@ -16,7 +16,11 @@ import pytest
 from kogwistar.runtime.models import RunFailure, RunSuccess
 from kogwistar.runtime.resolvers import MappingStepResolver
 from kogwistar.runtime.runtime import RunResult, WorkflowRuntime
-from kogwistar.runtime.rust_runtime_authority import RustRuntimeAuthority, freeze_runtime_plan
+from kogwistar.runtime.rust_runtime_authority import (
+    RustRuntimeAuthority,
+    RustRuntimeAuthorityError,
+    freeze_runtime_plan,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -72,6 +76,24 @@ def test_public_sync_runtime_dispatches_to_configured_rust_authority(
             "cache_dir": "cache",
         }
     ]
+
+
+def test_public_sync_runtime_rust_mode_without_authority_url_fails_closed(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_RUNTIME", "rust")
+    monkeypatch.delenv("KOGWISTAR_RUST_RUNTIME_URL", raising=False)
+    runtime = WorkflowRuntime.__new__(WorkflowRuntime)
+    runtime.step_resolver = SimpleNamespace(_state_schema={})
+
+    with pytest.raises(RustRuntimeAuthorityError, match="URL is not configured"):
+        runtime.run(
+            workflow_id="wf-1",
+            conversation_id="conv-1",
+            turn_node_id="turn-1",
+            initial_state={},
+            run_id="run-1",
+        )
 
 
 def test_authority_pumps_only_target_run_and_restores_process_local_deps(
@@ -652,6 +674,27 @@ def test_async_runtime_fails_closed_when_rust_authority_is_selected(
         assert "async resolver callbacks" in str(error)
     else:
         raise AssertionError("async Rust authority must fail closed")
+
+
+def test_async_runtime_rust_mode_without_authority_url_fails_closed(
+    monkeypatch,
+) -> None:
+    from kogwistar.runtime.async_runtime import AsyncWorkflowRuntime
+
+    monkeypatch.setenv("KOGWISTAR_IMPL_RUNTIME", "rust")
+    monkeypatch.delenv("KOGWISTAR_RUST_RUNTIME_URL", raising=False)
+    runtime = AsyncWorkflowRuntime.__new__(AsyncWorkflowRuntime)
+
+    async def invoke() -> None:
+        await runtime.run(
+            workflow_id="wf-1",
+            conversation_id="conv-1",
+            turn_node_id="turn-1",
+            initial_state={},
+        )
+
+    with pytest.raises(NotImplementedError, match="async resolver callbacks"):
+        asyncio.run(invoke())
 
 
 def test_public_resume_dispatches_to_rust_authority(monkeypatch) -> None:

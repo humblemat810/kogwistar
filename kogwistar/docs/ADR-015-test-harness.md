@@ -56,6 +56,24 @@ network measurement, not a semantic performance claim.
 Real provider constructor and OCR/model-selection coverage in kg-doc-parser is
 marked `llm_real`; it is outside ADR-015 contract CI until fully faked.
 
+## Development cadence
+
+Work in bounded semantic slices. Each slice has its focused regression gate
+(including every applicable fake, Chroma, and PostgreSQL backend), plus static
+checks. Accumulate a small independent batch—normally three to five slices—then
+run Cargo/Python parity and the host `ci_full` selector. Build a Linux wheel and
+run all four container layers only after the source candidate is frozen.
+
+Count slices by independent semantics, never by changed files or tests. For
+example, Rust DTO checks, the matching PyO3 boundary checks, and their golden
+fixture are one contract-hardening slice; they do not justify a batch gate by
+themselves.
+
+An ABI, durable-store transaction, public API, or authority-boundary change
+skips the batch allowance: run its proportional cross-boundary gate immediately.
+This keeps iteration fast without allowing a focused green test to substitute
+for a release candidate.
+
 ## Parallel policy
 
 Default execution uses three ordinary Docker containers and zero pytest-xdist

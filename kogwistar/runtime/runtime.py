@@ -1295,10 +1295,11 @@ class WorkflowRuntime(BaseRuntime):
             run_id = run_id or f"run|{uuid.uuid4()}"
             from .rust_runtime_authority import (
                 run_with_rust_authority,
+                rust_runtime_authority_selected,
                 rust_runtime_authority_url,
             )
 
-            if rust_runtime_authority_url() is not None:
+            if rust_runtime_authority_selected():
                 if _resume_step_seq is not None or _resume_last_exec_node is not None:
                     raise NotImplementedError(
                         "Rust runtime authority uses the versioned resume endpoint; "

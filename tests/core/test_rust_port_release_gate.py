@@ -87,6 +87,30 @@ def test_gate_passes_only_with_all_layers_perf_authority_and_production_canary()
 
     assert result["status"] == "passed"
     assert result["blockers"] == []
+    assert result["server_operation_deferrals"] == {"status": "passed"}
+
+
+def test_gate_rejects_missing_or_duplicate_versioned_server_deferrals() -> None:
+    manifest = json.loads((ROOT / "contracts" / "rust-port-v1.json").read_text(encoding="utf-8"))
+    for item in manifest["capability_ownership"]:
+        if item["capability"] in _gate().REQUIRED_RUST_OWNERS:
+            item["rust_cutover_ready"] = True
+    manifest["current_persistent_evidence"]["gate_status"] = "passed"
+    manifest["server_operation_deferrals"]["route_groups"][0]["operations"].append(
+        manifest["server_operation_deferrals"]["route_groups"][0]["operations"][0]
+    )
+
+    result = _gate().evaluate_release_gate(
+        manifest=manifest,
+        compatibility_reports=_compatibility("a" * 64),
+        runtime_performance={"gate": {"status": "passed"}},
+        canary_evidence=_production_canary(),
+    )
+
+    assert result["status"] == "blocked"
+    assert result["server_operation_deferrals"] == {"status": "blocked"}
+    details = {row["detail"] for row in result["blockers"]}
+    assert "duplicate deferred route DELETE /admin/doc/{doc_id}" in details
 
 
 def test_gate_rejects_historical_compatibility_report_after_source_changes() -> None:

@@ -31,12 +31,17 @@ class RustRuntimeAuthorityError(RuntimeError):
 
 def rust_runtime_authority_url() -> str | None:
     """Return configured authority URL only for explicit Rust runtime mode."""
-    from kogwistar._rust_bridge import runtime_implementation_mode
-
-    if runtime_implementation_mode() != "rust":
+    if not rust_runtime_authority_selected():
         return None
     value = os.getenv("KOGWISTAR_RUST_RUNTIME_URL", "").strip()
     return value.rstrip("/") or None
+
+
+def rust_runtime_authority_selected() -> bool:
+    """Whether public runtime routing explicitly selected Rust authority."""
+    from kogwistar._rust_bridge import runtime_implementation_mode
+
+    return runtime_implementation_mode() == "rust"
 
 
 def _json_state(initial_state: Mapping[str, Any]) -> dict[str, Any]:
@@ -565,5 +570,6 @@ __all__ = [
     "RustRuntimeAuthorityError",
     "freeze_runtime_plan",
     "run_with_rust_authority",
+    "rust_runtime_authority_selected",
     "rust_runtime_authority_url",
 ]

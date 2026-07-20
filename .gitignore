@@ -43,9 +43,17 @@ kogwistar/scripts/*.bundle.cdc.script.hl3.html
 # Reproducible ADR/Codex run output. Keep reusable .codex/*_smoke.py scripts
 # trackable; canonical benchmark and canary evidence lives under contracts/.
 .codex/*.json
+.codex/**/*.json
 .codex/*.log
+.codex/**/*.log
 .codex/*.out
+.codex/**/*.out
+.codex/**/*.out.txt
 .codex/*.err
+.codex/**/*.err
+.codex/**/*.err.txt
+.codex/*.xml
+.codex/**/*.xml
 .codex/*.db
 .codex/*.sqlite*
 .codex/*.prof

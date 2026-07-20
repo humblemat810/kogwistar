@@ -155,6 +155,51 @@ def test_server_cutover_ledger_count_matches_rust_frozen_route_inventory() -> No
     assert f"the {pending_count} currently frozen" in status
 
 
+def test_versioned_server_and_syscall_deferrals_match_rust_frozen_inventory() -> None:
+    manifest = _manifest()
+    deferrals = manifest["server_operation_deferrals"]
+    assert deferrals["contract_version"] == 1
+    assert deferrals["status"] == "versioned-intentionally-deferred"
+    assert deferrals["owner"] == "python-rollback-deployment"
+
+    rust_api = (
+        ROOT / "rust" / "crates" / "kogwistar-api" / "src" / "lib.rs"
+    ).read_text(encoding="utf-8")
+    pending_routes = re.search(
+        r"pub const PENDING_SERVER_CUTOVER_ROUTES:.*?= &\[(.*?)\];",
+        rust_api,
+        flags=re.DOTALL,
+    )
+    pending_syscalls = re.search(
+        r"pub const PENDING_SYSCALL_CUTOVER_OPS:.*?= &\[(.*?)\];",
+        rust_api,
+        flags=re.DOTALL,
+    )
+    assert pending_routes is not None
+    assert pending_syscalls is not None
+    rust_routes = set(
+        re.findall(r'"([A-Z]+)"\s*,\s*"([^"]+)"', pending_routes.group(1))
+    )
+    rust_syscalls = set(re.findall(r'"([a-z_]+)"', pending_syscalls.group(1)))
+    manifest_routes = {
+        (operation["method"], operation["path"])
+        for group in deferrals["route_groups"]
+        for operation in group["operations"]
+    }
+    manifest_syscalls = set(deferrals["syscall_group"]["operations"])
+
+    assert len(manifest_routes) == sum(
+        len(group["operations"]) for group in deferrals["route_groups"]
+    )
+    assert manifest_routes == rust_routes
+    assert manifest_syscalls == rust_syscalls
+    for group in [*deferrals["route_groups"], deferrals["syscall_group"]]:
+        assert group["owner"] == "python"
+        assert group["status"] == "intentionally-deferred"
+        assert group["required_authority"]
+        assert group["exit_evidence"]
+
+
 def test_each_authoritative_capability_has_owner_and_rollback() -> None:
     manifest = _manifest()
     capabilities = manifest["capability_ownership"]
