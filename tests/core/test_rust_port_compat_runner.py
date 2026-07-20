@@ -287,7 +287,7 @@ def test_milestone_layers_select_only_explicit_ci_gates(layer: str) -> None:
     expression = runner._marker_expression(layer, profile="milestone")
 
     assert expression.startswith("(ci or ci_full)")
-    for excluded in ("manual", "llm_real", "legacy", "requires_ollama"):
+    for excluded in ("slow", "manual", "llm_real", "legacy", "requires_ollama"):
         assert f"not {excluded}" in expression
 
 
@@ -298,6 +298,7 @@ def test_sink_milestone_layer_runs_deterministic_unmarked_suite() -> None:
 
     assert "ci or ci_full" not in expression
     for excluded in (
+        "slow",
         "manual",
         "integration",
         "longrun",

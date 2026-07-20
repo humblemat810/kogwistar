@@ -50,8 +50,8 @@ network measurement, not a semantic performance claim.
 - `feature`: `(ci or regression) and not slow`, excluding manual, real-LLM,
   Ollama, and legacy tests.
 - `regression`: `regression and not slow` with the same external exclusions.
-- `milestone`: explicit `ci or ci_full` compatibility coverage. Core and parser
-  remain file-isolated for release evidence.
+- `milestone`: explicit `ci or ci_full`, excluding `slow`, manual, and live-model
+  coverage. Core and parser remain file-isolated for release evidence.
 
 Real provider constructor and OCR/model-selection coverage in kg-doc-parser is
 marked `llm_real`; it is outside ADR-015 contract CI until fully faked.
@@ -106,6 +106,23 @@ Regression-only validation:
   --wheel <candidate.whl> --profile regression --shards 3 `
   --report .codex\adr015-regression-sharded.json
 ```
+
+### Resume an interrupted Docker run
+
+Reuse the exact prior command and report path, adding `--resume`:
+
+```powershell
+.venv\Scripts\python.exe scripts\rust_port_container_compat.py `
+  --wheel <same-candidate.whl> --profile milestone --shards 3 `
+  --resume --report .codex\adr015-milestone-sharded.json
+```
+
+Resume is fail-closed. The runner verifies candidate, source, ABI, capability
+mode, and harness identity before reusing anything. It reruns only unfinished or
+failed groups; previously successful groups are retained. Do not reuse a report
+after changing source, rebuilding a different wheel, changing capability modes,
+or editing the harness: start a new report instead. A merged `passed` report
+also proves all shard indexes and exactly-once group coverage.
 
 Explicit xdist experiment, not the default:
 

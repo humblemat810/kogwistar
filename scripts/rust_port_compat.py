@@ -390,18 +390,18 @@ def _marker_expression(layer: str, profile: str) -> str:
     if profile == "milestone":
         if layer in {"core", "parser"}:
             return (
-                "(ci or ci_full) and not manual and not llm_real "
+                "(ci or ci_full) and not slow and not manual and not llm_real "
                 "and not legacy and not requires_ollama"
             )
         if layer == "application":
             return (
-                "(ci or ci_full) and not manual and not llm_real "
+                "(ci or ci_full) and not slow and not manual and not llm_real "
                 "and not legacy and not requires_ollama"
             )
         if layer == "sink":
             # The sink does not classify its deterministic tests with ci markers.
             return (
-                "not manual and not integration and not longrun and not external "
+                "not slow and not manual and not integration and not longrun and not external "
                 "and not llm_real and not requires_ollama"
             )
         raise ValueError(f"unknown suite layer: {layer}")

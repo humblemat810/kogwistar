@@ -393,6 +393,74 @@ process.
   directory inventory, Chroma version, process identity, and the immediately
   preceding add/get sequence before cleanup.
 
+## Case 11: Conversation tail unnecessarily opened Chroma HNSW
+
+### Symptom
+
+The deterministic Chroma parameter of
+`test_conversation_flow_v2_param_e2e[add_knowledge_banana-banana-chroma_fake]`
+passed twice and then failed in a fresh third process. The visible assertion was
+only `Workflow add-turn run failed with status='failure'`.
+
+### Cause and proof
+
+The persisted `wf_step` result revealed the actual exception at `summarize`:
+
+```text
+AttributeError: 'NoneType' object has no attribute 'conversation_id'
+```
+
+`_summarize_conversation_batch` called the compatibility tail lookup; that helper
+caught every exception and converted a Chroma read failure into `None`.
+`get_chat_tail` requested `embeddings` although it only uses documents and
+metadata. The retained Chroma diagnostic contained the HNSW reader error
+`invalid type: string ..., expected f64`. Thus an unrelated vector-segment read
+silently changed a non-empty conversation into an empty one.
+
+### Fix and verification
+
+- Tail and sequence serving reads now request only `documents` and `metadatas`.
+- A regression test asserts the exact no-embedding read contract.
+- The original parameter passed once after the fix, then **three independent
+  fresh-process runs** passed (58.90s, 58.53s, 59.11s).
+
+This is a Python Chroma adapter/read-shape defect, not a Rust-authority defect.
+The fix is not a retry, delay, or skip: it removes an unnecessary HNSW dependency
+from the transition path. A new candidate still requires a normal full-suite run.
+
+## Case 12: Metadata lifecycle patch accidentally re-embeds content
+
+### Symptom and trap
+
+A tempting follow-up to an embedding-read failure is to stop fetching
+`embeddings`, but keep sending the existing `documents` in a lifecycle
+`update()`. That appears to preserve a record while avoiding an HNSW read.
+It does not. Chroma treats `update(documents=..., embeddings=None)` as a content
+update and invokes the configured embedding function again.
+
+This is a fake fix: a tombstone, redirect, or effective-time metadata patch
+silently gains model cost, latency, and a new vector that need not equal the
+original. It can also make deterministic metadata operations depend on an
+unavailable external embedding provider.
+
+### Required contract
+
+- Lifecycle-only operations read `metadatas` only.
+- Lifecycle-only operations call `update(ids=..., metadatas=...)` only; they
+  must not pass `documents` or `embeddings`.
+- A content mutation must declare its vector policy in code and tests: use a
+  supplied preserved vector, deliberately recompute one, or reject the write.
+  It must never inherit a policy accidentally from Chroma argument defaults.
+- `tests/core/test_lifecycle_read_contract.py` spies on the exact backend call,
+  forbids embedding callback invocation at the offending call, and proves the
+  prior vector is still present. Keep this test on fake and real Chroma
+  backends. Every new `StorageBackend` implementation must run the same
+  contract before it is supported for lifecycle operations.
+
+The metadata-only helper documents this rule beside the call site. Do not replace
+it with a broader read-modify-write helper without preserving this executable
+contract.
+
 ## Anti-patterns
 
 Do not:
@@ -400,6 +468,8 @@ Do not:
 - add blanket retries around semantic assertions;
 - use arbitrary sleeps to wait for native storage;
 - accept a single green rerun as proof;
+- treat omission of an embedding read as permission to resend a document; on
+  Chroma that recomputes the embedding and is a performance/semantic regression;
 - replace Chroma/PostgreSQL coverage with fake storage;
 - broaden `manual`, `llm_real`, or provider markers to hide deterministic tests;
 - reuse a report after source, tests, runner, config, or consumer sources change;

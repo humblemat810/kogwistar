@@ -117,12 +117,18 @@ communication estimate only: the scope-locked ledger and the authority/canary
 counts above remain the completion criteria.
 
 The current candidate's fresh Linux wheel was built with the persisted `uv`
-builder and passed all three isolated Docker shards. The full compatibility
-evidence has no code/test blocker. PostgreSQL live checks remain a separate
-capability-specific requirement: the Docker compatibility workers deliberately
-do not reach the host Docker daemon, so PostgreSQL fixtures correctly skip
-there rather than creating a false environmental pass. Neither result advances
-a capability flag until its listed capability-specific evidence passes.
+builder and passed all three isolated Docker shards. The current milestone
+report is `.codex/adr015-milestone-current.json`: candidate identity
+`7b4197b594bff5b8787b5d4246f51fb0d3d12b0ba4a3e6aa173c1f90b17a210f`, source
+digest `9fddf11185759d56656da9343fed5b14e06fbb1e4c8400af9789b3f8d230cfa6`, and
+wheel SHA-256 `b920206ff6c7c292283b4e853e342c4e94a0892d19bb767761aceaf33ae9e75f`.
+It passed core, parser, sink, and application with three ordinary containers
+and zero pytest-xdist workers. The full compatibility evidence has no code/test
+blocker. PostgreSQL live checks remain a separate capability-specific
+requirement: the Docker compatibility workers deliberately do not reach the
+host Docker daemon, so PostgreSQL fixtures correctly skip there rather than
+creating a false environmental pass. Neither result advances a capability flag
+until its listed capability-specific evidence and production canary pass.
 
 On 2026-07-20, a disposable host `pgvector/pgvector:pg16` instance supplied
 the previously unavailable PostgreSQL live evidence. Rust/Python event-log
@@ -134,6 +140,15 @@ not authorize a broad authority-flag promotion or replace production canaries.
 
 ## Completed local gates
 
+- Python-owned Chroma lifecycle projections have an explicit metadata-only
+  serving-write contract: tombstone, redirect, and effective-time patches read
+  only metadata and call `update(ids=..., metadatas=...)`. They never resend a
+  document or omit an embedding while doing so, because Chroma would silently
+  invoke its embedding function and replace/recompute a vector. The executable
+  fake-and-real-Chroma regression keeps the prior vector and asserts zero
+  lifecycle embedding calls. This is adapter correctness/performance hygiene,
+  not a new Rust authority capability; full rationale is Case 12 in
+  `ADR-015-nondeterministic-test-failures.md`.
 - Rust contract, memory, SQLite, PostgreSQL, pgvector, queue/lease/lane,
   run-registry, recorded-runtime, API, Python-worker, and wheel slices exist.
 - Runtime state serving uses a disposable full-state projection. Missing,
@@ -312,15 +327,16 @@ now unlock the `sqlite-meta` capability only.
 ## Intentionally not ready
 
 - Public PostgreSQL meta/event-log, projection, run-registry, and queue facades
-  are implemented behind the coordinated sync PostgreSQL selector, but the
-  capability readiness flags remain false until fresh four-layer evidence passes
-  and capability-specific production canaries exist. `KOGWISTAR_IMPL_META_STORE=rust`
+  are implemented behind the coordinated sync PostgreSQL selector. Fresh
+  current-candidate four-layer evidence now passes, but the capability readiness
+  flags remain false until capability-specific production canaries exist.
+  `KOGWISTAR_IMPL_META_STORE=rust`
   independently promotes only the ready `sqlite-meta` capability on SQLite.
 - Sync PostgreSQL base graph mutation, replay, repair, and rollback writers are
   now routed through the coordinated native transaction owner. Derived
   node-ref/endpoint tables remain disposable Python adapters driven by native
-  index jobs. `graph-pgvector` remains not ready pending fresh four-layer evidence
-  and production canaries. Chroma remains a Python single-writer adapter.
+  index jobs. `graph-pgvector` remains not ready pending capability-specific
+  production canaries. Chroma remains a Python single-writer adapter.
 - Coordinated sync PostgreSQL now routes exact singleton base node/edge/document reads
   through the native projection ABI. Rust projection reads accept legacy Python
   default-scope rows lacking scope metadata. Single-vector node/edge queries

@@ -262,4 +262,9 @@ jobs:
             --log-disable=urllib3
             --log-disable=urllib3.connectionpool
             --show-capture=no
-        run: python -m pytest -m ci_full -q
+        # ci_full is deterministic compatibility coverage. Provider/model and
+        # intentionally long probes have separate slow/manual execution.
+        run: >-
+          python -m pytest
+          -m "ci_full and not slow and not manual and not llm_real and not requires_ollama"
+          -q

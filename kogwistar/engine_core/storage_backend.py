@@ -17,6 +17,18 @@ Key design points:
 - UnitOfWork exists so engine/runtime can write `with engine.uow(): ...`.
   In Chroma mode it's a no-op for the vector index; transactions are handled by
   the meta store (SQLite today, Postgres later).
+
+Update contract for implementers:
+- Omitted `documents` and `embeddings` mean preserve the stored values; they do
+  not mean clear or recompute either value.
+- A metadata-only `*_update(ids=..., metadatas=...)` must not invoke an
+  embedding provider and must preserve the existing embedding exactly.
+- A caller that changes a document must explicitly choose a vector policy:
+  provide an embedding, deliberately recompute one, or reject the change.
+
+This is observable API semantics, not a Chroma detail.  Third-party backends
+must pass `tests/core/test_lifecycle_read_contract.py`; otherwise lifecycle
+patches can silently introduce model cost, latency, and vector drift.
 """
 
 from contextlib import asynccontextmanager, contextmanager

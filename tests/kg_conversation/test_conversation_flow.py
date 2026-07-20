@@ -2,7 +2,10 @@ import json
 from pathlib import Path
 
 import pytest
-pytestmark = pytest.mark.ci_full
+# This six-turn matrix invokes Gemini/Ollama provider paths for every backend.
+# Short deterministic v2 parity coverage remains in ci_full; provider behavior
+# belongs to slow/manual model validation, not ADR-015 compatibility CI.
+pytestmark = pytest.mark.slow
 
 pytest.importorskip("chromadb")
 pytest.importorskip("langchain_core")
@@ -79,9 +82,9 @@ def cached(memory: Memory, fn: Callable[P, R], *args, **kwargs) -> Callable[P, R
 @pytest.mark.parametrize(
     "backend_kind",
     [
-        pytest.param("fake", id="fake", marks=pytest.mark.ci_full),
-        pytest.param("chroma", id="chroma", marks=pytest.mark.ci_full),
-        pytest.param("pg", id="pg", marks=pytest.mark.ci_full),
+        pytest.param("fake", id="fake"),
+        pytest.param("chroma", id="chroma"),
+        pytest.param("pg", id="pg"),
     ],
 )
 @pytest.mark.parametrize(

@@ -305,36 +305,40 @@ def _backend_update_record_lifecycle(
     record_id: str,
     lifecycle_patch: dict,
 ) -> bool:
-    """Update one record's lifecycle metadata via backend get/update methods."""
+    """Patch lifecycle projection metadata without touching vector payloads.
+
+    Model reads reconstruct their metadata from the backend projection, so
+    lifecycle is metadata-only.  Rewriting a Chroma document without explicitly
+    supplying an embedding would invoke its embedding function; fetching and
+    re-supplying a vector instead would force an unrelated HNSW read.
+
+    Do not "fix" a missing vector by passing the existing document to
+    ``*_update``.  Chroma interprets a document update without an embedding as
+    a request to invoke its configured embedding function.  A real content
+    mutation must instead state and test its vector policy explicitly: preserve
+    a supplied vector, recompute it deliberately, or reject the mutation.
+    """
     get_fn = getattr(backend, f"{kind}_get", None)
     upd_fn = getattr(backend, f"{kind}_update", None)
     if get_fn is None or upd_fn is None:
         raise AttributeError(f"backend missing {kind}_get/{kind}_update")
+    # Existence plus current projection metadata are sufficient. Never request
+    # documents or embeddings here: Chroma would respectively recompute or read
+    # a vector for an operation that changes neither.  This exact shape is a
+    # performance and semantic contract; see test_lifecycle_read_contract.
     got = run_awaitable_blocking(
-        get_fn(ids=[record_id], include=["documents", "metadatas", "embeddings"])
+        get_fn(ids=[record_id], include=["metadatas"])
     )
     ids = got.get("ids") or []
     if not ids:
         return False
 
-    doc = (got.get("documents") or [None])[0]
     meta = (got.get("metadatas") or [None])[0]
-    emb = got.get("embeddings")
-
-    embedding = (emb if emb is not None else [None])[0]
-    base = _safe_json_dict(doc)
-
-    base_meta = base.get("metadata") if isinstance(base.get("metadata"), dict) else {}
-    base["metadata"] = _merge_meta(base_meta, lifecycle_patch)
-
     new_meta = _merge_meta(meta if isinstance(meta, dict) else {}, lifecycle_patch)
-    doc = json.dumps(base, ensure_ascii=False)
     run_awaitable_blocking(
         upd_fn(
-        ids=[record_id],
-        documents=[json.dumps(base, ensure_ascii=False)],
-        metadatas=[new_meta],
-        embeddings=[embedding],
+            ids=[record_id],
+            metadatas=[new_meta],
         )
     )
     return True

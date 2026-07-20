@@ -27,6 +27,7 @@ def test_ci_full_uses_postgres_image_with_pgvector_extension() -> None:
     workflow = CI_WORKFLOW_PATH.read_text(encoding="utf-8")
 
     assert 'GKE_TEST_PG_IMAGE: "pgvector/pgvector:pg16"' in workflow
+    assert "ci_full and not slow and not manual and not llm_real and not requires_ollama" in workflow
 
 
 def test_ci_uses_persisted_inspectable_python_smoke_scripts() -> None:

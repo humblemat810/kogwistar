@@ -2,7 +2,9 @@ import json
 from pathlib import Path
 
 import pytest
-pytestmark = pytest.mark.ci_full
+# Both parameter variants exercise provider-backed Gemini/Ollama workflow paths.
+# Keep them for slow model validation; ci_full has deterministic v2 parity cases.
+pytestmark = pytest.mark.slow
 
 pytest.importorskip("chromadb")
 

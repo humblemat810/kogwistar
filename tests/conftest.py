@@ -10,6 +10,7 @@ import asyncio
 import pathlib
 import tempfile
 import sys
+from contextlib import suppress
 from _pytest.monkeypatch import MonkeyPatch
 from typing import Any, cast
 import dataclasses
@@ -154,6 +155,43 @@ def tmp_path(request: pytest.FixtureRequest, tmp_path_factory: _SimpleTmpPathFac
     path = tmp_path_factory.mktemp(safe_name)
     request.addfinalizer(lambda: shutil.rmtree(path, ignore_errors=True))
     return path
+
+
+@pytest.fixture(autouse=True)
+def _release_test_chroma_process_resources():
+    """Release disposable Chroma systems after every test process-local case.
+
+    Chroma 1.x keeps persistent Rust/HNSW systems in a class-level cache.  Test
+    engines usually have a function-scoped persistence root, so retaining those
+    systems after their test keeps file and HTTP handles alive until the Windows
+    process exhausts its descriptor budget.  Production client lifetime remains
+    unchanged; this is only test isolation for disposable roots.
+    """
+    try:
+        yield
+    finally:
+        # AsyncHttpClient owns httpx clients separately from Chroma's shared
+        # system registry.  The helper is deliberately best-effort so a test
+        # whose optional Chroma dependencies are absent remains collectable.
+        with suppress(Exception):
+            from tests.core._async_chroma_real import (
+                _close_async_chroma_server_clients,
+                _LIVE_REAL_CHROMA_SERVERS,
+                stop_real_chroma_server,
+            )
+
+            _close_async_chroma_server_clients()
+            for server in list(_LIVE_REAL_CHROMA_SERVERS.values()):
+                stop_real_chroma_server(server)
+
+        with suppress(Exception):
+            from chromadb.api.shared_system_client import SharedSystemClient
+
+            systems = list(SharedSystemClient._identifier_to_system.values())
+            for system in systems:
+                with suppress(Exception):
+                    system.stop()
+            SharedSystemClient.clear_system_cache()
 
 
 from pathlib import Path
