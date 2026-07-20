@@ -32,6 +32,15 @@ _IDENTITY_DIAGNOSTIC_PATH_FIELDS: Final = {
     "resolved_package_file",
     "rust_extension_file",
 }
+_FAILURE_OUTPUT_LIMIT: Final = 64 * 1024
+
+
+def _failure_output(value: str) -> str:
+    """Keep enough pytest output to diagnose a failed isolated command."""
+    if len(value) <= _FAILURE_OUTPUT_LIMIT:
+        return value
+    header = f"[... output truncated to {_FAILURE_OUTPUT_LIMIT} characters ...]\n"
+    return header + value[-(_FAILURE_OUTPUT_LIMIT - len(header)) :]
 
 
 def _utc_now() -> str:
@@ -672,15 +681,29 @@ def _run_layer(
             cwd=cwd,
             env=_environment(application_root, mode, capability_modes),
             check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
         )
-        runs.append(
-            {
-                "command": command,
-                "returncode": result.returncode,
-                "duration_seconds": round(time.perf_counter() - run_started, 6),
-                **metadata,
-            }
-        )
+        if result.stdout:
+            print(result.stdout, end="", flush=True)
+        if result.stderr:
+            print(result.stderr, end="", file=sys.stderr, flush=True)
+        run_record = {
+            "command": command,
+            "returncode": result.returncode,
+            "duration_seconds": round(time.perf_counter() - run_started, 6),
+            **metadata,
+        }
+        if result.returncode != 0:
+            run_record.update(
+                {
+                    "stdout": _failure_output(result.stdout),
+                    "stderr": _failure_output(result.stderr),
+                }
+            )
+        runs.append(run_record)
         record["runs"] = runs
         if progress is not None:
             progress(record)

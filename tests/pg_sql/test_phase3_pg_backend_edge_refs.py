@@ -22,6 +22,8 @@ def _dummy_ref(
 
 
 def test_phase3_pg_backend_edge_refs_roundtrip(sa_engine, pg_schema) -> None:
+    if sa_engine is None or pg_schema is None:
+        pytest.skip("PostgreSQL fixtures are unavailable")
     be = PgVectorBackend(engine=sa_engine, embedding_dim=8, schema=pg_schema)
     be.ensure_schema()
 
@@ -64,6 +66,8 @@ def test_phase3_pg_backend_node_update_metadata_merge(sa_engine, pg_schema) -> N
     Note: merge is shallow (jsonb || jsonb).
     """
 
+    if sa_engine is None or pg_schema is None:
+        pytest.skip("PostgreSQL fixtures are unavailable")
     be = PgVectorBackend(engine=sa_engine, embedding_dim=8, schema=pg_schema)
     be.ensure_schema()
 

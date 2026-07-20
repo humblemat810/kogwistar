@@ -85,7 +85,9 @@ def _preseed_chroma_dir(persist_dir: str):
         doc_id=doc.id,
     )
     eng.write.add_edge(e_causes, doc_id=doc.id)
-    return n_smoke.id
+    seed_node_id = n_smoke.id
+    eng.close()
+    return seed_node_id
 
 
 @pytest.mark.asyncio

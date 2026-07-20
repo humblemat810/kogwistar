@@ -1389,6 +1389,8 @@ def engine(request, tmp_chroma_dir, monkeypatch, backend_kind, embedding_functio
             pg_schema = request.getfixturevalue("pg_schema")
         except Exception as exc:  # pragma: no cover - optional backend
             pytest.skip(f"pg backend requested but fixtures are unavailable: {exc}")
+        if sa_engine is None or pg_schema is None:
+            pytest.skip("pg backend requested but fixtures are unavailable")
         eng = GraphKnowledgeEngine(
             persist_directory=os.path.join(tmp_chroma_dir, "kg"),
             embedding_cache_path=os.path.join(os.getcwd(), ".embedding_cache"),
@@ -1437,6 +1439,8 @@ def conversation_engine(
             pg_schema = request.getfixturevalue("pg_schema")
         except Exception as exc:  # pragma: no cover - optional backend
             pytest.skip(f"pg backend requested but fixtures are unavailable: {exc}")
+        if sa_engine is None or pg_schema is None:
+            pytest.skip("pg backend requested but fixtures are unavailable")
         eng = GraphKnowledgeEngine(
             persist_directory=os.path.join(tmp_conv_chroma_dir, "conversation"),
             kg_graph_type="conversation",
@@ -1478,6 +1482,8 @@ def workflow_engine(
             pg_schema = request.getfixturevalue("pg_schema")
         except Exception as exc:  # pragma: no cover - optional backend
             pytest.skip(f"pg backend requested but fixtures are unavailable: {exc}")
+        if sa_engine is None or pg_schema is None:
+            pytest.skip("pg backend requested but fixtures are unavailable")
         eng = GraphKnowledgeEngine(
             persist_directory=os.path.join(tmp_conv_chroma_dir, "workflow"),
             kg_graph_type="workflow",

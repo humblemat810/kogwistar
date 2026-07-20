@@ -57,6 +57,8 @@ def test_workflow_design_creation_and_persistence(
             persist_directory=str(tmp_path / "wf"), kg_graph_type="workflow"
         )
     else:
+        if sa_engine is None or pg_schema is None:
+            pytest.skip("PostgreSQL fixtures are unavailable")
         wf_backend = PgVectorBackend(
             engine=sa_engine, embedding_dim=3, schema=f"{pg_schema}_wf"
         )

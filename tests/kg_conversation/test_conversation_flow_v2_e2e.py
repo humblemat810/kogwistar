@@ -245,7 +245,12 @@ def _deterministic_answer_impl(
 
 @pytest.mark.parametrize("backend_kind", ["chroma", "pg"])
 @pytest.mark.parametrize(
-    "llm_provider_name", ["gemini", "ollama"], indirect=True
+    "llm_provider_name",
+    [
+        pytest.param("gemini", marks=pytest.mark.llm_real),
+        pytest.param("ollama", marks=pytest.mark.requires_ollama),
+    ],
+    indirect=True,
 )
 def test_conversation_flow_v2_end_to_end_cached_llm(
     backend_kind: str,

@@ -34,9 +34,6 @@ def test_bundle_contains_d3_rendering_logic(tmp_path, request):
     )
 
     html = (out_dir / "conversation.bundle.html").read_text(encoding="utf-8")
-    import os
-
-    os.startfile(str(out_dir))
 
     # Bundle must be fully-rendered HTML (no raw Jinja tokens)
     assert "{{" not in html

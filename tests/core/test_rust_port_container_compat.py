@@ -168,6 +168,33 @@ def test_source_stage_copies_public_env_example_but_never_secret_env(
     assert not (stage / "application" / ".env").exists()
 
 
+def test_source_stage_includes_parser_owned_core_test_helper(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    harness = _harness()
+    root = tmp_path / "root"
+    application = tmp_path / "application"
+    stage = tmp_path / "stage"
+    root.mkdir()
+    application.mkdir()
+    (application / ".env.example").write_text("TOKEN=placeholder\n")
+    calls: list[tuple[Path, Path, tuple[str, ...]]] = []
+
+    def _snapshot(source: Path, target: Path, paths: tuple[str, ...] = ()) -> list[str]:
+        calls.append((source, target, paths))
+        return []
+
+    monkeypatch.setattr(harness, "_snapshot_files", _snapshot)
+
+    harness._source_stage(root, application, stage)
+
+    assert (
+        application / "kogwistar",
+        stage / "application" / "kogwistar",
+        ("tests/_helpers",),
+    ) in calls
+
+
 def _write_shard(
     path: Path,
     *,

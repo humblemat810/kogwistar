@@ -36,6 +36,8 @@ def test_pgvector_retrieval_ordering_e2e(distance: str, sa_engine, pg_schema):
 
     # engine = sa.create_engine(dsn, future=True)
 
+    if sa_engine is None or pg_schema is None:
+        pytest.skip("PostgreSQL fixtures are unavailable")
     backend = PgVectorBackend(
         engine=sa_engine, embedding_dim=3, distance=distance, schema=pg_schema
     )

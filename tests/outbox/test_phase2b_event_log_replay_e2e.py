@@ -69,6 +69,8 @@ def e2e_engine(
     else:
         sa_engine = request.getfixturevalue("sa_engine")
         pg_schema = request.getfixturevalue("pg_schema")
+        if sa_engine is None or pg_schema is None:
+            pytest.skip("PostgreSQL fixtures are unavailable")
         pytest.importorskip("pgvector")
         from kogwistar.engine_core.postgres_backend import PgVectorBackend
 

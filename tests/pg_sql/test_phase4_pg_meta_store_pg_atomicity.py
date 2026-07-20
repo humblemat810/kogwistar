@@ -16,6 +16,11 @@ from kogwistar.engine_core.engine_postgres_meta import (
 )
 
 
+def _require_postgres(sa_engine, pg_schema) -> None:
+    if sa_engine is None or pg_schema is None:
+        pytest.skip("PostgreSQL fixtures are unavailable")
+
+
 def _fake_ef(texts):
     # deterministic, dimension=3
     return [[0.0, 0.0, 0.0] for _ in texts]
@@ -25,6 +30,7 @@ def _fake_ef(texts):
 def test_pg_backend_uses_postgres_meta_store(
     sa_engine, pg_schema, tmp_path, distance: str
 ):
+    _require_postgres(sa_engine, pg_schema)
     backend = PgVectorBackend(
         engine=sa_engine, embedding_dim=3, distance=distance, schema=pg_schema
     )
@@ -67,6 +73,7 @@ def test_engine_uow_rolls_back_meta_and_graph_writes_together(
       - gke_user_seq should have no row (meta write rolled back)
       - gke_nodes should have no row (graph write rolled back)
     """
+    _require_postgres(sa_engine, pg_schema)
     backend = PgVectorBackend(
         engine=sa_engine, embedding_dim=3, distance=distance, schema=pg_schema
     )
@@ -103,6 +110,7 @@ def test_engine_uow_rolls_back_meta_and_graph_writes_together(
 def test_append_entity_event_allocates_unique_sequences_for_new_namespace_concurrently(
     sa_engine, pg_schema
 ):
+    _require_postgres(sa_engine, pg_schema)
     meta = EnginePostgresMetaStore(engine=sa_engine, schema=pg_schema)
     meta.ensure_initialized()
 

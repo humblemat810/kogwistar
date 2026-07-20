@@ -1,4 +1,5 @@
 import pytest
+
 pytestmark = pytest.mark.ci_full
 from typing import Any, Type, TypeVar
 from pydantic import BaseModel
@@ -38,6 +39,7 @@ def _mk_span(doc_id: str) -> Span:
 
 
 @pytest.mark.parametrize("backend_kind", ["chroma", "pg"])
+@pytest.mark.llm_real
 def test_summary_creates_context_snapshot_before_llm_call(
     backend_kind, tmp_path, request, monkeypatch
 ):

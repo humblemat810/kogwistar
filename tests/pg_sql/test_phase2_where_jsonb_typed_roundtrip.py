@@ -18,6 +18,8 @@ def test_where_jsonb_typed_roundtrip(sa_engine, pg_schema):
     - boolean JSON values are compared as booleans
     - where_jsonb works against a real Postgres execution, not just SQL compilation
     """
+    if sa_engine is None or pg_schema is None:
+        pytest.skip("PostgreSQL fixtures are unavailable")
     md = sa.MetaData(schema=pg_schema)
 
     t = sa.Table(

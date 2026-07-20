@@ -39,6 +39,12 @@ writes source/wheel/extension digests, and verifies the `transaction_id` store
 ABI before pytest. This prevents a stale local `.pyd` from impersonating current
 Rust source during host gates.
 
+The container recipe uses pinned `uv` for environment installation, with an
+inspectable BuildKit package cache. This is required for future image rebuilds:
+the 2026-07-20 current-candidate rebuild completed in 46.9 seconds with `uv`;
+the prior equivalent `pip` rebuild took 632.6 seconds. This is a local cache and
+network measurement, not a semantic performance claim.
+
 ## Profiles
 
 - `feature`: `(ci or regression) and not slow`, excluding manual, real-LLM,

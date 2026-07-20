@@ -1,25 +1,17 @@
 import time
 import time
 import pathlib
-import sqlite3
 
 import pytest
 pytestmark = pytest.mark.ci_full
 
 pytest.importorskip("sqlalchemy")
 
-import sqlalchemy as sa
-
 from kogwistar.engine_core.chroma_backend import ChromaBackend
 from kogwistar.engine_core.postgres_backend import PgVectorBackend
-from kogwistar.engine_core.engine_postgres_meta import (
-    EnginePostgresMetaStore,
-)
-
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.models import Node, Edge
 from tests.conftest import FakeEmbeddingFunction
-from tests._helpers.meta_job_state import set_index_job_state
 from tests._helpers.fake_backend import InMemoryBackend, build_fake_backend
 from tests._helpers.graph_builders import build_entity_node, build_relationship_edge
 
@@ -82,6 +74,8 @@ def e2e_engine(
     else:
         sa_engine = request.getfixturevalue("sa_engine")
         pg_schema = request.getfixturevalue("pg_schema")
+        if sa_engine is None or pg_schema is None:
+            pytest.skip("PostgreSQL fixtures are unavailable")
         # Skip cleanly if the pgvector dependency isn't available in this environment.
         pytest.importorskip("pgvector")
         backend = PgVectorBackend(engine=sa_engine, embedding_dim=3, schema=pg_schema)
@@ -114,36 +108,10 @@ def _job_by_id(eng: GraphKnowledgeEngine, job_id: str):
 
 
 def _make_job_runnable_now(eng: GraphKnowledgeEngine, job_id: str) -> None:
-    if hasattr(eng.meta_sqlite, "transaction"):
-        with eng.meta_sqlite.transaction() as txn:
-            if isinstance(eng.meta_sqlite, EnginePostgresMetaStore):
-                schema = eng.meta_sqlite.schema
-                table = getattr(eng.meta_sqlite, "index_jobs_table", "index_jobs")
-                ij = f"{schema}.{table}"
-                txn.execute(
-                    sa.text(
-                        f"UPDATE {ij} "
-                        "SET status='PENDING', lease_until=NULL, next_run_at=NOW(), updated_at=NOW() "
-                        "WHERE job_id=:job_id"
-                    ),
-                    {"job_id": job_id},
-                )
-            elif isinstance(txn, sqlite3.Connection):
-                now = int(time.time())
-                txn.execute(
-                    "UPDATE index_jobs SET status='PENDING', lease_until=NULL, next_run_at=?, updated_at=? WHERE job_id=?",
-                    (now, now, job_id),
-                )
-            else:
-                set_index_job_state(
-                    eng.meta_sqlite,
-                    txn,
-                    job_id=str(job_id),
-                    status="PENDING",
-                    lease_until=None,
-                    next_run_at=int(time.time()),
-                    updated_at=int(time.time()),
-                )
+    # First retry backoff is one second. Waiting exercises the public queue clock
+    # contract equally for Python, Rust SQLite, and PostgreSQL authorities.
+    assert _job_by_id(eng, job_id).status == "PENDING"
+    time.sleep(1.1)
 
 
 def test_reconcile_builds_all_joins_from_raw_entities(e2e_engine: GraphKnowledgeEngine):
@@ -285,69 +253,15 @@ def test_stuck_doing_job_is_stealable_after_lease_expiry(
     """Covers the 'halted forever' scenario: DOING with expired lease must be reclaimed."""
     eng = e2e_engine
     _assert_backend_kind(eng)
-    import re
-
     eng.add_node(_mk_node("n_stuck", doc_id="d1"))
     jid = eng.enqueue_index_job(
         entity_kind="node", entity_id="n_stuck", index_kind="node_docs", op="UPSERT"
     )
 
-    # Force the job into DOING with an expired lease to simulate a crashed worker.
-    # (We do it at the metastore level; this is not monkeypatching runtime logic.)
-    if hasattr(eng.meta_sqlite, "transaction"):
-        if isinstance(eng.meta_sqlite, EnginePostgresMetaStore):
-            with eng.meta_sqlite.transaction() as conn:
-                # PG uses per-test schema; schema-qualify the table.
-                schema = eng.meta_sqlite.schema
-                table = getattr(eng.meta_sqlite, "index_jobs_table", "index_jobs")
-                # Very defensive, keep schema/table safe even though fixtures should already sanitize schema.
-                if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", schema):
-                    raise AssertionError(f"invalid schema in test: {schema!r}")
-                if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", table):
-                    raise AssertionError(f"invalid table in test: {table!r}")
-                ij = f"{schema}.{table}"
-                conn.execute(
-                    sa.text(
-                        f"UPDATE {ij} "
-                        "SET status='DOING', "
-                        "    lease_until=NOW() - (:secs || ' seconds')::interval, "
-                        "    updated_at=NOW() "
-                        "WHERE job_id=:job_id"
-                    ),
-                    {"secs": 10, "job_id": jid},
-                )
-        elif hasattr(eng.meta_sqlite, "_debug_force_job_lease"):
-            # Fake/in-memory meta uses a transaction view, not a DB connection.
-            with eng.meta_sqlite.transaction() as txn:
-                set_index_job_state(
-                    eng.meta_sqlite,
-                    txn,
-                    job_id=jid,
-                    status="DOING",
-                    lease_until=0,
-                    updated_at=int(time.time()),
-                )
-        else:
-            with eng.meta_sqlite.transaction() as conn:
-                if isinstance(conn, sqlite3.Connection):
-                    set_index_job_state(
-                        eng.meta_sqlite,
-                        conn,
-                        job_id=jid,
-                        status="DOING",
-                        lease_until=int(time.time()) - 10,
-                        updated_at=int(time.time()),
-                    )
-                else:
-                    # SQLite-like in-memory fallback.
-                    set_index_job_state(
-                        eng.meta_sqlite,
-                        conn,
-                        job_id=jid,
-                        status="DOING",
-                        lease_until=int(time.time()) - 10,
-                        updated_at=int(time.time()),
-                    )
+    # Claim through the public queue API with an already-expired lease. This is
+    # the same crashed-worker state on every metastore implementation.
+    claimed = eng.meta_sqlite.claim_index_jobs(limit=1, lease_seconds=-1)
+    assert any(job.job_id == jid for job in claimed)
 
     eng.reconcile_indexes(max_jobs=10, lease_seconds=5)
 

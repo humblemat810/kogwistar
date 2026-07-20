@@ -6,6 +6,8 @@ from kogwistar.engine_core.engine_postgres import PgVectorBackend
 
 @pytest.mark.ci_full
 def test_pgvector_similarity_ordering_is_correct(sa_engine, pg_schema):
+    if sa_engine is None or pg_schema is None:
+        pytest.skip("PostgreSQL fixtures are unavailable")
     be = PgVectorBackend(engine=sa_engine, embedding_dim=3, schema=pg_schema)
     be.ensure_schema()
 
@@ -40,6 +42,8 @@ def test_pgvector_similarity_ordering_is_correct(sa_engine, pg_schema):
 
 @pytest.mark.ci_full
 def test_pgvector_ties_break_by_id(sa_engine, pg_schema):
+    if sa_engine is None or pg_schema is None:
+        pytest.skip("PostgreSQL fixtures are unavailable")
     be = PgVectorBackend(engine=sa_engine, embedding_dim=2, schema=pg_schema)
     be.ensure_schema()
 

@@ -247,6 +247,18 @@ def test_pytest_option_terminator_is_not_forwarded() -> None:
     assert runner._pytest_args(["-k", "focused"]) == ["-k", "focused"]
 
 
+def test_failed_command_output_is_bounded_from_the_tail() -> None:
+    runner = _runner()
+    value = "prefix-marker\n" + ("x" * runner._FAILURE_OUTPUT_LIMIT) + "tail-marker"
+
+    captured = runner._failure_output(value)
+
+    assert len(captured) < len(value)
+    assert "output truncated" in captured
+    assert "prefix-marker" not in captured
+    assert captured.endswith("tail-marker")
+
+
 @pytest.mark.parametrize("layer", ["core", "parser", "application"])
 def test_milestone_layers_select_only_explicit_ci_gates(layer: str) -> None:
     runner = _runner()

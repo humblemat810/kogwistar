@@ -7,7 +7,7 @@ from kogwistar.conversation.conversation_orchestrator import (
     ConversationOrchestrator,
     _estimate_tokens_from_chars,
 )
-from kogwistar.conversation.models import FilteringResult
+from kogwistar.conversation.models import ConversationAIResponse, FilteringResult
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from tests.conftest import _make_engine_pair
 from tests._helpers.embeddings import build_test_embedding_function
@@ -133,6 +133,11 @@ def test_summary_trigger_can_use_token_threshold(
         return "summary_node_id"
 
     monkeypatch.setattr(orch, "_summarize_conversation_batch", _fake_summarize)
+    monkeypatch.setattr(
+        orch,
+        "answer_only",
+        lambda **_kwargs: ConversationAIResponse(text="deterministic test answer"),
+    )
     orch.create_conversation(user_id="u1", conv_id="c1")
     # Seed first turn
     orch.add_conversation_turn(

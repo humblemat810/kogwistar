@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import re
 import threading
-import time
 import uuid
 
 import pytest
@@ -12,11 +10,7 @@ pytest_plugins = ["tests.core._async_chroma_real"]
 pytestmark = pytest.mark.ci_full
 pytest.importorskip("sqlalchemy")
 
-import sqlalchemy as sa  # noqa: E402
-
 from kogwistar.engine_core.engine import GraphKnowledgeEngine # noqa: E402
-from kogwistar.engine_core.engine_postgres_meta import EnginePostgresMetaStore# noqa: E402
-from tests._helpers.meta_job_state import set_index_job_state # noqa: E402
 from tests.conftest import _make_async_engine # noqa: E402
 from typing import Any # noqa: E402
 
@@ -234,35 +228,8 @@ def test_phase2_enqueue_while_doing_creates_new_pending_async(
         entity_kind="node", entity_id="n_busy", index_kind="node_docs", op="UPSERT"
     )
 
-    if hasattr(eng.meta_sqlite, "transaction"):
-        with eng.meta_sqlite.transaction() as conn:
-            if isinstance(eng.meta_sqlite, EnginePostgresMetaStore):
-                schema = eng.meta_sqlite.schema
-                table = getattr(eng.meta_sqlite, "index_jobs_table", "index_jobs")
-                if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", schema):
-                    raise AssertionError(f"invalid schema in test: {schema!r}")
-                if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", table):
-                    raise AssertionError(f"invalid table in test: {table!r}")
-                ij = f"{schema}.{table}"
-                conn.execute(
-                    sa.text(
-                        f"UPDATE {ij} "
-                        "SET status='DOING', "
-                        "    lease_until=NOW() + (:secs || ' seconds')::interval, "
-                        "    updated_at=NOW() "
-                        "WHERE job_id=:job_id"
-                    ),
-                    {"secs": 60, "job_id": jid1},
-                )
-            else:
-                set_index_job_state(
-                    eng.meta_sqlite,
-                    conn,
-                    job_id=str(jid1),
-                    status="DOING",
-                    lease_until=int(time.time()) + 60,
-                    updated_at=int(time.time()),
-                )
+    claimed = eng.meta_sqlite.claim_index_jobs(limit=1, lease_seconds=60)
+    assert any(job.job_id == jid1 for job in claimed)
 
     jid2 = eng.enqueue_index_job(
         entity_kind="node", entity_id="n_busy", index_kind="node_docs", op="UPSERT"

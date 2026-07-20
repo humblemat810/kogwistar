@@ -267,10 +267,16 @@ def _source_stage(root: Path, application: Path, target: Path) -> dict[str, int]
     nested_count = 0
     for name in ("kg-doc-parser", "kogwistar-obsidian-sink"):
         nested_count += len(_snapshot_files(application / name, consumer / name))
+    core_pin_files = _snapshot_files(
+        application / "kogwistar",
+        consumer / "kogwistar",
+        ("tests/_helpers",),
+    )
     return {
         "core": len(core_files),
         "application": len(application_files),
         "nested_consumers": nested_count,
+        "application_core_pin_helpers": len(core_pin_files),
     }
 
 
