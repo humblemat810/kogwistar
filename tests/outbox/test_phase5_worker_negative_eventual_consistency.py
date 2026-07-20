@@ -1,3 +1,4 @@
+import time
 import uuid
 import pytest
 pytestmark = pytest.mark.ci_full
@@ -51,16 +52,10 @@ def test_phase5_lease_expiry_allows_steal(eng):
     job_id = f"job_{uuid.uuid4().hex}"
     _enqueue(eng.meta_sqlite, ns=ns, job_id=job_id)
 
-    got1 = eng.meta_sqlite.claim_index_jobs(limit=1, lease_seconds=60, namespace=ns)
+    # A negative lease deterministically models a dead worker: the public claim
+    # API writes an already-expired lease, so a second worker may reclaim it.
+    got1 = eng.meta_sqlite.claim_index_jobs(limit=1, lease_seconds=-1, namespace=ns)
     assert len(got1) == 1
-
-    # Force lease expiry + make runnable now
-    with eng.meta_sqlite.transaction() as conn:
-        now = eng.meta_sqlite._now_epoch()
-        conn.execute(
-            "UPDATE index_jobs SET lease_until=?, next_run_at=? WHERE job_id=?",
-            (now - 10, now, job_id),
-        )
 
     got2 = eng.meta_sqlite.claim_index_jobs(limit=1, lease_seconds=60, namespace=ns)
     assert len(got2) == 1
@@ -113,15 +108,18 @@ def test_phase5_crash_after_apply_before_ack_eventually_converges(eng, monkeypat
     )  # SQLite meta may immediately requeue to PENDING with next_run_at
     assert row1.status != "DONE"
 
-    # Make eligible again (skip delay/lease) and run again; should converge to DONE without duplicating effect
-    with eng.meta_sqlite.transaction() as conn:
-        now = eng.meta_sqlite._now_epoch()
-        conn.execute(
-            "UPDATE index_jobs SET status='PENDING', lease_until=NULL, next_run_at=? WHERE job_id=?",
-            (now, job_id),
-        )
-
-    m2 = worker.tick()
+    # Retry scheduling is intentionally store-owned.  Wait for its documented
+    # one-second first backoff rather than reaching into a Python-only SQLite
+    # transaction; this exercises both Python and Rust metadata authorities.
+    deadline = time.monotonic() + 3.0
+    m2 = None
+    while time.monotonic() < deadline:
+        attempt = worker.tick()
+        if attempt.done:
+            m2 = attempt
+            break
+        time.sleep(0.05)
+    assert m2 is not None, "retry never became claimable through the public queue API"
     assert m2.done == 1
     assert len(applied) == 1  # idempotent effect (same tuple)
     rows2 = eng.meta_sqlite.list_index_jobs(namespace=ns, limit=50)

@@ -35,7 +35,16 @@ def store_sqlite(
         if engine_sqlite is not None
         else None
     )
-    if active_connection is not None:
+    active_path = (
+        getattr(engine_sqlite, "get_active_sqlite_path", lambda: None)()
+        if engine_sqlite is not None
+        else None
+    )
+    requested_path = os.path.abspath(os.fspath(path))
+    if active_connection is not None and (
+        active_path is None
+        or os.path.abspath(os.fspath(active_path)) == requested_path
+    ):
         error = RustParityError(
             "Rust SQLite bridge cannot open a second connection inside an active "
             "Python SQLite transaction"
@@ -164,6 +173,17 @@ def graph_store_implementation_mode() -> str:
 def meta_store_implementation_mode() -> str:
     """Internal Phase-2 meta-store selector; public meta-store remains Python-owned."""
     return _store_implementation_mode(env_name="KOGWISTAR_IMPL_META_STORE")
+
+
+def postgres_authority_implementation_mode() -> str:
+    """Select coordinated PostgreSQL authority independently from SQLite meta."""
+    mode = os.getenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "python").strip().lower()
+    if mode not in {"python", "rust"}:
+        raise ValueError(
+            "KOGWISTAR_IMPL_POSTGRES_AUTHORITY must be one of: python, rust; "
+            f"got {mode!r}"
+        )
+    return mode
 
 
 def server_implementation_mode() -> str:

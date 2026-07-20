@@ -16,19 +16,38 @@ from .meta_lane_messages import LaneMessageMetaStoreMixin
 _active_sqlite_conn: contextvars.ContextVar[sqlite3.Connection | None] = (
     contextvars.ContextVar("gke_sqlite_active_conn", default=None)
 )
+_active_sqlite_path: contextvars.ContextVar[Path | None] = contextvars.ContextVar(
+    "gke_sqlite_active_path", default=None
+)
 
 
 def get_active_sqlite_conn() -> sqlite3.Connection | None:
     return _active_sqlite_conn.get()
 
 
+def get_active_sqlite_path() -> Path | None:
+    """Return database path bound to current Python SQLite UoW, if any."""
+    return _active_sqlite_path.get()
+
+
 @contextmanager
-def _set_active_sqlite_conn(conn: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
-    token = _active_sqlite_conn.set(conn)
+def _set_active_sqlite_conn(
+    conn: sqlite3.Connection, path: Path
+) -> Iterator[sqlite3.Connection]:
+    """Bind an active UoW to both its connection and database path.
+
+    The connection context is process-context local, not instance local.  A
+    nested call may join it only when it targets the same SQLite file; otherwise
+    an unrelated EngineSQLite instance would silently write into the outer
+    database.
+    """
+    conn_token = _active_sqlite_conn.set(conn)
+    path_token = _active_sqlite_path.set(path.resolve())
     try:
         yield conn
     finally:
-        _active_sqlite_conn.reset(token)
+        _active_sqlite_path.reset(path_token)
+        _active_sqlite_conn.reset(conn_token)
 
 
 @dataclass(frozen=True)
@@ -477,16 +496,17 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
                 ...
         """
         existing = get_active_sqlite_conn()
-        if existing is not None:
+        if existing is not None and _active_sqlite_path.get() == self.db_path.resolve():
             # Nested transaction scope: join outer UoW/transaction.
-            # Do NOT BEGIN/COMMIT/ROLLBACK here.
+            # Do NOT BEGIN/COMMIT/ROLLBACK here.  Different databases must
+            # never borrow this process-context connection.
             yield existing
             return
 
         conn = self.connect()
         try:
             conn.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
-            with _set_active_sqlite_conn(conn):
+            with _set_active_sqlite_conn(conn, self.db_path):
                 yield conn
             conn.commit()
         except Exception:

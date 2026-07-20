@@ -1,6 +1,6 @@
 # ADR-015 implementation status
 
-Updated: 2026-07-19
+Updated: 2026-07-20
 
 ADR-015 is not complete as a production migration. Local implementation and
 compatibility work is substantially complete, but authoritative ownership and
@@ -77,11 +77,14 @@ Only these local items remain in scope before production rollout:
 - [ ] Phase 5: pass route/auth/capability/error/SSE-resume/MCP conformance,
   frozen OpenAPI/MCP no-drift, mixed-version/rolling-upgrade, and operational
   implementation/parity/queue/replay/schema telemetry gates.
-- [ ] Build one fresh candidate after all local code changes and run all four
+- [x] Build one fresh candidate after all local code changes and run all four
   compatibility layers (core, parser, sink, application) under one verified
-  identity. Older green reports are historical, not proof for changed source.
-- [ ] Re-run the release-readiness report and require no local implementation,
-  compatibility, performance, schema, or rollback blocker before canarying.
+  identity. Report `adr015-milestone-uv-final.json` passed on 2026-07-20 under
+  identity `fe22d92e51a9e023a742cd85ec088eed1c74254397ddf7c17c4cb37779e71b1b`.
+- [x] Re-run the release-readiness report. Current candidate has no
+  compatibility or recorded performance blocker; the report correctly remains
+  blocked only by six explicitly unready authority capabilities and absent
+  production canary evidence.
 
 Fields such as continuation provenance are not independent scope additions.
 They are changed only if an existing Phase 4 parity/interoperability gate proves
@@ -109,17 +112,25 @@ govern ADR completion.
 
 ### Current candidate estimate and validation
 
-As of 2026-07-19, the rough effort estimate is **56% complete**. This is a
+As of 2026-07-20, the rough effort estimate is **58% complete**. This is a
 communication estimate only: the scope-locked ledger and the authority/canary
 counts above remain the completion criteria.
 
-The current candidate adds two unpromoted correctness changes: raw workflow
-submission with no declared `node_ops` now persists the explicit frozen
-operation `"noop"` in SQLite and PostgreSQL, and the release gate rejects
-four-layer reports whose candidate source digest is absent or differs from the
-current source. Focused host validation passes; fresh Linux four-layer and
-Docker-backed PostgreSQL evidence remain required. Neither change advances a
-capability flag until its listed evidence passes.
+The current candidate's fresh Linux wheel was built with the persisted `uv`
+builder and passed all three isolated Docker shards. The full compatibility
+evidence has no code/test blocker. PostgreSQL live checks remain a separate
+capability-specific requirement: the Docker compatibility workers deliberately
+do not reach the host Docker daemon, so PostgreSQL fixtures correctly skip
+there rather than creating a false environmental pass. Neither result advances
+a capability flag until its listed capability-specific evidence passes.
+
+On 2026-07-20, a disposable host `pgvector/pgvector:pg16` instance supplied
+the previously unavailable PostgreSQL live evidence. Rust/Python event-log
+mutual readability, sequence/idempotency collision, native transaction,
+queue/lease, graph rollback, runtime checkpoint/restart/worker reclaim, and
+pgvector retrieval suites passed 56 tests total (with one intentional Chroma
+rollback skip). This closes the local live-PostgreSQL execution gap; it does
+not authorize a broad authority-flag promotion or replace production canaries.
 
 ## Completed local gates
 
@@ -156,6 +167,19 @@ capability flag until its listed evidence passes.
   Core, parser, and sink each passed as one process; all 13 isolated application
   groups passed. Measured layer times were 751.39s, 1132.43s, 19.74s, and
   2520.79s respectively.
+- Fresh three-shard Linux milestone evidence now passes all four layers under
+  one wheel/source identity: `.codex/adr015-milestone-uv-final.json`, candidate
+  identity `fe22d92e51a9e023a742cd85ec088eed1c74254397ddf7c17c4cb37779e71b1b`,
+  source digest `1081722c404271276dff52d9f93037fde6fc8161428fdaa19b802fd1688f6a85`,
+  wheel SHA-256 `985350eb63ba80b205b3c0f6f8cd4842aadb5eb65467a67eee756f22d72e617e`.
+  The persisted container source stage now includes the root MCP entrypoint;
+  MCP E2E validates wire JSON without opening a competing Chroma engine in the
+  parent test process. The builder also installs Maturin through pinned `uv`.
+  Final orchestration wall time was 1265.21 seconds with xdist still disabled.
+- `.codex/rust-port-release-final-current.json` confirms current compatibility
+  and recorded performance gates pass. Its sole blockers are the six explicit
+  `rust_cutover_ready: false` capabilities and rehearsal-only (not production)
+  canary evidence.
 - Sync PostgreSQL now has a native cross-call transaction owner. Coordinated
   `KOGWISTAR_IMPL_META_STORE=rust` plus `KOGWISTAR_IMPL_GRAPH_STORE=rust`
   routes node, edge, document, and domain ADD; existing-entity REPLACE;

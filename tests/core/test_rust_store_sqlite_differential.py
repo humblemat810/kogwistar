@@ -167,6 +167,46 @@ def test_rust_sqlite_then_python_initializes_reads_writes_aliases_and_cursors(tm
     assert regresses.value.code == "KOGWISTAR_STORE_CURSOR_REGRESSES"
 
 
+def test_python_sqlite_nested_transaction_does_not_capture_another_database(tmp_path: Path) -> None:
+    """A global UoW context may only join the database that opened it.
+
+    This is the Python/Rust handoff edge: a leaked or long-lived transaction on
+    one SQLite database must not make a second EngineSQLite write invisible to
+    the cached native reader for that second database.
+    """
+    outer = EngineSQLite(tmp_path / "outer")
+    target = EngineSQLite(tmp_path / "target")
+    outer.ensure_initialized()
+    target.ensure_initialized()
+    _rust(target.db_path, {"kind": "open_init"})
+
+    with outer.transaction():
+        assert target.append_entity_event(
+            namespace="target",
+            event_id="target-event",
+            entity_kind="node",
+            entity_id="target-node",
+            op="UPSERT",
+            payload_json='{"writer":"python"}',
+        ) == 1
+        assert list(outer.iter_entity_events(namespace="target", from_seq=1)) == []
+        assert _rust(
+            target.db_path,
+            {"kind": "latest_retained_event_seq", "namespace": "target"},
+        ) == 1
+
+    strict = _rust(
+        target.db_path,
+        {
+            "kind": "strict_cursor_advance",
+            "namespace": "target",
+            "consumer": "native-reader",
+            "last_seq": 1,
+        },
+    )
+    assert strict["last_seq"] == 1
+
+
 def test_rust_sqlite_batch_is_immediate_atomic_and_durable_after_reopen(tmp_path: Path) -> None:
     path = tmp_path / "engine.db"
     batch = {

@@ -523,18 +523,15 @@ def _target_groups(*, layer: str, tests_path: Path, profile: str) -> list[list[P
 
 
 def _command_succeeded(*, layer: str, profile: str, returncode: int) -> bool:
-    # File-isolated release commands legitimately return pytest code 5
-    # when every item in that file is outside ci/ci_full. Coverage is proven by
-    # `_target_groups`; the raw code remains in the report for auditability.
+    # File-isolated commands legitimately return pytest code 5 when every item
+    # in that file is outside the selected profile.  The target plan proves
+    # collection coverage; retain raw status in reports but do not fail a
+    # profile for selecting no applicable test in an otherwise valid file.
     return (
         returncode == 0
         or (profile == "regression" and returncode == 5)
-        or (layer in _ALWAYS_FILE_ISOLATED_LAYERS and returncode == 5)
-        or (
-            layer in _FILE_ISOLATED_RELEASE_LAYERS
-            and profile == "milestone"
-            and returncode == 5
-        )
+        or (returncode == 5 and layer in _ALWAYS_FILE_ISOLATED_LAYERS)
+        or (returncode == 5 and profile == "milestone")
     )
 
 

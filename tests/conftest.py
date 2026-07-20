@@ -1081,7 +1081,11 @@ def pg_container() -> Iterator[Optional["PostgresContainer"]]:
         yield None
         return
 
-    image = os.getenv("GKE_TEST_PG_IMAGE", "postgres:16")
+    # PgVectorBackend unconditionally creates the vector extension. Keep the
+    # fixture default aligned with ci_full so an omitted environment export
+    # cannot silently start plain PostgreSQL and turn capability tests into
+    # infrastructure errors.
+    image = os.getenv("GKE_TEST_PG_IMAGE", "pgvector/pgvector:pg16")
     initial_ryuk_disabled = _configure_testcontainers_ryuk_env()
     logger.info(
         "Starting pg test container image=%s ryuk_disabled=%s",

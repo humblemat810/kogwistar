@@ -195,6 +195,29 @@ def test_source_stage_includes_parser_owned_core_test_helper(
     ) in calls
 
 
+def test_source_stage_includes_root_mcp_entrypoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    harness = _harness()
+    root = tmp_path / "root"
+    application = tmp_path / "application"
+    stage = tmp_path / "stage"
+    root.mkdir()
+    application.mkdir()
+    (application / ".env.example").write_text("TOKEN=placeholder\n")
+    calls: list[tuple[Path, Path, tuple[str, ...]]] = []
+
+    def _snapshot(source: Path, target: Path, paths: tuple[str, ...] = ()) -> list[str]:
+        calls.append((source, target, paths))
+        return []
+
+    monkeypatch.setattr(harness, "_snapshot_files", _snapshot)
+
+    harness._source_stage(root, application, stage)
+
+    assert any(source == root and "server_mcp.py" in paths for source, _target, paths in calls)
+
+
 def _write_shard(
     path: Path,
     *,

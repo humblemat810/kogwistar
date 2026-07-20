@@ -25,6 +25,9 @@ def test_wheel_builder_uses_persisted_inspectable_entrypoints() -> None:
     source = SCRIPT.read_text(encoding="utf-8")
 
     assert "rust:1.91.1-bookworm" in dockerfile
+    assert "ghcr.io/astral-sh/uv:0.10.10" in dockerfile
+    assert "uv pip install --python /opt/build/bin/python" in dockerfile
+    assert "/opt/build/bin/pip install" not in dockerfile
     assert (
         'ENTRYPOINT ["/bin/sh", "/source/scripts/adr015_build_wheel.sh"]'
         in dockerfile

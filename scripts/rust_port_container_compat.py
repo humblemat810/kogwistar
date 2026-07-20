@@ -238,6 +238,7 @@ def _source_stage(root: Path, application: Path, target: Path) -> dict[str, int]
             "Dockerfile",
             "README.md",
             "LICENSE",
+            "server_mcp.py",
         ),
     )
     application_files = _snapshot_files(

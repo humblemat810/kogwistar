@@ -31,6 +31,12 @@ from tests._helpers.graph_builders import (
 pytestmark = [pytest.mark.ci_full, pytest.mark.core]
 
 
+@pytest.fixture(autouse=True)
+def _explicit_postgres_authority_boundary(monkeypatch: pytest.MonkeyPatch) -> None:
+    """This module exercises the explicitly promoted native PostgreSQL path."""
+    monkeypatch.setenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "rust")
+
+
 @pytest.fixture(scope="module", autouse=True)
 def _native_extension() -> Any:
     return pytest.importorskip("kogwistar._rust")

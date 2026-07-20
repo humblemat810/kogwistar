@@ -136,6 +136,20 @@ def test_server_override_rejects_shadow() -> None:
         )
 
 
+def test_postgres_authority_selector_is_explicit_and_rejects_invalid_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kogwistar._rust_bridge import postgres_authority_implementation_mode
+
+    monkeypatch.delenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", raising=False)
+    assert postgres_authority_implementation_mode() == "python"
+    monkeypatch.setenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "rust")
+    assert postgres_authority_implementation_mode() == "rust"
+    monkeypatch.setenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "invalid")
+    with pytest.raises(ValueError, match="KOGWISTAR_IMPL_POSTGRES_AUTHORITY"):
+        postgres_authority_implementation_mode()
+
+
 def test_identity_fingerprint_changes_with_capability_ownership() -> None:
     runner = _runner()
     base = {
@@ -257,6 +271,13 @@ def test_failed_command_output_is_bounded_from_the_tail() -> None:
     assert "output truncated" in captured
     assert "prefix-marker" not in captured
     assert captured.endswith("tail-marker")
+
+
+def test_milestone_treats_file_with_no_selected_items_as_covered() -> None:
+    runner = _runner()
+
+    assert runner._command_succeeded(layer="core", profile="milestone", returncode=5)
+    assert not runner._command_succeeded(layer="core", profile="milestone", returncode=1)
 
 
 @pytest.mark.parametrize("layer", ["core", "parser", "application"])

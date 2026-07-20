@@ -71,9 +71,9 @@ def test_load_postgres_container_cls_applies_env_before_import(monkeypatch):
 def test_pg_container_fixture_starts_and_stops_container(monkeypatch):
     for name in ("GKE_PG_DSN", "PG_DSN", "DATABASE_URL"):
         monkeypatch.delenv(name, raising=False)
+    monkeypatch.delenv("GKE_TEST_PG_IMAGE", raising=False)
     fake_pg = MagicMock()
     start_mock = MagicMock(return_value=fake_pg)
-    monkeypatch.setenv("GKE_TEST_PG_IMAGE", "postgres:16")
     monkeypatch.setattr(test_conf, "_start_postgres_container", start_mock)
     monkeypatch.setattr(test_conf.logger, "info", MagicMock())
     gen = test_conf.pg_container.__wrapped__()
@@ -81,7 +81,7 @@ def test_pg_container_fixture_starts_and_stops_container(monkeypatch):
     yielded = next(gen)
     assert yielded is fake_pg
     start_mock.assert_called_once()
-    assert start_mock.call_args.args[0] == "postgres:16"
+    assert start_mock.call_args.args[0] == "pgvector/pgvector:pg16"
 
     gen.close()
     fake_pg.stop.assert_called_once_with()
