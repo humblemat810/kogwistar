@@ -89,3 +89,4 @@ the workflow.
 - `ADR-015-incremental-rust-port.md`: migration and downstream authority policy.
 - `ADR-015-implementation-status.md`: implementation and evidence status.
 - `ADR-015-test-harness.md`: reproducible wheel, UAT, and four-layer commands.
+- `ADR-015-release-review-0.2.5.md`: publication record and post-release hardening backlog.
