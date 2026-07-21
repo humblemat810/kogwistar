@@ -73,7 +73,7 @@ Only these local items remain in scope before production rollout:
   Python/Rust mutual readability, rebuild equality, and update/tombstone replay.
   `scripts/adr015_phase3_store_gate.py` produced
   `.codex/adr015-phase3-store-gate.json` for source
-  `e69f1f2c71d4c39e97aff2de8523270cf9f58e3ca6fb5179b564583f0daa22d9`:
+  `294b384b37e423ca5b08c3c3d1be443de1c2549f9b7e185da689cba2502e7f00`:
   memory 17, SQLite 27, and live pgvector PostgreSQL 36 all passed with zero
   failures, errors, or skips. The gate rejects a skipped PostgreSQL group.
 - [ ] Phase 3: promote each of the four pending durable-store capabilities only
@@ -83,14 +83,14 @@ Only these local items remain in scope before production rollout:
   `.codex/adr015-phase3-capability-gate.json`: PostgreSQL sequence/event-log
   4, projection/snapshot/run-registry 6, queue/lease/lane 3, and graph/pgvector
   23 all passed with zero failures, errors, or skips for source
-  `6008c548d3ce7bcd8da367a2b7638f8286ae4cfd43eb8729cc2bedf5d32fa6d0`.
+  `294b384b37e423ca5b08c3c3d1be443de1c2549f9b7e185da689cba2502e7f00`.
   This proves each local slice; each `rust_cutover_ready` remains false until
   its same-candidate production canary and rollback evidence exists.
 - [x] Phase 4: finish the already-bounded recorded runtime cutover. Existing
   reducer, frontier, serving projection, indexed dedup, frozen route validation,
   lane transaction, and Python worker adapter stay within this item. Current
   native evidence is `.codex/adr015-phase4-runtime-gate.json` for source
-  `6008c548d3ce7bcd8da367a2b7638f8286ae4cfd43eb8729cc2bedf5d32fa6d0`.
+  `294b384b37e423ca5b08c3c3d1be443de1c2549f9b7e185da689cba2502e7f00`.
 - [x] Phase 4: pass existing sync, async, bridge-parity, suspend/resume, and
   terminal suites; recorded state/event/terminal-result parity; crash/restart;
   cancellation/backpressure; and Python-worker restart gates. The persisted
@@ -124,7 +124,7 @@ Only these local items remain in scope before production rollout:
   SSE-resume, MCP, and frozen OpenAPI/MCP no-drift conformance. Persisted
   `scripts/adr015_phase5_server_gate.py` produced
   `.codex/adr015-phase5-server-gate.json` for source
-  `6008c548d3ce7bcd8da367a2b7638f8286ae4cfd43eb8729cc2bedf5d32fa6d0`:
+  `294b384b37e423ca5b08c3c3d1be443de1c2549f9b7e185da689cba2502e7f00`:
   REST/SSE 4, auth/syscall 41, MCP 13, frozen contracts 3, and live async
   Chroma/PostgreSQL SSE 6 passed with zero failures, errors, or skips.
 - [ ] Phase 5: pass mixed-version/rolling-upgrade and operational
@@ -134,19 +134,19 @@ Only these local items remain in scope before production rollout:
 - [x] Build one fresh candidate after all local code changes and run all four
   compatibility layers (core, parser, sink, application) under one verified
   identity. `.codex/adr015-container-final.json` passed on 2026-07-21 under
-  identity `77a4b711cd93a3498187b6d169f7814f051d52e4426be32fd48bc6ae677ab36d`,
-  source `6008c548d3ce7bcd8da367a2b7638f8286ae4cfd43eb8729cc2bedf5d32fa6d0`,
+  identity `9a6606f0d5b400949843d800fb7d7de2f1447fb818666561ab2bca720cfccc53`,
+  source `294b384b37e423ca5b08c3c3d1be443de1c2549f9b7e185da689cba2502e7f00`,
   and Linux wheel SHA-256
-  `096e4aa88c3d8afd87de5b1a40e31cba29aa28d4ae3925a98a1a4377cd53b3e2`.
+  `8b1d0666d6aff334892ca5ab528300b7442033e8c6d3ae319f9e2ec999aa4d3d`.
 - [x] Re-run the frozen Phase 3/4 candidate through the same four Linux layers.
   The same final report used three ordinary Docker shards, zero xdist workers,
-  exact layer coverage, and 907.03 seconds orchestration wall time. PostgreSQL
+  exact layer coverage, and 1096.59 seconds orchestration wall time. PostgreSQL
   fixture skips inside isolated workers remain intentionally non-evidence; the
   no-skip live PostgreSQL Phase 3/4 gates remain authoritative for that backend.
 - [x] Re-run the release-readiness report. Current candidate has no
   compatibility, recorded performance, server-deferral, Phase-3, Phase-4, or
   Phase-5 local baseline blocker. `.codex/adr015-release-final.json` for source
-  `6008c548d3ce7bcd8da367a2b7638f8286ae4cfd43eb8729cc2bedf5d32fa6d0`
+  `294b384b37e423ca5b08c3c3d1be443de1c2549f9b7e185da689cba2502e7f00`
   correctly remains blocked only by six explicitly unready authority
   capabilities and absent production canary evidence. The release gate now
   independently requires current Phase-3 per-capability PostgreSQL evidence,
@@ -249,17 +249,18 @@ not authorize a broad authority-flag promotion or replace production canaries.
 - Cross-repository deterministic acceptance covers source, fake parser, app
   graph promotion, Rust event append/reducer, incremental Obsidian update and
   tombstone, and byte-equivalent full rebuild.
-- Python-created stores remain readable after Rust writes. The rollback
-  rehearsal deletes Rust current-state projection, recovers from events,
-  retries without duplication, and resumes contiguous sequencing.
+- SQLite persisted-file compatibility across Python/Rust owners is a clean
+  process-restart operation only; live mixed ownership is not a claim. The
+  rollback rehearsal deletes Rust current-state projection, recovers from
+  events, retries without duplication, and resumes contiguous sequencing.
 - Real LLM/OCR provider tests are manual and excluded from ADR CI. Long tests
   with equivalent short semantic coverage are marked slow.
 - Clean native wheel import and the four compatibility layers have passed.
-- `KOGWISTAR_IMPL_META_STORE=rust` now routes the public SQLite meta facade to
-  one persistent Rust writer. Native transaction tokens keep nested operations
-  in one atomic unit of work; raw Python writer access fails closed. Python
-  rollback reads the same database. A clean Linux wheel core feature run passed
-  723 tests with 8 environment-dependent skips.
+- `KOGWISTAR_IMPL_META_STORE=rust` routes the public SQLite meta facade to one
+  persistent Rust writer; `python` retains the existing Python owner. Native
+  transaction tokens keep nested operations atomic and raw Python writer access
+  through the Rust facade fails closed. Owner changes require process restart.
+  A clean Linux wheel core feature run passed 723 tests with 8 skips.
 - `scripts/rust_port_container_compat.py` reproduces clean Linux compatibility
   with a patch-pinned Python image, wheel digest, separate core/consumer venvs,
   full dependency fingerprints, resumable reports, and guaranteed native-bridge
@@ -283,6 +284,13 @@ not authorize a broad authority-flag promotion or replace production canaries.
   and recorded performance gates pass. Its sole blockers are the six explicit
   `rust_cutover_ready: false` capabilities and rehearsal-only (not production)
   canary evidence.
+- 2026-07-21 bounded single-VM UAT rebuilt final7 from source digest
+  `2702d59fd25bd65b50cd6ccc2cd4053e860e0ffb0792b9a1b6c05e4ddb673571`;
+  wheel SHA-256 is `8d1d379a19724f7dcde1bff598c1f9585cc590ebba36c92491034908277d8449`.
+  On Debian 12 Docker, clean wheel install/import and `pip check` passed; six
+  public-selection, raw-writer-closure, rollback, and durable-reopen tests
+  passed. `adr015_sqlite_owner_uat.py` then passed Rust -> Python -> Rust in
+  three fresh child processes. It is bounded library evidence, not live mixed
 - Sync PostgreSQL now has a native cross-call transaction owner. Coordinated
   `KOGWISTAR_IMPL_META_STORE=rust` plus `KOGWISTAR_IMPL_GRAPH_STORE=rust`
   routes node, edge, document, and domain ADD; existing-entity REPLACE;
@@ -408,9 +416,11 @@ generic persistent-store gate after a `SqliteStore` handle began retaining one
 serialized connection instead of reopening and tearing down WAL state per
 operation. Across event append/replay and projection replace/list, Rust p95
 latency is 0.18-0.69x Python, throughput is 1.54-6.04x Python, peak RSS is
-1.016x Python, and the canonical state digest is equal. Public routing,
-single-writer enforcement, rollback readability, and clean-wheel compatibility
-now unlock the `sqlite-meta` capability only.
+1.016x Python, and the canonical state digest is equal. Public routing and
+single-writer enforcement apply within one selected owner. Clean-process
+Rust/Python/Rust restart compatibility is separately proven; live mixed SQLite
+ownership is intentionally excluded. This unlocks only the bounded
+`sqlite-meta` capability.
 
 ## Intentionally not ready
 

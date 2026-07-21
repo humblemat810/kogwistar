@@ -732,6 +732,9 @@ class ConversationOrchestrator:
         )
         # Dependency injection for workflow step resolvers (workflow/resolvers.py)
         runtime_initial_state: dict[str, Any] = dict(init_state)
+        # ``WorkflowStateModel`` deliberately does not persist private `_deps`.
+        # Attach live resolver capabilities only at runtime admission.
+        runtime_initial_state["_deps"] = deps
         runtime_initial_state["in_conv"] = bool(in_conv)
         if prev_node is not None:
             runtime_initial_state["prev_turn_id"] = str(prev_node.id)

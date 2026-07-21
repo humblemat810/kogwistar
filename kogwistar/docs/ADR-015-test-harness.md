@@ -1,6 +1,6 @@
 # ADR-015 compatibility test harness
 
-Updated: 2026-07-20
+Updated: 2026-07-21
 
 The persisted test harness is:
 
@@ -28,6 +28,9 @@ The persisted test harness is:
   and entry point; no inline build script is generated.
 - `scripts/rust_port_test_compare.py`: identity- and coverage-checked serial
   versus parallel comparison.
+- `scripts/adr015_sqlite_owner_uat.py`: three fresh Python processes proving
+  Rust -> Python -> Rust persisted SQLite compatibility. It deliberately rejects
+  live mixed ownership as a release claim.
 
 No executable test logic is stored in `.codex` or generated temporary scripts.
 No inline shell, Python, or Dockerfile is hidden inside orchestrator code.
@@ -55,6 +58,36 @@ network measurement, not a semantic performance claim.
 
 Real provider constructor and OCR/model-selection coverage in kg-doc-parser is
 marked `llm_real`; it is outside ADR-015 contract CI until fully faked.
+
+## Backend and authority matrix
+
+`KOGWISTAR_IMPL_META_STORE` is a coarse meta-store selector, not a SQLite-only
+configuration name. Backend selection (SQLite versus PostgreSQL) comes first.
+
+| Runtime writer | Backend | Required selection | Live ownership boundary | ADR-015 state |
+| --- | --- | --- | --- | --- |
+| Python | SQLite | SQLite backend; `KOGWISTAR_IMPL_META_STORE=python` | Python SQLite only | Existing baseline |
+| Rust | SQLite | SQLite backend; `KOGWISTAR_IMPL_META_STORE=rust` | `RustEngineSQLite`; raw Python writer through facade fails closed | Bounded `sqlite-meta` ready; transfer is restart-only |
+| Python | PostgreSQL | PostgreSQL backend; Python authority selection | Existing Python PostgreSQL session | Existing baseline; no Rust promotion |
+| Rust | PostgreSQL | PostgreSQL backend; `KOGWISTAR_IMPL_POSTGRES_AUTHORITY=rust`, meta and graph selectors both `rust` | Coordinated native synchronous PostgreSQL session | Gates exist; PostgreSQL Rust readiness flags remain false |
+
+`KOGWISTAR_IMPL_META_STORE` alone does not choose SQLite or PostgreSQL, and it
+does not promote a PostgreSQL durable capability.
+
+For SQLite, `python|rust` selects `EngineSQLite` or `RustEngineSQLite`. Rust
+selection closes raw Python writer access through that facade. Do not alternate
+Python `sqlite3` and bundled native SQLite over a live database handle,
+especially on Windows where a stable common SQLite ABI cannot be assumed.
+
+For PostgreSQL Rust authority, `KOGWISTAR_IMPL_POSTGRES_AUTHORITY=rust` plus
+both meta/graph selectors set to `rust` is required. Its current gates prove
+bounded implementation paths; they do not flip any PostgreSQL readiness flag.
+
+SQLite cross-owner compatibility is a restart operation only: stop the old
+process, then start the new owner. `adr015_sqlite_owner_uat.py` proves this as
+three separate child processes. It is not evidence for simultaneous
+multi-process SQLite ownership, HA, or live handoff.
+
 
 ## Development cadence
 
@@ -109,6 +142,18 @@ Build current candidate first:
   --output .codex\wheelhouse-adr015-current
 ```
 
+Bounded owner-restart UAT, after installing the candidate wheel into a clean
+interpreter (or the dual-venv container):
+
+```powershell
+<clean-python> scripts\adr015_sqlite_owner_uat.py `
+  --workdir <empty-temp-directory> `
+  --report <evidence-directory>\adr015-sqlite-owner-uat.json
+```
+
+The report must show `rust-write`, `python-write`, and `rust-read` as separate
+successful child processes. Run the script outside a checkout package path so
+its provenance fields name the installed wheel, not source files.
 Fast four-layer validation:
 
 ```powershell
