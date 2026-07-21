@@ -1,6 +1,6 @@
 [build-system]
-requires = ["setuptools>=69", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["maturin>=1.8,<2"]
+build-backend = "maturin"
 
 [project]
 name = "kogwistar"
@@ -145,3 +145,7 @@ manifest-path = "rust/crates/kogwistar-python/Cargo.toml"
 module-name = "kogwistar._rust"
 python-source = "."
 bindings = "pyo3"
+include = [
+  { path = "contracts/**/*.json", format = "sdist" },
+  { path = "kogwistar/templates/*.html", format = "sdist" },
+]

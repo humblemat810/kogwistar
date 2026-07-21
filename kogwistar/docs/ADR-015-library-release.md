@@ -57,6 +57,32 @@ and verifies GitHub CI for that new commit SHA. Publishing the wheel to PyPI is 
 separate explicit action. Do not use an older GitHub run as evidence for a dirty
 or uncommitted candidate.
 
+`.github/workflows/pypi-release.yml` is the release path. Run it manually from
+the signed `v<version>` tag with `publish=false` to build/download audited wheel
+and source-distribution artifacts. Only rerun it with `publish=true` after review
+and GitHub environment approval. The workflow verifies that the version is not
+already on PyPI and publishes through OIDC Trusted Publishing; it never requires
+or stores a PyPI API key.
+
+Before first use, configure PyPI project's **Trusted Publishers** entry with the
+GitHub owner `humblemat810`, repository `kogwistar`, workflow filename
+`pypi-release.yml`, and GitHub environment `pypi`. Protect that environment with
+required reviewers.
+
+### Manual fallback
+
+If OIDC publishing is unavailable, first run the same tagged workflow with
+`publish=false` and download its audited artifacts. In an empty directory, verify
+them again with `python -m twine check dist/*`, then run
+`python -m twine upload dist/*`. Twine prompts for a project-scoped PyPI token;
+use username `__token__` and enter the token only at that prompt. Never place a
+token in the repository, workflow YAML, shell history, or artifact directory.
+
+The source distribution uses the Maturin build backend, so a source install builds
+the native extension instead of silently producing a pure-Python fallback. The
+manual path still requires the same version/tag/PyPI-availability checks as the
+workflow.
+
 ## Related documents
 
 - `ADR-015-incremental-rust-port.md`: migration and downstream authority policy.
