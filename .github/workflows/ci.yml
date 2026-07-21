@@ -185,11 +185,11 @@ jobs:
       - name: Deny Clippy warnings
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
+      - name: Install locked cargo-audit
+        run: cargo install cargo-audit --version 0.22.2 --locked
+
       - name: Audit dependencies
-        uses: rustsec/audit-check@v2
-        with:
-          working-directory: rust
-          token: ${{ secrets.GITHUB_TOKEN }}
+        run: cargo audit
 
       - name: Check dependency licenses and sources
         uses: EmbarkStudios/cargo-deny-action@v2
