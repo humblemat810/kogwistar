@@ -1,0 +1,28 @@
+{
+  "event_seq": 3,
+  "expected": {
+    "deleted_paths": [
+      "Concepts/Alpha.md"
+    ],
+    "drift": [],
+    "files": {
+      "Concepts/Beta.md": "---\nkg_id: node:beta\nkg_last_event_seq: 3\n---\n# Beta\n",
+      "System/index.md": "# Kogwistar projection\n\n- [[Beta]] (entity)\n"
+    },
+    "full_rebuild_equals_incremental": true
+  },
+  "input": {
+    "active_entities": [
+      {
+        "id": "node:beta",
+        "label": "Beta",
+        "source_ids": [],
+        "target_ids": []
+      }
+    ],
+    "tombstoned_entities": [
+      "node:alpha"
+    ]
+  },
+  "version": 3
+}

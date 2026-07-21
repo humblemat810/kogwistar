@@ -9,7 +9,10 @@ import uuid
 from pathlib import Path
 
 import pytest
-pytestmark = pytest.mark.ci_full
+
+# Tutorial subprocesses exercise covered flows end to end but take minutes. Keep
+# them available for explicit slow/nightly validation, outside deterministic CI.
+pytestmark = pytest.mark.slow
 
 import scripts.runtime_tutorial_ladder as runtime_tutorial_ladder
 import scripts.tutorial_ladder as tutorial_ladder

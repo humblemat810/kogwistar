@@ -1,0 +1,120 @@
+{
+  "candidate": {
+    "application_commit": "30d682ee79857d9b37f73c72a3b1647f0ad7a0cb",
+    "application_core_pin_commit": "206b43f9a17e19c6cb66f1b534dfcebe3b849192",
+    "backend": "memory",
+    "consumer_resolved_package_file": "C:\\Users\\chanh\\Documents\\graphrag_v2_working_tree\\kogwistar\\__init__.py",
+    "consumer_rust_contract_version": null,
+    "consumer_rust_extension_version": "0.1.0",
+    "contract_version": "1.0.0",
+    "core_commit": "206b43f9a17e19c6cb66f1b534dfcebe3b849192",
+    "identity_sha256": "e5f02563b97622ffdfd76a90d3f48be5e6d3971868578337a7a414b112db11e1",
+    "implementation_mode": "shadow",
+    "layer_interpreters": {
+      "application": "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\.venv\\Scripts\\python.exe",
+      "core": "C:\\Users\\chanh\\Documents\\graphrag_v2_working_tree\\.venv\\Scripts\\python.exe",
+      "parser": "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\.venv\\Scripts\\python.exe",
+      "sink": "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\.venv\\Scripts\\python.exe"
+    },
+    "package_version": "0.2.4",
+    "parser_commit": "a06f1cb2cc7a848b685011acb6abff1354ce2f56",
+    "resolved_package_file": "C:\\Users\\chanh\\Documents\\graphrag_v2_working_tree\\kogwistar\\__init__.py",
+    "rust_contract_version": null,
+    "rust_extension_file": "C:\\Users\\chanh\\Documents\\graphrag_v2_working_tree\\kogwistar\\_rust.pyd",
+    "rust_extension_version": "0.1.0",
+    "sink_commit": "c295894443dc589b6b6bdcd7b48b68be850f6a61",
+    "storage_root": "isolated"
+  },
+  "contract_version": "1.0.0",
+  "finished_at_utc": "2026-07-14T03:12:15.010462+00:00",
+  "layers": [
+    {
+      "candidate_identity_sha256": "e5f02563b97622ffdfd76a90d3f48be5e6d3971868578337a7a414b112db11e1",
+      "command": [
+        "C:\\Users\\chanh\\Documents\\graphrag_v2_working_tree\\.venv\\Scripts\\python.exe",
+        "-P",
+        "-c",
+        "import pathlib, pytest, kogwistar; expected=pathlib.Path('C:\\\\Users\\\\chanh\\\\Documents\\\\graphrag_v2_working_tree\\\\kogwistar\\\\__init__.py'); resolved=pathlib.Path(kogwistar.__file__).resolve(); assert resolved == expected, f'candidate import mismatch before pytest: expected {expected}, resolved {resolved}'; raise SystemExit(pytest.console_main())",
+        "C:\\Users\\chanh\\Documents\\graphrag_v2_working_tree\\tests",
+        "-m",
+        "ci and not ci_full",
+        "-q"
+      ],
+      "cwd": "C:\\Users\\chanh\\Documents\\graphrag_v2_working_tree",
+      "duration_seconds": 0.0,
+      "interpreter": "C:\\Users\\chanh\\Documents\\graphrag_v2_working_tree\\.venv\\Scripts\\python.exe",
+      "marker_expression": "ci and not ci_full",
+      "name": "core",
+      "returncode": null,
+      "status": "planned",
+      "tests_path": "C:\\Users\\chanh\\Documents\\graphrag_v2_working_tree\\tests"
+    },
+    {
+      "candidate_identity_sha256": "e5f02563b97622ffdfd76a90d3f48be5e6d3971868578337a7a414b112db11e1",
+      "command": [
+        "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\.venv\\Scripts\\python.exe",
+        "-P",
+        "-c",
+        "import pathlib, pytest, kogwistar; expected=pathlib.Path('C:\\\\Users\\\\chanh\\\\Documents\\\\graphrag_v2_working_tree\\\\kogwistar\\\\__init__.py'); resolved=pathlib.Path(kogwistar.__file__).resolve(); assert resolved == expected, f'candidate import mismatch before pytest: expected {expected}, resolved {resolved}'; raise SystemExit(pytest.console_main())",
+        "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\kg-doc-parser\\tests",
+        "-m",
+        "ci and not ci_full",
+        "-q"
+      ],
+      "cwd": "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki",
+      "duration_seconds": 0.0,
+      "interpreter": "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\.venv\\Scripts\\python.exe",
+      "marker_expression": "ci and not ci_full",
+      "name": "parser",
+      "returncode": null,
+      "status": "planned",
+      "tests_path": "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\kg-doc-parser\\tests"
+    },
+    {
+      "candidate_identity_sha256": "e5f02563b97622ffdfd76a90d3f48be5e6d3971868578337a7a414b112db11e1",
+      "command": [
+        "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\.venv\\Scripts\\python.exe",
+        "-P",
+        "-c",
+        "import pathlib, pytest, kogwistar; expected=pathlib.Path('C:\\\\Users\\\\chanh\\\\Documents\\\\graphrag_v2_working_tree\\\\kogwistar\\\\__init__.py'); resolved=pathlib.Path(kogwistar.__file__).resolve(); assert resolved == expected, f'candidate import mismatch before pytest: expected {expected}, resolved {resolved}'; raise SystemExit(pytest.console_main())",
+        "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\kogwistar-obsidian-sink\\tests",
+        "-m",
+        "not manual and not integration and not longrun and not requires_ollama",
+        "-q"
+      ],
+      "cwd": "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\kogwistar-obsidian-sink",
+      "duration_seconds": 0.0,
+      "interpreter": "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\.venv\\Scripts\\python.exe",
+      "marker_expression": "not manual and not integration and not longrun and not requires_ollama",
+      "name": "sink",
+      "returncode": null,
+      "status": "planned",
+      "tests_path": "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\kogwistar-obsidian-sink\\tests"
+    },
+    {
+      "candidate_identity_sha256": "e5f02563b97622ffdfd76a90d3f48be5e6d3971868578337a7a414b112db11e1",
+      "command": [
+        "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\.venv\\Scripts\\python.exe",
+        "-P",
+        "-c",
+        "import pathlib, pytest, kogwistar; expected=pathlib.Path('C:\\\\Users\\\\chanh\\\\Documents\\\\graphrag_v2_working_tree\\\\kogwistar\\\\__init__.py'); resolved=pathlib.Path(kogwistar.__file__).resolve(); assert resolved == expected, f'candidate import mismatch before pytest: expected {expected}, resolved {resolved}'; raise SystemExit(pytest.console_main())",
+        "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests",
+        "-m",
+        "not manual and not integration and not longrun and not requires_ollama",
+        "-q"
+      ],
+      "cwd": "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki",
+      "duration_seconds": 0.0,
+      "interpreter": "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\.venv\\Scripts\\python.exe",
+      "marker_expression": "not manual and not integration and not longrun and not requires_ollama",
+      "name": "application",
+      "returncode": null,
+      "status": "planned",
+      "tests_path": "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests"
+    }
+  ],
+  "manifest": "C:\\Users\\chanh\\Documents\\graphrag_v2_working_tree\\contracts\\rust-port-v1.json",
+  "report_version": 1,
+  "started_at_utc": "2026-07-14T03:12:12.929448+00:00",
+  "status": "planned"
+}

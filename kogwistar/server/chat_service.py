@@ -640,8 +640,11 @@ class ChatRunService:
     def capability_snapshot(self) -> dict[str, Any]:
         self._require_capability(
             "project_view",
-            ["project_view"],
-            approval_message="Inspecting capabilities requires project_view capability",
+            ["project_view", "read_security_scope"],
+            approval_message=(
+                "Inspecting capabilities requires project_view and "
+                "read_security_scope capabilities"
+            ),
         )
         return self.capability_kernel.snapshot() | {
             "current_subject": self._capability_subject(),

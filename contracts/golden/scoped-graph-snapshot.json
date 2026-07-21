@@ -1,0 +1,40 @@
+{
+  "cursor": 3,
+  "edges": [
+    {
+      "id": "edge:alpha-links-beta",
+      "metadata": {
+        "graph_space": "base_kg",
+        "namespace": "ws:golden:kg:base",
+        "workspace_id": "ws:golden"
+      },
+      "source_ids": [
+        "node:alpha"
+      ],
+      "target_ids": [
+        "node:beta"
+      ]
+    }
+  ],
+  "graph_space": "base_kg",
+  "namespace": "ws:golden:kg:base",
+  "nodes": [
+    {
+      "id": "node:alpha",
+      "metadata": {
+        "graph_space": "base_kg",
+        "namespace": "ws:golden:kg:base",
+        "workspace_id": "ws:golden"
+      }
+    },
+    {
+      "id": "node:beta",
+      "metadata": {
+        "graph_space": "base_kg",
+        "namespace": "ws:golden:kg:base",
+        "workspace_id": "ws:golden"
+      }
+    }
+  ],
+  "workspace_id": "ws:golden"
+}

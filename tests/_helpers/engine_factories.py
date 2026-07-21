@@ -62,13 +62,19 @@ def _make_engine_pair(
         return kg_engine, conv_engine
     if backend_kind == "chroma":
         try:
+            # Embedded Chroma's Rust bindings keep process-global native state.
+            # Multiple persistence roots in one process can resolve an HNSW
+            # segment against the wrong root (`Nothing found on disk`). Logical
+            # graph types already have distinct collection names, so keep one
+            # physical root for this isolated test pair.
+            chroma_root = Path(tmp_path) / "chroma"
             kg_engine = GraphKnowledgeEngine(
-                persist_directory=str(Path(tmp_path) / "kg"),
+                persist_directory=str(chroma_root),
                 kg_graph_type="knowledge",
                 embedding_function=ef,
             )
             conv_engine = GraphKnowledgeEngine(
-                persist_directory=str(Path(tmp_path) / "conv"),
+                persist_directory=str(chroma_root),
                 kg_graph_type="conversation",
                 embedding_function=ef,
             )
@@ -138,7 +144,7 @@ def _make_workflow_engine(
     if backend_kind == "chroma":
         try:
             return GraphKnowledgeEngine(
-                persist_directory=str(Path(tmp_path) / "wf"),
+                persist_directory=str(Path(tmp_path) / "chroma"),
                 kg_graph_type="workflow",
                 embedding_function=ef,
             )

@@ -1,0 +1,13 @@
+[package]
+name = "kogwistar-engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+hex.workspace = true
+kogwistar-contracts = { path = "../kogwistar-contracts" }
+kogwistar-store = { path = "../kogwistar-store" }
+serde_json.workspace = true
+sha2.workspace = true

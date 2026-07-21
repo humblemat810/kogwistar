@@ -2,7 +2,9 @@ import json
 from pathlib import Path
 
 import pytest
-pytestmark = pytest.mark.ci_full
+# Both parameter variants exercise provider-backed Gemini/Ollama workflow paths.
+# Keep them for slow model validation; ci_full has deterministic v2 parity cases.
+pytestmark = pytest.mark.slow
 
 pytest.importorskip("chromadb")
 
@@ -245,7 +247,12 @@ def _deterministic_answer_impl(
 
 @pytest.mark.parametrize("backend_kind", ["chroma", "pg"])
 @pytest.mark.parametrize(
-    "llm_provider_name", ["gemini", "ollama"], indirect=True
+    "llm_provider_name",
+    [
+        pytest.param("gemini", marks=pytest.mark.llm_real),
+        pytest.param("ollama", marks=pytest.mark.requires_ollama),
+    ],
+    indirect=True,
 )
 def test_conversation_flow_v2_end_to_end_cached_llm(
     backend_kind: str,

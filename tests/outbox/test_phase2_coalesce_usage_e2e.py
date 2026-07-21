@@ -1,6 +1,4 @@
-import time
 import pathlib
-import re
 
 import pytest
 pytestmark = pytest.mark.core
@@ -9,7 +7,6 @@ from kogwistar.engine_core.chroma_backend import ChromaBackend
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.models import Node
 from tests._helpers.fake_backend import InMemoryBackend, build_fake_backend
-from tests._helpers.meta_job_state import set_index_job_state
 from tests.conftest import FakeEmbeddingFunction
 from tests._helpers.graph_builders import build_entity_node
 
@@ -66,6 +63,8 @@ def e2e_engine(
     else:
         sa_engine = request.getfixturevalue("sa_engine")
         pg_schema = request.getfixturevalue("pg_schema")
+        if sa_engine is None or pg_schema is None:
+            pytest.skip("PostgreSQL fixtures are unavailable")
         pytest.importorskip("pgvector")
         from kogwistar.engine_core.postgres_backend import PgVectorBackend
 
@@ -159,42 +158,9 @@ def test_phase2_enqueue_while_doing_creates_new_pending(
         entity_kind="node", entity_id="n_busy", index_kind="node_docs", op="UPSERT"
     )
 
-    # Force J1 into DOING with a *future* lease_until to simulate an active worker.
-    if hasattr(eng.meta_sqlite, "transaction"):
-        with eng.meta_sqlite.transaction() as txn:
-            from kogwistar.engine_core.engine_postgres_meta import (
-                EnginePostgresMetaStore,
-            )
-
-            if isinstance(eng.meta_sqlite, EnginePostgresMetaStore):
-                import sqlalchemy as sa
-
-                schema = eng.meta_sqlite.schema
-                table = getattr(eng.meta_sqlite, "index_jobs_table", "index_jobs")
-                if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", schema):
-                    raise AssertionError(f"invalid schema in test: {schema!r}")
-                if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", table):
-                    raise AssertionError(f"invalid table in test: {table!r}")
-                ij = f"{schema}.{table}"
-                txn.execute(
-                    sa.text(
-                        f"UPDATE {ij} "
-                        "SET status='DOING', "
-                        "    lease_until=NOW() + (:secs || ' seconds')::interval, "
-                        "    updated_at=NOW() "
-                        "WHERE job_id=:job_id"
-                    ),
-                    {"secs": 60, "job_id": jid1},
-                )
-            else:
-                set_index_job_state(
-                    eng.meta_sqlite,
-                    txn,
-                    job_id=str(jid1),
-                    status="DOING",
-                    lease_until=int(time.time()) + 60,
-                    updated_at=int(time.time()),
-                )
+    # Claim J1 through the public queue API to simulate an active worker.
+    claimed = eng.meta_sqlite.claim_index_jobs(limit=1, lease_seconds=60)
+    assert any(job.job_id == jid1 for job in claimed)
 
     # Enqueue again while J1 is DOING.
     jid2 = eng.enqueue_index_job(

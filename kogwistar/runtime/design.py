@@ -22,6 +22,70 @@ PredicateName = Optional[str]
 Predicate = BasePredicate
 
 
+def _terminal_reachable_python(
+    *,
+    start_node_id: str,
+    adj: Dict[str, List[WorkflowEdge]],
+    terminals: set[str],
+) -> bool:
+    """Independent Python oracle for static terminal reachability."""
+    seen: set[str] = set()
+    stack = [start_node_id]
+    while stack:
+        cur = stack.pop()
+        if cur in seen:
+            continue
+        seen.add(cur)
+        for edge in adj.get(cur, []):
+            for target_id in edge.target_ids:
+                if target_id is not None:
+                    stack.append(str(target_id))
+    return any(terminal in seen for terminal in terminals)
+
+
+def _terminal_reachable(
+    *,
+    node_ids: list[str],
+    start_node_id: str,
+    adj: Dict[str, List[WorkflowEdge]],
+    terminals: set[str],
+) -> bool:
+    from kogwistar._rust_bridge import (
+        runtime_implementation_mode,
+        runtime_workflow_terminal_reachable,
+    )
+
+    edges = [
+        (str(source), str(target))
+        for source, workflow_edges in adj.items()
+        for edge in workflow_edges
+        for target in edge.target_ids
+        if target is not None
+    ]
+    if runtime_implementation_mode() == "rust":
+        return bool(
+            runtime_workflow_terminal_reachable(
+                node_ids=node_ids,
+                edges=edges,
+                start_node_id=start_node_id,
+                terminal_ids=sorted(terminals),
+            )
+        )
+    python_value = _terminal_reachable_python(
+        start_node_id=start_node_id,
+        adj=adj,
+        terminals=terminals,
+    )
+    selected = runtime_workflow_terminal_reachable(
+        node_ids=node_ids,
+        edges=edges,
+        start_node_id=start_node_id,
+        terminal_ids=sorted(terminals),
+        python_value=python_value,
+    )
+    return python_value if selected is None else selected
+
+
 @dataclass(frozen=True)
 class WFNode:
     """In-memory representation of a workflow node.
@@ -324,22 +388,12 @@ def validate_workflow_design(
     if not terminals:
         raise ValueError("Workflow has no terminal nodes and no sink nodes")
 
-    seen: set[str] = set()
-    stack = [start.id]
-    while stack:
-        cur = stack.pop()
-        if cur in seen:
-            continue
-        seen.add(cur)
-        for e in adj.get(cur, []):
-            for target_id in e.target_ids:
-                if target_id is None:
-                    continue
-                target_id = str(target_id)
-                if target_id not in seen:
-                    stack.append(target_id)
-
-    if not any(t in seen for t in terminals):
+    if not _terminal_reachable(
+        node_ids=[str(node_id) for node_id in nodes],
+        start_node_id=str(start.id),
+        adj=adj,
+        terminals=terminals,
+    ):
         raise ValueError("No terminal reachable from start (ignoring predicates).")
     return start, nodes, adj
 

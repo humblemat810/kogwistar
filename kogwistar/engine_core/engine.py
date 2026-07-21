@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from contextlib import contextmanager
 import contextvars
@@ -17,7 +17,7 @@ from .async_compat import run_awaitable_blocking
 from .chroma_backend import ChromaBackend
 
 
-from .engine_sqlite import EngineSQLite
+from .rust_meta_sqlite import build_sqlite_meta_store
 from .storage_backend import NoopUnitOfWork, StorageBackend
 from ..workers.index_job_worker import IndexJobWorker
 from ..utils.log import bind_log_context
@@ -151,6 +151,7 @@ PageLike = Union[str, Dict[str, Any]]
 NodeOrEdge: TypeAlias = Node | Edge
 
 if TYPE_CHECKING:
+    from .engine_sqlite import EngineSQLite
     from .engine_postgres_meta import EnginePostgresMetaStore
     from .postgres_backend import PgVectorBackend
 
@@ -305,36 +306,40 @@ def _backend_update_record_lifecycle(
     record_id: str,
     lifecycle_patch: dict,
 ) -> bool:
-    """Update one record's lifecycle metadata via backend get/update methods."""
+    """Patch lifecycle projection metadata without touching vector payloads.
+
+    Model reads reconstruct their metadata from the backend projection, so
+    lifecycle is metadata-only.  Rewriting a Chroma document without explicitly
+    supplying an embedding would invoke its embedding function; fetching and
+    re-supplying a vector instead would force an unrelated HNSW read.
+
+    Do not "fix" a missing vector by passing the existing document to
+    ``*_update``.  Chroma interprets a document update without an embedding as
+    a request to invoke its configured embedding function.  A real content
+    mutation must instead state and test its vector policy explicitly: preserve
+    a supplied vector, recompute it deliberately, or reject the mutation.
+    """
     get_fn = getattr(backend, f"{kind}_get", None)
     upd_fn = getattr(backend, f"{kind}_update", None)
     if get_fn is None or upd_fn is None:
         raise AttributeError(f"backend missing {kind}_get/{kind}_update")
+    # Existence plus current projection metadata are sufficient. Never request
+    # documents or embeddings here: Chroma would respectively recompute or read
+    # a vector for an operation that changes neither.  This exact shape is a
+    # performance and semantic contract; see test_lifecycle_read_contract.
     got = run_awaitable_blocking(
-        get_fn(ids=[record_id], include=["documents", "metadatas", "embeddings"])
+        get_fn(ids=[record_id], include=["metadatas"])
     )
     ids = got.get("ids") or []
     if not ids:
         return False
 
-    doc = (got.get("documents") or [None])[0]
     meta = (got.get("metadatas") or [None])[0]
-    emb = got.get("embeddings")
-
-    embedding = (emb if emb is not None else [None])[0]
-    base = _safe_json_dict(doc)
-
-    base_meta = base.get("metadata") if isinstance(base.get("metadata"), dict) else {}
-    base["metadata"] = _merge_meta(base_meta, lifecycle_patch)
-
     new_meta = _merge_meta(meta if isinstance(meta, dict) else {}, lifecycle_patch)
-    doc = json.dumps(base, ensure_ascii=False)
     run_awaitable_blocking(
         upd_fn(
-        ids=[record_id],
-        documents=[json.dumps(base, ensure_ascii=False)],
-        metadatas=[new_meta],
-        embeddings=[embedding],
+            ids=[record_id],
+            metadatas=[new_meta],
         )
     )
     return True
@@ -1335,7 +1340,7 @@ class GraphKnowledgeEngine:
                 raise ValueError("Backend factory and backend can only either be specified")
             self.backend = backend_factory(self)
             if not hasattr(self, "meta_sqlite"):
-                self.meta_sqlite = EngineSQLite(
+                self.meta_sqlite = build_sqlite_meta_store(
                     pathlib.Path(persist_directory or "./chroma_db"), "meta.sqlite"
                 )
             self.meta_sqlite.ensure_initialized()
@@ -1405,21 +1410,52 @@ class GraphKnowledgeEngine:
                 node_refs_collection=self.node_refs_collection,
                 edge_refs_collection=self.edge_refs_collection,
             )
-            self.meta_sqlite = EngineSQLite(
+            self.meta_sqlite = build_sqlite_meta_store(
                 pathlib.Path(persist_directory or "./chroma_db"), "meta.sqlite"
             )
             self.meta_sqlite.ensure_initialized()
         elif _is_pgvector_backend_instance(backend):
             from .engine_postgres_meta import EnginePostgresMetaStore
+            from .rust_postgres_session import RustEnginePostgresMetaStore
+            from kogwistar._rust_bridge import (
+                graph_store_implementation_mode,
+                meta_store_implementation_mode,
+                postgres_authority_implementation_mode,
+            )
 
             if type(backend) is str:
                 raise Exception("unreacheable")
             else:
                 backend2: PgVectorBackend = backend  # let static checker happy
             self.backend: StorageBackend = backend
-            meta_postgre = EnginePostgresMetaStore(
-                engine=backend2.engine, schema=backend2.schema
-            )
+            meta_mode = meta_store_implementation_mode()
+            graph_mode = graph_store_implementation_mode()
+            postgres_authority_mode = postgres_authority_implementation_mode()
+            sync_postgres = not getattr(backend2, "_is_async_engine", False)
+            if not sync_postgres and postgres_authority_mode == "rust":
+                raise ValueError(
+                    "async PostgreSQL Rust graph/meta authority is not available; "
+                    "use python or shadow until the native async facade is ready"
+                )
+            if postgres_authority_mode == "rust" and (
+                meta_mode != "rust" or graph_mode != "rust"
+            ):
+                raise ValueError(
+                    "KOGWISTAR_IMPL_POSTGRES_AUTHORITY=rust requires both "
+                    "KOGWISTAR_IMPL_META_STORE=rust and "
+                    "KOGWISTAR_IMPL_GRAPH_STORE=rust so graph/event writes share one "
+                    "transaction"
+                )
+            coordinated_rust_postgres = postgres_authority_mode == "rust" and sync_postgres
+            if coordinated_rust_postgres:
+                dsn = backend2.engine.url.render_as_string(hide_password=False)
+                meta_postgre = RustEnginePostgresMetaStore(
+                    dsn=dsn, schema=backend2.schema
+                )
+            else:
+                meta_postgre = EnginePostgresMetaStore(
+                    engine=backend2.engine, schema=backend2.schema
+                )
             meta_postgre.ensure_initialized()
             self.meta_sqlite = meta_postgre
         else:

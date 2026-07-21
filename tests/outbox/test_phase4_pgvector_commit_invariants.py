@@ -11,8 +11,14 @@ from kogwistar.engine_core.engine_postgres_meta import (
 from kogwistar.engine_core.postgres_backend import PostgresUnitOfWork
 
 
+def _require_postgres(sa_engine, pg_schema) -> None:
+    if sa_engine is None or pg_schema is None:
+        pytest.skip("PostgreSQL fixtures are unavailable")
+
+
 @pytest.mark.ci_full
 def test_uow_commit_creates_node_event_vector_and_job(sa_engine, pg_schema):
+    _require_postgres(sa_engine, pg_schema)
     be = PgVectorBackend(engine=sa_engine, embedding_dim=2, schema=pg_schema)
     be.ensure_schema()
 
@@ -77,6 +83,7 @@ def test_uow_commit_creates_node_event_vector_and_job(sa_engine, pg_schema):
 
 @pytest.mark.ci_full
 def test_uow_rollback_leaves_no_node_event_vector_or_job(sa_engine, pg_schema):
+    _require_postgres(sa_engine, pg_schema)
     be = PgVectorBackend(engine=sa_engine, embedding_dim=2, schema=pg_schema)
     be.ensure_schema()
 

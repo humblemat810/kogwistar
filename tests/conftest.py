@@ -10,6 +10,7 @@ import asyncio
 import pathlib
 import tempfile
 import sys
+from contextlib import suppress
 from _pytest.monkeypatch import MonkeyPatch
 from typing import Any, cast
 import dataclasses
@@ -154,6 +155,43 @@ def tmp_path(request: pytest.FixtureRequest, tmp_path_factory: _SimpleTmpPathFac
     path = tmp_path_factory.mktemp(safe_name)
     request.addfinalizer(lambda: shutil.rmtree(path, ignore_errors=True))
     return path
+
+
+@pytest.fixture(autouse=True)
+def _release_test_chroma_process_resources():
+    """Release disposable Chroma systems after every test process-local case.
+
+    Chroma 1.x keeps persistent Rust/HNSW systems in a class-level cache.  Test
+    engines usually have a function-scoped persistence root, so retaining those
+    systems after their test keeps file and HTTP handles alive until the Windows
+    process exhausts its descriptor budget.  Production client lifetime remains
+    unchanged; this is only test isolation for disposable roots.
+    """
+    try:
+        yield
+    finally:
+        # AsyncHttpClient owns httpx clients separately from Chroma's shared
+        # system registry.  The helper is deliberately best-effort so a test
+        # whose optional Chroma dependencies are absent remains collectable.
+        with suppress(Exception):
+            from tests.core._async_chroma_real import (
+                _close_async_chroma_server_clients,
+                _LIVE_REAL_CHROMA_SERVERS,
+                stop_real_chroma_server,
+            )
+
+            _close_async_chroma_server_clients()
+            for server in list(_LIVE_REAL_CHROMA_SERVERS.values()):
+                stop_real_chroma_server(server)
+
+        with suppress(Exception):
+            from chromadb.api.shared_system_client import SharedSystemClient
+
+            systems = list(SharedSystemClient._identifier_to_system.values())
+            for system in systems:
+                with suppress(Exception):
+                    system.stop()
+            SharedSystemClient.clear_system_cache()
 
 
 from pathlib import Path
@@ -1077,7 +1115,15 @@ def pg_container() -> Iterator[Optional["PostgresContainer"]]:
       - Python deps: testcontainers[postgresql], psycopg[binary], sqlalchemy
     """
 
-    image = os.getenv("GKE_TEST_PG_IMAGE", "postgres:16")
+    if any(os.getenv(name) for name in ("GKE_PG_DSN", "PG_DSN", "DATABASE_URL")):
+        yield None
+        return
+
+    # PgVectorBackend unconditionally creates the vector extension. Keep the
+    # fixture default aligned with ci_full so an omitted environment export
+    # cannot silently start plain PostgreSQL and turn capability tests into
+    # infrastructure errors.
+    image = os.getenv("GKE_TEST_PG_IMAGE", "pgvector/pgvector:pg16")
     initial_ryuk_disabled = _configure_testcontainers_ryuk_env()
     logger.info(
         "Starting pg test container image=%s ryuk_disabled=%s",
@@ -1385,6 +1431,8 @@ def engine(request, tmp_chroma_dir, monkeypatch, backend_kind, embedding_functio
             pg_schema = request.getfixturevalue("pg_schema")
         except Exception as exc:  # pragma: no cover - optional backend
             pytest.skip(f"pg backend requested but fixtures are unavailable: {exc}")
+        if sa_engine is None or pg_schema is None:
+            pytest.skip("pg backend requested but fixtures are unavailable")
         eng = GraphKnowledgeEngine(
             persist_directory=os.path.join(tmp_chroma_dir, "kg"),
             embedding_cache_path=os.path.join(os.getcwd(), ".embedding_cache"),
@@ -1433,6 +1481,8 @@ def conversation_engine(
             pg_schema = request.getfixturevalue("pg_schema")
         except Exception as exc:  # pragma: no cover - optional backend
             pytest.skip(f"pg backend requested but fixtures are unavailable: {exc}")
+        if sa_engine is None or pg_schema is None:
+            pytest.skip("pg backend requested but fixtures are unavailable")
         eng = GraphKnowledgeEngine(
             persist_directory=os.path.join(tmp_conv_chroma_dir, "conversation"),
             kg_graph_type="conversation",
@@ -1474,6 +1524,8 @@ def workflow_engine(
             pg_schema = request.getfixturevalue("pg_schema")
         except Exception as exc:  # pragma: no cover - optional backend
             pytest.skip(f"pg backend requested but fixtures are unavailable: {exc}")
+        if sa_engine is None or pg_schema is None:
+            pytest.skip("pg backend requested but fixtures are unavailable")
         eng = GraphKnowledgeEngine(
             persist_directory=os.path.join(tmp_conv_chroma_dir, "workflow"),
             kg_graph_type="workflow",

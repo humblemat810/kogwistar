@@ -56,6 +56,8 @@ def _mk_edge(edge_id: str, src: str, tgt: str, doc_id: str) -> Edge:
 
 @pytest.fixture()
 def pg_engine(sa_engine, pg_schema) -> GraphKnowledgeEngine:
+    if sa_engine is None or pg_schema is None:
+        pytest.skip("PostgreSQL fixtures are unavailable")
     pytest.importorskip("pgvector")
     backend = PgVectorBackend(
         engine=sa_engine, embedding_dim=EMBEDDING_DIM, schema=pg_schema

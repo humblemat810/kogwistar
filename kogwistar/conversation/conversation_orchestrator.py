@@ -416,20 +416,23 @@ class ConversationOrchestrator:
                     prev_node_distance_from_last_summary=prev_turn_meta_summary.prev_node_distance_from_last_summary,
                     tail_turn_index=prev_turn_meta_summary.tail_turn_index,
                 ),
-                _deps={
-                    "conversation_engine": self.conversation_engine,
-                    "ref_knowledge_engine": self.ref_knowledge_engine,
-                    "llm_tasks": self.llm_tasks,
-                    "filtering_callback": filtering_callback,
-                },
             ).model_dump(),
         )
         prev_turn_meta_summary.tail_turn_index += 1
+        runtime_initial_state: dict[str, Any] = dict(init_state)
+        runtime_initial_state["_deps"] = {
+            "conversation_engine": self.conversation_engine,
+            "ref_knowledge_engine": self.ref_knowledge_engine,
+            "llm_tasks": self.llm_tasks,
+            "filtering_callback": filtering_callback,
+        }
         runtime.run(
             workflow_id=backbone_wid,
             conversation_id=conversation_id,
             turn_node_id=turn_node_id,
-            initial_state=init_state,
+            # Conversation checkpoint shape is narrow; runtime state is open.
+            # Copy at this boundary so later resolver keys remain valid user state.
+            initial_state=runtime_initial_state,
             run_id=f"add_turn_backbone|{turn_node_id}",
         )
 
@@ -728,16 +731,19 @@ class ConversationOrchestrator:
             ).model_dump(),
         )
         # Dependency injection for workflow step resolvers (workflow/resolvers.py)
-        init_state["_deps"] = deps
-        init_state["in_conv"] = bool(in_conv)
+        runtime_initial_state: dict[str, Any] = dict(init_state)
+        # ``WorkflowStateModel`` deliberately does not persist private `_deps`.
+        # Attach live resolver capabilities only at runtime admission.
+        runtime_initial_state["_deps"] = deps
+        runtime_initial_state["in_conv"] = bool(in_conv)
         if prev_node is not None:
-            init_state["prev_turn_id"] = str(prev_node.id)
+            runtime_initial_state["prev_turn_id"] = str(prev_node.id)
 
         run_result = runtime.run(
             workflow_id=workflow_id,
             conversation_id=conversation_id,
             turn_node_id=turn_node_id,
-            initial_state=init_state,
+            initial_state=runtime_initial_state,
             run_id=f"add_turn|{turn_node_id}",
             cache_dir = cache_dir,
         )

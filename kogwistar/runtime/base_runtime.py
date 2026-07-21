@@ -5,6 +5,16 @@ import logging
 import warnings
 from typing import Any
 
+from .._rust_bridge import (
+    RustParityError,
+    json_contract_compatible,
+    runtime_apply_state_update,
+    runtime_decide_dispatch,
+    runtime_implementation_mode,
+    runtime_plan_nested_invocation,
+    runtime_scheduler_tick,
+)
+from ..id_provider import stable_id
 from .models import StateUpdate, WorkflowDesignArtifact, WorkflowInvocationRequest, WorkflowState
 from .routing import RouteComputation, compute_route_next
 
@@ -18,6 +28,52 @@ NON_CHECKPOINT_STATE_KEYS = {
     "_deps",
     "dream_deps",  # legacy dream DI key; keep out of checkpoints
 }
+
+
+def _native_state_update_payload(
+    state: WorkflowState,
+    state_update: list[tuple[str, dict[str, Any]]] | list[StateUpdate],
+    update: dict | None,
+    state_schema: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """JSON transport form; state-update pairs are tuples in public Python API."""
+    return {
+        "state": copy.deepcopy(state),
+        "state_update": [list(item) for item in state_update],
+        "update": update,
+        "state_schema": state_schema or {},
+    }
+
+
+def _native_state_update_safe(
+    state: WorkflowState,
+    state_update: list[tuple[str, dict[str, Any]]] | list[StateUpdate],
+    update: dict | None,
+    state_schema: dict[str, Any] | None,
+) -> bool:
+    """Keep Python for inputs whose observable legacy failure is not a contract fold."""
+    for item in state_update:
+        if not isinstance(item, (tuple, list)) or len(item) != 2:
+            return False
+        mode, payload = item
+        if not isinstance(payload, dict):
+            return False
+        if mode == "a" and any(key in state and not isinstance(state[key], list) for key in payload):
+            return False
+        if mode == "e":
+            if any(key in state and not isinstance(state[key], list) for key in payload):
+                return False
+            if any(not isinstance(value, (list, str, dict)) for value in payload.values()):
+                return False
+    if update:
+        schema = state_schema or {}
+        append_keys = (key for key in update if schema.get(key) == "a")
+        for key in append_keys:
+            if key in state and not isinstance(state[key], list):
+                return False
+            if not isinstance(update[key], (list, str, dict)):
+                return False
+    return True
 
 
 def validate_initial_state(initial_state: WorkflowState):
@@ -50,12 +106,35 @@ def apply_state_update_inplace(
     *,
     state_schema: dict[str, Any] | None = None,
 ):
-    """Apply runtime state delta in place.
+    """Apply a workflow-runtime state delta in place.
 
     Single reducer for sync runtime, async runtime, and replay.
     """
     if update and state_update:
-        raise Exception("Either update or state_update can be used")
+        error = Exception("Either update or state_update can be used")
+        error.code = "KOGWISTAR_CONTRACT_STATE_UPDATE_CONFLICT"
+        raise error
+
+    mode = runtime_implementation_mode()
+    # Inspect live inputs before copying them.  Runtime state can contain
+    # process-local plumbing (notably ``_deps``) such as locks; deepcopy would
+    # raise before the JSON boundary can decline that state and retain the
+    # legacy Python reducer.
+    native_transport = {
+        "state": mute_state,
+        "state_update": [list(item) for item in state_update],
+        "update": update,
+        "state_schema": state_schema or {},
+    }
+    json_compatible = json_contract_compatible(native_transport) and _native_state_update_safe(
+        mute_state, state_update, update, state_schema
+    )
+    native_state: dict[str, Any] | None = None
+    if mode != "python" and json_compatible:
+        native_payload = _native_state_update_payload(
+            mute_state, state_update, update, state_schema
+        )
+        native_state = runtime_apply_state_update(payload=native_payload)
 
     for update_item in state_update:
         update_item: tuple[str, dict[str, Any]] | StateUpdate
@@ -82,6 +161,16 @@ def apply_state_update_inplace(
                 mute_state.setdefault(k, []).extend(v)
             else:
                 mute_state[k] = v
+
+    if native_state is not None:
+        # Rust owns the canonical fold.  The thin Python facade materializes the
+        # same delta in place so untouched and inserted mutable objects retain
+        # the identity guarantees of the existing public API.
+        if native_state != mute_state:
+            raise RustParityError(
+                "Rust parity mismatch for runtime_state_update: "
+                f"python={mute_state!r}, rust={native_state!r}"
+            )
 
 
 def checkpointable_state_copy(state: WorkflowState) -> WorkflowState:
@@ -171,6 +260,115 @@ class BaseRuntime:
         deps["workflow_runtime"] = self  # type: ignore[index]
         child_state["_deps"] = deps  # type: ignore[index]
         return child_state
+
+    @staticmethod
+    def _workflow_invocation_plan(
+        *,
+        invocation: WorkflowInvocationRequest,
+        conversation_id: str,
+        turn_node_id: str,
+        parent_run_id: str,
+    ) -> dict[str, str]:
+        effective_turn_node_id = invocation.turn_node_id or turn_node_id
+        python_value = {
+            "child_run_id": invocation.run_id
+            or str(
+                stable_id(
+                    "workflow.child_run",
+                    parent_run_id,
+                    invocation.workflow_id,
+                    invocation.result_state_key or "",
+                    effective_turn_node_id,
+                )
+            ),
+            "conversation_id": invocation.conversation_id or conversation_id,
+            "turn_node_id": effective_turn_node_id,
+            "result_state_key": invocation.result_state_key
+            or f"workflow_result::{invocation.workflow_id}",
+        }
+        return runtime_plan_nested_invocation(
+            payload={
+                "parent_run_id": parent_run_id,
+                "workflow_id": invocation.workflow_id,
+                "result_state_key": invocation.result_state_key,
+                "run_id": invocation.run_id,
+                "parent_conversation_id": conversation_id,
+                "conversation_id": invocation.conversation_id,
+                "parent_turn_node_id": turn_node_id,
+                "turn_node_id": invocation.turn_node_id,
+            },
+            python_value=python_value,
+        )
+
+    @staticmethod
+    def _runtime_dispatch_decision(
+        *, max_workers: int, inflight: int, pending: int, cancelling: bool
+    ) -> dict[str, Any]:
+        worker_limit = max(1, int(max_workers))
+        launch_capacity = (
+            0
+            if cancelling
+            else min(max(0, worker_limit - int(inflight)), int(pending))
+        )
+        python_value = {
+            "worker_limit": worker_limit,
+            "launch_capacity": launch_capacity,
+            "should_launch": launch_capacity > 0,
+            "should_drain": bool(cancelling and inflight > 0),
+            "cancellation_complete": bool(
+                cancelling and inflight == 0 and pending == 0
+            ),
+        }
+        return runtime_decide_dispatch(
+            payload={
+                "max_workers": int(max_workers),
+                "inflight": int(inflight),
+                "pending": int(pending),
+                "cancelling": bool(cancelling),
+            },
+            python_value=python_value,
+        )
+
+    @staticmethod
+    def _runtime_scheduler_tick(
+        *,
+        pending: list[tuple[str, int, str, str | None]],
+        inflight: int,
+        max_workers: int,
+        cancelling: bool,
+    ) -> dict[str, Any]:
+        payload_pending = [
+            {
+                "node_id": str(node_id),
+                "join_mask": int(join_mask),
+                "token_id": str(token_id),
+                "parent_token_id": parent_token_id,
+            }
+            for node_id, join_mask, token_id, parent_token_id in pending
+        ]
+        worker_limit = max(1, int(max_workers))
+        dispatch_count = (
+            0
+            if cancelling
+            else min(max(0, worker_limit - int(inflight)), len(pending))
+        )
+        python_value = {
+            "dispatch": payload_pending[:dispatch_count],
+            "pending": payload_pending[dispatch_count:],
+            "should_drain": bool(cancelling and inflight > 0),
+            "cancellation_complete": bool(
+                cancelling and inflight == 0 and not pending
+            ),
+        }
+        return runtime_scheduler_tick(
+            payload={
+                "pending": payload_pending,
+                "inflight": int(inflight),
+                "max_workers": int(max_workers),
+                "cancelling": bool(cancelling),
+            },
+            python_value=python_value,
+        )
 
     def _apply_workflow_invocation_result(
         self,

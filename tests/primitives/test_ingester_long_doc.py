@@ -2,7 +2,9 @@ import os
 import pathlib
 import importlib.util
 import pytest
-pytestmark = pytest.mark.ci_full
+# This downloads a long public text and invokes a live Ollama/Azure provider.
+# It is retained for explicit slow model validation, not deterministic CI.
+pytestmark = pytest.mark.slow
 import requests
 from joblib import Memory
 from tests._helpers.embeddings import build_test_embedding_function
@@ -90,7 +92,11 @@ def _build_azure_ingester_llm():
 @pytest.mark.parametrize(
     "provider_kind",
     [
-        pytest.param("ollama", id="ollama", marks=pytest.mark.slow),
+        pytest.param(
+            "ollama",
+            id="ollama",
+            marks=[pytest.mark.slow, pytest.mark.requires_ollama],
+        ),
         pytest.param("azure", id="azure", marks=pytest.mark.manual),
     ],
 )

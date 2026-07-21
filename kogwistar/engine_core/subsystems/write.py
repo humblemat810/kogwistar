@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import uuid
 from typing import Any, Sequence, cast
 
 from ...cdc.change_event import EntityRefModel
@@ -68,6 +69,235 @@ class WriteSubsystem(NamespaceProxy, WriteLike):
             if bool(hook(edge)):
                 return True
         return False
+
+    def _rust_postgres_meta(self):
+        from ..rust_postgres_session import RustEnginePostgresMetaStore
+
+        meta = getattr(self._e, "meta_sqlite", None)
+        return meta if isinstance(meta, RustEnginePostgresMetaStore) else None
+
+    def uses_rust_postgres_authority(self) -> bool:
+        return self._rust_postgres_meta() is not None
+
+    def patch_base_projection_metadata(
+        self, *, entity_kind: str, entity_id: str, metadata_patch: dict[str, Any]
+    ) -> None:
+        meta = self._rust_postgres_meta()
+        if meta is not None:
+            table = (
+                self._e.backend.nodes.name
+                if entity_kind == "node"
+                else self._e.backend.edges.name
+            )
+            meta.patch_graph_projection_metadata(
+                namespace=getattr(self._e, "namespace", "default"),
+                workspace_id=None,
+                graph_space=None,
+                table=table,
+                entity_id=entity_id,
+                document=None,
+                metadata_patch=metadata_patch,
+                patch_document_metadata=False,
+            )
+            return
+        update = getattr(self._e.backend, f"{entity_kind}_update")
+        run_awaitable_blocking(
+            update(ids=[entity_id], metadatas=[metadata_patch])
+        )
+
+    def _rust_postgres_add(
+        self,
+        *,
+        entity_kind: str,
+        entity_id: str,
+        document: str,
+        metadata: dict[str, Any],
+        embedding: Sequence[float],
+        payload: dict[str, Any],
+        enqueue_index_jobs: bool = True,
+    ) -> bool:
+        meta = self._rust_postgres_meta()
+        if meta is None:
+            return False
+        table = (
+            self._e.backend.nodes.name
+            if entity_kind == "node"
+            else self._e.backend.edges.name
+            if entity_kind == "edge"
+            else self._e.backend.documents.name
+            if entity_kind == "document"
+            else self._e.backend.domains.name
+        )
+        with meta.transaction():
+            meta.apply_graph_mutation(
+                namespace=getattr(self._e, "namespace", "default"),
+                workspace_id=metadata.get("workspace_id"),
+                graph_space=metadata.get("graph_space"),
+                table=table,
+                entity_kind=entity_kind,
+                event_id=str(uuid.uuid4()),
+                op="ADD",
+                record={
+                    "id": entity_id,
+                    "document": document,
+                    "metadata": metadata,
+                    "embedding": list(embedding),
+                },
+                payload=payload,
+                embedding_dim=int(self._e.backend.embedding_dim),
+            )
+            if enqueue_index_jobs and entity_kind == "node":
+                self._e.enqueue_index_jobs_for_node(entity_id, op="UPSERT")
+            elif enqueue_index_jobs and entity_kind == "edge":
+                self._e.enqueue_index_jobs_for_edge(entity_id, op="UPSERT")
+        return True
+
+    def _rust_postgres_projection_upsert(
+        self,
+        *,
+        entity_kind: str,
+        entity_id: str,
+        document: str,
+        metadata: dict[str, Any],
+        embedding: Sequence[float],
+        enqueue_index_jobs: bool = True,
+    ) -> bool:
+        meta = self._rust_postgres_meta()
+        if meta is None or not getattr(self._e, "_disable_event_log", False):
+            return False
+        table = (
+            self._e.backend.nodes.name
+            if entity_kind == "node"
+            else self._e.backend.edges.name
+        )
+        with meta.transaction():
+            meta.upsert_graph_projection(
+                namespace=getattr(self._e, "namespace", "default"),
+                workspace_id=metadata.get("workspace_id"),
+                graph_space=metadata.get("graph_space"),
+                table=table,
+                record={
+                    "id": entity_id,
+                    "document": document,
+                    "metadata": metadata,
+                    "embedding": list(embedding),
+                },
+                embedding_dim=int(self._e.backend.embedding_dim),
+            )
+            if enqueue_index_jobs and getattr(
+                self._e, "_phase1_enable_index_jobs", False
+            ):
+                if entity_kind == "node":
+                    self._e.enqueue_index_jobs_for_node(entity_id, op="UPSERT")
+                else:
+                    self._e.enqueue_index_jobs_for_edge(entity_id, op="UPSERT")
+        return True
+
+    def _rust_postgres_delete_edges(self, edge_ids: list[str]) -> bool:
+        meta = self._rust_postgres_meta()
+        if meta is None:
+            return False
+        with meta.transaction():
+            for edge_id in edge_ids:
+                result = meta.apply_graph_delete_mutation(
+                    namespace=getattr(self._e, "namespace", "default"),
+                    workspace_id=None,
+                    graph_space=None,
+                    table=self._e.backend.edges.name,
+                    entity_kind="edge",
+                    event_id=str(uuid.uuid4()),
+                    entity_id=edge_id,
+                    payload={"entity_id": edge_id},
+                )
+                if result is not None:
+                    self._e.enqueue_index_jobs_for_edge(edge_id, op="DELETE")
+        try:
+            self._e.reconcile_indexes(max_jobs=50)
+        except Exception:
+            pass
+        return True
+
+    def rust_postgres_delete_existing(
+        self, *, entity_kind: str, entity_ids: list[str]
+    ) -> bool:
+        meta = self._rust_postgres_meta()
+        if meta is None:
+            return False
+        table = {
+            "node": self._e.backend.nodes.name,
+            "edge": self._e.backend.edges.name,
+            "document": self._e.backend.documents.name,
+            "domain": self._e.backend.domains.name,
+        }[entity_kind]
+        with meta.transaction():
+            for entity_id in entity_ids:
+                result = meta.apply_graph_delete_mutation(
+                    namespace=getattr(self._e, "namespace", "default"),
+                    workspace_id=None,
+                    graph_space=None,
+                    table=table,
+                    entity_kind=entity_kind,
+                    event_id=str(uuid.uuid4()),
+                    entity_id=entity_id,
+                    payload={"entity_id": entity_id},
+                )
+                if result is None:
+                    continue
+                if entity_kind == "node":
+                    self._e.enqueue_index_jobs_for_node(entity_id, op="DELETE")
+                elif entity_kind == "edge":
+                    self._e.enqueue_index_jobs_for_edge(entity_id, op="DELETE")
+        if entity_kind in {"node", "edge"}:
+            try:
+                self._e.reconcile_indexes(max_jobs=50)
+            except Exception:
+                pass
+        return True
+
+    def rust_postgres_replace_existing(
+        self,
+        *,
+        entity_kind: str,
+        entity_id: str,
+        document: str,
+        metadata_patch: dict[str, Any],
+        payload: dict[str, Any],
+    ) -> bool:
+        meta = self._rust_postgres_meta()
+        if meta is None:
+            return False
+        table = (
+            self._e.backend.nodes.name
+            if entity_kind == "node"
+            else self._e.backend.edges.name
+        )
+        with meta.transaction():
+            result = meta.apply_graph_metadata_patch_mutation(
+                namespace=getattr(self._e, "namespace", "default"),
+                workspace_id=None,
+                graph_space=None,
+                table=table,
+                entity_kind=entity_kind,
+                event_id=str(uuid.uuid4()),
+                op="REPLACE",
+                entity_id=entity_id,
+                document=document,
+                metadata_patch=metadata_patch,
+                payload=payload,
+            )
+            if result is None:
+                raise RuntimeError(
+                    f"{entity_kind} {entity_id!r} disappeared during native replace"
+                )
+            if entity_kind == "node":
+                self._e.enqueue_index_jobs_for_node(entity_id, op="UPSERT")
+            else:
+                self._e.enqueue_index_jobs_for_edge(entity_id, op="UPSERT")
+        try:
+            self._e.reconcile_indexes(max_jobs=50)
+        except Exception:
+            pass
+        return True
 
     def enrich_edge_meta(self, edge: Edge):
         node_endpoint_count = len(edge.source_ids or []) + len(edge.target_ids or [])
@@ -161,29 +391,46 @@ class WriteSubsystem(NamespaceProxy, WriteLike):
         node.embedding = normalize_embedding_vector(node.embedding, allow_none=False)
         meta["_class_name"] = type(node).__name__
 
-        run_awaitable_blocking(self._e.backend.node_add(
-            ids=[node.safe_get_id()],
-            documents=[doc],
-            embeddings=[node.embedding]
-            if node.embedding is not None
-            else [self._e.embed.iterative_defensive_emb(str(doc))],
-            metadatas=[meta],
-        ))
+        payload = node.model_dump(field_mode="backend", exclude=["embedding"])
+        native_added = self._rust_postgres_projection_upsert(
+            entity_kind="node",
+            entity_id=node.safe_get_id(),
+            document=doc,
+            metadata=meta,
+            embedding=node.embedding,
+        ) or self._rust_postgres_add(
+            entity_kind="node",
+            entity_id=node.safe_get_id(),
+            document=doc,
+            metadata=meta,
+            embedding=node.embedding,
+            payload=payload if isinstance(payload, dict) else {},
+        )
 
-        try:
-            payload = node.model_dump(field_mode="backend", exclude=["embedding"])
-            self._e._append_event_for_entity(
-                namespace=getattr(self._e, "namespace", "default"),
-                entity_kind="node",
-                entity_id=node.safe_get_id(),
-                op="ADD",
-                payload=payload if isinstance(payload, dict) else {},
-            )
-        except Exception:
-            pass
+        if not native_added:
+            run_awaitable_blocking(self._e.backend.node_add(
+                ids=[node.safe_get_id()],
+                documents=[doc],
+                embeddings=[node.embedding]
+                if node.embedding is not None
+                else [self._e.embed.iterative_defensive_emb(str(doc))],
+                metadatas=[meta],
+            ))
+
+            try:
+                self._e._append_event_for_entity(
+                    namespace=getattr(self._e, "namespace", "default"),
+                    entity_kind="node",
+                    entity_id=node.safe_get_id(),
+                    op="ADD",
+                    payload=payload if isinstance(payload, dict) else {},
+                )
+            except Exception:
+                pass
 
         if self._e._phase1_enable_index_jobs:
-            self._e.enqueue_index_jobs_for_node(node.safe_get_id(), op="UPSERT")
+            if not native_added:
+                self._e.enqueue_index_jobs_for_node(node.safe_get_id(), op="UPSERT")
             self._e.reconcile_indexes(max_jobs=50)
         else:
             self.index_node_docs(node)
@@ -230,29 +477,45 @@ class WriteSubsystem(NamespaceProxy, WriteLike):
 
         doc = edge.model_dump_json(field_mode="backend", exclude=["embedding"])
         base_metadata = [self.enrich_edge_meta(edge)]
-        run_awaitable_blocking(self._e.backend.edge_add(
-            ids=[edge.safe_get_id()],
-            documents=[str(doc)],
-            embeddings=[edge.embedding]
-            if edge.embedding is not None
-            else [self._e.embed.iterative_defensive_emb(str(doc))],
-            metadatas=base_metadata,
-        ))
+        payload = edge.model_dump(field_mode="backend", exclude=["embedding"])
+        native_added = self._rust_postgres_projection_upsert(
+            entity_kind="edge",
+            entity_id=edge.safe_get_id(),
+            document=str(doc),
+            metadata=base_metadata[0],
+            embedding=edge.embedding,
+        ) or self._rust_postgres_add(
+            entity_kind="edge",
+            entity_id=edge.safe_get_id(),
+            document=str(doc),
+            metadata=base_metadata[0],
+            embedding=edge.embedding,
+            payload=payload if isinstance(payload, dict) else {},
+        )
+        if not native_added:
+            run_awaitable_blocking(self._e.backend.edge_add(
+                ids=[edge.safe_get_id()],
+                documents=[str(doc)],
+                embeddings=[edge.embedding]
+                if edge.embedding is not None
+                else [self._e.embed.iterative_defensive_emb(str(doc))],
+                metadatas=base_metadata,
+            ))
 
-        try:
-            payload = edge.model_dump(field_mode="backend", exclude=["embedding"])
-            self._e._append_event_for_entity(
-                namespace=getattr(self._e, "namespace", "default"),
-                entity_kind="edge",
-                entity_id=edge.safe_get_id(),
-                op="ADD",
-                payload=payload if isinstance(payload, dict) else {},
-            )
-        except Exception:
-            pass
+            try:
+                self._e._append_event_for_entity(
+                    namespace=getattr(self._e, "namespace", "default"),
+                    entity_kind="edge",
+                    entity_id=edge.safe_get_id(),
+                    op="ADD",
+                    payload=payload if isinstance(payload, dict) else {},
+                )
+            except Exception:
+                pass
 
         if self._e._phase1_enable_index_jobs:
-            self._e.enqueue_index_jobs_for_edge(edge.safe_get_id(), op="UPSERT")
+            if not native_added:
+                self._e.enqueue_index_jobs_for_edge(edge.safe_get_id(), op="UPSERT")
             self._e.reconcile_indexes(max_jobs=50)
         else:
             self.maybe_reindex_edge_refs(edge)
@@ -284,24 +547,49 @@ class WriteSubsystem(NamespaceProxy, WriteLike):
         )
 
     def add_pure_node(self, node: PureChromaNode):
+        if node.id is None:
+            raise ValueError("pure node id must not be None")
         doc, meta = node_doc_and_meta_util(node)
         if meta.get("doc_id"):
             meta.pop("doc_id")
-        run_awaitable_blocking(self._e.backend.node_add(
-            ids=[node.id],
-            documents=[doc],
-            embeddings=[
-                normalize_embedding_vector(node.embedding, allow_none=False)
-                if node.embedding is not None
-                else normalize_embedding_vector(
-                    self._e.embed.iterative_defensive_emb(str(doc)), allow_none=False
+        embedding = normalize_embedding_vector(
+            node.embedding
+            if node.embedding is not None
+            else self._e.embed.iterative_defensive_emb(str(doc)),
+            allow_none=False,
+        )
+        assert embedding is not None
+        payload = node.model_dump(field_mode="backend", exclude=["embedding"])
+        native_added = self._rust_postgres_projection_upsert(
+            entity_kind="node",
+            entity_id=node.id,
+            document=doc,
+            metadata=meta,
+            embedding=embedding,
+            enqueue_index_jobs=False,
+        ) or self._rust_postgres_add(
+            entity_kind="node",
+            entity_id=node.id,
+            document=doc,
+            metadata=meta,
+            embedding=embedding,
+            payload=payload if isinstance(payload, dict) else {},
+            enqueue_index_jobs=False,
+        )
+        if not native_added:
+            run_awaitable_blocking(
+                self._e.backend.node_add(
+                    ids=[node.id],
+                    documents=[doc],
+                    embeddings=[embedding],
+                    metadatas=[meta],
                 )
-            ],
-            metadatas=[meta],
-        ))
+            )
 
     def add_pure_edge(self, edge: PureChromaEdge):
         """Low-level edge add without endpoint fanout or duplicate checks."""
+        if edge.id is None:
+            raise ValueError("pure edge id must not be None")
         s_nodes, s_edges, t_nodes, t_edges = self._e.adjudicate.split_endpoints(
             edge.source_ids,
             edge.target_ids,
@@ -315,19 +603,40 @@ class WriteSubsystem(NamespaceProxy, WriteLike):
             return
 
         doc = edge.model_dump_json(field_mode="backend", exclude=["embedding"])
-        base_metadata = [self.enrich_edge_meta(edge)]
-        run_awaitable_blocking(self._e.backend.edge_add(
-            ids=[edge.id],
-            documents=[str(doc)],
-            embeddings=[
-                normalize_embedding_vector(edge.embedding, allow_none=False)
-                if edge.embedding is not None
-                else normalize_embedding_vector(
-                    self._e.embed.iterative_defensive_emb(str(doc)), allow_none=False
+        metadata = self.enrich_edge_meta(edge)
+        embedding = normalize_embedding_vector(
+            edge.embedding
+            if edge.embedding is not None
+            else self._e.embed.iterative_defensive_emb(str(doc)),
+            allow_none=False,
+        )
+        assert embedding is not None
+        payload = edge.model_dump(field_mode="backend", exclude=["embedding"])
+        native_added = self._rust_postgres_projection_upsert(
+            entity_kind="edge",
+            entity_id=edge.id,
+            document=str(doc),
+            metadata=metadata,
+            embedding=embedding,
+            enqueue_index_jobs=False,
+        ) or self._rust_postgres_add(
+            entity_kind="edge",
+            entity_id=edge.id,
+            document=str(doc),
+            metadata=metadata,
+            embedding=embedding,
+            payload=payload if isinstance(payload, dict) else {},
+            enqueue_index_jobs=False,
+        )
+        if not native_added:
+            run_awaitable_blocking(
+                self._e.backend.edge_add(
+                    ids=[edge.id],
+                    documents=[str(doc)],
+                    embeddings=[embedding],
+                    metadatas=[metadata],
                 )
-            ],
-            metadatas=base_metadata,
-        ))
+            )
 
     def add_document(self, document: Document):
         if document.embeddings is None:
@@ -337,29 +646,38 @@ class WriteSubsystem(NamespaceProxy, WriteLike):
         document.embeddings = normalize_embedding_vector(
             document.embeddings, allow_none=False
         )
-        run_awaitable_blocking(self._e.backend.document_add(
-            ids=[document.id],
-            documents=[str(document.content)],
-            embeddings=[cast(Sequence[float], document.embeddings)]
-            if document.embeddings is not None
-            else [
-                normalize_embedding_vector(
-                    self._e.embed.iterative_defensive_emb(str(document.content)),
-                    allow_none=False,
-                )
-            ],
-            metadatas=[
-                strip_none(
-                    {
-                        "doc_id": document.id,
-                        "type": document.type,
-                        "metadata": json_or_none(document.metadata),
-                        "domain_id": document.domain_id,
-                        "processed": document.processed,
-                    }
-                )
-            ],
-        ))
+        metadata = strip_none(
+            {
+                "doc_id": document.id,
+                "type": document.type,
+                "metadata": json_or_none(document.metadata),
+                "domain_id": document.domain_id,
+                "processed": document.processed,
+            }
+        )
+        payload = document.model_dump(field_mode="backend", exclude=["embeddings"])
+        native_added = self._rust_postgres_add(
+            entity_kind="document",
+            entity_id=document.id,
+            document=str(document.content),
+            metadata=metadata,
+            embedding=cast(Sequence[float], document.embeddings),
+            payload=payload if isinstance(payload, dict) else {},
+        )
+        if not native_added:
+            run_awaitable_blocking(self._e.backend.document_add(
+                ids=[document.id],
+                documents=[str(document.content)],
+                embeddings=[cast(Sequence[float], document.embeddings)]
+                if document.embeddings is not None
+                else [
+                    normalize_embedding_vector(
+                        self._e.embed.iterative_defensive_emb(str(document.content)),
+                        allow_none=False,
+                    )
+                ],
+                metadatas=[metadata],
+            ))
         self._e._emit_change(
             op="doc.upsert",
             entity=EntityRefModel(
@@ -374,24 +692,29 @@ class WriteSubsystem(NamespaceProxy, WriteLike):
         )
 
     def add_domain(self, domain: Domain):
-        run_awaitable_blocking(self._e.backend.domain_add(
-            ids=[domain.id],
-            documents=[domain.model_dump_json()],
-            metadatas=[
-                self._e.chroma_sanitize_metadata(
-                    {
-                        "name": domain.name,
-                        "description": domain.description,
-                    }
-                )
-            ],
-            embeddings=[
-                normalize_embedding_vector(
-                    self._e.embed.iterative_defensive_emb(str(domain.model_dump_json())),
-                    allow_none=False,
-                )
-            ],
-        ))
+        document = domain.model_dump_json()
+        metadata = self._e.chroma_sanitize_metadata(
+            {"name": domain.name, "description": domain.description}
+        )
+        embedding = normalize_embedding_vector(
+            self._e.embed.iterative_defensive_emb(str(document)), allow_none=False
+        )
+        payload = domain.model_dump()
+        native_added = self._rust_postgres_add(
+            entity_kind="domain",
+            entity_id=domain.id,
+            document=document,
+            metadata=metadata,
+            embedding=embedding,
+            payload=payload if isinstance(payload, dict) else {},
+        )
+        if not native_added:
+            run_awaitable_blocking(self._e.backend.domain_add(
+                ids=[domain.id],
+                documents=[document],
+                metadatas=[metadata],
+                embeddings=[embedding],
+            ))
 
     # Index/metadata helpers
     def index_node_docs(self, node: Node) -> list[str]:
@@ -419,10 +742,11 @@ class WriteSubsystem(NamespaceProxy, WriteLike):
         cur_meta = (current.get("metadatas") or [None])[0] or {}
         new_doc_ids_json = json.dumps(doc_ids)
         if cur_meta.get("doc_ids") != new_doc_ids_json:
-            run_awaitable_blocking(self._e.backend.node_update(
-                ids=[node.id],
-                metadatas=[{"doc_ids": new_doc_ids_json}],
-            ))
+            self.patch_base_projection_metadata(
+                entity_kind="node",
+                entity_id=node.id,
+                metadata_patch={"doc_ids": new_doc_ids_json},
+            )
 
         return doc_ids
 
@@ -628,9 +952,11 @@ class WriteSubsystem(NamespaceProxy, WriteLike):
         docset_ok = current_doc_ids == expect_doc_ids
 
         if force or (new_fp != old_fp) or (not count_ok) or (not docset_ok):
-            run_awaitable_blocking(self._e.backend.edge_update(
-                ids=[edge.safe_get_id()], metadatas=[{"edge_refs_fp": new_fp}]
-            ))
+            self.patch_base_projection_metadata(
+                entity_kind="edge",
+                entity_id=edge.safe_get_id(),
+                metadata_patch={"edge_refs_fp": new_fp},
+            )
             self.index_edge_refs(edge)
 
     def maybe_reindex_node_refs(self, node: Node, *, force: bool = False) -> None:
@@ -658,9 +984,11 @@ class WriteSubsystem(NamespaceProxy, WriteLike):
         docset_ok = current_doc_ids == expect_doc_ids
 
         if force or (new_fp != old_fp) or (not count_ok) or (not docset_ok):
-            run_awaitable_blocking(self._e.backend.node_update(
-                ids=[node.id], metadatas=[{"node_refs_fp": new_fp}]
-            ))
+            self.patch_base_projection_metadata(
+                entity_kind="node",
+                entity_id=node.id,
+                metadata_patch={"node_refs_fp": new_fp},
+            )
             self.index_node_refs(node)
 
     def prune_node_refs_for_doc(self, node_id: str, doc_id: str) -> bool:
@@ -672,18 +1000,38 @@ class WriteSubsystem(NamespaceProxy, WriteLike):
         if not (docs and docs[0]):
             return False
         node = Node.model_validate_json(docs[0])
-        before = len(node.mentions or [])
-        for groundings in node.mentions:
+        before = sum(len(grounding.spans) for grounding in (node.mentions or []))
+        for groundings in node.mentions or []:
             filtered_spans = [
                 span for span in groundings.spans if span.doc_id != doc_id
             ]
             groundings.spans = filtered_spans
+        node.mentions = [
+            grounding for grounding in (node.mentions or []) if grounding.spans
+        ]
 
-        changed = len(node.mentions or []) != before
+        after = sum(len(grounding.spans) for grounding in (node.mentions or []))
+        changed = after != before
         if changed:
-            run_awaitable_blocking(self._e.backend.node_update(
-                ids=[node_id], documents=[node.model_dump_json(field_mode="backend")]
-            ))
+            if not node.mentions:
+                raise ValueError(
+                    f"cannot prune final reference from node {node_id!r}; "
+                    "tombstone or replace the node instead"
+                )
+            document = node.model_dump_json(field_mode="backend")
+            _, metadata = self.node_doc_and_meta(node)
+            payload = node.model_dump(field_mode="backend", exclude=["embedding"])
+            native_replaced = self.rust_postgres_replace_existing(
+                entity_kind="node",
+                entity_id=node_id,
+                document=document,
+                metadata_patch=metadata,
+                payload=payload if isinstance(payload, dict) else {},
+            )
+            if not native_replaced:
+                run_awaitable_blocking(
+                    self._e.backend.node_update(ids=[node_id], documents=[document])
+                )
             run_awaitable_blocking(self._e.backend.node_docs_delete(
                 where={"$and": [{"node_id": node_id}, {"doc_id": doc_id}]}
             ))
@@ -757,6 +1105,8 @@ class WriteSubsystem(NamespaceProxy, WriteLike):
 
     def delete_edges_by_ids(self, edge_ids: list[str]):
         if not edge_ids:
+            return
+        if self._rust_postgres_delete_edges(edge_ids):
             return
         run_awaitable_blocking(self._e.backend.edge_delete(ids=edge_ids))
         run_awaitable_blocking(

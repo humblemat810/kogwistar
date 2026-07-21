@@ -3,7 +3,7 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import asyncio
-import shutil
+import os
 import socket
 import subprocess
 import sys
@@ -29,6 +29,7 @@ class RealChromaServer:
 
 
 _ASYNC_CHROMA_SERVER_CLIENTS: dict[int, Any] = {}
+_LIVE_REAL_CHROMA_SERVERS: dict[int, RealChromaServer] = {}
 
 
 def _free_port() -> int:
@@ -48,9 +49,10 @@ def _tail_text(path: Path, *, limit: int = 16_000) -> str:
 
 
 def _terminate_process_tree(proc: subprocess.Popen[str], *, timeout: float) -> None:
-    if proc.poll() is not None:
-        return
     if sys.platform == "win32":
+        # Chroma can hand off to a child while its launcher has already
+        # exited.  Still issue ``taskkill /T`` for the recorded root; returning
+        # early on ``poll()`` would strand that serving child between tests.
         subprocess.run(
             ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
             stdout=subprocess.DEVNULL,
@@ -61,28 +63,13 @@ def _terminate_process_tree(proc: subprocess.Popen[str], *, timeout: float) -> N
             proc.wait(timeout=timeout)
         return
 
+    if proc.poll() is not None:
+        return
     proc.terminate()
     with contextlib.suppress(Exception):
         proc.wait(timeout=timeout)
     if proc.poll() is None:
         proc.kill()
-
-
-def _find_chroma_cli() -> str | None:
-    chroma_cli = shutil.which("chroma")
-    if chroma_cli is not None:
-        return chroma_cli
-
-    scripts_dir = Path(sys.executable).parent
-    candidates = (
-        scripts_dir / "chroma.exe",
-        scripts_dir / "chroma.cmd",
-        scripts_dir / "chroma",
-    )
-    for candidate in candidates:
-        if candidate.exists():
-            return str(candidate)
-    return None
 
 
 def _register_async_chroma_server(client: Any) -> None:
@@ -107,16 +94,19 @@ def _close_async_chroma_server_clients() -> None:
 
 @pytest.fixture(autouse=True)
 def _cleanup_async_chroma_clients_after_test():
-    yield
-    _close_async_chroma_server_clients()
+    try:
+        yield
+    finally:
+        _close_async_chroma_server_clients()
+        # Chroma CLI may fork its serving process.  Keep an explicit registry
+        # so every test gets a final cleanup pass even if a fixture setup or
+        # async teardown fails before its own finalizer is reached.
+        for server in list(_LIVE_REAL_CHROMA_SERVERS.values()):
+            stop_real_chroma_server(server)
 
 
 def start_real_chroma_server(tmp_path: Path) -> RealChromaServer:
     pytest.importorskip("chromadb")
-
-    chroma_cli = _find_chroma_cli()
-    if chroma_cli is None:
-        pytest.skip("real async Chroma tests require the `chroma` CLI")
 
     host = "127.0.0.1"
     port = _free_port()
@@ -124,7 +114,9 @@ def start_real_chroma_server(tmp_path: Path) -> RealChromaServer:
     persist_dir.mkdir(parents=True, exist_ok=True)
 
     cmd = [
-        chroma_cli,
+        sys.executable,
+        "-m",
+        "tests._helpers.chroma_server_entry",
         "run",
         "--path",
         str(persist_dir),
@@ -135,17 +127,33 @@ def start_real_chroma_server(tmp_path: Path) -> RealChromaServer:
     ]
     log_path = tmp_path / "chroma-server.log"
     log_file = log_path.open("w", encoding="utf-8")
+    repo_root = str(Path(__file__).resolve().parents[2])
+    child_env = os.environ.copy()
+    executable = sys.executable
+    python_path_parts = [repo_root]
+    if sys.platform == "win32":
+        # Windows venv ``python.exe`` is itself a launcher that starts the
+        # base interpreter and exits.  Use that interpreter directly, while
+        # preserving this venv's packages, so ``proc`` owns real server.
+        executable = getattr(sys, "_base_executable", sys.executable)
+        python_path_parts.append(str(Path(sys.prefix) / "Lib" / "site-packages"))
+    python_path_parts.append(child_env.get("PYTHONPATH", ""))
+    child_env["PYTHONPATH"] = os.pathsep.join(filter(None, python_path_parts))
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     proc = subprocess.Popen(
-        cmd,
+        [executable, *cmd[1:]],
         cwd=str(tmp_path),
+        env=child_env,
         stdout=log_file,
         stderr=subprocess.STDOUT,
         text=True,
+        creationflags=creationflags,
     )
     log_file.close()
     server = RealChromaServer(
         proc=proc, host=host, port=port, persist_dir=persist_dir, log_path=log_path
     )
+    _LIVE_REAL_CHROMA_SERVERS[proc.pid] = server
 
     deadline = time.monotonic() + 60.0
     heartbeat_url = f"http://{host}:{port}/api/v2/heartbeat"
@@ -171,8 +179,10 @@ def start_real_chroma_server(tmp_path: Path) -> RealChromaServer:
 
 
 def stop_real_chroma_server(server: RealChromaServer) -> None:
-    proc = server.proc
-    _terminate_process_tree(proc, timeout=10)
+    try:
+        _terminate_process_tree(server.proc, timeout=10)
+    finally:
+        _LIVE_REAL_CHROMA_SERVERS.pop(server.proc.pid, None)
 
 
 async def _await_chroma_setup(awaitable: Any, *, operation: str, server: RealChromaServer) -> Any:

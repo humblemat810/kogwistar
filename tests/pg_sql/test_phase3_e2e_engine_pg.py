@@ -64,6 +64,8 @@ def _dummy_embed(dim: int):
 def test_phase3_e2e_engine_edges_by_doc_pg(
     tmp_path: Path, sa_engine, pg_schema
 ) -> None:
+    if sa_engine is None or pg_schema is None:
+        pytest.skip("PostgreSQL fixtures are unavailable")
     dim = 8  # small for tests
 
     be = PgVectorBackend(engine=sa_engine, embedding_dim=dim, schema=pg_schema)

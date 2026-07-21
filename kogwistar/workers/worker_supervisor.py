@@ -66,6 +66,15 @@ def _main(argv: list[str]) -> int:
         signal.signal(signal.SIGINT, _handle)
     except Exception:
         pass
+    # Windows ``CTRL_BREAK_EVENT`` is delivered as SIGBREAK.  Test and
+    # operational supervisors are launched in a process group so this gives
+    # the supervisor a chance to terminate its child worker before exiting.
+    sigbreak = getattr(signal, "SIGBREAK", None)
+    if sigbreak is not None:
+        try:
+            signal.signal(sigbreak, _handle)
+        except Exception:
+            pass
 
     worker_args = [
         "--persist-directory",

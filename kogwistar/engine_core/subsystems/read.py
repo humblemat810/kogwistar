@@ -40,6 +40,137 @@ class ReadSubsystem(NamespaceProxy, ReadLike):
     def __init__(self, engine) -> None:
         super().__init__(engine)
 
+    @staticmethod
+    def _native_equality_filter(where: Any) -> dict[str, Any] | None:
+        if where is None:
+            return {}
+        if not isinstance(where, dict):
+            return None
+        if any(
+            not isinstance(key, str)
+            or key.startswith("$")
+            or isinstance(value, dict)
+            for key, value in where.items()
+        ):
+            return None
+        return dict(where)
+
+    def _rust_postgres_projection_get(
+        self,
+        *,
+        entity_kind: str,
+        ids: Sequence[str] | None,
+        where: Any,
+        limit: int | None,
+        include: list[str],
+    ) -> dict[str, Any] | None:
+        from ..rust_postgres_session import RustEnginePostgresMetaStore
+
+        meta = getattr(self._e, "meta_sqlite", None)
+        metadata = self._native_equality_filter(where)
+        if (
+            not isinstance(meta, RustEnginePostgresMetaStore)
+            or metadata is None
+            or limit is None
+            # Native projection reads are id-sorted while the legacy backend
+            # leaves multi-row get order unspecified. Cut over only the exact
+            # singleton case until a public ordering contract is approved.
+            or ids is None
+            or len(ids) != 1
+        ):
+            return None
+        table = (
+            self._e.backend.nodes.name
+            if entity_kind == "node"
+            else self._e.backend.edges.name
+            if entity_kind == "edge"
+            else self._e.backend.documents.name
+        )
+        effective_include = include or ["documents", "metadatas"]
+        records = meta.graph_projection_records(
+            namespace=getattr(self._e, "namespace", "default"),
+            workspace_id=None,
+            graph_space=None,
+            table=table,
+            ids=None if ids is None else list(ids),
+            metadata=metadata,
+            limit=int(limit),
+        )
+        result: dict[str, Any] = {
+            "ids": [str(record.get("id") or "") for record in records]
+        }
+        if "documents" in effective_include:
+            result["documents"] = [record.get("document") for record in records]
+        if "metadatas" in effective_include:
+            result["metadatas"] = [
+                dict(record.get("metadata") or {}) for record in records
+            ]
+        if "embeddings" in effective_include:
+            result["embeddings"] = [
+                normalize_embedding_vector(record.get("embedding"))
+                for record in records
+            ]
+        return result
+
+    def _rust_postgres_projection_query(
+        self,
+        *,
+        entity_kind: str,
+        query_embeddings: Sequence[Sequence[float]],
+        where: Any,
+        n_results: int,
+        include: list[str],
+    ) -> dict[str, Any] | None:
+        from ..rust_postgres_session import RustEnginePostgresMetaStore
+
+        meta = getattr(self._e, "meta_sqlite", None)
+        metadata = self._native_equality_filter(where)
+        if (
+            not isinstance(meta, RustEnginePostgresMetaStore)
+            or metadata is None
+            or len(query_embeddings) != 1
+        ):
+            return None
+        table = (
+            self._e.backend.nodes.name
+            if entity_kind == "node"
+            else self._e.backend.edges.name
+        )
+        matches = meta.graph_projection_vector_query(
+            namespace=getattr(self._e, "namespace", "default"),
+            workspace_id=None,
+            graph_space=None,
+            table=table,
+            embedding=list(query_embeddings[0]),
+            embedding_dim=int(self._e.backend.embedding_dim),
+            metadata=metadata,
+            metric=str(self._e.backend.distance),
+            limit=int(n_results),
+        )
+        records = [dict(match.get("record") or {}) for match in matches]
+        effective_include = include or ["documents", "metadatas", "distances"]
+        result: dict[str, Any] = {
+            "ids": [[str(record.get("id") or "") for record in records]]
+        }
+        if "documents" in effective_include:
+            result["documents"] = [[record.get("document") for record in records]]
+        if "metadatas" in effective_include:
+            result["metadatas"] = [
+                [dict(record.get("metadata") or {}) for record in records]
+            ]
+        if "embeddings" in effective_include:
+            result["embeddings"] = [
+                [
+                    normalize_embedding_vector(record.get("embedding"))
+                    for record in records
+                ]
+            ]
+        if "distances" in effective_include:
+            result["distances"] = [
+                [float(match.get("distance", 0.0)) for match in matches]
+            ]
+        return result
+
     def _node_get_raw(
         self,
         *,
@@ -50,6 +181,15 @@ class ReadSubsystem(NamespaceProxy, ReadLike):
     ) -> dict[str, Any]:
         if include is None:
             include = ["documents", "embeddings", "metadatas"]
+        native = self._rust_postgres_projection_get(
+            entity_kind="node",
+            ids=ids,
+            where=where,
+            limit=limit,
+            include=include,
+        )
+        if native is not None:
+            return native
         return run_awaitable_blocking(self._e.backend.node_get(
             ids=ids,
             include=include,
@@ -67,6 +207,15 @@ class ReadSubsystem(NamespaceProxy, ReadLike):
     ) -> dict[str, Any]:
         if include is None:
             include = ["documents", "embeddings", "metadatas"]
+        native = self._rust_postgres_projection_get(
+            entity_kind="edge",
+            ids=ids,
+            where=where,
+            limit=limit,
+            include=include,
+        )
+        if native is not None:
+            return native
         return run_awaitable_blocking(self._e.backend.edge_get(
             ids=ids,
             include=include,
@@ -226,7 +375,17 @@ class ReadSubsystem(NamespaceProxy, ReadLike):
         return self._e._filter_items_by_resolve_mode(edges, resolve_mode)
 
     def get_document(self, doc_id: str) -> Document:
-        doc_get_result = run_awaitable_blocking(self._e.backend.document_get(ids=[doc_id]))
+        doc_get_result = self._rust_postgres_projection_get(
+            entity_kind="document",
+            ids=[doc_id],
+            where=None,
+            limit=1,
+            include=["documents", "metadatas"],
+        )
+        if doc_get_result is None:
+            doc_get_result = run_awaitable_blocking(
+                self._e.backend.document_get(ids=[doc_id])
+            )
         if len(doc_get_result["ids"]) == 0:
             raise ValueError(f"no document found for doc id = {doc_id}")
         metadatas = doc_get_result["metadatas"]
@@ -276,7 +435,18 @@ class ReadSubsystem(NamespaceProxy, ReadLike):
             normalize_embedding_rows(query_embeddings, allow_empty=False),
         )
 
-        got = run_awaitable_blocking(self._e.backend.node_query(
+        native = (
+            None
+            if args or set(kwargs) - {"where", "n_results"}
+            else self._rust_postgres_projection_query(
+            entity_kind="node",
+            query_embeddings=query_embeddings,
+            where=kwargs.get("where"),
+            n_results=int(kwargs.get("n_results", 10)),
+            include=include,
+            )
+        )
+        got = native or run_awaitable_blocking(self._e.backend.node_query(
             query_embeddings=query_embeddings,
             *args,
             include=include,
@@ -467,7 +637,18 @@ class ReadSubsystem(NamespaceProxy, ReadLike):
             normalize_embedding_rows(query_embeddings, allow_empty=False),
         )
 
-        got = run_awaitable_blocking(self._e.backend.edge_query(
+        native = (
+            None
+            if args or set(kwargs) - {"where", "n_results"}
+            else self._rust_postgres_projection_query(
+            entity_kind="edge",
+            query_embeddings=query_embeddings,
+            where=kwargs.get("where"),
+            n_results=int(kwargs.get("n_results", 10)),
+            include=include,
+            )
+        )
+        got = native or run_awaitable_blocking(self._e.backend.edge_query(
             query_embeddings=query_embeddings,
             *args,
             include=include,

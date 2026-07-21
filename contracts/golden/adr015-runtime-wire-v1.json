@@ -1,0 +1,339 @@
+{
+  "claim": {
+    "claimed_by": "worker-1",
+    "lease_seconds": 60,
+    "limit": 2,
+    "run_id": "run-1"
+  },
+  "claimed_work_postgres": {
+    "claimed_by": "worker-1",
+    "correlation_id": "run-1",
+    "expected_event_seq": 7,
+    "lease_until": "2026-07-19T03:00:00Z",
+    "message_id": "lane-1",
+    "payload": {
+      "contract_version": 1,
+      "conversation_id": "conv-1",
+      "kind": "workflow.step.execute",
+      "node_id": "entry",
+      "op": "start",
+      "parent_token_id": null,
+      "run_id": "run-1",
+      "runtime_routes": [],
+      "state": {
+        "seed": 1
+      },
+      "step_seq": 0,
+      "token_id": "token-1",
+      "turn_node_id": null,
+      "worker_protocol": "sync-v1",
+      "workflow_id": "wf-1"
+    },
+    "run_id": "run-1",
+    "step_id": "entry"
+  },
+  "claimed_work_sqlite": {
+    "claimed_by": "worker-1",
+    "correlation_id": "run-1",
+    "expected_event_seq": 7,
+    "lease_until": 1784430000,
+    "message_id": "lane-1",
+    "payload": {
+      "contract_version": 1,
+      "conversation_id": "conv-1",
+      "kind": "workflow.step.execute",
+      "node_id": "entry",
+      "op": "start",
+      "parent_token_id": null,
+      "run_id": "run-1",
+      "runtime_routes": [],
+      "state": {
+        "seed": 1
+      },
+      "step_seq": 0,
+      "token_id": "token-1",
+      "turn_node_id": null,
+      "worker_protocol": "sync-v1",
+      "workflow_id": "wf-1"
+    },
+    "run_id": "run-1",
+    "step_id": "entry"
+  },
+  "contract_version": 1,
+  "result_effect": {
+    "effect": {
+      "contract_version": 1,
+      "effect_id": "effect-1",
+      "errors": [],
+      "result": {
+        "final_state": {
+          "answer": 42
+        },
+        "workflow_status": "succeeded"
+      },
+      "resume_payload": null,
+      "route_next": [
+        "go"
+      ],
+      "state_schema": {
+        "items": "a"
+      },
+      "state_update": [
+        [
+          "u",
+          {
+            "answer": 42
+          }
+        ],
+        [
+          "a",
+          {
+            "items": "one"
+          }
+        ]
+      ],
+      "status": "success",
+      "successors": [
+        {
+          "join_mask": 0,
+          "node_id": "done"
+        }
+      ],
+      "trace_events": [
+        {
+          "type": "step_completed"
+        }
+      ],
+      "update": null,
+      "usage": {
+        "input_tokens": 3,
+        "output_tokens": 2
+      },
+      "wait_reason": null
+    },
+    "handoff": {
+      "claimed_by": "worker-1",
+      "correlation_id": "run-1",
+      "message_id": "lane-1",
+      "run_id": "run-1",
+      "step_id": "entry"
+    },
+    "transition": null
+  },
+  "result_transition": {
+    "effect": null,
+    "handoff": {
+      "claimed_by": "worker-1",
+      "correlation_id": "run-1",
+      "message_id": "lane-1",
+      "run_id": "run-1",
+      "step_id": "entry"
+    },
+    "transition": {
+      "contract_version": 1,
+      "conversation_id": "conv-1",
+      "errors": [],
+      "expected_event_seq": 7,
+      "frontier": {
+        "join_node_ids": [],
+        "join_outstanding": [],
+        "join_waiters": {},
+        "pending": [],
+        "suspended": []
+      },
+      "initial_state": null,
+      "kind": "recorded_step_success",
+      "node_id": "entry",
+      "parent_token_id": null,
+      "result": {
+        "workflow_status": "succeeded"
+      },
+      "resume_payload": null,
+      "run_id": "run-1",
+      "state_schema": {},
+      "state_update": [
+        [
+          "u",
+          {
+            "answer": 42
+          }
+        ]
+      ],
+      "step_seq": 1,
+      "token_id": "token-1",
+      "transition_id": "transition-1",
+      "update": null,
+      "user_id": "user-1",
+      "user_turn_node_id": null,
+      "wait_reason": null,
+      "workflow_id": "wf-1"
+    }
+  },
+  "resume": {
+    "client_result": {
+      "contract_version": 1,
+      "effect_id": "effect-1",
+      "errors": [],
+      "result": {
+        "final_state": {
+          "answer": 42
+        },
+        "workflow_status": "succeeded"
+      },
+      "resume_payload": null,
+      "route_next": [
+        "go"
+      ],
+      "state_schema": {
+        "items": "a"
+      },
+      "state_update": [
+        [
+          "u",
+          {
+            "answer": 42
+          }
+        ],
+        [
+          "a",
+          {
+            "items": "one"
+          }
+        ]
+      ],
+      "status": "success",
+      "successors": [
+        {
+          "join_mask": 0,
+          "node_id": "done"
+        }
+      ],
+      "trace_events": [
+        {
+          "type": "step_completed"
+        }
+      ],
+      "update": null,
+      "usage": {
+        "input_tokens": 3,
+        "output_tokens": 2
+      },
+      "wait_reason": null
+    },
+    "conversation_id": "conv-1",
+    "suspended_node_id": "entry",
+    "suspended_token_id": "token-1",
+    "turn_node_id": "turn-1",
+    "workflow_id": "wf-1"
+  },
+  "step_execute": {
+    "contract_version": 1,
+    "conversation_id": "conv-1",
+    "expected_event_seq": 7,
+    "join_mask": 0,
+    "kind": "workflow.step.execute",
+    "node_id": "done",
+    "op": "finish",
+    "parent_token_id": null,
+    "resume_effect": {
+      "contract_version": 1,
+      "effect_id": "effect-1",
+      "errors": [],
+      "result": {
+        "final_state": {
+          "answer": 42
+        },
+        "workflow_status": "succeeded"
+      },
+      "resume_payload": null,
+      "route_next": [
+        "go"
+      ],
+      "state_schema": {
+        "items": "a"
+      },
+      "state_update": [
+        [
+          "u",
+          {
+            "answer": 42
+          }
+        ],
+        [
+          "a",
+          {
+            "items": "one"
+          }
+        ]
+      ],
+      "status": "success",
+      "successors": [
+        {
+          "join_mask": 0,
+          "node_id": "done"
+        }
+      ],
+      "trace_events": [
+        {
+          "type": "step_completed"
+        }
+      ],
+      "update": null,
+      "usage": {
+        "input_tokens": 3,
+        "output_tokens": 2
+      },
+      "wait_reason": null
+    },
+    "run_id": "run-1",
+    "runtime_routes": [],
+    "state": {
+      "seed": 1
+    },
+    "step_seq": 1,
+    "token_id": "token-1",
+    "turn_node_id": "turn-1",
+    "worker_protocol": "sync-v1",
+    "workflow_id": "wf-1"
+  },
+  "submit": {
+    "conversation_id": "conv-1",
+    "initial_state": {
+      "seed": 1
+    },
+    "join_node_ids": [
+      "join"
+    ],
+    "node_ops": {
+      "done": "finish",
+      "entry": "start"
+    },
+    "priority_class": "foreground",
+    "run_id": "run-1",
+    "runtime_kind": "sync",
+    "runtime_routes": [
+      {
+        "aliases": [
+          "go",
+          "done"
+        ],
+        "edge_id": "edge-1",
+        "is_default": false,
+        "join_mask": 0,
+        "multiplicity": "one",
+        "predicate": null,
+        "priority": 7,
+        "source_fanout": false,
+        "source_node_id": "entry",
+        "target_node_id": "done"
+      }
+    ],
+    "start_join_mask": 1,
+    "start_node_id": "entry",
+    "time_budget_ms": 5000,
+    "token_budget": 100,
+    "turn_node_id": null,
+    "user_id": "user-1",
+    "workflow_id": "wf-1"
+  }
+}

@@ -1,7 +1,7 @@
-from typing import Any, ClassVar, Literal, Optional, TypeAlias, TypedDict, Union, NotRequired
+from typing import Any, ClassVar, Literal, Optional, TypeAlias
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from ..engine_core.models import Edge, Node, Span
+from ..engine_core.models import Edge, Node
 
 
 class WorkflowNodeMetadata(BaseModel):
@@ -139,7 +139,8 @@ class WorkflowEdge(Edge):
 
     @property
     def priority(self):
-        return int(self.metadata.get("wf_priority")) # type: ignore  ok here, metadata validated at seem
+        value = self.metadata.get("wf_priority", 100)
+        return int(value if value is not None else 100)
 
 
 class WorkflowDesignArtifact(BaseModel):
@@ -201,32 +202,20 @@ class WorkflowInvocationRequest(BaseModel):
 #     summary_node_id: Optional[str]
 
 
-class WorkflowState(TypedDict):
-    conversation_id: str
-    user_id: str
-    turn_node_id: NotRequired[str]
-    turn_index: NotRequired[int]
-    role: NotRequired[str]
-    user_text: NotRequired[str]
-    mem_id: NotRequired[str]
-    self_span: NotRequired[Span]
-    embedding: NotRequired[Any]
-    memory: NotRequired[Any]
-    memory_raw: NotRequired[Any]
-    kg: NotRequired[Any]
-    memory_pin: NotRequired[Any]
-    kg_pin: NotRequired[Any]
-    answer: NotRequired[Any]
-    # summary: SummaryStateDict
-    # prev_turn_meta_summary: PrevTurnMetaSummaryDict
-    _deps: NotRequired[dict[str, Any]]
-    _rt_join: NotRequired[dict[str, Any]]
+# Runtime workflow state is deliberately open.  Workflow definitions contribute
+# application-specific keys (for example ``seed`` or ``async_answer``), so a
+# closed TypedDict here would make the public runtime contract falsely reject
+# valid state at type-check time.  Persisted conversation state keeps its
+# narrower structural TypedDict in ``conversation_state_contracts``.
+WorkflowState: TypeAlias = dict[str, Any]
 
 
-StateAppendUpdate = tuple[Literal["u"], Any]
-StateOverwriteUpdate = tuple[Literal["a"], Any]
-
-StateUpdate = Union[StateAppendUpdate, StateOverwriteUpdate]
+StateOverwriteUpdate: TypeAlias = tuple[Literal["u"], dict[str, Any]]
+StateAppendUpdate: TypeAlias = tuple[Literal["a"], dict[str, Any]]
+StateExtendUpdate: TypeAlias = tuple[Literal["e"], dict[str, Any]]
+StateUpdate: TypeAlias = (
+    StateOverwriteUpdate | StateAppendUpdate | StateExtendUpdate
+)
 
 
 def get_route_next_names(result: Any) -> list[str]:

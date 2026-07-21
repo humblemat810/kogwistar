@@ -7,7 +7,9 @@ import pathlib
 
 from tests._kg_factories import kg_document
 
-pytestmark = pytest.mark.ci_full
+# Calls the configured Gemini provider on a cache miss. A local joblib hit is
+# not deterministic compatibility evidence.
+pytestmark = pytest.mark.llm_real
 
 
 def test_ingest_document_with_llm_cache(engine):

@@ -236,18 +236,47 @@ def validate_workflow(
             "Workflow has no terminal nodes (wf_terminal=True) and no sink nodes"
         )
 
-    seen = set()
-    stack = [spec.start_node_id]
-    while stack:
-        cur = stack.pop()
-        if cur in seen:
-            continue
-        seen.add(cur)
-        for e in adj.get(cur, []):
-            if e.dst not in seen:
-                stack.append(e.dst)
+    from kogwistar._rust_bridge import (
+        runtime_implementation_mode,
+        runtime_workflow_terminal_reachable,
+    )
 
-    if not any(t in seen for t in terminal):
+    edges = [
+        (str(source), str(edge.dst))
+        for source, workflow_edges in adj.items()
+        for edge in workflow_edges
+    ]
+    if runtime_implementation_mode() == "rust":
+        terminal_reachable = bool(
+            runtime_workflow_terminal_reachable(
+                node_ids=list(nodes),
+                edges=edges,
+                start_node_id=spec.start_node_id,
+                terminal_ids=sorted(terminal),
+            )
+        )
+    else:
+        seen = set()
+        stack = [spec.start_node_id]
+        while stack:
+            cur = stack.pop()
+            if cur in seen:
+                continue
+            seen.add(cur)
+            for edge in adj.get(cur, []):
+                if edge.dst not in seen:
+                    stack.append(edge.dst)
+        python_value = any(node_id in seen for node_id in terminal)
+        selected = runtime_workflow_terminal_reachable(
+            node_ids=list(nodes),
+            edges=edges,
+            start_node_id=spec.start_node_id,
+            terminal_ids=sorted(terminal),
+            python_value=python_value,
+        )
+        terminal_reachable = python_value if selected is None else selected
+
+    if not terminal_reachable:
         raise ValueError(
             "No terminal reachable from start (ignoring predicates). Cyclic graph without exit."
         )

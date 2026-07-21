@@ -1,0 +1,24 @@
+[package]
+name = "kogwistar-python"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+name = "_rust"
+crate-type = ["cdylib"]
+
+[dependencies]
+kogwistar-api = { path = "../kogwistar-api" }
+kogwistar-contracts = { path = "../kogwistar-contracts" }
+kogwistar-engine = { path = "../kogwistar-engine" }
+kogwistar-runtime = { path = "../kogwistar-runtime" }
+kogwistar-store = { path = "../kogwistar-store" }
+kogwistar-store-memory = { path = "../kogwistar-store-memory" }
+kogwistar-store-postgres = { path = "../kogwistar-store-postgres" }
+kogwistar-store-sqlite = { path = "../kogwistar-store-sqlite" }
+pyo3.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["net", "sync", "time"] }

@@ -15,7 +15,14 @@ PROJECT_NS = uuid.uuid5(uuid.NAMESPACE_URL, "graph-knowledge-engine")
 
 def stable_id(kind: str, *parts: str) -> uuid.UUID:
     key = json.dumps([kind, *parts], separators=(",", ":"), ensure_ascii=False)
-    return uuid.uuid5(PROJECT_NS, key)
+    python_value = uuid.uuid5(PROJECT_NS, key)
+    from ._rust_bridge import contract_stable_id
+
+    return contract_stable_id(
+        kind=kind,
+        parts=tuple(parts),
+        python_value=python_value,
+    )
 
 
 def any_arg_new_event_id(*arg, **kwag):

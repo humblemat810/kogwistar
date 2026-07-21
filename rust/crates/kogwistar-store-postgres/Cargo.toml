@@ -1,0 +1,20 @@
+[package]
+name = "kogwistar-store-postgres"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+deadpool-postgres.workspace = true
+kogwistar-contracts = { path = "../kogwistar-contracts" }
+kogwistar-engine = { path = "../kogwistar-engine" }
+kogwistar-runtime = { path = "../kogwistar-runtime" }
+kogwistar-store = { path = "../kogwistar-store" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio-postgres.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true

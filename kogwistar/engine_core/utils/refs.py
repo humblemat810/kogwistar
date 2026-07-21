@@ -235,29 +235,27 @@ def backend_update_record_lifecycle(
     safe_json_dict_fn,
     merge_meta_fn,
 ) -> bool:
+    """Patch lifecycle metadata without causing a Chroma re-embedding.
+
+    Kept for older callers.  Lifecycle is a metadata projection operation;
+    forwarding an unchanged document with no embedding makes Chroma call its
+    embedding function, while fetching a vector solely to resend it forces an
+    unrelated HNSW read.  Content writers must choose their vector policy
+    explicitly instead.
+    """
     get_fn = getattr(backend, f"{kind}_get", None)
     upd_fn = getattr(backend, f"{kind}_update", None)
     if get_fn is None or upd_fn is None:
         raise AttributeError(f"backend missing {kind}_get/{kind}_update")
-    got = get_fn(ids=[record_id], include=["documents", "metadatas", "embeddings"])
+    got = get_fn(ids=[record_id], include=["metadatas"])
     ids = got.get("ids") or []
     if not ids:
         return False
 
-    doc = (got.get("documents") or [None])[0]
     meta = (got.get("metadatas") or [None])[0]
-    emb = got.get("embeddings")
-    embedding = (emb if emb is not None else [None])[0]
-    base = safe_json_dict_fn(doc)
-
-    base_meta = base.get("metadata") if isinstance(base.get("metadata"), dict) else {}
-    base["metadata"] = merge_meta_fn(base_meta, lifecycle_patch)
-
     new_meta = merge_meta_fn(meta if isinstance(meta, dict) else {}, lifecycle_patch)
     upd_fn(
         ids=[record_id],
-        documents=[json.dumps(base, ensure_ascii=False)],
         metadatas=[new_meta],
-        embeddings=[embedding],
     )
     return True

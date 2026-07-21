@@ -26,6 +26,8 @@ def e2e_engine(request, tmp_path) -> GraphKnowledgeEngine:
     if request.param == "pg":
         sa_engine = request.getfixturevalue("sa_engine")
         pg_schema = request.getfixturevalue("pg_schema")
+        if sa_engine is None or pg_schema is None:
+            pytest.skip("PostgreSQL fixtures are unavailable")
 
     if request.param == "fake":
         persist_dir = tmp_path / "fake"

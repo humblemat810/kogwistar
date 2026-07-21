@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from contextlib import asynccontextmanager
 from urllib.parse import parse_qs, urlparse
 
 import httpx
@@ -25,6 +26,12 @@ from kogwistar.server.auth.service import AuthService
 from tests.server.oidc_test_support import extract_login_action, oidc_provider_json
 
 pytestmark = [pytest.mark.ci_full]
+
+
+@asynccontextmanager
+async def _oidc_test_lifespan(_app):
+    """OIDC test owns auth state; it does not exercise MCP session lifecycle."""
+    yield
 
 
 @pytest.fixture
@@ -78,6 +85,15 @@ def oidc_test_client(monkeypatch, keycloak_container: dict[str, str], oidc_test_
         )
     }
     server.app.state.auth_service = AuthService(session, jwt_secret=server.JWT_SECRET)
+    # The process-wide MCP StreamableHTTPSessionManager is single-use.  Other
+    # server tests may already have started it, while this OIDC-only test needs
+    # neither MCP routes nor their lifecycle.
+    monkeypatch.setattr(
+        server.app.router,
+        "lifespan_context",
+        _oidc_test_lifespan,
+        raising=False,
+    )
 
     try:
         with TestClient(server.app) as client:

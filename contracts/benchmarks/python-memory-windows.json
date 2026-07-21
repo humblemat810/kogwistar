@@ -1,0 +1,61 @@
+{
+  "artifact_bytes": 40999,
+  "backend": "in-memory",
+  "benchmark_version": 1,
+  "command": "C:\\Users\\chanh\\Documents\\graphrag_v2_working_tree\\.venv\\Scripts\\python.exe scripts/rust_port_benchmark.py --items 20 --workflow-iterations 2 --output-root C:\\Users\\chanh\\Documents\\graphrag_v2_working_tree\\.codex\\benchmark-runtime-2",
+  "database_load": {
+    "external_queries": 0,
+    "kind": "in-memory"
+  },
+  "dataset": "rust-port-benchmark-v1",
+  "items": 20,
+  "metrics": {
+    "event_replay": {
+      "cpu_ms": 0.0,
+      "output_count": 39,
+      "peak_rss_bytes": 163917824,
+      "peak_traced_bytes": 15010,
+      "rss_after_bytes": 163917824,
+      "rss_before_bytes": 163913728,
+      "wall_ms": 0.1433
+    },
+    "graph_ingest": {
+      "cpu_ms": 8703.125,
+      "output_count": 39,
+      "peak_rss_bytes": 162893824,
+      "peak_traced_bytes": 1832032,
+      "rss_after_bytes": 162893824,
+      "rss_before_bytes": 158867456,
+      "wall_ms": 8751.5864
+    },
+    "graph_retrieval": {
+      "cpu_ms": 1062.5,
+      "output_count": 40,
+      "peak_rss_bytes": 163913728,
+      "peak_traced_bytes": 1018569,
+      "rss_after_bytes": 163913728,
+      "rss_before_bytes": 162893824,
+      "wall_ms": 1050.3904
+    },
+    "queue_claim": {
+      "cpu_ms": 234.375,
+      "output_count": 20,
+      "peak_rss_bytes": 163995648,
+      "peak_traced_bytes": 176619,
+      "rss_after_bytes": 163995648,
+      "rss_before_bytes": 163917824,
+      "wall_ms": 235.4725
+    },
+    "workflow_fanout_join": {
+      "cpu_ms": 3781.25,
+      "output_count": 2,
+      "peak_rss_bytes": 164188160,
+      "peak_traced_bytes": 827329,
+      "rss_after_bytes": 164134912,
+      "rss_before_bytes": 163995648,
+      "wall_ms": 3824.4103
+    }
+  },
+  "python": "3.13.3 (tags/v3.13.3:6280bb5, Apr  8 2025, 14:47:33) [MSC v.1943 64 bit (AMD64)]",
+  "workflow_iterations": 2
+}

@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 from kogwistar.provenance import EvidencePackDigest, evidence_pack_digest_hash
 
-__version__ = "0.2.4"
+__version__ = "0.2.5"
 
 if TYPE_CHECKING:
     from kogwistar.conversation.conversation_orchestrator import (

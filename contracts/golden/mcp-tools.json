@@ -1,0 +1,2315 @@
+{
+  "contract_version": "1.0.0",
+  "surfaces": {
+    "conversation": [
+      {
+        "description": null,
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "conversation_id": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            },
+            "user_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "workflow_id": {
+              "default": "agentic_answering.v2",
+              "type": "string"
+            }
+          },
+          "required": [
+            "conversation_id",
+            "text"
+          ],
+          "type": "object"
+        },
+        "name": "conversation.ask",
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "title": null
+      },
+      {
+        "description": null,
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "run_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "run_id"
+          ],
+          "type": "object"
+        },
+        "name": "conversation.cancel_run",
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "title": null
+      },
+      {
+        "description": null,
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "conversation_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "start_node_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "user_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "user_id"
+          ],
+          "type": "object"
+        },
+        "name": "conversation.create",
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "title": null
+      },
+      {
+        "description": null,
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "conversation_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "conversation_id"
+          ],
+          "type": "object"
+        },
+        "name": "conversation.get_transcript",
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "title": null
+      },
+      {
+        "description": null,
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "run_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "run_id"
+          ],
+          "type": "object"
+        },
+        "name": "conversation.run_status",
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "title": null
+      }
+    ],
+    "root": [
+      {
+        "description": null,
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "file_name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "file_name"
+          ],
+          "type": "object"
+        },
+        "name": "document_id_from_file_name",
+        "outputSchema": null,
+        "title": null
+      },
+      {
+        "description": null,
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "doc_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "relation": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "src_label_contains": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "tgt_label_contains": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "type": "object"
+        },
+        "name": "kg_find_edges",
+        "outputSchema": {
+          "properties": {
+            "edges": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "edges"
+          ],
+          "type": "object"
+        },
+        "title": null
+      },
+      {
+        "description": null,
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "doc_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "k": {
+              "default": 1,
+              "type": "integer"
+            },
+            "start_ids": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "start_ids"
+          ],
+          "type": "object"
+        },
+        "name": "kg_k_hop",
+        "outputSchema": {
+          "properties": {
+            "layers": {
+              "items": {
+                "properties": {
+                  "edges": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "nodes": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "nodes",
+                  "edges"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "layers"
+          ],
+          "type": "object"
+        },
+        "title": null
+      },
+      {
+        "description": null,
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "inp": {
+              "properties": {
+                "doc_ids": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "insertion_method": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "sid": {
+                  "default": true,
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "doc_ids"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "inp"
+          ],
+          "type": "object"
+        },
+        "name": "kg_load_persisted",
+        "outputSchema": {
+          "properties": {
+            "edge_ids": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "node_ids": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "node_ids",
+            "edge_ids"
+          ],
+          "type": "object"
+        },
+        "title": null
+      },
+      {
+        "description": null,
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "doc_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "rid": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "rid"
+          ],
+          "type": "object"
+        },
+        "name": "kg_neighbors",
+        "outputSchema": {
+          "properties": {
+            "edges": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "nodes": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "nodes",
+            "edges"
+          ],
+          "type": "object"
+        },
+        "title": null
+      },
+      {
+        "description": null,
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "inp": {
+              "properties": {
+                "allowed_docs": {
+                  "anyOf": [
+                    {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "anchor_doc_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "anchor_only": {
+                  "default": true,
+                  "type": "boolean"
+                },
+                "cross_doc_only": {
+                  "default": false,
+                  "type": "boolean"
+                },
+                "limit_per_bucket": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": 200
+                },
+                "pair_kind": {
+                  "default": "any_any",
+                  "type": "string"
+                },
+                "where": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                }
+              },
+              "type": "object"
+            }
+          },
+          "required": [
+            "inp"
+          ],
+          "type": "object"
+        },
+        "name": "kg_propose_bruteforce",
+        "outputSchema": {
+          "properties": {
+            "pairs": {
+              "items": {
+                "properties": {
+                  "left_id": {
+                    "type": "string"
+                  },
+                  "left_kind": {
+                    "enum": [
+                      "node",
+                      "edge"
+                    ],
+                    "type": "string"
+                  },
+                  "right_id": {
+                    "type": "string"
+                  },
+                  "right_kind": {
+                    "enum": [
+                      "node",
+                      "edge"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "left_id",
+                  "left_kind",
+                  "right_id",
+                  "right_kind"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "pairs"
+          ],
+          "type": "object"
+        },
+        "title": null
+      },
+      {
+        "description": null,
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "doc_ids": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "hops": {
+              "default": 1,
+              "type": "integer"
+            },
+            "text": {
+              "type": "string"
+            },
+            "top_k": {
+              "default": 5,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "text"
+          ],
+          "type": "object"
+        },
+        "name": "kg_semantic_seed_then_expand_text",
+        "outputSchema": {
+          "properties": {
+            "layers": {
+              "items": {
+                "properties": {
+                  "edges": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "nodes": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "nodes",
+                  "edges"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "seeds": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "seeds",
+            "layers"
+          ],
+          "type": "object"
+        },
+        "title": null
+      },
+      {
+        "description": null,
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "doc_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "dst_id": {
+              "type": "string"
+            },
+            "max_depth": {
+              "default": 8,
+              "type": "integer"
+            },
+            "src_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "src_id",
+            "dst_id"
+          ],
+          "type": "object"
+        },
+        "name": "kg_shortest_path",
+        "outputSchema": {
+          "properties": {
+            "path": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "type": "object"
+        },
+        "title": null
+      },
+      {
+        "description": null,
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "doc_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "mode": {
+              "default": "reify",
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "name": "kg_viz_cytoscape_json",
+        "outputSchema": {
+          "properties": {
+            "doc_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "elements": {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "mode": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "elements",
+            "mode",
+            "doc_id"
+          ],
+          "type": "object"
+        },
+        "title": null
+      },
+      {
+        "description": null,
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "doc_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "mode": {
+              "default": "reify",
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "name": "kg_viz_d3_json",
+        "outputSchema": {
+          "properties": {
+            "doc_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "links": {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "mode": {
+              "type": "string"
+            },
+            "nodes": {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "nodes",
+            "links",
+            "mode",
+            "doc_id"
+          ],
+          "type": "object"
+        },
+        "title": null
+      },
+      {
+        "description": null,
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "inp": {
+              "properties": {
+                "allowed_docs": {
+                  "anyOf": [
+                    {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "anchor_doc_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "anchor_only": {
+                  "default": true,
+                  "type": "boolean"
+                },
+                "cross_doc_only": {
+                  "default": false,
+                  "type": "boolean"
+                },
+                "include_edges": {
+                  "default": true,
+                  "type": "boolean"
+                },
+                "max_distance": {
+                  "default": 0.35,
+                  "type": "number"
+                },
+                "min_similarity": {
+                  "default": 0.65,
+                  "type": "number"
+                },
+                "new_edge_ids": {
+                  "anyOf": [
+                    {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "new_node_ids": {
+                  "anyOf": [
+                    {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "score_mode": {
+                  "default": "distance",
+                  "enum": [
+                    "distance",
+                    "similarity"
+                  ],
+                  "type": "string"
+                },
+                "top_k": {
+                  "default": 10,
+                  "type": "integer"
+                },
+                "where": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                }
+              },
+              "type": "object"
+            }
+          },
+          "required": [
+            "inp"
+          ],
+          "type": "object"
+        },
+        "name": "propose_vector",
+        "outputSchema": {
+          "properties": {
+            "pairs": {
+              "items": {
+                "properties": {
+                  "left_id": {
+                    "type": "string"
+                  },
+                  "left_kind": {
+                    "enum": [
+                      "node",
+                      "edge"
+                    ],
+                    "type": "string"
+                  },
+                  "right_id": {
+                    "type": "string"
+                  },
+                  "right_kind": {
+                    "enum": [
+                      "node",
+                      "edge"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "left_id",
+                  "left_kind",
+                  "right_id",
+                  "right_kind"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "pairs"
+          ],
+          "type": "object"
+        },
+        "title": null
+      },
+      {
+        "description": null,
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "inp": {
+              "properties": {
+                "content": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "description": "If provided and doc is new, store this as document content"
+                },
+                "edges": {
+                  "description": "PureEdge-shaped dicts",
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "insertion_method": {
+                  "default": "api_upsert",
+                  "description": "Provenance tag copied into each ReferenceSession",
+                  "type": "string"
+                },
+                "nodes": {
+                  "description": "PureNode-shaped dicts",
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "type": "array"
+                }
+              },
+              "type": "object"
+            }
+          },
+          "required": [
+            "inp"
+          ],
+          "type": "object"
+        },
+        "name": "wisdom.kg_upsert_graph",
+        "outputSchema": {
+          "properties": {
+            "edge_ids": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "edges_added": {
+              "type": "integer"
+            },
+            "node_ids": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "nodes_added": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "node_ids",
+            "edge_ids",
+            "nodes_added",
+            "edges_added"
+          ],
+          "type": "object"
+        },
+        "title": null
+      }
+    ],
+    "workflow": [
+      {
+        "description": null,
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "limit": {
+              "default": 100,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "name": "workflow.blocked_runs",
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "title": null
+      },
+      {
+        "description": null,
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "limit": {
+              "default": 200,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "name": "workflow.budget_history",
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "title": null
+      },
+      {
+        "description": null,
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object"
+        },
+        "name": "workflow.budget_snapshot",
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "title": null
+      },
+      {
+        "description": null,
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object"
+        },
+        "name": "workflow.capabilities_snapshot",
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "title": null
+      },
+      {
+        "description": null,
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "type": "string"
+            },
+            "capabilities": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "string"
+                }
+              ]
+            },
+            "subject": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "required": [
+            "action",
+            "capabilities"
+          ],
+          "type": "object"
+        },
+        "name": "workflow.capability_approve",
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "title": null
+      },
+      {
+        "description": null,
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "capability": {
+              "type": "string"
+            },
+            "subject": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "required": [
+            "capability"
+          ],
+          "type": "object"
+        },
+        "name": "workflow.capability_revoke",
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "title": null
+      },
+      {
+        "description": null,
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "run_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "run_id"
+          ],
+          "type": "object"
+        },
+        "name": "workflow.dead_letter_replay",
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "title": null
+      },
+      {
+        "description": null,
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "limit": {
+              "default": 100,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "name": "workflow.dead_letters",
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "title": null
+      },
+      {
+        "description": null,
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "designer_id": {
+              "type": "string"
+            },
+            "edge_id": {
+              "type": "string"
+            },
+            "workflow_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "workflow_id",
+            "edge_id",
+            "designer_id"
+          ],
+          "type": "object"
+        },
+        "name": "workflow.design_edge_delete",
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "title": null
+      },
+      {
+        "description": null,
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "designer_id": {
+              "type": "string"
+            },
+            "dst": {
+              "type": "string"
+            },
+            "edge_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "is_default": {
+              "default": false,
+              "type": "boolean"
+            },
+            "metadata": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "multiplicity": {
+              "default": "one",
+              "type": "string"
+            },
+            "predicate": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "priority": {
+              "default": 100,
+              "type": "integer"
+            },
+            "relation": {
+              "default": "wf_next",
+              "type": "string"
+            },
+            "src": {
+              "type": "string"
+            },
+            "workflow_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "workflow_id",
+            "designer_id",
+            "src",
+            "dst"
+          ],
+          "type": "object"
+        },
+        "name": "workflow.design_edge_upsert",
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "title": null
+      },
+      {
+        "description": null,
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "workflow_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "workflow_id"
+          ],
+          "type": "object"
+        },
+        "name": "workflow.design_history",
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "title": null
+      },
+      {
+        "description": null,
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "designer_id": {
+              "type": "string"
+            },
+            "node_id": {
+              "type": "string"
+            },
+            "workflow_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "workflow_id",
+            "node_id",
+            "designer_id"
+          ],
+          "type": "object"
+        },
+        "name": "workflow.design_node_delete",
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "title": null
+      },
+      {
+        "description": null,
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "designer_id": {
+              "type": "string"
+            },
+            "fanout": {
+              "default": false,
+              "type": "boolean"
+            },
+            "label": {
+              "type": "string"
+            },
+            "metadata": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "node_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "op": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "start": {
+              "default": false,
+              "type": "boolean"
+            },
+            "terminal": {
+              "default": false,
+              "type": "boolean"
+            },
+            "workflow_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "workflow_id",
+            "designer_id",
+            "label"
+          ],
+          "type": "object"
+        },
+        "name": "workflow.design_node_upsert",
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "title": null
+      },
+      {
+        "description": null,
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "designer_id": {
+              "type": "string"
+            },
+            "workflow_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "workflow_id",
+            "designer_id"
+          ],
+          "type": "object"
+        },
+        "name": "workflow.design_redo",
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "title": null
+      },
+      {
+        "description": null,
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "designer_id": {
+              "type": "string"
+            },
+            "workflow_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "workflow_id",
+            "designer_id"
+          ],
+          "type": "object"
+        },
+        "name": "workflow.design_undo",
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "title": null
+      },
+      {
+        "description": null,
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "inbox_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "limit": {
+              "default": 100,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "name": "workflow.message_orphans_repair",
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "title": null
+      },
+      {
+        "description": null,
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "limit": {
+              "default": 100,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "name": "workflow.operator_dashboard",
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "title": null
+      },
+      {
+        "description": null,
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "inbox_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "limit": {
+              "default": 200,
+              "type": "integer"
+            },
+            "status": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "type": "object"
+        },
+        "name": "workflow.operator_inbox",
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "title": null
+      },
+      {
+        "description": null,
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "conversation_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "limit": {
+              "default": 100,
+              "type": "integer"
+            },
+            "status": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "workflow_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "type": "object"
+        },
+        "name": "workflow.process_table",
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "title": null
+      },
+      {
+        "description": null,
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "after_seq": {
+              "default": 0,
+              "type": "integer"
+            },
+            "limit": {
+              "default": 200,
+              "type": "integer"
+            },
+            "run_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "run_id"
+          ],
+          "type": "object"
+        },
+        "name": "workflow.process_timeline",
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "title": null
+      },
+      {
+        "description": null,
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "run_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "run_id"
+          ],
+          "type": "object"
+        },
+        "name": "workflow.run_cancel",
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "title": null
+      },
+      {
+        "description": null,
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "run_id": {
+              "type": "string"
+            },
+            "step_seq": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "run_id",
+            "step_seq"
+          ],
+          "type": "object"
+        },
+        "name": "workflow.run_checkpoint_get",
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "title": null
+      },
+      {
+        "description": null,
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "after_seq": {
+              "default": 0,
+              "type": "integer"
+            },
+            "limit": {
+              "default": 200,
+              "type": "integer"
+            },
+            "run_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "run_id"
+          ],
+          "type": "object"
+        },
+        "name": "workflow.run_events",
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "title": null
+      },
+      {
+        "description": null,
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "run_id": {
+              "type": "string"
+            },
+            "target_step_seq": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "run_id",
+            "target_step_seq"
+          ],
+          "type": "object"
+        },
+        "name": "workflow.run_replay",
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "title": null
+      },
+      {
+        "description": null,
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "client_result": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "conversation_id": {
+              "type": "string"
+            },
+            "run_id": {
+              "type": "string"
+            },
+            "suspended_node_id": {
+              "type": "string"
+            },
+            "suspended_token_id": {
+              "type": "string"
+            },
+            "turn_node_id": {
+              "type": "string"
+            },
+            "user_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "workflow_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "run_id",
+            "suspended_node_id",
+            "suspended_token_id",
+            "client_result",
+            "workflow_id",
+            "conversation_id",
+            "turn_node_id"
+          ],
+          "type": "object"
+        },
+        "name": "workflow.run_resume",
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "title": null
+      },
+      {
+        "description": null,
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "run_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "run_id"
+          ],
+          "type": "object"
+        },
+        "name": "workflow.run_resume_contract",
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "title": null
+      },
+      {
+        "description": null,
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "run_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "run_id"
+          ],
+          "type": "object"
+        },
+        "name": "workflow.run_status",
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "title": null
+      },
+      {
+        "description": null,
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "conversation_id": {
+              "type": "string"
+            },
+            "initial_state": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "runtime_kind": {
+              "default": "sync",
+              "type": "string"
+            },
+            "turn_node_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "user_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "workflow_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "workflow_id",
+            "conversation_id"
+          ],
+          "type": "object"
+        },
+        "name": "workflow.run_submit",
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "title": null
+      },
+      {
+        "description": null,
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "limit": {
+              "default": 200,
+              "type": "integer"
+            },
+            "run_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "type": "object"
+        },
+        "name": "workflow.scheduler_timeline",
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "title": null
+      },
+      {
+        "description": null,
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "autostart": {
+              "default": false,
+              "type": "boolean"
+            },
+            "enabled": {
+              "default": true,
+              "type": "boolean"
+            },
+            "heartbeat_ttl_ms": {
+              "default": 60000,
+              "type": "integer"
+            },
+            "restart_policy": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "service_id": {
+              "type": "string"
+            },
+            "service_kind": {
+              "type": "string"
+            },
+            "target_config": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "target_kind": {
+              "type": "string"
+            },
+            "target_ref": {
+              "type": "string"
+            },
+            "trigger_specs": {
+              "anyOf": [
+                {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "required": [
+            "service_id",
+            "service_kind",
+            "target_kind",
+            "target_ref"
+          ],
+          "type": "object"
+        },
+        "name": "workflow.service_declare",
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "title": null
+      },
+      {
+        "description": null,
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "service_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "service_id"
+          ],
+          "type": "object"
+        },
+        "name": "workflow.service_disable",
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "title": null
+      },
+      {
+        "description": null,
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "service_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "service_id"
+          ],
+          "type": "object"
+        },
+        "name": "workflow.service_enable",
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "title": null
+      },
+      {
+        "description": null,
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "limit": {
+              "default": 500,
+              "type": "integer"
+            },
+            "service_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "service_id"
+          ],
+          "type": "object"
+        },
+        "name": "workflow.service_events",
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "title": null
+      },
+      {
+        "description": null,
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "service_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "service_id"
+          ],
+          "type": "object"
+        },
+        "name": "workflow.service_get",
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "title": null
+      },
+      {
+        "description": null,
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "instance_id": {
+              "type": "string"
+            },
+            "payload": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "service_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "service_id",
+            "instance_id"
+          ],
+          "type": "object"
+        },
+        "name": "workflow.service_heartbeat",
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "title": null
+      },
+      {
+        "description": null,
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "limit": {
+              "default": 200,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "name": "workflow.service_list",
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "title": null
+      },
+      {
+        "description": null,
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "service_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "service_id"
+          ],
+          "type": "object"
+        },
+        "name": "workflow.service_repair",
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "title": null
+      },
+      {
+        "description": null,
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "payload": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "service_id": {
+              "type": "string"
+            },
+            "trigger_type": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "service_id",
+            "trigger_type"
+          ],
+          "type": "object"
+        },
+        "name": "workflow.service_trigger",
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "title": null
+      },
+      {
+        "description": null,
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "limit": {
+              "default": 10000,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "name": "workflow.services_repair",
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "title": null
+      },
+      {
+        "description": null,
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "conversation_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "limit": {
+              "default": 200,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "name": "workflow.tool_audit",
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "title": null
+      },
+      {
+        "description": null,
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object"
+        },
+        "name": "workflow.visibility_snapshot",
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "title": null
+      }
+    ]
+  }
+}

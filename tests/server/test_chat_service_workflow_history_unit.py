@@ -150,6 +150,40 @@ def test_workflow_projection_not_stale(history_context):
     assert helper._workflow_projection_stale(state=state, projection=proj) is False
 
 
+def test_workflow_history_materializes_rust_event_only_projection(history_context):
+    owner, helper = history_context
+    owner.mock_meta_store.get_named_projection.return_value = {
+        "payload": {"snapshot_schema_version": 1},
+        "last_authoritative_seq": 0,
+        "last_materialized_seq": 0,
+        "projection_schema_version": 1,
+        "materialization_status": "rust_event_only",
+    }
+    owner.mock_meta_store.iter_entity_events.return_value = []
+    owner.mock_meta_store.get_latest_entity_event_seq.return_value = 0
+    owner.mock_meta_store.get_workflow_design_snapshot.return_value = None
+    owner.mock_meta_store.replace_named_projection = MagicMock()
+    owner.mock_workflow_engine.read.get_nodes.return_value = []
+    owner.mock_workflow_engine.read.get_edges.return_value = []
+    owner.mock_workflow_engine.backend.node_delete = MagicMock()
+    owner.mock_workflow_engine.backend.edge_delete = MagicMock()
+
+    # Exercise the service policy directly: an event-only Rust head is stale for
+    # Python's materialized graph and must not be reported as rollback-ready.
+    state = helper._workflow_sync_projection_locked(
+        workflow_id="rust-cutover", materialize=True
+    )
+
+    assert state["current_version"] == 0
+    owner.mock_meta_store.replace_named_projection.assert_called_once()
+    assert (
+        owner.mock_meta_store.replace_named_projection.call_args.kwargs[
+            "materialization_status"
+        ]
+        == "ready"
+    )
+
+
 def test_workflow_sync_projection_locked_rebuild_needed(history_context):
     owner, helper = history_context
     workflow_id = "wf1"

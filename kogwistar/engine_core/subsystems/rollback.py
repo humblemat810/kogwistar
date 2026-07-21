@@ -299,7 +299,12 @@ class RollbackSubsystem(NamespaceProxy):
         doc_ids = set(
             run_awaitable_blocking(self._e.backend.document_get(where={"doc_id": document_id}))["ids"]
         )
-        run_awaitable_blocking(self._e.backend.document_delete(where={"doc_id": document_id}))
+        if not self._e.write.rust_postgres_delete_existing(
+            entity_kind="document", entity_ids=sorted(doc_ids)
+        ):
+            run_awaitable_blocking(
+                self._e.backend.document_delete(where={"doc_id": document_id})
+            )
         doc_ids_after = set(
             run_awaitable_blocking(self._e.backend.document_get(where={"doc_id": document_id}))["ids"]
         )
@@ -370,29 +375,85 @@ class RollbackSubsystem(NamespaceProxy):
                     out[ids_out[i]] = d
             return out
 
+        def _filter_reference_payload(d: dict) -> tuple[str, list, int]:
+            key = "mentions" if "mentions" in d else "references"
+            refs = d.get(key) or []
+            kept: list = []
+            removed = 0
+            for ref in refs:
+                if not isinstance(ref, dict):
+                    kept.append(ref)
+                    continue
+                spans = ref.get("spans")
+                if isinstance(spans, list):
+                    kept_spans = []
+                    for span in spans:
+                        if (
+                            isinstance(span, dict)
+                            and span.get("doc_id") == doc_id
+                            and span.get("insertion_method") == extraction_method
+                        ):
+                            removed += 1
+                        else:
+                            kept_spans.append(span)
+                    if kept_spans:
+                        kept_grounding = dict(ref)
+                        kept_grounding["spans"] = kept_spans
+                        kept.append(kept_grounding)
+                    continue
+                if (
+                    ref.get("doc_id") == doc_id
+                    and ref.get("insertion_method") == extraction_method
+                ):
+                    removed += 1
+                else:
+                    kept.append(ref)
+            return key, kept, removed
+
         def _save_node(d: dict):
             nid = d["id"]
             prior = run_awaitable_blocking(self._e.backend.node_get(ids=[nid], include=["metadatas"]))
             meta = (prior.get("metadatas") or [None])[0] or {}
-            run_awaitable_blocking(self._e.backend.node_update(
-                ids=[nid],
-                documents=[json.dumps(d, ensure_ascii=False)],
-                metadatas=[dict(meta)],
-            ))
-            try:
-                self._e.write.index_node_docs(Node.model_validate(d))
-            except Exception:
-                pass
+            refs = d.get("mentions", d.get("references", []))
+            meta = {**meta, "mentions": json.dumps(refs, ensure_ascii=False)}
+            document = json.dumps(d, ensure_ascii=False)
+            native_replaced = self._e.write.rust_postgres_replace_existing(
+                entity_kind="node",
+                entity_id=nid,
+                document=document,
+                metadata_patch=dict(meta),
+                payload=d,
+            )
+            if not native_replaced:
+                run_awaitable_blocking(self._e.backend.node_update(
+                    ids=[nid],
+                    documents=[document],
+                    metadatas=[dict(meta)],
+                ))
+                try:
+                    self._e.write.index_node_docs(Node.model_validate(d))
+                except Exception:
+                    pass
 
         def _save_edge(d: dict):
             eid = d["id"]
             prior = run_awaitable_blocking(self._e.backend.edge_get(ids=[eid], include=["metadatas"]))
             meta = (prior.get("metadatas") or [None])[0] or {}
-            run_awaitable_blocking(self._e.backend.edge_update(
-                ids=[eid],
-                documents=[json.dumps(d, ensure_ascii=False)],
-                metadatas=[dict(meta)],
-            ))
+            refs = d.get("mentions", d.get("references", []))
+            meta = {**meta, "references": json.dumps(refs, ensure_ascii=False)}
+            document = json.dumps(d, ensure_ascii=False)
+            if not self._e.write.rust_postgres_replace_existing(
+                entity_kind="edge",
+                entity_id=eid,
+                document=document,
+                metadata_patch=dict(meta),
+                payload=d,
+            ):
+                run_awaitable_blocking(self._e.backend.edge_update(
+                    ids=[eid],
+                    documents=[document],
+                    metadatas=[dict(meta)],
+                ))
 
         node_ids = set()
         try:
@@ -404,8 +465,12 @@ class RollbackSubsystem(NamespaceProxy):
                     node_ids.add(m["node_id"])
             summary["deleted_node_doc_rows"] = len(nd.get("ids") or [])
         except Exception:
+            pass
+        if not node_ids:
             try:
-                q = run_awaitable_blocking(self._e.backend.node_get(where={"doc_id": doc_id}))
+                q = run_awaitable_blocking(
+                    self._e.backend.node_get(where={"doc_id": doc_id})
+                )
                 for nid in q.get("ids") or []:
                     node_ids.add(nid)
             except Exception:
@@ -421,8 +486,12 @@ class RollbackSubsystem(NamespaceProxy):
                     edge_ids.add(m["edge_id"])
             summary["deleted_edge_endpoints"] = len(ee.get("ids") or [])
         except Exception:
+            pass
+        if not edge_ids:
             try:
-                q = run_awaitable_blocking(self._e.backend.edge_get(where={"doc_id": doc_id}))
+                q = run_awaitable_blocking(
+                    self._e.backend.edge_get(where={"doc_id": doc_id})
+                )
                 for eid in q.get("ids") or []:
                     edge_ids.add(eid)
             except Exception:
@@ -430,29 +499,24 @@ class RollbackSubsystem(NamespaceProxy):
 
         nodes_map = _load_many("node", node_ids)
         for nid, d in nodes_map.items():
-            refs = d.get("references") or []
-            keep = []
-            removed = 0
-            for r in refs:
-                if (
-                    r
-                    and (r.get("doc_id") == doc_id)
-                    and (r.get("insertion_method") == extraction_method)
-                ):
-                    removed += 1
-                else:
-                    keep.append(r)
+            refs_key, keep, removed = _filter_reference_payload(d)
             if removed:
                 summary["deleted_node_refs"] += removed
                 if keep:
-                    d["references"] = keep
+                    d[refs_key] = keep
                     _save_node(d)
                     summary["updated_nodes"] += 1
                 else:
-                    try:
-                        run_awaitable_blocking(self._e.backend.node_delete(ids=[nid]))
-                    except Exception:
-                        pass
+                    native_deleted = self._e.write.rust_postgres_delete_existing(
+                        entity_kind="node", entity_ids=[nid]
+                    )
+                    if not native_deleted:
+                        try:
+                            run_awaitable_blocking(
+                                self._e.backend.node_delete(ids=[nid])
+                            )
+                        except Exception:
+                            pass
                     try:
                         run_awaitable_blocking(self._e.backend.node_docs_delete(
                             where={"node_id": nid, "doc_id": doc_id}
@@ -470,18 +534,7 @@ class RollbackSubsystem(NamespaceProxy):
 
         edges_map = _load_many("edge", edge_ids)
         for eid, d in edges_map.items():
-            refs = d.get("references") or []
-            keep = []
-            removed = 0
-            for r in refs:
-                if (
-                    r
-                    and (r.get("doc_id") == doc_id)
-                    and (r.get("insertion_method") == extraction_method)
-                ):
-                    removed += 1
-                else:
-                    keep.append(r)
+            refs_key, keep, removed = _filter_reference_payload(d)
 
             try:
                 run_awaitable_blocking(self._e.backend.edge_endpoints_delete(
@@ -493,14 +546,20 @@ class RollbackSubsystem(NamespaceProxy):
             if removed:
                 summary["deleted_edge_refs"] += removed
                 if keep:
-                    d["references"] = keep
+                    d[refs_key] = keep
                     _save_edge(d)
                     summary["updated_edges"] += 1
                 else:
-                    try:
-                        run_awaitable_blocking(self._e.backend.edge_delete(ids=[eid]))
-                    except Exception:
-                        pass
+                    native_deleted = self._e.write.rust_postgres_delete_existing(
+                        entity_kind="edge", entity_ids=[eid]
+                    )
+                    if not native_deleted:
+                        try:
+                            run_awaitable_blocking(
+                                self._e.backend.edge_delete(ids=[eid])
+                            )
+                        except Exception:
+                            pass
                     try:
                         run_awaitable_blocking(self._e.backend.edge_endpoints_delete(where={"edge_id": eid}))
                     except Exception:
@@ -536,6 +595,48 @@ class RollbackSubsystem(NamespaceProxy):
 
         removed_edge_ids: set[str] = set()
         updated_edge_ids: set[str] = set()
+
+        def _delete_base_edge(edge_id: str) -> None:
+            if not self._e.write.rust_postgres_delete_existing(
+                entity_kind="edge", entity_ids=[edge_id]
+            ):
+                run_awaitable_blocking(self._e.backend.edge_delete(ids=[edge_id]))
+
+        def _replace_base_edge(edge: Edge, metadata: dict[str, Any] | None) -> None:
+            replacement_metadata = strip_none(
+                {
+                    "doc_id": (metadata or {}).get("doc_id"),
+                    "relation": edge.relation,
+                    "source_ids": json_or_none(edge.source_ids),
+                    "target_ids": json_or_none(edge.target_ids),
+                    "type": edge.type,
+                    "summary": edge.summary,
+                    "domain_id": edge.domain_id,
+                    "canonical_entity_id": edge.canonical_entity_id,
+                    "properties": json_or_none(edge.properties),
+                    "references": json_or_none(
+                        [
+                            ref.model_dump(field_mode="backend")
+                            for ref in (edge.mentions or [])
+                        ]
+                    ),
+                }
+            )
+            document = edge.model_dump_json(field_mode="backend")
+            if not self._e.write.rust_postgres_replace_existing(
+                entity_kind="edge",
+                entity_id=edge.safe_get_id(),
+                document=document,
+                metadata_patch=replacement_metadata,
+                payload=edge.model_dump(field_mode="backend", exclude=["embedding"]),
+            ):
+                run_awaitable_blocking(self._e.backend.edge_update(
+                    ids=[edge.safe_get_id()],
+                    documents=[document],
+                    metadatas=[replacement_metadata],
+                ))
+                self._e.write.index_edge_refs(edge)
+
         for eid, edoc, meta in zip(
             edges.get("ids") or [],
             edges.get("documents") or [],
@@ -550,36 +651,11 @@ class RollbackSubsystem(NamespaceProxy):
                     removed_node_id=node_id,
                 )
                 if edge_deleted or (new_edge is None):
-                    run_awaitable_blocking(self._e.backend.edge_delete(ids=[eid]))
+                    _delete_base_edge(eid)
                     run_awaitable_blocking(self._e.backend.edge_endpoints_delete(where={"edge_id": eid}))
                     removed_edge_ids.add(eid)
                 else:
-                    run_awaitable_blocking(self._e.backend.edge_update(
-                        ids=[eid],
-                        documents=[new_edge.model_dump_json(field_mode="backend")],
-                        metadatas=[
-                            strip_none(
-                                {
-                                    "doc_id": (meta or {}).get("doc_id"),
-                                    "relation": new_edge.relation,
-                                    "source_ids": json_or_none(new_edge.source_ids),
-                                    "target_ids": json_or_none(new_edge.target_ids),
-                                    "type": new_edge.type,
-                                    "summary": new_edge.summary,
-                                    "domain_id": new_edge.domain_id,
-                                    "canonical_entity_id": new_edge.canonical_entity_id,
-                                    "properties": json_or_none(new_edge.properties),
-                                    "references": json_or_none(
-                                        [
-                                            ref.model_dump(field_mode="backend")
-                                            for ref in (new_edge.mentions or [])
-                                        ]
-                                    ),
-                                }
-                            )
-                        ],
-                    ))
-                    self._e.write.index_edge_refs(new_edge)
+                    _replace_base_edge(new_edge, meta)
                     run_awaitable_blocking(self._e.backend.edge_endpoints_delete(where={"edge_id": eid}))
                     ep_ids, ep_docs, ep_metas = [], [], []
                     for role, node_ids in (
@@ -628,41 +704,16 @@ class RollbackSubsystem(NamespaceProxy):
             new_src = [x for x in (e.source_ids or []) if x != node_id]
             new_tgt = [x for x in (e.target_ids or []) if x != node_id]
             if not new_src or not new_tgt:
-                run_awaitable_blocking(self._e.backend.edge_delete(ids=[eid]))
+                _delete_base_edge(eid)
                 run_awaitable_blocking(self._e.backend.edge_endpoints_delete(where={"edge_id": eid}))
                 removed_edge_ids.add(eid)
             else:
                 e.source_ids, e.target_ids = new_src, new_tgt
-                run_awaitable_blocking(self._e.backend.edge_update(
-                    ids=[eid],
-                    documents=[e.model_dump_json(field_mode="backend")],
-                    metadatas=[
-                        strip_none(
-                            {
-                                "doc_id": (meta or {}).get("doc_id"),
-                                "relation": e.relation,
-                                "source_ids": json_or_none(e.source_ids),
-                                "target_ids": json_or_none(e.target_ids),
-                                "type": e.type,
-                                "summary": e.summary,
-                                "domain_id": e.domain_id,
-                                "canonical_entity_id": e.canonical_entity_id,
-                                "properties": json_or_none(e.properties),
-                                "references": json_or_none(
-                                    [
-                                        ref.model_dump(field_mode="backend")
-                                        for ref in (e.mentions or [])
-                                    ]
-                                ),
-                            }
-                        )
-                    ],
-                ))
+                _replace_base_edge(e, meta)
                 run_awaitable_blocking(self._e.backend.edge_endpoints_delete(
                     where={"$and": [{"edge_id": eid}, {"node_id": node_id}]}
                 ))
                 updated_edge_ids.add(eid)
-                self._e.write.index_edge_refs(e)
 
         return {
             "deleted_edges": removed_edge_ids,

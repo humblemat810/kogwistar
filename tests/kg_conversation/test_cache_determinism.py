@@ -250,7 +250,9 @@ def test_cross_backend_cache_determinism(
     
     we_chroma = _make_workflow_engine(
         backend_kind="chroma",
-        tmp_path=tmp_path / "we_chroma",
+        # Share one embedded Chroma root with the KG/conversation pair;
+        # graph types retain distinct collection names.
+        tmp_path=tmp_path / "chroma",
         sa_engine=sa_engine,
         pg_schema=pg_schema,
     )

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Callable, Literal, Sequence, TypeVar, TYPE_CHECKING
+import uuid
 from .subsystems.base import NamespaceProxy
 
 if TYPE_CHECKING:
@@ -113,16 +114,27 @@ class LifecycleSubsystem(NamespaceProxy):
         if kw.get("deleted_by"):
             patch["deleted_by"] = kw["deleted_by"]
 
-        ok = self._e._backend_update_record_lifecycle(
+        native = self._rust_postgres_lifecycle_patch(
+            entity_kind="node",
+            entity_id=node_id,
+            lifecycle_patch=patch,
+            op="TOMBSTONE",
+            **kw,
+        )
+        ok = native if native is not None else self._e._backend_update_record_lifecycle(
             backend=self._e.backend,
             kind="node",
             record_id=node_id,
             lifecycle_patch=patch,
         )
 
-        if ok:
+        if ok and native is None:
             self._best_effort_event(
-                entity_kind="node", entity_id=node_id, op="TOMBSTONE", **kw
+                entity_kind="node",
+                entity_id=node_id,
+                op="TOMBSTONE",
+                lifecycle_patch=patch,
+                **kw,
             )
             self._maybe_index_delete(entity_kind="node", entity_id=node_id)
 
@@ -148,13 +160,20 @@ class LifecycleSubsystem(NamespaceProxy):
         if kw.get("deleted_by"):
             patch["deleted_by"] = kw["deleted_by"]
 
-        ok = self._e._backend_update_record_lifecycle(
+        native = self._rust_postgres_lifecycle_patch(
+            entity_kind="node",
+            entity_id=from_id,
+            lifecycle_patch=patch,
+            op="REPLACE",
+            **kw,
+        )
+        ok = native if native is not None else self._e._backend_update_record_lifecycle(
             backend=self._e.backend,
             kind="node",
             record_id=from_id,
             lifecycle_patch=patch,
         )
-        if ok:
+        if ok and native is None:
             self._maybe_index_delete(entity_kind="node", entity_id=from_id)
         return ok
 
@@ -169,16 +188,27 @@ class LifecycleSubsystem(NamespaceProxy):
         if kw.get("deleted_by"):
             patch["deleted_by"] = kw["deleted_by"]
 
-        ok = self._e._backend_update_record_lifecycle(
+        native = self._rust_postgres_lifecycle_patch(
+            entity_kind="edge",
+            entity_id=edge_id,
+            lifecycle_patch=patch,
+            op="TOMBSTONE",
+            **kw,
+        )
+        ok = native if native is not None else self._e._backend_update_record_lifecycle(
             backend=self._e.backend,
             kind="edge",
             record_id=edge_id,
             lifecycle_patch=patch,
         )
 
-        if ok:
+        if ok and native is None:
             self._best_effort_event(
-                entity_kind="edge", entity_id=edge_id, op="TOMBSTONE", **kw
+                entity_kind="edge",
+                entity_id=edge_id,
+                op="TOMBSTONE",
+                lifecycle_patch=patch,
+                **kw,
             )
             self._maybe_index_delete(entity_kind="edge", entity_id=edge_id)
 
@@ -199,19 +229,132 @@ class LifecycleSubsystem(NamespaceProxy):
         if kw.get("deleted_by"):
             patch["deleted_by"] = kw["deleted_by"]
 
-        ok = self._e._backend_update_record_lifecycle(
+        native = self._rust_postgres_lifecycle_patch(
+            entity_kind="edge",
+            entity_id=from_id,
+            lifecycle_patch=patch,
+            op="REPLACE",
+            **kw,
+        )
+        ok = native if native is not None else self._e._backend_update_record_lifecycle(
             backend=self._e.backend,
             kind="edge",
             record_id=from_id,
             lifecycle_patch=patch,
         )
-        if ok:
+        if ok and native is None:
             self._maybe_index_delete(entity_kind="edge", entity_id=from_id)
         return ok
 
     # -----------------------
     # Internals
     # -----------------------
+
+    def _rust_postgres_lifecycle_patch(
+        self,
+        *,
+        entity_kind: str,
+        entity_id: str,
+        lifecycle_patch: dict,
+        op: str,
+        **kw,
+    ) -> bool | None:
+        from .rust_postgres_session import RustEnginePostgresMetaStore
+
+        meta = getattr(self._e, "meta_sqlite", None)
+        if not isinstance(meta, RustEnginePostgresMetaStore):
+            return None
+        payload = {"entity_id": entity_id}
+        if kw.get("reason") is not None:
+            payload["reason"] = kw["reason"]
+        if kw.get("deleted_by") is not None:
+            payload["deleted_by"] = kw["deleted_by"]
+        payload["lifecycle_patch"] = dict(lifecycle_patch)
+        table = (
+            self._e.backend.nodes.name
+            if entity_kind == "node"
+            else self._e.backend.edges.name
+        )
+        with meta.transaction():
+            if getattr(self._e, "_disable_event_log", False):
+                if not meta.patch_graph_projection_metadata(
+                    namespace=getattr(self._e, "namespace", "default"),
+                    workspace_id=None,
+                    graph_space=None,
+                    table=table,
+                    entity_id=entity_id,
+                    document=None,
+                    metadata_patch=lifecycle_patch,
+                ):
+                    return False
+            else:
+                result = meta.apply_graph_metadata_patch_mutation(
+                    namespace=getattr(self._e, "namespace", "default"),
+                    workspace_id=None,
+                    graph_space=None,
+                    table=table,
+                    entity_kind=entity_kind,
+                    event_id=str(uuid.uuid4()),
+                    op=op,
+                    entity_id=entity_id,
+                    metadata_patch=lifecycle_patch,
+                    payload=payload,
+                )
+                if result is None:
+                    return False
+            if entity_kind == "node":
+                self._e.enqueue_index_jobs_for_node(entity_id, op="DELETE")
+            else:
+                self._e.enqueue_index_jobs_for_edge(entity_id, op="DELETE")
+        try:
+            self._e.reconcile_indexes(max_jobs=50)
+        except Exception:
+            # Durable jobs already committed; later workers can converge them.
+            pass
+        return True
+
+    def apply_replayed_lifecycle_patch(
+        self,
+        *,
+        entity_kind: str,
+        entity_id: str,
+        lifecycle_patch: dict,
+    ) -> bool:
+        from .rust_postgres_session import RustEnginePostgresMetaStore
+
+        meta = getattr(self._e, "meta_sqlite", None)
+        if isinstance(meta, RustEnginePostgresMetaStore):
+            table = (
+                self._e.backend.nodes.name
+                if entity_kind == "node"
+                else self._e.backend.edges.name
+            )
+            with meta.transaction():
+                updated = meta.patch_graph_projection_metadata(
+                    namespace=getattr(self._e, "namespace", "default"),
+                    workspace_id=None,
+                    graph_space=None,
+                    table=table,
+                    entity_id=entity_id,
+                    document=None,
+                    metadata_patch=lifecycle_patch,
+                )
+                if updated and getattr(self._e, "_phase1_enable_index_jobs", False):
+                    if entity_kind == "node":
+                        self._e.enqueue_index_jobs_for_node(entity_id, op="DELETE")
+                    else:
+                        self._e.enqueue_index_jobs_for_edge(entity_id, op="DELETE")
+            return bool(updated)
+
+        updated = self._e._backend_update_record_lifecycle(
+            backend=self._e.backend,
+            kind=entity_kind,
+            record_id=entity_id,
+            lifecycle_patch=lifecycle_patch,
+        )
+        if updated:
+            self._maybe_index_delete(entity_kind=entity_kind, entity_id=entity_id)
+        return bool(updated)
 
     def _best_effort_event(
         self, *, entity_kind: str, entity_id: str, op: str, **kw
@@ -222,6 +365,8 @@ class LifecycleSubsystem(NamespaceProxy):
                 payload["reason"] = kw.get("reason")
             if kw.get("deleted_by") is not None:
                 payload["deleted_by"] = kw.get("deleted_by")
+            if isinstance(kw.get("lifecycle_patch"), dict):
+                payload["lifecycle_patch"] = dict(kw["lifecycle_patch"])
             self._e._append_event_for_entity(
                 namespace=getattr(self._e, "namespace", "default"),
                 entity_kind=entity_kind,

@@ -1,0 +1,60 @@
+{
+  "benchmark_version": 1,
+  "candidate_source_sha256": "c9df8600ad93959bc3fccdaa636f448ebc03eba589a4312077e3c8163ee2ae8d",
+  "environment": {
+    "container_base_image": "python:3.13.14-slim-bookworm",
+    "container_runtime": "Docker Desktop 28.0.4",
+    "host_os": "Windows",
+    "wheel_sha256": "915f18fd6a10e7af5e4ee49e34ab5a3385de21668330d7de7aff636e2bcaded8"
+  },
+  "method": {
+    "comparison_script": "scripts/rust_port_test_compare.py",
+    "identity_requirements": [
+      "candidate_source_sha256",
+      "verification_harness_sha256",
+      "container_orchestrator_sha256",
+      "test_profile",
+      "group_key coverage"
+    ],
+    "profile": "feature"
+  },
+  "results": {
+    "application_container_shards": {
+      "coverage_equal": true,
+      "group_count": 13,
+      "parallel": {
+        "container_shards": 3,
+        "duration_seconds": 176.230675,
+        "pytest_xdist_workers": 0
+      },
+      "serial": {
+        "container_shards": 1,
+        "duration_seconds": 251.119589,
+        "pytest_xdist_workers": 0
+      },
+      "speedup": 1.424948,
+      "verdict": "enable three ordinary container shards by default"
+    },
+    "core_pytest_xdist": {
+      "coverage_equal": true,
+      "group_count": 1,
+      "parallel": {
+        "container_shards": 1,
+        "duration_seconds": 172.120419,
+        "pytest_xdist_workers": 2
+      },
+      "serial": {
+        "container_shards": 1,
+        "duration_seconds": 124.532268,
+        "pytest_xdist_workers": 0
+      },
+      "speedup": 0.723518,
+      "verdict": "keep pytest-xdist opt-in and disabled by default"
+    }
+  },
+  "status": "passed",
+  "verification_harness_sha256": {
+    "application_container_shards": "a9295494abf3a14acdf86ac4742eeb0ceca12617b2435ee3dc3ec19363655bd3",
+    "core_pytest_xdist": "1b048ead1cdb63e97042a728eac0370ab5752684ac5faae9712f2a316f9701bf"
+  }
+}

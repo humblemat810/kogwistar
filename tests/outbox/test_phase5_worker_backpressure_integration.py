@@ -49,6 +49,8 @@ def eng(request, tmp_path, sa_engine, pg_schema) -> GraphKnowledgeEngine:
         return e
 
     pytest.importorskip("pgvector")
+    if sa_engine is None or pg_schema is None:
+        pytest.skip("PostgreSQL fixtures are unavailable")
     from kogwistar.engine_core.postgres_backend import PgVectorBackend
 
     backend = PgVectorBackend(engine=sa_engine, embedding_dim=3, schema=pg_schema)

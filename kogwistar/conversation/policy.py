@@ -243,7 +243,12 @@ def get_last_seq_node(engine: "GraphKnowledgeEngine", conversation_id, min_seq=N
                 "$and": [{"conversation_id": conversation_id}]
                 + [{"seq": {"$gte": min_seq or 0}}],
             },
-            include=["documents", "metadatas", "embeddings"],
+            # Tail selection needs only persisted turn metadata and document
+            # payload.  Asking Chroma for embeddings unnecessarily opens its
+            # HNSW segment reader; an intermittent segment-reader failure was
+            # then swallowed by the compatibility tail lookup and incorrectly
+            # changed a non-empty conversation into an empty one.
+            include=["documents", "metadatas"],
         )
     )
     if not got["ids"]:
@@ -281,7 +286,9 @@ def get_chat_tail(
                     else []
                 )
             },
-            include=["documents", "metadatas", "embeddings"],
+            # This is a serving lookup, not vector retrieval.  Do not make
+            # conversation progression depend on an unrelated HNSW read.
+            include=["documents", "metadatas"],
         )
     )
     if not got["ids"]:

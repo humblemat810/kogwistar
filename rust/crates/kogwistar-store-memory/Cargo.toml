@@ -1,0 +1,13 @@
+[package]
+name = "kogwistar-store-memory"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+kogwistar-contracts = { path = "../kogwistar-contracts" }
+kogwistar-store = { path = "../kogwistar-store" }
+
+[dev-dependencies]
+serde_json.workspace = true

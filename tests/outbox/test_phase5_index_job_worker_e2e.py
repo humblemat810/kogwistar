@@ -1,4 +1,5 @@
 import uuid
+import time
 import pytest
 pytestmark = pytest.mark.ci_full
 
@@ -80,7 +81,7 @@ def test_phase5_job_fail_increments_retry_and_requeues(eng, monkeypatch):
     assert j.status == "PENDING"
     assert j.retry_count == 1
     assert j.next_run_at is not None
-    assert j.next_run_at > eng.meta_sqlite._now_epoch()  # should be delayed
+    assert int(j.next_run_at) > int(time.time())  # should be delayed
 
 
 def test_phase5_job_exceeds_max_retry_becomes_dlq_terminal(eng, monkeypatch):
@@ -111,12 +112,8 @@ def test_phase5_job_exceeds_max_retry_becomes_dlq_terminal(eng, monkeypatch):
     m1 = worker.tick()
     assert m1.retried == 1
 
-    # Make eligible immediately (simulate time passing)
-    with eng.meta_sqlite.transaction() as conn:
-        now = eng.meta_sqlite._now_epoch()
-        conn.execute(
-            "UPDATE index_jobs SET next_run_at=? WHERE job_id=?", (now, job_id)
-        )
+    # First retry delay is one second; use the queue's real clock contract.
+    time.sleep(1.1)
 
     # 2nd failure => DLQ (FAILED terminal)
     m2 = worker.tick()
@@ -188,13 +185,17 @@ def test_phase5_idempotent_apply_under_at_least_once(eng, monkeypatch):
     assert m1.done == 1
     assert len(applied) == 1
 
-    # Simulate at-least-once: same job gets re-delivered (e.g., lease stolen after crash)
-    with eng.meta_sqlite.transaction() as conn:
-        now = eng.meta_sqlite._now_epoch()
-        conn.execute(
-            "UPDATE index_jobs SET status='PENDING', lease_until=NULL, next_run_at=NULL, updated_at=? WHERE job_id=?",
-            (now, job_id),
-        )
+    # Simulate at-least-once logical delivery with a fresh durable row after the
+    # first row reached DONE. Both deliveries describe the same projection op.
+    redelivery_id = f"job_{uuid.uuid4().hex}"
+    eng.meta_sqlite.enqueue_index_job(
+        namespace=ns,
+        job_id=redelivery_id,
+        entity_kind="node",
+        entity_id="n1",
+        index_kind="node_docs",
+        op="upsert",
+    )
 
     m2 = worker.tick()
     assert m2.done == 1

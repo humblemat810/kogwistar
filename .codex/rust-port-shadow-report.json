@@ -1,0 +1,508 @@
+{
+  "candidate": {
+    "application_commit": "30d682ee79857d9b37f73c72a3b1647f0ad7a0cb",
+    "application_core_pin_commit": "206b43f9a17e19c6cb66f1b534dfcebe3b849192",
+    "backend": "memory",
+    "consumer_resolved_package_file": "C:\\Users\\chanh\\Documents\\graphrag_v2_working_tree\\kogwistar\\__init__.py",
+    "consumer_rust_contract_version": "1.0.0",
+    "consumer_rust_extension_version": "0.1.0",
+    "contract_version": "1.0.0",
+    "core_commit": "206b43f9a17e19c6cb66f1b534dfcebe3b849192",
+    "identity_sha256": "b176ecd04a66aee293e7222b0c1ce53e87b3a351303c9f0889797219e6e10b2b",
+    "implementation_mode": "shadow",
+    "layer_interpreters": {
+      "application": "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\.venv\\Scripts\\python.exe",
+      "core": "C:\\Users\\chanh\\Documents\\graphrag_v2_working_tree\\.venv\\Scripts\\python.exe",
+      "parser": "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\.venv\\Scripts\\python.exe",
+      "sink": "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\.venv\\Scripts\\python.exe"
+    },
+    "package_version": "0.2.4",
+    "parser_commit": "a06f1cb2cc7a848b685011acb6abff1354ce2f56",
+    "resolved_package_file": "C:\\Users\\chanh\\Documents\\graphrag_v2_working_tree\\kogwistar\\__init__.py",
+    "rust_contract_version": "1.0.0",
+    "rust_extension_file": "C:\\Users\\chanh\\Documents\\graphrag_v2_working_tree\\kogwistar\\_rust.pyd",
+    "rust_extension_version": "0.1.0",
+    "sink_commit": "c295894443dc589b6b6bdcd7b48b68be850f6a61",
+    "storage_root": "isolated"
+  },
+  "contract_version": "1.0.0",
+  "finished_at_utc": "2026-07-14T05:59:24.530016+00:00",
+  "layers": [
+    {
+      "candidate_identity_sha256": "b176ecd04a66aee293e7222b0c1ce53e87b3a351303c9f0889797219e6e10b2b",
+      "command": [
+        "C:\\Users\\chanh\\Documents\\graphrag_v2_working_tree\\.venv\\Scripts\\python.exe",
+        "-P",
+        "-c",
+        "import pathlib, pytest, kogwistar; expected=pathlib.Path('C:\\\\Users\\\\chanh\\\\Documents\\\\graphrag_v2_working_tree\\\\kogwistar\\\\__init__.py'); resolved=pathlib.Path(kogwistar.__file__).resolve(); assert resolved == expected, f'candidate import mismatch before pytest: expected {expected}, resolved {resolved}'; raise SystemExit(pytest.console_main())",
+        "C:\\Users\\chanh\\Documents\\graphrag_v2_working_tree\\tests",
+        "-m",
+        "ci and not ci_full",
+        "-q"
+      ],
+      "cwd": "C:\\Users\\chanh\\Documents\\graphrag_v2_working_tree",
+      "duration_seconds": 115.696068,
+      "interpreter": "C:\\Users\\chanh\\Documents\\graphrag_v2_working_tree\\.venv\\Scripts\\python.exe",
+      "marker_expression": "ci and not ci_full",
+      "name": "core",
+      "returncode": 0,
+      "status": "passed",
+      "tests_path": "C:\\Users\\chanh\\Documents\\graphrag_v2_working_tree\\tests"
+    },
+    {
+      "candidate_identity_sha256": "b176ecd04a66aee293e7222b0c1ce53e87b3a351303c9f0889797219e6e10b2b",
+      "command": [
+        "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\.venv\\Scripts\\python.exe",
+        "-P",
+        "-c",
+        "import pathlib, pytest, kogwistar; expected=pathlib.Path('C:\\\\Users\\\\chanh\\\\Documents\\\\graphrag_v2_working_tree\\\\kogwistar\\\\__init__.py'); resolved=pathlib.Path(kogwistar.__file__).resolve(); assert resolved == expected, f'candidate import mismatch before pytest: expected {expected}, resolved {resolved}'; raise SystemExit(pytest.console_main())",
+        "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\kg-doc-parser\\tests",
+        "-m",
+        "ci and not ci_full",
+        "-q"
+      ],
+      "cwd": "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki",
+      "duration_seconds": 430.970581,
+      "interpreter": "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\.venv\\Scripts\\python.exe",
+      "marker_expression": "ci and not ci_full",
+      "name": "parser",
+      "returncode": 0,
+      "status": "passed",
+      "tests_path": "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\kg-doc-parser\\tests"
+    },
+    {
+      "candidate_identity_sha256": "b176ecd04a66aee293e7222b0c1ce53e87b3a351303c9f0889797219e6e10b2b",
+      "command": [
+        "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\.venv\\Scripts\\python.exe",
+        "-P",
+        "-c",
+        "import pathlib, pytest, kogwistar; expected=pathlib.Path('C:\\\\Users\\\\chanh\\\\Documents\\\\graphrag_v2_working_tree\\\\kogwistar\\\\__init__.py'); resolved=pathlib.Path(kogwistar.__file__).resolve(); assert resolved == expected, f'candidate import mismatch before pytest: expected {expected}, resolved {resolved}'; raise SystemExit(pytest.console_main())",
+        "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\kogwistar-obsidian-sink\\tests",
+        "-m",
+        "not manual and not integration and not longrun and not requires_ollama",
+        "-q"
+      ],
+      "cwd": "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\kogwistar-obsidian-sink",
+      "duration_seconds": 10.258383,
+      "interpreter": "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\.venv\\Scripts\\python.exe",
+      "marker_expression": "not manual and not integration and not longrun and not requires_ollama",
+      "name": "sink",
+      "returncode": 0,
+      "status": "passed",
+      "tests_path": "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\kogwistar-obsidian-sink\\tests"
+    },
+    {
+      "candidate_identity_sha256": "b176ecd04a66aee293e7222b0c1ce53e87b3a351303c9f0889797219e6e10b2b",
+      "commands": [
+        [
+          "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\.venv\\Scripts\\python.exe",
+          "-P",
+          "-c",
+          "import pathlib, pytest, kogwistar; expected=pathlib.Path('C:\\\\Users\\\\chanh\\\\Documents\\\\graphrag_v2_working_tree\\\\kogwistar\\\\__init__.py'); resolved=pathlib.Path(kogwistar.__file__).resolve(); assert resolved == expected, f'candidate import mismatch before pytest: expected {expected}, resolved {resolved}'; raise SystemExit(pytest.console_main())",
+          "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\test_identities.py",
+          "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\test_import_path_smoke.py",
+          "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\test_models.py",
+          "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\test_namespaces.py",
+          "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\test_pgvector_experiment_isolation.py",
+          "-m",
+          "not manual and not integration and not longrun and not requires_ollama",
+          "-q"
+        ],
+        [
+          "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\.venv\\Scripts\\python.exe",
+          "-P",
+          "-c",
+          "import pathlib, pytest, kogwistar; expected=pathlib.Path('C:\\\\Users\\\\chanh\\\\Documents\\\\graphrag_v2_working_tree\\\\kogwistar\\\\__init__.py'); resolved=pathlib.Path(kogwistar.__file__).resolve(); assert resolved == expected, f'candidate import mismatch before pytest: expected {expected}, resolved {resolved}'; raise SystemExit(pytest.console_main())",
+          "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\integration",
+          "-m",
+          "not manual and not integration and not longrun and not requires_ollama",
+          "-q"
+        ],
+        [
+          "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\.venv\\Scripts\\python.exe",
+          "-P",
+          "-c",
+          "import pathlib, pytest, kogwistar; expected=pathlib.Path('C:\\\\Users\\\\chanh\\\\Documents\\\\graphrag_v2_working_tree\\\\kogwistar\\\\__init__.py'); resolved=pathlib.Path(kogwistar.__file__).resolve(); assert resolved == expected, f'candidate import mismatch before pytest: expected {expected}, resolved {resolved}'; raise SystemExit(pytest.console_main())",
+          "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\smoke",
+          "-m",
+          "not manual and not integration and not longrun and not requires_ollama",
+          "-q"
+        ],
+        [
+          "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\.venv\\Scripts\\python.exe",
+          "-P",
+          "-c",
+          "import pathlib, pytest, kogwistar; expected=pathlib.Path('C:\\\\Users\\\\chanh\\\\Documents\\\\graphrag_v2_working_tree\\\\kogwistar\\\\__init__.py'); resolved=pathlib.Path(kogwistar.__file__).resolve(); assert resolved == expected, f'candidate import mismatch before pytest: expected {expected}, resolved {resolved}'; raise SystemExit(pytest.console_main())",
+          "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_daemon_interrupt_recovery.py",
+          "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_disambiguation_selection.py",
+          "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_disambiguation_service.py",
+          "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_entity_disambiguation.py",
+          "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_env_example.py",
+          "-m",
+          "not manual and not integration and not longrun and not requires_ollama",
+          "-q"
+        ],
+        [
+          "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\.venv\\Scripts\\python.exe",
+          "-P",
+          "-c",
+          "import pathlib, pytest, kogwistar; expected=pathlib.Path('C:\\\\Users\\\\chanh\\\\Documents\\\\graphrag_v2_working_tree\\\\kogwistar\\\\__init__.py'); resolved=pathlib.Path(kogwistar.__file__).resolve(); assert resolved == expected, f'candidate import mismatch before pytest: expected {expected}, resolved {resolved}'; raise SystemExit(pytest.console_main())",
+          "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_graph_space_query.py",
+          "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_ingest_pipeline_branch_fixes.py",
+          "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_ingest_pipeline_candidate_crosslink.py",
+          "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_ingest_pipeline_ingest.py",
+          "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_ingest_pipeline_llm_text_parse.py",
+          "-m",
+          "not manual and not integration and not longrun and not requires_ollama",
+          "-q"
+        ],
+        [
+          "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\.venv\\Scripts\\python.exe",
+          "-P",
+          "-c",
+          "import pathlib, pytest, kogwistar; expected=pathlib.Path('C:\\\\Users\\\\chanh\\\\Documents\\\\graphrag_v2_working_tree\\\\kogwistar\\\\__init__.py'); resolved=pathlib.Path(kogwistar.__file__).resolve(); assert resolved == expected, f'candidate import mismatch before pytest: expected {expected}, resolved {resolved}'; raise SystemExit(pytest.console_main())",
+          "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_ingest_pipeline_orchestration.py",
+          "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_ingest_pipeline_parse_retry_history.py",
+          "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_ingest_pipeline_projection.py",
+          "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_ingest_pipeline_promote.py",
+          "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_ingest_pipeline_promotion_candidate.py",
+          "-m",
+          "not manual and not integration and not longrun and not requires_ollama",
+          "-q"
+        ],
+        [
+          "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\.venv\\Scripts\\python.exe",
+          "-P",
+          "-c",
+          "import pathlib, pytest, kogwistar; expected=pathlib.Path('C:\\\\Users\\\\chanh\\\\Documents\\\\graphrag_v2_working_tree\\\\kogwistar\\\\__init__.py'); resolved=pathlib.Path(kogwistar.__file__).resolve(); assert resolved == expected, f'candidate import mismatch before pytest: expected {expected}, resolved {resolved}'; raise SystemExit(pytest.console_main())",
+          "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_ingest_pipeline_register_source.py",
+          "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_knowledge_derivation.py",
+          "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_lane_message_contract_integration.py",
+          "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_llm_usage.py",
+          "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_llm_wiki_cli.py",
+          "-m",
+          "not manual and not integration and not longrun and not requires_ollama",
+          "-q"
+        ],
+        [
+          "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\.venv\\Scripts\\python.exe",
+          "-P",
+          "-c",
+          "import pathlib, pytest, kogwistar; expected=pathlib.Path('C:\\\\Users\\\\chanh\\\\Documents\\\\graphrag_v2_working_tree\\\\kogwistar\\\\__init__.py'); resolved=pathlib.Path(kogwistar.__file__).resolve(); assert resolved == expected, f'candidate import mismatch before pytest: expected {expected}, resolved {resolved}'; raise SystemExit(pytest.console_main())",
+          "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_llm_wiki_debug_run.py",
+          "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_llm_wiki_policies.py",
+          "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_llm_wiki_real_azure_smoke_helper.py",
+          "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_longrun_parser_worker_callbacks.py",
+          "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_longrun_parser_worker_usage.py",
+          "-m",
+          "not manual and not integration and not longrun and not requires_ollama",
+          "-q"
+        ],
+        [
+          "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\.venv\\Scripts\\python.exe",
+          "-P",
+          "-c",
+          "import pathlib, pytest, kogwistar; expected=pathlib.Path('C:\\\\Users\\\\chanh\\\\Documents\\\\graphrag_v2_working_tree\\\\kogwistar\\\\__init__.py'); resolved=pathlib.Path(kogwistar.__file__).resolve(); assert resolved == expected, f'candidate import mismatch before pytest: expected {expected}, resolved {resolved}'; raise SystemExit(pytest.console_main())",
+          "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_longrun_pgvector_container_fixture.py",
+          "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_maintenance_guards.py",
+          "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_maintenance_job_lowering.py",
+          "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_maintenance_migration.py",
+          "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_maintenance_patches.py",
+          "-m",
+          "not manual and not integration and not longrun and not requires_ollama",
+          "-q"
+        ],
+        [
+          "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\.venv\\Scripts\\python.exe",
+          "-P",
+          "-c",
+          "import pathlib, pytest, kogwistar; expected=pathlib.Path('C:\\\\Users\\\\chanh\\\\Documents\\\\graphrag_v2_working_tree\\\\kogwistar\\\\__init__.py'); resolved=pathlib.Path(kogwistar.__file__).resolve(); assert resolved == expected, f'candidate import mismatch before pytest: expected {expected}, resolved {resolved}'; raise SystemExit(pytest.console_main())",
+          "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_maintenance_planner.py",
+          "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_maintenance_policy.py",
+          "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_maintenance_reporting.py",
+          "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_maintenance_scope.py",
+          "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_maintenance_status.py",
+          "-m",
+          "not manual and not integration and not longrun and not requires_ollama",
+          "-q"
+        ],
+        [
+          "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\.venv\\Scripts\\python.exe",
+          "-P",
+          "-c",
+          "import pathlib, pytest, kogwistar; expected=pathlib.Path('C:\\\\Users\\\\chanh\\\\Documents\\\\graphrag_v2_working_tree\\\\kogwistar\\\\__init__.py'); resolved=pathlib.Path(kogwistar.__file__).resolve(); assert resolved == expected, f'candidate import mismatch before pytest: expected {expected}, resolved {resolved}'; raise SystemExit(pytest.console_main())",
+          "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_maintenance_strategies.py",
+          "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_obsidian_sink_build.py",
+          "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_page_index_retry.py",
+          "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_parse_comparison.py",
+          "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_projection_consistency.py",
+          "-m",
+          "not manual and not integration and not longrun and not requires_ollama",
+          "-q"
+        ],
+        [
+          "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\.venv\\Scripts\\python.exe",
+          "-P",
+          "-c",
+          "import pathlib, pytest, kogwistar; expected=pathlib.Path('C:\\\\Users\\\\chanh\\\\Documents\\\\graphrag_v2_working_tree\\\\kogwistar\\\\__init__.py'); resolved=pathlib.Path(kogwistar.__file__).resolve(); assert resolved == expected, f'candidate import mismatch before pytest: expected {expected}, resolved {resolved}'; raise SystemExit(pytest.console_main())",
+          "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_provider_config.py",
+          "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_pytest_ci_marker.py",
+          "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_review_query.py",
+          "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_temporary_namespace.py",
+          "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_usage_projection.py",
+          "-m",
+          "not manual and not integration and not longrun and not requires_ollama",
+          "-q"
+        ],
+        [
+          "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\.venv\\Scripts\\python.exe",
+          "-P",
+          "-c",
+          "import pathlib, pytest, kogwistar; expected=pathlib.Path('C:\\\\Users\\\\chanh\\\\Documents\\\\graphrag_v2_working_tree\\\\kogwistar\\\\__init__.py'); resolved=pathlib.Path(kogwistar.__file__).resolve(); assert resolved == expected, f'candidate import mismatch before pytest: expected {expected}, resolved {resolved}'; raise SystemExit(pytest.console_main())",
+          "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_vscode_launch_config.py",
+          "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_worker_runtime_orchestration.py",
+          "-m",
+          "not manual and not integration and not longrun and not requires_ollama",
+          "-q"
+        ]
+      ],
+      "cwd": "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki",
+      "duration_seconds": 992.942349,
+      "interpreter": "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\.venv\\Scripts\\python.exe",
+      "marker_expression": "not manual and not integration and not longrun and not requires_ollama",
+      "name": "application",
+      "returncode": 0,
+      "runs": [
+        {
+          "command": [
+            "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\.venv\\Scripts\\python.exe",
+            "-P",
+            "-c",
+            "import pathlib, pytest, kogwistar; expected=pathlib.Path('C:\\\\Users\\\\chanh\\\\Documents\\\\graphrag_v2_working_tree\\\\kogwistar\\\\__init__.py'); resolved=pathlib.Path(kogwistar.__file__).resolve(); assert resolved == expected, f'candidate import mismatch before pytest: expected {expected}, resolved {resolved}'; raise SystemExit(pytest.console_main())",
+            "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\test_identities.py",
+            "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\test_import_path_smoke.py",
+            "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\test_models.py",
+            "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\test_namespaces.py",
+            "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\test_pgvector_experiment_isolation.py",
+            "-m",
+            "not manual and not integration and not longrun and not requires_ollama",
+            "-q"
+          ],
+          "duration_seconds": 6.087089,
+          "returncode": 0
+        },
+        {
+          "command": [
+            "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\.venv\\Scripts\\python.exe",
+            "-P",
+            "-c",
+            "import pathlib, pytest, kogwistar; expected=pathlib.Path('C:\\\\Users\\\\chanh\\\\Documents\\\\graphrag_v2_working_tree\\\\kogwistar\\\\__init__.py'); resolved=pathlib.Path(kogwistar.__file__).resolve(); assert resolved == expected, f'candidate import mismatch before pytest: expected {expected}, resolved {resolved}'; raise SystemExit(pytest.console_main())",
+            "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\integration",
+            "-m",
+            "not manual and not integration and not longrun and not requires_ollama",
+            "-q"
+          ],
+          "duration_seconds": 327.856401,
+          "returncode": 0
+        },
+        {
+          "command": [
+            "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\.venv\\Scripts\\python.exe",
+            "-P",
+            "-c",
+            "import pathlib, pytest, kogwistar; expected=pathlib.Path('C:\\\\Users\\\\chanh\\\\Documents\\\\graphrag_v2_working_tree\\\\kogwistar\\\\__init__.py'); resolved=pathlib.Path(kogwistar.__file__).resolve(); assert resolved == expected, f'candidate import mismatch before pytest: expected {expected}, resolved {resolved}'; raise SystemExit(pytest.console_main())",
+            "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\smoke",
+            "-m",
+            "not manual and not integration and not longrun and not requires_ollama",
+            "-q"
+          ],
+          "duration_seconds": 9.820133,
+          "returncode": 0
+        },
+        {
+          "command": [
+            "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\.venv\\Scripts\\python.exe",
+            "-P",
+            "-c",
+            "import pathlib, pytest, kogwistar; expected=pathlib.Path('C:\\\\Users\\\\chanh\\\\Documents\\\\graphrag_v2_working_tree\\\\kogwistar\\\\__init__.py'); resolved=pathlib.Path(kogwistar.__file__).resolve(); assert resolved == expected, f'candidate import mismatch before pytest: expected {expected}, resolved {resolved}'; raise SystemExit(pytest.console_main())",
+            "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_daemon_interrupt_recovery.py",
+            "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_disambiguation_selection.py",
+            "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_disambiguation_service.py",
+            "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_entity_disambiguation.py",
+            "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_env_example.py",
+            "-m",
+            "not manual and not integration and not longrun and not requires_ollama",
+            "-q"
+          ],
+          "duration_seconds": 83.866672,
+          "returncode": 0
+        },
+        {
+          "command": [
+            "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\.venv\\Scripts\\python.exe",
+            "-P",
+            "-c",
+            "import pathlib, pytest, kogwistar; expected=pathlib.Path('C:\\\\Users\\\\chanh\\\\Documents\\\\graphrag_v2_working_tree\\\\kogwistar\\\\__init__.py'); resolved=pathlib.Path(kogwistar.__file__).resolve(); assert resolved == expected, f'candidate import mismatch before pytest: expected {expected}, resolved {resolved}'; raise SystemExit(pytest.console_main())",
+            "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_graph_space_query.py",
+            "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_ingest_pipeline_branch_fixes.py",
+            "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_ingest_pipeline_candidate_crosslink.py",
+            "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_ingest_pipeline_ingest.py",
+            "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_ingest_pipeline_llm_text_parse.py",
+            "-m",
+            "not manual and not integration and not longrun and not requires_ollama",
+            "-q"
+          ],
+          "duration_seconds": 53.032131,
+          "returncode": 0
+        },
+        {
+          "command": [
+            "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\.venv\\Scripts\\python.exe",
+            "-P",
+            "-c",
+            "import pathlib, pytest, kogwistar; expected=pathlib.Path('C:\\\\Users\\\\chanh\\\\Documents\\\\graphrag_v2_working_tree\\\\kogwistar\\\\__init__.py'); resolved=pathlib.Path(kogwistar.__file__).resolve(); assert resolved == expected, f'candidate import mismatch before pytest: expected {expected}, resolved {resolved}'; raise SystemExit(pytest.console_main())",
+            "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_ingest_pipeline_orchestration.py",
+            "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_ingest_pipeline_parse_retry_history.py",
+            "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_ingest_pipeline_projection.py",
+            "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_ingest_pipeline_promote.py",
+            "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_ingest_pipeline_promotion_candidate.py",
+            "-m",
+            "not manual and not integration and not longrun and not requires_ollama",
+            "-q"
+          ],
+          "duration_seconds": 53.289098,
+          "returncode": 0
+        },
+        {
+          "command": [
+            "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\.venv\\Scripts\\python.exe",
+            "-P",
+            "-c",
+            "import pathlib, pytest, kogwistar; expected=pathlib.Path('C:\\\\Users\\\\chanh\\\\Documents\\\\graphrag_v2_working_tree\\\\kogwistar\\\\__init__.py'); resolved=pathlib.Path(kogwistar.__file__).resolve(); assert resolved == expected, f'candidate import mismatch before pytest: expected {expected}, resolved {resolved}'; raise SystemExit(pytest.console_main())",
+            "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_ingest_pipeline_register_source.py",
+            "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_knowledge_derivation.py",
+            "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_lane_message_contract_integration.py",
+            "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_llm_usage.py",
+            "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_llm_wiki_cli.py",
+            "-m",
+            "not manual and not integration and not longrun and not requires_ollama",
+            "-q"
+          ],
+          "duration_seconds": 215.507332,
+          "returncode": 0
+        },
+        {
+          "command": [
+            "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\.venv\\Scripts\\python.exe",
+            "-P",
+            "-c",
+            "import pathlib, pytest, kogwistar; expected=pathlib.Path('C:\\\\Users\\\\chanh\\\\Documents\\\\graphrag_v2_working_tree\\\\kogwistar\\\\__init__.py'); resolved=pathlib.Path(kogwistar.__file__).resolve(); assert resolved == expected, f'candidate import mismatch before pytest: expected {expected}, resolved {resolved}'; raise SystemExit(pytest.console_main())",
+            "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_llm_wiki_debug_run.py",
+            "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_llm_wiki_policies.py",
+            "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_llm_wiki_real_azure_smoke_helper.py",
+            "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_longrun_parser_worker_callbacks.py",
+            "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_longrun_parser_worker_usage.py",
+            "-m",
+            "not manual and not integration and not longrun and not requires_ollama",
+            "-q"
+          ],
+          "duration_seconds": 31.732718,
+          "returncode": 0
+        },
+        {
+          "command": [
+            "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\.venv\\Scripts\\python.exe",
+            "-P",
+            "-c",
+            "import pathlib, pytest, kogwistar; expected=pathlib.Path('C:\\\\Users\\\\chanh\\\\Documents\\\\graphrag_v2_working_tree\\\\kogwistar\\\\__init__.py'); resolved=pathlib.Path(kogwistar.__file__).resolve(); assert resolved == expected, f'candidate import mismatch before pytest: expected {expected}, resolved {resolved}'; raise SystemExit(pytest.console_main())",
+            "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_longrun_pgvector_container_fixture.py",
+            "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_maintenance_guards.py",
+            "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_maintenance_job_lowering.py",
+            "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_maintenance_migration.py",
+            "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_maintenance_patches.py",
+            "-m",
+            "not manual and not integration and not longrun and not requires_ollama",
+            "-q"
+          ],
+          "duration_seconds": 20.203063,
+          "returncode": 0
+        },
+        {
+          "command": [
+            "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\.venv\\Scripts\\python.exe",
+            "-P",
+            "-c",
+            "import pathlib, pytest, kogwistar; expected=pathlib.Path('C:\\\\Users\\\\chanh\\\\Documents\\\\graphrag_v2_working_tree\\\\kogwistar\\\\__init__.py'); resolved=pathlib.Path(kogwistar.__file__).resolve(); assert resolved == expected, f'candidate import mismatch before pytest: expected {expected}, resolved {resolved}'; raise SystemExit(pytest.console_main())",
+            "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_maintenance_planner.py",
+            "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_maintenance_policy.py",
+            "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_maintenance_reporting.py",
+            "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_maintenance_scope.py",
+            "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_maintenance_status.py",
+            "-m",
+            "not manual and not integration and not longrun and not requires_ollama",
+            "-q"
+          ],
+          "duration_seconds": 6.942931,
+          "returncode": 0
+        },
+        {
+          "command": [
+            "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\.venv\\Scripts\\python.exe",
+            "-P",
+            "-c",
+            "import pathlib, pytest, kogwistar; expected=pathlib.Path('C:\\\\Users\\\\chanh\\\\Documents\\\\graphrag_v2_working_tree\\\\kogwistar\\\\__init__.py'); resolved=pathlib.Path(kogwistar.__file__).resolve(); assert resolved == expected, f'candidate import mismatch before pytest: expected {expected}, resolved {resolved}'; raise SystemExit(pytest.console_main())",
+            "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_maintenance_strategies.py",
+            "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_obsidian_sink_build.py",
+            "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_page_index_retry.py",
+            "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_parse_comparison.py",
+            "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_projection_consistency.py",
+            "-m",
+            "not manual and not integration and not longrun and not requires_ollama",
+            "-q"
+          ],
+          "duration_seconds": 71.750624,
+          "returncode": 0
+        },
+        {
+          "command": [
+            "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\.venv\\Scripts\\python.exe",
+            "-P",
+            "-c",
+            "import pathlib, pytest, kogwistar; expected=pathlib.Path('C:\\\\Users\\\\chanh\\\\Documents\\\\graphrag_v2_working_tree\\\\kogwistar\\\\__init__.py'); resolved=pathlib.Path(kogwistar.__file__).resolve(); assert resolved == expected, f'candidate import mismatch before pytest: expected {expected}, resolved {resolved}'; raise SystemExit(pytest.console_main())",
+            "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_provider_config.py",
+            "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_pytest_ci_marker.py",
+            "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_review_query.py",
+            "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_temporary_namespace.py",
+            "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_usage_projection.py",
+            "-m",
+            "not manual and not integration and not longrun and not requires_ollama",
+            "-q"
+          ],
+          "duration_seconds": 24.439243,
+          "returncode": 0
+        },
+        {
+          "command": [
+            "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\.venv\\Scripts\\python.exe",
+            "-P",
+            "-c",
+            "import pathlib, pytest, kogwistar; expected=pathlib.Path('C:\\\\Users\\\\chanh\\\\Documents\\\\graphrag_v2_working_tree\\\\kogwistar\\\\__init__.py'); resolved=pathlib.Path(kogwistar.__file__).resolve(); assert resolved == expected, f'candidate import mismatch before pytest: expected {expected}, resolved {resolved}'; raise SystemExit(pytest.console_main())",
+            "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_vscode_launch_config.py",
+            "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests\\unit\\test_worker_runtime_orchestration.py",
+            "-m",
+            "not manual and not integration and not longrun and not requires_ollama",
+            "-q"
+          ],
+          "duration_seconds": 88.414692,
+          "returncode": 0
+        }
+      ],
+      "status": "passed",
+      "tests_path": "C:\\Users\\chanh\\Documents\\kogwistar-llm-wiki\\tests"
+    }
+  ],
+  "manifest": "C:\\Users\\chanh\\Documents\\graphrag_v2_working_tree\\contracts\\rust-port-v1.json",
+  "report_version": 1,
+  "started_at_utc": "2026-07-14T05:00:13.109360+00:00",
+  "status": "passed"
+}

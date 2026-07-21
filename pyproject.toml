@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=69", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["maturin>=1.8,<2"]
+build-backend = "maturin"
 
 [project]
 name = "kogwistar"
-version = "0.2.4"
+version = "0.2.5"
 description = "Graph-native substrate for knowledge, conversation, workflow, provenance, replay, and MCP/REST tooling"
 keywords = ["agent substrate", "graph-native", "knowledge graph", "conversation", "memory", "workflow", "provenance", "replay", "mcp", "rest"]
 readme = { file = "README.md", content-type = "text/markdown" }
@@ -27,6 +27,7 @@ dependencies = [
   "pydantic>=2.6",
   "anyio>=4.0",
   "Jinja2>=3.1",
+  "fastapi>=0.111",
   "mcp>=1.2",
   "httpx>=0.28.1",
   "python-jose[cryptography]>=3.3",
@@ -47,7 +48,7 @@ Issues = "https://github.com/humblemat810/kogwistar/issues"
 [project.optional-dependencies]
 chroma = ["chromadb>=1.0.15"]
 pgvector = ["sqlalchemy>=2.0", "pgvector>=0.3.6", "psycopg[binary]>=3.1"]
-server = ["fastapi>=0.111", "uvicorn[standard]>=0.30", "fastmcp==3.0.0"]
+server = ["uvicorn[standard]>=0.30", "fastmcp==3.0.0"]
 openai = ["langchain-core>=0.3.0", "langchain-openai>=0.3.0"]
 gemini = ["langchain-core>=0.3.0", "langchain-google-genai>=2.0.0"]
 ollama = ["ollama>=0.5.3", "langchain-core>=0.3.0", "langchain-ollama>=0.3.0"]
@@ -60,11 +61,13 @@ test = [
   "pytest>=8",
   "pytest-asyncio>=1.1.0",
   "pytest-dotenv>=0.5.2",
+  "pytest-xdist>=3.8,<4",
   "testcontainers>=4.0"
 ]
 lint = ["ruff>=0.5"]
 typecheck = ["mypy>=1.8"]
 build = ["build", "twine"]
+rust = ["maturin>=1.7,<2"]
 full = [
   "chromadb>=1.0.15",
   "fastapi>=0.111",
@@ -84,6 +87,7 @@ full = [
 [project.scripts]
 kogwistar = "kogwistar.cli:main"
 knowledge-mcp = "kogwistar.server_mcp_with_admin:main"
+kogwistar-rust-server = "kogwistar.rust_server:main"
 
 
 [tool.setuptools]
@@ -105,6 +109,8 @@ kogwistar = [".env", ".env.*", "*.env", "*.env.*", "*.sqlite", "*.db", "*.pem", 
 markers = [
   "ci: fast pull-request-safe tests",
   "ci_full: full integration and end-to-end tests",
+  "regression: regression coverage for changed or previously failing behavior",
+  "slow: intentionally slow tests excluded from feature and regression profiles",
   "core: core engine tests",
   "workflow: workflow-layer tests",
   "conversation: conversation-layer tests",
@@ -112,6 +118,8 @@ markers = [
   "runtime_async: async runtime contracts",
   "runtime_sync: sync runtime contracts",
   "runtime_bridge_parity: bridge parity contract",
+  "llm_real: tests requiring non-fake LLM behavior or external LLM credentials",
+  "requires_ollama: tests requiring a live local Ollama service or model",
   "manual: manual smoke tests that require a live service",
   "e2e: end-to-end tests against real services",
 ]
@@ -131,3 +139,13 @@ ignore = ["E402", "E731", "E741", "F811", "F841"]
 "kogwistar/server/mcp_tools.py" = ["F821"]
 "kogwistar/strategies/__init__.py" = ["F401"]
 "tests/ingestions/test_ingest_document.py" = ["F821"]
+
+[tool.maturin]
+manifest-path = "rust/crates/kogwistar-python/Cargo.toml"
+module-name = "kogwistar._rust"
+python-source = "."
+bindings = "pyo3"
+include = [
+  { path = "contracts/**/*.json", format = "sdist" },
+  { path = "kogwistar/templates/*.html", format = "sdist" },
+]

@@ -1,0 +1,93 @@
+{
+  "benchmark_version": 1,
+  "dataset": "rust-runtime-serving-v1",
+  "gate": {
+    "checks": {
+      "retry_p95_large_over_small": true,
+      "state_read_p95_large_over_small": true
+    },
+    "max_growth_ratio": 2.5,
+    "status": "passed"
+  },
+  "history_multiplier": 100,
+  "iterations_per_sample": 200,
+  "python": "3.13.3 (tags/v3.13.3:6280bb5, Apr  8 2025, 14:47:33) [MSC v.1943 64 bit (AMD64)]",
+  "ratios": {
+    "retry_p95_large_over_small": 1.2087581124193092,
+    "state_read_p95_large_over_small": 1.140741640915246
+  },
+  "raw_samples": {
+    "large": [
+      {
+        "history_size": 10000,
+        "retry_mean_ns": 2244548.5,
+        "state_read_mean_ns": 2221229.5
+      },
+      {
+        "history_size": 10000,
+        "retry_mean_ns": 2195745.0,
+        "state_read_mean_ns": 2290002.5
+      },
+      {
+        "history_size": 10000,
+        "retry_mean_ns": 3067277.5,
+        "state_read_mean_ns": 2694069.0
+      },
+      {
+        "history_size": 10000,
+        "retry_mean_ns": 2201207.5,
+        "state_read_mean_ns": 2374068.0
+      },
+      {
+        "history_size": 10000,
+        "retry_mean_ns": 2424505.5,
+        "state_read_mean_ns": 2489153.5
+      }
+    ],
+    "small": [
+      {
+        "history_size": 100,
+        "retry_mean_ns": 2378937.5,
+        "state_read_mean_ns": 2361682.0
+      },
+      {
+        "history_size": 100,
+        "retry_mean_ns": 2331230.5,
+        "state_read_mean_ns": 2066422.0
+      },
+      {
+        "history_size": 100,
+        "retry_mean_ns": 2521113.5,
+        "state_read_mean_ns": 2053203.0
+      },
+      {
+        "history_size": 100,
+        "retry_mean_ns": 2219304.0,
+        "state_read_mean_ns": 2226420.0
+      },
+      {
+        "history_size": 100,
+        "retry_mean_ns": 2537544.5,
+        "state_read_mean_ns": 2262031.0
+      }
+    ]
+  },
+  "samples": 5,
+  "scope": "indexed exact retry and warm current-state projection lookup",
+  "summary": {
+    "large": {
+      "history_size": 10000,
+      "retry_median_ns": 2244548.5,
+      "retry_p95_ns": 3067277.5,
+      "state_read_median_ns": 2374068.0,
+      "state_read_p95_ns": 2694069.0
+    },
+    "small": {
+      "history_size": 100,
+      "retry_median_ns": 2378937.5,
+      "retry_p95_ns": 2537544.5,
+      "state_read_median_ns": 2226420.0,
+      "state_read_p95_ns": 2361682.0
+    }
+  }
+}

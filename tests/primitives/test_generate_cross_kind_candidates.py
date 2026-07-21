@@ -352,6 +352,7 @@ def test_generate_cross_kind_candidates_disabled_scoped_and_limit(
 @pytest.mark.skipif(
     _skip_real_llm, reason="Azure OpenAI env not set for real LLM adjudication"
 )
+@pytest.mark.llm_real
 def test_generate_cross_kind_candidates_happy_path_real_llm_reason(
     engine: GraphKnowledgeEngine,
 ):

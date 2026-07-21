@@ -1,0 +1,121 @@
+name: Rust Port Compatibility
+
+on:
+  workflow_dispatch:
+    inputs:
+      implementation-mode:
+        description: Contract implementation mode
+        required: true
+        type: choice
+        options: [shadow, rust, python]
+        default: shadow
+      release:
+        description: Run release markers, including integration and long-run suites
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: rust-port-compat-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  rust-port-four-layer-compat:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Checkout core candidate
+        uses: actions/checkout@v4
+        with:
+          path: candidate
+
+      - name: Checkout pinned reference application
+        uses: actions/checkout@v4
+        with:
+          repository: humblemat810/kogwistar-llm-wiki
+          ref: 30d682ee79857d9b37f73c72a3b1647f0ad7a0cb
+          path: kogwistar-llm-wiki
+
+      - name: Checkout pinned application core mirror
+        uses: actions/checkout@v4
+        with:
+          repository: humblemat810/kogwistar
+          ref: 206b43f9a17e19c6cb66f1b534dfcebe3b849192
+          path: kogwistar-llm-wiki/kogwistar
+
+      - name: Checkout pinned parser
+        uses: actions/checkout@v4
+        with:
+          repository: humblemat810/kg-doc-parser
+          ref: a06f1cb2cc7a848b685011acb6abff1354ce2f56
+          path: kogwistar-llm-wiki/kg-doc-parser
+
+      - name: Checkout pinned sink
+        uses: actions/checkout@v4
+        with:
+          repository: humblemat810/kogwistar-obsidian-sink
+          ref: c295894443dc589b6b6bdcd7b48b68be850f6a61
+          path: kogwistar-llm-wiki/kogwistar-obsidian-sink
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Set up pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.91.1
+
+      - name: Build current Linux candidate wheel
+        working-directory: candidate
+        shell: bash
+        run: |
+          python scripts/rust_port_build_wheel.py \
+            --output ../wheelhouse-adr015-current
+
+      - name: Run fast feature and regression compatibility layers
+        if: inputs.release != true
+        working-directory: candidate
+        shell: bash
+        run: |
+          WHEEL="$(find ../wheelhouse-adr015-current -maxdepth 1 -name 'kogwistar-*.whl' -print -quit)"
+          test -n "$WHEEL"
+          for PROFILE in feature regression; do
+            python scripts/rust_port_container_compat.py \
+              --application-root ../kogwistar-llm-wiki \
+              --wheel "$WHEEL" \
+              --implementation-mode "${{ inputs.implementation-mode }}" \
+              --meta-store-mode "${{ inputs.implementation-mode }}" \
+              --profile "$PROFILE" \
+              --shards 3 \
+              --report "../rust-port-compat-$PROFILE.json"
+          done
+
+      - name: Run milestone compatibility layers
+        if: inputs.release == true
+        working-directory: candidate
+        shell: bash
+        run: |
+          WHEEL="$(find ../wheelhouse-adr015-current -maxdepth 1 -name 'kogwistar-*.whl' -print -quit)"
+          test -n "$WHEEL"
+          if [[ "${{ inputs.release }}" == "true" ]]; then
+            PROFILE=milestone
+          fi
+          python scripts/rust_port_container_compat.py \
+            --application-root ../kogwistar-llm-wiki \
+            --wheel "$WHEEL" \
+            --implementation-mode "${{ inputs.implementation-mode }}" \
+            --meta-store-mode "${{ inputs.implementation-mode }}" \
+            --profile "$PROFILE" \
+            --shards 3 \
+            --report ../rust-port-compat-milestone.json
+
+      - name: Upload compatibility evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-port-compat-${{ inputs.implementation-mode }}
+          path: rust-port-compat-*.json
+          if-no-files-found: error

@@ -127,7 +127,7 @@ def _matches_field(value: Any, condition: Any) -> bool:
     return value == condition
 
 
-def _matches_where(metadata: dict[str, Any], where: dict[str, Any] | None) -> bool:
+def _matches_where_python(metadata: dict[str, Any], where: dict[str, Any] | None) -> bool:
     if not where:
         return True
     if not isinstance(where, dict):
@@ -137,12 +137,12 @@ def _matches_where(metadata: dict[str, Any], where: dict[str, Any] | None) -> bo
     for key, condition in where.items():
         if key == "$and":
             clauses = condition or []
-            if not all(_matches_where(metadata, clause) for clause in clauses):
+            if not all(_matches_where_python(metadata, clause) for clause in clauses):
                 return False
             continue
         if key == "$or":
             clauses = condition or []
-            if not any(_matches_where(metadata, clause) for clause in clauses):
+            if not any(_matches_where_python(metadata, clause) for clause in clauses):
                 return False
             continue
 
@@ -155,6 +155,34 @@ def _matches_where(metadata: dict[str, Any], where: dict[str, Any] | None) -> bo
         if not _matches_field(metadata.get(key), condition):
             return False
     return True
+
+
+def _matches_where(metadata: dict[str, Any], where: dict[str, Any] | None) -> bool:
+    """Evaluate `where` through selected contract owner without API change."""
+    from kogwistar._rust_bridge import (
+        contract_implementation_mode,
+        contract_metadata_filter_matches,
+        metadata_filter_json_contract_compatible,
+    )
+
+    mode = contract_implementation_mode()
+    native_compatible = metadata_filter_json_contract_compatible(
+        metadata
+    ) and metadata_filter_json_contract_compatible(where)
+    if mode == "rust" and native_compatible:
+        return contract_metadata_filter_matches(metadata=metadata, where=where)
+
+    # The native boundary is canonical JSON. Keep legacy support for Python-only
+    # values (tuple/set/non-finite float/non-string keys) rather than silently
+    # changing their `_matches_where` behavior during contract cutover.
+    python_value = _matches_where_python(metadata, where)
+    if not native_compatible:
+        return python_value
+    return contract_metadata_filter_matches(
+        metadata=metadata,
+        where=where,
+        python_value=python_value,
+    )
 
 
 def _cosine_similarity(left: Sequence[float], right: Sequence[float]) -> float:

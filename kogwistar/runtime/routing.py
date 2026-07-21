@@ -23,6 +23,7 @@ def compute_route_next(
     fanout: bool,
     predicate_registry: dict[str, Any],
     nodes: dict[str, Any] | None = None,
+    _native_disabled: bool = False,
 ) -> RouteComputation:
     matched: list[tuple[Any, str]] = []
     evaluated: list[tuple[str, bool]] = []
@@ -73,6 +74,7 @@ def compute_route_next(
 
     def _edge_aliases(edge: Any, target_id: str) -> set[str]:
         aliases = _target_aliases(target_id)
+        aliases.update(str(value) for value in (getattr(edge, "aliases", None) or []))
         label = getattr(edge, "label", None)
         if label:
             aliases.add(str(label))
@@ -98,6 +100,133 @@ def compute_route_next(
                 is_default=bool(md.get("wf_is_default", False)),
                 multiplicity=str(md.get("wf_multiplicity", "one")),
             )
+
+    from kogwistar._rust_bridge import runtime_implementation_mode, runtime_select_route
+
+    runtime_mode = "python" if _native_disabled else runtime_implementation_mode()
+    if runtime_mode != "python":
+        explicit_next = get_route_next_names(last_result)
+        explicit_has_match = bool(explicit_next) and any(
+            alias in _edge_aliases(edge, target)
+            for alias in explicit_next
+            for edge in edges
+            for target in [_first_target(edge)]
+            if target is not None
+        )
+        predicate_results: dict[int, bool] = {}
+        if not explicit_has_match:
+            for index, edge in enumerate(edges):
+                predicate = getattr(edge, "predicate", None)
+                if predicate is None or _first_target(edge) is None:
+                    continue
+                pred = predicate_registry.get(str(predicate))
+                if pred is None:
+                    predicate_results[index] = False
+                    continue
+                try:
+                    predicate_results[index] = bool(
+                        pred(_edge_info(edge), state, last_result)
+                    )
+                except Exception:
+                    predicate_results[index] = False
+
+        failure_only = getattr(last_result, "status", None) == "failure"
+        base_results: dict[int, bool] = {}
+        if (
+            not explicit_has_match
+            and not any(predicate_results.values())
+            and not failure_only
+        ):
+            node_decider = BasePredicate()
+            for index, edge in enumerate(edges):
+                if getattr(edge, "predicate", None) is not None:
+                    continue
+                if _first_target(edge) is None:
+                    continue
+                try:
+                    base_results[index] = bool(
+                        node_decider(_edge_info(edge), state, last_result)
+                    )
+                except Exception:
+                    base_results[index] = False
+
+        route_payload: list[dict[str, Any]] = []
+        for index, edge in enumerate(edges):
+            targets = [str(value) for value in (getattr(edge, "target_ids", None) or [])]
+            first_target = targets[0] if targets else ""
+            try:
+                priority = int(getattr(edge, "priority"))
+            except Exception:
+                priority = int(_edge_info(edge).priority)
+            route_payload.append(
+                {
+                    "edge_id": _edge_id(edge),
+                    "target_ids": targets,
+                    "aliases": sorted(_edge_aliases(edge, first_target)) if first_target else [],
+                    "predicate": (
+                        str(getattr(edge, "predicate"))
+                        if getattr(edge, "predicate", None) is not None
+                        else None
+                    ),
+                    "multiplicity": _edge_multiplicity(edge),
+                    "is_default": _edge_is_default(edge),
+                    "priority": priority,
+                    "predicate_result": predicate_results.get(index),
+                    "base_result": base_results.get(index),
+                }
+            )
+        native = runtime_select_route(
+            payload={
+                "edges": route_payload,
+                "explicit_next": explicit_next,
+                "fanout": fanout,
+                "failure_only": failure_only,
+            }
+        )
+        indices = [int(value) for value in native["selected_edge_indices"]]
+        native_computation = RouteComputation(
+            next_node_ids=[str(value) for value in native["next_node_ids"]],
+            selected_edges=[edges[index] for index in indices],
+            evaluated=[(str(key), bool(value)) for key, value in native["evaluated"]],
+            selected=[
+                (str(edge_id), str(target), str(reason))
+                for edge_id, target, reason in native["selected"]
+            ],
+        )
+        if runtime_mode == "rust":
+            return native_computation
+
+        def _recorded_predicate(info: WorkflowEdgeInfo, _state: Any, _result: Any) -> bool:
+            for index, edge in enumerate(edges):
+                if _edge_id(edge) == info.edge_id:
+                    return predicate_results.get(index, False)
+            return False
+
+        shadow_registry = {
+            name: _recorded_predicate for name in predicate_registry
+        }
+        python_computation = compute_route_next(
+            edges=edges,
+            state=state,
+            last_result=last_result,
+            fanout=fanout,
+            predicate_registry=shadow_registry,
+            nodes=nodes,
+            _native_disabled=True,
+        )
+        if (
+            native_computation.next_node_ids != python_computation.next_node_ids
+            or native_computation.selected_edges != python_computation.selected_edges
+            or native_computation.evaluated != python_computation.evaluated
+            or native_computation.selected != python_computation.selected
+        ):
+            from kogwistar._rust_bridge import RustParityError
+
+            raise RustParityError(
+                "Rust parity mismatch for runtime route selection: "
+                f"python={python_computation!r}, rust={native_computation!r}"
+            )
+        return python_computation
 
     explicit_next = get_route_next_names(last_result)
     if explicit_next:

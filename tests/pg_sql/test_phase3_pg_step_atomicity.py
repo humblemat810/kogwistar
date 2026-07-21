@@ -11,6 +11,8 @@ def test_pg_uow_rolls_back_backend_writes(sa_engine, pg_schema):
     # pg_url = os.getenv("TEST_PG_URL")
     # if not pg_url:
     #     pytest.skip("Set TEST_PG_URL to run Postgres integration test")
+    if sa_engine is None or pg_schema is None:
+        pytest.skip("PostgreSQL fixtures are unavailable")
     be = PgVectorBackend(engine=sa_engine, embedding_dim=8, schema=pg_schema)
     # backend = build_postgres_backend(PgVectorConfig(url=pg_url))
     engine = GraphKnowledgeEngine(backend=be)

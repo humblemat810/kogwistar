@@ -1,0 +1,18 @@
+{
+    "include": [
+        "kogwistar",
+        "tests"
+    ],
+    "venvPath": ".",
+    "venv": ".venv",
+    "executionEnvironments": [
+        {
+            "root": ".",
+            "extraPaths": [
+                ".",
+                "./tests",
+                "./kogwistar"
+            ]
+        }
+    ]
+}

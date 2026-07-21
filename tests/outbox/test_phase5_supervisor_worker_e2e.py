@@ -1,4 +1,5 @@
 import os
+import signal
 import sys
 import time
 import uuid
@@ -29,6 +30,47 @@ def _wait_until_done(
     raise AssertionError(f"job did not complete within {timeout_s}s: {job_id}")
 
 
+def _start_supervisor(cmd: list[str]) -> subprocess.Popen:
+    """Start an independently controllable supervisor on every supported OS."""
+    kwargs: dict[str, object] = {}
+    if os.name == "nt":
+        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    return subprocess.Popen(cmd, **kwargs)
+
+
+def _stop_supervisor(proc: subprocess.Popen) -> None:
+    """Stop supervisor and its worker without leaking a Windows child process."""
+    if proc.poll() is not None:
+        return
+    if os.name == "nt":
+        # ``terminate()`` maps to TerminateProcess on Windows, which bypasses
+        # Python signal handlers and used to leave the worker orphaned.  A
+        # process-group CTRL_BREAK reaches the supervisor's SIGBREAK handler;
+        # it then terminates and waits for the child itself.
+        try:
+            proc.send_signal(signal.CTRL_BREAK_EVENT)
+        except OSError:
+            pass
+    else:
+        proc.terminate()
+    try:
+        proc.wait(timeout=5)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    # Cleanup fallback only: keeps a failed graceful shutdown from polluting
+    # later CI while preserving normal Windows/Linux behavior above.
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+            check=False,
+            capture_output=True,
+        )
+    else:
+        proc.kill()
+    proc.wait(timeout=5)
+
+
 @pytest.mark.ci_full
 def test_phase5_supervisor_runs_worker_processes_job_then_graceful_shutdown(tmp_path):
     ns = f"phase5_sup_{uuid.uuid4().hex}"
@@ -55,7 +97,7 @@ def test_phase5_supervisor_runs_worker_processes_job_then_graceful_shutdown(tmp_
         str(pidfile),
         "--phase1-enable-index-jobs",
     ]
-    proc = subprocess.Popen(cmd)
+    proc = _start_supervisor(cmd)
 
     try:
         eng = GraphKnowledgeEngine(
@@ -79,8 +121,7 @@ def test_phase5_supervisor_runs_worker_processes_job_then_graceful_shutdown(tmp_
         _wait_until_done(eng, ns=ns, job_id=job_id, timeout_s=10.0)
 
     finally:
-        proc.terminate()
-        proc.wait(timeout=5)
+        _stop_supervisor(proc)
 
 
 @pytest.mark.ci_full
@@ -107,7 +148,7 @@ def test_phase5_supervisor_restarts_worker_after_kill_and_processes_job(tmp_path
         str(pidfile),
         "--phase1-enable-index-jobs",
     ]
-    proc = subprocess.Popen(cmd)
+    proc = _start_supervisor(cmd)
 
     try:
         # Wait for pidfile
@@ -149,5 +190,4 @@ def test_phase5_supervisor_restarts_worker_after_kill_and_processes_job(tmp_path
         _wait_until_done(eng, ns=ns, job_id=job_id, timeout_s=10.0)
 
     finally:
-        proc.terminate()
-        proc.wait(timeout=5)
+        _stop_supervisor(proc)
