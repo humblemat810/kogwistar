@@ -355,7 +355,7 @@ def _exercise_postgres_transport(
             ("/api/workflow/budget", "cost_ledger"),
             ("/api/workflow/budget/history", "events"),
             (
-                f"/api/workflow/lane/progress?conversation_id=pg-fanout-conversation",
+                "/api/workflow/lane/progress?conversation_id=pg-fanout-conversation",
                 "items",
             ),
             ("/api/workflow/operator/dashboard", "resources"),

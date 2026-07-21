@@ -5373,10 +5373,7 @@ impl PostgresRunApplicationService {
                         run_id = Some(created_run_id);
                     }
                     let mut triggered_payload = input.payload.clone();
-                    triggered_payload.insert(
-                        "trigger_type".to_owned(),
-                        json!(input.trigger_type),
-                    );
+                    triggered_payload.insert("trigger_type".to_owned(), json!(input.trigger_type));
                     for (event_type, payload) in [
                         (
                             "service.starting",
@@ -5384,12 +5381,8 @@ impl PostgresRunApplicationService {
                         ),
                         ("service.triggered", Value::Object(triggered_payload)),
                     ] {
-                        let (entity_id, event) = service_event_node(
-                            &service_id_owned,
-                            event_type,
-                            &payload,
-                            timestamp,
-                        );
+                        let (entity_id, event) =
+                            service_event_node(&service_id_owned, event_type, &payload, timestamp);
                         uow.append_raw_entity_event(
                             "workflow",
                             PostgresNewRawEntityEvent {
@@ -5435,14 +5428,13 @@ impl PostgresRunApplicationService {
                             event.payload_json,
                         )
                     }))
-                    .map_err(
-                        kogwistar_store_postgres::PostgresStoreError::TransactionAborted,
-                    )?;
-                    let (last_seq, projection) = projections.get(&service_id_owned).ok_or_else(|| {
-                        kogwistar_store_postgres::PostgresStoreError::TransactionAborted(
-                            "KOGWISTAR_SERVICE_TRIGGER_INVALID".to_owned(),
-                        )
-                    })?;
+                    .map_err(kogwistar_store_postgres::PostgresStoreError::TransactionAborted)?;
+                    let (last_seq, projection) =
+                        projections.get(&service_id_owned).ok_or_else(|| {
+                            kogwistar_store_postgres::PostgresStoreError::TransactionAborted(
+                                "KOGWISTAR_SERVICE_TRIGGER_INVALID".to_owned(),
+                            )
+                        })?;
                     uow.replace_named_projection(
                         "service_registry",
                         &service_id_owned,
@@ -7642,13 +7634,10 @@ impl SqliteRunApplicationService {
             ) {
                 return Ok(Some(current_value));
             }
-            let (target_kind, target_config) = service_definition_runtime(&definition).map_err(
-                |message| {
-                    kogwistar_store_sqlite::SqliteStoreError::TransactionAborted(
-                        message.to_owned(),
-                    )
-                },
-            )?;
+            let (target_kind, target_config) =
+                service_definition_runtime(&definition).map_err(|message| {
+                    kogwistar_store_sqlite::SqliteStoreError::TransactionAborted(message.to_owned())
+                })?;
             let target_ref = definition["properties"]["target_ref"]
                 .as_str()
                 .unwrap_or_default()
@@ -7822,10 +7811,7 @@ impl SqliteRunApplicationService {
                 run_id = Some(created_run_id);
             }
             let mut triggered_payload = input.payload.clone();
-            triggered_payload.insert(
-                "trigger_type".to_owned(),
-                json!(input.trigger_type),
-            );
+            triggered_payload.insert("trigger_type".to_owned(), json!(input.trigger_type));
             for (event_type, payload) in [
                 (
                     "service.starting",
@@ -11783,7 +11769,10 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
             .unwrap();
         assert_eq!(lanes.len(), 1);
         let payload: Value = serde_json::from_str(
-            lanes[0].payload_json.as_deref().expect("service lane payload"),
+            lanes[0]
+                .payload_json
+                .as_deref()
+                .expect("service lane payload"),
         )
         .unwrap();
         assert_eq!(payload["worker_protocol"], "async-v2");
@@ -12211,7 +12200,10 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
             .unwrap();
         assert_eq!(lanes.len(), 1);
         let payload: Value = serde_json::from_str(
-            lanes[0].payload_json.as_deref().expect("service lane payload"),
+            lanes[0]
+                .payload_json
+                .as_deref()
+                .expect("service lane payload"),
         )
         .unwrap();
         assert_eq!(payload["worker_protocol"], "async-v2");

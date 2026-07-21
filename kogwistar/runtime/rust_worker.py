@@ -9,7 +9,6 @@ the stable lane ``message_id`` idempotency key.
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import inspect
 import json

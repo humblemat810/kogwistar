@@ -1296,7 +1296,6 @@ class WorkflowRuntime(BaseRuntime):
             from .rust_runtime_authority import (
                 run_with_rust_authority,
                 rust_runtime_authority_selected,
-                rust_runtime_authority_url,
             )
 
             if rust_runtime_authority_selected():

@@ -9,7 +9,6 @@ import uuid
 from contextlib import nullcontext
 from typing import Any, Awaitable, Callable, ContextManager, TypeAlias, cast
 
-from ..id_provider import stable_id
 from .models import RunFailure, StepRunResult, WorkflowState
 from .executor import TerminalStatus, WorkflowExecutor
 from .base_runtime import BaseRuntime, apply_state_update_inplace, validate_initial_state

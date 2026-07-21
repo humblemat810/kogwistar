@@ -28,9 +28,11 @@ The persisted test harness is:
   and entry point; no inline build script is generated.
 - `scripts/rust_port_test_compare.py`: identity- and coverage-checked serial
   versus parallel comparison.
-- `scripts/adr015_sqlite_owner_uat.py`: three fresh Python processes proving
-  Rust -> Python -> Rust persisted SQLite compatibility. It deliberately rejects
-  live mixed ownership as a release claim.
+- `scripts/adr015_consumer_uat.py`: clean-wheel public selection, raw-writer
+  closure, rollback, and three fresh Rust -> Python -> Rust persisted SQLite
+  processes. It deliberately rejects live mixed ownership as a release claim.
+- `scripts/adr015_sqlite_owner_uat.py`: small persisted-owner restart-only
+  compatibility probe for focused diagnosis.
 
 No executable test logic is stored in `.codex` or generated temporary scripts.
 No inline shell, Python, or Dockerfile is hidden inside orchestrator code.
@@ -142,19 +144,22 @@ Build current candidate first:
   --output .codex\wheelhouse-adr015-current
 ```
 
-Bounded owner-restart UAT, after installing the candidate wheel into a clean
+Bounded consumer UAT, after installing the candidate wheel into a clean
 interpreter (or the dual-venv container):
 
 ```powershell
-<clean-python> scripts\adr015_sqlite_owner_uat.py `
+<clean-python> scripts\adr015_consumer_uat.py `
   --workdir <empty-temp-directory> `
   --report <evidence-directory>\adr015-sqlite-owner-uat.json
 ```
 
 The report must show `rust-write`, `python-write`, and `rust-read` as separate
-successful child processes. Run the script outside a checkout package path so
-its provenance fields name the installed wheel, not source files.
+successful child processes. It additionally proves public selector behavior,
+raw Python writer closure under Rust ownership, and a rolled-back transaction.
+Run the script outside a checkout package path so its provenance fields name the
+installed wheel, not source files.
 Fast four-layer validation:
+
 
 ```powershell
 .venv\Scripts\python.exe scripts\rust_port_container_compat.py `

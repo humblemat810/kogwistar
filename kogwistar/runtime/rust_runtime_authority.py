@@ -435,7 +435,6 @@ class RustRuntimeAuthority:
         initial_state: Mapping[str, Any],
         run_id: str,
     ) -> RunResult:
-        from .runtime import RunResult
 
         if initial_state.get("dream_deps"):
             raise RustRuntimeAuthorityError(

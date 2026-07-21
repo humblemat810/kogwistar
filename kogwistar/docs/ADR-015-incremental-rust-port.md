@@ -27,6 +27,25 @@ Expected Rust performance is not, by itself, sufficient reason to cut over. Each
 phase must demonstrate semantic parity and measured operational benefit or a clear
 maintenance benefit.
 
+### Library distribution versus downstream deployment authority
+
+Kogwistar is distributed as a library, not operated here as a customer-facing
+production service. This ADR therefore distinguishes two deliberately separate
+claims:
+
+- **library distribution readiness** means a versioned wheel, public API,
+  install/import metadata, deterministic consumer UAT, rollback compatibility,
+  and the four-layer consumer harness have passed for one identified candidate;
+- **downstream deployment authority** means an adopter has elected Rust as the
+  live writer/default in its own production deployment and has completed its
+  rollout observations.
+
+The second claim is never inferred from the first. A library release may ship
+selectable Rust capabilities while their `rust_cutover_ready` flags remain false:
+that preserves Python as the safe default. Production canaries, HA, customer
+traffic, and fleet-scale objectives belong to a downstream release operation,
+not to this library delivery gate.
+
 ## Context
 
 The repository is not a small storage wrapper. At the time of this decision it has
@@ -596,12 +615,14 @@ approved, a cutover candidate must have:
 A phase may proceed for a strong maintenance or safety benefit despite one failed
 performance threshold only through a recorded exception with evidence.
 
-### Production rollout
+### Downstream deployment rollout (not a library release gate)
 
-Use capability-level canaries: internal/test, 1%, 10%, 50%, then 100%. Promotion
+When an adopter chooses to make Rust authoritative in a live deployment, use
+capability-level canaries: internal/test, 1%, 10%, 50%, then 100%. Promotion
 requires a defined observation window with zero unexplained correctness mismatch.
 Rollback changes only the capability owner flag while schemas remain backward
-readable.
+readable. These records prove downstream deployment authority; they are not
+required to publish or consume the library wheel.
 
 Begin with new disposable workspaces. Existing data is shadowed read-only first.
 Persistent canaries use explicit roots, capture graph counts and IDs, event
@@ -736,7 +757,8 @@ Before the relevant phase, record or amend decisions for:
 
 - exact supported wheel and binary platform matrix;
 - contract versioning and deprecation duration;
-- production feature-flag and canary control plane;
+- downstream deployment feature-flag and canary control plane, if an adopter
+  elects Rust authority;
 - Chroma retention, Rust client, or deprecation;
 - MCP Rust implementation versus a retained compatibility adapter;
 - post-migration schema cleanup after the rollback window closes.

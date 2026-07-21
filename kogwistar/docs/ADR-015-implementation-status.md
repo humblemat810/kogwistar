@@ -284,13 +284,22 @@ not authorize a broad authority-flag promotion or replace production canaries.
   and recorded performance gates pass. Its sole blockers are the six explicit
   `rust_cutover_ready: false` capabilities and rehearsal-only (not production)
   canary evidence.
-- 2026-07-21 bounded single-VM UAT rebuilt final7 from source digest
-  `2702d59fd25bd65b50cd6ccc2cd4053e860e0ffb0792b9a1b6c05e4ddb673571`;
-  wheel SHA-256 is `8d1d379a19724f7dcde1bff598c1f9585cc590ebba36c92491034908277d8449`.
-  On Debian 12 Docker, clean wheel install/import and `pip check` passed; six
-  public-selection, raw-writer-closure, rollback, and durable-reopen tests
-  passed. `adr015_sqlite_owner_uat.py` then passed Rust -> Python -> Rust in
-  three fresh child processes. It is bounded library evidence, not live mixed
+- 2026-07-21 current bounded single-VM UAT rebuilt the `0.2.4` native wheel
+  from source digest `6a5f99e1ce7aa6b1882aee891daf32ecd29e5fe20610354ab54ea5592f40a6a9`;
+  wheel SHA-256 is `e08a55eeec499337df5edca5d943b78ab4f18251be7dbe0ce1ee67043140d247`.
+  On the Debian 12 VM in a clean CPython 3.12 Docker environment, bare wheel
+  installation, import, and `pip check` passed. The installed wheel's metadata
+  now declares the required `fastapi>=0.111` base dependency; this fixed the
+  initial clean-consumer import failure in the public `engine_core` selector.
+  `adr015_consumer_uat.py` passed public Python/Rust selection, Rust raw-writer
+  closure, transaction rollback, and Rust -> Python -> Rust persisted SQLite
+  compatibility across three fresh child processes. This is bounded library
+  evidence, not live mixed SQLite ownership, multi-process authority, HA, or a
+  durable-capability promotion.
+- The same wheel passed the current three-shard Linux feature compatibility
+  report `.codex/adr015-release-current-feature.json`: core (1 group), parser
+  (20 groups), sink (1 group), and application (13 groups) all passed with
+  exactly-once shard coverage in 519.8 seconds.
 - Sync PostgreSQL now has a native cross-call transaction owner. Coordinated
   `KOGWISTAR_IMPL_META_STORE=rust` plus `KOGWISTAR_IMPL_GRAPH_STORE=rust`
   routes node, edge, document, and domain ADD; existing-entity REPLACE;
@@ -424,6 +433,21 @@ ownership is intentionally excluded. This unlocks only the bounded
 
 ## Intentionally not ready
 
+### Library-release boundary
+
+This repository is a library distribution, not a customer production deployment.
+For ADR-015, the current release claim is therefore **single-VM /
+bounded-workload library ready**: a versioned native wheel, public API and package
+metadata, clean install/import UAT, restart/rollback/persisted-store evidence,
+and the four-layer consumer harness all pass for one identified candidate. It does
+not claim customer traffic, HA, hyperscale, or a durable-capability default switch.
+The fixed acceptance scope and evidence index live in
+`ADR-015-library-release.md`.
+
+`rust_cutover_ready: false` below is a safe-default setting, not an unchecked
+library delivery item. It means no downstream adopter has supplied the independent
+deployment canary evidence required to make Rust its live default writer.
+
 - Public PostgreSQL meta/event-log, projection, run-registry, and queue facades
   are implemented behind the coordinated sync PostgreSQL selector. Fresh
   current-candidate four-layer evidence now passes, but the capability readiness
@@ -457,20 +481,35 @@ ownership is intentionally excluded. This unlocks only the bounded
   conformance gates.
 - `index_applied_state` has native SQLite schema/API parity; graph and derived
   index authority nevertheless remain Python-owned until graph-store cutover.
-- Production internal/test, 1%, 10%, 50%, and 100% canaries have not occurred.
+- No downstream adopter production internal/test, 1%, 10%, 50%, and 100% canary
+  records exist. Those are explicitly deferred deployment operations, not library
+  release blockers.
 
-Every capability now requires explicit `rust_cutover_ready: true`; omitted
-readiness fails closed. `scripts/rust_port_readiness.py` validates canary
-evidence. Rehearsal evidence may validate its shape but can never authorize an
-ownership promotion.
+Every downstream default switch requires explicit `rust_cutover_ready: true`;
+omitted readiness fails closed. `scripts/rust_port_readiness.py` validates canary
+evidence. Rehearsal evidence may validate its shape but can never authorize a
+downstream ownership promotion.
 
-## Remaining completion gates
+## Library delivery checklist
 
-1. Finish Rust runtime/server authority, operational conformance, and release
-   packaging; keep Python rollback deployment available.
-2. Run capability canaries through internal/test, 1%, 10%, 50%, and 100% with
-   observation windows and zero unexplained correctness mismatches.
-3. Keep one full compatibility release before Phase 6 default/removal work.
+1. Build one versioned native wheel and verify package metadata, clean install,
+   import, and `pip check`.
+2. Run the deterministic consumer UAT and four-layer compatibility harness against
+   that exact candidate.
+3. Preserve the public Python API and documented Python rollback selection.
+
+The current candidate has completed these library gates. Commit/push and a new
+GitHub CI run remain external repository-release actions; publishing remains an
+explicit maintainer action.
+
+## Deferred downstream deployment operations
+
+1. An adopter may run capability canaries through internal/test, 1%, 10%, 50%,
+   and 100% with observation windows and zero unexplained correctness mismatches.
+2. An adopter may choose a Rust default switch and retain Python rollback for one
+   compatibility release before any removal decision.
+3. HA, hyperscale, and real customer traffic evaluation remain deployment-specific
+   work and are not inferred from this library evidence.
 
 ## Test execution acceleration
 
