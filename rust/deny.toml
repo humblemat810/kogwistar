@@ -1,6 +1,5 @@
 [advisories]
 yanked = "deny"
-unmaintained = "warn"
 
 [licenses]
 confidence-threshold = 0.8
