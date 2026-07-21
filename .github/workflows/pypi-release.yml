@@ -159,6 +159,10 @@ jobs:
     needs: [wheels, sdist]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
       - name: Download every tested release artifact
         uses: actions/download-artifact@v4
         with:
@@ -167,7 +171,7 @@ jobs:
 
       - name: Validate the exact publish set
         run: |
-          python -m pip install --upgrade twine
+          python -m pip install --upgrade pip twine packaging
           python -m twine check dist/*
           find dist -maxdepth 1 -type f -printf '%f\n' | sort
 
@@ -181,6 +185,10 @@ jobs:
     permissions:
       id-token: write
     steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
       - name: Download all tested artifacts
         uses: actions/download-artifact@v4
         with:
@@ -189,7 +197,7 @@ jobs:
 
       - name: Final artifact validation
         run: |
-          python -m pip install --upgrade twine
+          python -m pip install --upgrade pip twine packaging
           python -m twine check dist/*
           find dist -maxdepth 1 -type f -printf '%f\n' | sort
 
