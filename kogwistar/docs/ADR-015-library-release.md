@@ -2,7 +2,7 @@
 
 ## Release claim
 
-`Kogwistar 0.2.4` is release-ready as a **single-VM / bounded-workload Python
+`Kogwistar 0.2.5` is release-ready as a **single-VM / bounded-workload Python
 library distribution with a native Rust extension**. This is the fixed ADR-015
 library target. It is not a claim that Kogwistar operates a production service or
 that Rust is a downstream deployment's default durable writer.
@@ -26,12 +26,12 @@ All criteria apply to one identified candidate wheel.
 
 ## Current candidate evidence
 
-- source digest: `6a5f99e1ce7aa6b1882aee891daf32ecd29e5fe20610354ab54ea5592f40a6a9`
-- wheel: `kogwistar-0.2.4-cp312-abi3-manylinux_2_34_x86_64.whl`
-- wheel SHA-256: `e08a55eeec499337df5edca5d943b78ab4f18251be7dbe0ce1ee67043140d247`
-- build report: `.codex/wheelhouse-adr015-release-current/build-report.json`
-- VM consumer UAT: `.codex/adr015-consumer-uat-current-vm.json`
-- four-layer report: `.codex/adr015-release-current-feature.json`
+- source digest: `6c82072fe9aed1a2256d10ca8264608dcfa97901ef362d69edcc0a6a51b04bfd`
+- wheel: `kogwistar-0.2.5-cp312-abi3-manylinux_2_34_x86_64.whl`
+- wheel SHA-256: `18de9f14ec9b81415ac0a01704921c37b4f94e9afae565f901151db978b6763f`
+- build report: `.codex/wheelhouse-adr015-release-0.2.5-final/build-report.json`
+- VM consumer UAT: `.codex/adr015-consumer-uat-0.2.5-final-vm.json`
+- four-layer report: `.codex/adr015-release-0.2.5-final-feature.json`
 - Phase 3/4/5 local gate reports:
   `.codex/adr015-phase3-capability-gate-current.json`,
   `.codex/adr015-phase4-runtime-gate-current.json`, and
@@ -80,8 +80,9 @@ token in the repository, workflow YAML, shell history, or artifact directory.
 
 The source distribution uses the Maturin build backend, so a source install builds
 the native extension instead of silently producing a pure-Python fallback. The
-manual path still requires the same version/tag/PyPI-availability checks as the
-workflow.
+release workflow rebuilds the sdist through standard PEP 517 before publishing.
+The manual path still requires the same version/tag/PyPI-availability checks as
+the workflow.
 
 ## Related documents
 

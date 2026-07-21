@@ -182,11 +182,13 @@ not ready; completed production capability canaries are 0 of 8 (0 of 40
 capability-stage observations); the required full compatibility release has not
 elapsed. These counts, not a floating percentage, govern ADR completion.
 
-### Current candidate estimate and validation
+### Historical local validation and release boundary
 
-As of 2026-07-20, the rough effort estimate is **58% complete**. This is a
-communication estimate only: the scope-locked ledger and the authority/canary
-counts above remain the completion criteria.
+ADR-015 has no current percentage-complete estimate. Earlier percentages mixed
+library implementation with downstream production rollout and are retained
+nowhere as a release criterion. The scope-locked ledger and the
+authority/canary counts above govern ADR completion; the fixed library release
+claim is recorded separately in `ADR-015-library-release.md`.
 
 The current candidate's fresh Linux wheel was built with the persisted `uv`
 builder and passed all three isolated Docker shards. The current milestone
@@ -284,9 +286,9 @@ not authorize a broad authority-flag promotion or replace production canaries.
   and recorded performance gates pass. Its sole blockers are the six explicit
   `rust_cutover_ready: false` capabilities and rehearsal-only (not production)
   canary evidence.
-- 2026-07-21 current bounded single-VM UAT rebuilt the `0.2.4` native wheel
-  from source digest `6a5f99e1ce7aa6b1882aee891daf32ecd29e5fe20610354ab54ea5592f40a6a9`;
-  wheel SHA-256 is `e08a55eeec499337df5edca5d943b78ab4f18251be7dbe0ce1ee67043140d247`.
+- 2026-07-21 current bounded single-VM UAT rebuilt the `0.2.5` native wheel
+  from source digest `6c82072fe9aed1a2256d10ca8264608dcfa97901ef362d69edcc0a6a51b04bfd`;
+  wheel SHA-256 is `18de9f14ec9b81415ac0a01704921c37b4f94e9afae565f901151db978b6763f`.
   On the Debian 12 VM in a clean CPython 3.12 Docker environment, bare wheel
   installation, import, and `pip check` passed. The installed wheel's metadata
   now declares the required `fastapi>=0.111` base dependency; this fixed the
@@ -297,7 +299,7 @@ not authorize a broad authority-flag promotion or replace production canaries.
   evidence, not live mixed SQLite ownership, multi-process authority, HA, or a
   durable-capability promotion.
 - The same wheel passed the current three-shard Linux feature compatibility
-  report `.codex/adr015-release-current-feature.json`: core (1 group), parser
+  report `.codex/adr015-release-0.2.5-final-feature.json`: core (1 group), parser
   (20 groups), sink (1 group), and application (13 groups) all passed with
   exactly-once shard coverage in 519.8 seconds.
 - Sync PostgreSQL now has a native cross-call transaction owner. Coordinated
