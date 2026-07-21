@@ -26,12 +26,12 @@ All criteria apply to one identified candidate wheel.
 
 ## Current candidate evidence
 
-- source digest: `6c82072fe9aed1a2256d10ca8264608dcfa97901ef362d69edcc0a6a51b04bfd`
+- source digest: `c74f0f0a47f8e09b05fe58019ab266243ab2d4ab694b427025fde0f1eac26412`
 - wheel: `kogwistar-0.2.5-cp312-abi3-manylinux_2_34_x86_64.whl`
-- wheel SHA-256: `18de9f14ec9b81415ac0a01704921c37b4f94e9afae565f901151db978b6763f`
-- build report: `.codex/wheelhouse-adr015-release-0.2.5-final/build-report.json`
-- VM consumer UAT: `.codex/adr015-consumer-uat-0.2.5-final-vm.json`
-- four-layer report: `.codex/adr015-release-0.2.5-final-feature.json`
+- wheel SHA-256: `1a2ec45b38be99c789fae9ddcf5aabcb7f1afc5354f4903c491c7c500b437a6f`
+- build report: `.codex/wheelhouse-adr015-0.2.5-pyo3.29-local/build-report.json`
+- VM consumer UAT: `.codex/wheelhouse-adr015-0.2.5-pyo3.29-local/adr015-consumer-uat-vm.json`
+- four-layer report: `.codex/adr015-0.2.5-pyo3.29-local-feature.json`
 - Phase 3/4/5 local gate reports:
   `.codex/adr015-phase3-capability-gate-current.json`,
   `.codex/adr015-phase4-runtime-gate-current.json`, and

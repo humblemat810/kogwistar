@@ -287,8 +287,8 @@ not authorize a broad authority-flag promotion or replace production canaries.
   `rust_cutover_ready: false` capabilities and rehearsal-only (not production)
   canary evidence.
 - 2026-07-21 current bounded single-VM UAT rebuilt the `0.2.5` native wheel
-  from source digest `6c82072fe9aed1a2256d10ca8264608dcfa97901ef362d69edcc0a6a51b04bfd`;
-  wheel SHA-256 is `18de9f14ec9b81415ac0a01704921c37b4f94e9afae565f901151db978b6763f`.
+  from source digest `c74f0f0a47f8e09b05fe58019ab266243ab2d4ab694b427025fde0f1eac26412`;
+  wheel SHA-256 is `1a2ec45b38be99c789fae9ddcf5aabcb7f1afc5354f4903c491c7c500b437a6f`.
   On the Debian 12 VM in a clean CPython 3.12 Docker environment, bare wheel
   installation, import, and `pip check` passed. The installed wheel's metadata
   now declares the required `fastapi>=0.111` base dependency; this fixed the
@@ -299,9 +299,9 @@ not authorize a broad authority-flag promotion or replace production canaries.
   evidence, not live mixed SQLite ownership, multi-process authority, HA, or a
   durable-capability promotion.
 - The same wheel passed the current three-shard Linux feature compatibility
-  report `.codex/adr015-release-0.2.5-final-feature.json`: core (1 group), parser
+  report `.codex/adr015-0.2.5-pyo3.29-local-feature.json`: core (1 group), parser
   (20 groups), sink (1 group), and application (13 groups) all passed with
-  exactly-once shard coverage in 519.8 seconds.
+  exactly-once shard coverage.
 - Sync PostgreSQL now has a native cross-call transaction owner. Coordinated
   `KOGWISTAR_IMPL_META_STORE=rust` plus `KOGWISTAR_IMPL_GRAPH_STORE=rust`
   routes node, edge, document, and domain ADD; existing-entity REPLACE;
