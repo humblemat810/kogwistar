@@ -189,6 +189,7 @@ jobs:
         uses: rustsec/audit-check@v2
         with:
           working-directory: rust
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Check dependency licenses and sources
         uses: EmbarkStudios/cargo-deny-action@v2
