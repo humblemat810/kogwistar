@@ -58,6 +58,8 @@ class CheckpointedProjectionStore(Protocol):
         materialization_status: str,
     ) -> bool: ...
 
+    def compare_and_swap_named_projections(self, updates: list[dict[str, Any]]) -> bool: ...
+
 
 @dataclass(frozen=True, slots=True)
 class ProjectionCheckpoint:

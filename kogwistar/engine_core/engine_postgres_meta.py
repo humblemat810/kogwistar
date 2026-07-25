@@ -1717,6 +1717,30 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                 )
         return bool(result.rowcount == 1)
 
+    def compare_and_swap_named_projections(self, updates: list[dict[str, Any]]) -> bool:
+        """Atomically CAS multiple named projections in one database transaction."""
+        if not updates:
+            return True
+        rows = sorted(updates, key=lambda item: (str(item["namespace"]), str(item["key"])))
+        if len({(str(x["namespace"]), str(x["key"])) for x in rows}) != len(rows):
+            raise ValueError("duplicate named projection key")
+        schema = self.schema
+        now = int(time.time() * 1000)
+        with self.transaction() as conn:
+            for item in rows:
+                current = conn.execute(sa.text(f"SELECT last_authoritative_seq, last_materialized_seq FROM {schema}.named_projections WHERE namespace=:namespace AND key=:key FOR UPDATE"), {"namespace": str(item["namespace"]), "key": str(item["key"])}).first()
+                expected_a = item.get("expected_last_authoritative_seq")
+                expected_m = item.get("expected_last_materialized_seq")
+                if expected_a is None and expected_m is None:
+                    if current is not None:
+                        return False
+                elif current is None or int(current[0]) != int(expected_a) or int(current[1]) != int(expected_m):
+                    return False
+            for item in rows:
+                params = {"namespace": str(item["namespace"]), "key": str(item["key"]), "payload_json": json.dumps(item["payload"], sort_keys=True, separators=(",", ":")), "a": int(item.get("last_authoritative_seq", 0)), "m": int(item.get("last_materialized_seq", 0)), "v": int(item.get("projection_schema_version", 1)), "status": str(item.get("materialization_status", "ready")), "now": now}
+                conn.execute(sa.text(f"""INSERT INTO {schema}.named_projections(namespace,key,payload_json,last_authoritative_seq,last_materialized_seq,projection_schema_version,materialization_status,updated_at_ms) VALUES (:namespace,:key,:payload_json,:a,:m,:v,:status,:now) ON CONFLICT(namespace,key) DO UPDATE SET payload_json=EXCLUDED.payload_json,last_authoritative_seq=EXCLUDED.last_authoritative_seq,last_materialized_seq=EXCLUDED.last_materialized_seq,projection_schema_version=EXCLUDED.projection_schema_version,materialization_status=EXCLUDED.materialization_status,updated_at_ms=EXCLUDED.updated_at_ms"""), params)
+        return True
+
     def list_named_projections(self, namespace: str) -> list[dict[str, Any]]:
         schema = self.schema
         with self.transaction() as conn:

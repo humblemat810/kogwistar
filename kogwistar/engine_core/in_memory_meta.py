@@ -832,6 +832,27 @@ class InMemoryMetaStore(LaneMessageMetaStoreMixin):
             }
         return True
 
+    def compare_and_swap_named_projections(self, updates: list[dict[str, Any]]) -> bool:
+        if not updates:
+            return True
+        rows = sorted(updates, key=lambda item: (str(item["namespace"]), str(item["key"])))
+        if len({(str(x["namespace"]), str(x["key"])) for x in rows}) != len(rows):
+            raise ValueError("duplicate named projection key")
+        with self.transaction() as txn:
+            for item in rows:
+                existing = txn.state.named_projections.get((str(item["namespace"]), str(item["key"])))
+                ea, em = item.get("expected_last_authoritative_seq"), item.get("expected_last_materialized_seq")
+                if ea is None and em is None:
+                    if existing is not None: return False
+                elif existing is None or int(existing.get("last_authoritative_seq", -1)) != int(ea) or int(existing.get("last_materialized_seq", -1)) != int(em): return False
+            for item in rows:
+                txn.state.named_projections[(str(item["namespace"]), str(item["key"]))] = {
+                    "namespace": str(item["namespace"]), "key": str(item["key"]), "payload": copy.deepcopy(item["payload"]),
+                    "last_authoritative_seq": int(item.get("last_authoritative_seq", 0)), "last_materialized_seq": int(item.get("last_materialized_seq", 0)),
+                    "projection_schema_version": int(item.get("projection_schema_version", 1)), "materialization_status": str(item.get("materialization_status", "ready")), "updated_at_ms": _now_ms(),
+                }
+        return True
+
     def list_named_projections(self, namespace: str) -> list[dict[str, Any]]:
         with self._lock:
             rows = [

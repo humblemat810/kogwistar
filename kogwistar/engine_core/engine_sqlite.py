@@ -1719,6 +1719,25 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
                 )
         return bool(result.rowcount == 1)
 
+    def compare_and_swap_named_projections(self, updates: list[dict[str, Any]]) -> bool:
+        """Atomically CAS multiple named projections in one SQLite transaction."""
+        if not updates:
+            return True
+        rows = sorted(updates, key=lambda item: (str(item["namespace"]), str(item["key"])))
+        if len({(str(x["namespace"]), str(x["key"])) for x in rows}) != len(rows):
+            raise ValueError("duplicate named projection key")
+        now = int(datetime.now(timezone.utc).timestamp() * 1000)
+        with self.transaction() as conn:
+            for item in rows:
+                current = conn.execute("SELECT last_authoritative_seq,last_materialized_seq FROM named_projections WHERE namespace=? AND key=?", (str(item["namespace"]), str(item["key"]))).fetchone()
+                ea, em = item.get("expected_last_authoritative_seq"), item.get("expected_last_materialized_seq")
+                if ea is None and em is None:
+                    if current is not None: return False
+                elif current is None or int(current[0]) != int(ea) or int(current[1]) != int(em): return False
+            for item in rows:
+                conn.execute("""INSERT INTO named_projections(namespace,key,payload_json,last_authoritative_seq,last_materialized_seq,projection_schema_version,materialization_status,updated_at_ms) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(namespace,key) DO UPDATE SET payload_json=excluded.payload_json,last_authoritative_seq=excluded.last_authoritative_seq,last_materialized_seq=excluded.last_materialized_seq,projection_schema_version=excluded.projection_schema_version,materialization_status=excluded.materialization_status,updated_at_ms=excluded.updated_at_ms""", (str(item["namespace"]),str(item["key"]),json.dumps(item["payload"],sort_keys=True,separators=(",",":")),int(item.get("last_authoritative_seq",0)),int(item.get("last_materialized_seq",0)),int(item.get("projection_schema_version",1)),str(item.get("materialization_status","ready")),now))
+        return True
+
     def list_named_projections(self, namespace: str) -> list[dict[str, Any]]:
         with self.connect() as conn:
             rows = conn.execute(
