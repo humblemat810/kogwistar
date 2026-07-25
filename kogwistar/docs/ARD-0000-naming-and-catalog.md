@@ -51,12 +51,18 @@ Normalized numbering and phase-series naming:
 - Added `ARD-wisdom-layer-and-dynamic-workflow-orchestration.md` to the catalog.
 - Updated the workflow runtime contract to support nested workflow invocation results and `_route_next` aliasing.
 
+## Follow-up Performed (2026-07-25)
+- Added `ADR-016-agent-capability-and-documentation-surfaces.md`.
+- Established one transport-neutral capability contract across skills, documentation,
+  MCP, HTTP, CLI, Python, and deterministic workflow adapters.
+
 ## Current ARD/ADR Catalog
 
 ### ADR
 - `ADR-004-phase4-pgvector-authoritative.md`
 - `ADR-0014-graph-edit-with-redo-undo.md`
 - `ADR-015-incremental-rust-port.md`
+- `ADR-016-agent-capability-and-documentation-surfaces.md`
 
 ### ARD (numbered, global)
 - `ARD-0000-naming-and-catalog.md`
