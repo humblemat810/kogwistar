@@ -57,6 +57,7 @@ ingestion-openai = ["langchain-core>=0.3.0", "langchain-openai>=0.3.0"]
 ingestion-gemini = ["langchain-core>=0.3.0", "langchain-google-genai>=2.0.0"]
 mcp-adapter = ["langchain-mcp-adapters>=0.0.8"]
 viz = ["pygraphviz>=1.14"]
+browser = ["playwright>=1.45,<2"]
 test = [
   "pytest>=8",
   "pytest-asyncio>=1.1.0",
