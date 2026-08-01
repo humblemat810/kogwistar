@@ -12,4 +12,4 @@ RUN apt-get update -qq \
     && uv pip install --python /opt/build/bin/python "maturin>=1.8,<2"
 
 WORKDIR /source
-ENTRYPOINT ["/bin/sh", "/source/scripts/adr015_build_wheel.sh"]
+ENTRYPOINT ["/bin/sh", "/source/scripts/build_wheel.sh"]

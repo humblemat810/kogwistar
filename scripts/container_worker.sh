@@ -7,7 +7,7 @@ cp -a /source/application/. /workspace/application/
 
 native="$({
     cd /tmp
-    /opt/core/bin/python -P /source/core/scripts/adr015_native_path.py
+    /opt/core/bin/python -P /source/core/scripts/native_extension_path.py
 })"
 cp "$native" /workspace/core/kogwistar/_rust.abi3.so
 
