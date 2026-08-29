@@ -101,7 +101,7 @@ include = ["kogwistar*"]
 exclude = ["*.tests*", "*.test*", "tests*", "examples*", "diagnostic*"]
 
 [tool.setuptools.package-data]
-kogwistar = ["templates/*.html"]
+kogwistar = ["templates/*.html", "templates/*.js", "templates/*.txt"]
 
 [tool.setuptools.exclude-package-data]
 kogwistar = [".env", ".env.*", "*.env", "*.env.*", "*.sqlite", "*.db", "*.pem", "*.key", "*.pfx", "*.p12", "*.crt", "*.cer"]
@@ -149,4 +149,6 @@ bindings = "pyo3"
 include = [
   { path = "contracts/**/*.json", format = "sdist" },
   { path = "kogwistar/templates/*.html", format = "sdist" },
+  { path = "kogwistar/templates/*.js", format = "sdist" },
+  { path = "kogwistar/templates/*.txt", format = "sdist" },
 ]

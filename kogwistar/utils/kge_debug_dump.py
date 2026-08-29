@@ -19,9 +19,11 @@ if TYPE_CHECKING:
         GraphKnowledgeEngine,
         EngineType,
     )
-from kogwistar.visualization.graph_viz import to_d3_force
+from kogwistar.visualization.graph_viz import to_d3_force, to_sigma_hypergraph
 
 _GRAPH_TYPE = Literal["knowledge", "conversation", "workflow"]
+_GRAPHOLOGY_CDN = "https://cdnjs.cloudflare.com/ajax/libs/graphology/0.25.4/graphology.umd.min.js"
+_SIGMA_CDN = "https://cdnjs.cloudflare.com/ajax/libs/sigma.js/2.4.0/sigma.min.js"
 
 
 def build_engine(*, persist_dir: Path, graph_type: _GRAPH_TYPE) -> GraphKnowledgeEngine:
@@ -127,6 +129,64 @@ def dump_d3_bundle(
     return out_html
 
 
+def dump_sigma_bundle(
+    *,
+    engine: GraphKnowledgeEngine | None,
+    engine_type: EngineType | None = None,
+    template_html: str,
+    out_html: Path,
+    doc_id: Optional[str] = None,
+    mode: str = "reify",
+    insertion_method: Optional[str] = None,
+    bundle_meta: Optional[dict] = None,
+    cdc_enabled: bool = False,
+    cdc_ws_url: Optional[str] = None,
+    embed_empty: bool = False,
+) -> Path:
+    """Write a Sigma bundle backed by a lossless raw hypergraph snapshot."""
+
+    if engine_type is None:
+        engine_type = getattr(engine, "kg_graph_type", None)
+    engine_graph_type = getattr(engine, "kg_graph_type", None)
+    if engine and engine_graph_type is not None and engine_type != engine_graph_type:
+        raise Exception(
+            f"argument engine_type {engine_type} disagree with engine kg_graph_type = {engine_graph_type}"
+        )
+    if not engine_type and not engine:
+        raise ValueError("either engine type or engine required")
+    if not engine and not embed_empty:
+        raise ValueError("engine can only be empty when embed empty is set true")
+
+    payload = (
+        {"raw_nodes": [], "raw_edges": [], "mode": "raw-hypergraph"}
+        if embed_empty
+        else to_sigma_hypergraph(
+            engine, doc_id=doc_id, insertion_method=insertion_method
+        )
+    )
+    rendered = _render_template_html(
+        template_html,
+        context={
+            "doc_id": json.dumps(doc_id),
+            "mode": mode,
+            "insertion_method": json.dumps(insertion_method),
+            "is_bundle": json.dumps(bundle_meta is not None),
+            "embedded_data": json.dumps(payload),
+            "bundle_meta": json.dumps(bundle_meta) if bundle_meta is not None else None,
+            "bundle_graph_type": json.dumps(engine_type)
+            or json.dumps(getattr(engine, "kg_graph_type", None)),
+            "cdc_enabled": json.dumps(bool(cdc_enabled)),
+            "cdc_ws_url": json.dumps(cdc_ws_url)
+            if cdc_ws_url is not None
+            else "null",
+            "graphology_script_src": _GRAPHOLOGY_CDN,
+            "sigma_script_src": _SIGMA_CDN,
+        },
+    )
+    out_html.write_text(rendered, encoding="utf-8")
+    return out_html
+
+
 def dump_paired_bundles(
     *,
     kg_engine: GraphKnowledgeEngine | None = None,
@@ -144,6 +204,7 @@ def dump_paired_bundles(
     # Live CDC (optional)
     cdc_ws_url: Optional[str] = None,
     embed_empty=False,
+    viewer: Literal["d3", "sigma"] = "d3",
 ) -> dict:
 
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -157,7 +218,9 @@ def dump_paired_bundles(
         "conversation_doc_id": conversation_doc_id,
     }
 
-    dump_d3_bundle(
+    dump_bundle = dump_sigma_bundle if viewer == "sigma" else dump_d3_bundle
+
+    dump_bundle(
         engine=kg_engine,
         engine_type="knowledge",
         template_html=template_html,
@@ -171,7 +234,7 @@ def dump_paired_bundles(
         embed_empty=embed_empty,
     )
 
-    dump_d3_bundle(
+    dump_bundle(
         engine_type="conversation",
         engine=conversation_engine,
         template_html=template_html,
@@ -185,7 +248,7 @@ def dump_paired_bundles(
         embed_empty=embed_empty,
     )
     if workflow_engine or (embed_empty and cdc_ws_url):
-        dump_d3_bundle(
+        dump_bundle(
             engine_type="workflow",
             engine=workflow_engine,
             template_html=template_html,
@@ -216,7 +279,8 @@ def _cmd_one(args: argparse.Namespace) -> None:
     )
     template_html = Path(args.template).read_text(encoding="utf-8")
     os.makedirs(str(Path(args.out).parent), exist_ok=True)
-    dump_d3_bundle(
+    dump_bundle = dump_sigma_bundle if args.viewer == "sigma" else dump_d3_bundle
+    dump_bundle(
         engine_type=_engine_graph_type(engine, args.graph_type),
         engine=engine,
         template_html=template_html,
@@ -229,7 +293,7 @@ def _cmd_one(args: argparse.Namespace) -> None:
         cdc_ws_url=args.cdc_ws_url,
         embed_empty=bool(args.empty),
     )
-    print(f"[OK] D3 bundle written to {Path(args.out).absolute()}")
+    print(f"[OK] {args.viewer} bundle written to {Path(args.out).absolute()}")
 
 
 def _cmd_pair(args: argparse.Namespace) -> None:
@@ -264,6 +328,7 @@ def _cmd_pair(args: argparse.Namespace) -> None:
         insertion_method=args.insertion_method,
         cdc_ws_url=args.cdc_ws_url,
         embed_empty=args.empty,
+        viewer=args.viewer,
     )
     print(f"[OK] Paired bundle written to {Path(args.out_dir).absolute()}")
     print("[OK] bundle.meta.json:", json.dumps(meta, indent=2))
@@ -291,6 +356,9 @@ def main() -> None:
         "--insertion-method", help="Optional insertion_method (e.g. document_ingestion)"
     )
     p1.add_argument("--template", required=True, help="Path to templates/d3.html")
+    p1.add_argument(
+        "--viewer", choices=["d3", "sigma"], default="d3", help="Viewer runtime"
+    )
     p1.add_argument("--out", default="d3.bundle.html", help="Output HTML file")
     p1.add_argument(
         "--empty",
@@ -335,6 +403,9 @@ def main() -> None:
         "--insertion-method", help="Optional insertion_method (e.g. document_ingestion)"
     )
     p2.add_argument("--template", required=True, help="Path to templates/d3.html")
+    p2.add_argument(
+        "--viewer", choices=["d3", "sigma"], default="d3", help="Viewer runtime"
+    )
     p2.add_argument("--out-dir", default="d3_bundle", help="Output folder")
     p2.add_argument(
         "--kg-out", default="kg.bundle.html", help="KG bundle filename within out-dir"
