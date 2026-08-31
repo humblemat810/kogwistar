@@ -24,28 +24,57 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def _run(args: list[str], *, timeout: float | None = None) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        [sys.executable, "-u", *args],
+    result = _run_process(args, timeout=timeout)
+    if result.returncode:
+        raise subprocess.CalledProcessError(
+            result.returncode,
+            result.args,
+            output=result.stdout,
+            stderr=result.stderr,
+        )
+    return result
+
+
+def _run_process(
+    args: list[str], *, timeout: float | None = None
+) -> subprocess.CompletedProcess[str]:
+    command = [sys.executable, "-u", *args]
+    creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    proc = subprocess.Popen(
+        command,
         cwd=str(ROOT),
-        check=True,
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
-        timeout=timeout,
+        creationflags=creationflags,
     )
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        if sys.platform == "win32":
+            subprocess.run(
+                ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+        else:
+            proc.kill()
+        stdout, stderr = proc.communicate()
+        raise subprocess.TimeoutExpired(
+            command,
+            exc.timeout,
+            output=stdout,
+            stderr=stderr,
+        ) from exc
+    return subprocess.CompletedProcess(command, proc.returncode, stdout, stderr)
 
 
 def _run_allow_fail(
     args: list[str], *, timeout: float | None = None
 ) -> subprocess.CompletedProcess[str]:
     try:
-        return subprocess.run(
-            [sys.executable, "-u", *args],
-            cwd=str(ROOT),
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
+        return _run_process(args, timeout=timeout)
     except subprocess.TimeoutExpired as exc:
         stdout = exc.stdout if isinstance(exc.stdout, str) else (exc.stdout or "")
         stderr = exc.stderr if isinstance(exc.stderr, str) else (exc.stderr or "")

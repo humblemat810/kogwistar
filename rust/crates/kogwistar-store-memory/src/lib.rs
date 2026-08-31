@@ -1098,6 +1098,7 @@ impl GraphReadStore for InMemoryStore {
                         .filter_map(|id| scope.records.get(id))
                 })
                 .filter(|record| query.metadata.matches(&record.metadata))
+                .filter(|record| record.embedding.is_some())
                 .map(|record| VectorMatch {
                     record: record.clone(),
                     distance: cosine_memory_distance(&query.embedding, record.embedding.as_deref()),
@@ -1218,6 +1219,7 @@ impl GraphMutationStore for InMemoryStore {
                         .filter_map(|id| projection.records.get(id))
                 })
                 .filter(|record| query.query.metadata.matches(&record.metadata))
+                .filter(|record| record.embedding.is_some())
                 .map(|record| VectorMatch {
                     record: record.clone(),
                     distance: cosine_memory_distance(
@@ -2366,12 +2368,11 @@ mod tests {
                     .iter()
                     .map(|item| item.record.id.as_str())
                     .collect::<Vec<_>>(),
-                ["z", "a", "missing", "mismatch", "zero"]
+                ["z", "a", "mismatch", "zero"]
             );
             assert_eq!(results[0].distance, results[1].distance);
             assert_eq!(results[2].distance, 2.0);
             assert_eq!(results[3].distance, 2.0);
-            assert_eq!(results[4].distance, 2.0);
 
             let zero_query = VectorQuery {
                 embedding: vec![0.0, 0.0],

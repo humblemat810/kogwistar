@@ -31,12 +31,16 @@ The same pattern can be parameterized in pytest fixtures so a test can opt into:
 """
 
 import copy
+import json
 import math
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Sequence
 from kogwistar.engine_core.in_memory_meta import InMemoryMetaStore
-from kogwistar.engine_core.storage_backend import NoopUnitOfWork
+from kogwistar.engine_core.storage_backend import (
+    NoopUnitOfWork,
+    TwoStageProjectionCapability,
+)
 
 
 def _is_operator_dict(value: Any) -> bool:
@@ -323,6 +327,13 @@ class _InMemoryCollection:
             if index < len(embs_list) and embs_list[index] is not None:
                 row.embedding = list(embs_list[index])
 
+    def clear_embeddings(self, ids: Sequence[str]) -> None:
+        """Clear derived vectors for a new staged canonical revision."""
+        for row_id in [str(i) for i in ids]:
+            row = self._rows.get(row_id)
+            if row is not None:
+                row.embedding = None
+
     def _select_rows(
         self,
         *,
@@ -405,10 +416,16 @@ class _InMemoryCollection:
         for q_emb in query_embeddings:
             ranked: list[tuple[float, _StoredRow]] = []
             for row in rows:
+                if (
+                    not bool(_.get("include_tombstoned", False))
+                    and str(row.metadata.get("lifecycle_status") or "active")
+                    == "tombstoned"
+                ):
+                    continue
                 if row.embedding is None:
-                    score = -1.0
-                else:
-                    score = _cosine_similarity(q_emb, row.embedding)
+                    # Pending staged rows are metadata/ID-visible, never semantic hits.
+                    continue
+                score = _cosine_similarity(q_emb, row.embedding)
                 ranked.append((score, row))
             ranked.sort(key=lambda pair: pair[0], reverse=True)
             picked = [row for _, row in ranked[: max(int(n_results), 0)]]
@@ -455,6 +472,8 @@ class _InMemoryCollection:
 
 
 class InMemoryBackend:
+    supports_historical_tombstone_query = True
+
     def __init__(self, engine: Any):
         self._engine = engine
         self.unit_of_work = NoopUnitOfWork()
@@ -467,6 +486,19 @@ class InMemoryBackend:
         self.node_docs = _InMemoryCollection(name="node_docs", backend=self)
         self.node_refs = _InMemoryCollection(name="node_refs", backend=self)
         self.edge_refs = _InMemoryCollection(name="edge_refs", backend=self)
+        self.two_stage_projection_capability = TwoStageProjectionCapability(
+            supports_two_stage=True,
+            canonical_event_replay=True,
+            canonical_read=True,
+            stage1_strategy="none",
+            stage2_semantic_projection=True,
+            revision_gated_promotion=True,
+            semantic_readiness_gate=True,
+            delete_reconciliation=True,
+            atomic_promotion="same_store",
+            reason="in-memory staged vector row; volatile test arrangement",
+        )
+        self.two_stage_projection_adapter = _InMemoryTwoStageProjectionAdapter(self)
 
     def _c(self, key: str) -> _InMemoryCollection:
         try:
@@ -512,6 +544,9 @@ class InMemoryBackend:
     def node_update(self, **kwargs) -> Any:
         return self.call("node", "update", **kwargs)
 
+    def node_clear_embeddings(self, **kwargs) -> Any:
+        return self.node.clear_embeddings(**kwargs)
+
     def node_delete(self, **kwargs) -> Any:
         return self.call("node", "delete", **kwargs)
 
@@ -529,6 +564,9 @@ class InMemoryBackend:
 
     def edge_update(self, **kwargs) -> Any:
         return self.call("edge", "update", **kwargs)
+
+    def edge_clear_embeddings(self, **kwargs) -> Any:
+        return self.edge.clear_embeddings(**kwargs)
 
     def edge_delete(self, **kwargs) -> Any:
         return self.call("edge", "delete", **kwargs)
@@ -646,6 +684,90 @@ class InMemoryBackend:
         if callable(ef):
             return list(ef(list(texts)))
         return [[0.0] for _ in texts]
+
+
+class _InMemoryTwoStageProjectionAdapter:
+    """Volatile two-stage arrangement used only by deterministic tests."""
+
+    def __init__(self, backend: InMemoryBackend) -> None:
+        self.backend = backend
+
+    @property
+    def engine(self) -> Any:
+        return self.backend._engine
+
+    def _enqueue(self, *, entity_kind: str, entity_id: str, op: str) -> None:
+        indexing = getattr(self.engine, "indexing", None)
+        if indexing is None:
+            raise RuntimeError("in-memory two-stage adapter requires engine indexing")
+        indexing.enqueue_index_job(
+            entity_kind=entity_kind,
+            entity_id=entity_id,
+            index_kind="node_embedding",
+            op=op,
+            payload_json=indexing.canonical_revision_payload(
+                entity_kind=entity_kind, entity_id=entity_id
+            ),
+        )
+
+    enqueue_embedding_job = _enqueue
+
+    def add_node(self, node: Any, *, doc_id: str | None = None) -> None:
+        if doc_id is not None:
+            node.doc_id = doc_id
+        doc, meta = self.engine.write.node_doc_and_meta(node)
+        self.backend.node_clear_embeddings(ids=[node.safe_get_id()])
+        self.backend.node_add(
+            ids=[node.safe_get_id()],
+            documents=[doc],
+            metadatas=[meta],
+            embeddings=[None],
+        )
+        self._enqueue(entity_kind="node", entity_id=node.safe_get_id(), op="UPSERT")
+
+    def add_edge(self, edge: Any, *, doc_id: str | None = None) -> None:
+        if doc_id is not None:
+            edge.doc_id = doc_id
+        doc = edge.model_dump_json(field_mode="backend", exclude=["embedding"])
+        meta = self.engine.write.enrich_edge_meta(edge)
+        self.backend.edge_clear_embeddings(ids=[edge.safe_get_id()])
+        self.backend.edge_add(
+            ids=[edge.safe_get_id()],
+            documents=[str(doc)],
+            metadatas=[meta],
+            embeddings=[None],
+        )
+        self._enqueue(entity_kind="edge", entity_id=edge.safe_get_id(), op="UPSERT")
+
+    def apply_embedding_job(
+        self,
+        *,
+        entity_kind: str,
+        entity_id: str,
+        op: str,
+        payload_json: str | None,
+    ) -> None:
+        if entity_kind not in {"node", "edge"}:
+            raise ValueError(f"unsupported two-stage entity kind: {entity_kind!r}")
+        if op.upper() == "DELETE":
+            getattr(self.backend, f"{entity_kind}_delete")(ids=[entity_id])
+            return
+        current = getattr(self.backend, f"{entity_kind}_get")(
+            ids=[entity_id], include=["documents", "metadatas"]
+        )
+        if not current.get("ids"):
+            return
+        expected = str(json.loads(payload_json or "{}").get("source_fingerprint", ""))
+        actual = self.engine.indexing.canonical_revision_payload(
+            entity_kind=entity_kind, entity_id=entity_id
+        )
+        if expected and expected != str(json.loads(actual).get("source_fingerprint", "")):
+            return
+        document = (current.get("documents") or [""])[0] or ""
+        embedding = self.engine.embed.iterative_defensive_emb(str(document))
+        getattr(self.backend, f"{entity_kind}_update")(
+            ids=[entity_id], embeddings=[embedding]
+        )
 
 
 class _FakeMetaStore:

@@ -33,9 +33,113 @@ patches can silently introduce model cost, latency, and vector drift.
 
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
-from typing import Any, AsyncIterator, Dict, Iterator, Protocol
+from typing import Any, AsyncIterator, Dict, Iterator, Literal, Protocol
 
 JSONDict = Dict[str, Any]
+
+
+@dataclass(frozen=True)
+class TwoStageProjectionCapability:
+    """Backend arrangement contract for ADR-018 deferred semantic projection."""
+
+    supports_two_stage: bool = False
+    canonical_event_replay: bool = False
+    canonical_read: bool = False
+    stage1_strategy: Literal["none", "transient_projection"] = "none"
+    stage1_metadata_query: bool = False
+    stage1_cleanup: bool = False
+    stage2_semantic_projection: bool = False
+    revision_gated_promotion: bool = False
+    semantic_readiness_gate: bool = False
+    delete_reconciliation: bool = False
+    atomic_promotion: Literal["same_store", "eventual_reconcile"] = "eventual_reconcile"
+    reason: str = "two-stage projection is not implemented for this backend arrangement"
+
+    def missing_contracts(self) -> tuple[str, ...]:
+        """Return unfulfilled ADR-018 guarantees for fail-closed configuration."""
+        missing: list[str] = []
+        for field in (
+            "supports_two_stage",
+            "canonical_event_replay",
+            "canonical_read",
+            "stage2_semantic_projection",
+            "revision_gated_promotion",
+            "semantic_readiness_gate",
+            "delete_reconciliation",
+        ):
+            if not getattr(self, field):
+                missing.append(field)
+        if self.stage1_strategy == "transient_projection":
+            for field in ("stage1_metadata_query", "stage1_cleanup"):
+                if not getattr(self, field):
+                    missing.append(field)
+        return tuple(missing)
+
+    def is_complete(self) -> bool:
+        return not self.missing_contracts()
+
+
+class TwoStageProjectionAdapter(Protocol):
+    """Executable ADR-018 write arrangement supplied by a capable backend.
+
+    The adapter owns canonical Stage-1 admission and later Stage-2 promotion.
+    ``GraphKnowledgeEngine`` only dispatches to it after the immutable capability
+    descriptor passes; it never silently falls back to synchronous embedding.
+    """
+
+    def add_node(self, node: Any, *, doc_id: str | None = None) -> None: ...
+
+    def add_edge(self, edge: Any, *, doc_id: str | None = None) -> None: ...
+
+    def apply_embedding_job(
+        self,
+        *,
+        entity_kind: str,
+        entity_id: str,
+        op: str,
+        payload_json: str | None,
+    ) -> None: ...
+
+
+def get_two_stage_projection_capability(backend: Any) -> TwoStageProjectionCapability:
+    """Read an optional backend declaration without widening StorageBackend."""
+
+    declared = getattr(backend, "two_stage_projection_capability", None)
+    if callable(declared):
+        declared = declared()
+    if isinstance(declared, TwoStageProjectionCapability):
+        return declared
+    return TwoStageProjectionCapability()
+
+
+def get_two_stage_projection_adapter(backend: Any) -> TwoStageProjectionAdapter | None:
+    """Read an optional executable arrangement without widening StorageBackend."""
+    adapter = getattr(backend, "two_stage_projection_adapter", None)
+    if callable(adapter) and not hasattr(adapter, "add_node"):
+        adapter = adapter()
+    if adapter is None:
+        return None
+    required = (
+        "add_node",
+        "add_edge",
+        "apply_embedding_job",
+    )
+    if get_two_stage_projection_capability(backend).stage1_strategy == "transient_projection":
+        # Descriptor flags are not executable capability. A transient
+        # arrangement must expose its query/cleanup/reconciliation seam too.
+        required += (
+            "stage1_query",
+            "remove_stage1",
+            "promote_stage2",
+            "remove_stage2_or_invalidate",
+            "reconcile_projection",
+        )
+    if all(
+        callable(getattr(adapter, name, None))
+        for name in required
+    ):
+        return adapter
+    return None
 
 
 class UnitOfWork(Protocol):

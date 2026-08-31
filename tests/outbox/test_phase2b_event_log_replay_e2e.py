@@ -1,6 +1,9 @@
-import pytest
-pytestmark = pytest.mark.core
+import json
 import pathlib
+
+import pytest
+
+pytestmark = pytest.mark.core
 
 from kogwistar.engine_core.models import Node, Edge
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
@@ -183,3 +186,123 @@ def test_phase2b_event_log_tombstone_and_cursor_roundtrip(e2e_engine):
     eng.meta_sqlite.cursor_set(namespace=ns, consumer=consumer, last_seq=last_seq)
     got = eng.meta_sqlite.cursor_get(namespace=ns, consumer=consumer)
     assert int(got) == int(last_seq)
+
+
+def test_node_projection_failure_leaves_recoverable_canonical_event(tmp_path, monkeypatch):
+    """Canonical admission precedes an external backend projection write."""
+    eng = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path),
+        embedding_function=TEST_EMBEDDING,
+        backend_factory=build_fake_backend,
+    )
+
+    async def fail_node_add(**_kwargs):
+        raise RuntimeError("projection unavailable")
+
+    monkeypatch.setattr(eng.backend, "node_add", fail_node_add)
+    with pytest.raises(RuntimeError, match="projection unavailable"):
+        eng.add_node(_mk_node("canonical-before-projection", doc_id="d1"))
+
+    events = _read_all_events(eng, "default")
+    assert any(
+        entity_kind == "node" and entity_id == "canonical-before-projection" and op == "ADD"
+        for _, entity_kind, entity_id, op, _ in events
+    )
+
+
+def test_node_event_append_failure_does_not_create_projection(tmp_path, monkeypatch):
+    """A node is never projection-visible when required canonical append fails."""
+    eng = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path),
+        embedding_function=TEST_EMBEDDING,
+        backend_factory=build_fake_backend,
+    )
+
+    def fail_append(**_kwargs):
+        raise OSError("event store unavailable")
+
+    monkeypatch.setattr(eng.meta_sqlite, "append_entity_event", fail_append)
+    with pytest.raises(OSError, match="event store unavailable"):
+        eng.add_node(_mk_node("no-projection-without-event", doc_id="d1"))
+
+    assert {node.safe_get_id() for node in eng.get_nodes()} == set()
+
+
+def test_lifecycle_event_append_failure_does_not_patch_projection(tmp_path, monkeypatch):
+    eng = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path),
+        embedding_function=TEST_EMBEDDING,
+        backend_factory=build_fake_backend,
+    )
+    eng.write.add_node(_mk_node("lifecycle-event-required", doc_id="d1"))
+
+    def fail_append(**_kwargs):
+        raise OSError("event store unavailable")
+
+    monkeypatch.setattr(eng.meta_sqlite, "append_entity_event", fail_append)
+    with pytest.raises(OSError, match="event store unavailable"):
+        eng.lifecycle.tombstone_node("lifecycle-event-required")
+
+    raw = eng.backend.node_get(ids=["lifecycle-event-required"], include=["metadatas"])
+    assert raw["metadatas"][0].get("lifecycle_status") != "tombstoned"
+
+
+def test_lifecycle_projection_failure_leaves_recoverable_tombstone_event(
+    tmp_path, monkeypatch
+):
+    eng = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path),
+        embedding_function=TEST_EMBEDDING,
+        backend_factory=build_fake_backend,
+    )
+    eng.write.add_node(_mk_node("tombstone-before-projection", doc_id="d1"))
+
+    original_lifecycle_update = eng._backend_update_record_lifecycle
+    monkeypatch.setattr(
+        eng,
+        "_backend_update_record_lifecycle",
+        lambda **_kwargs: False,
+    )
+    assert eng.lifecycle.tombstone_node("tombstone-before-projection") is False
+
+    assert any(
+        entity_kind == "node"
+        and entity_id == "tombstone-before-projection"
+        and op == "TOMBSTONE"
+        and "lifecycle_patch" in json.loads(payload_json)
+        for _, entity_kind, entity_id, op, payload_json in _read_all_events(eng, "default")
+    )
+
+    monkeypatch.setattr(
+        eng, "_backend_update_record_lifecycle", original_lifecycle_update
+    )
+    eng.replay_namespace(namespace="default")
+    raw = eng.backend.node_get(
+        ids=["tombstone-before-projection"], include=["metadatas"]
+    )
+    assert raw["metadatas"][0]["lifecycle_status"] == "tombstoned"
+
+
+def test_redirect_is_recorded_as_replayable_lifecycle_replace(tmp_path):
+    eng = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path),
+        embedding_function=TEST_EMBEDDING,
+        backend_factory=build_fake_backend,
+    )
+    eng.write.add_node(_mk_node("redirect-source", doc_id="d1"))
+    eng.write.add_node(_mk_node("redirect-target", doc_id="d1"))
+
+    assert eng.lifecycle.redirect_node("redirect-source", "redirect-target")
+    events = _read_all_events(eng, "default")
+    assert any(
+        entity_kind == "node"
+        and entity_id == "redirect-source"
+        and op == "REPLACE"
+        and json.loads(payload_json)["lifecycle_patch"]["redirect_to_id"]
+        == "redirect-target"
+        for _, entity_kind, entity_id, op, payload_json in events
+    )
+
+    eng.replay_namespace(namespace="default")
+    raw = eng.backend.node_get(ids=["redirect-source"], include=["metadatas"])
+    assert raw["metadatas"][0]["redirect_to_id"] == "redirect-target"

@@ -44,6 +44,7 @@ import inspect
 import os
 import threading
 import sys
+import time
 from dataclasses import dataclass
 from contextlib import asynccontextmanager, contextmanager
 import contextvars
@@ -235,6 +236,7 @@ class PgVectorConfig:
     schema: str = "public"
     nodes_table: str = "gke_nodes"
     edges_table: str = "gke_edges"
+    stage1_table: str = "gke_stage1_projections"
     documents_table: str = "gke_documents"
     domains_table: str = "gke_domains"
     edge_endpoints_table: str = "gke_edge_endpoints"
@@ -653,6 +655,7 @@ class PgVectorBackend:
         schema: str = "public",
         nodes_table: str = "gke_nodes",
         edges_table: str = "gke_edges",
+        stage1_table: str = "gke_stage1_projections",
         documents_table: str = "gke_documents",
         domains_table: str = "gke_domains",
         edge_endpoints_table: str = "gke_edge_endpoints",
@@ -671,6 +674,7 @@ class PgVectorBackend:
         self.embedding_dim = int(embedding_dim)
         self.distance = str(self._normalize_distance(distance)).lower()
         self.schema = schema
+        self.stage1_table_name = stage1_table
         self.numeric_keys = numeric_keys or set(_NUMERIC_KEYS_DEFAULT)
 
         if self.distance not in {"cosine", "l2", "ip"}:
@@ -725,6 +729,23 @@ class PgVectorBackend:
                 onupdate=sa.func.now(),
                 nullable=False,
             ),
+        )
+
+        # High-churn, non-semantic staging projection.  It is deliberately
+        # separate from named projections and vector serving tables.
+        self.stage1_projections = sa.Table(
+            stage1_table,
+            md,
+            sa.Column("namespace", sa.String, nullable=False, server_default="default"),
+            sa.Column("entity_kind", sa.String, nullable=False),
+            sa.Column("entity_id", sa.String, nullable=False),
+            sa.Column("document", sa.Text, nullable=False),
+            sa.Column("metadata", JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")),
+            sa.Column("source_fingerprint", sa.String, nullable=False),
+            sa.Column("revision", sa.BigInteger, nullable=False, server_default="0"),
+            sa.Column("materialization_status", sa.String, nullable=False, server_default="'pending'"),
+            sa.Column("updated_at_ms", sa.BigInteger, nullable=False),
+            sa.PrimaryKeyConstraint("namespace", "entity_kind", "entity_id"),
         )
 
         self.documents = sa.Table(
@@ -928,11 +949,119 @@ class PgVectorBackend:
         async with self.engine.begin() as conn:
             yield conn
 
+    # ----------------------------
+    # ADR-018 PostgreSQL Stage-1 projection
+    # ----------------------------
+
+    def stage1_projection_upsert(
+        self,
+        *,
+        namespace: str,
+        entity_kind: str,
+        entity_id: str,
+        document: str,
+        metadata: dict[str, Any],
+        source_fingerprint: str,
+        revision: int = 0,
+    ) -> None:
+        if entity_kind not in {"node", "edge"}:
+            raise ValueError(f"unsupported Stage-1 entity kind: {entity_kind!r}")
+        table = self.stage1_projections
+        stmt = psql.insert(table).values(
+            namespace=str(namespace),
+            entity_kind=entity_kind,
+            entity_id=str(entity_id),
+            document=str(document),
+            metadata=dict(metadata or {}),
+            source_fingerprint=str(source_fingerprint or ""),
+            revision=int(revision),
+            materialization_status="pending",
+            updated_at_ms=int(time.time() * 1000),
+        )
+        stmt = stmt.on_conflict_do_update(
+            index_elements=[table.c.namespace, table.c.entity_kind, table.c.entity_id],
+            set_={
+                "document": stmt.excluded.document,
+                "metadata": stmt.excluded.metadata,
+                "source_fingerprint": stmt.excluded.source_fingerprint,
+                "revision": stmt.excluded.revision,
+                "materialization_status": "pending",
+                "updated_at_ms": stmt.excluded.updated_at_ms,
+            },
+        )
+        with self._conn() as conn:
+            conn.execute(stmt)
+
+    def stage1_projection_get(
+        self, *, namespace: str, entity_kind: str, entity_id: str
+    ) -> dict[str, Any] | None:
+        if entity_kind not in {"node", "edge"}:
+            raise ValueError(f"unsupported Stage-1 entity kind: {entity_kind!r}")
+        with self._conn() as conn:
+            row = conn.execute(
+                sa.select(self.stage1_projections).where(
+                    self.stage1_projections.c.namespace == str(namespace),
+                    self.stage1_projections.c.entity_kind == entity_kind,
+                    self.stage1_projections.c.entity_id == str(entity_id),
+                )
+            ).mappings().first()
+        return dict(row) if row is not None else None
+
+    def stage1_projection_query(
+        self,
+        *,
+        namespace: str,
+        entity_kind: str,
+        ids: Sequence[str] | None = None,
+        metadata: dict[str, Any] | None = None,
+        limit: int | None = 200,
+    ) -> list[dict[str, Any]]:
+        if entity_kind not in {"node", "edge"}:
+            raise ValueError(f"unsupported Stage-1 entity kind: {entity_kind!r}")
+        table = self.stage1_projections
+        q = sa.select(table).where(
+            table.c.namespace == str(namespace), table.c.entity_kind == entity_kind
+        )
+        if ids is not None:
+            q = q.where(table.c.entity_id.in_([str(item) for item in ids]))
+        # Keep Stage-1 query semantics aligned with the existing narrow adapter.
+        for key, value in (metadata or {}).items():
+            if not isinstance(key, str) or isinstance(value, (dict, list, tuple, set)):
+                raise ValueError("PostgreSQL Stage-1 supports flat metadata equality only")
+            q = q.where(table.c.metadata[key].astext == str(value))
+        q = q.order_by(table.c.updated_at_ms, table.c.entity_id)
+        if limit is not None:
+            q = q.limit(int(limit))
+        with self._conn() as conn:
+            rows = conn.execute(q).mappings().all()
+        return [dict(row) for row in rows]
+
+    def stage1_projection_delete(
+        self, *, namespace: str, entity_kind: str, entity_id: str
+    ) -> None:
+        if entity_kind not in {"node", "edge"}:
+            raise ValueError(f"unsupported Stage-1 entity kind: {entity_kind!r}")
+        with self._conn() as conn:
+            conn.execute(
+                sa.delete(self.stage1_projections).where(
+                    self.stage1_projections.c.namespace == str(namespace),
+                    self.stage1_projections.c.entity_kind == entity_kind,
+                    self.stage1_projections.c.entity_id == str(entity_id),
+                )
+            )
+
     def _ensure_schema_sync(self, conn: sa.Connection) -> None:
         conn.execute(sa.text("CREATE EXTENSION IF NOT EXISTS vector"))
         if self.schema and self.schema != "public":
             conn.execute(sa.text(f'CREATE SCHEMA IF NOT EXISTS "{self.schema}"'))
         self._md.create_all(conn)
+        conn.execute(
+            sa.text(
+                f'CREATE INDEX IF NOT EXISTS "idx_{self.stage1_table_name}_namespace_status" '
+                f'ON "{self.schema}"."{self.stage1_table_name}" '
+                "(namespace, materialization_status, updated_at_ms)"
+            )
+        )
 
         # Optional-but-useful vector indexes. We default to HNSW because it's
         # generally strong out of the box and doesn't require ANALYZE/training.
@@ -2234,6 +2363,7 @@ def build_postgres_backend(
         schema=cfg.schema,
         nodes_table=cfg.nodes_table,
         edges_table=cfg.edges_table,
+        stage1_table=cfg.stage1_table,
         documents_table=cfg.documents_table,
         domains_table=cfg.domains_table,
         edge_endpoints_table=cfg.edge_endpoints_table,
@@ -2267,6 +2397,7 @@ def build_async_postgres_backend(
         schema=cfg.schema,
         nodes_table=cfg.nodes_table,
         edges_table=cfg.edges_table,
+        stage1_table=cfg.stage1_table,
         documents_table=cfg.documents_table,
         domains_table=cfg.domains_table,
         edge_endpoints_table=cfg.edge_endpoints_table,

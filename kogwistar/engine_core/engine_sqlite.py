@@ -88,6 +88,8 @@ class ProjectedLaneMessageSqlRow:
     lease_until: int | None
     retry_count: int
     created_at: int
+
+
     available_at: int
     run_id: str | None
     step_id: str | None
@@ -129,6 +131,24 @@ class ProjectedLaneMessageSqlRow:
         )
 
 
+@dataclass(frozen=True)
+class ProjectionTableSpec:
+    """Registered projection table. Table names never come from caller input."""
+
+    table_name: str
+    high_churn: bool = False
+
+
+NAMED_PROJECTION_TABLE = ProjectionTableSpec("named_projections")
+STAGE1_NODE_PROJECTION_TABLE = ProjectionTableSpec(
+    "stage1_node_projections", high_churn=True
+)
+_PROJECTION_TABLES = {
+    NAMED_PROJECTION_TABLE.table_name: NAMED_PROJECTION_TABLE,
+    STAGE1_NODE_PROJECTION_TABLE.table_name: STAGE1_NODE_PROJECTION_TABLE,
+}
+
+
 class EngineSQLite(LaneMessageMetaStoreMixin):
     """
     Lightweight SQLite helper for engine persistence.
@@ -154,6 +174,41 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
     ) -> None:
         self.persistent_directory = persistent_directory
         self.db_path = persistent_directory / filename
+
+    @staticmethod
+    def _projection_table_spec(table_name: str) -> ProjectionTableSpec:
+        try:
+            return _PROJECTION_TABLES[table_name]
+        except KeyError as exc:
+            raise ValueError(f"Unregistered projection table: {table_name!r}") from exc
+
+    @classmethod
+    def _ensure_projection_table(
+        cls, conn: sqlite3.Connection, table_name: str
+    ) -> None:
+        spec = cls._projection_table_spec(table_name)
+        # `table_name` comes only from the registered constants above.
+        conn.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {spec.table_name} (
+                namespace TEXT NOT NULL,
+                key TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                last_authoritative_seq INTEGER NOT NULL,
+                last_materialized_seq INTEGER NOT NULL,
+                projection_schema_version INTEGER NOT NULL,
+                materialization_status TEXT NOT NULL,
+                updated_at_ms INTEGER NOT NULL,
+                PRIMARY KEY(namespace, key)
+            )
+            """
+        )
+        conn.execute(
+            f"""
+            CREATE INDEX IF NOT EXISTS idx_{spec.table_name}_namespace
+            ON {spec.table_name}(namespace, updated_at_ms)
+            """
+        )
 
     # ------------------------------------------------------------------
     # Initialization
@@ -377,26 +432,11 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
                 )
                 """
             )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS named_projections (
-                    namespace TEXT NOT NULL,
-                    key TEXT NOT NULL,
-                    payload_json TEXT NOT NULL,
-                    last_authoritative_seq INTEGER NOT NULL,
-                    last_materialized_seq INTEGER NOT NULL,
-                    projection_schema_version INTEGER NOT NULL,
-                    materialization_status TEXT NOT NULL,
-                    updated_at_ms INTEGER NOT NULL,
-                    PRIMARY KEY(namespace, key)
-                )
-                """
+            self._ensure_projection_table(
+                conn, NAMED_PROJECTION_TABLE.table_name
             )
-            conn.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_named_projections_namespace
-                ON named_projections(namespace, updated_at_ms)
-                """
+            self._ensure_projection_table(
+                conn, STAGE1_NODE_PROJECTION_TABLE.table_name
             )
 
             conn.execute(
@@ -1482,33 +1522,38 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
     ):
         next_seq = int(from_seq)
         while True:
-            with self.connect() as conn:
-                if to_seq is None:
-                    rows = list(
-                        conn.execute(
-                            """
-                            SELECT seq, entity_kind, entity_id, op, payload_json
-                            FROM entity_events
-                            WHERE namespace = ? AND seq >= ?
-                            ORDER BY seq ASC
-                            LIMIT ?
-                            """,
+            active = get_active_sqlite_conn()
+            conn = active if get_active_sqlite_path() == self.db_path.resolve() else None
+            if conn is None:
+                with self.connect() as owned_conn:
+                    if to_seq is None:
+                        rows = list(owned_conn.execute(
+                            "SELECT seq, entity_kind, entity_id, op, payload_json "
+                            "FROM entity_events WHERE namespace = ? AND seq >= ? "
+                            "ORDER BY seq ASC LIMIT ?",
                             (namespace, next_seq, int(batch_size)),
-                        )
-                    )
-                else:
-                    rows = list(
-                        conn.execute(
-                            """
-                            SELECT seq, entity_kind, entity_id, op, payload_json
-                            FROM entity_events
-                            WHERE namespace = ? AND seq >= ? AND seq <= ?
-                            ORDER BY seq ASC
-                            LIMIT ?
-                            """,
+                        ))
+                    else:
+                        rows = list(owned_conn.execute(
+                            "SELECT seq, entity_kind, entity_id, op, payload_json "
+                            "FROM entity_events WHERE namespace = ? AND seq >= ? AND seq <= ? "
+                            "ORDER BY seq ASC LIMIT ?",
                             (namespace, next_seq, int(to_seq), int(batch_size)),
-                        )
-                    )
+                        ))
+            elif to_seq is None:
+                rows = list(conn.execute(
+                    "SELECT seq, entity_kind, entity_id, op, payload_json "
+                    "FROM entity_events WHERE namespace = ? AND seq >= ? "
+                    "ORDER BY seq ASC LIMIT ?",
+                    (namespace, next_seq, int(batch_size)),
+                ))
+            else:
+                rows = list(conn.execute(
+                    "SELECT seq, entity_kind, entity_id, op, payload_json "
+                    "FROM entity_events WHERE namespace = ? AND seq >= ? AND seq <= ? "
+                    "ORDER BY seq ASC LIMIT ?",
+                    (namespace, next_seq, int(to_seq), int(batch_size)),
+                ))
 
             if not rows:
                 break
@@ -1599,14 +1644,17 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
             raise ValueError("named projection payload must deserialize to a dict")
         return payload
 
-    def get_named_projection(self, namespace: str, key: str) -> Optional[dict[str, Any]]:
+    def _get_projection_row(
+        self, table_name: str, namespace: str, key: str
+    ) -> Optional[dict[str, Any]]:
+        spec = self._projection_table_spec(table_name)
         with self.connect() as conn:
             row = conn.execute(
-                """
+                f"""
                 SELECT namespace, key, payload_json,
                        last_authoritative_seq, last_materialized_seq,
                        projection_schema_version, materialization_status, updated_at_ms
-                FROM named_projections
+                FROM {spec.table_name}
                 WHERE namespace = ? AND key = ?
                 """,
                 (str(namespace), str(key)),
@@ -1624,8 +1672,9 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
             "updated_at_ms": int(row[7]),
         }
 
-    def replace_named_projection(
+    def _replace_projection_row(
         self,
+        table_name: str,
         namespace: str,
         key: str,
         payload: dict[str, Any],
@@ -1637,12 +1686,13 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
     ) -> None:
         if not isinstance(payload, dict):
             raise TypeError("payload must be a dict")
+        spec = self._projection_table_spec(table_name)
         updated_at_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
         payload_json = json.dumps(payload, sort_keys=True, separators=(",", ":"))
         with self.transaction() as conn:
             conn.execute(
-                """
-                INSERT INTO named_projections(
+                f"""
+                INSERT INTO {spec.table_name}(
                     namespace, key, payload_json,
                     last_authoritative_seq, last_materialized_seq,
                     projection_schema_version, materialization_status, updated_at_ms
@@ -1666,6 +1716,97 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
                     updated_at_ms,
                 ),
             )
+
+    def _list_projection_rows(
+        self, table_name: str, namespace: str
+    ) -> list[dict[str, Any]]:
+        spec = self._projection_table_spec(table_name)
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT namespace, key, payload_json,
+                       last_authoritative_seq, last_materialized_seq,
+                       projection_schema_version, materialization_status, updated_at_ms
+                FROM {spec.table_name}
+                WHERE namespace = ?
+                ORDER BY key ASC
+                """,
+                (str(namespace),),
+            ).fetchall()
+        return [
+            {
+                "namespace": str(row[0]),
+                "key": str(row[1]),
+                "payload": self._decode_named_projection_payload(row[2]),
+                "last_authoritative_seq": int(row[3]),
+                "last_materialized_seq": int(row[4]),
+                "projection_schema_version": int(row[5]),
+                "materialization_status": str(row[6]),
+                "updated_at_ms": int(row[7]),
+            }
+            for row in rows
+        ]
+
+    def _clear_projection_rows(
+        self, table_name: str, namespace: str, key: str | None = None
+    ) -> None:
+        spec = self._projection_table_spec(table_name)
+        with self.transaction() as conn:
+            if key is None:
+                conn.execute(
+                    f"DELETE FROM {spec.table_name} WHERE namespace = ?",
+                    (str(namespace),),
+                )
+            else:
+                conn.execute(
+                    f"DELETE FROM {spec.table_name} WHERE namespace = ? AND key = ?",
+                    (str(namespace), str(key)),
+                )
+
+    def _projection_table_stats(self, table_name: str, namespace: str) -> dict[str, int]:
+        spec = self._projection_table_spec(table_name)
+        with self.connect() as conn:
+            row = conn.execute(
+                f"""
+                SELECT COUNT(*), COALESCE(MIN(updated_at_ms), 0),
+                       COALESCE(MAX(updated_at_ms), 0)
+                FROM {spec.table_name}
+                WHERE namespace = ?
+                """,
+                (str(namespace),),
+            ).fetchone()
+        return {
+            "row_count": int(row[0]) if row else 0,
+            "oldest_updated_at_ms": int(row[1]) if row else 0,
+            "newest_updated_at_ms": int(row[2]) if row else 0,
+        }
+
+    def get_named_projection(self, namespace: str, key: str) -> Optional[dict[str, Any]]:
+        return self._get_projection_row(
+            NAMED_PROJECTION_TABLE.table_name, namespace, key
+        )
+
+    def replace_named_projection(
+        self,
+        namespace: str,
+        key: str,
+        payload: dict[str, Any],
+        *,
+        last_authoritative_seq: int,
+        last_materialized_seq: int,
+        projection_schema_version: int,
+        materialization_status: str,
+    ) -> None:
+        self._replace_projection_row(
+            NAMED_PROJECTION_TABLE.table_name,
+            namespace,
+            key,
+            payload,
+            last_authoritative_seq=last_authoritative_seq,
+            last_materialized_seq=last_materialized_seq,
+            projection_schema_version=projection_schema_version,
+            materialization_status=materialization_status,
+        )
 
     def compare_and_swap_named_projection(
         self,
@@ -1732,52 +1873,136 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
                 current = conn.execute("SELECT last_authoritative_seq,last_materialized_seq FROM named_projections WHERE namespace=? AND key=?", (str(item["namespace"]), str(item["key"]))).fetchone()
                 ea, em = item.get("expected_last_authoritative_seq"), item.get("expected_last_materialized_seq")
                 if ea is None and em is None:
-                    if current is not None: return False
-                elif current is None or int(current[0]) != int(ea) or int(current[1]) != int(em): return False
+                    if current is not None:
+                        return False
+                elif (
+                    current is None
+                    or int(current[0]) != int(ea)
+                    or int(current[1]) != int(em)
+                ):
+                    return False
             for item in rows:
                 conn.execute("""INSERT INTO named_projections(namespace,key,payload_json,last_authoritative_seq,last_materialized_seq,projection_schema_version,materialization_status,updated_at_ms) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(namespace,key) DO UPDATE SET payload_json=excluded.payload_json,last_authoritative_seq=excluded.last_authoritative_seq,last_materialized_seq=excluded.last_materialized_seq,projection_schema_version=excluded.projection_schema_version,materialization_status=excluded.materialization_status,updated_at_ms=excluded.updated_at_ms""", (str(item["namespace"]),str(item["key"]),json.dumps(item["payload"],sort_keys=True,separators=(",",":")),int(item.get("last_authoritative_seq",0)),int(item.get("last_materialized_seq",0)),int(item.get("projection_schema_version",1)),str(item.get("materialization_status","ready")),now))
         return True
 
     def list_named_projections(self, namespace: str) -> list[dict[str, Any]]:
-        with self.connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT namespace, key, payload_json,
-                       last_authoritative_seq, last_materialized_seq,
-                       projection_schema_version, materialization_status, updated_at_ms
-                FROM named_projections
-                WHERE namespace = ?
-                ORDER BY key ASC
-                """,
-                (str(namespace),),
-            ).fetchall()
-        return [
-            {
-                "namespace": str(row[0]),
-                "key": str(row[1]),
-                "payload": self._decode_named_projection_payload(row[2]),
-                "last_authoritative_seq": int(row[3]),
-                "last_materialized_seq": int(row[4]),
-                "projection_schema_version": int(row[5]),
-                "materialization_status": str(row[6]),
-                "updated_at_ms": int(row[7]),
-            }
-            for row in rows
-        ]
+        return self._list_projection_rows(NAMED_PROJECTION_TABLE.table_name, namespace)
 
     def clear_named_projection(self, namespace: str, key: str) -> None:
-        with self.transaction() as conn:
-            conn.execute(
-                "DELETE FROM named_projections WHERE namespace = ? AND key = ?",
-                (str(namespace), str(key)),
-            )
+        self._clear_projection_rows(NAMED_PROJECTION_TABLE.table_name, namespace, key)
 
     def clear_projection_namespace(self, namespace: str) -> None:
-        with self.transaction() as conn:
-            conn.execute(
-                "DELETE FROM named_projections WHERE namespace = ?",
-                (str(namespace),),
+        self._clear_projection_rows(NAMED_PROJECTION_TABLE.table_name, namespace)
+
+    # Stage 1 is a dedicated high-churn table, not a namespace in
+    # named_projections. It deliberately reuses only the projection-row storage
+    # mechanics; two-stage query routing and promotion remain future work.
+    def get_stage1_node_projection(
+        self, namespace: str, node_id: str
+    ) -> Optional[dict[str, Any]]:
+        row = self._get_projection_row(
+            STAGE1_NODE_PROJECTION_TABLE.table_name, namespace, node_id
+        )
+        if row is not None:
+            return row
+        # Chroma's shared staging table namespaces node/edge keys physically;
+        # retain the legacy node-only lookup for callers using this API.
+        return self._get_projection_row(
+            STAGE1_NODE_PROJECTION_TABLE.table_name, namespace, f"node:{node_id}"
+        )
+
+    def replace_stage1_node_projection(
+        self,
+        namespace: str,
+        node_id: str,
+        payload: dict[str, Any],
+        *,
+        last_authoritative_seq: int,
+        last_materialized_seq: int,
+        projection_schema_version: int,
+        materialization_status: str,
+    ) -> None:
+        self._replace_projection_row(
+            STAGE1_NODE_PROJECTION_TABLE.table_name,
+            namespace,
+            node_id,
+            payload,
+            last_authoritative_seq=last_authoritative_seq,
+            last_materialized_seq=last_materialized_seq,
+            projection_schema_version=projection_schema_version,
+            materialization_status=materialization_status,
+        )
+
+    def list_stage1_node_projections(self, namespace: str) -> list[dict[str, Any]]:
+        return self._list_projection_rows(
+            STAGE1_NODE_PROJECTION_TABLE.table_name, namespace
+        )
+
+    def query_stage1_node_projections(
+        self,
+        namespace: str,
+        *,
+        ids: list[str] | None = None,
+        entity_kind: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        limit: int | None = 200,
+    ) -> list[dict[str, Any]]:
+        """Query transient node staging rows using the narrow metadata contract.
+
+        Filtering is deliberately performed after JSON decoding. SQLite JSON
+        operators are an implementation detail; this keeps the Stage-1 query
+        contract portable to a separate staging file and other adapters.
+        Only flat metadata equality is supported in this first seam.
+        """
+        if metadata is not None and not isinstance(metadata, dict):
+            raise TypeError("metadata must be a dict or None")
+        if any(
+            str(key).startswith("$") or isinstance(value, dict)
+            for key, value in (metadata or {}).items()
+        ):
+            raise ValueError("Stage-1 metadata query supports flat equality only")
+        if limit is not None and int(limit) <= 0:
+            return []
+        rows = self.list_stage1_node_projections(namespace)
+        wanted_ids = {str(value) for value in ids} if ids is not None else None
+        wanted_metadata = dict(metadata or {})
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            payload = row.get("payload")
+            if not isinstance(payload, dict):
+                continue
+            if entity_kind is not None and payload.get("entity_kind") != entity_kind:
+                continue
+            payload_id = str(payload.get("id") or row["key"])
+            if wanted_ids is not None and payload_id not in wanted_ids:
+                continue
+            row_metadata = payload.get("metadata") if isinstance(payload, dict) else None
+            if not isinstance(row_metadata, dict):
+                row_metadata = {}
+            if any(row_metadata.get(key) != value for key, value in wanted_metadata.items()):
+                continue
+            result.append(row)
+            if limit is not None and len(result) >= int(limit):
+                break
+        return result
+
+    def clear_stage1_node_projection(self, namespace: str, node_id: str) -> None:
+        self._clear_projection_rows(
+            STAGE1_NODE_PROJECTION_TABLE.table_name, namespace, node_id
+        )
+        if not node_id.startswith(("node:", "edge:")):
+            self._clear_projection_rows(
+                STAGE1_NODE_PROJECTION_TABLE.table_name, namespace, f"node:{node_id}"
             )
+
+    def clear_stage1_node_namespace(self, namespace: str) -> None:
+        self._clear_projection_rows(STAGE1_NODE_PROJECTION_TABLE.table_name, namespace)
+
+    def stage1_node_projection_stats(self, namespace: str) -> dict[str, int]:
+        """Report dedicated Stage-1 occupancy for explicit cleanup/rebuild policy."""
+        return self._projection_table_stats(
+            STAGE1_NODE_PROJECTION_TABLE.table_name, namespace
+        )
 
     def get_workflow_design_projection(
         self, *, workflow_id: str

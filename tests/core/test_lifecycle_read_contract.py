@@ -109,13 +109,21 @@ def test_lifecycle_patch_is_metadata_only_and_preserves_embedding(
 
         assert engine.lifecycle.tombstone_node(node.id)
 
-        assert requested_includes == [["metadatas"]]
+        # Lifecycle patch reads metadata only.  The optional derived-index delete
+        # fingerprint may separately inspect documents+metadata, but it must not
+        # turn the projection patch itself into a document/vector update.
+        assert requested_includes[0] == ["metadatas"]
+        assert all(
+            include in (["metadatas"], ["documents", "metadatas"])
+            for include in requested_includes
+        )
         assert len(updates) == 1
         assert updates[0]["ids"] == [node.id]
         assert "documents" not in updates[0]
         assert "embeddings" not in updates[0]
         assert updates[0]["metadatas"][0]["lifecycle_status"] == "tombstoned"
         assert embedder.calls == calls_before_lifecycle
+        lifecycle_get_count = len(requested_includes)
 
         # The legacy exported utility is retained for compatibility.  It must
         # obey the same no-document/no-vector contract or a future caller could
@@ -128,7 +136,8 @@ def test_lifecycle_patch_is_metadata_only_and_preserves_embedding(
             safe_json_dict_fn=lambda _value: {},
             merge_meta_fn=lambda base, patch: {**base, **patch},
         )
-        assert requested_includes == [["metadatas"], ["metadatas"]]
+        assert len(requested_includes) == lifecycle_get_count + 1
+        assert requested_includes[-1] == ["metadatas"]
         assert len(updates) == 2
         assert "documents" not in updates[1]
         assert "embeddings" not in updates[1]

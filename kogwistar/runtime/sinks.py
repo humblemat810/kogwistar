@@ -27,3 +27,7 @@ class JsonlEventSink:
             self.jsonl_path.parent.mkdir(parents=True, exist_ok=True)
             with self.jsonl_path.open("a", encoding="utf-8") as handle:
                 handle.write(line + "\n")
+
+    def close(self) -> None:
+        """Satisfy telemetry sink lifecycle; JSONL opens per write."""
+        return None

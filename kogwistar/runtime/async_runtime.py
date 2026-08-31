@@ -3,11 +3,12 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import inspect
+import json
 import queue
 import time
 import uuid
 from contextlib import nullcontext
-from typing import Any, Awaitable, Callable, ContextManager, TypeAlias, cast
+from typing import Any, Awaitable, Callable, ContextManager, Mapping, TypeAlias, cast
 
 from .models import RunFailure, StepRunResult, WorkflowState
 from .executor import TerminalStatus, WorkflowExecutor
@@ -156,6 +157,8 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
         cache_dir: str | None = None,
         _resume_step_seq: int | None = None,
         _resume_last_exec_node: Any | None = None,
+        _run_metadata: Mapping[str, Any] | None = None,
+        _trace_context: TraceContext | None = None,
     ) -> RunResult:
         from .rust_runtime_authority import (
             run_with_rust_authority_async,
@@ -187,6 +190,8 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
             initial_state=initial_state,
             run_id=run_id,
             cache_dir=cache_dir,
+            run_metadata=_run_metadata,
+            trace_context=_trace_context,
         )
 
     def _resolve_async_step_fn(self, op: str) -> AsyncStepFn:
@@ -236,6 +241,7 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
         turn_node_id: str,
         parent_run_id: str,
         cache_dir: str | None = None,
+        parent_trace_context: TraceContext | None = None,
     ) -> RunResult:
         if getattr(invocation, "workflow_design", None) is not None:
             wf_design = getattr(invocation, "workflow_design")
@@ -266,16 +272,155 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
 
         token = _CANCEL_REQUESTED_CTX.set(_child_cancel_requested)
         try:
-            return await self.run(
-                workflow_id=str(getattr(invocation, "workflow_id", "")),
-                conversation_id=plan["conversation_id"],
-                turn_node_id=plan["turn_node_id"],
-                initial_state=child_state,
-                run_id=plan["child_run_id"],
-                cache_dir=cache_dir,
+            load_terminal_result = getattr(
+                self._sync_runtime, "_terminal_run_result", None
             )
+            terminal_result = (
+                load_terminal_result(
+                    conversation_id=plan["conversation_id"],
+                    run_id=plan["child_run_id"],
+                )
+                if callable(load_terminal_result)
+                else None
+            )
+            persist_lineage = getattr(
+                self._sync_runtime, "_persist_workflow_invocation_lineage", None
+            )
+            if terminal_result is None:
+                latest_checkpoint = getattr(
+                    self._sync_runtime, "_latest_checkpoint_for_run", None
+                )
+                child_checkpoint = (
+                    await asyncio.to_thread(
+                        latest_checkpoint,
+                        conversation_id=plan["conversation_id"],
+                        run_id=plan["child_run_id"],
+                    )
+                    if callable(latest_checkpoint)
+                    else None
+                )
+                persist_run = getattr(self._sync_runtime, "_persist_workflow_run", None)
+                if child_checkpoint is None and callable(persist_run):
+                    persist_run(
+                        conversation_id=plan["conversation_id"],
+                        workflow_id=str(getattr(invocation, "workflow_id", "")),
+                        run_id=plan["child_run_id"],
+                        turn_node_id=plan["turn_node_id"],
+                        status="planned",
+                        run_metadata={
+                            "parent_run_id": parent_run_id,
+                            "invocation_key": getattr(invocation, "invocation_key", None),
+                            "result_state_key": plan["result_state_key"],
+                        },
+                    )
+                if callable(persist_lineage):
+                    persist_lineage(
+                        conversation_id=conversation_id,
+                        parent_run_id=parent_run_id,
+                        child_run_id=plan["child_run_id"],
+                        invocation=invocation,
+                        result_state_key=plan["result_state_key"],
+                        required=True,
+                    )
+            if terminal_result is not None:
+                child_result = terminal_result
+            elif child_checkpoint is not None:
+                child_result = await self.resume_from_latest_checkpoint(
+                    run_id=plan["child_run_id"],
+                    workflow_id=str(getattr(invocation, "workflow_id", "")),
+                    conversation_id=plan["conversation_id"],
+                    turn_node_id=plan["turn_node_id"],
+                    cache_dir=cache_dir,
+                )
+            else:
+                child_result = await self.run(
+                    workflow_id=str(getattr(invocation, "workflow_id", "")),
+                    conversation_id=plan["conversation_id"],
+                    turn_node_id=plan["turn_node_id"],
+                    initial_state=child_state,
+                    run_id=plan["child_run_id"],
+                    cache_dir=cache_dir,
+                    _run_metadata={
+                        "parent_run_id": parent_run_id,
+                        "invocation_key": getattr(invocation, "invocation_key", None),
+                        "result_state_key": plan["result_state_key"],
+                    },
+                    _trace_context=parent_trace_context,
+                )
+            if callable(persist_lineage):
+                persist_lineage(
+                    conversation_id=conversation_id,
+                    parent_run_id=parent_run_id,
+                    child_run_id=str(child_result.run_id),
+                    invocation=invocation,
+                    result_state_key=plan["result_state_key"],
+                )
+            return child_result
         finally:
             _CANCEL_REQUESTED_CTX.reset(token)
+
+    async def resume_from_latest_checkpoint(
+        self,
+        *,
+        run_id: str,
+        workflow_id: str,
+        conversation_id: str,
+        turn_node_id: str,
+        cache_dir: str | None = None,
+    ) -> RunResult:
+        """Resume an async run without blocking the event loop.
+
+        Checkpoint storage remains owned by the shared runtime persistence
+        seam; execution continues through this async scheduler.
+        """
+        latest_checkpoint = await asyncio.to_thread(
+            self._sync_runtime._latest_checkpoint_for_run,
+            conversation_id=conversation_id,
+            run_id=str(run_id),
+        )
+        if latest_checkpoint is None:
+            raise ValueError(f"Cannot resume run {run_id}: no checkpoints found.")
+        metadata = dict(getattr(latest_checkpoint, "metadata", {}) or {})
+        checkpoint_workflow_id = str(metadata.get("workflow_id") or workflow_id)
+        if checkpoint_workflow_id != str(workflow_id):
+            raise ValueError(
+                f"Checkpoint workflow mismatch for {run_id}: "
+                f"stored={checkpoint_workflow_id!r} requested={workflow_id!r}"
+            )
+        state_raw = metadata.get("state_json", {})
+        if isinstance(state_raw, str):
+            state = json.loads(state_raw)
+        elif isinstance(state_raw, dict):
+            state = dict(state_raw)
+        else:
+            raise ValueError(f"Checkpoint state for {run_id} is not a JSON object.")
+        if not isinstance(state, dict):
+            raise ValueError(f"Checkpoint state for {run_id} is not a JSON object.")
+        step_seq = int(metadata.get("step_seq") or 0)
+        continuation_context = None
+        persisted_trace_id = metadata.get("trace_id")
+        persisted_span_id = metadata.get("run_execution_span_id")
+        if persisted_trace_id and persisted_span_id:
+            candidate = TraceContext(
+                run_id=str(run_id),
+                token_id=str(run_id),
+                step_seq=step_seq,
+                node_id="resume",
+                trace_id=str(persisted_trace_id),
+                span_id=str(persisted_span_id),
+            )
+            if candidate.has_valid_w3c_ids:
+                continuation_context = candidate
+        return await self.run(
+            workflow_id=workflow_id,
+            conversation_id=conversation_id,
+            turn_node_id=turn_node_id,
+            initial_state=state,
+            run_id=str(run_id),
+            cache_dir=cache_dir,
+            _resume_step_seq=step_seq + 1,
+            _trace_context=continuation_context,
+        )
 
     @staticmethod
     def _select_next_edges(
@@ -310,6 +455,8 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
         initial_state: WorkflowState,
         run_id: str | None,
         cache_dir: str | None,
+        run_metadata: Mapping[str, Any] | None = None,
+        trace_context: TraceContext | None = None,
     ) -> RunResult:
         state: WorkflowState = dict(initial_state)
         validate_initial_state(state)
@@ -322,6 +469,15 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
             predicate_registry=self._predicate_registry,
             resolver=self._raw_step_resolver,
         )
+        run_trace_context = (
+            trace_context.child_span(
+                token_id=str(run_id),
+                step_seq=0,
+                node_id=str(getattr(start, "id", "start")),
+            )
+            if trace_context is not None
+            else None
+        )
         wf_run_root_node: Any | None = None
         persist_workflow_run = getattr(self._sync_runtime, "_persist_workflow_run", None)
         if callable(persist_workflow_run):
@@ -332,6 +488,8 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
                     run_id=str(run_id),
                     turn_node_id=str(turn_node_id),
                     status="running",
+                    run_metadata=run_metadata,
+                    trace_context=run_trace_context,
                 )
             except Exception:
                 wf_run_root_node = None
@@ -341,7 +499,7 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
             try:
                 emit_event(
                     type="workflow_run_started",
-                    ctx=TraceContext(
+                    ctx=run_trace_context or TraceContext(
                         run_id=str(run_id),
                         token_id=str(run_id),
                         step_seq=0,
@@ -529,6 +687,15 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
                 step_seq=int(step_seq),
                 conversation_id=str(conversation_id),
                 turn_node_id=str(turn_node_id),
+                trace_context=(
+                    run_trace_context.child_span(
+                        token_id=str(token_id),
+                        step_seq=int(step_seq),
+                        node_id=str(node_id),
+                    )
+                    if run_trace_context is not None
+                    else None
+                ),
                 state=state,
                 message_queue=mq,
                 lane_message_sender=getattr(self._sync_runtime, "lane_message_sender", None),
@@ -709,6 +876,7 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
                     turn_node_id=str(turn_node_id),
                     parent_run_id=str(run_id),
                     cache_dir=cache_dir,
+                    parent_trace_context=run_trace_context,
                 )
                 child_status = str(getattr(child_result, "status", None))
                 if child_status != "succeeded":

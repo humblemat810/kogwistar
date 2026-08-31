@@ -171,6 +171,44 @@ class ReadSubsystem(NamespaceProxy, ReadLike):
             ]
         return result
 
+    def _stage1_fallback_get(
+        self,
+        *,
+        entity_kind: str,
+        ids: Sequence[str] | None,
+        where: Any,
+        limit: int | None,
+        include: list[str],
+    ) -> dict[str, Any] | None:
+        """Read pending Chroma entities from the transient SQLite projection."""
+        if getattr(self._e, "persistence_mode", "single_stage") != "two_stage":
+            return None
+        adapter = getattr(self._e, "two_stage_projection_adapter", None)
+        query = getattr(adapter, "stage1_query", None)
+        if not callable(query):
+            return None
+        if where is not None and self._native_equality_filter(where) is None:
+            return None
+        rows = query(
+            ids=list(ids) if ids is not None else None,
+            entity_kind=entity_kind,
+            metadata=dict(where or {}),
+            limit=limit,
+        )
+        if not rows:
+            return None
+        payloads = [dict(row.get("payload") or {}) for row in rows]
+        result: dict[str, Any] = {
+            "ids": [str(payload.get("id") or row.get("key") or "") for payload, row in zip(payloads, rows)]
+        }
+        if "documents" in include:
+            result["documents"] = [payload.get("document") for payload in payloads]
+        if "metadatas" in include:
+            result["metadatas"] = [dict(payload.get("metadata") or {}) for payload in payloads]
+        if "embeddings" in include:
+            result["embeddings"] = [None for _ in payloads]
+        return result
+
     def _node_get_raw(
         self,
         *,
@@ -190,12 +228,17 @@ class ReadSubsystem(NamespaceProxy, ReadLike):
         )
         if native is not None:
             return native
-        return run_awaitable_blocking(self._e.backend.node_get(
+        result = run_awaitable_blocking(self._e.backend.node_get(
             ids=ids,
             include=include,
             where=where,
             limit=limit,
         ))
+        if not result.get("ids"):
+            return self._stage1_fallback_get(
+                entity_kind="node", ids=ids, where=where, limit=limit, include=include
+            ) or result
+        return result
 
     def _edge_get_raw(
         self,
@@ -216,12 +259,17 @@ class ReadSubsystem(NamespaceProxy, ReadLike):
         )
         if native is not None:
             return native
-        return run_awaitable_blocking(self._e.backend.edge_get(
+        result = run_awaitable_blocking(self._e.backend.edge_get(
             ids=ids,
             include=include,
             where=where,
             limit=limit,
         ))
+        if not result.get("ids"):
+            return self._stage1_fallback_get(
+                entity_kind="edge", ids=ids, where=where, limit=limit, include=include
+            ) or result
+        return result
 
     def node_exists(
         self,
@@ -587,13 +635,18 @@ class ReadSubsystem(NamespaceProxy, ReadLike):
         if as_of is None:
             raise ValueError(f"Invalid as_of_ts: {as_of_ts!r}")
 
-        got = run_awaitable_blocking(self._e.backend.node_query(
-            query_embeddings=query_embeddings,
-            include=include,
-            n_results=n_results,
-            where=where,
+        query_kwargs = {
+            "query_embeddings": query_embeddings,
+            "include": include,
+            "n_results": n_results,
+            "where": where,
             **kwargs,
-        ))
+        }
+        # Historical search needs tombstone candidates for redirect/time
+        # resolution; ordinary semantic search must continue excluding them.
+        if getattr(self._e.backend, "supports_historical_tombstone_query", False):
+            query_kwargs["include_tombstoned"] = True
+        got = run_awaitable_blocking(self._e.backend.node_query(**query_kwargs))
         batches = self.nodes_from_query_result(got, node_type=node_type)
         candidates = [node for batch in batches for node in batch] if batches else []
         cache = {str(node.safe_get_id()): node for node in candidates}
@@ -730,6 +783,8 @@ class ReadSubsystem(NamespaceProxy, ReadLike):
         res = []
         for i_q in range(len(gots["ids"])):
             n_doc = len(gots["ids"][i_q])
+            if n_doc == 0:
+                continue
             for _ids, docs, embs, metadatas in zip(
                 gots.get("ids"),
                 gots.get("documents")
@@ -753,6 +808,8 @@ class ReadSubsystem(NamespaceProxy, ReadLike):
         res = []
         for i_q in range(len(gots["ids"])):
             n_doc = len(gots["ids"][i_q])
+            if n_doc == 0:
+                continue
             for ids, docs, embs, metadatas in zip(
                 gots.get("ids"),
                 gots.get("documents")
@@ -943,9 +1000,18 @@ class ReadSubsystem(NamespaceProxy, ReadLike):
             for m in rows.get("metadatas") or []:
                 if m and m.get("node_id"):
                     result.add(m.get("node_id"))
-            return sorted(result)
+            if result:
+                return sorted(result)
         got = run_awaitable_blocking(self._e.backend.node_get(where={"doc_id": doc_id}))
-        return got.get("ids") or []
+        result = set(got.get("ids") or [])
+        adapter = getattr(self._e, "two_stage_projection_adapter", None)
+        query = getattr(adapter, "stage1_query", None)
+        if callable(query):
+            for row in query(entity_kind="node", limit=10000) or []:
+                payload = dict(row.get("payload") or {})
+                if (payload.get("metadata") or {}).get("doc_id") == doc_id:
+                    result.add(str(payload.get("id") or row.get("key")))
+        return sorted(result)
 
     def edge_ids_by_doc(
         self, doc_id: str, insertion_method: str | None = None
@@ -963,6 +1029,13 @@ class ReadSubsystem(NamespaceProxy, ReadLike):
         for m in eps.get("metadatas") or []:
             if m and m.get("edge_id"):
                 result.add(m.get("edge_id"))
+        adapter = getattr(self._e, "two_stage_projection_adapter", None)
+        query = getattr(adapter, "stage1_query", None)
+        if callable(query):
+            for row in query(entity_kind="edge", limit=10000) or []:
+                payload = dict(row.get("payload") or {})
+                if (payload.get("metadata") or {}).get("doc_id") == doc_id:
+                    result.add(str(payload.get("id") or row.get("key")))
         return sorted(result)
 
     def edges_by_doc(self, doc_id: str, where: dict | None = None) -> list[str]:

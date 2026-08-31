@@ -18,7 +18,12 @@ from .chroma_backend import ChromaBackend
 
 
 from .rust_meta_sqlite import build_sqlite_meta_store
-from .storage_backend import NoopUnitOfWork, StorageBackend
+from .storage_backend import (
+    NoopUnitOfWork,
+    StorageBackend,
+    get_two_stage_projection_adapter,
+    get_two_stage_projection_capability,
+)
 from ..workers.index_job_worker import IndexJobWorker
 from ..utils.log import bind_log_context
 from .indexing import IndexingSubsystem
@@ -868,31 +873,22 @@ class GraphKnowledgeEngine:
         entity_id: str,
         op: str,
         payload: dict,
+        required: bool = False,
     ) -> None:
         """
-        Best-effort append to the meta outbox. Must never block the primary write path.
-        Replay suppresses this via self._disable_event_log.
-        """
-        """
-        ### Replay vs Repair Replay (Event Sourcing / Projections)
+        Append a domain event to the meta event log.
 
-        The entity event log (`entity_events`) is the source of truth. Storage backends (Chroma / pgvector)
-        are projections derived from the event stream.
-
-        - `replay_namespace(...)` replays events to rebuild projection state.
-        - For create-only backends like Chroma (`collection.add`), normal replay can rebuild missing ids,
-            but cannot overwrite ids that already exist with corrupted/tampered content.
-
-        - `replay_namespace(..., repair_backend=True)` (or `replay_repair_namespace(...)`) performs a
-        "repair replay" that best-effort overwrites projection state to match the event log.
-        - Use this when you suspect backend drift/tampering.
-
-        Invariant: replay never emits new `entity_events` (guarded by `_disable_event_log`).
+        Ordinary lifecycle telemetry may retain best-effort behavior. Canonical
+        admission passes ``required=True`` so a backend projection cannot become
+        visible without its replay authority being durable first. Replay suppresses
+        all re-append attempts via ``self._disable_event_log``.
         """
         if getattr(self, "_disable_event_log", False):
             return
         append = getattr(self.meta_sqlite, "append_entity_event", None)
         if append is None:
+            if required:
+                raise RuntimeError("canonical event store does not support append_entity_event")
             return
 
         event_id = str(uuid.uuid4())
@@ -1241,6 +1237,7 @@ class GraphKnowledgeEngine:
         acl_enabled: bool = False,
         acl_cache_enabled: bool = True,
         acl_startup_repair_limit: int = 0,
+        persistence_mode: str = "single_stage",
     ):
         """
         embedding_function: callable(texts: List[str]) -> List[List[float]].
@@ -1249,7 +1246,14 @@ class GraphKnowledgeEngine:
           - ENV SENTENCE_TRANSFORMERS_MODEL, or
           - "all-MiniLM-L6-v2".
         """
+        if persistence_mode not in {"single_stage", "two_stage"}:
+            raise ValueError(
+                "persistence_mode must be 'single_stage' or 'two_stage', "
+                f"got {persistence_mode!r}"
+            )
+
         load_dotenv()
+        self.persistence_mode = persistence_mode
         self.kg_graph_type = normalize_graph_kind(kg_graph_type)
         self.persist_directory = persist_directory
         self.namespace = namespace
@@ -1414,6 +1418,18 @@ class GraphKnowledgeEngine:
                 pathlib.Path(persist_directory or "./chroma_db"), "meta.sqlite"
             )
             self.meta_sqlite.ensure_initialized()
+            if self.persistence_mode == "two_stage":
+                from .two_stage_chroma import (
+                    SQLiteChromaTwoStageProjectionAdapter,
+                    chroma_two_stage_capability,
+                )
+
+                self.backend.two_stage_projection_capability = (
+                    chroma_two_stage_capability()
+                )
+                self.backend.two_stage_projection_adapter = (
+                    SQLiteChromaTwoStageProjectionAdapter(self)
+                )
         elif _is_pgvector_backend_instance(backend):
             from .engine_postgres_meta import EnginePostgresMetaStore
             from .rust_postgres_session import RustEnginePostgresMetaStore
@@ -1432,6 +1448,10 @@ class GraphKnowledgeEngine:
             graph_mode = graph_store_implementation_mode()
             postgres_authority_mode = postgres_authority_implementation_mode()
             sync_postgres = not getattr(backend2, "_is_async_engine", False)
+            if self.persistence_mode == "two_stage" and postgres_authority_mode == "rust":
+                raise ValueError(
+                    "persistence_mode='two_stage' is not available with Rust PostgreSQL authority"
+                )
             if not sync_postgres and postgres_authority_mode == "rust":
                 raise ValueError(
                     "async PostgreSQL Rust graph/meta authority is not available; "
@@ -1458,6 +1478,22 @@ class GraphKnowledgeEngine:
                 )
             meta_postgre.ensure_initialized()
             self.meta_sqlite = meta_postgre
+            if self.persistence_mode == "two_stage":
+                if not sync_postgres:
+                    raise ValueError(
+                        "persistence_mode='two_stage' currently requires synchronous PostgreSQL"
+                    )
+                from .two_stage_postgres import (
+                    PostgresTwoStageProjectionAdapter,
+                    postgres_two_stage_capability,
+                )
+
+                self.backend.two_stage_projection_capability = (
+                    postgres_two_stage_capability()
+                )
+                self.backend.two_stage_projection_adapter = (
+                    PostgresTwoStageProjectionAdapter(self)
+                )
         else:
             if isinstance(backend, str):
                 raise ValueError(
@@ -1472,6 +1508,33 @@ class GraphKnowledgeEngine:
         self._backend_uow = _build_postgres_uow_if_needed(
             getattr(self, "backend", None)
         )
+        self.two_stage_projection_capability = get_two_stage_projection_capability(
+            self.backend
+        )
+        self.two_stage_projection_adapter = None
+        if (
+            self.persistence_mode == "two_stage"
+            and not self.two_stage_projection_capability.is_complete()
+        ):
+            missing = ", ".join(
+                self.two_stage_projection_capability.missing_contracts()
+            )
+            raise ValueError(
+                "persistence_mode='two_stage' is unsupported for "
+                f"{type(self.backend).__name__}: "
+                f"{self.two_stage_projection_capability.reason}; "
+                f"missing capability contract: {missing}"
+            )
+        if self.persistence_mode == "two_stage":
+            self.two_stage_projection_adapter = get_two_stage_projection_adapter(
+                self.backend
+            )
+            if self.two_stage_projection_adapter is None:
+                raise ValueError(
+                    "persistence_mode='two_stage' requires an executable "
+                    f"two-stage projection adapter for {type(self.backend).__name__}; "
+                    "refusing synchronous single-stage fallback"
+                )
 
         from .lifecycle import LifecycleSubsystem
 

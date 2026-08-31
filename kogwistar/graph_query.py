@@ -36,33 +36,134 @@ class GraphQuery:
     def __init__(self, engine: "GraphKnowledgeEngine"):
         self.e = engine
 
+    def _read_nodes(self, *, ids=None, where=None) -> list[Node]:
+        """Use the read facade while retaining compatibility with tiny adapters."""
+        try:
+            return list(self.e.read.get_nodes(ids=ids, where=where, include=["documents"]))
+        except TypeError:
+            got = self.e.backend.node_get(ids=ids, where=where, include=["documents"])
+            return [Node.model_validate_json(doc) for doc in (got.get("documents") or []) if doc]
+
+    def _read_edges(self, *, ids=None, where=None) -> list[Edge]:
+        """Use the read facade while retaining compatibility with tiny adapters."""
+        try:
+            return list(self.e.read.get_edges(ids=ids, where=where, include=["documents"]))
+        except TypeError:
+            got = self.e.backend.edge_get(ids=ids, where=where, include=["documents"])
+            return [Edge.model_validate_json(doc) for doc in (got.get("documents") or []) if doc]
+
     # ---- internals ----
     def _is_node(self, rid: str) -> bool:
+        reader = getattr(self.e, "read", None)
+        exists = getattr(reader, "node_exists", None)
+        if callable(exists):
+            return bool(exists(ids=[rid]))
         hit = self.e.backend.node_get(ids=[rid])
         return (hit.get("ids") or [None])[0] == rid
 
     def _is_edge(self, rid: str) -> bool:
+        reader = getattr(self.e, "read", None)
+        exists = getattr(reader, "edge_exists", None)
+        if callable(exists):
+            return bool(exists(ids=[rid]))
         hit = self.e.backend.edge_get(ids=[rid])
         return (hit.get("ids") or [None])[0] == rid
+
+    def _stage1_endpoint_rows(self, *, edge_id: str | None = None) -> list[dict]:
+        """Derive transient endpoint rows from pending Stage-1 edge payloads.
+
+        Stage 1 is intentionally not copied into backend semantic collections.
+        Traversal still needs structural endpoints, so derive them from the
+        short-lived edge payload instead of embedding or persisting another
+        endpoint index.
+        """
+        if getattr(self.e, "persistence_mode", "single_stage") != "two_stage":
+            return []
+        adapter = getattr(self.e, "two_stage_projection_adapter", None)
+        query = getattr(adapter, "stage1_query", None)
+        if not callable(query):
+            return []
+        try:
+            rows = query(entity_kind="edge", ids=[edge_id] if edge_id else None, limit=10000)
+        except Exception:
+            return []
+
+        endpoints: list[dict] = []
+        for row in rows or []:
+            payload = dict(row.get("payload") or {})
+            document = payload.get("document")
+            if not document:
+                continue
+            try:
+                edge = Edge.model_validate_json(document)
+            except Exception:
+                continue
+            current_edge_id = str(edge.safe_get_id())
+            for role, ids, endpoint_type in (
+                ("src", edge.source_ids or [], "node"),
+                ("tgt", edge.target_ids or [], "node"),
+                ("src", getattr(edge, "source_edge_ids", []) or [], "edge"),
+                ("tgt", getattr(edge, "target_edge_ids", []) or [], "edge"),
+            ):
+                for endpoint_id in ids:
+                    endpoints.append(
+                        {
+                            "id": f"{current_edge_id}::{role}::{endpoint_type}::{endpoint_id}",
+                            "edge_id": current_edge_id,
+                            "endpoint_id": str(endpoint_id),
+                            "endpoint_type": endpoint_type,
+                            "role": role,
+                            "doc_id": edge.doc_id,
+                            "relation": edge.relation,
+                        }
+                    )
+        return endpoints
+
+    def _endpoint_rows(self, where: dict, *, edge_id: str | None = None) -> list[dict]:
+        """Return backend endpoint rows plus matching transient Stage-1 rows."""
+        rows: list[dict] = []
+        try:
+            got = self.e.backend.edge_endpoints_get(
+                where=where, include=["documents"]
+            )
+            rows.extend(
+                json.loads(document)
+                for document in (got.get("documents") or [])
+                if document
+            )
+        except Exception:
+            pass
+
+        def matches(row: dict) -> bool:
+            clauses = where.get("$and", [where]) if isinstance(where, dict) else []
+            for clause in clauses:
+                if not isinstance(clause, dict):
+                    continue
+                for key, value in clause.items():
+                    if row.get(key) != value:
+                        return False
+            return True
+
+        existing = {
+            (str(row.get("edge_id")), str(row.get("endpoint_id")), str(row.get("role")))
+            for row in rows
+        }
+        for row in self._stage1_endpoint_rows(edge_id=edge_id):
+            if matches(row):
+                key = (str(row.get("edge_id")), str(row.get("endpoint_id")), str(row.get("role")))
+                if key not in existing:
+                    rows.append(row)
+                    existing.add(key)
+        return rows
 
     # ---- doc scoping ----
     def nodes_in_doc(self, doc_id: str) -> List[Node]:
         ids = self.e.read.node_ids_by_doc(doc_id)
-        got = (
-            self.e.backend.node_get(ids=ids, include=["documents"])
-            if ids
-            else {"documents": []}
-        )
-        return [Node.model_validate_json(d) for d in (got.get("documents") or []) if d]
+        return self._read_nodes(ids=ids) if ids else []
 
     def edges_in_doc(self, doc_id: str) -> List[Edge]:
         ids = self.e.read.edge_ids_by_doc(doc_id)
-        got = (
-            self.e.backend.edge_get(ids=ids, include=["documents"])
-            if ids
-            else {"documents": []}
-        )
-        return [Edge.model_validate_json(d) for d in (got.get("documents") or []) if d]
+        return self._read_edges(ids=ids) if ids else []
 
     def document_subgraph(
         self, doc_id: str, *, center_ids: Optional[Iterable[str]] = None, hops: int = 1
@@ -89,34 +190,23 @@ class GraphQuery:
     def final_summary_node_id(self, doc_id: str) -> Optional[str]:
         """Find the single node that has a 'summarizes_document' edge -> docnode:{doc_id}."""
         tgt = f"docnode:{doc_id}"
-        eps = self.e.backend.edge_endpoints_get(
-            where={
-                "$and": [
-                    {"endpoint_id": tgt},
-                    {"endpoint_type": "node"},
-                    {"role": "tgt"},
-                    {"relation": "summarizes_document"},
-                ]
-            },
-            include=["documents"],
+        eps = self._endpoint_rows(
+            {"$and": [
+                {"endpoint_id": tgt},
+                {"endpoint_type": "node"},
+                {"role": "tgt"},
+                {"relation": "summarizes_document"},
+            ]}
         )
-        eids = {json.loads(d)["edge_id"] for d in (eps.get("documents") or [])}
+        eids = {str(row["edge_id"]) for row in eps}
         if not eids:
             return None
         # For each edge, fetch its src node endpoint
         for eid in eids:
-            srcs = self.e.backend.edge_endpoints_get(
-                where={
-                    "$and": [
-                        {"edge_id": eid},
-                        {"endpoint_type": "node"},
-                        {"role": "src"},
-                    ]
-                },
-                include=["documents"],
-            )
-            for d in srcs.get("documents") or []:
-                row = json.loads(d)
+            srcs = self._endpoint_rows({"$and": [
+                {"edge_id": eid}, {"endpoint_type": "node"}, {"role": "src"}
+            ]}, edge_id=eid)
+            for row in srcs:
                 return row.get("endpoint_id")
         return None
 
@@ -124,14 +214,8 @@ class GraphQuery:
         rid = self.final_summary_node_id(doc_id)
         if not rid:
             return None
-        got = (
-            self.e.backend.node_get(ids=[rid], include=["documents"])
-            if rid
-            else {"documents": []}
-        )
-        if got.get("documents"):
-            return Node.model_validate_json(got["documents"][0])
-        return None
+        nodes = self._read_nodes(ids=[rid]) if rid else []
+        return nodes[0] if nodes else None
 
     # ---- generic traversals ----
     def neighbors(
@@ -165,17 +249,13 @@ class GraphQuery:
                     ]
                 }
             )
-            eps = self.e.backend.edge_endpoints_get(where=q, include=["documents"])
-            for d in eps.get("documents") or []:
-                row = json.loads(d)
+            for row in self._endpoint_rows(q):
                 edges.add(row["edge_id"])
                 # pull opposite endpoints
                 if allow_jump_edge:
-                    eps2 = self.e.backend.edge_endpoints_get(
-                        where={"edge_id": row["edge_id"]}, include=["documents"]
-                    )
-                    for d2 in eps2.get("documents") or []:
-                        r2 = json.loads(d2)
+                    for r2 in self._endpoint_rows(
+                        {"edge_id": row["edge_id"]}, edge_id=row["edge_id"]
+                    ):
                         if (
                             r2.get("endpoint_type") == "node"
                             and r2["endpoint_id"] != rid
@@ -187,9 +267,7 @@ class GraphQuery:
             if direction in ("src", "tgt"):
                 clause.append({"role": direction})
             q = {"$and": clause} if len(clause) > 1 else {"edge_id": rid}
-            eps = self.e.backend.edge_endpoints_get(where=q, include=["documents"])
-            for d in eps.get("documents") or []:
-                row = json.loads(d)
+            for row in self._endpoint_rows(q, edge_id=rid):
                 if row["endpoint_type"] == "node":
                     nodes.add(row["endpoint_id"])
                 elif row["endpoint_type"] == "edge":
@@ -269,12 +347,12 @@ class GraphQuery:
         if doc_id:
             where["doc_id"] = doc_id
         # Pull candidate set by doc scope, then filter by JSON to avoid over‑constraining Chroma metadata
-        got = self.e.backend.node_get(where=(where or None), include=["documents"])
+        nodes = self._read_nodes(where=(where or None))
         out: List[str] = []
-        for nid, ndoc in zip(got.get("ids") or [], got.get("documents") or []):
-            if not nid or not ndoc:
+        for n in nodes:
+            nid = n.safe_get_id()
+            if not nid:
                 continue
-            n = Node.model_validate_json(ndoc)
             if type and (n.type != type):
                 continue
             if label_contains and (
@@ -330,32 +408,18 @@ class GraphQuery:
             where = None
         elif len(where) > 1:
             where = {"$and": [{k: v} for k, v in where.items()]}
-        edges = self.e.backend.edge_get(where=where, include=["documents"])
+        edges = self._read_edges(where=where)
         out: List[str] = []
-        for eid, edoc in zip(edges.get("ids") or [], edges.get("documents") or []):
-            if not eid or not edoc:
+        for e in edges:
+            eid = e.safe_get_id()
+            if not eid:
                 continue
-            e = Edge.model_validate_json(edoc)
 
             ok_src = src_label_contains is None
             ok_tgt = tgt_label_contains is None
             if src_label_contains or tgt_label_contains:
-                srcs = self.e.backend.node_get(
-                    ids=e.source_ids or [], include=["documents"]
-                )
-                tgts = self.e.backend.node_get(
-                    ids=e.target_ids or [], include=["documents"]
-                )
-                src_labels = [
-                    Node.model_validate_json(j).label
-                    for j in (srcs.get("documents") or [])
-                    if j
-                ]
-                tgt_labels = [
-                    Node.model_validate_json(j).label
-                    for j in (tgts.get("documents") or [])
-                    if j
-                ]
+                src_labels = [n.label for n in self._read_nodes(ids=e.source_ids or [])]
+                tgt_labels = [n.label for n in self._read_nodes(ids=e.target_ids or [])]
                 if src_label_contains:
                     ok_src = any(
                         src_label_contains.lower() in (s or "").lower()

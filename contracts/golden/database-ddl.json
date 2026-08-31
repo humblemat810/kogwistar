@@ -111,6 +111,12 @@
         "type": "index"
       },
       {
+        "name": "idx_stage1_node_projections_namespace",
+        "sql": "CREATE INDEX idx_stage1_node_projections_namespace ON stage1_node_projections(namespace, updated_at_ms)",
+        "table": "stage1_node_projections",
+        "type": "index"
+      },
+      {
         "name": "uq_index_jobs_pending_ns_coalesce",
         "sql": "CREATE UNIQUE INDEX uq_index_jobs_pending_ns_coalesce ON index_jobs(namespace, coalesce_key) WHERE status='PENDING'",
         "table": "index_jobs",
@@ -177,6 +183,12 @@
         "type": "table"
       },
       {
+        "name": "stage1_node_projections",
+        "sql": "CREATE TABLE stage1_node_projections ( namespace TEXT NOT NULL, key TEXT NOT NULL, payload_json TEXT NOT NULL, last_authoritative_seq INTEGER NOT NULL, last_materialized_seq INTEGER NOT NULL, projection_schema_version INTEGER NOT NULL, materialization_status TEXT NOT NULL, updated_at_ms INTEGER NOT NULL, PRIMARY KEY(namespace, key) )",
+        "table": "stage1_node_projections",
+        "type": "table"
+      },
+      {
         "name": "user_seq",
         "sql": "CREATE TABLE user_seq ( user_id TEXT PRIMARY KEY, value INTEGER NOT NULL )",
         "table": "user_seq",
@@ -195,6 +207,6 @@
         "type": "table"
       }
     ],
-    "sha256": "12e35b4b1399b428522e47b4b40cc0bc119fd6028cdb79ad43440717b85a8ea0"
+    "sha256": "8531ef1c79223b8712dfb6bb23d5153f4e3bfd65af7f4022be65561e487742ea"
   }
 }

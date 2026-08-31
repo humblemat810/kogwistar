@@ -85,6 +85,20 @@ class IndexJobWorker:
 
             metrics.claimed += len(jobs)
 
+            batch_results = None
+            adapter = getattr(self.engine, "two_stage_projection_adapter", None)
+            batch_apply = getattr(adapter, "apply_embedding_jobs_batch", None)
+            if (
+                len(jobs) > 1
+                and callable(batch_apply)
+                and all(
+                    str(getattr(job, "index_kind", None) or (job.get("index_kind") if isinstance(job, dict) else ""))
+                    == "node_embedding"
+                    for job in jobs
+                )
+            ):
+                batch_results = batch_apply(jobs)
+
             for job in jobs:
                 start = time.time()
 
@@ -104,6 +118,9 @@ class IndexJobWorker:
                 op = getattr(job, "op", None) or (
                     job.get("op") if isinstance(job, dict) else None
                 )
+                payload_json = getattr(job, "payload_json", None) or (
+                    job.get("payload_json") if isinstance(job, dict) else None
+                )
                 retry_count = (
                     getattr(job, "retry_count", None)
                     if not isinstance(job, dict)
@@ -119,15 +136,23 @@ class IndexJobWorker:
                 try_mr = int(max_retries or 10)
 
                 try:
-                    self.engine.indexing.apply_index_job(
-                        job_id=str(job_id),
-                        entity_kind=str(entity_kind),
-                        entity_id=str(entity_id),
-                        index_kind=str(index_kind),
-                        op=str(op),
-                        namespace=ns,
-                        validated_entity_cache=entity_cache,
-                    )
+                    if batch_results is not None:
+                        if str(job_id) not in batch_results:
+                            raise RuntimeError("batch embedding result missing job")
+                        batch_error = batch_results[str(job_id)]
+                        if batch_error is not None:
+                            raise batch_error
+                    else:
+                        self.engine.indexing.apply_index_job(
+                            job_id=str(job_id),
+                            entity_kind=str(entity_kind),
+                            entity_id=str(entity_id),
+                            index_kind=str(index_kind),
+                            op=str(op),
+                            namespace=ns,
+                            payload_json=payload_json,
+                            validated_entity_cache=entity_cache,
+                        )
                     if mark_done is not None and job_id:
                         mark_done(str(job_id))
                     metrics.done += 1

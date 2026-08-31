@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any, TYPE_CHECKING
 
 from .async_compat import run_awaitable_blocking
+from .canonical_events import CanonicalEntityRevision, read_canonical_entity_revision
 from .models import Node, Edge, Span, Grounding
 
 if TYPE_CHECKING:
@@ -87,17 +88,255 @@ class IndexingSubsystem:
         if callable(hook):
             hook(str(label), time.perf_counter() - float(started_s))
 
+    def canonical_source_payload(self, *, entity_kind: str, entity_id: str) -> str:
+        """Return a stable current-state identity for derived projection jobs.
+
+        This is a read of existing canonical/backend state, not an additional
+        entity store. Missing and tombstoned entities deliberately get distinct
+        fingerprints so stale workers cannot treat them as an earlier live row.
+        """
+
+        if entity_kind == "node":
+            getter = self.engine.backend.node_get
+        elif entity_kind == "edge":
+            getter = self.engine.backend.edge_get
+        else:
+            raise ValueError(f"unsupported entity kind for index work: {entity_kind!r}")
+
+        got = run_awaitable_blocking(
+            getter(ids=[entity_id], include=["documents", "metadatas"])
+        )
+        ids = got.get("ids") or []
+        documents = got.get("documents") or []
+        metadatas = got.get("metadatas") or []
+        if not ids:
+            source: dict[str, Any] = {
+                "entity_kind": entity_kind,
+                "entity_id": entity_id,
+                "state": "missing",
+            }
+        else:
+            metadata = metadatas[0] if metadatas and isinstance(metadatas[0], dict) else {}
+            source = {
+                "entity_kind": entity_kind,
+                "entity_id": entity_id,
+                "state": "deleted" if _is_tombstoned(metadata) else "active",
+                "document": documents[0] if documents else None,
+                "metadata": metadata,
+            }
+
+        blob = json.dumps(source, sort_keys=True, separators=(",", ":"))
+        return json.dumps(
+            {"source_fingerprint": hashlib.blake2b(blob.encode("utf-8"), digest_size=16).hexdigest(),
+             "source_state": source["state"]},
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+    def canonical_entity_revision(
+        self, *, entity_kind: str, entity_id: str, namespace: str | None = None
+    ) -> CanonicalEntityRevision | None:
+        """Read latest event-derived revision for future projection gates.
+
+        This deliberately reuses ``entity_events`` rather than inferring truth
+        from a vector/index backend. Existing Phase-1 job fingerprints retain
+        their compatibility behavior until a complete two-stage adapter uses
+        this seam for promotion and deletion checks.
+        """
+        selected_namespace = str(
+            namespace or getattr(self.engine, "namespace", "default")
+        )
+        iter_events = getattr(self.engine.meta_sqlite, "iter_entity_events", None)
+        if not callable(iter_events):
+            raise RuntimeError("canonical event store does not support iter_entity_events")
+        return read_canonical_entity_revision(
+            events=iter_events(namespace=selected_namespace, from_seq=1),
+            namespace=selected_namespace,
+            entity_kind=entity_kind,
+            entity_id=entity_id,
+        )
+
+    def canonical_revision_payload(self, *, entity_kind: str, entity_id: str) -> str:
+        """Return a stable identity derived from canonical entity events."""
+        revision = self.canonical_entity_revision(
+            entity_kind=entity_kind, entity_id=entity_id
+        )
+        if revision is None:
+            state = "missing"
+            revision_number = 0
+            payload: dict[str, Any] = {}
+        else:
+            state = revision.state
+            revision_number = revision.revision
+            payload = revision.payload
+        source = {
+            "entity_kind": entity_kind,
+            "entity_id": entity_id,
+            "state": state,
+            "revision": revision_number,
+            "payload": payload,
+        }
+        blob = json.dumps(source, sort_keys=True, separators=(",", ":"))
+        return json.dumps(
+            {
+                "source_fingerprint": hashlib.blake2b(
+                    blob.encode("utf-8"), digest_size=16
+                ).hexdigest(),
+                "source_state": state,
+                "canonical_revision": revision_number,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
     def enqueue_index_jobs_for_node(self, node_id: str, *, op: str) -> None:
+        payload_json = self.canonical_source_payload(
+            entity_kind="node", entity_id=node_id
+        )
+        if getattr(self.engine, "persistence_mode", "single_stage") == "two_stage":
+            self.enqueue_index_job(
+                entity_kind="node",
+                entity_id=node_id,
+                index_kind="node_embedding",
+                op=op,
+                payload_json=self.canonical_revision_payload(
+                    entity_kind="node", entity_id=node_id
+                ),
+            )
         for idx in ("node_docs", "node_refs"):
             self.enqueue_index_job(
-                entity_kind="node", entity_id=node_id, index_kind=idx, op=op
+                entity_kind="node",
+                entity_id=node_id,
+                index_kind=idx,
+                op=op,
+                payload_json=payload_json,
             )
 
     def enqueue_index_jobs_for_edge(self, edge_id: str, *, op: str) -> None:
+        payload_json = self.canonical_source_payload(
+            entity_kind="edge", entity_id=edge_id
+        )
+        if getattr(self.engine, "persistence_mode", "single_stage") == "two_stage":
+            self.enqueue_index_job(
+                entity_kind="edge",
+                entity_id=edge_id,
+                index_kind="node_embedding",
+                op=op,
+                payload_json=self.canonical_revision_payload(
+                    entity_kind="edge", entity_id=edge_id
+                ),
+            )
         for idx in ("edge_refs", "edge_endpoints"):
             self.enqueue_index_job(
-                entity_kind="edge", entity_id=edge_id, index_kind=idx, op=op
+                entity_kind="edge",
+                entity_id=edge_id,
+                index_kind=idx,
+                op=op,
+                payload_json=payload_json,
             )
+
+    def repair_missing_two_stage_embedding_jobs(
+        self, *, max_entities: int = 100, namespace: str | None = None
+    ) -> int:
+        """Recreate missing active embedding work from canonical events.
+
+        This is a bounded repair scanner, not a second queue. Canonical events
+        identify current entities; existing index jobs remain worker
+        coordination. A DONE job with a missing vector is repaired too.
+        """
+        if getattr(self.engine, "persistence_mode", "single_stage") != "two_stage":
+            return 0
+        iter_events = getattr(self.engine.meta_sqlite, "iter_entity_events", None)
+        list_jobs = getattr(self.engine.meta_sqlite, "list_index_jobs", None)
+        if not callable(iter_events) or not callable(list_jobs):
+            return 0
+        ns = self.engine.namespace if namespace is None else str(namespace)
+        latest: dict[tuple[str, str], Any] = {}
+        for event in iter_events(namespace=ns, from_seq=1):
+            if isinstance(event, dict):
+                entity_kind = str(event.get("entity_kind") or "")
+                entity_id = str(event.get("entity_id") or "")
+            elif isinstance(event, (tuple, list)) and len(event) >= 4:
+                # EngineSQLite compatibility shape:
+                # (seq, entity_kind, entity_id, op, payload_json).
+                entity_kind = str(event[1] or "")
+                entity_id = str(event[2] or "")
+            else:
+                entity_kind = str(getattr(event, "entity_kind", "") or "")
+                entity_id = str(getattr(event, "entity_id", "") or "")
+            if entity_kind in {"node", "edge"} and entity_id:
+                latest[(entity_kind, entity_id)] = event
+        repaired = 0
+        for (entity_kind, entity_id), event in sorted(latest.items()):
+            if repaired >= max(int(max_entities), 0):
+                break
+            op = str(
+                (
+                    event.get("op")
+                    if isinstance(event, dict)
+                    else event[3]
+                    if isinstance(event, (tuple, list))
+                    else getattr(event, "op", "")
+                )
+                or ""
+            ).upper()
+            revision_payload = self.canonical_revision_payload(
+                entity_kind=entity_kind, entity_id=entity_id
+            )
+            getter = getattr(self.engine.backend, f"{entity_kind}_get")
+            current = run_awaitable_blocking(
+                getter(ids=[entity_id], include=["embeddings", "metadatas"])
+            )
+            raw_embeddings = current.get("embeddings")
+            raw_metadatas = current.get("metadatas")
+            embeddings = [] if raw_embeddings is None else list(raw_embeddings)
+            metadatas = [] if raw_metadatas is None else list(raw_metadatas)
+            metadata = metadatas[0] if metadatas else {}
+            stage1_present = False
+            adapter = getattr(self.engine, "two_stage_projection_adapter", None)
+            stage1_query = getattr(adapter, "stage1_query", None)
+            if callable(stage1_query):
+                stage1_present = bool(stage1_query(ids=[entity_id], limit=1))
+            if op in {"DELETE", "TOMBSTONE", "REMOVE"}:
+                if not current.get("ids") and not stage1_present:
+                    continue
+                needs_delete = bool(current.get("ids")) and _is_tombstoned(metadata)
+                needs_delete = needs_delete or stage1_present
+                desired_op = "DELETE"
+            else:
+                needs_delete = False
+                desired_op = "UPSERT"
+            ready = bool(current.get("ids")) and bool(embeddings) and embeddings[0] is not None
+            ready = ready and not _is_tombstoned(metadata)
+            projected_fingerprint = (
+                metadata.get("_kogwistar_source_fingerprint")
+                if isinstance(metadata, dict)
+                else None
+            )
+            current_fingerprint = json.loads(revision_payload).get("source_fingerprint")
+            if projected_fingerprint and projected_fingerprint != current_fingerprint:
+                ready = False
+            if not needs_delete and ready:
+                continue
+            jobs = list_jobs(namespace=ns, entity_kind=entity_kind, entity_id=entity_id)
+            current_job_exists = any(
+                str(getattr(job, "index_kind", "") or "") == "node_embedding"
+                and str(getattr(job, "payload_json", "") or "") == revision_payload
+                and str(getattr(job, "status", "") or "") in {"PENDING", "DOING"}
+                and str(getattr(job, "op", "") or "").upper() == desired_op
+                for job in jobs
+            )
+            if not current_job_exists:
+                self.enqueue_index_job(
+                    entity_kind=entity_kind,
+                    entity_id=entity_id,
+                    index_kind="node_embedding",
+                    op=desired_op,
+                    payload_json=revision_payload,
+                    namespace=ns,
+                )
+                repaired += 1
+        return repaired
 
     def reconcile_indexes(
         self,
@@ -150,6 +389,9 @@ class IndexingSubsystem:
             op = getattr(job, "op", None) or (
                 job.get("op") if isinstance(job, dict) else None
             )
+            payload_json = getattr(job, "payload_json", None) or (
+                job.get("payload_json") if isinstance(job, dict) else None
+            )
 
             retry_count = (
                 getattr(job, "retry_count", None)
@@ -173,6 +415,7 @@ class IndexingSubsystem:
                     index_kind=str(index_kind),
                     op=str(op),
                     namespace=ns,
+                    payload_json=payload_json,
                     validated_entity_cache=entity_cache,
                 )
             except Exception as e:
@@ -236,6 +479,7 @@ class IndexingSubsystem:
         index_kind: str,
         op: str,
         namespace: str,
+        payload_json: str | None = None,
         validated_entity_cache: dict[tuple[str, str, str], Any] | None = None,
     ) -> None:
         """
@@ -247,8 +491,21 @@ class IndexingSubsystem:
         projections, and missing base rows raise so the caller can retry with
         backoff instead of synthesizing state for entities that do not exist yet.
         """
-        if index_kind not in self._PHASE1_JOIN_INDEX_KINDS:
+        if index_kind == "node_embedding":
+            adapter = getattr(self.engine, "two_stage_projection_adapter", None)
+            promote = getattr(adapter, "apply_embedding_job", None)
+            if not callable(promote):
+                raise ValueError("node_embedding requires an executable two-stage adapter")
+            promote(
+                entity_kind=entity_kind,
+                entity_id=entity_id,
+                op=op,
+                payload_json=payload_json,
+            )
             return
+
+        if index_kind not in self._PHASE1_JOIN_INDEX_KINDS:
+            raise ValueError(f"unsupported index job kind: {index_kind!r}")
 
         # Phase 2: fingerprints + drift detection
         coalesce_key = f"{entity_kind}:{entity_id}:{index_kind}"

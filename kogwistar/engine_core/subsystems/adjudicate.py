@@ -48,13 +48,32 @@ class AdjudicateSubsystem(NamespaceProxy, AdjudicateLike):
             )
             if docs := got.get("documents"):
                 return Node.model_validate_json(docs[0])
+            staged = self._stage1_target(t.kind, t.id)
+            if staged is not None:
+                return Node.model_validate_json(staged["document"])
             raise ValueError(f"Node {t.id} not found")
         got = run_awaitable_blocking(
             self._e.backend.edge_get(ids=[t.id], include=["documents"])
         )
         if docs := got.get("documents"):
             return Edge.model_validate_json(docs[0])
+        staged = self._stage1_target(t.kind, t.id)
+        if staged is not None:
+            return Edge.model_validate_json(staged["document"])
         raise ValueError(f"Edge {t.id} not found")
+
+    def _stage1_target(self, kind: str, entity_id: str) -> dict[str, Any] | None:
+        """Use transient projection only for endpoint adjudication during handoff."""
+        adapter = getattr(self._e, "two_stage_projection_adapter", None)
+        backend = getattr(self._e, "backend", None)
+        getter = getattr(backend, "stage1_projection_get", None)
+        if adapter is None or getter is None:
+            return None
+        return getter(
+            namespace=str(getattr(self._e, "namespace", "default")),
+            entity_kind=kind,
+            entity_id=entity_id,
+        )
 
     def classify_endpoint_id(self, rid: str) -> str:
         hit = run_awaitable_blocking(self._e.backend.node_get(ids=[rid]))
@@ -62,6 +81,10 @@ class AdjudicateSubsystem(NamespaceProxy, AdjudicateLike):
             return "node"
         hit = run_awaitable_blocking(self._e.backend.edge_get(ids=[rid]))
         if (hit.get("ids") or [None])[0] == rid:
+            return "edge"
+        if self._stage1_target("node", rid) is not None:
+            return "node"
+        if self._stage1_target("edge", rid) is not None:
             return "edge"
         raise ValueError(f"Unknown endpoint id {rid!r} (not a node or edge)")
 

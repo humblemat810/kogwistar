@@ -61,6 +61,10 @@ class RustEngineSQLite:
         self.persistent_directory.mkdir(parents=True, exist_ok=True)
         self._call("open_init")
 
+    def close(self) -> None:
+        """Release the native cached SQLite handle for this facade path."""
+        self._call("close")
+
     def connect(self) -> None:
         raise RustSQLiteConnectionUnavailable(
             "raw Python SQLite connection would create a second writer while "
@@ -344,6 +348,78 @@ class RustEngineSQLite:
 
     def clear_projection_namespace(self, namespace: str) -> None:
         self._call("clear_projection_namespace", namespace=namespace)
+
+    def get_stage1_node_projection(
+        self, namespace: str, node_id: str
+    ) -> dict[str, Any] | None:
+        return self._call(
+            "get_stage1_node_projection", namespace=namespace, key=node_id
+        )
+
+    def list_stage1_node_projections(self, namespace: str) -> list[dict[str, Any]]:
+        return list(
+            self._call("list_stage1_node_projections", namespace=namespace)
+        )
+
+    def replace_stage1_node_projection(
+        self,
+        namespace: str,
+        node_id: str,
+        payload: dict[str, Any],
+        **values: Any,
+    ) -> None:
+        self._call(
+            "replace_stage1_node_projection",
+            namespace=namespace,
+            key=node_id,
+            payload=payload,
+            **values,
+        )
+
+    def clear_stage1_node_projection(self, namespace: str, node_id: str) -> None:
+        self._call(
+            "clear_stage1_node_projection", namespace=namespace, key=node_id
+        )
+
+    def query_stage1_node_projections(
+        self,
+        namespace: str,
+        *,
+        ids: list[str] | None = None,
+        entity_kind: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        limit: int | None = 200,
+    ) -> list[dict[str, Any]]:
+        if metadata is not None and not isinstance(metadata, dict):
+            raise TypeError("metadata must be a dict or None")
+        if any(
+            str(key).startswith("$") or isinstance(value, dict)
+            for key, value in (metadata or {}).items()
+        ):
+            raise ValueError("Stage-1 metadata query supports flat equality only")
+        if limit is not None and int(limit) <= 0:
+            return []
+        wanted_ids = {str(value) for value in ids} if ids is not None else None
+        wanted_metadata = dict(metadata or {})
+        result: list[dict[str, Any]] = []
+        for row in self.list_stage1_node_projections(namespace):
+            payload = row.get("payload")
+            if not isinstance(payload, dict):
+                continue
+            if entity_kind is not None and payload.get("entity_kind") != entity_kind:
+                continue
+            payload_id = str(payload.get("id") or row["key"])
+            if wanted_ids is not None and payload_id not in wanted_ids:
+                continue
+            row_metadata = payload.get("metadata") if isinstance(payload, dict) else None
+            if not isinstance(row_metadata, dict):
+                row_metadata = {}
+            if any(row_metadata.get(key) != value for key, value in wanted_metadata.items()):
+                continue
+            result.append(row)
+            if limit is not None and len(result) >= int(limit):
+                break
+        return result
 
     def get_workflow_design_projection(self, *, workflow_id: str) -> dict[str, Any] | None:
         projection = self.get_named_projection("workflow_design", workflow_id)

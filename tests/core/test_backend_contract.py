@@ -4,6 +4,7 @@ import pytest
 
 from kogwistar.conversation.models import ConversationEdge, ConversationNode, ConversationRole
 from kogwistar.engine_core.models import Edge, Node
+from kogwistar.engine_core.in_memory_backend import InMemoryBackend
 from kogwistar.id_provider import stable_id
 from kogwistar.server.run_registry import RunRegistry
 from tests._helpers.graph_builders import (
@@ -131,6 +132,24 @@ def _mk_next_turn_edge(
         properties=None,
         embedding=None,
     )
+
+
+def test_in_memory_semantic_query_excludes_pending_embedding() -> None:
+    backend = InMemoryBackend(None)
+    backend.node_add(
+        ids=["pending"],
+        documents=["pending node"],
+        metadatas=[{"doc_id": "d1"}],
+        embeddings=[None],
+    )
+
+    result = backend.node_query(
+        query_embeddings=[[1.0, 0.0, 0.0]],
+        n_results=10,
+        include=["metadatas"],
+    )
+
+    assert result["ids"] == [[]]
 
 
 def _mk_dependency_edge(

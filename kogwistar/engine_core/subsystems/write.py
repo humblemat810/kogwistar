@@ -373,14 +373,37 @@ class WriteSubsystem(NamespaceProxy, WriteLike):
         return base_metadata
 
     def _add_node_impl(self, node: Node, doc_id: str | None = None):
-        """Persist the base node, then converge derived indexes around it.
+        """Commit canonical node event, then converge projections around it.
 
-        The backend node row is the source of truth. This method best-effort appends
-        an entity event and then either enqueues index jobs plus an immediate drain
-        attempt or updates join indexes inline when phase1 jobs are disabled.
-        Callers should not assume derived rows are atomically present with the base
-        node write.
+        For non-native backends, event append is required before the backend write.
+        A projection failure may therefore leave a recoverable event without a row;
+        an event-store failure leaves no backend projection. Derived rows remain
+        asynchronous/best-effort according to existing index-job settings.
         """
+        if self._e.persistence_mode == "two_stage":
+            adapter = self._e.two_stage_projection_adapter
+            if adapter is None:
+                raise RuntimeError("two-stage projection adapter is unavailable")
+            if doc_id is not None:
+                node.doc_id = doc_id
+            self._run_pre_add_node_hooks(node)
+            doc, meta = self.node_doc_and_meta(node)
+            meta["_class_name"] = type(node).__name__
+            payload = node.model_dump(field_mode="backend", exclude=["embedding"])
+            with self._e.uow():
+                self._e._append_event_for_entity(
+                    namespace=getattr(self._e, "namespace", "default"),
+                    entity_kind="node",
+                    entity_id=node.safe_get_id(),
+                    op="ADD",
+                    payload=payload if isinstance(payload, dict) else {},
+                    required=True,
+                )
+                result = adapter.add_node(node, doc_id=doc_id)
+            enqueue = getattr(adapter, "enqueue_embedding_job", None)
+            if callable(enqueue):
+                enqueue(entity_kind="node", entity_id=node.safe_get_id(), op="UPSERT")
+            return result
         if doc_id is not None:
             node.doc_id = doc_id
         self._run_pre_add_node_hooks(node)
@@ -408,6 +431,14 @@ class WriteSubsystem(NamespaceProxy, WriteLike):
         )
 
         if not native_added:
+            self._e._append_event_for_entity(
+                namespace=getattr(self._e, "namespace", "default"),
+                entity_kind="node",
+                entity_id=node.safe_get_id(),
+                op="ADD",
+                payload=payload if isinstance(payload, dict) else {},
+                required=True,
+            )
             run_awaitable_blocking(self._e.backend.node_add(
                 ids=[node.safe_get_id()],
                 documents=[doc],
@@ -416,17 +447,6 @@ class WriteSubsystem(NamespaceProxy, WriteLike):
                 else [self._e.embed.iterative_defensive_emb(str(doc))],
                 metadatas=[meta],
             ))
-
-            try:
-                self._e._append_event_for_entity(
-                    namespace=getattr(self._e, "namespace", "default"),
-                    entity_kind="node",
-                    entity_id=node.safe_get_id(),
-                    op="ADD",
-                    payload=payload if isinstance(payload, dict) else {},
-                )
-            except Exception:
-                pass
 
         if self._e._phase1_enable_index_jobs:
             if not native_added:
@@ -457,6 +477,37 @@ class WriteSubsystem(NamespaceProxy, WriteLike):
         edge_endpoints fanout, so derived projections may converge after the base
         edge is durable.
         """
+        if self._e.persistence_mode == "two_stage":
+            adapter = self._e.two_stage_projection_adapter
+            if adapter is None:
+                raise RuntimeError("two-stage projection adapter is unavailable")
+            if doc_id is not None:
+                edge.doc_id = doc_id
+            s_nodes, s_edges, t_nodes, t_edges = self._e.adjudicate.split_endpoints(
+                edge.source_ids, edge.target_ids
+            )
+            edge.source_ids = s_nodes
+            edge.source_edge_ids = (getattr(edge, "source_edge_ids", []) or []) + s_edges
+            edge.target_ids = t_nodes
+            edge.target_edge_ids = (getattr(edge, "target_edge_ids", []) or []) + t_edges
+            self._e.persist.assert_endpoints_exist(edge)
+            if self._run_pre_add_edge_hooks(edge, pure=False):
+                return
+            payload = edge.model_dump(field_mode="backend", exclude=["embedding"])
+            with self._e.uow():
+                self._e._append_event_for_entity(
+                    namespace=getattr(self._e, "namespace", "default"),
+                    entity_kind="edge",
+                    entity_id=edge.safe_get_id(),
+                    op="ADD",
+                    payload=payload if isinstance(payload, dict) else {},
+                    required=True,
+                )
+                result = adapter.add_edge(edge, doc_id=doc_id)
+            enqueue = getattr(adapter, "enqueue_embedding_job", None)
+            if callable(enqueue):
+                enqueue(entity_kind="edge", entity_id=edge.safe_get_id(), op="UPSERT")
+            return result
         if doc_id is not None:
             edge.doc_id = doc_id
         s_nodes, s_edges, t_nodes, t_edges = self._e.adjudicate.split_endpoints(
@@ -493,6 +544,14 @@ class WriteSubsystem(NamespaceProxy, WriteLike):
             payload=payload if isinstance(payload, dict) else {},
         )
         if not native_added:
+            self._e._append_event_for_entity(
+                namespace=getattr(self._e, "namespace", "default"),
+                entity_kind="edge",
+                entity_id=edge.safe_get_id(),
+                op="ADD",
+                payload=payload if isinstance(payload, dict) else {},
+                required=True,
+            )
             run_awaitable_blocking(self._e.backend.edge_add(
                 ids=[edge.safe_get_id()],
                 documents=[str(doc)],
@@ -501,17 +560,6 @@ class WriteSubsystem(NamespaceProxy, WriteLike):
                 else [self._e.embed.iterative_defensive_emb(str(doc))],
                 metadatas=base_metadata,
             ))
-
-            try:
-                self._e._append_event_for_entity(
-                    namespace=getattr(self._e, "namespace", "default"),
-                    entity_kind="edge",
-                    entity_id=edge.safe_get_id(),
-                    op="ADD",
-                    payload=payload if isinstance(payload, dict) else {},
-                )
-            except Exception:
-                pass
 
         if self._e._phase1_enable_index_jobs:
             if not native_added:

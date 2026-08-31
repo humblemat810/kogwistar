@@ -325,6 +325,20 @@ class PersistSubsystem(NamespaceProxy):
                 or []
             )
             if got != need_nodes:
+                adapter = getattr(self._e, "two_stage_projection_adapter", None)
+                getter = getattr(self._e.backend, "stage1_projection_get", None)
+                if adapter is not None and getter is not None:
+                    got.update(
+                        node_id
+                        for node_id in need_nodes - got
+                        if getter(
+                            namespace=str(getattr(self._e, "namespace", "default")),
+                            entity_kind="node",
+                            entity_id=node_id,
+                        )
+                        is not None
+                    )
+            if got != need_nodes:
                 raise ValueError(f"Missing node endpoints: {sorted(need_nodes - got)}")
 
         for attr in ("source_edge_ids", "target_edge_ids"):

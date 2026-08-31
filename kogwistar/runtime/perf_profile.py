@@ -937,6 +937,7 @@ def _profile_job_loop_scenario(
                         index_kind=str(job.index_kind),
                         op=str(job.op),
                         namespace=namespace,
+                        payload_json=getattr(job, "payload_json", None),
                         validated_entity_cache=cache,
                     )
                     conversation_engine.meta_sqlite.mark_index_job_done(str(job.job_id))

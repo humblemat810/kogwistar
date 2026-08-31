@@ -60,6 +60,7 @@ class FakeIndexing:
         index_kind: str,
         op: str,
         namespace: str,
+        payload_json=None,
         validated_entity_cache=None,
     ):
         # record that we processed this job

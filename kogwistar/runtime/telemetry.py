@@ -10,7 +10,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, Dict, Mapping, Optional, Protocol, Sequence
 
 
 # -----------------------------
@@ -24,6 +24,23 @@ def _now_ms() -> int:
 
 def _new_id(prefix: str = "evt") -> str:
     return f"{prefix}|{uuid.uuid4()}"
+
+
+def _new_w3c_trace_id() -> str:
+    return uuid.uuid4().hex
+
+
+def _new_w3c_span_id() -> str:
+    return uuid.uuid4().hex[:16]
+
+
+def _valid_w3c_id(value: Optional[str], length: int) -> bool:
+    if not isinstance(value, str) or len(value) != length:
+        return False
+    try:
+        return int(value, 16) != 0
+    except ValueError:
+        return False
 
 
 @dataclass(frozen=True)
@@ -45,6 +62,70 @@ class TraceContext:
     trace_id: Optional[str] = None
     span_id: Optional[str] = None
     parent_span_id: Optional[str] = None
+
+    @property
+    def has_valid_w3c_ids(self) -> bool:
+        """Whether explicitly supplied trace fields satisfy W3C ID shape."""
+        return _valid_w3c_id(self.trace_id, 32) and _valid_w3c_id(
+            self.span_id, 16
+        ) and (
+            self.parent_span_id is None
+            or _valid_w3c_id(self.parent_span_id, 16)
+        )
+
+    def require_valid_w3c_ids(self) -> "TraceContext":
+        """Reject pseudo/domain IDs before an adapter treats them as trace IDs."""
+        if not self.has_valid_w3c_ids:
+            raise ValueError("TraceContext does not contain valid W3C trace IDs")
+        return self
+
+    @classmethod
+    def new_root(
+        cls,
+        *,
+        run_id: str,
+        token_id: str,
+        step_seq: int,
+        node_id: str,
+        attempt: int = 1,
+        conversation_id: Optional[str] = None,
+        turn_node_id: Optional[str] = None,
+    ) -> "TraceContext":
+        """Create a vendor-neutral W3C root without changing legacy defaults."""
+        return cls(
+            run_id=run_id,
+            token_id=token_id,
+            step_seq=step_seq,
+            node_id=node_id,
+            attempt=attempt,
+            conversation_id=conversation_id,
+            turn_node_id=turn_node_id,
+            trace_id=_new_w3c_trace_id(),
+            span_id=_new_w3c_span_id(),
+        )
+
+    def child_span(
+        self,
+        *,
+        token_id: Optional[str] = None,
+        step_seq: Optional[int] = None,
+        node_id: Optional[str] = None,
+        attempt: Optional[int] = None,
+    ) -> "TraceContext":
+        """Create a new span in this trace while retaining domain correlation."""
+        parent = self.with_span_defaults()
+        return TraceContext(
+            run_id=parent.run_id,
+            token_id=token_id if token_id is not None else parent.token_id,
+            step_seq=step_seq if step_seq is not None else parent.step_seq,
+            node_id=node_id if node_id is not None else parent.node_id,
+            attempt=attempt if attempt is not None else parent.attempt,
+            conversation_id=parent.conversation_id,
+            turn_node_id=parent.turn_node_id,
+            trace_id=parent.trace_id,
+            span_id=_new_w3c_span_id(),
+            parent_span_id=parent.span_id,
+        )
 
     def with_span_defaults(self) -> "TraceContext":
         """
@@ -90,6 +171,71 @@ class TraceContext:
 # -----------------------------
 
 
+class EventSink(Protocol):
+    """Best-effort telemetry destination; never a workflow authority."""
+
+    def emit(self, evt: Dict[str, Any]) -> None: ...
+
+    def flush(self, timeout: float = 1.0) -> bool: ...
+
+    def close(self, timeout: float = 1.0) -> None: ...
+
+
+@dataclass(frozen=True)
+class _FlushBarrier:
+    """Private queue control marker; never serialized as a telemetry event."""
+
+    completed: threading.Event
+
+
+class FanoutEventSink:
+    """Small sink composition that isolates one observer from another."""
+
+    def __init__(
+        self, sinks: Sequence[EventSink], *, logger: Optional[logging.Logger] = None
+    ) -> None:
+        self._sinks = tuple(sinks)
+        self._log = logger or logging.getLogger(__name__)
+
+    def emit(self, evt: Dict[str, Any]) -> None:
+        for sink in self._sinks:
+            try:
+                sink.emit(evt)
+            except Exception:
+                self._log.exception("telemetry sink failed; event discarded by that sink")
+
+    def close(self, timeout: float = 1.0) -> None:
+        deadline = time.monotonic() + max(timeout, 0.0)
+        self.flush(timeout)
+        for sink in self._sinks:
+            try:
+                remaining = max(0.0, deadline - time.monotonic())
+                try:
+                    sink.close(remaining)
+                except TypeError:
+                    # Keep compatibility with older no-argument sinks. New
+                    # sinks must accept the bounded timeout parameter.
+                    sink.close()
+            except Exception:
+                self._log.exception("telemetry sink close failed")
+
+    def flush(self, timeout: float = 1.0) -> bool:
+        """Flush all capable child sinks without letting one peer block another."""
+        deadline = time.monotonic() + max(timeout, 0.0)
+        complete = True
+        for sink in self._sinks:
+            flush = getattr(sink, "flush", None)
+            if not callable(flush):
+                continue
+            try:
+                remaining = max(0.0, deadline - time.monotonic())
+                complete = bool(flush(remaining)) and complete
+            except Exception:
+                complete = False
+                self._log.exception("telemetry sink flush failed")
+        return complete
+
+
 class SQLiteEventSink:
     """
     Durable append-only event store with an async writer thread.
@@ -117,7 +263,7 @@ class SQLiteEventSink:
         self.drop_when_full = drop_when_full
         self._log = logger or logging.getLogger(__name__)
 
-        self._q: "queue.Queue[dict]" = queue.Queue(maxsize=queue_max)
+        self._q: "queue.Queue[dict | _FlushBarrier]" = queue.Queue(maxsize=queue_max)
         self._stop = threading.Event()
         self._thr = threading.Thread(
             target=self._run, name=f"wf-trace-sqlite-writer-{db_path}", daemon=True
@@ -247,6 +393,10 @@ class SQLiteEventSink:
                 timeout = max(0.01, self.flush_interval_ms / 1000.0)
                 try:
                     e = self._q.get(timeout=timeout)
+                    if isinstance(e, _FlushBarrier):
+                        flush()
+                        e.completed.set()
+                        continue
                     batch.append(e)
                     if len(batch) >= self.batch_size:
                         flush()
@@ -258,19 +408,47 @@ class SQLiteEventSink:
             # drain on stop
             while True:
                 try:
-                    batch.append(self._q.get_nowait())
+                    e = self._q.get_nowait()
+                    if isinstance(e, _FlushBarrier):
+                        flush()
+                        e.completed.set()
+                    else:
+                        batch.append(e)
                 except queue.Empty:
                     break
             flush()
         finally:
             conn.close()
 
-    def close(self) -> None:
+    def flush(self, timeout: float = 1.0) -> bool:
+        """Commit events queued before this call within the caller's time budget."""
+        if self._stop.is_set():
+            return not self._thr.is_alive()
+        barrier = _FlushBarrier(threading.Event())
+        deadline = time.monotonic() + max(timeout, 0.0)
+        try:
+            self._q.put(barrier, timeout=max(0.0, deadline - time.monotonic()))
+        except queue.Full:
+            return False
+        return barrier.completed.wait(max(0.0, deadline - time.monotonic()))
+
+    def close(self, timeout: float = 2.0) -> None:
         if self._stop.is_set():
             return
+        self.flush(timeout)
         self._stop.set()
+        # Wake a writer blocked in a long flush-interval queue get. The marker is
+        # consumed during the normal drain path and never reaches SQLite rows.
         try:
-            self._thr.join(timeout=2.0)
+            self._q.put(
+                _FlushBarrier(threading.Event()), timeout=max(timeout, 0.0)
+            )
+        except queue.Full:
+            # The writer will wake as it consumes queued telemetry; close remains
+            # bounded rather than blocking a runtime shutdown indefinitely.
+            pass
+        try:
+            self._thr.join(timeout=max(timeout, 0.0))
         except Exception:
             pass
 
@@ -291,7 +469,7 @@ class EventEmitter:
     def __init__(
         self,
         *,
-        sink: Optional[SQLiteEventSink] = None,
+        sink: Optional[EventSink] = None,
         logger: Optional[logging.Logger] = None,
         log_prefix: str = "WF_EVT",
     ) -> None:
@@ -326,7 +504,10 @@ class EventEmitter:
 
         # durable sink
         if self.sink is not None:
-            self.sink.emit(evt)
+            try:
+                self.sink.emit(evt)
+            except Exception:
+                self.log.exception("telemetry sink failed; workflow event remains best effort")
 
         return event_id
 

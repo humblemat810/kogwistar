@@ -556,6 +556,40 @@ impl SqliteStore {
         self.with_connection(|conn| named_projections(conn, namespace))
     }
 
+    pub fn get_stage1_node_projection(
+        &self,
+        namespace: &str,
+        key: &str,
+    ) -> SqliteStoreResult<Option<NamedProjection>> {
+        self.with_connection(|conn| stage1_node_projection(conn, namespace, key))
+    }
+
+    pub fn list_stage1_node_projections(
+        &self,
+        namespace: &str,
+    ) -> SqliteStoreResult<Vec<NamedProjection>> {
+        self.with_connection(|conn| stage1_node_projections(conn, namespace))
+    }
+
+    pub fn replace_stage1_node_projection(
+        &self,
+        namespace: &str,
+        key: &str,
+        projection: NamedProjectionWrite,
+    ) -> SqliteStoreResult<()> {
+        self.immediate_transaction(|uow| {
+            uow.replace_stage1_node_projection(namespace, key, projection)
+        })
+    }
+
+    pub fn clear_stage1_node_projection(
+        &self,
+        namespace: &str,
+        key: &str,
+    ) -> SqliteStoreResult<()> {
+        self.immediate_transaction(|uow| uow.clear_stage1_node_projection(namespace, key))
+    }
+
     pub fn replace_named_projection(
         &self,
         namespace: &str,
@@ -1430,6 +1464,15 @@ impl SqliteUnitOfWork<'_> {
         replace_named_projection(self.transaction, namespace, key, projection)
     }
 
+    pub fn replace_stage1_node_projection(
+        &mut self,
+        namespace: &str,
+        key: &str,
+        projection: NamedProjectionWrite,
+    ) -> SqliteStoreResult<()> {
+        replace_stage1_node_projection(self.transaction, namespace, key, projection)
+    }
+
     pub fn get_named_projection(
         &mut self,
         namespace: &str,
@@ -1458,6 +1501,14 @@ impl SqliteUnitOfWork<'_> {
 
     pub fn clear_named_projection(&mut self, namespace: &str, key: &str) -> SqliteStoreResult<()> {
         clear_named_projection(self.transaction, namespace, key)
+    }
+
+    pub fn clear_stage1_node_projection(
+        &mut self,
+        namespace: &str,
+        key: &str,
+    ) -> SqliteStoreResult<()> {
+        clear_stage1_node_projection(self.transaction, namespace, key)
     }
 
     pub fn clear_projection_namespace(&mut self, namespace: &str) -> SqliteStoreResult<()> {
@@ -1997,6 +2048,19 @@ fn initialize_schema(conn: &Connection) -> SqliteStoreResult<()> {
         );
         CREATE INDEX IF NOT EXISTS idx_named_projections_namespace
         ON named_projections(namespace, updated_at_ms);
+        CREATE TABLE IF NOT EXISTS stage1_node_projections (
+            namespace TEXT NOT NULL,
+            key TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            last_authoritative_seq INTEGER NOT NULL,
+            last_materialized_seq INTEGER NOT NULL,
+            projection_schema_version INTEGER NOT NULL,
+            materialization_status TEXT NOT NULL,
+            updated_at_ms INTEGER NOT NULL,
+            PRIMARY KEY(namespace, key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_stage1_node_projections_namespace
+        ON stage1_node_projections(namespace, updated_at_ms);
         CREATE TABLE IF NOT EXISTS workflow_design_snapshots (
             workflow_id TEXT NOT NULL,
             version INTEGER NOT NULL,
@@ -2686,6 +2750,35 @@ fn named_projections(
         .map_err(Into::into)
 }
 
+const STAGE1_NODE_PROJECTIONS_TABLE: &str = "stage1_node_projections";
+
+fn stage1_node_projection(
+    conn: &Connection,
+    namespace: &str,
+    key: &str,
+) -> SqliteStoreResult<Option<NamedProjection>> {
+    conn.query_row(
+        &format!("SELECT namespace, key, payload_json, last_authoritative_seq, last_materialized_seq, projection_schema_version, materialization_status, updated_at_ms FROM {STAGE1_NODE_PROJECTIONS_TABLE} WHERE namespace = ?1 AND key = ?2"),
+        params![namespace, key],
+        projection_from_row,
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+fn stage1_node_projections(
+    conn: &Connection,
+    namespace: &str,
+) -> SqliteStoreResult<Vec<NamedProjection>> {
+    let mut statement = conn.prepare(&format!(
+        "SELECT namespace, key, payload_json, last_authoritative_seq, last_materialized_seq, projection_schema_version, materialization_status, updated_at_ms FROM {STAGE1_NODE_PROJECTIONS_TABLE} WHERE namespace = ?1 ORDER BY key ASC"
+    ))?;
+    statement
+        .query_map([namespace], projection_from_row)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(Into::into)
+}
+
 fn replace_named_projection(
     conn: &Connection,
     namespace: &str,
@@ -2695,6 +2788,20 @@ fn replace_named_projection(
     let payload_json = projection_payload_json(&projection.payload)?;
     conn.execute(
         "INSERT INTO named_projections(namespace, key, payload_json, last_authoritative_seq, last_materialized_seq, projection_schema_version, materialization_status, updated_at_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) ON CONFLICT(namespace, key) DO UPDATE SET payload_json = excluded.payload_json, last_authoritative_seq = excluded.last_authoritative_seq, last_materialized_seq = excluded.last_materialized_seq, projection_schema_version = excluded.projection_schema_version, materialization_status = excluded.materialization_status, updated_at_ms = excluded.updated_at_ms",
+        params![namespace, key, payload_json, projection.last_authoritative_seq, projection.last_materialized_seq, projection.projection_schema_version, projection.materialization_status, unix_epoch_millis()],
+    )?;
+    Ok(())
+}
+
+fn replace_stage1_node_projection(
+    conn: &Connection,
+    namespace: &str,
+    key: &str,
+    projection: NamedProjectionWrite,
+) -> SqliteStoreResult<()> {
+    let payload_json = projection_payload_json(&projection.payload)?;
+    conn.execute(
+        &format!("INSERT INTO {STAGE1_NODE_PROJECTIONS_TABLE}(namespace, key, payload_json, last_authoritative_seq, last_materialized_seq, projection_schema_version, materialization_status, updated_at_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) ON CONFLICT(namespace, key) DO UPDATE SET payload_json = excluded.payload_json, last_authoritative_seq = excluded.last_authoritative_seq, last_materialized_seq = excluded.last_materialized_seq, projection_schema_version = excluded.projection_schema_version, materialization_status = excluded.materialization_status, updated_at_ms = excluded.updated_at_ms"),
         params![namespace, key, payload_json, projection.last_authoritative_seq, projection.last_materialized_seq, projection.projection_schema_version, projection.materialization_status, unix_epoch_millis()],
     )?;
     Ok(())
@@ -2727,6 +2834,18 @@ fn compare_and_swap_named_projection(
 fn clear_named_projection(conn: &Connection, namespace: &str, key: &str) -> SqliteStoreResult<()> {
     conn.execute(
         "DELETE FROM named_projections WHERE namespace = ?1 AND key = ?2",
+        params![namespace, key],
+    )?;
+    Ok(())
+}
+
+fn clear_stage1_node_projection(
+    conn: &Connection,
+    namespace: &str,
+    key: &str,
+) -> SqliteStoreResult<()> {
+    conn.execute(
+        &format!("DELETE FROM {STAGE1_NODE_PROJECTIONS_TABLE} WHERE namespace = ?1 AND key = ?2"),
         params![namespace, key],
     )?;
     Ok(())
@@ -4178,6 +4297,59 @@ mod tests {
         (SqliteStore::open(&path).unwrap(), path)
     }
 
+    #[test]
+    fn stage1_node_projection_isolated_crud() {
+        let (store, path) = store("stage1-crud");
+        let projection = NamedProjectionWrite {
+            payload: serde_json::json!({
+                "id": "node-1",
+                "metadata": {"kind": "person"}
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+            last_authoritative_seq: 7,
+            last_materialized_seq: 7,
+            projection_schema_version: 1,
+            materialization_status: "pending".to_owned(),
+        };
+        store
+            .replace_stage1_node_projection("tenant-a", "node-1", projection)
+            .unwrap();
+        assert_eq!(
+            store
+                .get_stage1_node_projection("tenant-a", "node-1")
+                .unwrap()
+                .unwrap()
+                .payload["metadata"]["kind"],
+            "person"
+        );
+        assert_eq!(
+            store
+                .list_stage1_node_projections("tenant-a")
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(
+            store
+                .get_named_projection("tenant-a", "node-1")
+                .unwrap()
+                .is_none()
+        );
+        store
+            .clear_stage1_node_projection("tenant-a", "node-1")
+            .unwrap();
+        assert!(
+            store
+                .get_stage1_node_projection("tenant-a", "node-1")
+                .unwrap()
+                .is_none()
+        );
+        drop(store);
+        fs::remove_file(path).unwrap();
+    }
+
     fn event(event_id: &str, entity_id: &str) -> NewEntityEvent {
         NewEntityEvent {
             event_id: event_id.to_owned(),
@@ -4628,6 +4800,7 @@ mod tests {
                 "server_run_events",
                 "server_runs",
                 "sqlite_sequence",
+                "stage1_node_projections",
                 "user_seq",
                 "workflow_design_snapshots",
                 "workflow_design_version_deltas",

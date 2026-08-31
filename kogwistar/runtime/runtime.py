@@ -6,7 +6,7 @@ import json
 import uuid
 import queue
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional, Tuple, cast
+from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple, cast
 from concurrent.futures import ThreadPoolExecutor
 import pathlib
 import logging
@@ -275,7 +275,7 @@ from typing import Dict
 
 from .telemetry import (
     TraceContext,
-    SQLiteEventSink,
+    EventSink,
     EventEmitter,
     bind_logger,
     BoundLoggerAdapter,
@@ -310,6 +310,7 @@ class StepContext:
     # --- optional provenance (may be None for non-conversational workloads) ---
     conversation_id: str | None = None
     turn_node_id: str | None = None
+    trace_context: TraceContext | None = field(default=None, repr=False)
 
     # --- runtime capabilities ---
     message_queue: "queue.Queue[Dict[str, Json]]" = field(
@@ -401,6 +402,8 @@ class StepContext:
 
     @property
     def trace_ctx(self) -> TraceContext:
+        if self.trace_context is not None:
+            return self.trace_context
         # generic trace context; conversation_id/turn_node_id may be None
         return TraceContext(
             run_id=self.run_id,
@@ -522,7 +525,7 @@ class WorkflowRuntime(BaseRuntime):
         # Quick-fix knobs for nested runs / resource sharing
         trace: bool = True,
         events: EventEmitter | None = None,
-        sink: SQLiteEventSink | None = None,
+        sink: EventSink | None = None,
         cancel_requested: Callable[[str], bool] | None = None,
         lane_message_sender: Callable[..., Any] | None = None,
         lane_message_event_sink: Callable[[dict[str, Json]], Any] | None = None,
@@ -676,6 +679,7 @@ class WorkflowRuntime(BaseRuntime):
         turn_node_id: str,
         parent_run_id: str,
         cache_dir: str | PathLike | None = None,
+        parent_trace_context: TraceContext | None = None,
     ) -> RunResult:
         if invocation.workflow_design is not None:
             if str(invocation.workflow_design.workflow_id) != str(
@@ -695,14 +699,133 @@ class WorkflowRuntime(BaseRuntime):
             turn_node_id=turn_node_id,
             parent_run_id=parent_run_id,
         )
-        return self.run(
-            workflow_id=invocation.workflow_id,
-            conversation_id=plan["conversation_id"],
-            turn_node_id=plan["turn_node_id"],
-            initial_state=child_state,
-            run_id=plan["child_run_id"],
-            cache_dir=cache_dir,
+        child_result = self._terminal_run_result(
+            conversation_id=plan["conversation_id"], run_id=plan["child_run_id"]
         )
+        if child_result is None:
+            child_checkpoint = self._latest_checkpoint_for_run(
+                conversation_id=plan["conversation_id"],
+                run_id=plan["child_run_id"],
+            )
+            if child_checkpoint is None:
+                # Persist generic intent before entering a new child. A resumed
+                # parent can derive this same child from its invocation key.
+                self._persist_workflow_run(
+                    conversation_id=plan["conversation_id"],
+                    workflow_id=str(invocation.workflow_id),
+                    run_id=plan["child_run_id"],
+                    turn_node_id=plan["turn_node_id"],
+                    status="planned",
+                    run_metadata={
+                        "parent_run_id": parent_run_id,
+                        "invocation_key": invocation.invocation_key,
+                        "result_state_key": plan["result_state_key"],
+                    },
+                )
+            self._persist_workflow_invocation_lineage(
+                conversation_id=conversation_id,
+                parent_run_id=parent_run_id,
+                child_run_id=plan["child_run_id"],
+                invocation=invocation,
+                result_state_key=plan["result_state_key"],
+                required=True,
+            )
+            if child_checkpoint is not None:
+                child_result = self.resume_from_latest_checkpoint(
+                    run_id=plan["child_run_id"],
+                    workflow_id=str(invocation.workflow_id),
+                    conversation_id=plan["conversation_id"],
+                    turn_node_id=plan["turn_node_id"],
+                    cache_dir=cache_dir,
+                )
+            else:
+                child_result = self.run(
+                    workflow_id=invocation.workflow_id,
+                    conversation_id=plan["conversation_id"],
+                    turn_node_id=plan["turn_node_id"],
+                    initial_state=child_state,
+                    run_id=plan["child_run_id"],
+                    cache_dir=cache_dir,
+                    _run_metadata={
+                        "parent_run_id": parent_run_id,
+                        "invocation_key": invocation.invocation_key,
+                        "result_state_key": plan["result_state_key"],
+                    },
+                    _trace_context=parent_trace_context,
+                )
+        self._persist_workflow_invocation_lineage(
+            conversation_id=conversation_id,
+            parent_run_id=parent_run_id,
+            child_run_id=str(child_result.run_id),
+            invocation=invocation,
+            result_state_key=plan["result_state_key"],
+        )
+        return child_result
+
+    def _persist_workflow_invocation_lineage(
+        self,
+        *,
+        conversation_id: str,
+        parent_run_id: str,
+        child_run_id: str,
+        invocation: WorkflowInvocationRequest,
+        result_state_key: str,
+        required: bool = False,
+    ) -> bool:
+        """Record generic run lineage without making it workflow authority."""
+        from kogwistar.engine_core.models import Grounding, Span
+
+        parent_id = f"wf_run|{parent_run_id}"
+        child_id = f"wf_run|{child_run_id}"
+        content = f"{parent_id} invoked {child_id}"
+        # ``run_subworkflow`` may be called with an external parent that has
+        # no persisted run node. An endpoint-valid lineage edge is impossible
+        # until that parent is durable, so defer it without noisy failure logs.
+        try:
+            parent_exists = self.conversation_engine.read.get_nodes(
+                ids=[parent_id], limit=1
+            )
+        except Exception:
+            parent_exists = []
+        if not parent_exists:
+            return False
+        try:
+            span = Span(
+                **_make_trace_span(
+                    conversation_id=conversation_id,
+                    excerpt=content,
+                    doc_id=f"conv:{conversation_id}",
+                )
+            )
+            edge = _make_runtime_edge(
+                edge_id=f"wf_invoked|{parent_run_id}|{child_run_id}",
+                relation="wf_invoked",
+                label="workflow invocation",
+                summary=content,
+                doc_id=f"wf_invoked|{parent_run_id}|{child_run_id}",
+                conversation_id=conversation_id,
+                source_ids=[parent_id],
+                target_ids=[child_id],
+                mentions=[Grounding(spans=[span])],
+                run_id=parent_run_id,
+                metadata={
+                    "parent_run_id": parent_run_id,
+                    "child_run_id": child_run_id,
+                    "workflow_id": invocation.workflow_id,
+                    "invocation_key": invocation.invocation_key,
+                    "result_state_key": result_state_key,
+                },
+            )
+            with self._trace_write_mode():
+                self.conversation_engine.write.add_edge(edge)
+            return True
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "workflow invocation lineage persistence failed"
+            )
+            if required:
+                raise
+            return False
 
     def _apply_workflow_invocation_result(
         self,
@@ -1250,6 +1373,20 @@ class WorkflowRuntime(BaseRuntime):
         if not isinstance(state, dict):
             raise ValueError(f"Checkpoint state for {run_id} is not a JSON object.")
         step_seq = int(metadata.get("step_seq") or 0)
+        continuation_context = None
+        persisted_trace_id = metadata.get("trace_id")
+        persisted_span_id = metadata.get("run_execution_span_id")
+        if persisted_trace_id and persisted_span_id:
+            candidate = TraceContext(
+                run_id=str(run_id),
+                token_id=str(run_id),
+                step_seq=step_seq,
+                node_id="resume",
+                trace_id=str(persisted_trace_id),
+                span_id=str(persisted_span_id),
+            )
+            if candidate.has_valid_w3c_ids:
+                continuation_context = candidate
         return self.run(
             workflow_id=workflow_id,
             conversation_id=conversation_id,
@@ -1258,6 +1395,7 @@ class WorkflowRuntime(BaseRuntime):
             run_id=str(run_id),
             cache_dir=cache_dir,
             _resume_step_seq=step_seq + 1,
+            _trace_context=continuation_context,
         )
 
     def run(
@@ -1271,6 +1409,8 @@ class WorkflowRuntime(BaseRuntime):
         cache_dir = None,
         _resume_step_seq: int | None = None,
         _resume_last_exec_node: WorkflowStepExecNode | WorkflowRunNode | None = None,
+        _run_metadata: Mapping[str, Any] | None = None,
+        _trace_context: TraceContext | None = None,
     ) -> RunResult:
         """
         Returns (final_state, run_id).
@@ -1519,6 +1659,19 @@ class WorkflowRuntime(BaseRuntime):
             state: WorkflowState = initial_state
             step_seq = int(_resume_step_seq) if _resume_step_seq is not None else 0
 
+            # Establish the execution span before persisting the run record so
+            # restart/reconciliation can find trace identity even before the
+            # first checkpoint exists.
+            run_trace_context = (
+                _trace_context.child_span(
+                    token_id=str(run_id),
+                    step_seq=0,
+                    node_id=str(getattr(start, "id", "start")),
+                )
+                if _trace_context is not None
+                else None
+            )
+
             # Persist workflow_run node in conversation_engine
             wf_run_root_node = self._persist_workflow_run(
                 conversation_id=conversation_id,
@@ -1526,10 +1679,12 @@ class WorkflowRuntime(BaseRuntime):
                 run_id=run_id,
                 turn_node_id=turn_node_id,
                 status="running",
+                run_metadata=_run_metadata,
+                trace_context=run_trace_context,
             )
             # trace: workflow run started
             try:
-                tc_run = TraceContext(
+                tc_run = run_trace_context or TraceContext(
                     run_id=str(run_id),
                     token_id=str(run_id),  # root token id is run_id for now
                     step_seq=0,
@@ -1754,6 +1909,16 @@ class WorkflowRuntime(BaseRuntime):
                                 turn_node_id=str(turn_node_id)
                                 if turn_node_id is not None
                                 else None,
+                                trace_context=(
+                                    run_trace_context.child_span(
+                                        token_id=str(token_id),
+                                        step_seq=int(step_seq),
+                                        node_id=str(node_id),
+                                        attempt=1,
+                                    )
+                                    if run_trace_context is not None
+                                    else None
+                                ),
                                 state=state,
                                 message_queue=mq,
                                 lane_message_sender=self.lane_message_sender,
@@ -1804,6 +1969,7 @@ class WorkflowRuntime(BaseRuntime):
                                             turn_node_id=str(turn_node_id),
                                             parent_run_id=str(run_id),
                                             cache_dir=cache_dir,
+                                            parent_trace_context=ctx.trace_ctx,
                                         )
                                         if child_result.status != "succeeded":
                                             status = "failure"
@@ -2544,6 +2710,7 @@ class WorkflowRuntime(BaseRuntime):
                                     step_seq=step_seq_current,
                                     state=state,
                                     last_exec_node=last_exec_node,
+                                    trace_context=run_trace_context,
                                 )
                             try:
                                 tc_ck = TraceContext(
@@ -2710,6 +2877,7 @@ class WorkflowRuntime(BaseRuntime):
                                     step_seq=step_seq_current,
                                     state=state,
                                     last_exec_node=last_exec_node,
+                                    trace_context=run_trace_context,
                                 )
                             try:
                                 tc_ck = TraceContext(
@@ -3049,6 +3217,53 @@ class WorkflowRuntime(BaseRuntime):
 
     def _conversation_backend(self) -> Any | None:
         return getattr(self.conversation_engine, "backend", None)
+
+    def _terminal_run_result(
+        self, *, conversation_id: str, run_id: str
+    ) -> RunResult | None:
+        """Rehydrate a terminal child result instead of running its action again."""
+        terminal_types = (
+            ("workflow_completed", "succeeded"),
+            ("workflow_failed", "failure"),
+            ("workflow_cancelled", "cancelled"),
+        )
+        terminal_metadata: dict[str, Any] | None = None
+        status: str | None = None
+        for entity_type, candidate_status in terminal_types:
+            nodes = self.conversation_engine.read.get_nodes(
+                where={
+                    "$and": [
+                        {"entity_type": entity_type},
+                        {"run_id": str(run_id)},
+                    ]
+                },
+                limit=1,
+            )
+            if nodes:
+                terminal_metadata = dict(getattr(nodes[0], "metadata", {}) or {})
+                status = candidate_status
+                break
+        if status is None:
+            return None
+        checkpoint = self._latest_checkpoint_for_run(
+            conversation_id=conversation_id, run_id=str(run_id)
+        )
+        state: WorkflowState = {}
+        if checkpoint is not None:
+            raw_state = (getattr(checkpoint, "metadata", {}) or {}).get("state_json")
+            if isinstance(raw_state, str):
+                loaded = json.loads(raw_state)
+                if isinstance(loaded, dict):
+                    state = loaded
+            elif isinstance(raw_state, dict):
+                state = dict(raw_state)
+        return RunResult(
+            run_id=str(run_id),
+            final_state=state,
+            mq=queue.Queue(),
+            status=status,
+            errors=list((terminal_metadata or {}).get("errors") or []),
+        )
 
     def _conversation_node_exists(self, node_id: str) -> bool:
         backend = self._conversation_backend()
@@ -3542,6 +3757,8 @@ class WorkflowRuntime(BaseRuntime):
         run_id: str,
         turn_node_id: str,
         status: str,
+        run_metadata: Mapping[str, Any] | None = None,
+        trace_context: TraceContext | None = None,
     ) -> WorkflowRunNode: 
         # current engine always persist on edit, no batch persist mode needed
         from kogwistar.engine_core.models import (
@@ -3557,6 +3774,34 @@ class WorkflowRuntime(BaseRuntime):
                 doc_id=f"conv:{conversation_id}",
             )
         )
+        metadata = {
+            "entity_type": "workflow_run",
+            "doc_id": f"wf_run|{run_id}",
+            "workflow_id": workflow_id,
+            "workflow_version": "v1",
+            "run_id": run_id,
+            "conversation_id": conversation_id,
+            "turn_node_id": turn_node_id,
+            "status": status,
+            "level_from_root": 0,
+        }
+        try:
+            existing = self.conversation_engine.read.get_nodes(
+                ids=[f"wf_run|{run_id}"], limit=1
+            )
+            existing_metadata = dict(getattr(existing[0], "metadata", {}) or {}) if existing else {}
+        except Exception:
+            existing_metadata = {}
+        for key, value in existing_metadata.items():
+            metadata.setdefault(str(key), value)
+        for key, value in (run_metadata or {}).items():
+            if key not in metadata and value is not None:
+                metadata[str(key)] = value
+        if trace_context is not None and trace_context.has_valid_w3c_ids:
+            metadata["trace_id"] = trace_context.trace_id
+            metadata["run_execution_span_id"] = trace_context.span_id
+            if trace_context.parent_span_id is not None:
+                metadata["parent_span_id"] = trace_context.parent_span_id
         n = WorkflowRunNode(
             id=f"wf_run|{run_id}",
             label=f"Workflow run {workflow_id}",
@@ -3565,17 +3810,7 @@ class WorkflowRuntime(BaseRuntime):
             summary=excerpt,
             mentions=[Grounding(spans=[span])],
             properties={},
-            metadata={
-                "entity_type": "workflow_run",
-                "doc_id": f"wf_run|{run_id}",
-                "workflow_id": workflow_id,
-                "workflow_version": "v1",
-                "run_id": run_id,
-                "conversation_id": conversation_id,
-                "turn_node_id": turn_node_id,
-                "status": status,
-                "level_from_root": 0,
-            },
+            metadata=metadata,
             level_from_root=0,
             domain_id=None,
             canonical_entity_id=None,
@@ -3803,6 +4038,7 @@ class WorkflowRuntime(BaseRuntime):
         step_seq: int,
         state: WorkflowState,
         last_exec_node: Optional[WorkflowStepExecNode | WorkflowRunNode] = None,
+        trace_context: TraceContext | None = None,
     ) -> None:
         from kogwistar.engine_core.models import (
             Grounding,
@@ -3843,6 +4079,11 @@ class WorkflowRuntime(BaseRuntime):
             embedding=None,
             level_from_root=0,
         )
+        if trace_context is not None:
+            n.metadata["trace_id"] = trace_context.trace_id
+            n.metadata["run_execution_span_id"] = trace_context.span_id
+            if trace_context.parent_span_id is not None:
+                n.metadata["parent_span_id"] = trace_context.parent_span_id
         with self._trace_write_mode():
             self.conversation_engine.write.add_node(n)
 

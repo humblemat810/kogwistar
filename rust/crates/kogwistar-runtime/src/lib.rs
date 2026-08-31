@@ -980,6 +980,8 @@ pub struct RuntimeNestedInvocationPlanRequest {
     pub result_state_key: Option<String>,
     #[serde(default)]
     pub run_id: Option<String>,
+    #[serde(default)]
+    pub invocation_key: Option<String>,
     pub parent_conversation_id: String,
     #[serde(default)]
     pub conversation_id: Option<String>,
@@ -1016,6 +1018,7 @@ pub fn plan_runtime_nested_invocation(
                 request.workflow_id.clone(),
                 request.result_state_key.clone().unwrap_or_default(),
                 effective_turn_node_id.clone(),
+                request.invocation_key.clone().unwrap_or_default(),
             ],
         )
         .to_string()
@@ -2495,6 +2498,7 @@ mod tests {
             workflow_id: "child".to_owned(),
             result_state_key: None,
             run_id: None,
+            invocation_key: None,
             parent_conversation_id: "conversation".to_owned(),
             conversation_id: Some("child-conversation".to_owned()),
             parent_turn_node_id: "turn".to_owned(),
@@ -2505,6 +2509,11 @@ mod tests {
         assert_eq!(first.conversation_id, "child-conversation");
         assert_eq!(first.turn_node_id, "turn");
         assert_eq!(first.result_state_key, "workflow_result::child");
+        let keyed = plan_runtime_nested_invocation(&RuntimeNestedInvocationPlanRequest {
+            invocation_key: Some("loop:2:act:1".to_owned()),
+            ..request
+        });
+        assert_ne!(first.child_run_id, keyed.child_run_id);
     }
 
     #[test]

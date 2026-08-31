@@ -680,6 +680,7 @@ struct SqliteStoreRequest {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum SqliteStoreOperation {
     OpenInit,
+    Close,
     BeginTransaction,
     CommitTransaction,
     RollbackTransaction,
@@ -792,6 +793,26 @@ enum SqliteStoreOperation {
     },
     ClearProjectionNamespace {
         namespace: String,
+    },
+    GetStage1NodeProjection {
+        namespace: String,
+        key: String,
+    },
+    ListStage1NodeProjections {
+        namespace: String,
+    },
+    ReplaceStage1NodeProjection {
+        namespace: String,
+        key: String,
+        payload: Map<String, Value>,
+        last_authoritative_seq: i64,
+        last_materialized_seq: i64,
+        projection_schema_version: i64,
+        materialization_status: String,
+    },
+    ClearStage1NodeProjection {
+        namespace: String,
+        key: String,
     },
     PutWorkflowDesignSnapshot {
         workflow_id: String,
@@ -1184,6 +1205,9 @@ fn sqlite_store_operation_json(
 ) -> Result<Value, SqliteStoreError> {
     match operation {
         SqliteStoreOperation::OpenInit => Ok(json!({"initialized": true})),
+        SqliteStoreOperation::Close => Err(SqliteStoreError::TransactionAborted(
+            "SQLite close must be handled by the session".to_owned(),
+        )),
         SqliteStoreOperation::BeginTransaction
         | SqliteStoreOperation::CommitTransaction
         | SqliteStoreOperation::RollbackTransaction => Err(SqliteStoreError::TransactionAborted(
@@ -1352,6 +1376,43 @@ fn sqlite_store_operation_json(
         }
         SqliteStoreOperation::ClearProjectionNamespace { namespace } => {
             store.clear_projection_namespace(&namespace)?;
+            Ok(Value::Null)
+        }
+        SqliteStoreOperation::GetStage1NodeProjection { namespace, key } => Ok(store
+            .get_stage1_node_projection(&namespace, &key)?
+            .map(projection_json)
+            .unwrap_or(Value::Null)),
+        SqliteStoreOperation::ListStage1NodeProjections { namespace } => Ok(Value::Array(
+            store
+                .list_stage1_node_projections(&namespace)?
+                .into_iter()
+                .map(projection_json)
+                .collect(),
+        )),
+        SqliteStoreOperation::ReplaceStage1NodeProjection {
+            namespace,
+            key,
+            payload,
+            last_authoritative_seq,
+            last_materialized_seq,
+            projection_schema_version,
+            materialization_status,
+        } => {
+            store.replace_stage1_node_projection(
+                &namespace,
+                &key,
+                projection_write(
+                    payload,
+                    last_authoritative_seq,
+                    last_materialized_seq,
+                    projection_schema_version,
+                    materialization_status,
+                ),
+            )?;
+            Ok(Value::Null)
+        }
+        SqliteStoreOperation::ClearStage1NodeProjection { namespace, key } => {
+            store.clear_stage1_node_projection(&namespace, &key)?;
             Ok(Value::Null)
         }
         SqliteStoreOperation::PutWorkflowDesignSnapshot {
@@ -1926,6 +1987,32 @@ fn sqlite_batch_operation_json(
             uow.clear_projection_namespace(&namespace)?;
             Ok(Value::Null)
         }
+        SqliteStoreOperation::ReplaceStage1NodeProjection {
+            namespace,
+            key,
+            payload,
+            last_authoritative_seq,
+            last_materialized_seq,
+            projection_schema_version,
+            materialization_status,
+        } => {
+            uow.replace_stage1_node_projection(
+                &namespace,
+                &key,
+                projection_write(
+                    payload,
+                    last_authoritative_seq,
+                    last_materialized_seq,
+                    projection_schema_version,
+                    materialization_status,
+                ),
+            )?;
+            Ok(Value::Null)
+        }
+        SqliteStoreOperation::ClearStage1NodeProjection { namespace, key } => {
+            uow.clear_stage1_node_projection(&namespace, &key)?;
+            Ok(Value::Null)
+        }
         SqliteStoreOperation::PutWorkflowDesignSnapshot {
             workflow_id,
             version,
@@ -2252,6 +2339,10 @@ fn sqlite_store_json_impl(payload_json: &str) -> Result<String, (&'static str, S
             format!("invalid SQLite store payload: {error}"),
         )
     })?;
+    if matches!(&request.operation, SqliteStoreOperation::Close) {
+        close_cached_sqlite_store(&request.path)?;
+        return Ok("null".to_owned());
+    }
     let entry = cached_sqlite_store(&request.path)?;
     let mut entry = entry
         .lock()
@@ -2361,10 +2452,8 @@ struct CachedSqliteStore {
 type SharedCachedSqliteStore = std::sync::Arc<Mutex<CachedSqliteStore>>;
 
 fn cached_sqlite_store(path: &str) -> Result<SharedCachedSqliteStore, (&'static str, String)> {
-    static STORES: OnceLock<Mutex<BTreeMap<PathBuf, SharedCachedSqliteStore>>> = OnceLock::new();
-
     let path = PathBuf::from(path);
-    let stores = STORES.get_or_init(|| Mutex::new(BTreeMap::new()));
+    let stores = sqlite_store_cache();
     let mut stores = stores
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -2385,6 +2474,37 @@ fn cached_sqlite_store(path: &str) -> Result<SharedCachedSqliteStore, (&'static 
     }));
     stores.insert(path, entry.clone());
     Ok(entry)
+}
+
+fn sqlite_store_cache() -> &'static Mutex<BTreeMap<PathBuf, SharedCachedSqliteStore>> {
+    static STORES: OnceLock<Mutex<BTreeMap<PathBuf, SharedCachedSqliteStore>>> = OnceLock::new();
+    STORES.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+fn close_cached_sqlite_store(path: &str) -> Result<(), (&'static str, String)> {
+    let path = PathBuf::from(path);
+    let stores = sqlite_store_cache();
+    let entry = stores
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(&path)
+        .cloned();
+    if let Some(entry) = entry {
+        let entry = entry
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if entry.transaction_id.is_some() {
+            return Err((
+                STORE_INVALID_PAYLOAD,
+                "cannot close SQLite store while transaction is active".to_owned(),
+            ));
+        }
+    }
+    stores
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(&path);
+    Ok(())
 }
 
 fn validate_sqlite_operation(value: &Value) -> Result<(), (&'static str, String)> {
@@ -4918,8 +5038,23 @@ fn validate_postgres_operation(value: &Value) -> Result<(), (&'static str, Strin
             "projection_key",
             "abort_after_projection",
         ][..],
-        "get_named_projection" | "clear_named_projection" => &["kind", "namespace", "key"][..],
-        "list_named_projections" | "clear_projection_namespace" => &["kind", "namespace"][..],
+        "get_named_projection"
+        | "clear_named_projection"
+        | "get_stage1_node_projection"
+        | "clear_stage1_node_projection" => &["kind", "namespace", "key"][..],
+        "list_named_projections"
+        | "clear_projection_namespace"
+        | "list_stage1_node_projections" => &["kind", "namespace"][..],
+        "replace_stage1_node_projection" => &[
+            "kind",
+            "namespace",
+            "key",
+            "payload",
+            "last_authoritative_seq",
+            "last_materialized_seq",
+            "projection_schema_version",
+            "materialization_status",
+        ][..],
         "put_workflow_design_snapshot" => &[
             "kind",
             "workflow_id",
@@ -5399,6 +5534,7 @@ fn _rust(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn isolated_store_snapshot_reads_are_ordered_and_read_only() {
@@ -5446,5 +5582,23 @@ mod tests {
                 .0,
             STORE_INVALID_PAYLOAD
         );
+    }
+
+    #[test]
+    fn sqlite_session_close_releases_cached_handle() {
+        let path =
+            std::env::temp_dir().join(format!("kogwistar-python-close-{}.db", std::process::id()));
+        let path_text = path.to_string_lossy().into_owned();
+        let init = json!({
+            "path": path_text.clone(),
+            "operation": {"kind": "open_init"}
+        });
+        sqlite_store_json_impl(&init.to_string()).unwrap();
+        let close = json!({
+            "path": path_text,
+            "operation": {"kind": "close"}
+        });
+        sqlite_store_json_impl(&close.to_string()).unwrap();
+        fs::remove_file(path).unwrap();
     }
 }
