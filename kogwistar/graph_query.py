@@ -3,8 +3,11 @@ from __future__ import annotations
 from collections import deque
 from typing import Dict, Set, List, Optional, Iterable
 import json
+import asyncio
+import inspect
 
 from .engine_core.models import Node, Edge
+from .engine_core.async_compat import run_awaitable_blocking
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -97,27 +100,56 @@ class GraphQuery:
         return (hit.get("ids") or [None])[0] == rid
 
     def _stage1_endpoint_rows(self, *, edge_id: str | None = None) -> list[dict]:
-        """Derive transient endpoint rows from pending Stage-1 edge payloads.
+        """Read pending structural endpoint rows from Stage 1.
 
-        Stage 1 is intentionally not copied into backend semantic collections.
-        Traversal still needs structural endpoints, so derive them from the
-        short-lived edge payload instead of embedding or persisting another
-        endpoint index.
+        Stage 1 endpoint rows are short-lived structural projection data. They
+        are removed after Stage 2 promotion; they are not canonical state.
         """
         if getattr(self.e, "persistence_mode", "single_stage") != "two_stage":
             return []
         adapter = getattr(self.e, "two_stage_projection_adapter", None)
         query = getattr(adapter, "stage1_query", None)
         if not callable(query):
+            adapter = getattr(self.e, "async_two_stage_projection_adapter", None)
+            query = getattr(adapter, "stage1_query", None)
+        if not callable(query):
             return []
+        if inspect.iscoroutinefunction(query):
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                pass
+            else:
+                # A synchronous traversal must not block an active async loop.
+                # Use neighbors_async() for pending async Stage-1 data.
+                return []
         try:
-            rows = query(entity_kind="edge", ids=[edge_id] if edge_id else None, limit=10000)
+            rows = run_awaitable_blocking(
+                query(
+                    entity_kind="edge",
+                    ids=[edge_id] if edge_id else None,
+                    limit=10000,
+                )
+            )
         except Exception:
-            return []
+            rows = []
+        if not rows:
+            meta = getattr(self.e, "meta_sqlite", None)
+            meta_query = getattr(meta, "query_stage1_node_projections", None)
+            if callable(meta_query):
+                try:
+                    rows = meta_query(
+                        str(getattr(self.e, "namespace", "default")),
+                        entity_kind="edge",
+                        ids=[edge_id] if edge_id else None,
+                        limit=10000,
+                    )
+                except Exception:
+                    rows = []
 
         endpoints: list[dict] = []
         for row in rows or []:
-            payload = dict(row.get("payload") or {})
+            payload = dict(row.get("payload") or row)
             document = payload.get("document")
             if not document:
                 continue
@@ -145,6 +177,148 @@ class GraphQuery:
                         }
                     )
         return endpoints
+
+    async def _stage1_endpoint_rows_async(self, *, edge_id: str | None = None) -> list[dict]:
+        """Read pending Stage-1 edge payloads without a sync bridge."""
+        if getattr(self.e, "persistence_mode", "single_stage") != "two_stage":
+            return []
+        adapter = getattr(self.e, "async_two_stage_projection_adapter", None)
+        query = getattr(adapter, "stage1_query", None)
+        if not callable(query):
+            return []
+        rows = await query(
+            entity_kind="edge",
+            ids=[edge_id] if edge_id else None,
+            limit=10000,
+        )
+        endpoints: list[dict] = []
+        for row in rows or []:
+            payload = dict(row.get("payload") or row)
+            document = payload.get("document")
+            if not document:
+                continue
+            try:
+                edge = Edge.model_validate_json(document)
+            except Exception:
+                continue
+            for role, ids, endpoint_type in (
+                ("src", edge.source_ids or [], "node"),
+                ("tgt", edge.target_ids or [], "node"),
+                ("src", getattr(edge, "source_edge_ids", []) or [], "edge"),
+                ("tgt", getattr(edge, "target_edge_ids", []) or [], "edge"),
+            ):
+                for endpoint_id in ids:
+                    endpoints.append({
+                        "id": f"{edge.safe_get_id()}::{role}::{endpoint_type}::{endpoint_id}",
+                        "edge_id": str(edge.safe_get_id()),
+                        "endpoint_id": str(endpoint_id),
+                        "endpoint_type": endpoint_type,
+                        "role": role,
+                        "doc_id": edge.doc_id,
+                        "relation": edge.relation,
+                    })
+        return endpoints
+
+    async def _endpoint_rows_async(self, where: dict, *, edge_id: str | None = None) -> list[dict]:
+        backend = getattr(self.e, "backend", None)
+        rows: list[dict] = []
+        got = await self._async_collection_call(
+            "edge_endpoints", "get", where=where, include=["documents"]
+        )
+        if got is not None:
+            rows.extend(
+                json.loads(document)
+                for document in (got.get("documents") or [])
+                if document
+            )
+
+        def matches(row: dict) -> bool:
+            clauses = where.get("$and", [where]) if isinstance(where, dict) else []
+            return all(
+                row.get(key) == value
+                for clause in clauses if isinstance(clause, dict)
+                for key, value in clause.items()
+            )
+
+        existing = {
+            (str(row.get("edge_id")), str(row.get("endpoint_id")), str(row.get("role")))
+            for row in rows
+        }
+        for row in await self._stage1_endpoint_rows_async(edge_id=edge_id):
+            key = (str(row.get("edge_id")), str(row.get("endpoint_id")), str(row.get("role")))
+            if matches(row) and key not in existing:
+                rows.append(row)
+                existing.add(key)
+        return rows
+
+    async def _async_collection_call(
+        self, collection_key: str, method: str, **kwargs
+    ) -> dict | None:
+        """Call native async backend verbs without forcing a sync bridge."""
+        backend = getattr(self.e, "backend", None)
+        async_call = getattr(backend, "async_call", None)
+        if callable(async_call):
+            result = async_call(collection_key, method, **kwargs)
+        else:
+            fn = getattr(backend, f"{collection_key}_{method}", None)
+            if not callable(fn):
+                return None
+            result = fn(**kwargs)
+        if inspect.isawaitable(result):
+            result = await result
+        return result
+
+    async def neighbors_async(
+        self, rid: str, *, direction: str = "both", doc_id: Optional[str] = None,
+        allow_jump_edge: bool = True,
+    ) -> Dict[str, Set[str]]:
+        """Async traversal path for async backends and pending Stage-1 rows."""
+        if getattr(self.e, "backend", None) is None:
+            return self.neighbors(rid, direction=direction, doc_id=doc_id, allow_jump_edge=allow_jump_edge)
+
+        node_hit = await self._async_collection_call(
+            "node", "get", ids=[rid], include=["documents"]
+        ) or {}
+        edge_hit = await self._async_collection_call(
+            "edge", "get", ids=[rid], include=["documents"]
+        ) or {}
+        stage1_rows = await self._stage1_endpoint_rows_async(edge_id=rid)
+        adapter = getattr(self.e, "async_two_stage_projection_adapter", None)
+        stage1_nodes = await adapter.stage1_query(entity_kind="node", ids=[rid], limit=1) \
+            if callable(getattr(adapter, "stage1_query", None)) else []
+        is_node = bool((node_hit.get("ids") or [None])[0] == rid)
+        is_node = is_node or bool(stage1_nodes)
+        is_edge = bool((edge_hit.get("ids") or [None])[0] == rid or any(
+            row.get("edge_id") == rid for row in stage1_rows
+        ))
+        if not (is_node or is_edge):
+            return {"nodes": set(), "edges": set()}
+
+        nodes, edges = set(), set()
+        if is_node:
+            clauses = [{"endpoint_type": "node"}, {"endpoint_id": rid}]
+            if doc_id is not None:
+                clauses.append({"doc_id": doc_id})
+            for row in await self._endpoint_rows_async({"$and": clauses}):
+                edges.add(str(row["edge_id"]))
+                if allow_jump_edge:
+                    for other in await self._endpoint_rows_async(
+                        {"edge_id": row["edge_id"]}, edge_id=str(row["edge_id"])
+                    ):
+                        if other.get("endpoint_type") == "node" and other["endpoint_id"] != rid:
+                            nodes.add(str(other["endpoint_id"]))
+        if is_edge:
+            clauses = [{"edge_id": rid}]
+            if direction in ("src", "tgt"):
+                clauses.append({"role": direction})
+            for row in await self._endpoint_rows_async(
+                {"$and": clauses} if len(clauses) > 1 else clauses[0], edge_id=rid
+            ):
+                if row["endpoint_type"] == "node":
+                    nodes.add(str(row["endpoint_id"]))
+                elif row["endpoint_type"] == "edge":
+                    edges.add(str(row["endpoint_id"]))
+        return {"nodes": nodes, "edges": edges}
 
     def _endpoint_rows(self, where: dict, *, edge_id: str | None = None) -> list[dict]:
         """Return backend endpoint rows plus matching transient Stage-1 rows."""

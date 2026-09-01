@@ -6,6 +6,7 @@ import json
 from typing import Any
 
 from .async_compat import run_awaitable_blocking
+from .edge_endpoint_rows import edge_endpoint_rows
 from .storage_backend import TwoStageProjectionCapability
 from ..utils.embedding_vectors import normalize_embedding_vector
 
@@ -134,6 +135,20 @@ class PostgresTwoStageProjectionAdapter:
 
     def remove_stage2_or_invalidate(self, *, entity_kind: str, entity_id: str, **_: Any) -> None:
         getattr(self._backend(), f"{entity_kind}_delete")(ids=[entity_id])
+        if entity_kind == "edge":
+            self._backend().edge_endpoints_delete(where={"edge_id": entity_id})
+
+    def _promote_edge_endpoints(self, document: str) -> None:
+        from .models import Edge
+
+        edge = Edge.model_validate_json(document)
+        rows = edge_endpoint_rows(edge)
+        if rows:
+            self._backend().edge_endpoints_upsert(
+                ids=[row["id"] for row in rows],
+                documents=[json.dumps(row) for row in rows],
+                metadatas=rows,
+            )
 
     def _current(self, *, entity_kind: str, entity_id: str) -> Any:
         return self.engine.indexing.canonical_entity_revision(
@@ -199,6 +214,8 @@ class PostgresTwoStageProjectionAdapter:
                 metadatas=[metadata],
                 embeddings=[embedding],
             )
+            if entity_kind == "edge":
+                self._promote_edge_endpoints(document)
             self.remove_stage1(entity_kind=entity_kind, entity_id=entity_id)
 
     def apply_embedding_jobs_batch(self, jobs: list[Any]) -> dict[str, BaseException | None]:
@@ -283,6 +300,8 @@ class PostgresTwoStageProjectionAdapter:
                     ids=[entity_id], documents=[str(row["document"])],
                     metadatas=[metadata], embeddings=[embedding]
                 )
+                if entity_kind == "edge":
+                    self._promote_edge_endpoints(str(row["document"]))
                 self.remove_stage1(entity_kind=entity_kind, entity_id=entity_id)
                 outcomes[job_id] = None
         return outcomes
@@ -312,7 +331,7 @@ class PostgresTwoStageProjectionAdapter:
                 removed += 1
                 continue
             current_stage2 = getattr(self._backend(), f"{kind}_get")(
-                ids=[entity_id], include=["metadatas"]
+                ids=[entity_id], include=["documents", "metadatas"]
             )
             stage2_metadata = (current_stage2.get("metadatas") or [None])[0]
             if (
@@ -321,6 +340,10 @@ class PostgresTwoStageProjectionAdapter:
                 and stage2_metadata.get("_kogwistar_source_fingerprint")
                 == row.get("source_fingerprint")
             ):
+                if kind == "edge":
+                    document = (current_stage2.get("documents") or [None])[0]
+                    if document:
+                        self._promote_edge_endpoints(document)
                 self.remove_stage1(entity_kind=kind, entity_id=entity_id)
                 removed += 1
         return removed

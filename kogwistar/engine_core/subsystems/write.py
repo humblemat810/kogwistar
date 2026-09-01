@@ -95,7 +95,7 @@ class WriteSubsystem(NamespaceProxy, WriteLike):
         edge.source_edge_ids = (getattr(edge, "source_edge_ids", []) or []) + s_edges
         edge.target_ids = t_nodes
         edge.target_edge_ids = (getattr(edge, "target_edge_ids", []) or []) + t_edges
-        await asyncio.to_thread(self._e.persist.assert_endpoints_exist, edge)
+        await self._e.persist.assert_endpoints_exist_async(edge)
         if await asyncio.to_thread(self._run_pre_add_edge_hooks, edge, pure=False):
             return
         payload = edge.model_dump(field_mode="backend", exclude=["embedding"])

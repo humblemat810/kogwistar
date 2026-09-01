@@ -11,6 +11,7 @@ import json
 from typing import Any
 
 from .async_compat import run_awaitable_blocking
+from .edge_endpoint_rows import edge_endpoint_rows
 from .storage_backend import TwoStageProjectionCapability
 
 
@@ -131,10 +132,37 @@ class SQLiteChromaTwoStageProjectionAdapter:
         fn = getattr(self.engine.backend, f"{entity_kind}_{method}")
         return run_awaitable_blocking(fn(**kwargs))
 
+    def _edge_endpoint_rows(self, edge: Any) -> list[dict[str, Any]]:
+        return edge_endpoint_rows(edge)
+
+    def _promote_edge_endpoints(
+        self, edge: Any, embedding: list[float] | None = None
+    ) -> None:
+        rows = self._edge_endpoint_rows(edge)
+        if not rows:
+            return
+        if embedding is None:
+            raise RuntimeError(
+                "edge endpoint promotion requires the current edge embedding"
+            )
+        documents = [json.dumps(row) for row in rows]
+        self._collection_call(
+            "edge_endpoints",
+            "upsert",
+            ids=[row["id"] for row in rows],
+            documents=documents,
+            metadatas=rows,
+            # Chroma requires vectors here; structural rows reuse the already
+            # computed edge vector and never call the provider.
+            embeddings=[list(embedding) for _ in rows],
+        )
+
     def remove_stage2_or_invalidate(
         self, *, entity_kind: str, entity_id: str, **_: Any
     ) -> None:
         self._collection_call(entity_kind, "delete", ids=[entity_id])
+        if entity_kind == "edge":
+            self._collection_call("edge_endpoints", "delete", where={"edge_id": entity_id})
 
     def _current_fingerprint(self, *, entity_kind: str, entity_id: str) -> str:
         revision_payload = self.engine.indexing.canonical_revision_payload(
@@ -187,6 +215,10 @@ class SQLiteChromaTwoStageProjectionAdapter:
             metadatas=[metadata],
             embeddings=[embedding],
         )
+        if entity_kind == "edge":
+            from .models import Edge
+
+            self._promote_edge_endpoints(Edge.model_validate_json(document), embedding)
         self.remove_stage1(entity_kind=entity_kind, entity_id=entity_id)
 
     def apply_embedding_jobs_batch(
@@ -305,6 +337,12 @@ class SQLiteChromaTwoStageProjectionAdapter:
                     metadatas=[metadata],
                     embeddings=[embedding],
                 )
+                if entity_kind == "edge":
+                    from .models import Edge
+
+                    self._promote_edge_endpoints(
+                        Edge.model_validate_json(staged["document"]), embedding
+                    )
                 self.remove_stage1(entity_kind=entity_kind, entity_id=entity_id)
                 outcomes[job_id] = None
             except BaseException as exc:
@@ -336,9 +374,23 @@ class SQLiteChromaTwoStageProjectionAdapter:
                 self.remove_stage1(entity_kind=entity_kind, entity_id=entity_id)
                 removed += 1
                 continue
-            got = self._collection_call(entity_kind, "get", ids=[entity_id], include=["metadatas"])
+            got = self._collection_call(
+                entity_kind, "get", ids=[entity_id],
+                include=["documents", "metadatas", "embeddings"]
+            )
             metadata = (got.get("metadatas") or [None])[0]
             if isinstance(metadata, dict) and metadata.get("_kogwistar_source_fingerprint") == current_fp:
+                if entity_kind == "edge":
+                    from .models import Edge
+
+                    document = (got.get("documents") or [None])[0]
+                    if document:
+                        embeddings = got.get("embeddings") or []
+                        self._promote_edge_endpoints(
+                            Edge.model_validate_json(document),
+                            list(embeddings[0])
+                            if embeddings and embeddings[0] is not None else None,
+                        )
                 self.remove_stage1(entity_kind=entity_kind, entity_id=entity_id)
                 removed += 1
         return removed

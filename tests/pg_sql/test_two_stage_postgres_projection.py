@@ -12,6 +12,7 @@ from tests._helpers.embeddings import ConstantEmbeddingFunction
 from tests._helpers.graph_builders import build_entity_node, build_relationship_edge
 from tests.core.two_stage_case_catalog import two_stage_case
 from kogwistar.workers.async_index_job_worker import AsyncIndexJobWorker
+from kogwistar.graph_query import GraphQuery
 
 pytestmark = [pytest.mark.ci_full, pytest.mark.integration, pytest.mark.e2e]
 
@@ -28,6 +29,187 @@ def _engine(sa_engine, pg_schema) -> GraphKnowledgeEngine:
         persistence_mode="two_stage",
         embedding_function=ConstantEmbeddingFunction(dim=3),
     )
+
+
+def _conversation_tree():
+    nodes = [
+        build_entity_node(node_id="pg-conv-root", doc_id="pg-conv"),
+        build_entity_node(node_id="pg-conv-child", doc_id="pg-conv"),
+        build_entity_node(node_id="pg-conv-leaf", doc_id="pg-conv"),
+    ]
+    edges = [
+        build_relationship_edge(
+            edge_id="pg-conv-root-child", src="pg-conv-root", tgt="pg-conv-child",
+            doc_id="pg-conv", relation="next_turn", embedding=None,
+        ),
+        build_relationship_edge(
+            edge_id="pg-conv-child-leaf", src="pg-conv-child", tgt="pg-conv-leaf",
+            doc_id="pg-conv", relation="next_turn", embedding=None,
+        ),
+    ]
+    return nodes, edges
+
+
+def _conversation_tree_snapshot(engine: GraphKnowledgeEngine) -> dict[str, object]:
+    graph = GraphQuery(engine)
+    ids = [
+        "pg-conv-root", "pg-conv-child", "pg-conv-leaf",
+        "pg-conv-root-child", "pg-conv-child-leaf",
+    ]
+    return {
+        "neighbors": {
+            item: {
+                "nodes": sorted(graph.neighbors(item)["nodes"]),
+                "edges": sorted(graph.neighbors(item)["edges"]),
+            }
+            for item in ids
+        },
+        "root_to_leaf": graph.shortest_path("pg-conv-root", "pg-conv-leaf"),
+    }
+
+
+async def _conversation_tree_snapshot_async(engine: GraphKnowledgeEngine) -> dict[str, object]:
+    graph = GraphQuery(engine)
+    ids = [
+        "pg-conv-root", "pg-conv-child", "pg-conv-leaf",
+        "pg-conv-root-child", "pg-conv-child-leaf",
+    ]
+    neighbors = {}
+    for item in ids:
+        got = await graph.neighbors_async(item)
+        neighbors[item] = {
+            "nodes": sorted(got["nodes"]), "edges": sorted(got["edges"])
+        }
+    return {"neighbors": neighbors, "root_to_leaf": []}
+
+
+def _promote_pg_entities(engine: GraphKnowledgeEngine, entity_ids: set[str]) -> None:
+    for job in engine.meta_sqlite.list_index_jobs(namespace="default"):
+        if job.entity_id not in entity_ids:
+            continue
+        engine.two_stage_projection_adapter.apply_embedding_job(
+            entity_kind=job.entity_kind,
+            entity_id=job.entity_id,
+            op=job.op,
+            payload_json=job.payload_json,
+        )
+
+
+@pytest.mark.conversation
+@pytest.mark.runtime_sync
+def test_postgres_conversation_tree_preserves_links_during_partial_promotion(
+    sa_engine, pg_schema
+) -> None:
+    """Structural traversal stays available while vector rows promote."""
+    _require_postgres(sa_engine, pg_schema)
+    engine = _engine(sa_engine, pg_schema)
+    try:
+        nodes, edges = _conversation_tree()
+        for node in nodes:
+            engine.write.add_node(node)
+        for edge in edges:
+            engine.write.add_edge(edge)
+
+        pending = _conversation_tree_snapshot(engine)
+        _promote_pg_entities(
+            engine, {"pg-conv-root", "pg-conv-root-child", "pg-conv-leaf"}
+        )
+        mixed = _conversation_tree_snapshot(engine)
+        _promote_pg_entities(engine, {"pg-conv-child", "pg-conv-child-leaf"})
+        ready = _conversation_tree_snapshot(engine)
+
+        assert mixed == pending
+        assert ready == pending
+    finally:
+        engine.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.conversation
+@pytest.mark.runtime_async
+async def test_async_postgres_conversation_tree_preserves_links_during_promotion(
+    async_pg_backend,
+):
+    provider = ConstantEmbeddingFunction(dim=3)
+    engine = GraphKnowledgeEngine(
+        backend=async_pg_backend,
+        persistence_mode="two_stage",
+        embedding_function=provider,
+    )
+    try:
+        nodes, edges = _conversation_tree()
+        for node in nodes:
+            await engine.async_add_node(node)
+        for edge in edges:
+            await engine.async_add_edge(edge)
+
+        pending = await _conversation_tree_snapshot_async(engine)
+        jobs = engine.meta_sqlite.list_index_jobs(namespace="default")
+        for job in jobs:
+            if job.entity_id not in {"pg-conv-root", "pg-conv-root-child", "pg-conv-leaf"}:
+                continue
+            await engine.async_two_stage_projection_adapter.apply_embedding_job(
+                entity_kind=job.entity_kind,
+                entity_id=job.entity_id,
+                op=job.op,
+                payload_json=job.payload_json,
+            )
+        mixed = await _conversation_tree_snapshot_async(engine)
+
+        jobs = engine.meta_sqlite.list_index_jobs(namespace="default")
+        for job in jobs:
+            if job.entity_id not in {"pg-conv-child", "pg-conv-child-leaf"}:
+                continue
+            await engine.async_two_stage_projection_adapter.apply_embedding_job(
+                entity_kind=job.entity_kind,
+                entity_id=job.entity_id,
+                op=job.op,
+                payload_json=job.payload_json,
+            )
+        ready = await _conversation_tree_snapshot_async(engine)
+
+        assert mixed == pending
+        assert ready == pending
+    finally:
+        engine.close()
+
+
+@pytest.mark.conversation
+@pytest.mark.runtime_sync
+@pytest.mark.runtime_bridge_parity
+def test_rust_postgres_conversation_tree_preserves_links_during_promotion(
+    sa_engine, pg_schema, monkeypatch
+) -> None:
+    """Rust-authority facade keeps the same graph traversal contract."""
+    _require_postgres(sa_engine, pg_schema)
+    monkeypatch.setenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_GRAPH_STORE", "rust")
+    backend = PgVectorBackend(engine=sa_engine, embedding_dim=3, schema=pg_schema)
+    engine = GraphKnowledgeEngine(
+        backend=backend,
+        persistence_mode="two_stage",
+        embedding_function=ConstantEmbeddingFunction(dim=3),
+    )
+    try:
+        nodes, edges = _conversation_tree()
+        for node in nodes:
+            engine.write.add_node(node)
+        for edge in edges:
+            engine.write.add_edge(edge)
+
+        pending = _conversation_tree_snapshot(engine)
+        _promote_pg_entities(
+            engine, {"pg-conv-root", "pg-conv-root-child", "pg-conv-leaf"}
+        )
+        mixed = _conversation_tree_snapshot(engine)
+        _promote_pg_entities(engine, {"pg-conv-child", "pg-conv-child-leaf"})
+        ready = _conversation_tree_snapshot(engine)
+
+        assert mixed == pending
+        assert ready == pending
+    finally:
+        engine.close()
 
 
 @two_stage_case("pending_visibility")
@@ -375,6 +557,60 @@ async def test_postgres_two_stage_async_backend_uses_async_adapter(
             ids=["async-pg-n1", "async-pg-n2"], include=["embeddings"]
         )
         assert all(embedding is not None for embedding in ready["embeddings"])
+    finally:
+        engine.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.conversation
+@pytest.mark.regression
+async def test_postgres_two_stage_async_reconciles_edge_endpoints_after_stage2_write(
+    async_pg_backend,
+):
+    """Async recovery rebuilds structural endpoints before Stage-1 cleanup."""
+    async def provider(texts):
+        return [[1.0, 0.0, 0.0] for _ in texts]
+
+    engine = GraphKnowledgeEngine(
+        backend=async_pg_backend,
+        persistence_mode="two_stage",
+        embedding_function=provider,
+    )
+    try:
+        edge = build_relationship_edge(
+            edge_id="async-pg-recovery-edge", src="async-pg-recovery-src",
+            tgt="async-pg-recovery-tgt", doc_id="async-pg-recovery",
+            embedding=None,
+        )
+        for node_id in ("async-pg-recovery-src", "async-pg-recovery-tgt"):
+            await engine.async_add_node(
+                build_entity_node(node_id=node_id, doc_id="async-pg-recovery")
+            )
+        await engine.async_add_edge(edge)
+        staged = await async_pg_backend.stage1_projection_get_async(
+            namespace="default", entity_kind="edge", entity_id=edge.safe_get_id()
+        )
+        assert staged is not None
+
+        metadata = dict(staged["metadata"])
+        metadata["_kogwistar_stage2_ready"] = True
+        metadata["_kogwistar_source_fingerprint"] = staged["source_fingerprint"]
+        await async_pg_backend.edge_upsert(
+            ids=[edge.safe_get_id()], documents=[staged["document"]],
+            metadatas=[metadata], embeddings=[[1.0, 0.0, 0.0]],
+        )
+        await async_pg_backend.edge_endpoints_delete(
+            where={"edge_id": edge.safe_get_id()}
+        )
+
+        assert await engine.async_two_stage_projection_adapter.reconcile_projection() == 1
+        endpoints = await async_pg_backend.edge_endpoints_get(
+            where={"edge_id": edge.safe_get_id()}, include=["documents"]
+        )
+        assert len(endpoints["ids"]) == 2
+        assert await async_pg_backend.stage1_projection_get_async(
+            namespace="default", entity_kind="edge", entity_id=edge.safe_get_id()
+        ) is None
     finally:
         engine.close()
 

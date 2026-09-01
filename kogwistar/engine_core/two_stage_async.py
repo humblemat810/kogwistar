@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import inspect
 import json
+from contextlib import asynccontextmanager
 from typing import Any
 
 from .storage_backend import TwoStageProjectionCapability
+from .edge_endpoint_rows import edge_endpoint_rows
 from ..utils.embedding_vectors import normalize_embedding_vector
 from .two_stage_rust_postgres import RustPostgresTwoStageProjectionAdapter
 
@@ -42,6 +44,17 @@ class AsyncPostgresTwoStageProjectionAdapter:
     def _namespace(self) -> str:
         return str(getattr(self.engine, "namespace", "default"))
 
+    @asynccontextmanager
+    async def _backend_transaction(self):
+        """Join the configured async SQL UOW when one exists."""
+        uow = getattr(self.engine, "_backend_uow", None)
+        transaction = getattr(uow, "transaction", None)
+        if callable(transaction):
+            async with transaction():
+                yield
+        else:
+            yield
+
     async def add_node(self, node: Any, *, doc_id: str | None = None) -> None:
         if doc_id is not None:
             node.doc_id = doc_id
@@ -65,6 +78,9 @@ class AsyncPostgresTwoStageProjectionAdapter:
         metadata: dict[str, Any],
     ) -> None:
         import asyncio
+        await self.remove_stage2_or_invalidate(
+            entity_kind=entity_kind, entity_id=entity_id
+        )
         revision_payload = await asyncio.to_thread(
             self.engine.indexing.canonical_revision_payload,
             entity_kind=entity_kind, entity_id=entity_id,
@@ -110,7 +126,21 @@ class AsyncPostgresTwoStageProjectionAdapter:
         )
 
     async def remove_stage2_or_invalidate(self, *, entity_kind: str, entity_id: str, **_: Any) -> None:
-        await getattr(self._backend(), f"_{entity_kind}_c").delete(ids=[entity_id])
+        await getattr(self._backend(), f"_{entity_kind}s_c").delete(ids=[entity_id])
+        if entity_kind == "edge":
+            await self._backend()._edge_endpoints_c.delete(where={"edge_id": entity_id})
+
+    async def _promote_edge_endpoints(self, document: str) -> None:
+        from .models import Edge
+
+        rows = edge_endpoint_rows(Edge.model_validate_json(document))
+        if rows:
+            await self._backend()._upsert_async(
+                self._backend().edge_endpoints,
+                ids=[row["id"] for row in rows],
+                documents=[json.dumps(row) for row in rows],
+                metadatas=rows,
+            )
 
     async def _current(self, entity_kind: str, entity_id: str) -> Any:
         # Canonical event scanning remains synchronous today. Keep it off the
@@ -161,11 +191,14 @@ class AsyncPostgresTwoStageProjectionAdapter:
         metadata = dict(row.get("metadata") or {})
         metadata["_kogwistar_stage2_ready"] = True
         metadata["_kogwistar_source_fingerprint"] = expected
-        await self._backend()._upsert_async(
-            getattr(self._backend(), f"{entity_kind}s"), ids=[entity_id],
-            documents=[document], metadatas=[metadata], embeddings=[embedding],
-        )
-        await self.remove_stage1(entity_kind=entity_kind, entity_id=entity_id)
+        async with self._backend_transaction():
+            await self._backend()._upsert_async(
+                getattr(self._backend(), f"{entity_kind}s"), ids=[entity_id],
+                documents=[document], metadatas=[metadata], embeddings=[embedding],
+            )
+            if entity_kind == "edge":
+                await self._promote_edge_endpoints(document)
+            await self.remove_stage1(entity_kind=entity_kind, entity_id=entity_id)
 
     async def promote_stage2(self, **kwargs: Any) -> None:
         await self.apply_embedding_job(**kwargs)
@@ -224,12 +257,15 @@ class AsyncPostgresTwoStageProjectionAdapter:
                 metadata = dict(row.get("metadata") or {})
                 metadata["_kogwistar_stage2_ready"] = True
                 metadata["_kogwistar_source_fingerprint"] = source_fingerprint
-                await self._backend()._upsert_async(
-                    getattr(self._backend(), f"{kind}s"), ids=[entity_id],
-                    documents=[str(row["document"])], metadatas=[metadata],
-                    embeddings=[normalize_embedding_vector(embedding, allow_none=False)],
-                )
-                await self.remove_stage1(entity_kind=kind, entity_id=entity_id)
+                async with self._backend_transaction():
+                    await self._backend()._upsert_async(
+                        getattr(self._backend(), f"{kind}s"), ids=[entity_id],
+                        documents=[str(row["document"])], metadatas=[metadata],
+                        embeddings=[normalize_embedding_vector(embedding, allow_none=False)],
+                    )
+                    if kind == "edge":
+                        await self._promote_edge_endpoints(str(row["document"]))
+                    await self.remove_stage1(entity_kind=kind, entity_id=entity_id)
                 outcomes[job_id] = None
             except BaseException as exc:
                 outcomes[job_id] = exc
@@ -247,6 +283,32 @@ class AsyncPostgresTwoStageProjectionAdapter:
             if current is None or current.state != "active":
                 await self.remove_stage1(entity_kind=entity_kind, entity_id=entity_id)
                 await self.remove_stage2_or_invalidate(entity_kind=entity_kind, entity_id=entity_id)
+                removed += 1
+                continue
+            stage2 = await self._backend()._get_flat_async(
+                getattr(self._backend(), f"{entity_kind}s"),
+                ids=[entity_id], where=None,
+                include=["documents", "metadatas"], limit=1,
+            )
+            stage2_metadata = (stage2.get("metadatas") or [None])[0]
+            if (
+                stage2.get("ids")
+                and isinstance(stage2_metadata, dict)
+                and stage2_metadata.get("_kogwistar_source_fingerprint")
+                == row.get("source_fingerprint")
+            ):
+                if entity_kind == "edge":
+                    document = (stage2.get("documents") or [None])[0]
+                    if document:
+                        async with self._backend_transaction():
+                            await self._promote_edge_endpoints(document)
+                            await self.remove_stage1(
+                                entity_kind=entity_kind, entity_id=entity_id
+                            )
+                    else:
+                        await self.remove_stage1(entity_kind=entity_kind, entity_id=entity_id)
+                else:
+                    await self.remove_stage1(entity_kind=entity_kind, entity_id=entity_id)
                 removed += 1
         return removed
 
@@ -295,6 +357,9 @@ class AsyncChromaTwoStageProjectionAdapter:
 
     async def _add(self, entity_kind: str, entity_id: str, document: str, metadata: dict[str, Any]) -> None:
         import asyncio
+        await self.remove_stage2_or_invalidate(
+            entity_kind=entity_kind, entity_id=entity_id
+        )
         payload = json.loads(await asyncio.to_thread(self.engine.indexing.canonical_revision_payload, entity_kind=entity_kind, entity_id=entity_id))
         revision = await self._current(entity_kind, entity_id)
         await self._meta("replace_stage1_node_projection", self._namespace(), self._key(entity_kind, entity_id), {
@@ -320,9 +385,36 @@ class AsyncChromaTwoStageProjectionAdapter:
 
     async def remove_stage2_or_invalidate(self, *, entity_kind: str, entity_id: str, **_: Any) -> None:
         await self.engine.backend.async_call(entity_kind, "delete", ids=[entity_id])
+        if entity_kind == "edge":
+            await self.engine.backend.async_call(
+                "edge_endpoints", "delete", where={"edge_id": entity_id}
+            )
+
+    async def _promote_edge_endpoints(
+        self, document: str, embedding: list[float] | None = None
+    ) -> None:
+        from .models import Edge
+
+        edge = Edge.model_validate_json(document)
+        rows = edge_endpoint_rows(edge)
+        if not rows:
+            return
+        documents = [json.dumps(row) for row in rows]
+        if embedding is None:
+            raise RuntimeError(
+                "edge endpoint promotion requires the current edge embedding"
+            )
+        await self.engine.backend.async_call(
+            "edge_endpoints", "upsert",
+            ids=[row["id"] for row in rows],
+            documents=documents,
+            metadatas=rows,
+            # Chroma requires vectors here; structural rows reuse the already
+            # computed edge vector and never call the provider.
+            embeddings=[list(embedding) for _ in rows],
+        )
 
     async def apply_embedding_job(self, *, entity_kind: str, entity_id: str, op: str, payload_json: str | None) -> None:
-        import asyncio
         current = await self._current(entity_kind, entity_id)
         expected = str(json.loads(payload_json or "{}").get("source_fingerprint") or "")
         if op.upper() == "DELETE" or current is None or current.state != "active":
@@ -344,6 +436,10 @@ class AsyncChromaTwoStageProjectionAdapter:
             return
         collection_key = entity_kind
         await self.engine.backend.async_call(collection_key, "upsert", ids=[entity_id], documents=[str(staged.get("document") or "")], metadatas=[{**dict(staged.get("metadata") or {}), "_kogwistar_stage2_ready": True, "_kogwistar_source_fingerprint": expected}], embeddings=[embedding])
+        if entity_kind == "edge":
+            await self._promote_edge_endpoints(
+                str(staged.get("document") or ""), embedding
+            )
         await self.remove_stage1(entity_kind=entity_kind, entity_id=entity_id)
 
     async def promote_stage2(self, **kwargs: Any) -> None:
@@ -402,6 +498,10 @@ class AsyncChromaTwoStageProjectionAdapter:
                     metadatas=[{**dict(staged.get("metadata") or {}), "_kogwistar_stage2_ready": True, "_kogwistar_source_fingerprint": str(staged.get("_expected") or staged.get("source_fingerprint") or "")}],
                     embeddings=[embedding],
                 )
+                if kind == "edge":
+                    await self._promote_edge_endpoints(
+                        str(staged.get("document") or ""), embedding
+                    )
                 await self.remove_stage1(entity_kind=kind, entity_id=entity_id)
                 outcomes[job_id] = None
             except BaseException as exc:
@@ -412,9 +512,14 @@ class AsyncChromaTwoStageProjectionAdapter:
         removed = 0
         for row in await self.stage1_query(entity_kind="node") + await self.stage1_query(entity_kind="edge"):
             kind = str(row.get("entity_kind") or "node")
-            entity_id = str(row.get("id") or row.get("key") or "")
+            payload = row.get("payload") or {}
+            entity_id = str(payload.get("id") or row.get("id") or row.get("key") or "")
+            if ":" in entity_id and entity_id.startswith(("node:", "edge:")):
+                entity_id = entity_id.split(":", 1)[1]
             current = await self._current(kind, entity_id)
-            source_fingerprint = str(row.get("source_fingerprint") or "")
+            source_fingerprint = str(
+                payload.get("source_fingerprint") or row.get("source_fingerprint") or ""
+            )
             if current is None or current.state != "active":
                 await self.remove_stage1(entity_kind=kind, entity_id=entity_id)
                 await self.remove_stage2_or_invalidate(entity_kind=kind, entity_id=entity_id)
@@ -425,7 +530,8 @@ class AsyncChromaTwoStageProjectionAdapter:
                 removed += 1
                 continue
             ready = await self.engine.backend.async_call(
-                kind, "get", ids=[entity_id], include=["metadatas"]
+                kind, "get", ids=[entity_id],
+                include=["documents", "metadatas", "embeddings"]
             )
             metadata = (ready.get("metadatas") or [None])[0]
             if (
@@ -433,6 +539,15 @@ class AsyncChromaTwoStageProjectionAdapter:
                 and isinstance(metadata, dict)
                 and metadata.get("_kogwistar_source_fingerprint") == source_fingerprint
             ):
+                if kind == "edge":
+                    document = (ready.get("documents") or [None])[0]
+                    if document:
+                        embeddings = ready.get("embeddings") or []
+                        await self._promote_edge_endpoints(
+                            document,
+                            list(embeddings[0])
+                            if embeddings and embeddings[0] is not None else None,
+                        )
                 await self.remove_stage1(entity_kind=kind, entity_id=entity_id)
                 removed += 1
         return removed

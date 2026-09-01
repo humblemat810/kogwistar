@@ -21,6 +21,7 @@ from tests.core.two_stage_case_catalog import two_stage_case
 class _Backend:
     def __init__(self) -> None:
         self.rows: dict[str, dict] = {}
+        self.endpoint_rows: dict[str, dict] = {}
 
     def node_get(self, **kwargs):
         ids = [str(value) for value in kwargs.get("ids") or []]
@@ -29,6 +30,7 @@ class _Backend:
             "ids": [row["id"] for row in rows],
             "documents": [row["document"] for row in rows],
             "metadatas": [row["metadata"] for row in rows],
+            "embeddings": [row.get("embedding") for row in rows],
         }
 
     def node_upsert(self, **kwargs):
@@ -49,6 +51,43 @@ class _Backend:
     edge_get = node_get
     edge_upsert = node_upsert
     edge_delete = node_delete
+
+    def edge_endpoints_get(self, **kwargs):
+        ids = [str(value) for value in kwargs.get("ids") or []]
+        rows = list(self.endpoint_rows.values())
+        if ids:
+            rows = [row for row in rows if row["id"] in ids]
+        where = kwargs.get("where") or {}
+        clauses = where.get("$and", [where]) if isinstance(where, dict) else []
+        for clause in clauses:
+            if not isinstance(clause, dict):
+                continue
+            for key, value in clause.items():
+                rows = [
+                    row for row in rows
+                    if row["metadata"].get(key) == value
+                ]
+        return {
+            "ids": [row["id"] for row in rows],
+            "documents": [row["document"] for row in rows],
+            "metadatas": [row["metadata"] for row in rows],
+        }
+
+    def edge_endpoints_upsert(self, **kwargs):
+        for endpoint_id, document, metadata in zip(
+            kwargs["ids"], kwargs["documents"], kwargs["metadatas"]
+        ):
+            self.endpoint_rows[str(endpoint_id)] = {
+                "id": str(endpoint_id), "document": document, "metadata": metadata
+            }
+
+    def edge_endpoints_delete(self, **kwargs):
+        ids = {str(value) for value in kwargs.get("ids") or []}
+        where = kwargs.get("where") or {}
+        edge_id = where.get("edge_id")
+        for endpoint_id, row in list(self.endpoint_rows.items()):
+            if endpoint_id in ids or (edge_id is not None and row["metadata"].get("edge_id") == edge_id):
+                self.endpoint_rows.pop(endpoint_id, None)
 
 
 class _Indexing:
@@ -162,6 +201,42 @@ def test_chroma_stage1_edge_remains_traversable_by_id_and_neighbors(tmp_path):
     assert graph.neighbors("e1")["nodes"] == {"n1", "n2"}
 
 
+def test_chroma_endpoint_promotion_reuses_edge_vector_not_provider(tmp_path):
+    engine, adapter = _engine(tmp_path)
+    calls: list[str] = []
+
+    def provider(document):
+        calls.append(str(document))
+        return [9.0, 9.0]
+
+    engine.embed.iterative_defensive_emb = provider
+    edge = build_relationship_edge(
+        edge_id="e1", src="n1", tgt="n2", doc_id="d-edge", embedding=None
+    )
+    adapter.add_edge(edge)
+    adapter.apply_embedding_job(
+        entity_kind="edge", entity_id="e1", op="UPSERT",
+        payload_json=engine.indexing.canonical_revision_payload(
+            entity_kind="edge", entity_id="e1"
+        ),
+    )
+
+    assert calls == [edge.model_dump_json(field_mode="backend", exclude=["embedding"])]
+    assert engine.backend.endpoint_rows
+    assert all(
+        row["metadata"] and row["document"]
+        for row in engine.backend.endpoint_rows.values()
+    )
+
+
+def test_chroma_endpoint_semantic_query_is_rejected():
+    from kogwistar.engine_core.chroma_backend import ChromaBackend
+
+    backend = object.__new__(ChromaBackend)
+    with pytest.raises(ValueError, match="structural"):
+        backend.edge_endpoints_query(query_embeddings=[[0.1, 0.2]])
+
+
 @two_stage_case("stale_revision")
 def test_chroma_arrangement_rejects_stale_promotion_and_deletes_stage1(tmp_path):
     engine, adapter = _engine(tmp_path)
@@ -230,6 +305,35 @@ def test_chroma_reconciles_stage1_after_stage2_write_before_cleanup(tmp_path):
     assert adapter.reconcile_projection() == 1
     assert engine.meta_sqlite.get_stage1_node_projection("tenant-a", "n1") is None
     assert engine.backend.rows["n1"]["embedding"] == [1.0, 0.0]
+
+
+@two_stage_case("recovery_reconciliation")
+def test_chroma_reconciles_missing_edge_endpoints_before_stage1_cleanup(tmp_path):
+    engine, adapter = _engine(tmp_path)
+    adapter.add_node(build_entity_node(node_id="n1", doc_id="d1"))
+    adapter.add_node(build_entity_node(node_id="n2", doc_id="d2"))
+    edge = build_relationship_edge(edge_id="e1", src="n1", tgt="n2", doc_id="d-edge")
+    adapter.add_edge(edge)
+
+    staged = engine.meta_sqlite.get_stage1_node_projection("tenant-a", "edge:e1")
+    payload = staged["payload"]
+    metadata = dict(payload["metadata"])
+    metadata["_kogwistar_stage2_ready"] = True
+    metadata["_kogwistar_source_fingerprint"] = payload["source_fingerprint"]
+    engine.backend.edge_upsert(
+        ids=["e1"],
+        documents=[payload["document"]],
+        metadatas=[metadata],
+        embeddings=[[1.0, 0.0]],
+    )
+
+    assert not engine.backend.endpoint_rows
+    assert adapter.reconcile_projection() == 1
+    assert engine.meta_sqlite.get_stage1_node_projection("tenant-a", "edge:e1") is None
+    assert engine.backend.endpoint_rows
+    assert GraphQuery(engine).neighbors("n1") == {
+        "nodes": {"n2"}, "edges": {"e1"}
+    }
 
 
 def test_chroma_capability_requires_eventual_reconciliation():

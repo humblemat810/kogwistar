@@ -165,7 +165,10 @@ class ChromaBackend:
         return self.call("edge_endpoints", "get", **kwargs)
 
     def edge_endpoints_query(self, **kwargs) -> Any:
-        return self.call("edge_endpoints", "query", **kwargs)
+        raise ValueError(
+            "edge_endpoints is structural; semantic query is unsupported; "
+            "use edge_endpoints_get with metadata filters"
+        )
 
     def edge_endpoints_add(self, **kwargs) -> Any:
         return self.call("edge_endpoints", "add", **kwargs)

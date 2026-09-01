@@ -207,7 +207,14 @@ def _build_postgres_uow_if_needed(backend: StorageBackend):
     if not _is_pgvector_backend_instance(backend):
         return NoopUnitOfWork()
     if getattr(backend, "_is_async_engine", False):
-        return NoopUnitOfWork()
+        try:
+            from kogwistar.engine_core.postgres_backend import AsyncPostgresUnitOfWork
+        except Exception as e:  # pragma: no cover - optional dependency
+            raise _optional_dependency_error(
+                extra="pgvector",
+                detail="async PgVector backend requires optional PostgreSQL dependencies",
+            ) from e
+        return AsyncPostgresUnitOfWork(engine=backend.engine)
     try:
         from kogwistar.engine_core.postgres_backend import (
             PgVectorBackend,
