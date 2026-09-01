@@ -109,7 +109,7 @@ def _engine_query_nodes(
     include: list[str],
 ):
     reader = getattr(engine, "read", None)
-    if getattr(engine, "acl_enabled", False) and reader is not None and hasattr(reader, "query_nodes"):
+    if reader is not None and callable(getattr(reader, "query_nodes", None)):
         return reader.query_nodes(
             query_embeddings=query_embeddings,
             n_results=n_results,
@@ -127,14 +127,14 @@ def _engine_query_nodes(
 
 def _engine_get_nodes(engine: Any, *, ids: list[str], include: list[str]):
     reader = getattr(engine, "read", None)
-    if getattr(engine, "acl_enabled", False) and reader is not None and hasattr(reader, "get_nodes"):
+    if reader is not None and callable(getattr(reader, "get_nodes", None)):
         return reader.get_nodes(ids=ids, include=include, node_type=ConversationNode)
     return engine.backend.node_get(ids=ids, include=include)
 
 
 def _engine_get_edges(engine: Any, *, ids: list[str], include: list[str]):
     reader = getattr(engine, "read", None)
-    if getattr(engine, "acl_enabled", False) and reader is not None and hasattr(reader, "get_edges"):
+    if reader is not None and callable(getattr(reader, "get_edges", None)):
         return reader.get_edges(ids=ids, include=include, edge_type=ConversationEdge)
     return engine.backend.edge_get(ids=ids, include=include)
 

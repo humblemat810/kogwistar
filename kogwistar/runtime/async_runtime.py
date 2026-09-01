@@ -470,7 +470,8 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
             resolver=self._raw_step_resolver,
         )
         run_trace_context = (
-            trace_context.child_span(
+            trace_context.child_run(
+                run_id=str(run_id),
                 token_id=str(run_id),
                 step_seq=0,
                 node_id=str(getattr(start, "id", "start")),

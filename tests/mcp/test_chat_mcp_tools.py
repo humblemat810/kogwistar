@@ -19,6 +19,9 @@ from kogwistar.server.auth_middleware import claims_ctx
 from kogwistar.conversation.models import ConversationNode
 from kogwistar.runtime.models import WorkflowCheckpointNode
 from kogwistar.engine_core.models import Grounding, Span
+from kogwistar.graph_query import GraphQuery
+from kogwistar.engine_core.two_stage_chroma import SQLiteChromaTwoStageProjectionAdapter
+from tests._helpers.graph_builders import build_entity_node, build_relationship_edge
 from kogwistar.server.chat_service import (
     AnswerRunRequest,
     ChatRunService,
@@ -139,6 +142,41 @@ def _structured(result):
     if hasattr(result, "model_dump"):
         return result.model_dump()
     return {}
+
+
+@pytest.mark.asyncio
+async def test_mcp_stage1_read_and_semantic_visibility(monkeypatch, tmp_path):
+    """MCP must expose Stage 1 references but never Stage 1 semantic hits."""
+    from tests.core.test_two_stage_chroma import _engine
+    from kogwistar.server import mcp_tools
+
+    engine, adapter = _engine(tmp_path)
+    engine._iterative_defensive_emb = lambda _text: [0.0, 0.0]
+    engine.read.query_nodes = lambda **_kwargs: []
+    source = build_entity_node(node_id="mcp-stage1-source", doc_id="mcp-doc")
+    target = build_entity_node(node_id="mcp-stage1-target", doc_id="mcp-doc")
+    edge = build_relationship_edge(
+        edge_id="mcp-stage1-edge", src=source.id, tgt=target.id, doc_id="mcp-doc"
+    )
+    adapter.add_node(source)
+    adapter.add_node(target)
+    adapter.add_edge(edge)
+    monkeypatch.setattr(mcp_tools, "gq", _FixedResource(GraphQuery(engine)))
+
+    with _claims("rw", "knowledge", sub="mcp-agent"):
+        neighbors = _structured(
+            await server.mcp.call_tool("kg_neighbors", {"rid": source.id})
+        )
+        semantic = _structured(
+            await server.mcp.call_tool(
+                "kg_semantic_seed_then_expand_text",
+                {"text": "stage one pending", "top_k": 5, "hops": 1},
+            )
+        )
+
+    assert target.id in neighbors["nodes"]
+    assert edge.id in neighbors["edges"]
+    assert semantic["seeds"] == []
 
 
 def _success_runner(req: AnswerRunRequest) -> dict:

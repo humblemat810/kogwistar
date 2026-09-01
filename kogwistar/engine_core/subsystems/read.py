@@ -329,6 +329,22 @@ class ReadSubsystem(NamespaceProxy, ReadLike):
         metadatas = got.get("metadatas") or []
         return [dict(meta) for meta in metadatas if isinstance(meta, dict)]
 
+    def get_edge_endpoints(
+        self,
+        *,
+        where=None,
+        include: list[str] | None = None,
+        limit: int | None = 10000,
+    ) -> dict[str, Any]:
+        """Read structural endpoint rows through the engine read boundary."""
+        return run_awaitable_blocking(
+            self._e.backend.edge_endpoints_get(
+                where=where,
+                include=include or ["documents", "metadatas"],
+                limit=limit,
+            )
+        )
+
     # Canonical read API
     def get_nodes(
         self,

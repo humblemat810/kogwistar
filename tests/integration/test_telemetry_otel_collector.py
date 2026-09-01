@@ -12,7 +12,7 @@ import pytest
 from kogwistar.runtime.telemetry import EventEmitter, TraceContext
 
 
-pytestmark = [pytest.mark.integration, pytest.mark.e2e]
+pytestmark = [pytest.mark.integration, pytest.mark.e2e, pytest.mark.slow]
 
 
 def test_otel_otlp_receiver_smoke() -> None:
@@ -33,6 +33,8 @@ def test_otel_otlp_receiver_smoke() -> None:
     from kogwistar.runtime.telemetry_otel import OpenTelemetrySink
 
     container_id = None
+    provider = None
+    sink = None
     endpoint = os.getenv("KOGWISTAR_OTEL_COLLECTOR_ENDPOINT")
     checker = os.getenv("KOGWISTAR_OTEL_CHECK_URL")
     if not endpoint and os.getenv("KOGWISTAR_RUN_DOCKER_OTEL") == "1":
@@ -62,9 +64,14 @@ def test_otel_otlp_receiver_smoke() -> None:
             text=True,
         )
         container_id = started.stdout.strip()
-        port = subprocess.check_output(
-            [docker, "port", container_id, "4318/tcp"], text=True
-        )
+        try:
+            port = subprocess.check_output(
+                [docker, "port", container_id, "4318/tcp"], text=True
+            )
+        except Exception:
+            subprocess.run([docker, "rm", "-f", container_id], check=False)
+            container_id = None
+            raise
         match = re.search(r":(\d+)\s*$", port.strip())
         if match is None:
             pytest.fail(f"cannot determine managed collector port: {port!r}")
@@ -93,7 +100,6 @@ def test_otel_otlp_receiver_smoke() -> None:
         )
         emitter.emit(type="workflow_run_completed", ctx=ctx)
         assert sink.flush(5.0)
-        sink.close(timeout=5.0)
         provider.force_flush(timeout_millis=5_000)
 
         if checker:
@@ -122,6 +128,10 @@ def test_otel_otlp_receiver_smoke() -> None:
             time.sleep(0.25)
         pytest.fail("managed OTel Collector debug exporter did not observe smoke span")
     finally:
+        if sink is not None:
+            sink.close(timeout=5.0)
+        if provider is not None:
+            provider.shutdown()
         if container_id:
             subprocess.run(
                 [shutil.which("docker") or "docker", "rm", "-f", container_id],

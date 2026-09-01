@@ -1663,7 +1663,8 @@ class WorkflowRuntime(BaseRuntime):
             # restart/reconciliation can find trace identity even before the
             # first checkpoint exists.
             run_trace_context = (
-                _trace_context.child_span(
+                _trace_context.child_run(
+                    run_id=str(run_id),
                     token_id=str(run_id),
                     step_seq=0,
                     node_id=str(getattr(start, "id", "start")),

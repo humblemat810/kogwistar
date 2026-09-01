@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from kogwistar.engine_core.engine_sqlite import EngineSQLite
 from kogwistar.engine_core.subsystems.read import ReadSubsystem
 from kogwistar.engine_core.two_stage_chroma import (
@@ -113,6 +115,32 @@ def test_chroma_arrangement_hands_off_sqlite_stage1_to_explicit_vector_stage2(tm
     assert engine.meta_sqlite.get_stage1_node_projection("tenant-a", "n1") is None
 
 
+def test_chroma_batch_embedding_uses_one_provider_call_per_batch(tmp_path):
+    engine, adapter = _engine(tmp_path)
+    calls: list[list[str]] = []
+
+    def batch_embed(documents):
+        calls.append(list(documents))
+        return [[float(index), 1.0] for index, _ in enumerate(documents, 1)]
+
+    engine._ef = batch_embed
+    adapter.add_node(build_entity_node(node_id="n1", doc_id="d1"))
+    adapter.add_node(build_entity_node(node_id="n2", doc_id="d2"))
+
+    jobs = [
+        SimpleNamespace(job_id=f"job-{index}", **job)
+        for index, job in enumerate(engine.indexing.jobs, 1)
+    ]
+    outcomes = adapter.apply_embedding_jobs_batch(jobs)
+
+    assert set(outcomes) == {"job-1", "job-2"}
+    assert all(error is None for error in outcomes.values())
+    assert calls == [["document:n1", "document:n2"]]
+    assert engine.backend.rows["n1"]["embedding"] == [1.0, 1.0]
+    assert engine.backend.rows["n2"]["embedding"] == [2.0, 1.0]
+    assert engine.meta_sqlite.list_stage1_node_projections("tenant-a") == []
+
+
 def test_chroma_stage1_edge_remains_traversable_by_id_and_neighbors(tmp_path):
     engine, adapter = _engine(tmp_path)
     adapter.add_node(build_entity_node(node_id="n1", doc_id="d1"))
@@ -204,6 +232,8 @@ def test_chroma_capability_requires_eventual_reconciliation():
     assert capability.is_complete()
 
 
+@pytest.mark.integration
+@pytest.mark.e2e
 def test_real_chroma_engine_uses_sqlite_stage1_then_promotes(tmp_path):
     from kogwistar.engine_core.engine import GraphKnowledgeEngine
 
@@ -249,6 +279,149 @@ def test_real_chroma_engine_uses_sqlite_stage1_then_promotes(tmp_path):
         engine.close()
 
 
+@pytest.mark.integration
+@pytest.mark.e2e
+def test_real_chroma_engine_promotes_through_index_job_worker(tmp_path):
+    """Exercise the public worker path, not only direct adapter application."""
+    from kogwistar.engine_core.engine import GraphKnowledgeEngine
+
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path),
+        persistence_mode="two_stage",
+        embedding_function=build_test_embedding_function("constant", dim=2),
+    )
+    try:
+        engine.write.add_node(build_entity_node(node_id="n1", doc_id="d1"))
+        worker = engine.indexing.make_index_job_worker(
+            batch_size=8, max_inflight=2, max_jobs_per_tick=8
+        )
+        metrics = worker.tick()
+
+        assert metrics.claimed >= 1
+        assert metrics.done >= 1
+        assert engine.read.query_nodes(query_embeddings=[[0.1, 0.2]], n_results=10)
+        assert engine.meta_sqlite.get_stage1_node_projection(
+            engine.namespace, "n1"
+        ) is None
+    finally:
+        engine.close()
+
+
+@pytest.mark.integration
+@pytest.mark.e2e
+def test_real_chroma_stage1_pending_survives_engine_restart_and_worker_recovery(tmp_path):
+    """A restart leaves Stage 1 recoverable; the worker completes promotion."""
+    from kogwistar.engine_core.engine import GraphKnowledgeEngine
+
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path),
+        persistence_mode="two_stage",
+        embedding_function=build_test_embedding_function("constant", dim=2),
+    )
+    engine.write.add_node(build_entity_node(node_id="n1", doc_id="d1"))
+    assert engine.meta_sqlite.get_stage1_node_projection(engine.namespace, "n1")
+    engine.close()
+
+    restarted = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path),
+        persistence_mode="two_stage",
+        embedding_function=build_test_embedding_function("constant", dim=2),
+    )
+    try:
+        worker = restarted.indexing.make_index_job_worker(
+            batch_size=8, max_inflight=2, max_jobs_per_tick=8
+        )
+        metrics = worker.tick()
+        assert metrics.done >= 1
+        assert restarted.read.query_nodes(query_embeddings=[[0.1, 0.2]], n_results=10)
+        assert restarted.meta_sqlite.get_stage1_node_projection(
+            restarted.namespace, "n1"
+        ) is None
+    finally:
+        restarted.close()
+
+
+@pytest.mark.integration
+@pytest.mark.e2e
+def test_real_chroma_reconciles_after_stage2_write_before_stage1_cleanup(tmp_path, monkeypatch):
+    """A promotion crash converges without leaving dual projection visibility."""
+    from kogwistar.engine_core.engine import GraphKnowledgeEngine
+
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path),
+        persistence_mode="two_stage",
+        embedding_function=build_test_embedding_function("constant", dim=2),
+    )
+    try:
+        engine.write.add_node(build_entity_node(node_id="n1", doc_id="d1"))
+        job = next(
+            item
+            for item in engine.meta_sqlite.list_index_jobs(namespace=engine.namespace)
+            if item.index_kind == "node_embedding"
+        )
+        original = engine.two_stage_projection_adapter.remove_stage1
+
+        def fail_cleanup(**kwargs):
+            raise RuntimeError("simulated crash after Stage-2 write")
+
+        monkeypatch.setattr(engine.two_stage_projection_adapter, "remove_stage1", fail_cleanup)
+        with pytest.raises(RuntimeError, match="after Stage-2"):
+            engine.two_stage_projection_adapter.apply_embedding_job(
+                entity_kind="node",
+                entity_id="n1",
+                op="UPSERT",
+                payload_json=job.payload_json,
+            )
+        assert engine.read.query_nodes(query_embeddings=[[0.1, 0.2]], n_results=10)
+        assert engine.meta_sqlite.get_stage1_node_projection(engine.namespace, "n1")
+
+        monkeypatch.setattr(engine.two_stage_projection_adapter, "remove_stage1", original)
+        assert engine.two_stage_projection_adapter.reconcile_projection() == 1
+        assert engine.meta_sqlite.get_stage1_node_projection(engine.namespace, "n1") is None
+    finally:
+        engine.close()
+
+
+@pytest.mark.integration
+@pytest.mark.e2e
+def test_real_chroma_rebuilds_lost_embedding_job_after_restart(tmp_path):
+    """Canonical state repairs an enqueue that was lost after admission."""
+    from kogwistar.engine_core.engine import GraphKnowledgeEngine
+
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path),
+        persistence_mode="two_stage",
+        embedding_function=build_test_embedding_function("constant", dim=2),
+    )
+    engine.write.add_node(build_entity_node(node_id="n1", doc_id="d1"))
+    claimed = engine.meta_sqlite.claim_index_jobs(
+        limit=10, lease_seconds=60, namespace=engine.namespace
+    )
+    for job in claimed:
+        engine.meta_sqlite.mark_index_job_done(job.job_id, claim_token=job.claim_token)
+    engine.close()
+
+    restarted = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path),
+        persistence_mode="two_stage",
+        embedding_function=build_test_embedding_function("constant", dim=2),
+    )
+    try:
+        assert restarted.indexing.repair_missing_two_stage_embedding_jobs() == 1
+        worker = restarted.indexing.make_index_job_worker(
+            batch_size=8, max_inflight=2, max_jobs_per_tick=8
+        )
+        assert worker.tick().done >= 1
+        assert restarted.read.query_nodes(query_embeddings=[[0.1, 0.2]], n_results=10)
+        assert restarted.meta_sqlite.get_stage1_node_projection(
+            restarted.namespace, "n1"
+        ) is None
+    finally:
+        restarted.close()
+
+
+@pytest.mark.integration
+@pytest.mark.e2e
 def test_real_chroma_stage1_delete_is_repaired_from_canonical_event(tmp_path):
     from kogwistar.engine_core.engine import GraphKnowledgeEngine
 

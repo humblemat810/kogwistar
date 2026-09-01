@@ -37,20 +37,43 @@ class GraphQuery:
         self.e = engine
 
     def _read_nodes(self, *, ids=None, where=None) -> list[Node]:
-        """Use the read facade while retaining compatibility with tiny adapters."""
-        try:
-            return list(self.e.read.get_nodes(ids=ids, where=where, include=["documents"]))
-        except TypeError:
-            got = self.e.backend.node_get(ids=ids, where=where, include=["documents"])
-            return [Node.model_validate_json(doc) for doc in (got.get("documents") or []) if doc]
+        """Read nodes through the engine facade, including staged rows."""
+        reader = getattr(self.e, "read", None)
+        if reader is not None and callable(getattr(reader, "get_nodes", None)):
+            try:
+                return list(reader.get_nodes(ids=ids, where=where, include=["documents"]))
+            except TypeError:
+                # Tiny legacy read shims may expose only ids/include.
+                if where is None:
+                    return list(reader.get_nodes(ids))
+                raw_get = getattr(reader, "_node_get_raw", None)
+                if callable(raw_get):
+                    got = raw_get(ids=ids, where=where, limit=10000, include=["documents"])
+                    return [Node.model_validate_json(doc) for doc in (got.get("documents") or []) if doc]
+                return []
+        if reader is not None:
+            return []
+        got = self.e.backend.node_get(ids=ids, where=where, include=["documents"])
+        return [Node.model_validate_json(doc) for doc in (got.get("documents") or []) if doc]
 
     def _read_edges(self, *, ids=None, where=None) -> list[Edge]:
-        """Use the read facade while retaining compatibility with tiny adapters."""
-        try:
-            return list(self.e.read.get_edges(ids=ids, where=where, include=["documents"]))
-        except TypeError:
-            got = self.e.backend.edge_get(ids=ids, where=where, include=["documents"])
-            return [Edge.model_validate_json(doc) for doc in (got.get("documents") or []) if doc]
+        """Read edges through the engine facade, including staged rows."""
+        reader = getattr(self.e, "read", None)
+        if reader is not None and callable(getattr(reader, "get_edges", None)):
+            try:
+                return list(reader.get_edges(ids=ids, where=where, include=["documents"]))
+            except TypeError:
+                if where is None:
+                    return list(reader.get_edges(ids))
+                raw_get = getattr(reader, "_edge_get_raw", None)
+                if callable(raw_get):
+                    got = raw_get(ids=ids, where=where, limit=10000, include=["documents"])
+                    return [Edge.model_validate_json(doc) for doc in (got.get("documents") or []) if doc]
+                return []
+        if reader is not None:
+            return []
+        got = self.e.backend.edge_get(ids=ids, where=where, include=["documents"])
+        return [Edge.model_validate_json(doc) for doc in (got.get("documents") or []) if doc]
 
     # ---- internals ----
     def _is_node(self, rid: str) -> bool:
@@ -58,6 +81,8 @@ class GraphQuery:
         exists = getattr(reader, "node_exists", None)
         if callable(exists):
             return bool(exists(ids=[rid]))
+        if reader is not None:
+            return bool(self._read_nodes(ids=[rid]))
         hit = self.e.backend.node_get(ids=[rid])
         return (hit.get("ids") or [None])[0] == rid
 
@@ -66,6 +91,8 @@ class GraphQuery:
         exists = getattr(reader, "edge_exists", None)
         if callable(exists):
             return bool(exists(ids=[rid]))
+        if reader is not None:
+            return bool(self._read_edges(ids=[rid]))
         hit = self.e.backend.edge_get(ids=[rid])
         return (hit.get("ids") or [None])[0] == rid
 
@@ -123,9 +150,16 @@ class GraphQuery:
         """Return backend endpoint rows plus matching transient Stage-1 rows."""
         rows: list[dict] = []
         try:
-            got = self.e.backend.edge_endpoints_get(
-                where=where, include=["documents"]
-            )
+            reader = getattr(self.e, "read", None)
+            endpoint_get = getattr(reader, "get_edge_endpoints", None)
+            if callable(endpoint_get):
+                got = endpoint_get(where=where, include=["documents"])
+            elif reader is not None:
+                got = {"documents": []}
+            else:
+                got = self.e.backend.edge_endpoints_get(
+                    where=where, include=["documents"]
+                )
             rows.extend(
                 json.loads(document)
                 for document in (got.get("documents") or [])
@@ -448,10 +482,18 @@ class GraphQuery:
     def semantic_seed_then_expand(
         self, query_embedding: List[float], *, top_k: int = 5, hops: int = 1
     ):
-        hits = self.e.backend.node_query(
-            query_embeddings=[query_embedding], n_results=top_k
+        query_reader = getattr(getattr(self.e, "read", None), "query_nodes", None)
+        hits = (
+            query_reader(query_embeddings=[query_embedding], n_results=top_k)
+            if callable(query_reader)
+            else [] if getattr(self.e, "read", None) is not None else self.e.backend.node_query(
+                query_embeddings=[query_embedding], n_results=top_k
+            )
         )
-        seed_ids = [nid for nid in (hits.get("ids") or [[]])[0]]
+        if isinstance(hits, list):
+            seed_ids = [str(node.safe_get_id()) for node in hits[0]] if hits else []
+        else:
+            seed_ids = [nid for nid in (hits.get("ids") or [[]])[0]]
         layers = self.k_hop(seed_ids, k=hops)
         return {"seeds": seed_ids, "layers": layers}
 
@@ -485,21 +527,31 @@ class GraphQuery:
                     # _where['and'].append()
                 else:
                     _where = {"$and": [where, _where]}
-        hits = self.e.backend.node_query(
-            query_texts=[query_text], n_results=top_k, where=_where
+        query_reader = getattr(getattr(self.e, "read", None), "query_nodes", None)
+        hits = (
+            query_reader(query=query_text, n_results=top_k, where=_where)
+            if callable(query_reader)
+            else [] if getattr(self.e, "read", None) is not None else self.e.backend.node_query(
+                query_texts=[query_text], n_results=top_k, where=_where
+            )
         )
-        seed_ids = [nid for nid in (hits.get("ids") or [[]])[0] if nid]
+        if isinstance(hits, list):
+            seed_ids = [str(node.safe_get_id()) for node in hits[0]] if hits else []
+            seed_docs = [node.model_dump_json() for node in hits[0]] if hits else []
+        else:
+            seed_ids = [nid for nid in (hits.get("ids") or [[]])[0] if nid]
+            seed_docs = hits.get("documents", [[]])[0]
         layers = self.k_hop(seed_ids, k=hops)
         out_layers = [
             {
-                "nodes": self.e.backend.node_get(ids=list(l["nodes"]))["documents"]
+                "nodes": [n.model_dump_json() for n in self._read_nodes(ids=list(l["nodes"]))]
                 if l["nodes"]
                 else [],
-                "edges": self.e.backend.edge_get(ids=list(l["edges"]))["documents"]
+                "edges": [e.model_dump_json() for e in self._read_edges(ids=list(l["edges"]))]
                 if l["edges"]
                 else [],
             }
             for l in layers
         ]
-        res = {"seeds": hits["documents"][0], "layers": out_layers}
+        res = {"seeds": seed_docs, "layers": out_layers}
         return res

@@ -134,6 +134,22 @@ class OpenTelemetrySink:
             self.flush(timeout)
             self._stop.set()
         self._thread.join(timeout=max(timeout, 0.0))
+        if not self._thread.is_alive():
+            # A dropped terminal event can leave spans open in the local maps.
+            # Close them on shutdown so a long-lived process does not retain
+            # span objects indefinitely.
+            for step in tuple(self._step_spans.values()):
+                try:
+                    step.end()
+                except Exception:
+                    self.export_errors += 1
+            for span in tuple(self._run_spans.values()):
+                try:
+                    span.end()
+                except Exception:
+                    self.export_errors += 1
+            self._step_spans.clear()
+            self._run_spans.clear()
 
     @property
     def is_alive(self) -> bool:
@@ -202,9 +218,33 @@ class OpenTelemetrySink:
         run_id = str(evt["run_id"])
         span = self._run_spans.get(run_id)
         if span is None:
-            span = self._tracer.start_span("kogwistar.workflow.run", attributes=self._attributes(evt))
+            parent = self._known_span(str(evt.get("parent_span_id", "")))
+            context = self._context_factory(parent) if parent and self._context_factory else None
+            span = self._tracer.start_span(
+                "kogwistar.workflow.run",
+                context=context,
+                attributes=self._attributes(evt),
+            )
             self._run_spans[run_id] = span
         return span
+
+    def _known_span(self, span_id: str) -> _Span | None:
+        """Find an in-process parent span from the Kogwistar correlation ID."""
+        if not span_id:
+            return None
+        for span in (*self._run_spans.values(), *self._step_spans.values()):
+            try:
+                if self._attributes_for_span(span).get("kogwistar.span_id") == span_id:
+                    return span
+            except Exception:
+                continue
+        return None
+
+    @staticmethod
+    def _attributes_for_span(span: _Span) -> Mapping[str, Any]:
+        # The protocol intentionally stays tiny; test and SDK spans expose
+        # attributes differently, so only use the optional public attribute.
+        return getattr(span, "attributes", {}) or {}
 
     def _project(self, evt: dict[str, Any]) -> None:
         event_type = str(evt.get("type", ""))

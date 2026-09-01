@@ -34,6 +34,12 @@ opt-in and may be enabled only for a backend arrangement that passes the full
 capability contract below. Unsupported arrangements fail configuration; they
 must not silently embed synchronously.
 
+`persistence_mode` is selected per engine/projection arrangement, not per
+entity. Entities may be at different projection phases concurrently (for
+example, one pending Stage 1 while another is Stage 2 ready), but each entity
+must follow the lifecycle contract of the selected arrangement. An individual
+write may not silently switch between single-stage and two-stage semantics.
+
 `add_node()` keeps its public signature. A later engine option and
 `KOGWISTAR_PERSISTENCE_MODE` may select the mode after validation.
 
@@ -431,11 +437,43 @@ fails. Embedding/provider/index failure never invalidates canonical truth.
 Pending/failed Stage-2 work remains non-semantic and recoverable through
 existing queue retry/DLQ rules.
 
-Worker claims bounded compatible `node_embedding` jobs, grouping by model,
-version, namespace/tenant, and provider limits. One bad member cannot block
-others; successful members promote independently, failed members retry or DLQ.
-Acknowledgement occurs only after current Stage 2 write and required Stage-1
+Worker claims a bounded set of `index_jobs`. A claim may contain mixed work:
+`node_embedding`, projection creation, endpoint maintenance, deletion, and
+other index kinds. The worker partitions the claim before execution. Compatible
+`node_embedding` jobs are grouped by model, version, provider, namespace/tenant,
+and other provider constraints, then split into groups no larger than
+`batch_size`. Each group is sent to the embedding provider in one call when the
+adapter supports batching. Non-embedding jobs are processed one by one through
+their existing `apply_index_job` handler. Embedding groups are processed before
+those individual jobs; this is an execution-order optimization, not a
+dependency or transaction boundary.
+
+`batch_size` is the maximum number of embeddings sent in one provider call. A
+claim or compatible group may contain fewer than that number and is processed
+immediately; the worker does not wait to fill a batch. A single available job
+therefore uses the single-item path.
+
+The worker API and CLI expose `batch_size`, `max_jobs_per_tick`,
+`lease_seconds`, and `max_inflight`. Current worker execution is serial:
+`batch_size` controls provider batch width, while `max_inflight` is retained as
+a forward-compatible concurrency limit and must not reduce `batch_size`.
+Actual concurrent batch scheduling is not part of this implementation phase.
+Batch embedding is an optimization boundary, not a transaction boundary. The
+worker does not promise all-or-nothing completion for a batch. A provider batch
+failure is isolated to the members of that group and may fall back to per-job
+processing when supported; one bad member cannot block unrelated jobs.
+Successful members promote and acknowledge independently, while failed members
+retry or enter DLQ. An adapter exception must not escape the worker tick and
+must be converted to per-job retry/failure outcomes. Acknowledgement occurs
+only after each job's current Stage 2 write and required Stage-1
 cleanup/reconciliation intent are durable enough for idempotent convergence.
+
+For PostgreSQL, a single member's Stage-2 handoff may use one local UOW; this
+does not make the provider call or the complete multi-member batch one SQL
+transaction. For Chroma and other cross-store arrangements, partial promotion
+is expected and repaired through revision gates, lease/redelivery, and
+reconciliation. Crash recovery therefore targets per-job completion and
+eventual convergence, not rollback of already successful batch members.
 
 ## Recovery and Rebuild
 
@@ -463,6 +501,13 @@ Stage 2 readiness.
 
 Any backend claiming `two_stage` must pass equivalent lifecycle tests:
 
+- mixed claim containing embedding and non-embedding jobs -> compatible
+  embeddings use one or more bounded provider batches, while other jobs use
+  their individual handlers;
+- provider/adapter batch failure -> worker remains alive and each affected job
+  independently retries or enters DLQ;
+- partial batch promotion -> completed members remain complete and incomplete
+  members independently retry/reconcile; no batch-wide rollback is assumed;
 - canonical create -> Stage 1 metadata/reference query yes; semantic query no;
 - successful promotion -> Stage 2 semantic query yes; Stage 1 absent;
 - crash before Stage 2 -> job/scanner recovers, then Stage 1 removed;

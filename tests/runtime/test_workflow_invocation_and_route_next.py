@@ -7,6 +7,7 @@ from kogwistar.engine_core.models import Grounding, MentionVerification, Span
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.runtime import MappingStepResolver, WorkflowRuntime
 from kogwistar.runtime.models import (
+    RunFailure,
     RunSuccess,
     WorkflowDesignArtifact,
     WorkflowEdge,
@@ -15,6 +16,7 @@ from kogwistar.runtime.models import (
 )
 from tests._helpers.embeddings import ConstantEmbeddingFunction
 from tests._helpers.fake_backend import build_fake_backend
+from tests._helpers.graph_builders import build_entity_node
 
 pytestmark = [pytest.mark.workflow, pytest.mark.runtime]
 
@@ -313,6 +315,85 @@ def test_goal_loop_is_an_ordinary_cyclic_workflow_pattern(engine_pair):
     }
 
 
+@pytest.mark.e2e
+def test_goal_action_failure_fails_control_workflow_without_checking_success(engine_pair):
+    """A failed ordinary Act child cannot be mistaken for a satisfied goal."""
+    workflow_engine, conversation_engine = engine_pair
+    control_id = "wf_goal_failure_control"
+    child_id = "wf_goal_failure_action"
+    for node in (
+        _node(workflow_id=control_id, node_id="goal-start", op="start", start=True),
+        _node(workflow_id=control_id, node_id="goal-act", op="act"),
+        _node(workflow_id=control_id, node_id="goal-check", op="check"),
+        _node(workflow_id=control_id, node_id="goal-done", op="done", terminal=True),
+        _node(workflow_id=child_id, node_id="action-start", op="action", start=True),
+        _node(workflow_id=child_id, node_id="action-done", op="done", terminal=True),
+    ):
+        workflow_engine.write.add_node(node)
+    for edge in (
+        _edge(workflow_id=control_id, edge_id="goal-1", src="goal-start", dst="goal-act"),
+        _edge(workflow_id=control_id, edge_id="goal-2", src="goal-act", dst="goal-check"),
+        _edge(workflow_id=control_id, edge_id="goal-3", src="goal-check", dst="goal-done"),
+        _edge(workflow_id=child_id, edge_id="action-1", src="action-start", dst="action-done"),
+    ):
+        workflow_engine.write.add_edge(edge)
+
+    resolver = MappingStepResolver()
+
+    @resolver.register("start")
+    def _start(ctx):
+        return RunSuccess(state_update=[])
+
+    @resolver.register("act")
+    def _act(ctx):
+        return RunSuccess(
+            state_update=[],
+            workflow_invocations=[
+                WorkflowInvocationRequest(
+                    workflow_id=child_id,
+                    invocation_key="goal-failing-action",
+                    result_state_key="action_result",
+                )
+            ],
+        )
+
+    @resolver.register("action")
+    def _action(ctx):
+        return RunFailure(
+            conversation_node_id=None,
+            status="failure",
+            errors=["simulated action failure"],
+            state_update=[],
+        )
+
+    @resolver.register("check")
+    def _check(ctx):
+        raise AssertionError("goal check must not run after failed Act")
+
+    @resolver.register("done")
+    def _done(ctx):
+        return RunSuccess(state_update=[])
+
+    runtime = WorkflowRuntime(
+        workflow_engine=workflow_engine,
+        conversation_engine=conversation_engine,
+        step_resolver=resolver,
+        predicate_registry={},
+        checkpoint_every_n_steps=1,
+    )
+    result = runtime.run(
+        workflow_id=control_id,
+        conversation_id="conv-goal-failure",
+        turn_node_id="turn-goal-failure",
+        run_id="run-goal-failure",
+        initial_state={"goal_status": "active"},
+    )
+
+    assert result.status == "failure"
+    assert result.final_state["goal_status"] == "active"
+
+
+@pytest.mark.e2e
 def test_nested_workflow_synthesized_design_is_persisted_and_used(engine_pair):
     """Async mirror: `tests/runtime/test_async_runtime_contract.py::test_async_runtime_nested_workflow_invocation_matches_sync`."""
     workflow_engine, conversation_engine = engine_pair
@@ -489,6 +570,7 @@ def test_nested_workflow_synthesized_design_is_persisted_and_used(engine_pair):
     assert len(persisted_child_nodes) == 3
 
 
+@pytest.mark.e2e
 def test_nested_workflow_failure_short_circuits_parent_routing(engine_pair):
     """Async mirror: `tests/runtime/test_async_runtime_contract.py::test_async_runtime_nested_workflow_child_failure_fails_parent`."""
     workflow_engine, conversation_engine = engine_pair
@@ -599,3 +681,78 @@ def test_nested_workflow_failure_short_circuits_parent_routing(engine_pair):
     assert rr.status == "failure"
     assert rr.final_state["spawn_seen"] is True
     assert "ended" not in rr.final_state
+
+
+@pytest.mark.e2e
+def test_goal_act_uses_normal_two_stage_write_and_index_worker(engine_pair, tmp_path):
+    """Goal topology adds no special handling to Stage-1/Stage-2 projection."""
+    workflow_engine, _ = engine_pair
+    data_engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path / "goal-data"),
+        backend_factory=build_fake_backend,
+        persistence_mode="two_stage",
+    )
+    control_id = "wf_goal_two_stage_act"
+    try:
+        for node in (
+            _node(workflow_id=control_id, node_id="start", op="start", start=True),
+            _node(workflow_id=control_id, node_id="act", op="act"),
+            _node(workflow_id=control_id, node_id="check", op="check"),
+            _node(workflow_id=control_id, node_id="done", op="done", terminal=True),
+        ):
+            workflow_engine.write.add_node(node)
+        for edge in (
+            _edge(workflow_id=control_id, edge_id="gts-1", src="start", dst="act"),
+            _edge(workflow_id=control_id, edge_id="gts-2", src="act", dst="check"),
+            _edge(workflow_id=control_id, edge_id="gts-3", src="check", dst="done"),
+        ):
+            workflow_engine.write.add_edge(edge)
+
+        resolver = MappingStepResolver()
+
+        @resolver.register("start")
+        def _start(ctx):
+            return RunSuccess(state_update=[])
+
+        @resolver.register("act")
+        def _act(ctx):
+            data_engine.write.add_node(
+                build_entity_node(node_id="goal-created", doc_id="goal-doc", embedding=None)
+            )
+            return RunSuccess(state_update=[])
+
+        @resolver.register("check")
+        def _check(ctx):
+            return RunSuccess(state_update=[])
+
+        @resolver.register("done")
+        def _done(ctx):
+            return RunSuccess(state_update=[])
+
+        runtime = WorkflowRuntime(
+            workflow_engine=workflow_engine,
+            conversation_engine=data_engine,
+            step_resolver=resolver,
+            predicate_registry={},
+            checkpoint_every_n_steps=1,
+        )
+        result = runtime.run(
+            workflow_id=control_id,
+            conversation_id="conv-goal-two-stage",
+            turn_node_id="turn-goal-two-stage",
+            run_id="run-goal-two-stage",
+            initial_state={},
+        )
+        assert result.status == "succeeded"
+        assert data_engine.read.get_nodes(ids=["goal-created"])
+        assert data_engine.backend.node_get(ids=["goal-created"])["embeddings"] == [None]
+        assert data_engine.read.query_nodes(query_embeddings=[[1, 0, 0]], n_results=10) == []
+
+        worker = data_engine.indexing.make_index_job_worker(
+            batch_size=8, max_inflight=2, max_jobs_per_tick=8
+        )
+        assert worker.tick().done >= 1
+        assert data_engine.read.query_nodes(query_embeddings=[[1, 0, 0]], n_results=10)
+        assert data_engine.backend.node_get(ids=["goal-created"])["embeddings"][0] is not None
+    finally:
+        data_engine.close()

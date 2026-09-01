@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import signal
 import sys
 import time
@@ -25,6 +26,8 @@ class IndexJobWorker:
 
     - Uses meta store's claim/ack/requeue APIs.
     - Applies jobs via engine.indexing.apply_index_job(...).
+    - ``batch_size`` controls provider batch width; ``max_inflight`` is reserved
+      for future concurrent batch scheduling and does not alter batch width.
 
     This is intentionally decoupled from the Engine hot path.
     """
@@ -75,7 +78,10 @@ class IndexJobWorker:
 
         while remaining > 0:
             # IMPORTANT: don't over-claim beyond what we can process this tick.
-            batch_n = min(self.batch_size, remaining, self.max_inflight)
+            # ``batch_size`` is the provider request size. ``max_inflight`` is
+            # reserved for concurrent batch scheduling and must not shrink a
+            # batch when this worker is operating serially.
+            batch_n = min(self.batch_size, remaining)
             if batch_n <= 0:
                 break
 
@@ -85,51 +91,112 @@ class IndexJobWorker:
 
             metrics.claimed += len(jobs)
 
-            batch_results = None
             adapter = getattr(self.engine, "two_stage_projection_adapter", None)
             batch_apply = getattr(adapter, "apply_embedding_jobs_batch", None)
-            if (
-                len(jobs) > 1
-                and callable(batch_apply)
-                and all(
-                    str(getattr(job, "index_kind", None) or (job.get("index_kind") if isinstance(job, dict) else ""))
-                    == "node_embedding"
-                    for job in jobs
-                )
-            ):
-                batch_results = batch_apply(jobs)
 
+            # Keep embedding provider calls homogeneous, while allowing a single
+            # claim to contain ordinary projection work as well. Embeddings run
+            # first; non-embedding jobs retain their existing one-job handler.
+            embedding_groups: dict[tuple[str, str, str], list[object]] = {}
+            ordinary_jobs: list[object] = []
             for job in jobs:
+                index_kind = self._job_value(job, "index_kind")
+                if index_kind == "node_embedding":
+                    payload = self._decode_payload(self._job_value(job, "payload_json"))
+                    key = (
+                        str(payload.get("embedding_model") or ""),
+                        str(payload.get("embedding_version") or ""),
+                        str(payload.get("embedding_provider") or ""),
+                    )
+                    embedding_groups.setdefault(key, []).append(job)
+                else:
+                    ordinary_jobs.append(job)
+
+            work_units: list[tuple[list[object], object | None]] = []
+            for group in embedding_groups.values():
+                for start in range(0, len(group), max(1, self.batch_size)):
+                    work_units.append((group[start : start + max(1, self.batch_size)], batch_apply))
+            work_units.extend(([job], None) for job in ordinary_jobs)
+
+            for unit, batch_fn in work_units:
+                batch_results = None
+                if batch_fn is not None and len(unit) > 1 and callable(batch_fn):
+                    try:
+                        batch_results = batch_fn(unit)
+                    except Exception as exc:
+                        # A provider/adapter batch failure is per-job failure,
+                        # not a worker-process failure or batch transaction.
+                        batch_results = {
+                            str(self._job_value(job, "job_id")): exc for job in unit
+                        }
+
+                for job in unit:
+                    self._process_job(
+                        job=job,
+                        batch_results=batch_results,
+                        namespace=ns,
+                        entity_cache=entity_cache,
+                        mark_done=mark_done,
+                        bump=bump,
+                        mark_failed=mark_failed,
+                        metrics=metrics,
+                        durations=durations,
+                    )
+                    remaining -= 1
+                    if remaining <= 0:
+                        break
+                if remaining <= 0:
+                    break
+
+        if durations:
+            metrics.avg_job_duration_s = sum(durations) / len(durations)
+        return metrics
+
+    @staticmethod
+    def _job_value(job: object, name: str):
+        if isinstance(job, dict):
+            return job.get(name)
+        return getattr(job, name, None)
+
+    @staticmethod
+    def _decode_payload(payload_json: object) -> dict[str, object]:
+        if isinstance(payload_json, dict):
+            return payload_json
+        if isinstance(payload_json, str) and payload_json:
+            try:
+                value = json.loads(payload_json)
+            except (TypeError, ValueError):
+                return {}
+            return value if isinstance(value, dict) else {}
+        return {}
+
+    def _process_job(
+        self,
+        *,
+        job: object,
+        batch_results: Optional[dict[str, BaseException | None]],
+        namespace: str,
+        entity_cache: dict[tuple[str, str, str], object],
+        mark_done,
+        bump,
+        mark_failed,
+        metrics: WorkerTickMetrics,
+        durations: list[float],
+    ) -> None:
                 start = time.time()
 
                 # Support both dict-like and dataclass rows.
-                job_id = getattr(job, "job_id", None) or (
-                    job.get("job_id") if isinstance(job, dict) else None
-                )
-                entity_kind = getattr(job, "entity_kind", None) or (
-                    job.get("entity_kind") if isinstance(job, dict) else None
-                )
-                entity_id = getattr(job, "entity_id", None) or (
-                    job.get("entity_id") if isinstance(job, dict) else None
-                )
-                index_kind = getattr(job, "index_kind", None) or (
-                    job.get("index_kind") if isinstance(job, dict) else None
-                )
-                op = getattr(job, "op", None) or (
-                    job.get("op") if isinstance(job, dict) else None
-                )
-                payload_json = getattr(job, "payload_json", None) or (
-                    job.get("payload_json") if isinstance(job, dict) else None
-                )
+                job_id = self._job_value(job, "job_id")
+                entity_kind = self._job_value(job, "entity_kind")
+                entity_id = self._job_value(job, "entity_id")
+                index_kind = self._job_value(job, "index_kind")
+                op = self._job_value(job, "op")
+                payload_json = self._job_value(job, "payload_json")
                 retry_count = (
-                    getattr(job, "retry_count", None)
-                    if not isinstance(job, dict)
-                    else job.get("retry_count")
+                    self._job_value(job, "retry_count")
                 )
                 max_retries = (
-                    getattr(job, "max_retries", None)
-                    if not isinstance(job, dict)
-                    else job.get("max_retries")
+                    self._job_value(job, "max_retries")
                 )
 
                 try_rc = int(retry_count or 0)
@@ -149,7 +216,7 @@ class IndexJobWorker:
                             entity_id=str(entity_id),
                             index_kind=str(index_kind),
                             op=str(op),
-                            namespace=ns,
+                            namespace=namespace,
                             payload_json=payload_json,
                             validated_entity_cache=entity_cache,
                         )
@@ -168,14 +235,6 @@ class IndexJobWorker:
                         metrics.failed += 1
                 finally:
                     durations.append(time.time() - start)
-
-                remaining -= 1
-                if remaining <= 0:
-                    break
-
-        if durations:
-            metrics.avg_job_duration_s = sum(durations) / len(durations)
-        return metrics
 
 
 def run_forever(
@@ -210,7 +269,12 @@ def _main(argv: list[str]) -> int:
     )
     parser.add_argument("--batch-size", type=int, default=50)
     parser.add_argument("--max-jobs-per-tick", type=int, default=200)
-    parser.add_argument("--max-inflight", type=int, default=50)
+    parser.add_argument(
+        "--max-inflight",
+        type=int,
+        default=50,
+        help="Reserved concurrent-batch limit; serial worker currently processes one batch at a time",
+    )
     parser.add_argument("--lease-seconds", type=int, default=60)
     parser.add_argument(
         "--phase1-enable-index-jobs",

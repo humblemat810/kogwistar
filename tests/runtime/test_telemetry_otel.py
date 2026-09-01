@@ -5,7 +5,11 @@ import threading
 
 import pytest
 
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.runtime.models import RunSuccess, WorkflowInvocationRequest
+from kogwistar.runtime.resolvers import MappingStepResolver
 from kogwistar.runtime.runtime import StepContext
+from kogwistar.runtime.runtime import WorkflowRuntime
 from kogwistar.runtime.telemetry import EventEmitter, TraceContext
 from kogwistar.runtime.telemetry_otel import (
     OpenTelemetrySink,
@@ -219,3 +223,213 @@ def test_otel_closes_run_and_open_steps_on_cancel_or_suspend():
     _wait_until(lambda: sink.export_errors == 1)
     sink.close()
     assert not sink.is_alive
+
+
+@pytest.mark.e2e
+def test_real_workflow_runtime_projects_lifecycle_to_otel_sink(tmp_path):
+    """The adapter is exercised through WorkflowRuntime, not only EventEmitter."""
+    from tests.runtime.test_trace_sink_smoke import _add_edge, _add_node
+
+    workflow_engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path / "workflow"), kg_graph_type="workflow"
+    )
+    conversation_engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path / "conversation"), kg_graph_type="conversation"
+    )
+    tracer = _Tracer()
+    sink = OpenTelemetrySink(tracer, context_factory=lambda parent: ("child-of", parent))
+    resolver = MappingStepResolver()
+    workflow_id = "wf_otel_runtime"
+
+    try:
+        _add_node(
+            workflow_engine,
+            workflow_id=workflow_id,
+            node_id=f"wf|{workflow_id}|start",
+            op="start",
+            start=True,
+        )
+        _add_node(
+            workflow_engine,
+            workflow_id=workflow_id,
+            node_id=f"wf|{workflow_id}|done",
+            op="done",
+            terminal=True,
+        )
+        _add_edge(
+            workflow_engine,
+            workflow_id=workflow_id,
+            edge_id=f"wf|{workflow_id}|start->done",
+            src=f"wf|{workflow_id}|start",
+            dst=f"wf|{workflow_id}|done",
+        )
+
+        @resolver.register("start")
+        def _start(ctx):
+            return RunSuccess(state_update=[("u", {"started": True})])
+
+        @resolver.register("done")
+        def _done(ctx):
+            return RunSuccess(state_update=[("u", {"done": True})])
+
+        runtime = WorkflowRuntime(
+            workflow_engine=workflow_engine,
+            conversation_engine=conversation_engine,
+            step_resolver=resolver,
+            predicate_registry={},
+            checkpoint_every_n_steps=1,
+            sink=sink,
+        )
+        result = runtime.run(
+            workflow_id=workflow_id,
+            conversation_id="conv-otel-runtime",
+            turn_node_id="turn-otel-runtime",
+            run_id="run-otel-runtime",
+            initial_state={},
+        )
+        assert result.status == "succeeded"
+        assert sink.flush(1.0)
+        assert [span.name for span in tracer.spans] == [
+            "kogwistar.workflow.run",
+            "kogwistar.workflow.step_attempt",
+            "kogwistar.workflow.step_attempt",
+        ]
+        assert tracer.spans[0].ended
+        assert all(span.ended for span in tracer.spans[1:])
+        assert any(event[0] == "checkpoint_saved" for event in tracer.spans[0].events)
+    finally:
+        sink.close()
+        workflow_engine.close()
+        conversation_engine.close()
+
+
+@pytest.mark.e2e
+def test_otel_resume_uses_same_trace_and_new_continuation_span():
+    """Restarted execution keeps W3C trace identity without reusing a span."""
+    tracer = _Tracer()
+    sink = OpenTelemetrySink(tracer)
+    root = TraceContext.new_root(
+        run_id="run-resume", token_id="token", step_seq=0, node_id="start"
+    )
+    first = {"type": "workflow_run_started", **root.as_fields()}
+    continuation = root.child_span(step_seq=4, node_id="resume")
+    second = {"type": "workflow_run_started", **continuation.as_fields()}
+    sink.emit(first)
+    sink.emit({"type": "workflow_run_completed", **root.as_fields()})
+    assert sink.flush(1.0)
+    sink.emit(second)
+    sink.emit({"type": "workflow_run_completed", **continuation.as_fields()})
+    assert sink.flush(1.0)
+    sink.close()
+
+    assert len(tracer.spans) == 2
+    assert tracer.spans[0].attributes["kogwistar.trace_id"] == root.trace_id
+    assert tracer.spans[1].attributes["kogwistar.trace_id"] == root.trace_id
+    assert tracer.spans[0].attributes["kogwistar.span_id"] != tracer.spans[1].attributes[
+        "kogwistar.span_id"
+    ]
+
+
+@pytest.mark.e2e
+def test_nested_workflow_runtime_projects_child_run_under_parent_span(tmp_path):
+    """Nested invoke-and-await keeps trace identity and OTel parentage."""
+    from tests.runtime.test_workflow_invocation_and_route_next import (
+        _build_engine_pair,
+        _edge,
+        _node,
+    )
+
+    workflow_engine, conversation_engine = _build_engine_pair(tmp_path)
+    tracer = _Tracer()
+    sink = OpenTelemetrySink(
+        tracer, context_factory=lambda parent: ("child-of", parent)
+    )
+    resolver = MappingStepResolver()
+    parent_id = "wf_otel_parent"
+    child_id = "wf_otel_child"
+    try:
+        for node in (
+            _node(workflow_id=parent_id, node_id="parent-start", op="start", start=True),
+            _node(workflow_id=parent_id, node_id="parent-act", op="act"),
+            _node(workflow_id=parent_id, node_id="parent-done", op="done", terminal=True),
+            _node(workflow_id=child_id, node_id="child-start", op="child", start=True),
+            _node(workflow_id=child_id, node_id="child-done", op="child-done", terminal=True),
+        ):
+            workflow_engine.write.add_node(node)
+        for edge in (
+            _edge(workflow_id=parent_id, edge_id="parent-1", src="parent-start", dst="parent-act"),
+            _edge(workflow_id=parent_id, edge_id="parent-2", src="parent-act", dst="parent-done"),
+            _edge(workflow_id=child_id, edge_id="child-1", src="child-start", dst="child-done"),
+        ):
+            workflow_engine.write.add_edge(edge)
+
+        @resolver.register("start")
+        def _start(ctx):
+            return RunSuccess(state_update=[])
+
+        @resolver.register("act")
+        def _act(ctx):
+            return RunSuccess(
+                state_update=[],
+                workflow_invocations=[
+                    WorkflowInvocationRequest(
+                        workflow_id=child_id,
+                        invocation_key="otel-child-action",
+                        result_state_key="child_result",
+                    )
+                ],
+            )
+
+        @resolver.register("done")
+        def _done(ctx):
+            return RunSuccess(state_update=[])
+
+        @resolver.register("child")
+        def _child(ctx):
+            return RunSuccess(state_update=[])
+
+        @resolver.register("child-done")
+        def _child_done(ctx):
+            return RunSuccess(state_update=[])
+
+        runtime = WorkflowRuntime(
+            workflow_engine=workflow_engine,
+            conversation_engine=conversation_engine,
+            step_resolver=resolver,
+            predicate_registry={},
+            checkpoint_every_n_steps=1,
+            sink=sink,
+        )
+        result = runtime.run(
+            workflow_id=parent_id,
+            conversation_id="conv-otel-nested",
+            turn_node_id="turn-otel-nested",
+            run_id="run-otel-parent",
+            initial_state={},
+            _trace_context=TraceContext.new_root(
+                run_id="run-otel-parent",
+                token_id="run-otel-parent",
+                step_seq=0,
+                node_id="start",
+            ),
+        )
+        assert result.status == "succeeded"
+        assert sink.flush(1.0)
+
+        run_spans = [span for span in tracer.spans if span.name == "kogwistar.workflow.run"]
+        assert len(run_spans) == 2
+        parent_span, child_span = run_spans
+        parent_step = next(
+            span
+            for span in tracer.spans
+            if span.name == "kogwistar.workflow.step_attempt"
+            and span.attributes.get("kogwistar.node_id") == "parent-act"
+        )
+        assert child_span.attributes["kogwistar.trace_id"] == parent_span.attributes[
+            "kogwistar.trace_id"
+        ]
+        assert child_span.context == ("child-of", parent_step)
+    finally:
+        sink.close()
+        workflow_engine.close()
+        conversation_engine.close()

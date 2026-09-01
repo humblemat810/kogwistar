@@ -189,6 +189,128 @@ class SQLiteChromaTwoStageProjectionAdapter:
         )
         self.remove_stage1(entity_kind=entity_kind, entity_id=entity_id)
 
+    def apply_embedding_jobs_batch(
+        self, jobs: list[Any]
+    ) -> dict[str, BaseException | None]:
+        """Best-effort batch embedding with per-job promotion and failures."""
+        prepared: list[tuple[str, str, str, str, str | None, dict[str, Any]]] = []
+        outcomes: dict[str, BaseException | None] = {}
+
+        for job in jobs:
+            value = (
+                (lambda name: job.get(name))
+                if isinstance(job, dict)
+                else (lambda name: getattr(job, name, None))
+            )
+            job_id = str(value("job_id") or "")
+            entity_kind = str(value("entity_kind") or "")
+            entity_id = str(value("entity_id") or "")
+            op = str(value("op") or "UPSERT")
+            payload_json = value("payload_json")
+            try:
+                if op.upper() == "DELETE":
+                    self.apply_embedding_job(
+                        entity_kind=entity_kind,
+                        entity_id=entity_id,
+                        op=op,
+                        payload_json=payload_json,
+                    )
+                    outcomes[job_id] = None
+                    continue
+                expected = str(
+                    json.loads(payload_json or "{}").get("source_fingerprint") or ""
+                )
+                current = self.engine.indexing.canonical_entity_revision(
+                    entity_kind=entity_kind, entity_id=entity_id
+                )
+                if current is None or current.state != "active":
+                    self.apply_embedding_job(
+                        entity_kind=entity_kind,
+                        entity_id=entity_id,
+                        op=op,
+                        payload_json=payload_json,
+                    )
+                    outcomes[job_id] = None
+                    continue
+                if expected and expected != self._current_fingerprint(
+                    entity_kind=entity_kind, entity_id=entity_id
+                ):
+                    outcomes[job_id] = None
+                    continue
+                row = self._meta().get_stage1_node_projection(
+                    self._namespace(), self._stage1_key(entity_kind, entity_id)
+                )
+                if not row:
+                    raise RuntimeError("current Stage-1 projection is missing")
+                staged = row.get("payload") or {}
+                if expected and str(staged.get("source_fingerprint") or "") != expected:
+                    outcomes[job_id] = None
+                    continue
+                prepared.append(
+                    (job_id, entity_kind, entity_id, expected, payload_json, staged)
+                )
+            except BaseException as exc:
+                outcomes[job_id] = exc
+
+        if not prepared:
+            return outcomes
+
+        documents = [str(item[5].get("document") or "") for item in prepared]
+        try:
+            provider = getattr(self.engine, "_ef", None)
+            if not callable(provider):
+                raise RuntimeError("embedding provider has no batch interface")
+            raw_embeddings = run_awaitable_blocking(provider(documents))
+            embeddings = list(raw_embeddings)
+            if len(embeddings) != len(prepared):
+                raise RuntimeError("embedding provider returned wrong batch length")
+        except BaseException:
+            # Provider batch failure must degrade to isolated jobs, not lose all.
+            for job_id, entity_kind, entity_id, _, payload_json, _ in prepared:
+                try:
+                    self.apply_embedding_job(
+                        entity_kind=entity_kind,
+                        entity_id=entity_id,
+                        op="UPSERT",
+                        payload_json=payload_json,
+                    )
+                    outcomes[job_id] = None
+                except BaseException as exc:
+                    outcomes[job_id] = exc
+            return outcomes
+
+        for (job_id, entity_kind, entity_id, expected, _, staged), embedding in zip(
+            prepared, embeddings
+        ):
+            try:
+                current = self.engine.indexing.canonical_entity_revision(
+                    entity_kind=entity_kind, entity_id=entity_id
+                )
+                if current is None or current.state != "active":
+                    continue
+                if expected and expected != self._current_fingerprint(
+                    entity_kind=entity_kind, entity_id=entity_id
+                ):
+                    continue
+                metadata = dict(staged.get("metadata") or {})
+                metadata["_kogwistar_stage2_ready"] = True
+                metadata["_kogwistar_source_fingerprint"] = expected or self._current_fingerprint(
+                    entity_kind=entity_kind, entity_id=entity_id
+                )
+                self._collection_call(
+                    entity_kind,
+                    "upsert",
+                    ids=[entity_id],
+                    documents=[str(staged.get("document") or "")],
+                    metadatas=[metadata],
+                    embeddings=[embedding],
+                )
+                self.remove_stage1(entity_kind=entity_kind, entity_id=entity_id)
+                outcomes[job_id] = None
+            except BaseException as exc:
+                outcomes[job_id] = exc
+        return outcomes
+
     def promote_stage2(self, **kwargs: Any) -> None:
         self.apply_embedding_job(**kwargs)
 

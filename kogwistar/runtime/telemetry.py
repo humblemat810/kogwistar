@@ -127,6 +127,30 @@ class TraceContext:
             parent_span_id=parent.span_id,
         )
 
+    def child_run(
+        self,
+        *,
+        run_id: str,
+        token_id: Optional[str] = None,
+        step_seq: int = 0,
+        node_id: str = "start",
+        attempt: int = 1,
+    ) -> "TraceContext":
+        """Create a nested workflow context with a new run and span identity."""
+        parent = self.with_span_defaults()
+        return TraceContext(
+            run_id=str(run_id),
+            token_id=str(token_id if token_id is not None else run_id),
+            step_seq=int(step_seq),
+            node_id=str(node_id),
+            attempt=int(attempt),
+            conversation_id=parent.conversation_id,
+            turn_node_id=parent.turn_node_id,
+            trace_id=parent.trace_id,
+            span_id=_new_w3c_span_id(),
+            parent_span_id=parent.span_id,
+        )
+
     def with_span_defaults(self) -> "TraceContext":
         """
         Provide conventional defaults:

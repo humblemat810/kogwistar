@@ -162,24 +162,38 @@ class _ReadShim:
         )
         return sorted({meta["edge_id"] for meta in got.get("metadatas") or [] if meta})
 
-    def get_nodes(self, ids):
-        got = (
-            self._e.node_collection.get(ids=list(ids), include=["documents"])
-            if ids
-            else {"documents": []}
+    def get_nodes(self, ids=None, *, where=None, include=None):
+        got = self._e.node_collection.get(
+            ids=list(ids) if ids else None,
+            where=where,
+            include=include or ["documents"],
         )
         return [
             Node.model_validate_json(doc) for doc in (got.get("documents") or []) if doc
         ]
 
-    def get_edges(self, ids):
-        got = (
-            self._e.edge_collection.get(ids=list(ids), include=["documents"])
-            if ids
-            else {"documents": []}
+    def get_edges(self, ids=None, *, where=None, include=None):
+        got = self._e.edge_collection.get(
+            ids=list(ids) if ids else None,
+            where=where,
+            include=include or ["documents"],
         )
         return [
             Edge.model_validate_json(doc) for doc in (got.get("documents") or []) if doc
+        ]
+
+    def get_edge_endpoints(self, *, where=None, include=None, limit=10000):
+        return self._e.backend.edge_endpoints_get(
+            where=where, include=include
+        )
+
+    def query_nodes(self, **kwargs):
+        if "query" in kwargs:
+            kwargs["query_texts"] = [kwargs.pop("query")]
+        got = self._e.backend.node_query(**kwargs)
+        return [
+            [Node.model_validate_json(doc) for doc in row if doc]
+            for row in (got.get("documents") or [])
         ]
 
 
