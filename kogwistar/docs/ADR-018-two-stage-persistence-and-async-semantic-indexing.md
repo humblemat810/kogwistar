@@ -307,10 +307,26 @@ having only Stage-1 admission methods is insufficient. `index_jobs` remains
 worker coordination and supplies job payload; it is not replaced by this
 adapter.
 
+Async arrangements preserve both persistence modes. In `single_stage`, the
+async admission path awaits an async embedding provider and writes the final
+semantic projection through an async backend verb; a synchronous provider is
+isolated with `asyncio.to_thread()` and never called on the event loop. In
+`two_stage`, an async adapter exposes awaitable admission, promotion, cleanup,
+and reconciliation operations, and `AsyncIndexJobWorker` reuses the existing
+durable claim, lease, retry, ACK, and DLQ semantics without blocking the event
+loop. Python async PostgreSQL, Chroma, and in-memory arrangements have both
+single-stage admission and explicit two-stage adapters; the Rust PostgreSQL
+adapter currently uses `asyncio.to_thread()` around the native synchronous
+ABI. That is transport parity, not a claim that the Rust extension already
+exposes a native async ABI. An async arrangement still fails closed if its
+selected mode lacks the required executable path.
+
 The adapter contract is common, but its physical implementation is
 backend-specific. SQLite is not a universal Stage-1 store: a Chroma deployment
-may use it because Stage 2 is external, while pgvector and in-memory adapters
-own their respective storage and lifecycle implementations.
+uses it because Stage 2 is external, while pgvector and in-memory adapters own
+their respective storage and lifecycle implementations. More generally, an
+explicit SQL high-churn projection may fill the same Stage-1 role when it
+implements the contract; this does not make SQL canonical truth.
 
 Backend profiles:
 
@@ -320,9 +336,11 @@ pgvector co-located arrangement:
   canonical_read = relational node/edge read projection after handoff
   atomic_promotion = same_store
 
-Chroma external-vector arrangement:
+Chroma external-vector arrangement (selected implementation):
   stage1_strategy = transient_projection
+  stage1_store = dedicated SQL high-churn projection (currently SQLite)
   canonical_read = event-derived read materialization
+  stage2_store = Chroma/HNSW only
   atomic_promotion = eventual_reconcile
 ```
 
@@ -350,11 +368,11 @@ cleanup; delete propagation; stale-worker rejection; and crash reconciliation.
 
 | Backend | Physical support now | Stage 1 / metadata-query basis | Stage 2 basis | Current complete capability |
 | --- | --- | --- | --- | --- |
-| PostgreSQL/pgvector | dedicated `gke_stage1_projections` plus relational vector tables | Stage-1 flat metadata equality; normal relational read after handoff | pgvector HNSW | supported for synchronous Python PG arrangement; async/native remain unsupported |
+| PostgreSQL/pgvector | dedicated `gke_stage1_projections` for Python adapter; nullable relational projection for Rust authority | Stage-1 flat metadata equality for Python; native relational read for Rust | pgvector HNSW | supported for synchronous/async Python arrangement and Rust-PG authority, subject to live backend tests |
 | SQLite | `entity_events`, `index_jobs`, JSON-capable SQLite, FTS tables | dedicated `stage1_node_projections` table with narrow equality query seam | current FTS is search projection, not Stage 1 | unsupported pending promotion/read routing/reconciliation |
-| ChromaDB | explicit collections and later update APIs | dedicated SQLite `stage1_node_projections` table in the engine arrangement; narrow flat-metadata query | Chroma/HNSW via explicit embedding promotion | supported only for SQLite+Chroma arrangement; bare Chroma remains unsupported |
+| ChromaDB | Chroma collections plus engine-owned `meta.sqlite` | dedicated SQLite `stage1_node_projections` table; narrow flat-metadata query | Chroma/HNSW via explicit embedding promotion | supported for the standard Chroma engine arrangement; standalone Chroma without the SQLite coordinator is not a complete arrangement |
 | In-memory | same volatile row: `embedding=None` then update | row storage/get | in-memory vector query with readiness exclusion | complete test arrangement; volatile only, not durable recovery |
-| Rust/native Postgres paths | native projection writes require embeddings today | no staged projection contract or `node_embedding` worker integration | native/Postgres projection | unsupported now |
+| Rust/native PostgreSQL | native nullable graph projection plus native index-job queue | native relational read; no transient Stage-1 table | native pgvector projection and revision-gated promotion | supported for sync Rust authority and async thread-bridge arrangement; native async ABI not yet present |
 
 ### PostgreSQL/pgvector
 
@@ -364,8 +382,11 @@ The implemented synchronous Python arrangement adds a distinct
 event append and Stage-1 admission share one PostgreSQL UOW; `node_embedding`
 promotion rechecks event-derived revision, writes pgvector, and deletes Stage 1
 in the same local transaction. Delete-before-promotion cleanup and stale-job
-rejection are covered by live pgvector acceptance tests. Async PostgreSQL and
-Rust/native authority do not inherit this adapter and remain unsupported.
+rejection are covered by live pgvector acceptance tests. Async PostgreSQL uses
+its own awaitable adapter and async worker; Rust-PG authority uses native graph
+projection and native index-job operations, with the async facade delegating
+blocking ABI calls to worker threads. Both paths have live tests; a native Rust
+async ABI remains future work.
 
 ### SQLite
 
@@ -379,13 +400,15 @@ with backend `where` semantics. JSON support alone does not define equality,
 scalar, nested, array, namespace/tenant, or filtering semantics compatible with
 existing backend `where` APIs.
 
-Option A remains viable for a Chroma profile: a dedicated high-churn SQLite
-Stage-1 file/table plus the narrow Kogwistar metadata query adapter, then Chroma
-Stage 2. The table may be batch-cleared or rebuilt from canonical state; it
-retains no deletion history. It reuses SQLite storage mechanics but is not a
-generic named-projection namespace. Its query contract remains intentionally
-narrow until full Chroma-facing parity is designed and tested; SQLite JSON is
-implementation detail, not API contract. SQLite
+The selected Chroma profile is a dedicated high-churn SQLite Stage-1 file/table
+plus the narrow Kogwistar metadata query adapter, then Chroma Stage 2. A future
+deployment may substitute another SQL high-churn projection only if it passes
+the same adapter capability contract. The staging table may be batch-cleared
+or rebuilt from canonical state; it retains no deletion history. It reuses
+SQLite storage mechanics but is not a generic named-projection namespace. Its
+query contract remains intentionally narrow until full Chroma-facing parity is
+designed and tested; SQLite JSON is implementation detail, not API contract.
+SQLite
 maintenance may use cheap query-planner optimization routinely and controlled
 rebuild/compaction only for the dedicated Stage-1 store, never as a reason to
 truncate canonical events or shared job metadata.
@@ -395,23 +418,25 @@ truncate canonical events or shared job metadata.
 Current `nodes` and `nodes_index` collections use
 `embedding_function=self._ef`. Current write path embeds first; a simple
 omitted embedding therefore cannot be claimed as non-semantic Stage 1. The
-implemented Chroma arrangement does not write Chroma during Stage 1. It stores
-payload in the dedicated SQLite `stage1_node_projections` table, then promotes
-with an explicit embedding into the existing Chroma collection and removes
-Stage 1. This support is arrangement-specific: a bare `ChromaBackend` still
-rejects `two_stage` and does not automatically acquire SQLite staging. Future
-implementations may choose either:
+implemented standard Chroma engine arrangement creates `meta.sqlite` beside
+the Chroma persistence directory. Stage 1 writes payload and metadata only to
+the dedicated SQLite `stage1_node_projections` table; it does not write any
+Chroma collection. Promotion later computes an explicit embedding, writes the
+existing Chroma collection, then removes the SQLite Stage-1 row.
 
-- a dedicated SQLite (or another explicit) Stage-1 metadata/reference
-  projection and Chroma/HNSW Stage 2; or
-- a Chroma staging collection/path guaranteed to have no automatic embedding,
-  plus separate vector Stage 2.
+Thus `GraphKnowledgeEngine(backend="chroma", persistence_mode="two_stage")`
+is supported because the engine supplies both stores. “Bare Chroma” means a
+standalone `ChromaBackend`/collection arrangement that has no SQLite (or other
+explicit SQL) Stage-1 coordinator; that arrangement is not a complete
+two-stage implementation and must fail capability validation. Chroma itself
+is never the Stage-1 store in this ADR. A Chroma staging collection is not a
+valid shortcut: its write path may invoke an embedding function and would
+confuse Stage-1 metadata admission with Stage-2 semantic projection.
 
-Either must prove no provider call during Stage 1, exclusive projection
-residency, cleanup, revision/delete gates, and replay/reconciliation. The
-current SQLite+Chroma arrangement satisfies the declared narrow contract;
-full metadata-query parity and stronger background reconciliation remain
-future work.
+The arrangement must continue to prove no provider call during Stage 1,
+exclusive projection residency, cleanup, revision/delete gates, and
+replay/reconciliation. Full metadata-query parity and stronger background
+reconciliation remain future work.
 
 ### In-memory
 
@@ -425,10 +450,18 @@ crash recovery or production persistence guarantees.
 
 ### Rust/native paths
 
-Current native PostgreSQL projection APIs receive concrete embeddings and
-enqueue only existing join-index jobs. No native Stage-1/Stage-2 lifecycle,
-revision gate, or `node_embedding` job handler is present. Native support is
-explicit future work, not inherited from Python PostgreSQL capability.
+Rust-PG authority now exposes the required native graph projection, nullable
+pending vector, revision-gated promotion, and PostgreSQL index-job queue
+operations. The synchronous Rust adapter is the native writer; its async
+facade preserves that single-writer rule by running native calls in bounded
+worker threads. This supports async Python orchestration but is not a native
+Rust async ABI.
+
+Rust SQLite meta authority is covered as a two-stage in-memory graph profile:
+Rust owns metadata/events/index jobs while the volatile graph adapter owns the
+test semantic row. The standalone Rust in-memory store remains a shadow/read
+parity component, not a selectable Python `GraphKnowledgeEngine` write
+authority; it must not be advertised as durable Rust graph-backend support.
 
 ## Failure, Batching, and Backpressure
 
@@ -564,5 +597,5 @@ No requirement is imposed that an existing `single_stage` projection be converte
 - projection registry and readiness API;
 - generic SQLite metadata Stage-1 adapter, if selected;
 - broader Chroma metadata-query parity and background reconciliation;
-- PostgreSQL and Rust/native staged-projection implementation;
+- native Rust async ABI and selectable Rust in-memory graph authority;
 - model/version migration and controlled historic re-embedding.

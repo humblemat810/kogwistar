@@ -276,4 +276,31 @@ class ChromaBackend:
 
 
 class AsyncChromaBackend(ChromaBackend):
-    pass
+    """Chroma facade retaining sync API while exposing non-blocking verbs."""
+
+    is_async_backend = True
+
+    async def async_call(self, collection_key: str, method: str, **kwargs) -> Any:
+        coll = self._c(collection_key)
+        result = getattr(coll, method)(**_chroma_safe_kwargs(kwargs))
+        if hasattr(result, "__await__"):
+            result = await result
+        return result
+
+    async def async_node_get(self, **kwargs) -> Any:
+        return await self.async_call("node", "get", **kwargs)
+
+    async def async_node_upsert(self, **kwargs) -> Any:
+        return await self.async_call("node", "upsert", **kwargs)
+
+    async def async_node_delete(self, **kwargs) -> Any:
+        return await self.async_call("node", "delete", **kwargs)
+
+    async def async_edge_get(self, **kwargs) -> Any:
+        return await self.async_call("edge", "get", **kwargs)
+
+    async def async_edge_upsert(self, **kwargs) -> Any:
+        return await self.async_call("edge", "upsert", **kwargs)
+
+    async def async_edge_delete(self, **kwargs) -> Any:
+        return await self.async_call("edge", "delete", **kwargs)

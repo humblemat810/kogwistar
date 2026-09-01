@@ -4124,6 +4124,17 @@ async fn postgres_uow_operation_json(
             })
             .await?,
         )),
+        PostgresStoreOperation::ExclusiveRawReplay {
+            namespace,
+            after_seq,
+            limit,
+        } => Ok(Value::Array(
+            uow.replay_raw_events(&namespace, after_seq, limit)
+                .await?
+                .into_iter()
+                .map(postgres_raw_event_json)
+                .collect(),
+        )),
         PostgresStoreOperation::GraphMetadataPatchMutation {
             namespace,
             workspace_id,

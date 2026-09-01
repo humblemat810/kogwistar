@@ -499,6 +499,7 @@ class InMemoryBackend:
             reason="in-memory staged vector row; volatile test arrangement",
         )
         self.two_stage_projection_adapter = _InMemoryTwoStageProjectionAdapter(self)
+        self.async_two_stage_projection_adapter = AsyncInMemoryTwoStageProjectionAdapter(self)
 
     def _c(self, key: str) -> _InMemoryCollection:
         try:
@@ -768,6 +769,123 @@ class _InMemoryTwoStageProjectionAdapter:
         getattr(self.backend, f"{entity_kind}_update")(
             ids=[entity_id], embeddings=[embedding]
         )
+
+
+class AsyncInMemoryTwoStageProjectionAdapter(_InMemoryTwoStageProjectionAdapter):
+    """Non-blocking adapter for the volatile in-memory async test path."""
+
+    async def add_node(self, node: Any, *, doc_id: str | None = None) -> None:
+        super().add_node(node, doc_id=doc_id)
+
+    async def add_edge(self, edge: Any, *, doc_id: str | None = None) -> None:
+        super().add_edge(edge, doc_id=doc_id)
+
+    async def apply_embedding_job(
+        self,
+        *,
+        entity_kind: str,
+        entity_id: str,
+        op: str,
+        payload_json: str | None,
+    ) -> None:
+        if entity_kind not in {"node", "edge"}:
+            raise ValueError(f"unsupported two-stage entity kind: {entity_kind!r}")
+        if op.upper() == "DELETE":
+            getattr(self.backend, f"{entity_kind}_delete")(ids=[entity_id])
+            return
+        current = getattr(self.backend, f"{entity_kind}_get")(
+            ids=[entity_id], include=["documents", "metadatas"]
+        )
+        if not current.get("ids"):
+            return
+        expected = str(json.loads(payload_json or "{}").get("source_fingerprint", ""))
+        actual = self.engine.indexing.canonical_revision_payload(
+            entity_kind=entity_kind, entity_id=entity_id
+        )
+        if expected and expected != str(json.loads(actual).get("source_fingerprint", "")):
+            return
+        document = (current.get("documents") or [""])[0] or ""
+        provider = getattr(self.engine, "_ef", None)
+        if callable(provider):
+            embedding_result = provider([str(document)])
+            if hasattr(embedding_result, "__await__"):
+                embedding_result = await embedding_result
+            embedding = list(embedding_result)[0]
+        else:
+            embedding = self.engine.embed.iterative_defensive_emb(str(document))
+            if hasattr(embedding, "__await__"):
+                embedding = await embedding
+        getattr(self.backend, f"{entity_kind}_update")(
+            ids=[entity_id], embeddings=[embedding]
+        )
+
+    async def apply_embedding_jobs_batch(self, jobs: list[Any]) -> dict[str, BaseException | None]:
+        """Embed compatible in-memory jobs in one provider call."""
+        prepared: list[tuple[str, str, str, str, dict[str, Any]]] = []
+        outcomes: dict[str, BaseException | None] = {}
+        for job in jobs:
+            value = lambda name: job.get(name) if isinstance(job, dict) else getattr(job, name, None)
+            job_id = str(value("job_id") or "")
+            entity_kind = str(value("entity_kind") or "")
+            entity_id = str(value("entity_id") or "")
+            payload_json = value("payload_json")
+            try:
+                if str(value("op") or "UPSERT").upper() == "DELETE":
+                    await self.apply_embedding_job(
+                        entity_kind=entity_kind,
+                        entity_id=entity_id,
+                        op="DELETE",
+                        payload_json=payload_json,
+                    )
+                    outcomes[job_id] = None
+                    continue
+                current = getattr(self.backend, f"{entity_kind}_get")(
+                    ids=[entity_id], include=["documents"]
+                )
+                if not current.get("ids"):
+                    outcomes[job_id] = None
+                    continue
+                expected = str(json.loads(payload_json or "{}").get("source_fingerprint", ""))
+                actual = self.engine.indexing.canonical_revision_payload(
+                    entity_kind=entity_kind, entity_id=entity_id
+                )
+                if expected and expected != str(json.loads(actual).get("source_fingerprint", "")):
+                    outcomes[job_id] = None
+                    continue
+                prepared.append(
+                    (job_id, entity_kind, entity_id, expected,
+                     {"document": (current.get("documents") or [""])[0] or ""})
+                )
+            except BaseException as exc:
+                outcomes[job_id] = exc
+        if not prepared:
+            return outcomes
+        documents = [str(row[4]["document"]) for row in prepared]
+        provider = getattr(self.engine, "_ef", None)
+        try:
+            if not callable(provider):
+                raise RuntimeError("async in-memory batch requires an embedding provider")
+            raw = provider(documents)
+            if hasattr(raw, "__await__"):
+                raw = await raw
+            embeddings = list(raw)
+            if len(embeddings) != len(prepared):
+                raise RuntimeError("embedding provider returned wrong batch length")
+        except BaseException as exc:
+            for job_id, *_ in prepared:
+                outcomes[job_id] = exc
+            return outcomes
+        for (job_id, entity_kind, entity_id, _expected, _row), embedding in zip(
+            prepared, embeddings
+        ):
+            try:
+                getattr(self.backend, f"{entity_kind}_update")(
+                    ids=[entity_id], embeddings=[embedding]
+                )
+                outcomes[job_id] = None
+            except BaseException as exc:
+                outcomes[job_id] = exc
+        return outcomes
 
 
 class _FakeMetaStore:

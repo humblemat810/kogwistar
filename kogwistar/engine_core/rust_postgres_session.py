@@ -153,6 +153,14 @@ class RustEnginePostgresMetaStore(RustEngineSQLite):
     def ensure_initialized(self) -> None:
         self.session.ensure_initialized()
 
+    def close(self) -> None:
+        """Rust PostgreSQL calls own their pool lifetime per operation.
+
+        Unlike the SQLite bridge, the PostgreSQL ABI has no cached-handle
+        ``close`` operation. Keep engine shutdown explicit and harmless.
+        """
+        return None
+
     def connect(self) -> None:
         self.session.connect()
 

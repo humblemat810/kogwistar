@@ -9,6 +9,7 @@ pytest.importorskip("chromadb")
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.models import Node
 from tests._kg_factories import kg_document, kg_grounding
+from tests._helpers.graph_builders import build_entity_node
 from tests.core._async_chroma_real import (
     make_real_async_chroma_backend,
     make_real_async_chroma_uow,
@@ -156,3 +157,36 @@ async def test_async_embedding_and_node_write_path(real_chroma_server):
     assert node_refs["ids"]
     assert node_refs["metadatas"][0]["node_id"] == node.id
     assert collections["node_docs"] is not None
+
+
+@pytest.mark.asyncio
+async def test_async_node_admission_uses_real_async_chroma_verbs(real_chroma_server):
+    """Engine async admission reaches Chroma async collections end to end."""
+    _client, backend, _collections = await make_real_async_chroma_backend(
+        real_chroma_server, collection_prefix="engine_async_node_admission"
+    )
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(real_chroma_server.persist_dir),
+        embedding_function=_AsyncEmbeddingFunction(),  # type: ignore
+        backend_factory=lambda _engine: backend,
+    )
+    engine._phase1_enable_index_jobs = False
+    try:
+        node = build_entity_node(
+            node_id="async-real-node", doc_id="doc::async-real-node"
+        )
+        await engine.async_add_node(node)
+
+        stored = await backend.async_node_get(
+            ids=[node.id], include=["documents", "metadatas", "embeddings"]
+        )
+        refs = await backend.async_call(
+            "node_refs", "get", where={"node_id": node.id}, include=["documents"]
+        )
+        assert stored["ids"] == [node.id]
+        embeddings = stored["embeddings"]
+        assert embeddings is not None and len(embeddings) == 1
+        assert len(embeddings[0]) > 0
+        assert refs["ids"]
+    finally:
+        engine.close()

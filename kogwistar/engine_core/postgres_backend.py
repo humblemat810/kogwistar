@@ -1050,6 +1050,97 @@ class PgVectorBackend:
                 )
             )
 
+    async def stage1_projection_upsert_async(
+        self,
+        *,
+        namespace: str,
+        entity_kind: str,
+        entity_id: str,
+        document: str,
+        metadata: dict[str, Any],
+        source_fingerprint: str,
+        revision: int = 0,
+    ) -> None:
+        if entity_kind not in {"node", "edge"}:
+            raise ValueError(f"unsupported Stage-1 entity kind: {entity_kind!r}")
+        table = self.stage1_projections
+        stmt = psql.insert(table).values(
+            namespace=str(namespace), entity_kind=entity_kind,
+            entity_id=str(entity_id), document=str(document),
+            metadata=dict(metadata or {}), source_fingerprint=str(source_fingerprint or ""),
+            revision=int(revision), materialization_status="pending",
+            updated_at_ms=int(time.time() * 1000),
+        )
+        stmt = stmt.on_conflict_do_update(
+            index_elements=[table.c.namespace, table.c.entity_kind, table.c.entity_id],
+            set_={
+                "document": stmt.excluded.document,
+                "metadata": stmt.excluded.metadata,
+                "source_fingerprint": stmt.excluded.source_fingerprint,
+                "revision": stmt.excluded.revision,
+                "materialization_status": "pending",
+                "updated_at_ms": stmt.excluded.updated_at_ms,
+            },
+        )
+        async with self._async_conn() as conn:
+            await conn.execute(stmt)
+
+    async def stage1_projection_get_async(
+        self, *, namespace: str, entity_kind: str, entity_id: str
+    ) -> dict[str, Any] | None:
+        if entity_kind not in {"node", "edge"}:
+            raise ValueError(f"unsupported Stage-1 entity kind: {entity_kind!r}")
+        async with self._async_conn() as conn:
+            row = (await conn.execute(
+                sa.select(self.stage1_projections).where(
+                    self.stage1_projections.c.namespace == str(namespace),
+                    self.stage1_projections.c.entity_kind == entity_kind,
+                    self.stage1_projections.c.entity_id == str(entity_id),
+                )
+            )).mappings().first()
+        return dict(row) if row is not None else None
+
+    async def stage1_projection_query_async(
+        self,
+        *,
+        namespace: str,
+        entity_kind: str,
+        ids: Sequence[str] | None = None,
+        metadata: dict[str, Any] | None = None,
+        limit: int | None = 200,
+    ) -> list[dict[str, Any]]:
+        if entity_kind not in {"node", "edge"}:
+            raise ValueError(f"unsupported Stage-1 entity kind: {entity_kind!r}")
+        table = self.stage1_projections
+        query = sa.select(table).where(
+            table.c.namespace == str(namespace),
+            table.c.entity_kind == entity_kind,
+        )
+        if ids is not None:
+            query = query.where(table.c.entity_id.in_([str(item) for item in ids]))
+        for key, value in (metadata or {}).items():
+            if not isinstance(key, str) or isinstance(value, (dict, list, tuple, set)):
+                raise ValueError("PostgreSQL Stage-1 supports flat metadata equality only")
+            query = query.where(table.c.metadata[key].astext == str(value))
+        query = query.order_by(table.c.updated_at_ms, table.c.entity_id)
+        if limit is not None:
+            query = query.limit(int(limit))
+        async with self._async_conn() as conn:
+            rows = (await conn.execute(query)).mappings().all()
+        return [dict(row) for row in rows]
+
+    async def stage1_projection_delete_async(
+        self, *, namespace: str, entity_kind: str, entity_id: str
+    ) -> None:
+        if entity_kind not in {"node", "edge"}:
+            raise ValueError(f"unsupported Stage-1 entity kind: {entity_kind!r}")
+        async with self._async_conn() as conn:
+            await conn.execute(sa.delete(self.stage1_projections).where(
+                self.stage1_projections.c.namespace == str(namespace),
+                self.stage1_projections.c.entity_kind == entity_kind,
+                self.stage1_projections.c.entity_id == str(entity_id),
+            ))
+
     def _ensure_schema_sync(self, conn: sa.Connection) -> None:
         conn.execute(sa.text("CREATE EXTENSION IF NOT EXISTS vector"))
         if self.schema and self.schema != "public":
@@ -1324,6 +1415,14 @@ class PgVectorBackend:
 
         async with self._async_conn() as conn:
             await conn.execute(stmt)
+
+    async def async_node_upsert(self, **kwargs: Any) -> None:
+        """Public async semantic write used by single-stage admission."""
+        await self._upsert_async(self.nodes, **kwargs)
+
+    async def async_edge_upsert(self, **kwargs: Any) -> None:
+        """Public async semantic write used by single-stage admission."""
+        await self._upsert_async(self.edges, **kwargs)
 
     def _query_vector(
         self,

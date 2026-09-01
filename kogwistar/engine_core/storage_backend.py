@@ -33,6 +33,7 @@ patches can silently introduce model cost, latency, and vector drift.
 
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
+import inspect
 from typing import Any, AsyncIterator, Dict, Iterator, Literal, Protocol
 
 JSONDict = Dict[str, Any]
@@ -99,6 +100,57 @@ class TwoStageProjectionAdapter(Protocol):
         op: str,
         payload_json: str | None,
     ) -> None: ...
+
+
+class AsyncTwoStageProjectionAdapter(Protocol):
+    """Async counterpart for arrangements used from an async engine.
+
+    This protocol is intentionally separate from the synchronous adapter:
+    async callers must not satisfy the contract by hiding blocking bridge
+    calls inside an ``async`` method.
+    """
+
+    async def add_node(self, node: Any, *, doc_id: str | None = None) -> None: ...
+
+    async def add_edge(self, edge: Any, *, doc_id: str | None = None) -> None: ...
+
+    async def apply_embedding_job(
+        self,
+        *,
+        entity_kind: str,
+        entity_id: str,
+        op: str,
+        payload_json: str | None,
+    ) -> None: ...
+
+
+def get_async_two_stage_projection_adapter(
+    backend: Any,
+) -> AsyncTwoStageProjectionAdapter | None:
+    """Return only an executable async arrangement; never bridge sync calls."""
+
+    adapter = getattr(backend, "async_two_stage_projection_adapter", None)
+    if callable(adapter) and not hasattr(adapter, "add_node"):
+        adapter = adapter()
+    if adapter is None:
+        return None
+    required = ("add_node", "add_edge", "apply_embedding_job")
+    capability = get_two_stage_projection_capability(backend)
+    if capability.stage1_strategy == "transient_projection":
+        required += (
+            "stage1_query",
+            "remove_stage1",
+            "promote_stage2",
+            "remove_stage2_or_invalidate",
+            "reconcile_projection",
+        )
+    if all(
+        callable(getattr(adapter, name, None))
+        and inspect.iscoroutinefunction(getattr(adapter, name))
+        for name in required
+    ):
+        return adapter
+    return None
 
 
 def get_two_stage_projection_capability(backend: Any) -> TwoStageProjectionCapability:

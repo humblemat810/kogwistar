@@ -51,6 +51,469 @@ class WriteSubsystem(NamespaceProxy, WriteLike):
     def add_edge(self, *args, **kwargs):
         return self._add_edge_impl(*args, **kwargs)
 
+    async def add_node_async(self, node: Node, doc_id: str | None = None):
+        """Admit a node through the configured async persistence mode."""
+        import asyncio
+
+        adapter = getattr(self._e, "async_two_stage_projection_adapter", None)
+        if getattr(self._e, "persistence_mode", "single_stage") == "two_stage":
+            if adapter is None:
+                raise RuntimeError("async two-stage projection adapter is unavailable")
+            if doc_id is not None:
+                node.doc_id = doc_id
+            await asyncio.to_thread(self._run_pre_add_node_hooks, node)
+            payload = node.model_dump(field_mode="backend", exclude=["embedding"])
+            await asyncio.to_thread(
+                self._e._append_event_for_entity,
+                namespace=getattr(self._e, "namespace", "default"),
+                entity_kind="node", entity_id=node.safe_get_id(), op="ADD",
+                payload=payload if isinstance(payload, dict) else {}, required=True,
+            )
+            return await adapter.add_node(node, doc_id=doc_id)
+
+        return await self._add_node_async_single_stage(node, doc_id=doc_id)
+
+    async def add_edge_async(self, edge: Edge, doc_id: str | None = None):
+        """Admit an edge through the configured async persistence mode."""
+        adapter = getattr(self._e, "async_two_stage_projection_adapter", None)
+        if getattr(self._e, "persistence_mode", "single_stage") == "two_stage":
+            if adapter is None:
+                raise RuntimeError("async two-stage projection adapter is unavailable")
+            return await self._add_edge_async_two_stage(edge, doc_id=doc_id, adapter=adapter)
+
+        return await self._add_edge_async_single_stage(edge, doc_id=doc_id)
+
+    async def _add_edge_async_two_stage(self, edge, *, doc_id, adapter):
+        import asyncio
+
+        if doc_id is not None:
+            edge.doc_id = doc_id
+        s_nodes, s_edges, t_nodes, t_edges = await asyncio.to_thread(
+            self._e.adjudicate.split_endpoints, edge.source_ids, edge.target_ids
+        )
+        edge.source_ids = s_nodes
+        edge.source_edge_ids = (getattr(edge, "source_edge_ids", []) or []) + s_edges
+        edge.target_ids = t_nodes
+        edge.target_edge_ids = (getattr(edge, "target_edge_ids", []) or []) + t_edges
+        await asyncio.to_thread(self._e.persist.assert_endpoints_exist, edge)
+        if await asyncio.to_thread(self._run_pre_add_edge_hooks, edge, pure=False):
+            return
+        payload = edge.model_dump(field_mode="backend", exclude=["embedding"])
+        await asyncio.to_thread(
+            self._e._append_event_for_entity,
+            namespace=getattr(self._e, "namespace", "default"),
+            entity_kind="edge", entity_id=edge.safe_get_id(), op="ADD",
+            payload=payload if isinstance(payload, dict) else {}, required=True,
+        )
+        return await adapter.add_edge(edge, doc_id=doc_id)
+
+    async def _embedding_async(self, document: str) -> list[float]:
+        """Await async providers; isolate legacy sync providers from the loop."""
+        import asyncio
+        import inspect
+        from ...utils.embedding_vectors import normalize_embedding_vector
+
+        provider = getattr(self._e, "_ef", None)
+        if provider is None:
+            raw = await asyncio.to_thread(
+                self._e.embed.iterative_defensive_emb, str(document)
+            )
+        else:
+            call = provider if inspect.iscoroutinefunction(provider) else getattr(
+                provider, "__call__", provider
+            )
+            if inspect.iscoroutinefunction(call):
+                raw = await provider([str(document)])
+            else:
+                raw = await asyncio.to_thread(provider, [str(document)])
+        raw = list(raw)[0] if raw else None
+        embedding = normalize_embedding_vector(raw, allow_none=False)
+        if embedding is None:
+            raise RuntimeError("embedding provider returned no vector")
+        return list(embedding)
+
+    async def _async_semantic_upsert(
+        self, *, entity_kind: str, entity_id: str, document: str,
+        metadata: dict[str, Any], embedding: list[float],
+    ) -> None:
+        import asyncio
+
+        backend = self._e.backend
+        direct = getattr(backend, f"async_{entity_kind}_upsert", None)
+        kwargs = {
+            "ids": [entity_id], "documents": [document],
+            "embeddings": [embedding], "metadatas": [metadata],
+        }
+        if callable(direct):
+            await direct(**kwargs)
+            return
+        if getattr(backend, "_is_async_engine", False):
+            table = getattr(backend, f"{entity_kind}s")
+            await backend._upsert_async(table, **kwargs)
+            return
+        sync_upsert = getattr(backend, f"{entity_kind}_upsert", None)
+        if not callable(sync_upsert):
+            raise RuntimeError(
+                f"async single-stage backend lacks {entity_kind} upsert operation"
+            )
+        await asyncio.to_thread(sync_upsert, **kwargs)
+
+    async def _async_backend_call(
+        self, collection_key: str, method: str, **kwargs: Any
+    ) -> Any:
+        """Call native async backend verbs, with a sync compatibility fallback."""
+        import asyncio
+        import inspect
+
+        backend = self._e.backend
+        async_call = getattr(backend, "async_call", None)
+        if callable(async_call):
+            return await async_call(collection_key, method, **kwargs)
+
+        if getattr(backend, "_is_async_engine", False):
+            facade_key = {
+                "node": "_nodes_c",
+                "edge": "_edges_c",
+                "document": "_documents_c",
+                "domain": "_domains_c",
+                "edge_endpoints": "_edge_endpoints_c",
+                "edge_refs": "_edge_refs_c",
+                "node_docs": "_node_docs_c",
+                "node_refs": "_node_refs_c",
+            }.get(collection_key)
+            facade = getattr(backend, facade_key, None) if facade_key else None
+            if facade is not None:
+                result = getattr(facade, method)(**kwargs)
+                if inspect.isawaitable(result):
+                    return await result
+                return result
+
+        operation = getattr(backend, f"{collection_key}_{method}", None)
+        if not callable(operation):
+            raise RuntimeError(
+                f"backend lacks {collection_key}_{method} operation"
+            )
+        return await asyncio.to_thread(operation, **kwargs)
+
+    async def _async_patch_base_projection_metadata(
+        self, *, entity_kind: str, entity_id: str, metadata_patch: dict[str, Any]
+    ) -> None:
+        import asyncio
+
+        if self._rust_postgres_meta() is not None:
+            await asyncio.to_thread(
+                self.patch_base_projection_metadata,
+                entity_kind=entity_kind,
+                entity_id=entity_id,
+                metadata_patch=metadata_patch,
+            )
+            return
+        await self._async_backend_call(
+            entity_kind, "update", ids=[entity_id], metadatas=[metadata_patch]
+        )
+
+    async def _async_index_node_docs(self, node: Node) -> list[str]:
+        doc_ids = extract_doc_ids_from_refs(node.mentions)
+        await self._async_backend_call("node_docs", "delete", where={"node_id": node.id})
+        if doc_ids:
+            rows = [
+                {
+                    "id": f"{node.id}::{did}",
+                    "node_id": node.id,
+                    "doc_id": did,
+                    "mention_count": 1,
+                }
+                for did in doc_ids
+            ]
+            await self._async_backend_call(
+                "node_docs",
+                "add",
+                ids=[row["id"] for row in rows],
+                documents=[json.dumps(row) for row in rows],
+                metadatas=rows,
+                embeddings=[
+                    await self._embedding_async(json.dumps(row)) for row in rows
+                ],
+            )
+
+        current = await self._async_backend_call(
+            "node", "get", ids=[node.id], include=["metadatas"]
+        )
+        cur_meta = (current.get("metadatas") or [None])[0] or {}
+        new_doc_ids_json = json.dumps(doc_ids)
+        if cur_meta.get("doc_ids") != new_doc_ids_json:
+            await self._async_patch_base_projection_metadata(
+                entity_kind="node", entity_id=node.id,
+                metadata_patch={"doc_ids": new_doc_ids_json},
+            )
+        return doc_ids
+
+    async def _async_delete_ref_rows(self, collection_key: str, field: str, entity_id: str) -> None:
+        got = await self._async_backend_call(
+            collection_key, "get", where={field: entity_id}, include=[]
+        )
+        ids = got.get("ids") or []
+        if ids:
+            await self._async_backend_call(collection_key, "delete", ids=ids)
+
+    async def _async_index_node_refs(self, node: Node) -> list[str]:
+        await self._async_delete_ref_rows("node_refs", "node_id", node.id)
+        rows: list[dict[str, Any]] = []
+        for i, mention in enumerate(node.mentions or []):
+            for j, span in enumerate(mention.spans):
+                ver = getattr(span, "verification", None)
+                rows.append(strip_none({
+                    "id": f"{node.id}::mention::{i}::span::{j}",
+                    "node_id": node.id,
+                    "doc_id": getattr(span, "doc_id", None) or node.doc_id,
+                    "insertion_method": getattr(span, "insertion_method", None),
+                    "verification_method": getattr(ver, "method", None),
+                    "is_verified": getattr(ver, "is_verified", None),
+                    "verificication_score": getattr(ver, "score", None),
+                    "page_number": getattr(span, "start_page", None),
+                    "excerpt": getattr(span, "excerpt", None),
+                    "start_char": getattr(span, "start_char", None),
+                    "end_char": getattr(span, "end_char", None),
+                }))
+        if rows:
+            await self._async_backend_call(
+                "node_refs", "add",
+                ids=[row["id"] for row in rows],
+                documents=[json.dumps(row) for row in rows],
+                metadatas=rows,
+                embeddings=[
+                    await self._embedding_async(json.dumps(row)) for row in rows
+                ],
+            )
+        return [row["id"] for row in rows]
+
+    async def _async_index_edge_refs(self, edge: Edge) -> list[str]:
+        await self._async_delete_ref_rows("edge_refs", "edge_id", edge.id)
+        rows: list[dict[str, Any]] = []
+        for i, ref in enumerate(edge.mentions or []):
+            ver = getattr(ref, "verification", None)
+            rows.append(strip_none({
+                "id": f"{edge.id}::ref::{i}",
+                "edge_id": edge.id,
+                "doc_id": getattr(ref, "doc_id", None) or edge.doc_id,
+                "insertion_method": getattr(ref, "insertion_method", None),
+                "verification_method": getattr(ver, "method", None),
+                "is_verified": getattr(ver, "is_verified", None),
+                "verificication_score": getattr(ver, "score", None),
+                "start_page": getattr(ref, "start_page", None),
+                "end_page": getattr(ref, "end_page", None),
+                "start_char": getattr(ref, "start_char", None),
+                "end_char": getattr(ref, "end_char", None),
+            }))
+        if rows:
+            await self._async_backend_call(
+                "edge_refs", "add",
+                ids=[row["id"] for row in rows],
+                documents=[json.dumps(row) for row in rows],
+                metadatas=rows,
+                embeddings=[
+                    await self._embedding_async(json.dumps(row)) for row in rows
+                ],
+            )
+        return [row["id"] for row in rows]
+
+    async def _async_maybe_reindex_node_refs(self, node: Node) -> None:
+        new_fp = _refs_fingerprint(node.mentions or [])
+        meta = await self._async_backend_call(
+            "node", "get", ids=[node.id], include=["metadatas"]
+        )
+        metadatas = meta.get("metadatas") or []
+        old_fp = metadatas[0].get("node_refs_fp") if metadatas and metadatas[0] else None
+        got = await self._async_backend_call(
+            "node_refs", "get", where={"node_id": node.id}, include=["documents"]
+        )
+        documents = got.get("documents") or []
+        current_doc_ids = {json.loads(doc).get("doc_id") for doc in documents}
+        expected_doc_ids = {getattr(ref, "doc_id", None) for ref in (node.mentions or [])}
+        if (
+            new_fp != old_fp
+            or len(documents) != len(node.mentions or [])
+            or current_doc_ids != expected_doc_ids
+        ):
+            await self._async_patch_base_projection_metadata(
+                entity_kind="node", entity_id=node.id,
+                metadata_patch={"node_refs_fp": new_fp},
+            )
+            await self._async_index_node_refs(node)
+
+    async def _async_maybe_reindex_edge_refs(self, edge: Edge) -> None:
+        new_fp = _refs_fingerprint(edge.mentions or [])
+        meta = await self._async_backend_call(
+            "edge", "get", ids=[edge.id], include=["metadatas"]
+        )
+        metadatas = meta.get("metadatas") or []
+        old_fp = metadatas[0].get("edge_refs_fp") if metadatas and metadatas[0] else None
+        got = await self._async_backend_call(
+            "edge_refs", "get", where={"edge_id": edge.id}, include=["documents"]
+        )
+        documents = got.get("documents") or []
+        current_doc_ids = {json.loads(doc).get("doc_id") for doc in documents}
+        expected_doc_ids = {getattr(ref, "doc_id", None) for ref in (edge.mentions or [])}
+        if (
+            new_fp != old_fp
+            or len(documents) != len(edge.mentions or [])
+            or current_doc_ids != expected_doc_ids
+        ):
+            await self._async_patch_base_projection_metadata(
+                entity_kind="edge", entity_id=edge.id,
+                metadata_patch={"edge_refs_fp": new_fp},
+            )
+            await self._async_index_edge_refs(edge)
+
+    async def _async_fanout_endpoints_rows(self, edge: Edge, doc_id: str | None) -> list[dict[str, Any]]:
+        async def endpoint_doc(endpoint_id: str, endpoint_kind: str) -> str | None:
+            if doc_id is not None:
+                return doc_id
+            result = await self._async_backend_call(
+                endpoint_kind, "get", ids=[endpoint_id], include=["metadatas"]
+            )
+            metadata = (result.get("metadatas") or [None])[0] or {}
+            value = metadata.get("doc_id")
+            if isinstance(value, str):
+                return value
+            if not self._allow_missing_doc_id(edge):
+                raise Exception("doc_id is not string")
+            return None
+
+        rows: list[dict[str, Any]] = []
+        for role, endpoint_ids, endpoint_kind in (
+            ("src", edge.source_ids or [], "node"),
+            ("tgt", edge.target_ids or [], "node"),
+            ("src", getattr(edge, "source_edge_ids", []) or [], "edge"),
+            ("tgt", getattr(edge, "target_edge_ids", []) or [], "edge"),
+        ):
+            for endpoint_id in endpoint_ids:
+                row = {
+                    "id": f"{edge.id}::{role}::{endpoint_kind}::{endpoint_id}",
+                    "edge_id": edge.id,
+                    "endpoint_id": endpoint_id,
+                    "endpoint_type": endpoint_kind,
+                    "role": role,
+                    "causal_type": (edge.metadata or {}).get("causal_type"),
+                    "relation": edge.relation,
+                }
+                value = await endpoint_doc(endpoint_id, endpoint_kind)
+                if value is not None:
+                    row["doc_id"] = value
+                rows.append({key: value for key, value in row.items() if value is not None})
+        return rows
+
+    async def _async_post_write(self, *, entity_kind: str, entity: Any) -> None:
+        """Keep existing derived-index behavior off the event loop."""
+        import asyncio
+
+        if self._e._phase1_enable_index_jobs:
+            enqueue = (
+                self._e.enqueue_index_jobs_for_node
+                if entity_kind == "node"
+                else self._e.enqueue_index_jobs_for_edge
+            )
+            await asyncio.to_thread(enqueue, entity.safe_get_id(), op="UPSERT")
+            await asyncio.to_thread(self._e.reconcile_indexes, max_jobs=50)
+            return
+        if entity_kind == "node":
+            await self._async_index_node_docs(entity)
+            await self._async_maybe_reindex_node_refs(entity)
+        else:
+            await self._async_maybe_reindex_edge_refs(entity)
+            rows = await self._async_fanout_endpoints_rows(entity, None)
+            if rows:
+                kwargs = {
+                    "ids": [row["id"] for row in rows],
+                    "documents": [json.dumps(row) for row in rows],
+                    "metadatas": rows,
+                    "embeddings": [
+                        await self._embedding_async(json.dumps(row)) for row in rows
+                    ],
+                }
+                await self._async_backend_call("edge_endpoints", "upsert", **kwargs)
+
+    async def _add_node_async_single_stage(self, node: Node, *, doc_id: str | None):
+        import asyncio
+
+        if doc_id is not None:
+            node.doc_id = doc_id
+        await asyncio.to_thread(self._run_pre_add_node_hooks, node)
+        document, metadata = await asyncio.to_thread(self.node_doc_and_meta, node)
+        if node.embedding is None:
+            node.embedding = await self._embedding_async(document)
+        else:
+            from ...utils.embedding_vectors import normalize_embedding_vector
+
+            node.embedding = normalize_embedding_vector(node.embedding, allow_none=False)
+        metadata["_class_name"] = type(node).__name__
+        payload = node.model_dump(field_mode="backend", exclude=["embedding"])
+        await asyncio.to_thread(
+            self._e._append_event_for_entity,
+            namespace=getattr(self._e, "namespace", "default"),
+            entity_kind="node", entity_id=node.safe_get_id(), op="ADD",
+            payload=payload if isinstance(payload, dict) else {}, required=True,
+        )
+        await self._async_semantic_upsert(
+            entity_kind="node", entity_id=node.safe_get_id(),
+            document=document, metadata=metadata, embedding=list(node.embedding),
+        )
+        await self._async_post_write(entity_kind="node", entity=node)
+        await asyncio.to_thread(
+            self._e._emit_change,
+            op="node.upsert", entity=EntityRefModel(
+                kind="node", id=node.safe_get_id(),
+                kg_graph_type=self._e.kg_graph_type, url=self._e.persist_directory,
+            ), payload=node.to_jsonable() if hasattr(node, "to_jsonable")
+            else node.model_dump(exclude=["embedding"]),
+        )
+        return None
+
+    async def _add_edge_async_single_stage(self, edge: Edge, *, doc_id: str | None):
+        import asyncio
+
+        if doc_id is not None:
+            edge.doc_id = doc_id
+        s_nodes, s_edges, t_nodes, t_edges = await asyncio.to_thread(
+            self._e.adjudicate.split_endpoints, edge.source_ids, edge.target_ids
+        )
+        edge.source_ids = s_nodes
+        edge.source_edge_ids = (getattr(edge, "source_edge_ids", []) or []) + s_edges
+        edge.target_ids = t_nodes
+        edge.target_edge_ids = (getattr(edge, "target_edge_ids", []) or []) + t_edges
+        await asyncio.to_thread(self._e.persist.assert_endpoints_exist, edge)
+        if await asyncio.to_thread(self._run_pre_add_edge_hooks, edge, pure=False):
+            return None
+        document = edge.model_dump_json(field_mode="backend", exclude=["embedding"])
+        if edge.embedding is None:
+            edge.embedding = await self._embedding_async(document)
+        else:
+            from ...utils.embedding_vectors import normalize_embedding_vector
+
+            edge.embedding = normalize_embedding_vector(edge.embedding, allow_none=False)
+        metadata = await asyncio.to_thread(self.enrich_edge_meta, edge)
+        payload = edge.model_dump(field_mode="backend", exclude=["embedding"])
+        await asyncio.to_thread(
+            self._e._append_event_for_entity,
+            namespace=getattr(self._e, "namespace", "default"),
+            entity_kind="edge", entity_id=edge.safe_get_id(), op="ADD",
+            payload=payload if isinstance(payload, dict) else {}, required=True,
+        )
+        await self._async_semantic_upsert(
+            entity_kind="edge", entity_id=edge.safe_get_id(),
+            document=document, metadata=metadata, embedding=list(edge.embedding),
+        )
+        await self._async_post_write(entity_kind="edge", entity=edge)
+        await asyncio.to_thread(
+            self._e._emit_change,
+            op="edge.upsert", entity=EntityRefModel(
+                kind="edge", id=edge.safe_get_id(),
+                kg_graph_type=self._e.kg_graph_type, url=self._e.persist_directory,
+            ), payload=edge.to_jsonable() if hasattr(edge, "to_jsonable")
+            else edge.model_dump(exclude=["embedding"]),
+        )
+        return None
+
     def _run_pre_add_node_hooks(self, node: Node) -> None:
         for hook in list(getattr(self._e, "pre_add_node_hooks", []) or []):
             hook(node)

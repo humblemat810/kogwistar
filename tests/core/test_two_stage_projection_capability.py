@@ -5,12 +5,14 @@ import pytest
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.chroma_backend import ChromaBackend
 from kogwistar.engine_core.storage_backend import (
+    get_async_two_stage_projection_adapter,
     TwoStageProjectionCapability,
     get_two_stage_projection_adapter,
     get_two_stage_projection_capability,
 )
 from tests._helpers.fake_backend import build_fake_backend
 from tests._helpers.graph_builders import build_entity_node
+from tests.core.two_stage_case_catalog import two_stage_case
 
 
 def test_two_stage_defaults_to_single_stage_for_existing_backend(tmp_path) -> None:
@@ -192,6 +194,67 @@ def test_two_stage_rejects_transient_adapter_without_stage1_seams(tmp_path) -> N
         )
 
 
+def test_async_two_stage_adapter_requires_explicit_async_arrangement() -> None:
+    class _Backend:
+        two_stage_projection_capability = _complete_capability()
+
+        async_two_stage_projection_adapter = object()
+
+    assert get_async_two_stage_projection_adapter(_Backend()) is None
+
+
+def test_async_two_stage_adapter_does_not_accept_sync_arrangement() -> None:
+    class _SyncAdapter:
+        def add_node(self, node, *, doc_id=None):
+            return None
+
+        def add_edge(self, edge, *, doc_id=None):
+            return None
+
+        def apply_embedding_job(self, **kwargs):
+            return None
+
+    class _Backend:
+        two_stage_projection_capability = _complete_capability()
+        async_two_stage_projection_adapter = _SyncAdapter()
+
+    assert get_async_two_stage_projection_adapter(_Backend()) is None
+
+
+def test_async_two_stage_adapter_accepts_complete_async_arrangement() -> None:
+    class _AsyncAdapter:
+        async def add_node(self, node, *, doc_id=None):
+            return None
+
+        async def add_edge(self, edge, *, doc_id=None):
+            return None
+
+        async def apply_embedding_job(self, **kwargs):
+            return None
+
+        async def stage1_query(self, **kwargs):
+            return []
+
+        async def remove_stage1(self, **kwargs):
+            return None
+
+        async def promote_stage2(self, **kwargs):
+            return None
+
+        async def remove_stage2_or_invalidate(self, **kwargs):
+            return None
+
+        async def reconcile_projection(self, **kwargs):
+            return 0
+
+    class _Backend:
+        two_stage_projection_capability = _complete_capability()
+        async_two_stage_projection_adapter = _AsyncAdapter()
+
+    adapter = get_async_two_stage_projection_adapter(_Backend())
+    assert isinstance(adapter, _AsyncAdapter)
+
+
 def test_two_stage_dispatches_to_executable_adapter_without_sync_fallback(tmp_path) -> None:
     class _Adapter:
         def __init__(self) -> None:
@@ -241,6 +304,8 @@ def test_two_stage_dispatches_to_executable_adapter_without_sync_fallback(tmp_pa
     assert adapter.calls == [("node", node, "node-doc")]
 
 
+@two_stage_case("pending_visibility")
+@two_stage_case("promotion_handoff")
 def test_in_memory_two_stage_promotes_pending_node_via_index_job(tmp_path) -> None:
     engine = GraphKnowledgeEngine(
         persist_directory=str(tmp_path),
@@ -265,6 +330,7 @@ def test_in_memory_two_stage_promotes_pending_node_via_index_job(tmp_path) -> No
     )["ids"] == [["n1"]]
 
 
+@two_stage_case("batch_embedding")
 def test_in_memory_two_stage_uses_existing_index_job_worker(tmp_path) -> None:
     engine = GraphKnowledgeEngine(
         persist_directory=str(tmp_path),
@@ -284,6 +350,7 @@ def test_in_memory_two_stage_uses_existing_index_job_worker(tmp_path) -> None:
     assert engine.backend.node_get(ids=["n1"])["embeddings"][0] is not None
 
 
+@two_stage_case("recovery_reconciliation")
 def test_two_stage_repair_recreates_missing_embedding_job(tmp_path) -> None:
     engine = GraphKnowledgeEngine(
         persist_directory=str(tmp_path),
@@ -338,6 +405,7 @@ def test_two_stage_repair_recreates_lost_delete_job(tmp_path) -> None:
     assert engine.backend.node_get(ids=["n1"])["ids"] == []
 
 
+@two_stage_case("stale_revision")
 def test_in_memory_two_stage_rejects_stale_job_after_update(tmp_path) -> None:
     engine = GraphKnowledgeEngine(
         persist_directory=str(tmp_path),
@@ -397,6 +465,7 @@ def test_in_memory_two_stage_update_hands_off_old_vector(tmp_path) -> None:
     )["ids"] == [[]]
 
 
+@two_stage_case("delete_race")
 def test_in_memory_two_stage_rejects_old_job_after_delete(tmp_path) -> None:
     engine = GraphKnowledgeEngine(
         persist_directory=str(tmp_path),
@@ -497,3 +566,96 @@ def test_two_stage_does_not_dispatch_before_canonical_event(tmp_path) -> None:
     with pytest.raises(RuntimeError, match="event store unavailable"):
         engine.write.add_node(node)
     assert adapter.calls == 0
+
+
+@two_stage_case("pending_visibility")
+@two_stage_case("promotion_handoff")
+@two_stage_case("batch_embedding")
+@two_stage_case("stale_revision")
+@two_stage_case("delete_race")
+@two_stage_case("recovery_reconciliation")
+def test_rust_sqlite_meta_authority_runs_two_stage_in_memory_profile(
+    tmp_path, monkeypatch
+) -> None:
+    """Rust meta/queue authority is tested separately from Rust graph authority."""
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path),
+        backend_factory=build_fake_backend,
+        persistence_mode="two_stage",
+    )
+    try:
+        engine.write.add_node(
+            build_entity_node(node_id="rust-sqlite-n1", doc_id="d1", embedding=None)
+        )
+        assert engine.backend.node_get(ids=["rust-sqlite-n1"])["embeddings"] == [None]
+        metrics = engine.indexing.make_index_job_worker(
+            batch_size=8, max_inflight=8, max_jobs_per_tick=8
+        ).tick()
+        assert metrics.done >= 1
+        assert engine.backend.node_get(ids=["rust-sqlite-n1"])["embeddings"][0] is not None
+
+        engine.write.add_node(
+            build_entity_node(node_id="rust-sqlite-b1", doc_id="d1", embedding=None)
+        )
+        engine.write.add_node(
+            build_entity_node(node_id="rust-sqlite-b2", doc_id="d1", embedding=None)
+        )
+        batch_metrics = engine.indexing.make_index_job_worker(
+            batch_size=8, max_inflight=8, max_jobs_per_tick=8
+        ).tick()
+        assert batch_metrics.done >= 2
+
+        engine.write.add_node(
+            build_entity_node(node_id="rust-sqlite-stale", doc_id="d1", embedding=None)
+        )
+        stale_job = next(
+            job for job in engine.meta_sqlite.list_index_jobs(namespace="default")
+            if job.entity_id == "rust-sqlite-stale" and job.index_kind == "node_embedding"
+        )
+        replacement = build_entity_node(
+            node_id="rust-sqlite-stale", doc_id="d2", embedding=None
+        )
+        engine.write.add_node(replacement)
+        engine.two_stage_projection_adapter.apply_embedding_job(
+            entity_kind=stale_job.entity_kind,
+            entity_id=stale_job.entity_id,
+            op=stale_job.op,
+            payload_json=stale_job.payload_json,
+        )
+        assert engine.backend.node_get(ids=["rust-sqlite-stale"])["embeddings"] == [None]
+
+        engine.write.add_node(
+            build_entity_node(node_id="rust-sqlite-delete", doc_id="d1", embedding=None)
+        )
+        delete_job = next(
+            job for job in engine.meta_sqlite.list_index_jobs(namespace="default")
+            if job.entity_id == "rust-sqlite-delete" and job.index_kind == "node_embedding"
+        )
+        assert engine.lifecycle.tombstone_node("rust-sqlite-delete") is True
+        engine.two_stage_projection_adapter.apply_embedding_job(
+            entity_kind=delete_job.entity_kind,
+            entity_id=delete_job.entity_id,
+            op=delete_job.op,
+            payload_json=delete_job.payload_json,
+        )
+        assert engine.backend.node_get(ids=["rust-sqlite-delete"])["ids"] == []
+
+        engine.write.add_node(
+            build_entity_node(node_id="rust-sqlite-repair", doc_id="d1", embedding=None)
+        )
+        claimed = engine.meta_sqlite.claim_index_jobs(
+            limit=8, lease_seconds=60, namespace="default"
+        )
+        repair_job = next(job for job in claimed if job.entity_id == "rust-sqlite-repair")
+        engine.meta_sqlite.mark_index_job_done(
+            repair_job.job_id, claim_token=repair_job.claim_token
+        )
+        assert engine.indexing.repair_missing_two_stage_embedding_jobs(max_entities=20) >= 1
+        repaired = engine.indexing.make_index_job_worker(
+            batch_size=8, max_inflight=8, max_jobs_per_tick=20
+        ).tick()
+        assert repaired.done >= 1
+        assert engine.backend.node_get(ids=["rust-sqlite-repair"])["embeddings"][0] is not None
+    finally:
+        engine.close()

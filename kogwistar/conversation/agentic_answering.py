@@ -135,7 +135,12 @@ def _engine_get_nodes(engine: Any, *, ids: list[str], include: list[str]):
 def _engine_get_edges(engine: Any, *, ids: list[str], include: list[str]):
     reader = getattr(engine, "read", None)
     if reader is not None and callable(getattr(reader, "get_edges", None)):
-        return reader.get_edges(ids=ids, include=include, edge_type=ConversationEdge)
+        result = reader.get_edges(ids=ids, include=include, edge_type=ConversationEdge)
+        # Some lightweight adapters expose a read facade while keeping edge
+        # storage on the backend. Preserve that compatibility without making
+        # the backend the primary read path.
+        if _has_result_items(result):
+            return result
     return engine.backend.edge_get(ids=ids, include=include)
 
 

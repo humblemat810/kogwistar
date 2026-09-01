@@ -470,6 +470,27 @@ class IndexingSubsystem:
             namespace=namespace,
         )
 
+    def make_async_index_job_worker(
+        self,
+        *,
+        max_inflight: int = 1,
+        batch_size: int = 50,
+        lease_seconds: int = 60,
+        max_jobs_per_tick: int = 200,
+        namespace: str | None = None,
+    ):
+        """Build async worker without converting async projection calls to sync."""
+        from ..workers.async_index_job_worker import AsyncIndexJobWorker
+
+        return AsyncIndexJobWorker(
+            engine=self.engine,
+            max_inflight=max_inflight,
+            batch_size=batch_size,
+            lease_seconds=lease_seconds,
+            max_jobs_per_tick=max_jobs_per_tick,
+            namespace=namespace,
+        )
+
     def apply_index_job(
         self,
         *,

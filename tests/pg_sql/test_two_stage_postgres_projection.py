@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import asyncio
+import threading
 
 import pytest
 
@@ -8,6 +10,8 @@ from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.postgres_backend import PgVectorBackend
 from tests._helpers.embeddings import ConstantEmbeddingFunction
 from tests._helpers.graph_builders import build_entity_node, build_relationship_edge
+from tests.core.two_stage_case_catalog import two_stage_case
+from kogwistar.workers.async_index_job_worker import AsyncIndexJobWorker
 
 pytestmark = [pytest.mark.ci_full, pytest.mark.integration, pytest.mark.e2e]
 
@@ -26,6 +30,8 @@ def _engine(sa_engine, pg_schema) -> GraphKnowledgeEngine:
     )
 
 
+@two_stage_case("pending_visibility")
+@two_stage_case("promotion_handoff")
 def test_postgres_two_stage_pending_then_same_store_promotion(sa_engine, pg_schema) -> None:
     _require_postgres(sa_engine, pg_schema)
     engine = _engine(sa_engine, pg_schema)
@@ -111,6 +117,7 @@ def test_postgres_two_stage_delete_before_promotion_cleans_stage1(
     assert engine.backend.node_get(ids=["n1"], include=["embeddings"])["ids"] == []
 
 
+@two_stage_case("recovery_reconciliation")
 def test_postgres_two_stage_reconciliation_cleans_stage1_after_stage2_write(
     sa_engine, pg_schema
 ) -> None:
@@ -134,6 +141,7 @@ def test_postgres_two_stage_reconciliation_cleans_stage1_after_stage2_write(
     ) is None
 
 
+@two_stage_case("delete_race")
 def test_postgres_two_stage_delete_during_embedding_cannot_resurrect(
     sa_engine, pg_schema, monkeypatch
 ) -> None:
@@ -162,6 +170,7 @@ def test_postgres_two_stage_delete_during_embedding_cannot_resurrect(
     ) is None
 
 
+@two_stage_case("stale_revision")
 def test_postgres_two_stage_late_v1_cannot_overwrite_v2(
     sa_engine, pg_schema
 ) -> None:
@@ -275,6 +284,7 @@ def test_postgres_two_stage_edges_follow_same_promotion_contract(sa_engine, pg_s
     ) is None
 
 
+@two_stage_case("batch_embedding")
 def test_postgres_two_stage_provider_batch_promotes_multiple_nodes(
     sa_engine, pg_schema, monkeypatch
 ) -> None:
@@ -304,16 +314,117 @@ def test_postgres_two_stage_provider_batch_promotes_multiple_nodes(
     ]
 
 
-def test_postgres_two_stage_async_backend_fails_closed(async_pg_backend) -> None:
-    with pytest.raises(ValueError, match="requires synchronous PostgreSQL"):
-        GraphKnowledgeEngine(
-            backend=async_pg_backend,
-            persistence_mode="two_stage",
-            embedding_function=ConstantEmbeddingFunction(dim=3),
+@pytest.mark.asyncio
+async def test_postgres_single_stage_async_writes_embedding_directly(async_pg_backend) -> None:
+    main_thread = threading.get_ident()
+    call_threads: list[int] = []
+
+    async def provider(documents):
+        call_threads.append(threading.get_ident())
+        await asyncio.sleep(0)
+        return [[1.0, 0.0, 0.0] for _ in documents]
+
+    engine = GraphKnowledgeEngine(
+        backend=async_pg_backend,
+        embedding_function=provider,
+        # Omitted intentionally: single_stage remains the default.
+    )
+    try:
+        node = build_entity_node(node_id="async-pg-single", doc_id="d1")
+        await engine.async_add_node(node)
+        got = await async_pg_backend.node_get(
+            ids=[node.id], include=["embeddings"]
         )
+        assert got["ids"] == [node.id]
+        assert got["embeddings"] == [[1.0, 0.0, 0.0]]
+        assert call_threads and call_threads[0] == main_thread
+        jobs = engine.meta_sqlite.list_index_jobs(namespace="default")
+        assert all(job.index_kind != "node_embedding" for job in jobs)
+    finally:
+        engine.close()
 
 
-def test_postgres_two_stage_rust_authority_fails_closed(
+@pytest.mark.asyncio
+async def test_postgres_two_stage_async_backend_uses_async_adapter(
+    async_pg_backend,
+) -> None:
+    calls: list[int] = []
+
+    async def provider(documents):
+        calls.append(len(documents))
+        return [[1.0, 0.0, 0.0] for _ in documents]
+
+    engine = GraphKnowledgeEngine(
+        backend=async_pg_backend,
+        persistence_mode="two_stage",
+        embedding_function=provider,
+    )
+    try:
+        assert engine.two_stage_projection_capability.is_complete()
+        assert engine.two_stage_projection_adapter is None
+        assert engine.async_two_stage_projection_adapter is not None
+        for node_id in ("async-pg-n1", "async-pg-n2"):
+            await engine.async_add_node(
+                build_entity_node(node_id=node_id, doc_id="d1", embedding=None)
+            )
+        worker = AsyncIndexJobWorker(engine=engine, batch_size=8, max_jobs_per_tick=8)
+        metrics = await worker.tick()
+        assert metrics.claimed == 2 and metrics.done == 2
+        assert calls == [2]
+        ready = await engine.backend.node_get(
+            ids=["async-pg-n1", "async-pg-n2"], include=["embeddings"]
+        )
+        assert all(embedding is not None for embedding in ready["embeddings"])
+    finally:
+        engine.close()
+
+
+@pytest.mark.asyncio
+async def test_postgres_two_stage_async_rust_authority_uses_native_facade(
+    async_pg_backend, monkeypatch
+) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_GRAPH_STORE", "rust")
+    calls: list[int] = []
+
+    async def provider(texts):
+        calls.append(len(texts))
+        return [[0.1, 0.2, 0.3] for _ in texts]
+
+    engine = GraphKnowledgeEngine(
+        backend=async_pg_backend,
+        persistence_mode="two_stage",
+        embedding_function=provider,
+    )
+    try:
+        assert engine.async_two_stage_projection_adapter.__class__.__name__ == (
+            "AsyncRustPostgresTwoStageProjectionAdapter"
+        )
+        for node_id in ("async-rust-pg-n1", "async-rust-pg-n2"):
+            await engine.async_add_node(
+                build_entity_node(node_id=node_id, doc_id="d1", embedding=None)
+            )
+        metrics = await AsyncIndexJobWorker(
+            engine=engine, batch_size=8, max_jobs_per_tick=8
+        ).tick()
+        assert metrics.done == 2
+        assert calls == [2]
+        ready = await engine.backend.node_get(
+            ids=["async-rust-pg-n1", "async-rust-pg-n2"], include=["embeddings"]
+        )
+        assert all(embedding is not None for embedding in ready["embeddings"])
+    finally:
+        engine.close()
+
+
+@two_stage_case("pending_visibility")
+@two_stage_case("promotion_handoff")
+@two_stage_case("batch_embedding")
+@two_stage_case("stale_revision")
+@two_stage_case("delete_race")
+@two_stage_case("recovery_reconciliation")
+def test_postgres_two_stage_rust_authority_uses_native_two_stage_adapter(
     sa_engine, pg_schema, monkeypatch
 ) -> None:
     _require_postgres(sa_engine, pg_schema)
@@ -321,9 +432,89 @@ def test_postgres_two_stage_rust_authority_fails_closed(
     monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
     monkeypatch.setenv("KOGWISTAR_IMPL_GRAPH_STORE", "rust")
     backend = PgVectorBackend(engine=sa_engine, embedding_dim=3, schema=pg_schema)
-    with pytest.raises(ValueError, match="not available with Rust PostgreSQL authority"):
-        GraphKnowledgeEngine(
-            backend=backend,
-            persistence_mode="two_stage",
-            embedding_function=ConstantEmbeddingFunction(dim=3),
+    engine = GraphKnowledgeEngine(
+        backend=backend,
+        persistence_mode="two_stage",
+        embedding_function=ConstantEmbeddingFunction(dim=3),
+    )
+    try:
+        assert engine.two_stage_projection_capability.is_complete()
+        assert engine.two_stage_projection_adapter.__class__.__name__ == (
+            "RustPostgresTwoStageProjectionAdapter"
         )
+        engine.write.add_node(build_entity_node(node_id="rust-n1", doc_id="d1", embedding=None))
+        engine.write.add_node(build_entity_node(node_id="rust-n2", doc_id="d1", embedding=None))
+        assert engine.backend.node_get(
+            ids=["rust-n1", "rust-n2"], include=["embeddings"]
+        )["embeddings"] == [None, None]
+        calls: list[list[str]] = []
+
+        def batch_provider(documents):
+            calls.append(list(documents))
+            return [[1.0, 0.0, 0.0] for _ in documents]
+
+        monkeypatch.setattr(engine, "_ef", batch_provider)
+        worker = engine.indexing.make_index_job_worker(
+            batch_size=10, max_inflight=10, max_jobs_per_tick=10
+        )
+        metrics = worker.tick()
+        assert metrics.claimed == 2 and metrics.done == 2
+        assert len(calls) == 1 and len(calls[0]) == 2
+        assert engine.backend.node_get(
+            ids=["rust-n1", "rust-n2"], include=["embeddings"]
+        )["embeddings"] == [[1.0, 0.0, 0.0], [1.0, 0.0, 0.0]]
+
+        engine.write.add_node(build_entity_node(node_id="rust-stale", doc_id="d1", embedding=None))
+        stale_job = next(
+            job for job in engine.meta_sqlite.list_index_jobs(namespace="default")
+            if job.entity_id == "rust-stale" and job.index_kind == "node_embedding"
+        )
+        replacement = build_entity_node(node_id="rust-stale", doc_id="d2", embedding=None)
+        engine.write.add_node(replacement)
+        engine.two_stage_projection_adapter.apply_embedding_job(
+            entity_kind=stale_job.entity_kind,
+            entity_id=stale_job.entity_id,
+            op=stale_job.op,
+            payload_json=stale_job.payload_json,
+        )
+        assert engine.backend.node_get(ids=["rust-stale"], include=["embeddings"])["embeddings"] == [None]
+
+        engine.write.add_node(build_entity_node(node_id="rust-delete", doc_id="d1", embedding=None))
+        delete_job = next(
+            job for job in engine.meta_sqlite.list_index_jobs(namespace="default")
+            if job.entity_id == "rust-delete" and job.index_kind == "node_embedding"
+        )
+        assert engine.lifecycle.tombstone_node("rust-delete") is True
+        engine.two_stage_projection_adapter.apply_embedding_job(
+            entity_kind=delete_job.entity_kind,
+            entity_id=delete_job.entity_id,
+            op=delete_job.op,
+            payload_json=delete_job.payload_json,
+        )
+        deleted = engine.backend.node_get(
+            ids=["rust-delete"], include=["embeddings", "metadatas"]
+        )
+        assert deleted["ids"] == ["rust-delete"]
+        assert deleted["embeddings"] == [None]
+        assert deleted["metadatas"][0]["lifecycle_status"] == "tombstoned"
+        semantic = engine.backend.node_query(
+            query_embeddings=[[1.0, 0.0, 0.0]], n_results=10
+        )
+        assert "rust-delete" not in semantic["ids"][0]
+
+        engine.write.add_node(build_entity_node(node_id="rust-repair", doc_id="d1", embedding=None))
+        claimed = engine.meta_sqlite.claim_index_jobs(
+            limit=10, lease_seconds=60, namespace="default"
+        )
+        repair_job = next(job for job in claimed if job.entity_id == "rust-repair")
+        engine.meta_sqlite.mark_index_job_done(
+            repair_job.job_id, claim_token=repair_job.claim_token
+        )
+        assert engine.indexing.repair_missing_two_stage_embedding_jobs(max_entities=10) >= 1
+        repaired = engine.indexing.make_index_job_worker(
+            batch_size=10, max_inflight=10, max_jobs_per_tick=10
+        ).tick()
+        assert repaired.done >= 1
+        assert engine.backend.node_get(ids=["rust-repair"], include=["embeddings"])["embeddings"][0] is not None
+    finally:
+        engine.close()

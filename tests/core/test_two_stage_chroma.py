@@ -15,6 +15,7 @@ from kogwistar.engine_core.two_stage_chroma import (
 from kogwistar.graph_query import GraphQuery
 from tests._helpers.graph_builders import build_entity_node, build_relationship_edge
 from tests._helpers.embeddings import build_test_embedding_function
+from tests.core.two_stage_case_catalog import two_stage_case
 
 
 class _Backend:
@@ -92,6 +93,8 @@ def _engine(tmp_path: Path):
     return engine, adapter
 
 
+@two_stage_case("pending_visibility")
+@two_stage_case("promotion_handoff")
 def test_chroma_arrangement_hands_off_sqlite_stage1_to_explicit_vector_stage2(tmp_path):
     engine, adapter = _engine(tmp_path)
     node = build_entity_node(node_id="n1", doc_id="d1")
@@ -115,6 +118,7 @@ def test_chroma_arrangement_hands_off_sqlite_stage1_to_explicit_vector_stage2(tm
     assert engine.meta_sqlite.get_stage1_node_projection("tenant-a", "n1") is None
 
 
+@two_stage_case("batch_embedding")
 def test_chroma_batch_embedding_uses_one_provider_call_per_batch(tmp_path):
     engine, adapter = _engine(tmp_path)
     calls: list[list[str]] = []
@@ -158,6 +162,7 @@ def test_chroma_stage1_edge_remains_traversable_by_id_and_neighbors(tmp_path):
     assert graph.neighbors("e1")["nodes"] == {"n1", "n2"}
 
 
+@two_stage_case("stale_revision")
 def test_chroma_arrangement_rejects_stale_promotion_and_deletes_stage1(tmp_path):
     engine, adapter = _engine(tmp_path)
     node = build_entity_node(node_id="n1", doc_id="d1")
@@ -204,6 +209,7 @@ def test_chroma_new_stage1_revision_removes_old_stage2_visibility(tmp_path):
     assert engine.meta_sqlite.get_stage1_node_projection("tenant-a", "n1") is not None
 
 
+@two_stage_case("recovery_reconciliation")
 def test_chroma_reconciles_stage1_after_stage2_write_before_cleanup(tmp_path):
     engine, adapter = _engine(tmp_path)
     node = build_entity_node(node_id="n1", doc_id="d1")
@@ -422,6 +428,7 @@ def test_real_chroma_rebuilds_lost_embedding_job_after_restart(tmp_path):
 
 @pytest.mark.integration
 @pytest.mark.e2e
+@two_stage_case("delete_race")
 def test_real_chroma_stage1_delete_is_repaired_from_canonical_event(tmp_path):
     from kogwistar.engine_core.engine import GraphKnowledgeEngine
 

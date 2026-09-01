@@ -21,6 +21,7 @@ from .rust_meta_sqlite import build_sqlite_meta_store
 from .storage_backend import (
     NoopUnitOfWork,
     StorageBackend,
+    get_async_two_stage_projection_adapter,
     get_two_stage_projection_adapter,
     get_two_stage_projection_capability,
 )
@@ -1348,6 +1349,34 @@ class GraphKnowledgeEngine:
                     pathlib.Path(persist_directory or "./chroma_db"), "meta.sqlite"
                 )
             self.meta_sqlite.ensure_initialized()
+            if self.persistence_mode == "two_stage" and (
+                getattr(self.backend, "_is_async_engine", False)
+                or getattr(self.backend, "is_async_backend", False)
+            ):
+                from .two_stage_async import (
+                    AsyncChromaTwoStageProjectionAdapter,
+                    AsyncPostgresTwoStageProjectionAdapter,
+                    async_transient_two_stage_capability,
+                )
+
+                if self.backend.__class__.__name__ == "AsyncChromaBackend":
+                    self.backend.two_stage_projection_capability = (
+                        async_transient_two_stage_capability(
+                            "async SQLite Stage-1 with async Chroma Stage-2"
+                        )
+                    )
+                    self.backend.async_two_stage_projection_adapter = (
+                        AsyncChromaTwoStageProjectionAdapter(self)
+                    )
+                elif getattr(self.backend, "_is_async_engine", False):
+                    self.backend.two_stage_projection_capability = (
+                        async_transient_two_stage_capability(
+                            "async PostgreSQL transient Stage-1 and pgvector Stage-2"
+                        )
+                    )
+                    self.backend.async_two_stage_projection_adapter = (
+                        AsyncPostgresTwoStageProjectionAdapter(self)
+                    )
         elif backend is None or (type(backend) is str and backend == "chroma"):
             # 2) Chroma client + collections; inject embedder on vectorized collections
             ChromaClient, ChromaSettings = _import_chroma_client()
@@ -1418,7 +1447,40 @@ class GraphKnowledgeEngine:
                 pathlib.Path(persist_directory or "./chroma_db"), "meta.sqlite"
             )
             self.meta_sqlite.ensure_initialized()
-            if self.persistence_mode == "two_stage":
+            if self.persistence_mode == "two_stage" and (
+                getattr(self.backend, "_is_async_engine", False)
+                or getattr(self.backend, "is_async_backend", False)
+            ):
+                from .postgres_backend import PgVectorBackend
+                from .two_stage_async import (
+                    AsyncPostgresTwoStageProjectionAdapter,
+                    async_transient_two_stage_capability,
+                )
+
+                if isinstance(self.backend, PgVectorBackend):
+                    self.backend.two_stage_projection_capability = (
+                        async_transient_two_stage_capability(
+                            "async PostgreSQL transient Stage-1 and pgvector Stage-2"
+                        )
+                    )
+                    self.backend.async_two_stage_projection_adapter = (
+                        AsyncPostgresTwoStageProjectionAdapter(self)
+                    )
+                elif self.backend.__class__.__name__ == "AsyncChromaBackend":
+                    from .two_stage_async import AsyncChromaTwoStageProjectionAdapter
+
+                    self.backend.two_stage_projection_capability = (
+                        async_transient_two_stage_capability(
+                            "async SQLite Stage-1 with async Chroma Stage-2"
+                        )
+                    )
+                    self.backend.async_two_stage_projection_adapter = (
+                        AsyncChromaTwoStageProjectionAdapter(self)
+                    )
+            if self.persistence_mode == "two_stage" and not (
+                getattr(self.backend, "_is_async_engine", False)
+                or getattr(self.backend, "is_async_backend", False)
+            ):
                 from .two_stage_chroma import (
                     SQLiteChromaTwoStageProjectionAdapter,
                     chroma_two_stage_capability,
@@ -1448,15 +1510,6 @@ class GraphKnowledgeEngine:
             graph_mode = graph_store_implementation_mode()
             postgres_authority_mode = postgres_authority_implementation_mode()
             sync_postgres = not getattr(backend2, "_is_async_engine", False)
-            if self.persistence_mode == "two_stage" and postgres_authority_mode == "rust":
-                raise ValueError(
-                    "persistence_mode='two_stage' is not available with Rust PostgreSQL authority"
-                )
-            if not sync_postgres and postgres_authority_mode == "rust":
-                raise ValueError(
-                    "async PostgreSQL Rust graph/meta authority is not available; "
-                    "use python or shadow until the native async facade is ready"
-                )
             if postgres_authority_mode == "rust" and (
                 meta_mode != "rust" or graph_mode != "rust"
             ):
@@ -1467,7 +1520,7 @@ class GraphKnowledgeEngine:
                     "transaction"
                 )
             coordinated_rust_postgres = postgres_authority_mode == "rust" and sync_postgres
-            if coordinated_rust_postgres:
+            if postgres_authority_mode == "rust":
                 dsn = backend2.engine.url.render_as_string(hide_password=False)
                 meta_postgre = RustEnginePostgresMetaStore(
                     dsn=dsn, schema=backend2.schema
@@ -1479,21 +1532,52 @@ class GraphKnowledgeEngine:
             meta_postgre.ensure_initialized()
             self.meta_sqlite = meta_postgre
             if self.persistence_mode == "two_stage":
-                if not sync_postgres:
-                    raise ValueError(
-                        "persistence_mode='two_stage' currently requires synchronous PostgreSQL"
+                if postgres_authority_mode == "rust":
+                    from .two_stage_rust_postgres import (
+                        RustPostgresTwoStageProjectionAdapter,
+                        rust_postgres_two_stage_capability,
                     )
-                from .two_stage_postgres import (
-                    PostgresTwoStageProjectionAdapter,
-                    postgres_two_stage_capability,
-                )
 
-                self.backend.two_stage_projection_capability = (
-                    postgres_two_stage_capability()
-                )
-                self.backend.two_stage_projection_adapter = (
-                    PostgresTwoStageProjectionAdapter(self)
-                )
+                    self.backend.two_stage_projection_capability = (
+                        rust_postgres_two_stage_capability()
+                    )
+                    self.backend.two_stage_projection_adapter = (
+                        RustPostgresTwoStageProjectionAdapter(self, meta_postgre)
+                    )
+                    if not sync_postgres:
+                        from .two_stage_async import (
+                            AsyncRustPostgresTwoStageProjectionAdapter,
+                        )
+
+                        self.backend.async_two_stage_projection_adapter = (
+                            AsyncRustPostgresTwoStageProjectionAdapter(self, meta_postgre)
+                        )
+                elif not sync_postgres:
+                    from .two_stage_async import (
+                        AsyncPostgresTwoStageProjectionAdapter,
+                        async_transient_two_stage_capability,
+                    )
+
+                    self.backend.two_stage_projection_capability = (
+                        async_transient_two_stage_capability(
+                            "async PostgreSQL transient Stage-1 and pgvector Stage-2"
+                        )
+                    )
+                    self.backend.async_two_stage_projection_adapter = (
+                        AsyncPostgresTwoStageProjectionAdapter(self)
+                    )
+                else:
+                    from .two_stage_postgres import (
+                        PostgresTwoStageProjectionAdapter,
+                        postgres_two_stage_capability,
+                    )
+
+                    self.backend.two_stage_projection_capability = (
+                        postgres_two_stage_capability()
+                    )
+                    self.backend.two_stage_projection_adapter = (
+                        PostgresTwoStageProjectionAdapter(self)
+                    )
         else:
             if isinstance(backend, str):
                 raise ValueError(
@@ -1508,6 +1592,14 @@ class GraphKnowledgeEngine:
         self._backend_uow = _build_postgres_uow_if_needed(
             getattr(self, "backend", None)
         )
+        if (
+            self.persistence_mode == "two_stage"
+            and _is_pgvector_backend_instance(getattr(self, "backend", None))
+            and "postgres_authority_mode" in locals()
+            and postgres_authority_mode == "rust"
+        ):
+            # The native adapter writes through this same Rust-owned UoW.
+            self._backend_uow = self.meta_sqlite
         self.two_stage_projection_capability = get_two_stage_projection_capability(
             self.backend
         )
@@ -1530,11 +1622,19 @@ class GraphKnowledgeEngine:
                 self.backend
             )
             if self.two_stage_projection_adapter is None:
-                raise ValueError(
-                    "persistence_mode='two_stage' requires an executable "
-                    f"two-stage projection adapter for {type(self.backend).__name__}; "
-                    "refusing synchronous single-stage fallback"
-                )
+                # Async arrangements are consumed through explicit async entry
+                # points; never silently route them through sync projection IO.
+                if get_async_two_stage_projection_adapter(self.backend) is None:
+                    raise ValueError(
+                        "persistence_mode='two_stage' requires an executable "
+                        f"two-stage projection adapter for {type(self.backend).__name__}; "
+                        "refusing synchronous single-stage fallback"
+                    )
+        self.async_two_stage_projection_adapter = (
+            get_async_two_stage_projection_adapter(self.backend)
+            if self.persistence_mode == "two_stage"
+            else None
+        )
 
         from .lifecycle import LifecycleSubsystem
 
@@ -1829,6 +1929,14 @@ class GraphKnowledgeEngine:
     @engine_context
     def add_edge(self, edge: Edge, doc_id: Optional[str] = None):
         return self.write.add_edge(edge, doc_id=doc_id)
+
+    async def async_add_node(self, node: Node, doc_id: Optional[str] = None):
+        """Use the async projection arrangement without sync IO fallback."""
+        return await self.write.add_node_async(node, doc_id=doc_id)
+
+    async def async_add_edge(self, edge: Edge, doc_id: Optional[str] = None):
+        """Use the async projection arrangement without sync IO fallback."""
+        return await self.write.add_edge_async(edge, doc_id=doc_id)
 
     @engine_context
     def add_document(self, document: Document):
