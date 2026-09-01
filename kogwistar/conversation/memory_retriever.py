@@ -129,23 +129,23 @@ class MemoryRetriever:
     ) -> MemoryRetrievalResult:
         # Broad memory retrieval across same user
         where = {"user_id": user_id}
-        memory_nodes = self.conversation_engine.read.query_nodes(
+        node_batches = self.conversation_engine.read.query_nodes(
             query_embeddings=[query_embedding],
             n_results=n_results,
             where=where,
             include=["metadatas", "documents", "embeddings"],
             node_type=ConversationNode,
-        )[0]
+        )
+        memory_nodes = node_batches[0] if node_batches else []
         where = {"user_id": user_id}
-        memory_edges = self.conversation_engine.read.query_edges(
+        edge_batches = self.conversation_engine.read.query_edges(
             query_embeddings=[query_embedding],
             n_results=n_results,
             where=where,
             include=["metadatas", "documents", "embeddings"],
             edge_type=ConversationEdge,
-        )[
-            0
-        ]  # supposed not work, conversation edge has no role mixin and not retrievable no matter how given current state
+        )
+        memory_edges = edge_batches[0] if edge_batches else []
 
         def _rank(m: Node | Edge):
             t = m.type or m.metadata.get("entity_type") or ""

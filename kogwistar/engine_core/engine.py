@@ -207,14 +207,9 @@ def _build_postgres_uow_if_needed(backend: StorageBackend):
     if not _is_pgvector_backend_instance(backend):
         return NoopUnitOfWork()
     if getattr(backend, "_is_async_engine", False):
-        try:
-            from kogwistar.engine_core.postgres_backend import AsyncPostgresUnitOfWork
-        except Exception as e:  # pragma: no cover - optional dependency
-            raise _optional_dependency_error(
-                extra="pgvector",
-                detail="async PgVector backend requires optional PostgreSQL dependencies",
-            ) from e
-        return AsyncPostgresUnitOfWork(engine=backend.engine)
+        # Engine.uow() is a synchronous compatibility surface. Async callers
+        # use the separate async UOW installed by GraphKnowledgeEngine.
+        return NoopUnitOfWork()
     try:
         from kogwistar.engine_core.postgres_backend import (
             PgVectorBackend,
@@ -1599,6 +1594,13 @@ class GraphKnowledgeEngine:
         self._backend_uow = _build_postgres_uow_if_needed(
             getattr(self, "backend", None)
         )
+        self._async_backend_uow = None
+        if getattr(getattr(self, "backend", None), "_is_async_engine", False):
+            from .postgres_backend import AsyncPostgresUnitOfWork
+
+            self._async_backend_uow = AsyncPostgresUnitOfWork(
+                engine=self.backend.engine
+            )
         if (
             self.persistence_mode == "two_stage"
             and _is_pgvector_backend_instance(getattr(self, "backend", None))

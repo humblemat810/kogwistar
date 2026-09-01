@@ -110,13 +110,14 @@ def _engine_query_nodes(
 ):
     reader = getattr(engine, "read", None)
     if reader is not None and callable(getattr(reader, "query_nodes", None)):
-        return reader.query_nodes(
+        batches = reader.query_nodes(
             query_embeddings=query_embeddings,
             n_results=n_results,
             where=where,
             include=include,
             node_type=ConversationNode,
-        )[0]
+        )
+        return batches[0] if batches else []
     return engine.backend.node_query(
         query_embeddings=query_embeddings,
         n_results=n_results,
