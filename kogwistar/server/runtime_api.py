@@ -7,8 +7,9 @@ import time
 from pathlib import Path
 from typing import Any, cast, Callable
 
-from fastapi import APIRouter, HTTPException
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 from .chat_service import WorkflowProjectionRebuildingError, ChatRunService
 from .error_reporting import internal_http_error
@@ -184,6 +185,18 @@ def create_runtime_router(
 ):
     router = APIRouter(prefix="/api/workflow", tags=["runtime"])
     get_service_r = cast(Callable[[], ChatRunService], get_service)
+    templates = Jinja2Templates(
+        directory=str(Path(__file__).resolve().parents[1] / "templates")
+    )
+
+    @router.get("/designer", response_class=HTMLResponse, include_in_schema=False)
+    def workflow_designer(request: Request):
+        """Serve the graph-native workflow design surface."""
+        require_role("ro")
+        require_namespace(runtime_namespaces)
+        return templates.TemplateResponse(
+            request, "workflow_designer.html", {"request": request}
+        )
 
     @router.post("/runs")
     def submit_workflow_run(inp: SubmitWorkflowRunIn):
@@ -798,11 +811,17 @@ def create_runtime_router(
 
     @router.get("/design/{workflow_id}/graph")
     def workflow_design_graph(workflow_id: str, refresh: bool = False):
+        require_role("ro")
+        require_namespace(runtime_namespaces)
+        if require_workflow_access:
+            require_workflow_access(workflow_id, "ro")
         service = get_service_r()
         return service.workflow_design_graph(workflow_id=workflow_id, refresh=refresh)
 
     @router.get("/catalog/ops")
     def workflow_catalog_ops():
+        require_role("ro")
+        require_namespace(runtime_namespaces)
         service = get_service_r()
         return service.workflow_catalog_ops()
 
