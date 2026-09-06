@@ -47,7 +47,7 @@ class AsyncPostgresTwoStageProjectionAdapter:
     @asynccontextmanager
     async def _backend_transaction(self):
         """Join the configured async SQL UOW when one exists."""
-        uow = getattr(self.engine, "_backend_uow", None)
+        uow = getattr(self.engine, "_async_backend_uow", None)
         transaction = getattr(uow, "transaction", None)
         if callable(transaction):
             async with transaction():

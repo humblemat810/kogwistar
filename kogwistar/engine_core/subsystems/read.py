@@ -359,6 +359,14 @@ class ReadSubsystem(NamespaceProxy, ReadLike):
     ) -> list[Node]:
         if include is None:
             include = ["documents", "embeddings", "metadatas"]
+        else:
+            # Model reconstruction requires both payload and metadata, even
+            # when compatibility callers pass a narrow or empty include list.
+            include = [*include]
+            if "documents" not in include:
+                include.append("documents")
+            if "metadatas" not in include:
+                include.append("metadatas")
         if not node_type:
             node_type = default_node_type_for_graph_kind(self._e.kg_graph_type)
 
@@ -404,6 +412,14 @@ class ReadSubsystem(NamespaceProxy, ReadLike):
     ) -> list[Edge]:
         if include is None:
             include = ["documents", "embeddings", "metadatas"]
+        else:
+            # Edge reconstruction and structural traversal require both
+            # payload and metadata for every compatibility include shape.
+            include = [*include]
+            if "documents" not in include:
+                include.append("documents")
+            if "metadatas" not in include:
+                include.append("metadatas")
         if not edge_type:
             edge_type = default_edge_type_for_graph_kind(self._e.kg_graph_type)
 
@@ -662,7 +678,28 @@ class ReadSubsystem(NamespaceProxy, ReadLike):
         # resolution; ordinary semantic search must continue excluding them.
         if getattr(self._e.backend, "supports_historical_tombstone_query", False):
             query_kwargs["include_tombstoned"] = True
-        got = run_awaitable_blocking(self._e.backend.node_query(**query_kwargs))
+        try:
+            got = run_awaitable_blocking(self._e.backend.node_query(**query_kwargs))
+        except Exception as exc:
+            # Chroma's embedded Rust reader can briefly lose an HNSW segment
+            # after a local persistent update. Historical filtering is still
+            # correct over non-semantic node records, so fall back to a
+            # metadata/payload candidate read without retrying the vector path.
+            message = str(exc).lower()
+            is_chroma_hnsw_gap = (
+                self._e.backend.__class__.__name__ in {"ChromaBackend", "AsyncChromaBackend"}
+                and "nothing found on disk" in message
+                and "hnsw segment reader" in message
+            )
+            if not is_chroma_hnsw_gap:
+                raise
+            got = run_awaitable_blocking(
+                self._e.backend.node_get(
+                    where=where,
+                    limit=max(int(n_results), 10_000),
+                    include=["documents", "metadatas"],
+                )
+            )
         batches = self.nodes_from_query_result(got, node_type=node_type)
         candidates = [node for batch in batches for node in batch] if batches else []
         cache = {str(node.safe_get_id()): node for node in candidates}
