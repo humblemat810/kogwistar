@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+import sqlalchemy as sa
 
 from kogwistar.engine_core.postgres_backend import (
     PgVectorBackend,
@@ -88,3 +89,19 @@ def test_pgvector_dimension_guard_accepts_matching_live_columns() -> None:
     _backend_for_dimension_check(1024)._validate_vector_column_dimensions_sync(
         connection
     )
+
+
+def test_pgvector_constructor_initializes_metadata_and_schema(monkeypatch: pytest.MonkeyPatch) -> None:
+    called: list[bool] = []
+    monkeypatch.setattr(
+        PgVectorBackend,
+        "ensure_schema",
+        lambda self: called.append(hasattr(self, "_md")),
+    )
+
+    backend = PgVectorBackend(engine=sa.create_engine("sqlite:///:memory:"), embedding_dim=2)
+    try:
+        assert hasattr(backend, "_md")
+        assert called == [True]
+    finally:
+        backend.close()

@@ -954,6 +954,10 @@ class PgVectorBackend:
         )
 
         self._init_facades()
+        self._md = md
+        if self._is_async_engine:
+            self._install_async_passthroughs()
+        self.ensure_schema()
 
     def embedding_storage_scope(self) -> str:
         """Return a stable identity for the shared PostgreSQL vector bundle."""
@@ -1009,12 +1013,6 @@ class PgVectorBackend:
             vector_count=sum(count for _name, count in counts),
             details=tuple(f"{name}={count}" for name, count in counts),
         )
-        if self._is_async_engine:
-            self._install_async_passthroughs()
-
-        self._md = md
-        self.ensure_schema()
-
     # ----------------------------
     # DDL / bootstrap
     # ----------------------------
