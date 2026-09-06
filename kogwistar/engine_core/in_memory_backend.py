@@ -41,6 +41,7 @@ from kogwistar.engine_core.storage_backend import (
     NoopUnitOfWork,
     TwoStageProjectionCapability,
 )
+from kogwistar.engine_core.embedding_profile import EmbeddingStorageState
 
 
 def _is_operator_dict(value: Any) -> bool:
@@ -234,6 +235,9 @@ class _InMemoryCollection:
     def _ensure_order(self, row_id: str) -> None:
         if row_id not in self._order:
             self._order.append(row_id)
+
+    def count(self) -> int:
+        return len(self._rows)
 
     def _store(
         self,
@@ -500,6 +504,32 @@ class InMemoryBackend:
         )
         self.two_stage_projection_adapter = _InMemoryTwoStageProjectionAdapter(self)
         self.async_two_stage_projection_adapter = AsyncInMemoryTwoStageProjectionAdapter(self)
+
+    def embedding_storage_scope(self) -> str:
+        """Identify this volatile backend instance for profile checks."""
+
+        return f"memory:{id(self):x}"
+
+    def inspect_embedding_storage(self) -> EmbeddingStorageState:
+        vector_keys = (
+            "node_index",
+            "node",
+            "edge",
+            "edge_endpoints",
+            "document",
+            "domain",
+            "node_docs",
+        )
+        counts = tuple(
+            f"{key}={self._c(key).count()}" for key in vector_keys
+        )
+        return EmbeddingStorageState(
+            backend_kind="memory",
+            storage_scope=self.embedding_storage_scope(),
+            persistent=False,
+            vector_count=sum(self._c(key).count() for key in vector_keys),
+            details=counts,
+        )
 
     def _c(self, key: str) -> _InMemoryCollection:
         try:

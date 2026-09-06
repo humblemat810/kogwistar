@@ -40,8 +40,10 @@ Index/materialization collections (non-vector):
 """
 
 import asyncio
+import hashlib
 import inspect
 import os
+import re
 import threading
 import sys
 import time
@@ -56,6 +58,8 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 from sqlalchemy.dialects import postgresql as psql
 
 from ..utils.embedding_vectors import normalize_embedding_rows, normalize_embedding_vector
+from .async_compat import run_awaitable_blocking
+from .embedding_profile import EmbeddingProfileError, EmbeddingStorageState
 
 try:
     # pip install pgvector
@@ -69,6 +73,53 @@ else:
 
 Json = Dict[str, Any]
 JSONB = psql.JSONB
+
+
+_VECTOR_TYPE_RE = re.compile(r"^vector\((?P<dimension>\d+)\)$")
+
+
+@dataclass(frozen=True)
+class PgVectorColumnDimension:
+    """Observed physical type for one pgvector embedding column."""
+
+    table_name: str
+    column_name: str
+    type_name: str
+    dimension: int | None
+
+
+class PgVectorSchemaMismatchError(EmbeddingProfileError):
+    """Raised before writes when an existing pgvector column has the wrong shape."""
+
+    def __init__(
+        self,
+        *,
+        schema: str,
+        expected_dimension: int,
+        mismatches: Sequence[PgVectorColumnDimension],
+    ) -> None:
+        self.schema = schema
+        self.expected_dimension = expected_dimension
+        self.mismatches = tuple(mismatches)
+        observed = "; ".join(
+            f'{schema}.{item.table_name}.{item.column_name} is {item.type_name}'
+            for item in self.mismatches
+        )
+        super().__init__(
+            "PostgreSQL pgvector schema mismatch: "
+            f"configured embedding dimension is {expected_dimension}, but {observed}. "
+            "No data was written. Do not alter the live vector column in place: "
+            "existing embeddings and HNSW indexes must be rebuilt. Stop writers, "
+            "create an isolated target schema or database configured for the new "
+            "dimension, replay canonical state, re-embed, validate, then cut over."
+        )
+
+
+def _parse_vector_dimension(type_name: object) -> int | None:
+    """Extract a dimension from PostgreSQL's stable ``format_type`` output."""
+
+    match = _VECTOR_TYPE_RE.fullmatch(str(type_name or "").strip())
+    return int(match.group("dimension")) if match is not None else None
 
 
 class _AwaitableValue:
@@ -903,6 +954,61 @@ class PgVectorBackend:
         )
 
         self._init_facades()
+
+    def embedding_storage_scope(self) -> str:
+        """Return a stable identity for the shared PostgreSQL vector bundle."""
+
+        rendered = self.engine.url.render_as_string(hide_password=True)
+        tables = ":".join(
+            table.name
+            for table in (self.nodes, self.edges, self.documents, self.domains)
+        )
+        value = f"{rendered}|schema={self.schema}|tables={tables}"
+        return "pgvector:" + hashlib.sha256(value.encode("utf-8")).hexdigest()[:32]
+
+    def inspect_embedding_storage(self) -> EmbeddingStorageState:
+        """Report whether the physical vector tables already contain rows."""
+
+        if self._is_async_engine:
+            return run_awaitable_blocking(self.inspect_embedding_storage_async())
+        tables = (self.nodes, self.edges, self.documents, self.domains)
+        with self.engine.connect() as conn:
+            counts = tuple(
+                (
+                    table.name,
+                    int(conn.execute(sa.select(sa.func.count()).select_from(table)).scalar_one()),
+                )
+                for table in tables
+            )
+        return EmbeddingStorageState(
+            backend_kind="pgvector",
+            storage_scope=self.embedding_storage_scope(),
+            persistent=True,
+            vector_count=sum(count for _name, count in counts),
+            details=tuple(f"{name}={count}" for name, count in counts),
+        )
+
+    async def inspect_embedding_storage_async(self) -> EmbeddingStorageState:
+        """Async counterpart used by async engine bootstrap paths."""
+
+        tables = (self.nodes, self.edges, self.documents, self.domains)
+        async with self.engine.connect() as conn:
+            counts = tuple(
+                (
+                    table.name,
+                    int(
+                        (await conn.execute(sa.select(sa.func.count()).select_from(table))).scalar_one()
+                    ),
+                )
+                for table in tables
+            )
+        return EmbeddingStorageState(
+            backend_kind="pgvector",
+            storage_scope=self.embedding_storage_scope(),
+            persistent=True,
+            vector_count=sum(count for _name, count in counts),
+            details=tuple(f"{name}={count}" for name, count in counts),
+        )
         if self._is_async_engine:
             self._install_async_passthroughs()
 
@@ -1146,6 +1252,7 @@ class PgVectorBackend:
         if self.schema and self.schema != "public":
             conn.execute(sa.text(f'CREATE SCHEMA IF NOT EXISTS "{self.schema}"'))
         self._md.create_all(conn)
+        self._validate_vector_column_dimensions_sync(conn)
         conn.execute(
             sa.text(
                 f'CREATE INDEX IF NOT EXISTS "idx_{self.stage1_table_name}_namespace_status" '
@@ -1172,6 +1279,60 @@ class PgVectorBackend:
                     f'CREATE INDEX IF NOT EXISTS "{idx}" ON "{self.schema}"."{tbl}" '
                     f"USING hnsw (embedding {ops})"
                 )
+            )
+
+    def _validate_vector_column_dimensions_sync(self, conn: sa.Connection) -> None:
+        """Reject stale ``vector(N)`` columns before any graph write can occur.
+
+        SQLAlchemy's ``create_all`` is intentionally additive. It cannot alter an
+        existing pgvector typmod, so reopening a database with a new embedding
+        model would otherwise fail later during an opaque provider/graph write.
+        ``format_type`` keeps this independent of PostgreSQL's internal typmod
+        representation.
+        """
+        table_names = (
+            self.nodes.name,
+            self.edges.name,
+            self.documents.name,
+            self.domains.name,
+        )
+        rows = conn.execute(
+            sa.text(
+                """
+                SELECT c.relname AS table_name,
+                       a.attname AS column_name,
+                       format_type(a.atttypid, a.atttypmod) AS type_name
+                  FROM pg_catalog.pg_attribute AS a
+                  JOIN pg_catalog.pg_class AS c ON c.oid = a.attrelid
+                  JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
+                 WHERE n.nspname = :schema
+                   AND c.relname IN :table_names
+                   AND c.relkind IN ('r', 'p')
+                   AND a.attname = 'embedding'
+                   AND a.attnum > 0
+                   AND NOT a.attisdropped
+                """
+            ).bindparams(sa.bindparam("table_names", expanding=True)),
+            {"schema": self.schema, "table_names": list(table_names)},
+        ).mappings().all()
+        mismatches: list[PgVectorColumnDimension] = []
+        for row in rows:
+            type_name = str(row["type_name"])
+            dimension = _parse_vector_dimension(type_name)
+            if dimension != self.embedding_dim:
+                mismatches.append(
+                    PgVectorColumnDimension(
+                        table_name=str(row["table_name"]),
+                        column_name=str(row["column_name"]),
+                        type_name=type_name,
+                        dimension=dimension,
+                    )
+                )
+        if mismatches:
+            raise PgVectorSchemaMismatchError(
+                schema=self.schema,
+                expected_dimension=self.embedding_dim,
+                mismatches=mismatches,
             )
 
     async def _ensure_schema_async(self) -> None:

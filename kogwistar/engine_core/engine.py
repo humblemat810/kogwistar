@@ -14,7 +14,7 @@ from .utils import AliasBook
 from .async_compat import run_sync_or_awaitable
 from .async_compat import run_awaitable_blocking
 
-from .chroma_backend import ChromaBackend
+from .chroma_backend import ChromaBackend, ChromaStorageInspector
 
 
 from .rust_meta_sqlite import build_sqlite_meta_store
@@ -24,6 +24,10 @@ from .storage_backend import (
     get_async_two_stage_projection_adapter,
     get_two_stage_projection_adapter,
     get_two_stage_projection_capability,
+)
+from .embedding_profile import (
+    EmbeddingProfile,
+    EmbeddingProfileRegistry,
 )
 from ..workers.index_job_worker import IndexJobWorker
 from ..utils.log import bind_log_context
@@ -1241,6 +1245,8 @@ class GraphKnowledgeEngine:
         acl_cache_enabled: bool = True,
         acl_startup_repair_limit: int = 0,
         persistence_mode: str = "single_stage",
+        embedding_profile: EmbeddingProfile | None = None,
+        embedding_profile_mode: str = "enforce",
     ):
         """
         embedding_function: callable(texts: List[str]) -> List[List[float]].
@@ -1254,9 +1260,16 @@ class GraphKnowledgeEngine:
                 "persistence_mode must be 'single_stage' or 'two_stage', "
                 f"got {persistence_mode!r}"
             )
+        if embedding_profile_mode not in {"enforce", "inspect", "adopt"}:
+            raise ValueError(
+                "embedding_profile_mode must be 'enforce', 'inspect', or 'adopt'"
+            )
 
         load_dotenv()
         self.persistence_mode = persistence_mode
+        self.embedding_profile = embedding_profile
+        self.embedding_profile_mode = embedding_profile_mode
+        self.embedding_profile_report: dict[str, Any] | None = None
         self.kg_graph_type = normalize_graph_kind(kg_graph_type)
         self.persist_directory = persist_directory
         self.namespace = namespace
@@ -1342,6 +1355,7 @@ class GraphKnowledgeEngine:
             return vecs[0] if vecs else None
 
         self._embed_one = _embed_one
+        embedding_profile_checked = False
         if backend_factory is not None:
             if backend is not None:
                 raise ValueError("Backend factory and backend can only either be specified")
@@ -1389,43 +1403,74 @@ class GraphKnowledgeEngine:
                     anonymized_telemetry=False,
                 )
             )
+            self.meta_sqlite = build_sqlite_meta_store(
+                pathlib.Path(persist_directory or "./chroma_db"), "meta.sqlite"
+            )
+            self.meta_sqlite.ensure_initialized()
+            if self.embedding_profile is not None:
+                inspector = ChromaStorageInspector(
+                    self.chroma_client, persist_directory or "./chroma_db"
+                )
+                registry = EmbeddingProfileRegistry(self.meta_sqlite)
+                if self.embedding_profile_mode == "inspect":
+                    self.embedding_profile_report = registry.inspect(
+                        inspector, configured=self.embedding_profile
+                    )
+                else:
+                    self.embedding_profile = registry.ensure_bound(
+                        inspector,
+                        self.embedding_profile,
+                        allow_legacy_adoption=self.embedding_profile_mode == "adopt",
+                    )
+                    self.embedding_profile_report = registry.inspect(
+                        inspector, configured=self.embedding_profile
+                    )
+                embedding_profile_checked = True
             # IMPORTANT: pass embedding_function to vector collections
+            collection_embedding_function = (
+                None if self.embedding_profile_mode == "inspect" else self._ef
+            )
+            collection_metric = (
+                self.embedding_profile.similarity_metric
+                if self.embedding_profile is not None
+                else "cosine"
+            )
             from threading import Lock
 
             self.collection_lock = {"node": Lock(), "edge": Lock()}
 
             self.node_index_collection = self.chroma_client.get_or_create_collection(
                 "nodes_index",
-                embedding_function=self._ef,
-                metadata={"hnsw:space": "cosine"},
+                embedding_function=collection_embedding_function,
+                metadata={"hnsw:space": collection_metric},
             )
             self.node_collection = self.chroma_client.get_or_create_collection(
-                "nodes", embedding_function=self._ef, metadata={"hnsw:space": "cosine"}
+                "nodes", embedding_function=collection_embedding_function, metadata={"hnsw:space": collection_metric}
             )
             self.edge_collection = self.chroma_client.get_or_create_collection(
-                "edges", embedding_function=self._ef, metadata={"hnsw:space": "cosine"}
+                "edges", embedding_function=collection_embedding_function, metadata={"hnsw:space": collection_metric}
             )
             self.edge_endpoints_collection = (
                 self.chroma_client.get_or_create_collection(
                     "edge_endpoints",
-                    embedding_function=self._ef,
-                    metadata={"hnsw:space": "cosine"},
+                    embedding_function=collection_embedding_function,
+                    metadata={"hnsw:space": collection_metric},
                 )
             )
             self.document_collection = self.chroma_client.get_or_create_collection(
                 "documents",
-                embedding_function=self._ef,
-                metadata={"hnsw:space": "cosine"},
+                embedding_function=collection_embedding_function,
+                metadata={"hnsw:space": collection_metric},
             )
             self.domain_collection = self.chroma_client.get_or_create_collection(
                 "domains",
-                embedding_function=self._ef,
-                metadata={"hnsw:space": "cosine"},
+                embedding_function=collection_embedding_function,
+                metadata={"hnsw:space": collection_metric},
             )
             self.node_docs_collection = self.chroma_client.get_or_create_collection(
                 "node_docs",
-                embedding_function=self._ef,
-                metadata={"hnsw:space": "cosine"},
+                embedding_function=collection_embedding_function,
+                metadata={"hnsw:space": collection_metric},
             )
             self.node_refs_collection = self.chroma_client.get_or_create_collection(
                 "node_refs"
@@ -1444,11 +1489,8 @@ class GraphKnowledgeEngine:
                 node_docs_collection=self.node_docs_collection,
                 node_refs_collection=self.node_refs_collection,
                 edge_refs_collection=self.edge_refs_collection,
+                persist_directory=persist_directory or "./chroma_db",
             )
-            self.meta_sqlite = build_sqlite_meta_store(
-                pathlib.Path(persist_directory or "./chroma_db"), "meta.sqlite"
-            )
-            self.meta_sqlite.ensure_initialized()
             if self.persistence_mode == "two_stage" and (
                 getattr(self.backend, "_is_async_engine", False)
                 or getattr(self.backend, "is_async_backend", False)
@@ -1590,6 +1632,31 @@ class GraphKnowledgeEngine:
                 "Unrecognised argument for backend. "
                 "Expected None/'chroma' or a PgVectorBackend instance."
             )
+        if self.embedding_profile is not None and not embedding_profile_checked:
+            inspector = self.backend
+            if not all(
+                callable(getattr(inspector, name, None))
+                for name in ("embedding_storage_scope", "inspect_embedding_storage")
+            ):
+                raise ValueError(
+                    f"{type(self.backend).__name__} does not implement the embedding "
+                    "storage compatibility protocol"
+                )
+            registry = EmbeddingProfileRegistry(self.meta_sqlite)
+            if self.embedding_profile_mode == "inspect":
+                self.embedding_profile_report = registry.inspect(
+                    inspector, configured=self.embedding_profile
+                )
+            else:
+                self.embedding_profile = registry.ensure_bound(
+                    inspector,
+                    self.embedding_profile,
+                    allow_legacy_adoption=self.embedding_profile_mode == "adopt",
+                )
+                self.embedding_profile_report = registry.inspect(
+                    inspector, configured=self.embedding_profile
+                )
+
         # Backend UoW: in Postgres mode this becomes a real SQL transaction.
         self._backend_uow = _build_postgres_uow_if_needed(
             getattr(self, "backend", None)

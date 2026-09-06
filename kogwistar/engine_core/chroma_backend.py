@@ -1,6 +1,64 @@
+import hashlib
+from pathlib import Path
 from typing import Any, Dict
 
 from .async_compat import run_awaitable_blocking
+from .embedding_profile import EmbeddingStorageState
+
+
+_VECTOR_COLLECTION_NAMES = (
+    "nodes_index",
+    "nodes",
+    "edges",
+    "edge_endpoints",
+    "documents",
+    "domains",
+    "node_docs",
+)
+
+
+def _chroma_scope(persist_directory: str | None) -> str:
+    value = persist_directory or "chroma:ephemeral"
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:32]
+    return f"chroma:{digest}"
+
+
+class ChromaStorageInspector:
+    """Inspect existing collections without passing an embedder to Chroma."""
+
+    def __init__(self, client: Any, persist_directory: str | None) -> None:
+        self._client = client
+        self._persist_directory = (
+            str(Path(persist_directory).expanduser().resolve())
+            if persist_directory
+            else None
+        )
+
+    def embedding_storage_scope(self) -> str:
+        return _chroma_scope(self._persist_directory)
+
+    def inspect_embedding_storage(self) -> EmbeddingStorageState:
+        existing = {
+            str(getattr(item, "name", item))
+            for item in self._client.list_collections()
+        }
+        counts: list[str] = []
+        total = 0
+        for name in _VECTOR_COLLECTION_NAMES:
+            count = (
+                int(self._client.get_collection(name=name).count())
+                if name in existing
+                else 0
+            )
+            total += count
+            counts.append(f"{name}={count}")
+        return EmbeddingStorageState(
+            backend_kind="chroma",
+            storage_scope=self.embedding_storage_scope(),
+            persistent=self._persist_directory is not None,
+            vector_count=total,
+            details=tuple(counts),
+        )
 
 
 def _chroma_safe_kwargs(kwargs: Dict[str, Any]) -> Dict[str, Any]:
@@ -79,6 +137,7 @@ class ChromaBackend:
         node_docs_collection: Any,
         node_refs_collection: Any,
         edge_refs_collection: Any,
+        persist_directory: str | None = None,
     ):
         self._collections: Dict[str, Any] = {
             "node_index": node_index_collection,
@@ -91,6 +150,42 @@ class ChromaBackend:
             "node_refs": node_refs_collection,
             "edge_refs": edge_refs_collection,
         }
+        self._persist_directory = (
+            str(Path(persist_directory).expanduser().resolve())
+            if persist_directory
+            else None
+        )
+
+    def embedding_storage_scope(self) -> str:
+        """Return a stable, secret-free identity for this Chroma directory."""
+
+        return _chroma_scope(self._persist_directory)
+
+    def inspect_embedding_storage(self) -> EmbeddingStorageState:
+        """Count all collections that participate in semantic vector storage."""
+
+        vector_keys = (
+            "node_index",
+            "node",
+            "edge",
+            "edge_endpoints",
+            "document",
+            "domain",
+            "node_docs",
+        )
+        counts: list[str] = []
+        total = 0
+        for key in vector_keys:
+            count = int(self._c(key).count())
+            total += count
+            counts.append(f"{key}={count}")
+        return EmbeddingStorageState(
+            backend_kind="chroma",
+            storage_scope=self.embedding_storage_scope(),
+            persistent=self._persist_directory is not None,
+            vector_count=total,
+            details=tuple(counts),
+        )
 
     def _c(self, key: str) -> Any:
         try:
