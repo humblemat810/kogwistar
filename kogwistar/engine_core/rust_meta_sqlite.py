@@ -150,6 +150,26 @@ class RustEngineSQLite:
     def mark_index_job_done(self, job_id: str, *, claim_token: str | None = None) -> bool:
         return bool(self._call("mark_index_job_done", job_id=job_id, claim_token=claim_token))
 
+    def accept_index_job_result(
+        self,
+        job_id: str,
+        *,
+        claim_token: str,
+        result_json: str,
+        result_sha256: str,
+    ) -> dict[str, Any]:
+        return dict(self._call(
+            "accept_index_job_result",
+            job_id=job_id,
+            claim_token=claim_token,
+            result_json=result_json,
+            result_sha256=result_sha256,
+        ))
+
+    def get_index_job_result(self, job_id: str) -> dict[str, Any] | None:
+        value = self._call("get_index_job_result", job_id=job_id)
+        return None if value is None else dict(value)
+
     def mark_index_job_failed(
         self,
         job_id: str,

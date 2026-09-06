@@ -14,7 +14,7 @@ use kogwistar_runtime::{
     transition_digest, worker_effect_digest,
 };
 use kogwistar_store::{
-    AppendedEvent, AuthIdentityStore, AuthUser, EntityEvent, EntityRebuildRequest,
+    AcceptedIndexJobResult, AppendedEvent, AuthIdentityStore, AuthUser, EntityEvent, EntityRebuildRequest,
     EntityRecoveryReport, EntityRecoveryRequest, EventPruneStore, EventReadStore, EventWriteStore,
     ExternalIdentity, IndexJob, IndexJobReadStore, IndexJobWriteStore, LaneMessageFilter,
     LaneMessageReadStore, LaneMessageWriteStore, NamedProjection, NamedProjectionWrite,
@@ -939,6 +939,20 @@ impl SqliteStore {
     ) -> SqliteStoreResult<bool> {
         self.immediate_transaction(|uow| uow.mark_index_job_done(job_id, claim_token))
     }
+    pub fn accept_index_job_result(
+        &self,
+        job_id: &str,
+        claim_token: &str,
+        result_json: &str,
+        result_sha256: &str,
+    ) -> SqliteStoreResult<AcceptedIndexJobResult> {
+        self.immediate_transaction(|uow| {
+            uow.accept_index_job_result(job_id, claim_token, result_json, result_sha256)
+        })
+    }
+    pub fn index_job_result(&self, job_id: &str) -> SqliteStoreResult<Option<AcceptedIndexJobResult>> {
+        self.with_connection(|conn| index_job_result(conn, job_id))
+    }
     pub fn mark_index_job_failed(
         &self,
         job_id: &str,
@@ -1298,6 +1312,15 @@ impl SqliteUnitOfWork<'_> {
         claim_token: Option<&str>,
     ) -> SqliteStoreResult<bool> {
         mark_index_job_done(self.transaction, job_id, claim_token)
+    }
+    pub fn accept_index_job_result(
+        &mut self,
+        job_id: &str,
+        claim_token: &str,
+        result_json: &str,
+        result_sha256: &str,
+    ) -> SqliteStoreResult<AcceptedIndexJobResult> {
+        accept_index_job_result(self.transaction, job_id, claim_token, result_json, result_sha256)
     }
     pub fn mark_index_job_failed(
         &mut self,
@@ -1720,6 +1743,19 @@ impl IndexJobWriteStore for SqliteStore {
         claim_token: Option<&str>,
     ) -> StoreResult<bool> {
         SqliteStore::mark_index_job_done(self, job_id, claim_token).map_err(trait_error)
+    }
+    async fn accept_index_job_result(
+        &self,
+        job_id: &str,
+        claim_token: &str,
+        result_json: &str,
+        result_sha256: &str,
+    ) -> StoreResult<AcceptedIndexJobResult> {
+        SqliteStore::accept_index_job_result(self, job_id, claim_token, result_json, result_sha256)
+            .map_err(trait_error)
+    }
+    async fn index_job_result(&self, job_id: &str) -> StoreResult<Option<AcceptedIndexJobResult>> {
+        SqliteStore::index_job_result(self, job_id).map_err(trait_error)
     }
     async fn mark_index_job_failed(
         &self,
@@ -2154,7 +2190,10 @@ fn initialize_schema(conn: &Connection) -> SqliteStoreResult<()> {
             payload_json TEXT,
             created_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL,
-            claim_token TEXT
+            claim_token TEXT,
+            accepted_result_json TEXT,
+            accepted_result_sha256 TEXT,
+            accepted_at INTEGER
         );
         CREATE TABLE IF NOT EXISTS index_applied_state (
             namespace TEXT NOT NULL DEFAULT 'default',
@@ -2221,6 +2260,15 @@ fn initialize_schema(conn: &Connection) -> SqliteStoreResult<()> {
         .any(|column| column == "claim_token")
     {
         conn.execute("ALTER TABLE index_jobs ADD COLUMN claim_token TEXT", [])?;
+    }
+    if !index_job_columns.iter().any(|column| column == "accepted_result_json") {
+        conn.execute("ALTER TABLE index_jobs ADD COLUMN accepted_result_json TEXT", [])?;
+    }
+    if !index_job_columns.iter().any(|column| column == "accepted_result_sha256") {
+        conn.execute("ALTER TABLE index_jobs ADD COLUMN accepted_result_sha256 TEXT", [])?;
+    }
+    if !index_job_columns.iter().any(|column| column == "accepted_at") {
+        conn.execute("ALTER TABLE index_jobs ADD COLUMN accepted_at INTEGER", [])?;
     }
     let lane_columns = conn
         .prepare("PRAGMA table_info(projected_lane_messages)")?
@@ -2317,7 +2365,7 @@ fn claim_index_jobs(
         ""
     };
     let sql = format!(
-        "WITH candidates AS (SELECT job_id FROM index_jobs WHERE ((status='PENDING' AND (next_run_at IS NULL OR next_run_at <= ?1)) OR (status='DOING' AND lease_until IS NOT NULL AND lease_until < ?1)) {namespace_sql} ORDER BY created_at ASC,job_id ASC LIMIT ?2) UPDATE index_jobs SET status='DOING',lease_until=?4,claim_token=?5,updated_at=?1 WHERE job_id IN (SELECT job_id FROM candidates) RETURNING job_id,namespace,entity_kind,entity_id,index_kind,coalesce_key,op,status,lease_until,next_run_at,max_retries,retry_count,last_error,payload_json,created_at,updated_at,claim_token"
+        "WITH candidates AS (SELECT job_id FROM index_jobs WHERE ((status='PENDING' AND (next_run_at IS NULL OR next_run_at <= ?1)) OR (status='DOING' AND lease_until IS NOT NULL AND lease_until < ?1)) {namespace_sql} ORDER BY created_at ASC,job_id ASC LIMIT ?2) UPDATE index_jobs SET status='DOING',lease_until=?4,claim_token=?5,updated_at=?1 WHERE job_id IN (SELECT job_id FROM candidates) RETURNING job_id,namespace,entity_kind,entity_id,index_kind,coalesce_key,op,status,lease_until,next_run_at,max_retries,retry_count,last_error,payload_json,created_at,updated_at,claim_token,accepted_result_json,accepted_result_sha256,accepted_at"
     );
     let mut statement = conn.prepare(&sql)?;
     let rows = if let Some(namespace) = namespace {
@@ -2352,6 +2400,44 @@ fn mark_index_job_done(
     claim_token: Option<&str>,
 ) -> SqliteStoreResult<bool> {
     Ok(conn.execute("UPDATE index_jobs SET status='DONE',lease_until=NULL,claim_token=NULL,updated_at=?1 WHERE job_id=?2 AND status='DOING' AND (?3 IS NULL OR claim_token=?3)", params![unix_epoch_seconds(), job_id, claim_token])? != 0)
+}
+fn index_job_result(conn: &Connection, job_id: &str) -> SqliteStoreResult<Option<AcceptedIndexJobResult>> {
+    conn.query_row(
+        "SELECT accepted_result_json, accepted_result_sha256, accepted_at FROM index_jobs WHERE job_id=?1",
+        [job_id],
+        |row| {
+            Ok(AcceptedIndexJobResult {
+                status: "existing".to_owned(),
+                result_json: row.get(0)?,
+                result_sha256: row.get(1)?,
+                accepted_at: row.get::<_, Option<i64>>(2)?.map(serde_json::Value::from),
+            })
+        },
+    )
+    .optional()
+    .map_err(Into::into)
+}
+fn accept_index_job_result(
+    conn: &Connection,
+    job_id: &str,
+    claim_token: &str,
+    result_json: &str,
+    result_sha256: &str,
+) -> SqliteStoreResult<AcceptedIndexJobResult> {
+    if let Some(existing) = index_job_result(conn, job_id)? {
+        if existing.result_json.is_some() {
+            return Ok(existing);
+        }
+    }
+    let now = unix_epoch_seconds();
+    let changed = conn.execute(
+        "UPDATE index_jobs SET accepted_result_json=?1, accepted_result_sha256=?2, accepted_at=?3 WHERE job_id=?4 AND status='DOING' AND claim_token=?5 AND (lease_until IS NULL OR lease_until>=?3) AND accepted_result_json IS NULL",
+        params![result_json, result_sha256, now, job_id, claim_token],
+    )?;
+    if changed == 0 {
+        return Ok(AcceptedIndexJobResult { status: "rejected".to_owned(), result_json: None, result_sha256: None, accepted_at: None });
+    }
+    Ok(AcceptedIndexJobResult { status: "accepted".to_owned(), result_json: Some(result_json.to_owned()), result_sha256: Some(result_sha256.to_owned()), accepted_at: Some(serde_json::Value::from(now)) })
 }
 fn mark_index_job_failed(
     conn: &Connection,
@@ -2408,7 +2494,7 @@ fn list_index_jobs(
     index_kind: Option<&str>,
     limit: usize,
 ) -> SqliteStoreResult<Vec<IndexJob>> {
-    let query = "SELECT job_id,namespace,entity_kind,entity_id,index_kind,coalesce_key,op,status,lease_until,next_run_at,max_retries,retry_count,last_error,payload_json,created_at,updated_at,claim_token FROM index_jobs WHERE (?1 IS NULL OR namespace=?1) AND (?2 IS NULL OR status=?2) AND (?3 IS NULL OR entity_kind=?3) AND (?4 IS NULL OR entity_id=?4) AND (?5 IS NULL OR index_kind=?5) ORDER BY created_at ASC,job_id ASC LIMIT ?6";
+    let query = "SELECT job_id,namespace,entity_kind,entity_id,index_kind,coalesce_key,op,status,lease_until,next_run_at,max_retries,retry_count,last_error,payload_json,created_at,updated_at,claim_token,accepted_result_json,accepted_result_sha256,accepted_at FROM index_jobs WHERE (?1 IS NULL OR namespace=?1) AND (?2 IS NULL OR status=?2) AND (?3 IS NULL OR entity_kind=?3) AND (?4 IS NULL OR entity_id=?4) AND (?5 IS NULL OR index_kind=?5) ORDER BY created_at ASC,job_id ASC LIMIT ?6";
     let mut statement = conn.prepare(query)?;
     let rows = statement.query_map(
         params![
@@ -2443,6 +2529,9 @@ fn index_job_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<IndexJob> {
         updated_at: serde_json::Value::from(row.get::<_, i64>(15)?),
         claim_token: row.get(16)?,
         claim_attempts: 0,
+        accepted_result_json: row.get(17)?,
+        accepted_result_sha256: row.get(18)?,
+        accepted_at: row.get::<_, Option<i64>>(19)?.map(serde_json::Value::from),
     })
 }
 fn require_queue_namespace(namespace: &str) -> SqliteStoreResult<()> {
@@ -5543,6 +5632,40 @@ mod tests {
         issued.sort_unstable();
         assert_eq!(issued, [2, 3, 4, 5, 6, 7]);
         drop(reopened);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn accepted_index_job_result_is_first_live_claim_wins() {
+        let (store, path) = store("accepted-result");
+        store
+            .enqueue_index_job(NewIndexJob {
+                job_id: "candidate-job".to_owned(),
+                namespace: "maintenance".to_owned(),
+                entity_kind: "maintenance".to_owned(),
+                entity_id: "doc-1".to_owned(),
+                index_kind: "parse".to_owned(),
+                op: "UPSERT".to_owned(),
+                payload_json: Some("{}".to_owned()),
+                max_retries: 3,
+            })
+            .unwrap();
+        let claim = store.claim_index_jobs(1, 30, Some("maintenance")).unwrap().remove(0);
+        let accepted = store
+            .accept_index_job_result(
+                &claim.job_id,
+                claim.claim_token.as_deref().unwrap(),
+                "{\"winner\":1}",
+                "digest-1",
+            )
+            .unwrap();
+        assert_eq!(accepted.status, "accepted");
+        let existing = store
+            .accept_index_job_result(&claim.job_id, "stale-worker", "{\"winner\":2}", "digest-2")
+            .unwrap();
+        assert_eq!(existing.status, "existing");
+        assert_eq!(existing.result_json.as_deref(), Some("{\"winner\":1}"));
+        drop(store);
         fs::remove_file(path).unwrap();
     }
 }

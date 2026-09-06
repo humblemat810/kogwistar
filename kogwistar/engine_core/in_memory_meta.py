@@ -59,6 +59,9 @@ class _JobState:
     created_at: int
     updated_at: int
     claim_token: str | None = None
+    accepted_result_json: str | None = None
+    accepted_result_sha256: str | None = None
+    accepted_at: int | None = None
 
     def as_row(self) -> IndexJobRow:
         return IndexJobRow(
@@ -79,6 +82,9 @@ class _JobState:
             created_at=self.created_at,
             updated_at=self.updated_at,
             claim_token=self.claim_token,
+            accepted_result_json=self.accepted_result_json,
+            accepted_result_sha256=self.accepted_result_sha256,
+            accepted_at=self.accepted_at,
         )
 
 
@@ -434,6 +440,51 @@ class InMemoryMetaStore(LaneMessageMetaStoreMixin):
             job.claim_token = None
             job.updated_at = now
             return True
+
+    def accept_index_job_result(
+        self,
+        job_id: str,
+        *,
+        claim_token: str,
+        result_json: str,
+        result_sha256: str,
+    ) -> dict[str, object]:
+        now = _now_epoch()
+        with self.transaction() as txn:
+            job = txn.state.index_jobs.get(str(job_id))
+            if job is None:
+                return {"status": "rejected", "reason": "job_not_found"}
+            if job.accepted_result_json is not None:
+                return {
+                    "status": "existing",
+                    "result_json": job.accepted_result_json,
+                    "result_sha256": job.accepted_result_sha256 or "",
+                    "accepted_at": job.accepted_at,
+                }
+            if (
+                job.status != "DOING"
+                or job.claim_token != claim_token
+                or job.lease_until is None
+                or job.lease_until < now
+            ):
+                return {"status": "rejected", "reason": "claim_not_valid"}
+            job.accepted_result_json = result_json
+            job.accepted_result_sha256 = result_sha256
+            job.accepted_at = now
+            job.updated_at = now
+            return {"status": "accepted", "result_json": result_json, "result_sha256": result_sha256, "accepted_at": now}
+
+    def get_index_job_result(self, job_id: str) -> dict[str, object] | None:
+        with self._lock:
+            job = self._state.index_jobs.get(str(job_id))
+            if job is None or job.accepted_result_json is None:
+                return None
+            return {
+                "status": "existing",
+                "result_json": job.accepted_result_json,
+                "result_sha256": job.accepted_result_sha256 or "",
+                "accepted_at": job.accepted_at,
+            }
 
     def mark_index_job_failed(self, job_id: str, error: str, *, final: bool = True, claim_token: str | None = None) -> None:
         now = _now_epoch()

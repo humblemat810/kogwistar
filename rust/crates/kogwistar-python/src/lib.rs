@@ -112,7 +112,10 @@ fn server_run_event_json(event: ServerRunEvent) -> Result<Value, serde_json::Err
 }
 
 fn index_job_json(job: kogwistar_store::IndexJob) -> Value {
-    json!({"job_id":job.job_id,"namespace":job.namespace,"entity_kind":job.entity_kind,"entity_id":job.entity_id,"index_kind":job.index_kind,"coalesce_key":job.coalesce_key,"op":job.op,"status":job.status,"lease_until":job.lease_until,"next_run_at":job.next_run_at,"max_retries":job.max_retries,"retry_count":job.retry_count,"last_error":job.last_error,"payload_json":job.payload_json,"created_at":job.created_at,"updated_at":job.updated_at,"claim_token":job.claim_token,"claim_attempts":job.claim_attempts})
+    json!({"job_id":job.job_id,"namespace":job.namespace,"entity_kind":job.entity_kind,"entity_id":job.entity_id,"index_kind":job.index_kind,"coalesce_key":job.coalesce_key,"op":job.op,"status":job.status,"lease_until":job.lease_until,"next_run_at":job.next_run_at,"max_retries":job.max_retries,"retry_count":job.retry_count,"last_error":job.last_error,"payload_json":job.payload_json,"created_at":job.created_at,"updated_at":job.updated_at,"claim_token":job.claim_token,"claim_attempts":job.claim_attempts,"accepted_result_json":job.accepted_result_json,"accepted_result_sha256":job.accepted_result_sha256,"accepted_at":job.accepted_at})
+}
+fn accepted_index_job_result_json(result: kogwistar_store::AcceptedIndexJobResult) -> Value {
+    json!({"status": result.status, "result_json": result.result_json, "result_sha256": result.result_sha256, "accepted_at": result.accepted_at})
 }
 fn lane_message_json(row: ProjectedLaneMessage) -> Value {
     json!({"message_id":row.message_id,"namespace":row.namespace,"purpose":row.purpose,"inbox_id":row.inbox_id,"conversation_id":row.conversation_id,"recipient_id":row.recipient_id,"sender_id":row.sender_id,"msg_type":row.msg_type,"status":row.status,"seq":row.seq,"conversation_seq":row.conversation_seq,"claimed_by":row.claimed_by,"lease_until":row.lease_until,"retry_count":row.retry_count,"created_at":row.created_at,"available_at":row.available_at,"run_id":row.run_id,"step_id":row.step_id,"correlation_id":row.correlation_id,"payload_json":row.payload_json,"error_json":row.error_json,"prev_message_id":row.prev_message_id,"next_message_id":row.next_message_id,"inbox_tail_message_id":row.inbox_tail_message_id,"conversation_tail_message_id":row.conversation_tail_message_id})
@@ -967,6 +970,15 @@ enum SqliteStoreOperation {
         #[serde(default)]
         claim_token: Option<String>,
     },
+    AcceptIndexJobResult {
+        job_id: String,
+        claim_token: String,
+        result_json: String,
+        result_sha256: String,
+    },
+    GetIndexJobResult {
+        job_id: String,
+    },
     MarkIndexJobFailed {
         job_id: String,
         error: String,
@@ -1679,6 +1691,23 @@ fn sqlite_store_operation_json(
         } => Ok(json!(
             store.mark_index_job_done(&job_id, claim_token.as_deref())?
         )),
+        SqliteStoreOperation::AcceptIndexJobResult {
+            job_id,
+            claim_token,
+            result_json,
+            result_sha256,
+        } => Ok(accepted_index_job_result_json(store.accept_index_job_result(
+            &job_id,
+            &claim_token,
+            &result_json,
+            &result_sha256,
+        )?)),
+        SqliteStoreOperation::GetIndexJobResult { job_id } => Ok(
+            store
+                .index_job_result(&job_id)?
+                .map(accepted_index_job_result_json)
+                .unwrap_or(Value::Null),
+        ),
         SqliteStoreOperation::MarkIndexJobFailed {
             job_id,
             error,
@@ -2216,6 +2245,20 @@ fn sqlite_batch_operation_json(
             claim_token,
         } => Ok(json!(
             uow.mark_index_job_done(&job_id, claim_token.as_deref())?
+        )),
+        SqliteStoreOperation::AcceptIndexJobResult {
+            job_id,
+            claim_token,
+            result_json,
+            result_sha256,
+        } => Ok(accepted_index_job_result_json(uow.accept_index_job_result(
+            &job_id,
+            &claim_token,
+            &result_json,
+            &result_sha256,
+        )?)),
+        SqliteStoreOperation::GetIndexJobResult { .. } => Err(SqliteStoreError::TransactionAborted(
+            "get_index_job_result is not available inside a transaction".to_owned(),
         )),
         SqliteStoreOperation::MarkIndexJobFailed {
             job_id,
@@ -2947,6 +2990,15 @@ enum PostgresStoreOperation {
         job_id: String,
         #[serde(default)]
         claim_token: Option<String>,
+    },
+    AcceptIndexJobResult {
+        job_id: String,
+        claim_token: String,
+        result_json: String,
+        result_sha256: String,
+    },
+    GetIndexJobResult {
+        job_id: String,
     },
     MarkIndexJobFailed {
         job_id: String,
@@ -3838,6 +3890,24 @@ async fn postgres_store_operation_json(
                 .mark_index_job_done(&job_id, claim_token.as_deref())
                 .await?
         )),
+        PostgresStoreOperation::AcceptIndexJobResult {
+            job_id,
+            claim_token,
+            result_json,
+            result_sha256,
+        } => Ok(accepted_index_job_result_json(store.accept_index_job_result(
+            &job_id,
+            &claim_token,
+            &result_json,
+            &result_sha256,
+        ).await?)),
+        PostgresStoreOperation::GetIndexJobResult { job_id } => Ok(
+            store
+                .index_job_result(&job_id)
+                .await?
+                .map(accepted_index_job_result_json)
+                .unwrap_or(Value::Null),
+        ),
         PostgresStoreOperation::MarkIndexJobFailed {
             job_id,
             error,
@@ -4512,6 +4582,20 @@ async fn postgres_uow_operation_json(
         } => Ok(json!(
             uow.mark_index_job_done(&job_id, claim_token.as_deref())
                 .await?
+        )),
+        PostgresStoreOperation::AcceptIndexJobResult {
+            job_id,
+            claim_token,
+            result_json,
+            result_sha256,
+        } => Ok(accepted_index_job_result_json(uow.accept_index_job_result(
+            &job_id,
+            &claim_token,
+            &result_json,
+            &result_sha256,
+        ).await?)),
+        PostgresStoreOperation::GetIndexJobResult { .. } => Err(PostgresStoreError::TransactionAborted(
+            "get_index_job_result is not available inside a transaction".to_owned(),
         )),
         PostgresStoreOperation::MarkIndexJobFailed {
             job_id,
@@ -5200,6 +5284,8 @@ fn validate_postgres_operation(value: &Value) -> Result<(), (&'static str, Strin
         ][..],
         "claim_index_jobs" => &["kind", "limit", "lease_seconds", "namespace"][..],
         "mark_index_job_done" => &["kind", "job_id", "claim_token"][..],
+        "accept_index_job_result" => &["kind", "job_id", "claim_token", "result_json", "result_sha256"][..],
+        "get_index_job_result" => &["kind", "job_id"][..],
         "mark_index_job_failed" => &["kind", "job_id", "error", "final", "claim_token"][..],
         "bump_retry_and_requeue" => &[
             "kind",

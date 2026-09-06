@@ -552,6 +552,17 @@ pub struct IndexJob {
     pub updated_at: Value,
     pub claim_token: Option<String>,
     pub claim_attempts: i64,
+    pub accepted_result_json: Option<String>,
+    pub accepted_result_sha256: Option<String>,
+    pub accepted_at: Option<Value>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct AcceptedIndexJobResult {
+    pub status: String,
+    pub result_json: Option<String>,
+    pub result_sha256: Option<String>,
+    pub accepted_at: Option<Value>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -778,6 +789,17 @@ pub trait IndexJobWriteStore: IndexJobReadStore {
         job_id: &str,
         claim_token: Option<&str>,
     ) -> impl Future<Output = StoreResult<bool>> + Send;
+    fn accept_index_job_result(
+        &self,
+        job_id: &str,
+        claim_token: &str,
+        result_json: &str,
+        result_sha256: &str,
+    ) -> impl Future<Output = StoreResult<AcceptedIndexJobResult>> + Send;
+    fn index_job_result(
+        &self,
+        job_id: &str,
+    ) -> impl Future<Output = StoreResult<Option<AcceptedIndexJobResult>>> + Send;
     fn mark_index_job_failed(
         &self,
         job_id: &str,

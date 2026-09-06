@@ -23,6 +23,7 @@ def write_execution_wisdom_artifacts(
     build_node_for_pattern: Callable[[ExecutionFailurePattern, list[Any], int], Any],
     match_where_for_pattern: Callable[[ExecutionFailurePattern], dict[str, Any]],
     min_failure_signals: int = 2,
+    before_write: Callable[[ExecutionFailurePattern], None] | None = None,
 ) -> list[ExecutionWisdomTemplateResult]:
     """Write one wisdom artifact per repeated execution-failure pattern."""
     with scoped_namespace(source_engine, source_namespace):
@@ -35,6 +36,8 @@ def write_execution_wisdom_artifacts(
 
     results: list[ExecutionWisdomTemplateResult] = []
     for pattern in patterns:
+        if before_write is not None:
+            before_write(pattern)
         write_result = write_versioned_artifact(
             target_engine,
             namespace=target_namespace,

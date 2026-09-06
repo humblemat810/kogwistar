@@ -35,6 +35,29 @@ class _Connection:
         return _Result(self.rows)
 
 
+class _AsyncCountResult:
+    def __init__(self, count: int) -> None:
+        self.count = count
+
+    def scalar_one(self) -> int:
+        return self.count
+
+
+class _AsyncConnection:
+    def __init__(self) -> None:
+        self.index = 0
+
+    async def __aenter__(self) -> "_AsyncConnection":
+        return self
+
+    async def __aexit__(self, *_args: object) -> None:
+        return None
+
+    async def execute(self, _statement: object) -> _AsyncCountResult:
+        self.index += 1
+        return _AsyncCountResult(self.index)
+
+
 def _backend_for_dimension_check(expected_dimension: int) -> PgVectorBackend:
     backend = object.__new__(PgVectorBackend)
     backend.schema = "wiki"
@@ -105,3 +128,39 @@ def test_pgvector_constructor_initializes_metadata_and_schema(monkeypatch: pytes
         assert called == [True]
     finally:
         backend.close()
+
+
+def test_pgvector_async_storage_inspection_awaits_each_count() -> None:
+    import asyncio
+
+    backend = _backend_for_dimension_check(2)
+    backend.nodes = sa.table("gke_nodes", sa.column("id"))
+    backend.edges = sa.table("gke_edges", sa.column("id"))
+    backend.documents = sa.table("gke_documents", sa.column("id"))
+    backend.domains = sa.table("gke_domains", sa.column("id"))
+    backend.engine = SimpleNamespace(
+        url=SimpleNamespace(host="localhost", port=5432, database="wiki"),
+        connect=lambda: _AsyncConnection(),
+    )
+    state = asyncio.run(backend.inspect_embedding_storage_async())
+
+    assert state.vector_count == 10
+    assert state.details == (
+        "gke_nodes=1",
+        "gke_edges=2",
+        "gke_documents=3",
+        "gke_domains=4",
+    )
+
+
+def test_pgvector_scope_ignores_credentials_and_driver() -> None:
+    def make(url: str) -> PgVectorBackend:
+        backend = _backend_for_dimension_check(2)
+        backend.schema = "wiki"
+        backend.engine = SimpleNamespace(url=sa.make_url(url))
+        return backend
+
+    first = make("postgresql+psycopg://alice:secret@db.example/wiki")
+    second = make("postgresql+asyncpg://bob:other@db.example:5432/wiki?sslmode=require")
+
+    assert first.embedding_storage_scope() == second.embedding_storage_scope()

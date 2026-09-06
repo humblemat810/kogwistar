@@ -962,13 +962,33 @@ class PgVectorBackend:
     def embedding_storage_scope(self) -> str:
         """Return a stable identity for the shared PostgreSQL vector bundle."""
 
+        url = self.engine.url
+        # Credentials, dialect drivers, and query parameters describe an
+        # access path, not the physical vector bundle.  Excluding them keeps
+        # profile compatibility stable when operators rotate credentials or
+        # switch between sync and async SQLAlchemy drivers.
+        host = str(getattr(url, "host", None) or "localhost").lower()
+        port = int(getattr(url, "port", None) or 5432)
+        database = str(getattr(url, "database", None) or "").strip()
+        tables = ":".join(
+            table.name
+            for table in (self.nodes, self.edges, self.documents, self.domains)
+        )
+        value = f"host={host}|port={port}|database={database}|schema={self.schema}|tables={tables}"
+        return "pgvector:" + hashlib.sha256(value.encode("utf-8")).hexdigest()[:32]
+
+    def embedding_storage_scope_aliases(self) -> tuple[str, ...]:
+        """Return the pre-profile-guard URL-derived scope for migration."""
+
         rendered = self.engine.url.render_as_string(hide_password=True)
         tables = ":".join(
             table.name
             for table in (self.nodes, self.edges, self.documents, self.domains)
         )
         value = f"{rendered}|schema={self.schema}|tables={tables}"
-        return "pgvector:" + hashlib.sha256(value.encode("utf-8")).hexdigest()[:32]
+        legacy = "pgvector:" + hashlib.sha256(value.encode("utf-8")).hexdigest()[:32]
+        current = self.embedding_storage_scope()
+        return (legacy,) if legacy != current else ()
 
     def inspect_embedding_storage(self) -> EmbeddingStorageState:
         """Report whether the physical vector tables already contain rows."""
@@ -997,15 +1017,11 @@ class PgVectorBackend:
 
         tables = (self.nodes, self.edges, self.documents, self.domains)
         async with self.engine.connect() as conn:
-            counts = tuple(
-                (
-                    table.name,
-                    int(
-                        (await conn.execute(sa.select(sa.func.count()).select_from(table))).scalar_one()
-                    ),
-                )
-                for table in tables
-            )
+            counts_list: list[tuple[str, int]] = []
+            for table in tables:
+                result = await conn.execute(sa.select(sa.func.count()).select_from(table))
+                counts_list.append((table.name, int(result.scalar_one())))
+            counts = tuple(counts_list)
         return EmbeddingStorageState(
             backend_kind="pgvector",
             storage_scope=self.embedding_storage_scope(),

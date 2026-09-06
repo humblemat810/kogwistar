@@ -199,3 +199,27 @@ def test_chroma_directories_have_independent_profile_bindings(tmp_path: Path) ->
     )
     first.close()
     second.close()
+
+
+def test_copied_chroma_bundle_keeps_profile_scope(tmp_path: Path) -> None:
+    pytest.importorskip("chromadb")
+    import shutil
+    from kogwistar.engine_core.engine import GraphKnowledgeEngine
+
+    source = tmp_path / "source"
+    copied = tmp_path / "copied"
+    profile = _profile(model="portable")
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(source),
+        embedding_function=_FakeEmbeddings("portable"),
+        embedding_profile=profile,
+    )
+    engine.close()
+    shutil.copytree(source, copied)
+
+    restored = GraphKnowledgeEngine(
+        persist_directory=str(copied),
+        embedding_function=_FakeEmbeddings("portable"),
+        embedding_profile=profile,
+    )
+    restored.close()

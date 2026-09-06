@@ -70,6 +70,9 @@ class IndexJobRow:
     created_at: int
     updated_at: int
     claim_token: Optional[str] = None
+    accepted_result_json: Optional[str] = None
+    accepted_result_sha256: Optional[str] = None
+    accepted_at: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -263,6 +266,9 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
                     created_at   INTEGER NOT NULL,
                     updated_at   INTEGER NOT NULL
                     ,claim_token TEXT
+                    ,accepted_result_json TEXT
+                    ,accepted_result_sha256 TEXT
+                    ,accepted_at INTEGER
                 )
                 """
             )
@@ -275,6 +281,15 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_index_jobs_namespace ON index_jobs(namespace)"
             )
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(index_jobs)").fetchall()}
+            for name, definition in (
+                ("claim_token", "TEXT"),
+                ("accepted_result_json", "TEXT"),
+                ("accepted_result_sha256", "TEXT"),
+                ("accepted_at", "INTEGER"),
+            ):
+                if name not in columns:
+                    conn.execute(f"ALTER TABLE index_jobs ADD COLUMN {name} {definition}")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS projected_lane_messages (
@@ -787,7 +802,8 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
                 SET status = 'DOING', lease_until = ?, claim_token = ?, updated_at = ?
                 WHERE job_id IN (SELECT job_id FROM candidates)
                 RETURNING job_id, namespace, entity_kind, entity_id, index_kind, coalesce_key, op, status,
-                        lease_until, next_run_at, max_retries, retry_count, last_error, payload_json, created_at, updated_at, claim_token
+                        lease_until, next_run_at, max_retries, retry_count, last_error, payload_json, created_at, updated_at, claim_token,
+                        accepted_result_json, accepted_result_sha256, accepted_at
                 """,
                 (now, now, *ns_param, limit, lease_until, claim_token, now),
             ).fetchall()
@@ -813,6 +829,9 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
                     created_at=int(r[14]),
                     updated_at=int(r[15]),
                     claim_token=str(r[16]) if r[16] is not None else None,
+                    accepted_result_json=str(r[17]) if r[17] is not None else None,
+                    accepted_result_sha256=str(r[18]) if r[18] is not None else None,
+                    accepted_at=int(r[19]) if r[19] is not None else None,
                 )
             )
         return out
@@ -829,6 +848,58 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
                 (now, job_id, claim_token, claim_token),
             )
             return bool(result.rowcount)
+
+    def accept_index_job_result(
+        self,
+        job_id: str,
+        *,
+        claim_token: str,
+        result_json: str,
+        result_sha256: str,
+    ) -> dict[str, object]:
+        """Accept the first valid leased candidate and make it immutable."""
+        now = self._now_epoch()
+        with self.transaction() as conn:
+            row = conn.execute(
+                "SELECT status, claim_token, lease_until, accepted_result_json, accepted_result_sha256, accepted_at "
+                "FROM index_jobs WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+            if row is None:
+                return {"status": "rejected", "reason": "job_not_found"}
+            if row[3] is not None:
+                return {
+                    "status": "existing",
+                    "result_json": str(row[3]),
+                    "result_sha256": str(row[4] or ""),
+                    "accepted_at": row[5],
+                }
+            if row[0] != "DOING" or row[1] != claim_token or row[2] is None or int(row[2]) < now:
+                return {"status": "rejected", "reason": "claim_not_valid"}
+            updated = conn.execute(
+                "UPDATE index_jobs SET accepted_result_json=?, accepted_result_sha256=?, accepted_at=?, updated_at=? "
+                "WHERE job_id=? AND status='DOING' AND claim_token=? AND lease_until>=? AND accepted_result_json IS NULL",
+                (result_json, result_sha256, now, now, job_id, claim_token, now),
+            )
+            if not updated.rowcount:
+                winner = conn.execute(
+                    "SELECT accepted_result_json, accepted_result_sha256, accepted_at FROM index_jobs WHERE job_id=?",
+                    (job_id,),
+                ).fetchone()
+                if winner and winner[0] is not None:
+                    return {"status": "existing", "result_json": str(winner[0]), "result_sha256": str(winner[1] or ""), "accepted_at": winner[2]}
+                return {"status": "rejected", "reason": "claim_not_valid"}
+            return {"status": "accepted", "result_json": result_json, "result_sha256": result_sha256, "accepted_at": now}
+
+    def get_index_job_result(self, job_id: str) -> dict[str, object] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT accepted_result_json, accepted_result_sha256, accepted_at FROM index_jobs WHERE job_id=?",
+                (job_id,),
+            ).fetchone()
+        if row is None or row[0] is None:
+            return None
+        return {"status": "existing", "result_json": str(row[0]), "result_sha256": str(row[1] or ""), "accepted_at": row[2]}
 
     def mark_index_job_failed(
         self, job_id: str, error: str, *, final: bool = True, claim_token: str | None = None
@@ -942,7 +1013,7 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
         if index_kind is not None:
             where.append("index_kind = ?")
             params.append(index_kind)
-        sql = "SELECT job_id, namespace, entity_kind, entity_id, index_kind, coalesce_key, op, status, lease_until, next_run_at, max_retries, retry_count, last_error, payload_json, created_at, updated_at FROM index_jobs"
+        sql = "SELECT job_id, namespace, entity_kind, entity_id, index_kind, coalesce_key, op, status, lease_until, next_run_at, max_retries, retry_count, last_error, payload_json, created_at, updated_at, claim_token, accepted_result_json, accepted_result_sha256, accepted_at FROM index_jobs"
         if where:
             sql += " WHERE " + " AND ".join(where)
         sql += " ORDER BY created_at ASC LIMIT ?"
@@ -967,6 +1038,10 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
                 payload_json=str(r[13]) if r[13] is not None else None,
                 created_at=int(r[14]),
                 updated_at=int(r[15]),
+                claim_token=str(r[16]) if r[16] is not None else None,
+                accepted_result_json=str(r[17]) if r[17] is not None else None,
+                accepted_result_sha256=str(r[18]) if r[18] is not None else None,
+                accepted_at=int(r[19]) if r[19] is not None else None,
             )
             for r in rows
         ]
@@ -1490,6 +1565,12 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
             cols = [r[1] for r in conn.execute("PRAGMA table_info(index_jobs)").fetchall()]
             if "claim_token" not in cols:
                 conn.execute("ALTER TABLE index_jobs ADD COLUMN claim_token TEXT")
+            if "accepted_result_json" not in cols:
+                conn.execute("ALTER TABLE index_jobs ADD COLUMN accepted_result_json TEXT")
+            if "accepted_result_sha256" not in cols:
+                conn.execute("ALTER TABLE index_jobs ADD COLUMN accepted_result_sha256 TEXT")
+            if "accepted_at" not in cols:
+                conn.execute("ALTER TABLE index_jobs ADD COLUMN accepted_at INTEGER")
             seq = int(seq_row[0])
             conn.execute(
                 """

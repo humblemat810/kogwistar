@@ -1,4 +1,5 @@
 import hashlib
+import uuid
 from pathlib import Path
 from typing import Any, Dict
 
@@ -18,6 +19,29 @@ _VECTOR_COLLECTION_NAMES = (
 
 
 def _chroma_scope(persist_directory: str | None) -> str:
+    # The profile binding is stored in this directory's metadata database.
+    # A portable identity must therefore survive copying the complete bundle
+    # to a new host/path; the metadata database provides the physical scope.
+    if not persist_directory:
+        return "chroma:ephemeral"
+    root = Path(persist_directory)
+    marker = root / ".kogwistar-storage-identity"
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        identity = marker.read_text(encoding="ascii").strip()
+        if not identity:
+            raise ValueError("empty storage identity")
+    except (FileNotFoundError, ValueError):
+        identity = uuid.uuid4().hex
+        try:
+            with marker.open("x", encoding="ascii") as handle:
+                handle.write(identity + "\n")
+        except FileExistsError:
+            identity = marker.read_text(encoding="ascii").strip()
+    return f"chroma:bundle:{identity}"
+
+
+def _legacy_chroma_scope(persist_directory: str | None) -> str:
     value = persist_directory or "chroma:ephemeral"
     digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:32]
     return f"chroma:{digest}"
@@ -36,6 +60,11 @@ class ChromaStorageInspector:
 
     def embedding_storage_scope(self) -> str:
         return _chroma_scope(self._persist_directory)
+
+    def embedding_storage_scope_aliases(self) -> tuple[str, ...]:
+        legacy = _legacy_chroma_scope(self._persist_directory)
+        current = self.embedding_storage_scope()
+        return (legacy,) if legacy != current else ()
 
     def inspect_embedding_storage(self) -> EmbeddingStorageState:
         existing = {

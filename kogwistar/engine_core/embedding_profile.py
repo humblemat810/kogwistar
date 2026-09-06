@@ -163,6 +163,8 @@ class EmbeddingStorageInspector(Protocol):
 
     def inspect_embedding_storage(self) -> EmbeddingStorageState: ...
 
+    def embedding_storage_scope_aliases(self) -> tuple[str, ...]: ...
+
 
 class NamedProjectionStore(Protocol):
     """Minimal durable metadata surface required by the profile registry."""
@@ -176,6 +178,8 @@ class NamedProjectionStore(Protocol):
         payload: dict[str, Any],
         **values: Any,
     ) -> bool: ...
+
+    def list_named_projections(self, namespace: str) -> list[dict[str, Any]]: ...
 
 
 def _profile_projection(profile: EmbeddingProfile, *, adopted: bool) -> dict[str, Any]:
@@ -244,6 +248,59 @@ class EmbeddingProfileRegistry:
         if current is not None:
             return self._validate_current(scope, current, configured)
 
+        # Older releases keyed local Chroma stores by absolute path and
+        # PostgreSQL stores by the full connection URL.  A copied store or a
+        # rotated credential must retain its binding, but conflicting legacy
+        # records must never be guessed through.
+        aliases = tuple(getattr(inspector, "embedding_storage_scope_aliases", lambda: ())())
+        list_projections = getattr(self._metadata, "list_named_projections", None)
+        legacy_rows = (
+            list_projections(PROFILE_REGISTRY_NAMESPACE)
+            if callable(list_projections)
+            else [
+                row
+                for alias in aliases
+                for row in [self._metadata.get_named_projection(PROFILE_REGISTRY_NAMESPACE, alias)]
+                if row is not None
+            ]
+        )
+        legacy_rows = [row for row in legacy_rows if str(row.get("key") or "") in aliases]
+        if legacy_rows:
+            profiles = [
+                self._registered_profile(str(row.get("key") or ""), row)
+                for row in legacy_rows
+            ]
+            if any(profile.fingerprint != configured.fingerprint for profile in profiles):
+                raise EmbeddingProfileMismatchError(
+                    storage_scope=scope,
+                    configured=configured,
+                    registered=profiles[0],
+                )
+            if len({profile.fingerprint for profile in profiles}) != 1:
+                raise CorruptEmbeddingProfileError(
+                    f"conflicting legacy embedding profile bindings for {scope}"
+                )
+            payload = legacy_rows[0].get("payload") or {}
+            inserted = self._metadata.compare_and_swap_named_projection(
+                PROFILE_REGISTRY_NAMESPACE,
+                scope,
+                payload,
+                expected_last_authoritative_seq=None,
+                expected_last_materialized_seq=None,
+                last_authoritative_seq=0,
+                last_materialized_seq=0,
+                projection_schema_version=int(legacy_rows[0].get("projection_schema_version", 1)),
+                materialization_status="bound",
+            )
+            if inserted:
+                return configured
+            winner = self._metadata.get_named_projection(PROFILE_REGISTRY_NAMESPACE, scope)
+            if winner is None:
+                raise CorruptEmbeddingProfileError(
+                    f"embedding profile migration disappeared during startup for {scope}"
+                )
+            return self._validate_current(scope, winner, configured)
+
         state = inspector.inspect_embedding_storage()
         if state.persistent and state.has_vectors and not allow_legacy_adoption:
             raise LegacyEmbeddingProfileError(state=state, configured=configured)
@@ -269,6 +326,17 @@ class EmbeddingProfileRegistry:
                 f"embedding profile binding disappeared during startup for {scope}"
             )
         return self._validate_current(scope, winner, configured)
+
+    @staticmethod
+    def _registered_profile(scope: str, projection: Mapping[str, Any]) -> EmbeddingProfile:
+        payload = projection.get("payload") or {}
+        EmbeddingProfileRegistry._validate_schema(scope, projection, payload)
+        try:
+            return EmbeddingProfile.from_mapping(payload["embedding_profile"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise CorruptEmbeddingProfileError(
+                f"invalid embedding profile registry record for {scope}"
+            ) from exc
 
     @staticmethod
     def _validate_current(

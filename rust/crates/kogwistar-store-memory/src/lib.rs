@@ -3,7 +3,7 @@ use kogwistar_contracts::EntityEventEnvelope;
 use kogwistar_store::{
     AppendedEvent, AppliedGraphMutation, DistanceMetric, EntityEvent, EventPruneStore,
     EventReadStore, EventWriteStore, GraphMutation, GraphMutationStore, GraphProjectionRead,
-    GraphProjectionVectorQuery, GraphReadStore, GraphRecord, GraphScope, GraphWriteStore, IndexJob,
+    AcceptedIndexJobResult, GraphProjectionVectorQuery, GraphReadStore, GraphRecord, GraphScope, GraphWriteStore, IndexJob,
     IndexJobReadStore, IndexJobWriteStore, LaneMessageFilter, LaneMessageReadStore,
     LaneMessageWriteStore, MetadataFilter, NamedProjection, NamedProjectionWrite, NewEntityEvent,
     NewIndexJob, NewProjectedLaneMessage, ProjectedLaneMessage, ProjectionReadStore,
@@ -431,6 +431,9 @@ impl IndexJobWriteStore for InMemoryStore {
                 updated_at: integer_timestamp(now),
                 claim_token: None,
                 claim_attempts: 0,
+                accepted_result_json: None,
+                accepted_result_sha256: None,
+                accepted_at: None,
             },
         );
         Ok(job_id)
@@ -506,6 +509,38 @@ impl IndexJobWriteStore for InMemoryStore {
         row.claim_token = None;
         row.updated_at = integer_timestamp(now);
         Ok(true)
+    }
+
+    async fn accept_index_job_result(
+        &self,
+        job_id: &str,
+        claim_token: &str,
+        result_json: &str,
+        result_sha256: &str,
+    ) -> StoreResult<AcceptedIndexJobResult> {
+        let now = now_seconds();
+        let mut state = self.state.write().expect("in-memory store lock poisoned");
+        let Some(row) = state.index_jobs.get_mut(job_id) else {
+            return Ok(AcceptedIndexJobResult { status: "rejected".to_owned(), result_json: None, result_sha256: None, accepted_at: None });
+        };
+        if let Some(existing) = row.accepted_result_json.as_ref() {
+            return Ok(AcceptedIndexJobResult { status: "existing".to_owned(), result_json: Some(existing.clone()), result_sha256: row.accepted_result_sha256.clone(), accepted_at: row.accepted_at.clone() });
+        }
+        if row.status != "DOING"
+            || row.claim_token.as_deref() != Some(claim_token)
+            || row.lease_until.as_ref().is_some_and(|value| timestamp_i64(value) < now)
+        {
+            return Ok(AcceptedIndexJobResult { status: "rejected".to_owned(), result_json: None, result_sha256: None, accepted_at: None });
+        }
+        row.accepted_result_json = Some(result_json.to_owned());
+        row.accepted_result_sha256 = Some(result_sha256.to_owned());
+        row.accepted_at = Some(integer_timestamp(now));
+        Ok(AcceptedIndexJobResult { status: "accepted".to_owned(), result_json: Some(result_json.to_owned()), result_sha256: Some(result_sha256.to_owned()), accepted_at: row.accepted_at.clone() })
+    }
+
+    async fn index_job_result(&self, job_id: &str) -> StoreResult<Option<AcceptedIndexJobResult>> {
+        let state = self.state.read().expect("in-memory store lock poisoned");
+        Ok(state.index_jobs.get(job_id).and_then(|row| row.accepted_result_json.as_ref().map(|result_json| AcceptedIndexJobResult { status: "existing".to_owned(), result_json: Some(result_json.clone()), result_sha256: row.accepted_result_sha256.clone(), accepted_at: row.accepted_at.clone() })))
     }
 
     async fn mark_index_job_failed(

@@ -3,6 +3,7 @@ from __future__ import annotations
 """Typed facade over the durable metastore job queue."""
 
 import json
+import hashlib
 import uuid
 from dataclasses import dataclass
 from typing import Any, TYPE_CHECKING
@@ -29,6 +30,8 @@ class JobQueueItem:
     last_error: str | None = None
     claim_token: str | None = None
     claim_attempts: int = 0
+    accepted_result_json: str | None = None
+    accepted_result_sha256: str | None = None
 
 
 class JobQueueSubsystem:
@@ -114,6 +117,36 @@ class JobQueueSubsystem:
         if renew is None or job.claim_token is None:
             return False
         return bool(renew(job.job_id, claim_token=job.claim_token, lease_seconds=lease_seconds))
+
+    def accept_candidate(self, job: JobQueueItem, candidate: object) -> dict[str, object]:
+        """Durably fence a candidate to the first live claimant.
+
+        The candidate is canonical JSON so retries and competing workers can
+        compare it without depending on Python object identity.
+        """
+        if job.claim_token is None:
+            return {"status": "rejected", "reason": "claim_token_missing"}
+        accept = getattr(self.engine.meta_sqlite, "accept_index_job_result", None)
+        if accept is None:
+            return {"status": "rejected", "reason": "claim_result_not_supported"}
+        result_json = json.dumps(candidate, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        result_sha256 = hashlib.sha256(result_json.encode("utf-8")).hexdigest()
+        result = accept(
+            job.job_id,
+            claim_token=job.claim_token,
+            result_json=result_json,
+            result_sha256=result_sha256,
+        )
+        return result
+
+    def accepted_candidate(self, job: JobQueueItem) -> object | None:
+        result = getattr(self.engine.meta_sqlite, "get_index_job_result", lambda _job_id: None)(job.job_id)
+        if not result or result.get("result_json") is None:
+            return None
+        try:
+            return json.loads(str(result["result_json"]))
+        except (TypeError, ValueError):
+            return None
 
     def mark_failed(self, job_id: str, error: str, *, final: bool = True, claim_token: str | None = None) -> None:
         mark_failed = getattr(self.engine.meta_sqlite, "mark_index_job_failed", None)
@@ -208,6 +241,8 @@ class JobQueueSubsystem:
             last_error=(None if field("last_error") is None else str(field("last_error"))),
             claim_token=(None if field("claim_token") is None else str(field("claim_token"))),
             claim_attempts=int(field("claim_attempts", 0) or 0),
+            accepted_result_json=(None if field("accepted_result_json") is None else str(field("accepted_result_json"))),
+            accepted_result_sha256=(None if field("accepted_result_sha256") is None else str(field("accepted_result_sha256"))),
         )
 
     @staticmethod

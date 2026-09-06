@@ -156,6 +156,9 @@ class IndexJob:
     payload_json: Optional[str] = None
     claim_token: Optional[str] = None
     claim_attempts: int = 0
+    accepted_result_json: Optional[str] = None
+    accepted_result_sha256: Optional[str] = None
+    accepted_at: Optional[str] = None
 
 
 @dataclass
@@ -260,7 +263,10 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                     next_run_at TIMESTAMPTZ NULL,
                     max_retries INTEGER NOT NULL DEFAULT 10,
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    accepted_result_json TEXT NULL,
+                    accepted_result_sha256 TEXT NULL,
+                    accepted_at TIMESTAMPTZ NULL
                 )
             """,
             f"CREATE INDEX IF NOT EXISTS idx_index_jobs_status_lease ON {ij}(status, lease_until)",
@@ -273,6 +279,9 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
             f"ALTER TABLE {ij} ADD COLUMN IF NOT EXISTS max_retries INTEGER NOT NULL DEFAULT 10",
             f"ALTER TABLE {ij} ADD COLUMN IF NOT EXISTS claim_token TEXT NULL",
             f"ALTER TABLE {ij} ADD COLUMN IF NOT EXISTS claim_attempts INTEGER NOT NULL DEFAULT 0",
+            f"ALTER TABLE {ij} ADD COLUMN IF NOT EXISTS accepted_result_json TEXT NULL",
+            f"ALTER TABLE {ij} ADD COLUMN IF NOT EXISTS accepted_result_sha256 TEXT NULL",
+            f"ALTER TABLE {ij} ADD COLUMN IF NOT EXISTS accepted_at TIMESTAMPTZ NULL",
             f"CREATE UNIQUE INDEX IF NOT EXISTS uq_index_jobs_pending_ns_ck ON {ij}(namespace, coalesce_key) WHERE status='PENDING'",
             f"""
                 CREATE TABLE IF NOT EXISTS {ias} (
@@ -734,7 +743,8 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                     FROM candidates c
                     WHERE j.job_id = c.job_id
                     RETURNING j.job_id, j.namespace, j.entity_kind, j.entity_id, j.index_kind, j.coalesce_key, j.op, j.status,
-                              j.lease_until, j.next_run_at, j.max_retries, j.retry_count, j.last_error, j.payload_json, j.claim_token, j.claim_attempts
+                              j.lease_until, j.next_run_at, j.max_retries, j.retry_count, j.last_error, j.payload_json, j.claim_token, j.claim_attempts,
+                              j.accepted_result_json, j.accepted_result_sha256, j.accepted_at
                     """
                 ),
                 params,
@@ -786,6 +796,9 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                     ),
                     claim_token=(str(r.get("claim_token")) if r.get("claim_token") is not None else None),
                     claim_attempts=int(r.get("claim_attempts") or 0),
+                    accepted_result_json=(str(r.get("accepted_result_json")) if r.get("accepted_result_json") is not None else None),
+                    accepted_result_sha256=(str(r.get("accepted_result_sha256")) if r.get("accepted_result_sha256") is not None else None),
+                    accepted_at=(str(r.get("accepted_at")) if r.get("accepted_at") is not None else None),
                 )
             )
         return out
@@ -804,6 +817,49 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                 {"job_id": job_id, "claim_token": claim_token},
             )
             return bool(getattr(result, "rowcount", 0))
+
+    def accept_index_job_result(
+        self,
+        job_id: str,
+        *,
+        claim_token: str,
+        result_json: str,
+        result_sha256: str,
+    ) -> dict[str, object]:
+        """Atomically accept the first valid leased candidate."""
+        ij = f"{self.schema}.{self.index_jobs_table}"
+        with self.transaction() as conn:
+            row = conn.execute(
+                sa.text(
+                    f"SELECT status, claim_token, lease_until, accepted_result_json, accepted_result_sha256, accepted_at FROM {ij} WHERE job_id=:job_id FOR UPDATE"
+                ),
+                {"job_id": job_id},
+            ).mappings().first()
+            if row is None:
+                return {"status": "rejected", "reason": "job_not_found"}
+            if row.get("accepted_result_json") is not None:
+                return {"status": "existing", "result_json": str(row["accepted_result_json"]), "result_sha256": str(row.get("accepted_result_sha256") or ""), "accepted_at": row.get("accepted_at")}
+            now = __import__("datetime").datetime.now(__import__("datetime").timezone.utc)
+            valid = row.get("status") == "DOING" and row.get("claim_token") == claim_token and row.get("lease_until") is not None and row["lease_until"] >= now
+            if not valid:
+                return {"status": "rejected", "reason": "claim_not_valid"}
+            result = conn.execute(
+                sa.text(
+                    f"UPDATE {ij} SET accepted_result_json=:result_json, accepted_result_sha256=:result_sha256, accepted_at=NOW(), updated_at=NOW() WHERE job_id=:job_id AND status='DOING' AND claim_token=:claim_token AND lease_until>=NOW() AND accepted_result_json IS NULL"
+                ),
+                {"job_id": job_id, "claim_token": claim_token, "result_json": result_json, "result_sha256": result_sha256},
+            )
+            if not getattr(result, "rowcount", 0):
+                return {"status": "rejected", "reason": "claim_not_valid"}
+            return {"status": "accepted", "result_json": result_json, "result_sha256": result_sha256}
+
+    def get_index_job_result(self, job_id: str) -> dict[str, object] | None:
+        ij = f"{self.schema}.{self.index_jobs_table}"
+        with self.transaction() as conn:
+            row = conn.execute(sa.text(f"SELECT accepted_result_json, accepted_result_sha256, accepted_at FROM {ij} WHERE job_id=:job_id"), {"job_id": job_id}).mappings().first()
+        if row is None or row.get("accepted_result_json") is None:
+            return None
+        return {"status": "existing", "result_json": str(row["accepted_result_json"]), "result_sha256": str(row.get("accepted_result_sha256") or ""), "accepted_at": row.get("accepted_at")}
 
     def renew_index_job_lease(self, job_id: str, *, claim_token: str, lease_seconds: int) -> bool:
         ij = f"{self.schema}.{self.index_jobs_table}"

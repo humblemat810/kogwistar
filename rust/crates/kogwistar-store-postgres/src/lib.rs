@@ -16,7 +16,7 @@ use kogwistar_runtime::{
     transition_digest, worker_effect_digest,
 };
 use kogwistar_store::{
-    AppendedEvent, AppliedGraphMutation, AuthIdentityStore, AuthUser, EntityEvent,
+    AcceptedIndexJobResult, AppendedEvent, AppliedGraphMutation, AuthIdentityStore, AuthUser, EntityEvent,
     EntityRebuildRequest, EntityRecoveryReport, EntityRecoveryRequest, EventPruneStore,
     EventReadStore, EventWriteStore, ExternalIdentity, GraphMutation, GraphMutationStore,
     GraphProjectionRead, GraphProjectionVectorQuery, GraphRecord, IndexJob, IndexJobReadStore,
@@ -1262,6 +1262,24 @@ impl PostgresStore {
         })
         .await
     }
+    pub async fn accept_index_job_result(
+        &self,
+        job_id: &str,
+        claim_token: &str,
+        result_json: &str,
+        result_sha256: &str,
+    ) -> PostgresStoreResult<AcceptedIndexJobResult> {
+        let job_id = job_id.to_owned();
+        let claim_token = claim_token.to_owned();
+        let result_json = result_json.to_owned();
+        let result_sha256 = result_sha256.to_owned();
+        self.transaction(move |uow| Box::pin(async move {
+            uow.accept_index_job_result(&job_id, &claim_token, &result_json, &result_sha256).await
+        })).await
+    }
+    pub async fn index_job_result(&self, job_id: &str) -> PostgresStoreResult<Option<AcceptedIndexJobResult>> {
+        index_job_result(&**self.client().await?, &self.tables, job_id).await
+    }
     pub async fn mark_index_job_failed(
         &self,
         job_id: &str,
@@ -1807,6 +1825,15 @@ impl PostgresUnitOfWork<'_> {
     ) -> PostgresStoreResult<bool> {
         mark_index_job_done(&self.transaction, &self.tables, job_id, claim_token).await
     }
+    pub async fn accept_index_job_result(
+        &mut self,
+        job_id: &str,
+        claim_token: &str,
+        result_json: &str,
+        result_sha256: &str,
+    ) -> PostgresStoreResult<AcceptedIndexJobResult> {
+        accept_index_job_result(&self.transaction, &self.tables, job_id, claim_token, result_json, result_sha256).await
+    }
     pub async fn mark_index_job_failed(
         &mut self,
         job_id: &str,
@@ -2322,6 +2349,20 @@ impl IndexJobWriteStore for PostgresStore {
         PostgresStore::mark_index_job_done(self, job_id, claim_token)
             .await
             .map_err(trait_error)
+    }
+    async fn accept_index_job_result(
+        &self,
+        job_id: &str,
+        claim_token: &str,
+        result_json: &str,
+        result_sha256: &str,
+    ) -> StoreResult<AcceptedIndexJobResult> {
+        PostgresStore::accept_index_job_result(self, job_id, claim_token, result_json, result_sha256)
+            .await
+            .map_err(trait_error)
+    }
+    async fn index_job_result(&self, job_id: &str) -> StoreResult<Option<AcceptedIndexJobResult>> {
+        PostgresStore::index_job_result(self, job_id).await.map_err(trait_error)
     }
     async fn mark_index_job_failed(
         &self,
@@ -5356,7 +5397,7 @@ where
         &format!("UPDATE {} SET status='FAILED',last_error='lease ownership exceeded',lease_until=NULL,claim_token=NULL,updated_at=NOW() WHERE status='DOING' AND lease_until<NOW() AND claim_attempts>=$1", tables.index_jobs),
         &[&3_i32],
     ).await.map_err(backend)?;
-    let rows=client.query(&format!("WITH candidates AS (SELECT job_id FROM {} WHERE ((status='PENDING' AND (next_run_at IS NULL OR next_run_at<=NOW())) OR (status='DOING' AND lease_until IS NOT NULL AND lease_until<NOW())) AND ($1::TEXT IS NULL OR namespace=$1) ORDER BY created_at ASC,job_id ASC LIMIT $2 FOR UPDATE SKIP LOCKED) UPDATE {} j SET status='DOING',lease_until=NOW()+($3::TEXT||' seconds')::interval,claim_token=md5(random()::TEXT||clock_timestamp()::TEXT||j.job_id),claim_attempts=j.claim_attempts+CASE WHEN j.status='DOING' THEN 1 ELSE 0 END,updated_at=NOW() FROM candidates c WHERE j.job_id=c.job_id RETURNING j.job_id,j.namespace,j.entity_kind,j.entity_id,j.index_kind,j.coalesce_key,j.op,j.status,j.lease_until::TEXT,j.next_run_at::TEXT,j.max_retries,j.retry_count,j.last_error,j.payload_json,j.created_at::TEXT,j.updated_at::TEXT,j.claim_token,j.claim_attempts",tables.index_jobs,tables.index_jobs), &[&namespace,&limit,&lease_seconds]).await.map_err(backend)?;
+    let rows=client.query(&format!("WITH candidates AS (SELECT job_id FROM {} WHERE ((status='PENDING' AND (next_run_at IS NULL OR next_run_at<=NOW())) OR (status='DOING' AND lease_until IS NOT NULL AND lease_until<NOW())) AND ($1::TEXT IS NULL OR namespace=$1) ORDER BY created_at ASC,job_id ASC LIMIT $2 FOR UPDATE SKIP LOCKED) UPDATE {} j SET status='DOING',lease_until=NOW()+($3::TEXT||' seconds')::interval,claim_token=md5(random()::TEXT||clock_timestamp()::TEXT||j.job_id),claim_attempts=j.claim_attempts+CASE WHEN j.status='DOING' THEN 1 ELSE 0 END,updated_at=NOW() FROM candidates c WHERE j.job_id=c.job_id RETURNING j.job_id,j.namespace,j.entity_kind,j.entity_id,j.index_kind,j.coalesce_key,j.op,j.status,j.lease_until::TEXT,j.next_run_at::TEXT,j.max_retries,j.retry_count,j.last_error,j.payload_json,j.created_at::TEXT,j.updated_at::TEXT,j.claim_token,j.claim_attempts,j.accepted_result_json,j.accepted_result_sha256,j.accepted_at::TEXT",tables.index_jobs,tables.index_jobs), &[&namespace,&limit,&lease_seconds]).await.map_err(backend)?;
     rows.iter().map(index_job_from_row).collect()
 }
 async fn mark_index_job_done<C>(
@@ -5369,6 +5410,27 @@ where
     C: GenericClient + Sync,
 {
     Ok(client.execute(&format!("UPDATE {} SET status='DONE',lease_until=NULL,claim_token=NULL,updated_at=NOW() WHERE job_id=$1 AND status='DOING' AND ($2::TEXT IS NULL OR claim_token=$2)",tables.index_jobs), &[&job_id,&claim_token]).await.map_err(backend)?!=0)
+}
+async fn index_job_result<C>(client: &C, tables: &Tables, job_id: &str) -> PostgresStoreResult<Option<AcceptedIndexJobResult>>
+where C: GenericClient + Sync {
+    let row = client.query_opt(&format!("SELECT accepted_result_json, accepted_result_sha256, accepted_at::TEXT FROM {} WHERE job_id=$1", tables.index_jobs), &[&job_id]).await.map_err(backend)?;
+    Ok(row.map(|row| AcceptedIndexJobResult {
+        status: "existing".to_owned(),
+        result_json: row.get(0),
+        result_sha256: row.get(1),
+        accepted_at: row.get::<_, Option<String>>(2).map(serde_json::Value::String),
+    }))
+}
+async fn accept_index_job_result<C>(client: &C, tables: &Tables, job_id: &str, claim_token: &str, result_json: &str, result_sha256: &str) -> PostgresStoreResult<AcceptedIndexJobResult>
+where C: GenericClient + Sync {
+    if let Some(existing) = index_job_result(client, tables, job_id).await? {
+        if existing.result_json.is_some() { return Ok(existing); }
+    }
+    let row = client.query_opt(&format!("UPDATE {} SET accepted_result_json=$1,accepted_result_sha256=$2,accepted_at=NOW() WHERE job_id=$3 AND status='DOING' AND claim_token=$4 AND (lease_until IS NULL OR lease_until>=NOW()) AND accepted_result_json IS NULL RETURNING accepted_at::TEXT", tables.index_jobs), &[&result_json, &result_sha256, &job_id, &claim_token]).await.map_err(backend)?;
+    if let Some(row) = row {
+        return Ok(AcceptedIndexJobResult { status: "accepted".to_owned(), result_json: Some(result_json.to_owned()), result_sha256: Some(result_sha256.to_owned()), accepted_at: row.get::<_, Option<String>>(0).map(serde_json::Value::String) });
+    }
+    Ok(AcceptedIndexJobResult { status: "rejected".to_owned(), result_json: None, result_sha256: None, accepted_at: None })
 }
 async fn mark_index_job_failed<C>(
     client: &C,
@@ -5442,7 +5504,7 @@ where
     C: GenericClient + Sync,
 {
     let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-    let rows=client.query(&format!("SELECT job_id,namespace,entity_kind,entity_id,index_kind,coalesce_key,op,status,lease_until::TEXT,next_run_at::TEXT,max_retries,retry_count,last_error,payload_json,created_at::TEXT,updated_at::TEXT,claim_token,claim_attempts FROM {} WHERE ($1::TEXT IS NULL OR namespace=$1) AND ($2::TEXT IS NULL OR status=$2) AND ($3::TEXT IS NULL OR entity_kind=$3) AND ($4::TEXT IS NULL OR entity_id=$4) AND ($5::TEXT IS NULL OR index_kind=$5) ORDER BY created_at ASC,job_id ASC LIMIT $6",tables.index_jobs), &[&namespace,&status,&entity_kind,&entity_id,&index_kind,&limit]).await.map_err(backend)?;
+    let rows=client.query(&format!("SELECT job_id,namespace,entity_kind,entity_id,index_kind,coalesce_key,op,status,lease_until::TEXT,next_run_at::TEXT,max_retries,retry_count,last_error,payload_json,created_at::TEXT,updated_at::TEXT,claim_token,claim_attempts,accepted_result_json,accepted_result_sha256,accepted_at::TEXT FROM {} WHERE ($1::TEXT IS NULL OR namespace=$1) AND ($2::TEXT IS NULL OR status=$2) AND ($3::TEXT IS NULL OR entity_kind=$3) AND ($4::TEXT IS NULL OR entity_id=$4) AND ($5::TEXT IS NULL OR index_kind=$5) ORDER BY created_at ASC,job_id ASC LIMIT $6",tables.index_jobs), &[&namespace,&status,&entity_kind,&entity_id,&index_kind,&limit]).await.map_err(backend)?;
     rows.iter().map(index_job_from_row).collect()
 }
 fn index_job_from_row(row: &Row) -> PostgresStoreResult<IndexJob> {
@@ -5471,6 +5533,9 @@ fn index_job_from_row(row: &Row) -> PostgresStoreResult<IndexJob> {
         updated_at: serde_json::Value::String(row.try_get(15).map_err(backend)?),
         claim_token: row.try_get(16).map_err(backend)?,
         claim_attempts: i64::from(row.try_get::<_, i32>(17).map_err(backend)?),
+        accepted_result_json: row.try_get(18).map_err(backend)?,
+        accepted_result_sha256: row.try_get(19).map_err(backend)?,
+        accepted_at: row.try_get::<_, Option<String>>(20).map_err(backend)?.map(serde_json::Value::String),
     })
 }
 fn truncate_error(error: &str) -> String {
@@ -5963,10 +6028,13 @@ fn schema_sql(tables: &Tables) -> String {
             ON {server_run_events} ((payload_json::jsonb->>'transition_id'))\
             WHERE event_type='workflow.recorded_transition.v1';\
          CREATE TABLE IF NOT EXISTS {index_jobs} (\
-            job_id TEXT PRIMARY KEY,namespace TEXT NOT NULL DEFAULT 'default',entity_kind TEXT NOT NULL,entity_id TEXT NOT NULL,index_kind TEXT NOT NULL,coalesce_key TEXT NOT NULL,op TEXT NOT NULL,status TEXT NOT NULL,lease_until TIMESTAMPTZ NULL,next_run_at TIMESTAMPTZ NULL,max_retries INTEGER NOT NULL DEFAULT 10,retry_count INTEGER NOT NULL DEFAULT 0,last_error TEXT NULL,payload_json TEXT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),claim_token TEXT NULL,claim_attempts INTEGER NOT NULL DEFAULT 0\
+            job_id TEXT PRIMARY KEY,namespace TEXT NOT NULL DEFAULT 'default',entity_kind TEXT NOT NULL,entity_id TEXT NOT NULL,index_kind TEXT NOT NULL,coalesce_key TEXT NOT NULL,op TEXT NOT NULL,status TEXT NOT NULL,lease_until TIMESTAMPTZ NULL,next_run_at TIMESTAMPTZ NULL,max_retries INTEGER NOT NULL DEFAULT 10,retry_count INTEGER NOT NULL DEFAULT 0,last_error TEXT NULL,payload_json TEXT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),claim_token TEXT NULL,claim_attempts INTEGER NOT NULL DEFAULT 0,accepted_result_json TEXT NULL,accepted_result_sha256 TEXT NULL,accepted_at TIMESTAMPTZ NULL\
          );\
          ALTER TABLE {index_jobs} ADD COLUMN IF NOT EXISTS claim_token TEXT NULL;\
          ALTER TABLE {index_jobs} ADD COLUMN IF NOT EXISTS claim_attempts INTEGER NOT NULL DEFAULT 0;\
+         ALTER TABLE {index_jobs} ADD COLUMN IF NOT EXISTS accepted_result_json TEXT NULL;\
+         ALTER TABLE {index_jobs} ADD COLUMN IF NOT EXISTS accepted_result_sha256 TEXT NULL;\
+         ALTER TABLE {index_jobs} ADD COLUMN IF NOT EXISTS accepted_at TIMESTAMPTZ NULL;\
          CREATE INDEX IF NOT EXISTS {index_jobs_status_lease_index} ON {index_jobs}(status, lease_until);\
          CREATE INDEX IF NOT EXISTS {index_jobs_status_next_run_index} ON {index_jobs}(status, next_run_at);\
          CREATE INDEX IF NOT EXISTS {index_jobs_entity_index} ON {index_jobs}(entity_kind, entity_id, index_kind);\
