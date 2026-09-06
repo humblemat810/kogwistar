@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Iterator, List, Optional
 
 from ..messaging.models import ProjectedLaneMessageRow
+from .event_envelope import EntityEventEnvelope
 from .meta_lane_messages import LaneMessageMetaStoreMixin
 
 _active_sqlite_conn: contextvars.ContextVar[sqlite3.Connection | None] = (
@@ -1563,6 +1564,83 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
 
             # advance cursor: next batch starts after the last seq we just yielded
             next_seq = int(rows[-1][0]) + 1
+
+    def iter_entity_event_envelopes(
+        self,
+        *,
+        namespace: str = "default",
+        from_seq: int = 1,
+        to_seq: int | None = None,
+        batch_size: int = 500,
+    ) -> Iterator[EntityEventEnvelope]:
+        """Yield lossless event rows without changing the legacy iterator."""
+        next_seq = int(from_seq)
+        while True:
+            with self.connect() as conn:
+                if to_seq is None:
+                    rows = list(conn.execute(
+                        "SELECT namespace, seq, event_id, entity_kind, entity_id, op, payload_json, created_at "
+                        "FROM entity_events WHERE namespace = ? AND seq >= ? "
+                        "ORDER BY seq ASC LIMIT ?",
+                        (namespace, next_seq, int(batch_size)),
+                    ))
+                else:
+                    rows = list(conn.execute(
+                        "SELECT namespace, seq, event_id, entity_kind, entity_id, op, payload_json, created_at "
+                        "FROM entity_events WHERE namespace = ? AND seq >= ? AND seq <= ? "
+                        "ORDER BY seq ASC LIMIT ?",
+                        (namespace, next_seq, int(to_seq), int(batch_size)),
+                    ))
+            if not rows:
+                return
+            for row in rows:
+                yield EntityEventEnvelope(
+                    namespace=str(row[0]), seq=int(row[1]), event_id=str(row[2]),
+                    entity_kind=str(row[3]), entity_id=str(row[4]), op=str(row[5]),
+                    payload_json=str(row[6]), created_at=int(row[7]),
+                )
+            next_seq = int(rows[-1][1]) + 1
+
+    def append_entity_event_envelope(self, event: EntityEventEnvelope) -> int:
+        """Import one lossless event, idempotently, into a fresh namespace."""
+        if not isinstance(event, EntityEventEnvelope):
+            raise TypeError("event must be an EntityEventEnvelope")
+        with self.transaction() as conn:
+            existing = conn.execute(
+                "SELECT namespace, seq, event_id, entity_kind, entity_id, op, payload_json, created_at "
+                "FROM entity_events WHERE event_id = ?",
+                (event.event_id,),
+            ).fetchone()
+            if existing is not None:
+                actual = EntityEventEnvelope(
+                    namespace=str(existing[0]), seq=int(existing[1]), event_id=str(existing[2]),
+                    entity_kind=str(existing[3]), entity_id=str(existing[4]), op=str(existing[5]),
+                    payload_json=str(existing[6]), created_at=int(existing[7]),
+                )
+                if actual != event:
+                    raise ValueError(f"event_id {event.event_id!r} conflicts with stored event")
+                return actual.seq
+            latest = int(conn.execute(
+                "SELECT COALESCE(MAX(seq), 0) FROM entity_events WHERE namespace = ?",
+                (event.namespace,),
+            ).fetchone()[0])
+            if event.seq != latest + 1:
+                raise ValueError(
+                    f"event sequence for {event.namespace!r} must be {latest + 1}, got {event.seq}"
+                )
+            json.loads(event.payload_json)
+            conn.execute(
+                "INSERT INTO entity_events(namespace, seq, event_id, entity_kind, entity_id, op, payload_json, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (event.namespace, event.seq, event.event_id, event.entity_kind, event.entity_id,
+                 event.op, event.payload_json, event.created_at),
+            )
+            conn.execute(
+                "INSERT INTO namespace_seq(namespace, next_seq) VALUES (?, ?) "
+                "ON CONFLICT(namespace) DO UPDATE SET next_seq = MAX(namespace_seq.next_seq, excluded.next_seq)",
+                (event.namespace, event.seq + 1),
+            )
+        return event.seq
 
     def prune_entity_events_after(
         self, *, namespace: str = "default", to_seq: int

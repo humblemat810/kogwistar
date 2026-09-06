@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 from .postgres_backend import get_active_conn, _set_active_conn
 from ..messaging.models import ProjectedLaneMessageRow
 from .meta_lane_messages import LaneMessageMetaStoreMixin
+from .event_envelope import EntityEventEnvelope
 
 
 _SCHEMA_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -1509,6 +1510,79 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                     {"ns": namespace, "from_seq": int(from_seq), "to_seq": int(to_seq)},
                 )
             yield from rows
+
+    def iter_entity_event_envelopes(
+        self,
+        *,
+        namespace: str = "default",
+        from_seq: int = 1,
+        to_seq: int | None = None,
+    ) -> Iterator[EntityEventEnvelope]:
+        """Yield the complete immutable event envelope for archive export."""
+        schema = self.schema
+        with self.transaction() as conn:
+            predicates = "namespace=:ns AND seq >= :from_seq"
+            params: dict[str, Any] = {"ns": namespace, "from_seq": int(from_seq)}
+            if to_seq is not None:
+                predicates += " AND seq <= :to_seq"
+                params["to_seq"] = int(to_seq)
+            rows = conn.execute(sa.text(f"""
+                SELECT namespace, seq, event_id, entity_kind, entity_id, op,
+                       payload_json, EXTRACT(EPOCH FROM created_at)::BIGINT
+                FROM {schema}.entity_events
+                WHERE {predicates}
+                ORDER BY seq ASC
+            """), params)
+            for row in rows:
+                yield EntityEventEnvelope(
+                    namespace=str(row[0]), seq=int(row[1]), event_id=str(row[2]),
+                    entity_kind=str(row[3]), entity_id=str(row[4]), op=str(row[5]),
+                    payload_json=str(row[6]), created_at=int(row[7]),
+                )
+
+    def append_entity_event_envelope(self, event: EntityEventEnvelope) -> int:
+        """Import one lossless event, idempotently, into a fresh namespace."""
+        if not isinstance(event, EntityEventEnvelope):
+            raise TypeError("event must be an EntityEventEnvelope")
+        schema = self.schema
+        with self.transaction() as conn:
+            existing = conn.execute(sa.text(f"""
+                SELECT namespace, seq, event_id, entity_kind, entity_id, op,
+                       payload_json, EXTRACT(EPOCH FROM created_at)::BIGINT
+                FROM {schema}.entity_events WHERE event_id=:event_id
+            """), {"event_id": event.event_id}).fetchone()
+            if existing is not None:
+                actual = EntityEventEnvelope(
+                    namespace=str(existing[0]), seq=int(existing[1]), event_id=str(existing[2]),
+                    entity_kind=str(existing[3]), entity_id=str(existing[4]), op=str(existing[5]),
+                    payload_json=str(existing[6]), created_at=int(existing[7]),
+                )
+                if actual != event:
+                    raise ValueError(f"event_id {event.event_id!r} conflicts with stored event")
+                return actual.seq
+            latest = int(conn.execute(sa.text(
+                f"SELECT COALESCE(MAX(seq), 0) FROM {schema}.entity_events WHERE namespace=:ns"
+            ), {"ns": event.namespace}).scalar_one())
+            if event.seq != latest + 1:
+                raise ValueError(
+                    f"event sequence for {event.namespace!r} must be {latest + 1}, got {event.seq}"
+                )
+            json.loads(event.payload_json)
+            conn.execute(sa.text(f"""
+                INSERT INTO {schema}.entity_events(
+                    namespace, seq, event_id, entity_kind, entity_id, op, payload_json, created_at
+                ) VALUES (:namespace, :seq, :event_id, :entity_kind, :entity_id, :op,
+                          :payload_json, to_timestamp(:created_at))
+            """), {
+                "namespace": event.namespace, "seq": event.seq, "event_id": event.event_id,
+                "entity_kind": event.entity_kind, "entity_id": event.entity_id, "op": event.op,
+                "payload_json": event.payload_json, "created_at": event.created_at,
+            })
+            conn.execute(sa.text(f"""
+                INSERT INTO {schema}.namespace_seq(namespace, next_seq) VALUES (:namespace, :next_seq)
+                ON CONFLICT(namespace) DO UPDATE SET next_seq=GREATEST({schema}.namespace_seq.next_seq, EXCLUDED.next_seq)
+            """), {"namespace": event.namespace, "next_seq": event.seq + 1})
+        return event.seq
 
     def prune_entity_events_after(
         self, *, namespace: str = "default", to_seq: int

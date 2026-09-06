@@ -97,6 +97,18 @@ pub struct NewRawEntityEvent {
     pub payload_json: String,
 }
 
+/// An event imported from a portable archive with authoritative identity.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RestoredRawEntityEvent {
+    pub seq: i64,
+    pub event_id: String,
+    pub entity_kind: String,
+    pub entity_id: String,
+    pub op: String,
+    pub payload_json: String,
+    pub created_at: i64,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AppendedRawEvent {
     pub event: RawEntityEvent,
@@ -430,6 +442,14 @@ impl SqliteStore {
         event: NewRawEntityEvent,
     ) -> SqliteStoreResult<AppendedRawEvent> {
         self.immediate_transaction(|uow| uow.append_raw_entity_event(namespace, event))
+    }
+
+    pub fn append_restored_raw_entity_event(
+        &self,
+        namespace: &str,
+        event: RestoredRawEntityEvent,
+    ) -> SqliteStoreResult<AppendedRawEvent> {
+        self.immediate_transaction(|uow| uow.append_restored_raw_entity_event(namespace, event))
     }
 
     /// Raw replay is exclusive of `after_seq`, preserving stored JSON text.
@@ -1392,6 +1412,14 @@ impl SqliteUnitOfWork<'_> {
         event: NewRawEntityEvent,
     ) -> SqliteStoreResult<AppendedRawEvent> {
         append_raw_entity_event(self.transaction, namespace, event)
+    }
+
+    pub fn append_restored_raw_entity_event(
+        &mut self,
+        namespace: &str,
+        event: RestoredRawEntityEvent,
+    ) -> SqliteStoreResult<AppendedRawEvent> {
+        append_restored_raw_entity_event(self.transaction, namespace, event)
     }
 
     pub fn replay_raw_events(
@@ -2934,6 +2962,87 @@ fn append_raw_entity_event(
     })
 }
 
+fn append_restored_raw_entity_event(
+    conn: &Connection,
+    namespace: &str,
+    event: RestoredRawEntityEvent,
+) -> SqliteStoreResult<AppendedRawEvent> {
+    if namespace.is_empty() {
+        return Err(SqliteStoreError::EmptyNamespace);
+    }
+    if event.seq < 1 {
+        return Err(SqliteStoreError::NegativeSequenceValue { value: event.seq });
+    }
+    serde_json::from_str::<Value>(&event.payload_json)?;
+    if let Some(existing) = event_by_id(conn, &event.event_id)? {
+        if existing.namespace != namespace {
+            return Err(SqliteStoreError::EventIdNamespaceCollision {
+                event_id: event.event_id,
+                existing_namespace: existing.namespace,
+                requested_namespace: namespace.to_owned(),
+            });
+        }
+        let same = existing.seq == event.seq
+            && existing.entity_kind == event.entity_kind
+            && existing.entity_id == event.entity_id
+            && existing.op == event.op
+            && existing.payload_json == event.payload_json
+            && existing.created_at == event.created_at;
+        if !same {
+            return Err(SqliteStoreError::TransactionAborted(format!(
+                "restored event_id {:?} conflicts with stored event",
+                event.event_id
+            )));
+        }
+        return Ok(AppendedRawEvent {
+            event: existing,
+            inserted: false,
+        });
+    }
+    let latest = latest_retained_event_seq(conn, namespace)?;
+    if event.seq != latest + 1 {
+        return Err(SqliteStoreError::TransactionAborted(format!(
+            "restored event sequence for {:?} must be {}, got {}",
+            namespace,
+            latest + 1,
+            event.seq
+        )));
+    }
+    let stored = RawEntityEvent {
+        namespace: namespace.to_owned(),
+        seq: event.seq,
+        event_id: event.event_id,
+        entity_kind: event.entity_kind,
+        entity_id: event.entity_id,
+        op: event.op,
+        payload_json: event.payload_json,
+        created_at: event.created_at,
+    };
+    conn.execute(
+        "INSERT INTO entity_events(namespace, seq, event_id, entity_kind, entity_id, op, payload_json, created_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            stored.namespace,
+            stored.seq,
+            stored.event_id,
+            stored.entity_kind,
+            stored.entity_id,
+            stored.op,
+            stored.payload_json,
+            stored.created_at,
+        ],
+    )?;
+    conn.execute(
+        "INSERT INTO namespace_seq(namespace, next_seq) VALUES (?1, ?2) \
+         ON CONFLICT(namespace) DO UPDATE SET next_seq = excluded.next_seq",
+        params![namespace, event.seq + 1],
+    )?;
+    Ok(AppendedRawEvent {
+        event: stored,
+        inserted: true,
+    })
+}
+
 fn event_by_id(conn: &Connection, event_id: &str) -> SqliteStoreResult<Option<RawEntityEvent>> {
     conn.query_row(
         "SELECT namespace, seq, event_id, entity_kind, entity_id, op, payload_json, created_at \
@@ -4295,6 +4404,46 @@ mod tests {
     fn store(label: &str) -> (SqliteStore, PathBuf) {
         let path = database_path(label);
         (SqliteStore::open(&path).unwrap(), path)
+    }
+
+    #[test]
+    fn restored_raw_event_preserves_identity_and_is_idempotent() {
+        let (store, path) = store("restored-raw-event");
+        let event = RestoredRawEntityEvent {
+            seq: 1,
+            event_id: "archive-event".to_owned(),
+            entity_kind: "node".to_owned(),
+            entity_id: "node-1".to_owned(),
+            op: "UPSERT".to_owned(),
+            payload_json: "{\"value\":1}".to_owned(),
+            created_at: 123,
+        };
+        assert!(
+            store
+                .append_restored_raw_entity_event("archive", event.clone())
+                .unwrap()
+                .inserted
+        );
+        assert!(
+            !store
+                .append_restored_raw_entity_event("archive", event.clone())
+                .unwrap()
+                .inserted
+        );
+        assert_eq!(
+            store.replay_raw_events("archive", 0, 10).unwrap()[0].created_at,
+            123
+        );
+        assert!(
+            store
+                .append_restored_raw_entity_event(
+                    "archive",
+                    RestoredRawEntityEvent { seq: 3, ..event },
+                )
+                .is_err()
+        );
+        drop(store);
+        fs::remove_file(path).unwrap();
     }
 
     #[test]

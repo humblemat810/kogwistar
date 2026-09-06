@@ -5,6 +5,7 @@ from contextlib import contextmanager
 from dataclasses import fields
 from pathlib import Path
 from typing import Any, Iterator
+from .event_envelope import EntityEventEnvelope
 import uuid
 
 from kogwistar._rust_bridge import store_sqlite
@@ -262,6 +263,23 @@ class RustEngineSQLite:
     def append_entity_event(self, **values: Any) -> int:
         return int(self._call("raw_append", **values)["seq"])
 
+    def append_entity_event_envelope(self, event: EntityEventEnvelope) -> int:
+        """Import one lossless event through the Rust transaction boundary."""
+        if not isinstance(event, EntityEventEnvelope):
+            raise TypeError("event must be an EntityEventEnvelope")
+        result = self._call(
+            "raw_restore",
+            namespace=event.namespace,
+            seq=int(event.seq),
+            event_id=event.event_id,
+            entity_kind=event.entity_kind,
+            entity_id=event.entity_id,
+            op=event.op,
+            payload_json=event.payload_json,
+            created_at=int(event.created_at),
+        )
+        return int(result["seq"])
+
     def iter_entity_events(
         self,
         *,
@@ -292,6 +310,33 @@ class RustEngineSQLite:
                 )
             after_seq = int(rows[-1]["seq"])
             if len(rows) < batch_size or (to_seq is not None and after_seq >= to_seq):
+                return
+
+    def iter_entity_event_envelopes(
+        self,
+        *,
+        namespace: str = "default",
+        from_seq: int = 1,
+        to_seq: int | None = None,
+        batch_size: int = 500,
+    ) -> Iterator[EntityEventEnvelope]:
+        """Read the Rust raw replay envelope without changing legacy tuples."""
+        after_seq = int(from_seq) - 1
+        while True:
+            rows = self._call(
+                "exclusive_raw_replay",
+                namespace=namespace,
+                after_seq=after_seq,
+                limit=int(batch_size),
+            )
+            if to_seq is not None:
+                rows = [row for row in rows if int(row["seq"]) <= int(to_seq)]
+            if not rows:
+                return
+            for row in rows:
+                yield EntityEventEnvelope.from_mapping(row)
+            after_seq = int(rows[-1]["seq"])
+            if len(rows) < int(batch_size) or (to_seq is not None and after_seq >= int(to_seq)):
                 return
 
     def prune_entity_events_after(self, *, namespace: str = "default", to_seq: int) -> int:

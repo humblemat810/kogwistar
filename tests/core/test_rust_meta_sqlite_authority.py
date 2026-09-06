@@ -10,6 +10,8 @@ from kogwistar.engine_core.rust_meta_sqlite import (
     build_sqlite_meta_store,
 )
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.event_envelope import EntityEventEnvelope
+from kogwistar._rust_bridge import RustParityError
 from kogwistar.engine_core.in_memory_backend import InMemoryBackend, _DummyLock
 from tests._helpers.graph_builders import build_entity_node
 
@@ -96,6 +98,39 @@ def test_rust_authority_database_is_readable_after_python_rollback(
     assert python.get_named_projection("projection", "key")["payload"] == {
         "owner": "rust"
     }
+
+
+def test_rust_authority_event_envelope_is_lossless_and_idempotent(tmp_path: Path) -> None:
+    store = RustEngineSQLite(tmp_path, "envelope.sqlite")
+    store.ensure_initialized()
+    event = EntityEventEnvelope(
+        namespace="archive/source",
+        seq=1,
+        event_id="event-1",
+        entity_kind="source",
+        entity_id="source-1",
+        op="UPSERT",
+        payload_json='{"title":"rust"}',
+        created_at=123456789,
+    )
+
+    assert store.append_entity_event_envelope(event) == 1
+    assert store.append_entity_event_envelope(event) == 1
+    assert list(store.iter_entity_event_envelopes(namespace=event.namespace)) == [event]
+
+    with pytest.raises(RustParityError, match="conflicts"):
+        store.append_entity_event_envelope(
+            EntityEventEnvelope(
+                namespace=event.namespace,
+                seq=1,
+                event_id=event.event_id,
+                entity_kind=event.entity_kind,
+                entity_id=event.entity_id,
+                op=event.op,
+                payload_json='{"title":"changed"}',
+                created_at=event.created_at,
+            )
+        )
 
 
 def test_public_graph_engine_uses_rust_meta_owner(

@@ -14,7 +14,8 @@ use kogwistar_store_postgres::{
     PostgresUnitOfWork, RawEntityEvent as PostgresRawEntityEvent,
 };
 use kogwistar_store_sqlite::{
-    NewRawEntityEvent, RawEntityEvent, SqliteStore, SqliteStoreError, SqliteUnitOfWork,
+    NewRawEntityEvent, RawEntityEvent, RestoredRawEntityEvent, SqliteStore, SqliteStoreError,
+    SqliteUnitOfWork,
 };
 use pyo3::create_exception;
 use pyo3::exceptions::{PyAttributeError, PyRuntimeError, PyTypeError, PyValueError};
@@ -717,6 +718,16 @@ enum SqliteStoreOperation {
         op: String,
         payload_json: String,
     },
+    RawRestore {
+        namespace: String,
+        seq: i64,
+        event_id: String,
+        entity_kind: String,
+        entity_id: String,
+        op: String,
+        payload_json: String,
+        created_at: i64,
+    },
     ExclusiveRawReplay {
         namespace: String,
         after_seq: i64,
@@ -1247,6 +1258,29 @@ fn sqlite_store_operation_json(
             &namespace,
             new_raw_event(event_id, entity_kind, entity_id, op, payload_json),
         )?)),
+        SqliteStoreOperation::RawRestore {
+            namespace,
+            seq,
+            event_id,
+            entity_kind,
+            entity_id,
+            op,
+            payload_json,
+            created_at,
+        } => Ok(appended_raw_event_json(
+            store.append_restored_raw_entity_event(
+                &namespace,
+                RestoredRawEntityEvent {
+                    seq,
+                    event_id,
+                    entity_kind,
+                    entity_id,
+                    op,
+                    payload_json,
+                    created_at,
+                },
+            )?,
+        )),
         SqliteStoreOperation::ExclusiveRawReplay {
             namespace,
             after_seq,
@@ -1917,6 +1951,29 @@ fn sqlite_batch_operation_json(
             &namespace,
             new_raw_event(event_id, entity_kind, entity_id, op, payload_json),
         )?)),
+        SqliteStoreOperation::RawRestore {
+            namespace,
+            seq,
+            event_id,
+            entity_kind,
+            entity_id,
+            op,
+            payload_json,
+            created_at,
+        } => Ok(appended_raw_event_json(
+            uow.append_restored_raw_entity_event(
+                &namespace,
+                RestoredRawEntityEvent {
+                    seq,
+                    event_id,
+                    entity_kind,
+                    entity_id,
+                    op,
+                    payload_json,
+                    created_at,
+                },
+            )?,
+        )),
         SqliteStoreOperation::PruneEntityEventsAfter { namespace, to_seq } => {
             Ok(json!(uow.prune_entity_events_after(&namespace, to_seq)?))
         }
@@ -4944,6 +5001,17 @@ fn validate_postgres_operation(value: &Value) -> Result<(), (&'static str, Strin
             "entity_id",
             "op",
             "payload_json",
+        ][..],
+        "raw_restore" => &[
+            "kind",
+            "namespace",
+            "seq",
+            "event_id",
+            "entity_kind",
+            "entity_id",
+            "op",
+            "payload_json",
+            "created_at",
         ][..],
         "graph_mutation" => &[
             "kind",

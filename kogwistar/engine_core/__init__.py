@@ -2,6 +2,7 @@
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.engine_sqlite import EngineSQLite, IndexJobRow
+from kogwistar.engine_core.event_envelope import EntityEventEnvelope
 from kogwistar.engine_core.indexing import IndexingSubsystem
 from kogwistar.engine_core.jobs import JobQueueItem, JobQueueSubsystem
 from kogwistar.engine_core.lifecycle import LifecycleSubsystem
@@ -59,6 +60,7 @@ __all__ = [
     "IndexJob",
     "EngineSQLite",
     "IndexJobRow",
+    "EntityEventEnvelope",
     "IndexingSubsystem",
     "JobQueueItem",
     "JobQueueSubsystem",

@@ -13,6 +13,7 @@ from typing import Any, Iterator, Optional
 from .engine_sqlite import IndexJobRow
 from .meta_lane_messages import LaneMessageMetaStoreMixin
 from ..messaging.models import ProjectedLaneMessageRow
+from .event_envelope import EntityEventEnvelope
 
 
 _active_in_memory_meta_txn: contextvars.ContextVar["_TxnView | None"] = contextvars.ContextVar(
@@ -36,6 +37,7 @@ class _EntityEventRow:
     entity_id: str
     op: str
     payload_json: str
+    created_at: int
 
 
 @dataclass
@@ -693,6 +695,7 @@ class InMemoryMetaStore(LaneMessageMetaStoreMixin):
                     entity_id=str(entity_id),
                     op=str(op),
                     payload_json=str(payload_json),
+                    created_at=_now_epoch(),
                 )
             )
         return seq
@@ -727,6 +730,67 @@ class InMemoryMetaStore(LaneMessageMetaStoreMixin):
                     str(row.payload_json),
                 )
             next_seq = int(rows[-1].seq) + 1
+
+    def iter_entity_event_envelopes(
+        self,
+        *,
+        namespace: str = "default",
+        from_seq: int = 1,
+        to_seq: int | None = None,
+        batch_size: int = 500,
+    ) -> Iterator[EntityEventEnvelope]:
+        next_seq = int(from_seq)
+        while True:
+            with self._lock:
+                events = [
+                    event for event in self._state.entity_events.get(str(namespace), [])
+                    if int(event.seq) >= next_seq
+                    and (to_seq is None or int(event.seq) <= int(to_seq))
+                ]
+                events = sorted(events, key=lambda item: item.seq)[: int(batch_size)]
+            if not events:
+                return
+            for event in events:
+                yield EntityEventEnvelope(
+                    namespace=str(namespace), seq=int(event.seq), event_id=str(event.event_id),
+                    entity_kind=str(event.entity_kind), entity_id=str(event.entity_id),
+                    op=str(event.op), payload_json=str(event.payload_json),
+                    created_at=int(event.created_at),
+                )
+            next_seq = int(events[-1].seq) + 1
+
+    def append_entity_event_envelope(self, event: EntityEventEnvelope) -> int:
+        """Import one lossless event, idempotently, into a fresh namespace."""
+        if not isinstance(event, EntityEventEnvelope):
+            raise TypeError("event must be an EntityEventEnvelope")
+        with self.transaction() as txn:
+            events = txn.state.entity_events.setdefault(str(event.namespace), [])
+            existing = next((item for item in events if item.event_id == event.event_id), None)
+            if existing is not None:
+                actual = EntityEventEnvelope(
+                    namespace=str(event.namespace), seq=int(existing.seq), event_id=str(existing.event_id),
+                    entity_kind=str(existing.entity_kind), entity_id=str(existing.entity_id),
+                    op=str(existing.op), payload_json=str(existing.payload_json),
+                    created_at=int(existing.created_at),
+                )
+                if actual != event:
+                    raise ValueError(f"event_id {event.event_id!r} conflicts with stored event")
+                return actual.seq
+            latest = max((int(item.seq) for item in events), default=0)
+            if event.seq != latest + 1:
+                raise ValueError(
+                    f"event sequence for {event.namespace!r} must be {latest + 1}, got {event.seq}"
+                )
+            json.loads(event.payload_json)
+            events.append(_EntityEventRow(
+                seq=int(event.seq), event_id=event.event_id, entity_kind=event.entity_kind,
+                entity_id=event.entity_id, op=event.op, payload_json=event.payload_json,
+                created_at=int(event.created_at),
+            ))
+            txn.state.namespace_next_seq[str(event.namespace)] = max(
+                int(txn.state.namespace_next_seq.get(str(event.namespace), 1)), int(event.seq) + 1
+            )
+        return event.seq
 
     def prune_entity_events_after(self, *, namespace: str = "default", to_seq: int) -> int:
         with self.transaction() as txn:
