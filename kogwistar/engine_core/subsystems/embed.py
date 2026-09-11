@@ -18,6 +18,8 @@ class EmbedSubsystem(NamespaceProxy):
         super().__init__(engine)
 
     def iterative_defensive_emb(self, emb_text0):
+        if self._e.cached_embed:
+            return self._e.cached_embed(emb_text0)
         return self.iterative_defensive_emb_internal(emb_text0)
 
     def iterative_defensive_emb_internal(self, emb_text0):
@@ -32,8 +34,6 @@ class EmbedSubsystem(NamespaceProxy):
                 token_capability,
                 min(int(token_budget), token_capability.max_input_tokens),
             )
-        if self._e.cached_embed:
-            return self._e.cached_embed(emb_text0)
         success = False
         idx = self._e.embedding_length_limit
         embedding = None
@@ -80,8 +80,7 @@ class EmbedSubsystem(NamespaceProxy):
         else:
             candidate = capability.truncate_to_tokens(text, budget)
         try:
-            embedder = self._e.cached_embed or self._e._ef
-            embedding = run_sync_or_awaitable(embedder([candidate]))[0]
+            embedding = run_sync_or_awaitable(self._e._ef([candidate]))[0]
             return normalize_embedding_vector(embedding, allow_none=False)
         except Exception as first_error:
             high = max(0, int(capability.count_tokens(candidate)) - 1)
@@ -91,7 +90,7 @@ class EmbedSubsystem(NamespaceProxy):
                 middle = (low + high) // 2
                 reduced = capability.truncate_to_tokens(text, middle)
                 try:
-                    best = run_sync_or_awaitable(embedder([reduced]))[0]
+                    best = run_sync_or_awaitable(self._e._ef([reduced]))[0]
                     low = middle + 1
                 except Exception:
                     high = middle - 1
