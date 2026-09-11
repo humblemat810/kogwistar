@@ -5463,10 +5463,10 @@ async fn accept_index_job_result<C>(
 where
     C: GenericClient + Sync,
 {
-    if let Some(existing) = index_job_result(client, tables, job_id).await? {
-        if existing.result_json.is_some() {
-            return Ok(existing);
-        }
+    if let Some(existing) = index_job_result(client, tables, job_id).await?
+        && existing.result_json.is_some()
+    {
+        return Ok(existing);
     }
     let row = client.query_opt(&format!("UPDATE {} SET accepted_result_json=$1,accepted_result_sha256=$2,accepted_at=NOW() WHERE job_id=$3 AND status='DOING' AND claim_token=$4 AND (lease_until IS NULL OR lease_until>=NOW()) AND accepted_result_json IS NULL RETURNING accepted_at::TEXT", tables.index_jobs), &[&result_json, &result_sha256, &job_id, &claim_token]).await.map_err(backend)?;
     if let Some(row) = row {

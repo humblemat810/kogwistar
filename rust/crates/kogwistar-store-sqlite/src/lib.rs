@@ -2451,10 +2451,10 @@ fn accept_index_job_result(
     result_json: &str,
     result_sha256: &str,
 ) -> SqliteStoreResult<AcceptedIndexJobResult> {
-    if let Some(existing) = index_job_result(conn, job_id)? {
-        if existing.result_json.is_some() {
-            return Ok(existing);
-        }
+    if let Some(existing) = index_job_result(conn, job_id)?
+        && existing.result_json.is_some()
+    {
+        return Ok(existing);
     }
     let now = unix_epoch_seconds();
     let changed = conn.execute(
