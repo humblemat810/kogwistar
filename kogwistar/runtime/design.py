@@ -88,7 +88,7 @@ def _terminal_reachable(
 
 @dataclass(frozen=True)
 class WFNode:
-    """In-memory representation of a workflow node.
+    """In-memory embedding of a workflow node.
     
     Attributes:
         node_id: Canonical graph node ID.
@@ -112,7 +112,7 @@ class WFNode:
 
 @dataclass(frozen=True)
 class WFEdge:
-    """In-memory representation of a workflow transition.
+    """In-memory embedding of a workflow transition.
     
     Attributes:
         edge_id: Canonical graph edge ID.

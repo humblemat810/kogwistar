@@ -145,7 +145,7 @@ def test_lifecycle_patch_is_metadata_only_and_preserves_embedding(
 
         stored = original_get(ids=[node.id], include=["embeddings", "metadatas"])
         # Chroma returns an ndarray while the fake backend returns a list.
-        # Compare the one stored vector, not its container representation.
+        # Compare the one stored vector, not its container embedding.
         assert list(stored["embeddings"][0]) == pytest.approx([0.25, 0.5, 0.75])
         assert stored["metadatas"][0]["lifecycle_status"] == "tombstoned"
         assert stored["metadatas"][0]["legacy_lifecycle_contract"] is True

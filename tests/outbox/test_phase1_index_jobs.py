@@ -18,7 +18,7 @@ from kogwistar.engine_core.engine_sqlite import EngineSQLite
 
 @dataclass
 class FakeDerivedStore:
-    """In-memory representation of a derived join index.
+    """In-memory embedding of a derived join index.
 
     This stands in for join tables/collections like node_docs.
     """

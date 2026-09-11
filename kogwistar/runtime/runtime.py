@@ -219,7 +219,7 @@ def _compute_may_reach_join_bitsets(
 
 def _iter_bits(mask: int):
     """Yield bit positions (0-based) for an int bitset."""
-    # 2's complement tricks to get the first set least significant bit in binary representation
+    # 2's complement tricks to get the first set least significant bit in binary embedding
     while mask:
         lsb = mask & -mask
         yield (lsb.bit_length() - 1)

@@ -99,7 +99,7 @@ A nullable vector, a physically present row, or an existing projection record do
 This does **not** permit removal of the normal canonical read path. ID lookup,
 payload retrieval, graph traversal, and last/next traversal must remain
 available after Stage 1 cleanup through a canonical read materialization or an
-explicit Stage-2 serving representation. A vector row with `NULL` embedding is
+explicit Stage-2 serving embedding. A vector row with `NULL` embedding is
 not automatically either of those things.
 
 Current repository boundary: non-native node/edge admission and lifecycle
@@ -120,7 +120,7 @@ Before promotion:
 | ID/payload/graph/reference/last-next | yes, normal canonical or Stage-1 path | yes, normal post-promotion path |
 | metadata/reference query | Stage 1 may answer | normal canonical or Stage-2 appropriate path |
 | semantic/vector/HNSW/FTS/hybrid | no | yes, Stage 2 only |
-| Stage 1 representation | present | absent |
+| Stage 1 embedding | present | absent |
 
 Semantic eligibility requires a Stage-2 projection whose captured canonical
 revision/fingerprint matches current canonical state. Presence of a node,
@@ -345,7 +345,7 @@ Chroma external-vector arrangement (selected implementation):
 ```
 
 The pgvector profile does not delete its relational node/edge row after vector
-write: that row is the post-handoff Stage-2/read representation, not Stage 1.
+write: that row is the post-handoff Stage-2/read embedding, not Stage 1.
 PG Stage 1 uses a separate high-churn `gke_stage1_projections` table and the
 event plus Stage-1 admission are committed in one PostgreSQL UOW. Promotion
 embeds outside the transaction, then rechecks canonical revision and writes
@@ -376,7 +376,7 @@ cleanup; delete propagation; stale-worker rejection; and crash reconciliation.
 
 ### PostgreSQL/pgvector
 
-`embedding` being nullable proves only physical representation of no vector.
+`embedding` being nullable proves only physical embedding of no vector.
 The implemented synchronous Python arrangement adds a distinct
 `gke_stage1_projections` table for short-lived metadata/reference reads. Canonical
 event append and Stage-1 admission share one PostgreSQL UOW; `node_embedding`

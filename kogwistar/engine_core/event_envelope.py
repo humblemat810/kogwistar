@@ -8,7 +8,7 @@ from typing import Any, Mapping
 
 @dataclass(frozen=True, slots=True)
 class EntityEventEnvelope:
-    """The immutable, portable representation of one authoritative event."""
+    """The immutable, portable embedding of one authoritative event."""
 
     namespace: str
     seq: int

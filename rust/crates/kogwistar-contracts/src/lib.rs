@@ -1161,7 +1161,7 @@ pub fn metadata_filter_matches_from_str(payload_json: &str) -> Result<bool, Cont
     matches_where(&metadata, &where_value)
 }
 
-/// Canonical request representation for deterministic fixtures and telemetry.
+/// Canonical request embedding for deterministic fixtures and telemetry.
 pub fn normalize_metadata_filter_from_str(payload_json: &str) -> Result<String, ContractError> {
     let value: Value = serde_json::from_str(payload_json)?;
     let Value::Object(request) = &value else {

@@ -145,7 +145,7 @@ nor this pattern promises exactly-once effects.
 - `WorkflowRuntime.run(...)` executes root control graph.
 - `RunSuccess.workflow_invocations` and `WorkflowInvocationRequest` execute
   Act as normal nested invoke-and-await work.
-- `WorkflowDesignArtifact` is existing dynamic workflow representation.
+- `WorkflowDesignArtifact` is existing dynamic workflow embedding.
 - WorkflowRun, step execution, terminal nodes, workflow state, and checkpoints
   provide ordinary iteration evidence.
 - `resume_from_latest_checkpoint(...)` resumes root or child under common

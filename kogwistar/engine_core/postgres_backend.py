@@ -1302,7 +1302,7 @@ class PgVectorBackend:
         existing pgvector typmod, so reopening a database with a new embedding
         model would otherwise fail later during an opaque provider/graph write.
         ``format_type`` keeps this independent of PostgreSQL's internal typmod
-        representation.
+        embedding.
         """
         table_names = (
             self.nodes.name,

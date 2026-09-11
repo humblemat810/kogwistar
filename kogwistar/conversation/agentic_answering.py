@@ -1168,7 +1168,7 @@ class AgenticAnsweringAgent:
         out_model: Type[BaseM] = AnswerWithCitations,
     ):
         """Ask the LLM to answer AND cite exact mention/span indices from the provided evidence pack."""
-        # Build a compact, indexable representation for the LLM
+        # Build a compact, indexable embedding for the LLM
         lines: list[str] = []
         for n in evidence_pack.get("nodes", []):
             nid = n["node_id"]

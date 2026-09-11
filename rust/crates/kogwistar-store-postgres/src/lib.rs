@@ -82,7 +82,7 @@ pub struct RawEntityEvent {
     pub entity_id: String,
     pub op: String,
     pub payload_json: String,
-    /// PostgreSQL's textual `TIMESTAMPTZ` representation. It is deliberately
+    /// PostgreSQL's textual `TIMESTAMPTZ` embedding. It is deliberately
     /// not parsed so raw event APIs add no time-library dependency.
     pub created_at: String,
 }
