@@ -55,6 +55,7 @@ from kogwistar.engine_core.embedding_profile import (
     NamedProjectionStore,
     endpoint_fingerprint,
 )
+from kogwistar.typing_interfaces import TokenAwareEmbeddingFunction
 from kogwistar.engine_core.types import (
     EngineType,
     ExtractionSchemaMode,
@@ -115,6 +116,7 @@ __all__ = [
     "LegacyEmbeddingProfileError",
     "NamedProjectionStore",
     "endpoint_fingerprint",
+    "TokenAwareEmbeddingFunction",
     "EngineType",
     "ExtractionSchemaMode",
     "ResolvedExtractionSchemaMode",

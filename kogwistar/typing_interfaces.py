@@ -231,6 +231,17 @@ class EmbedLike(Protocol):
     def iterative_defensive_emb(self, emb_text0: str) -> Any: ...
 
 
+@runtime_checkable
+class TokenAwareEmbeddingFunction(Protocol):
+    """Optional provider capability for safe token-bounded embedding input."""
+
+    max_input_tokens: int
+
+    def count_tokens(self, text: str) -> int: ...
+
+    def truncate_to_tokens(self, text: str, max_tokens: int) -> str: ...
+
+
 class AdjudicateLike(Protocol):
     def target_from_node(self, n: GraphNode) -> GraphAdjudicationTarget: ...
     def target_from_edge(self, e: GraphEdge) -> GraphAdjudicationTarget: ...
