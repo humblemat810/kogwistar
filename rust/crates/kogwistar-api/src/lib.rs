@@ -10306,12 +10306,13 @@ mod tests {
 
     #[test]
     fn frozen_route_registry_covers_committed_openapi() {
-        assert_eq!(FROZEN_OPENAPI_ROUTES.len(), 82);
+        assert_eq!(FROZEN_OPENAPI_ROUTES.len(), 83);
         assert!(FROZEN_OPENAPI_ROUTES.contains(&("GET", "/health")));
         assert!(FROZEN_OPENAPI_ROUTES.contains(&("POST", "/api/workflow/runs")));
         assert!(FROZEN_OPENAPI_ROUTES.contains(&("GET", "/api/runs/{run_id}/events")));
+        assert!(FROZEN_OPENAPI_ROUTES.contains(&("GET", "/api/runs/{run_id}/evidence")));
         let embedded: Value = serde_json::from_str(FROZEN_OPENAPI_JSON).unwrap();
-        assert_eq!(embedded["paths"].as_object().unwrap().len(), 80);
+        assert_eq!(embedded["paths"].as_object().unwrap().len(), 81);
     }
 
     #[test]
