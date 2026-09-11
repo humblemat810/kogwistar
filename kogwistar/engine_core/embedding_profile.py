@@ -51,6 +51,10 @@ class EmbeddingProfile:
     dimension: int
     similarity_metric: str = "cosine"
     endpoint_fingerprint: str | None = None
+    max_sequence_length: int | None = None
+    crop_token_budget: int | None = None
+    tokenizer_fingerprint: str | None = None
+    crop_policy: str | None = None
 
     def __post_init__(self) -> None:
         if not str(self.provider).strip():
@@ -61,15 +65,35 @@ class EmbeddingProfile:
             raise ValueError("embedding profile dimension must be positive")
         if str(self.similarity_metric).lower() not in {"cosine", "l2", "ip"}:
             raise ValueError("embedding profile similarity_metric must be cosine, l2, or ip")
+        if self.max_sequence_length is not None and int(self.max_sequence_length) <= 0:
+            raise ValueError("embedding profile max_sequence_length must be positive")
+        if self.crop_token_budget is not None and int(self.crop_token_budget) <= 0:
+            raise ValueError("embedding profile crop_token_budget must be positive")
+        if (
+            self.max_sequence_length is not None
+            and self.crop_token_budget is not None
+            and int(self.crop_token_budget) > int(self.max_sequence_length)
+        ):
+            raise ValueError("embedding profile crop_token_budget cannot exceed max_sequence_length")
+        if self.crop_policy is not None and not str(self.crop_policy).strip():
+            raise ValueError("embedding profile crop_policy must not be empty")
 
     def as_dict(self) -> dict[str, Any]:
-        return {
+        result = {
             "provider": str(self.provider).strip().lower(),
             "model": str(self.model).strip(),
             "dimension": int(self.dimension),
             "similarity_metric": str(self.similarity_metric).strip().lower(),
             "endpoint_fingerprint": self.endpoint_fingerprint,
         }
+        optional = {
+            "max_sequence_length": self.max_sequence_length,
+            "crop_token_budget": self.crop_token_budget,
+            "tokenizer_fingerprint": self.tokenizer_fingerprint,
+            "crop_policy": self.crop_policy,
+        }
+        result.update({key: value for key, value in optional.items() if value is not None})
+        return result
 
     @property
     def fingerprint(self) -> str:
@@ -91,6 +115,22 @@ class EmbeddingProfile:
                 if value.get("endpoint_fingerprint") is not None
                 else None
             ),
+            max_sequence_length=(
+                int(value["max_sequence_length"])
+                if value.get("max_sequence_length") is not None
+                else None
+            ),
+            crop_token_budget=(
+                int(value["crop_token_budget"])
+                if value.get("crop_token_budget") is not None
+                else None
+            ),
+            tokenizer_fingerprint=(
+                str(value["tokenizer_fingerprint"])
+                if value.get("tokenizer_fingerprint") is not None
+                else None
+            ),
+            crop_policy=(str(value["crop_policy"]) if value.get("crop_policy") is not None else None),
         )
 
 
