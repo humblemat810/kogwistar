@@ -29,7 +29,7 @@ def test_wheel_builder_uses_persisted_inspectable_entrypoints() -> None:
     assert "uv pip install --python /opt/build/bin/python" in dockerfile
     assert "/opt/build/bin/pip install" not in dockerfile
     assert (
-        'ENTRYPOINT ["/bin/sh", "/source/scripts/adr015_build_wheel.sh"]'
+        'ENTRYPOINT ["/bin/sh", "/source/scripts/build_wheel.sh"]'
         in dockerfile
     )
     assert "maturin build" in worker
@@ -89,8 +89,8 @@ def test_wheel_builder_source_fingerprint_tracks_dirty_and_untracked_inputs(
 
 
 def test_host_native_builder_and_smoke_are_persisted_and_abi_exact() -> None:
-    host_builder = ROOT / "scripts" / "adr015_build_host_native.py"
-    smoke = ROOT / "scripts" / "adr015_native_extension_smoke.py"
+    host_builder = ROOT / "scripts" / "host_native_wheel_builder.py"
+    smoke = ROOT / "scripts" / "native_extension_abi_smoke.py"
 
     source = host_builder.read_text(encoding="utf-8")
     smoke_source = smoke.read_text(encoding="utf-8")

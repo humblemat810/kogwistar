@@ -15,9 +15,9 @@ from typing import Any, Callable, Final, cast
 try:
     # Direct script execution places this file's directory on sys.path.
     # The package fallback keeps importlib-based test loading supported.
-    from adr015_source_identity import candidate_source_fingerprint  # type: ignore[import-not-found]
+    from source_fingerprint import candidate_source_fingerprint  # type: ignore[import-not-found]
 except ModuleNotFoundError:
-    from scripts.adr015_source_identity import candidate_source_fingerprint
+    from scripts.source_fingerprint import candidate_source_fingerprint
 
 
 ROOT: Final = Path(__file__).resolve().parents[1]
@@ -95,11 +95,11 @@ def _verification_harness_fingerprint(application_root: Path) -> str:
     """Hash suite-selection code/config so resume cannot cross harness changes."""
     files = [
         Path(__file__).resolve(),
-        ROOT / "scripts" / "adr015_candidate_identity.py",
-        ROOT / "scripts" / "adr015_source_identity.py",
-        ROOT / "scripts" / "adr015_container_worker.sh",
-        ROOT / "scripts" / "adr015_native_path.py",
-        ROOT / "scripts" / "adr015_pytest_bootstrap.py",
+        ROOT / "scripts" / "runtime_candidate_identity.py",
+        ROOT / "scripts" / "source_fingerprint.py",
+        ROOT / "scripts" / "container_worker.sh",
+        ROOT / "scripts" / "native_extension_path.py",
+        ROOT / "scripts" / "candidate_pytest_runner.py",
         ROOT / ".github" / "workflows" / "ci.yml",
         ROOT / "pytest.ini",
         ROOT / "tests" / "conftest.py",
@@ -342,7 +342,7 @@ def _identity(
         [
             str(python),
             "-P",
-            str(ROOT / "scripts" / "adr015_candidate_identity.py"),
+            str(ROOT / "scripts" / "runtime_candidate_identity.py"),
             str(expected),
         ],
         cwd=ROOT,
@@ -632,7 +632,7 @@ def _run_layer(
     progress: Callable[[dict[str, object]], None] | None = None,
 ) -> dict[str, object]:
     expression = _marker_expression(layer, profile)
-    bootstrap = ROOT / "scripts" / "adr015_pytest_bootstrap.py"
+    bootstrap = ROOT / "scripts" / "candidate_pytest_runner.py"
     expected_package = (ROOT / "kogwistar" / "__init__.py").resolve()
     target_groups = _target_groups(layer=layer, tests_path=tests_path, profile=profile)
 

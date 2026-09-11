@@ -30,7 +30,7 @@ def test_container_harness_uses_dual_venv_and_cleans_native_bridge() -> None:
     assert "mkdir -p /workspace/core /workspace/application/logs" in script
     assert "cp -a /source/core/. /workspace/core/" in script
     assert "cp -a /source/application/. /workspace/application/" in script
-    assert "/source/core/scripts/adr015_native_path.py" in script
+    assert "/source/core/scripts/native_extension_path.py" in script
     assert "python -P -c" not in script
     assert 'cp "$native" /workspace/core/kogwistar/_rust.abi3.so' in script
     assert "exec /opt/core/bin/python" in script
@@ -53,7 +53,7 @@ def test_container_harness_uses_dual_venv_and_cleans_native_bridge() -> None:
     assert "/opt/core/bin/pip install" not in dockerfile
     assert "/opt/consumer/bin/pip install" not in dockerfile
 
-    native_path_helper = ROOT / "scripts" / "adr015_native_path.py"
+    native_path_helper = ROOT / "scripts" / "native_extension_path.py"
     assert native_path_helper.is_file()
     assert "Path(native.__file__).resolve()" in native_path_helper.read_text(
         encoding="utf-8"

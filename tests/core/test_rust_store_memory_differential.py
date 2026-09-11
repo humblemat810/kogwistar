@@ -361,7 +361,7 @@ def test_cosine_vector_query_matches_python_memory_order_and_candidates(monkeypa
         backend, embedding=[1.0, 1.0], where={"team": "red"}, limit=5
     )
     assert [item["record"]["id"] for item in python_ties] == [
-        "z", "a", "missing", "mismatch", "zero"
+        "z", "a", "mismatch", "zero"
     ]
     result = _native(
         snapshot=snapshot,
@@ -377,14 +377,15 @@ def test_cosine_vector_query_matches_python_memory_order_and_candidates(monkeypa
         store="graph",
     )
     assert [item["record"]["id"] for item in result] == [
-        "z", "a", "missing", "mismatch", "zero"
+        "z", "a", "mismatch", "zero"
     ]
     for expected, actual in zip(python_ties, result, strict=True):
         assert expected["record"]["id"] == actual["record"]["id"]
         assert actual["distance"] == pytest.approx(expected["distance"], abs=1e-6)
-    assert [item["distance"] for item in result[-3:]] == [2.0, 2.0, 2.0]
+    assert [item["distance"] for item in result[-2:]] == [2.0, 2.0]
 
-    # Dimension mismatch and zero query vector remain normal candidates at 2.0.
+    # Dimension mismatch and zero vector remain candidates at 2.0; missing
+    # embeddings remain invisible to semantic search.
     python_short = _python_vector_matches(backend, embedding=[1.0], where=None, limit=5)
     short = _native(
         snapshot=snapshot,
@@ -398,8 +399,8 @@ def test_cosine_vector_query_matches_python_memory_order_and_candidates(monkeypa
         python_value=python_short,
         store="graph",
     )
-    assert [item["record"]["id"] for item in short] == ["z", "a", "missing", "mismatch", "zero"]
-    assert [item["distance"] for item in short] == [2.0] * 5
+    assert [item["record"]["id"] for item in short] == ["z", "a", "mismatch", "zero"]
+    assert [item["distance"] for item in short] == [2.0] * 4
 
     python_zero = _python_vector_matches(backend, embedding=[0.0, 0.0], where=None, limit=5)
     zero = _native(
@@ -414,7 +415,7 @@ def test_cosine_vector_query_matches_python_memory_order_and_candidates(monkeypa
         python_value=python_zero,
         store="graph",
     )
-    assert [item["distance"] for item in zero] == [2.0] * 5
+    assert [item["distance"] for item in zero] == [2.0] * 4
     assert _state_hash(backend) == before
 
 

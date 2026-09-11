@@ -8,30 +8,30 @@ The persisted test harness is:
   timing history, resume, and candidate reports.
 - `scripts/rust_port_container_compat.py`: immutable source staging, cached test
   image construction, ordinary-container workers, cleanup, and report merge.
-- `scripts/adr015_container.Dockerfile`: inspectable dual-venv image recipe.
-- `scripts/adr015_container_worker.sh`: inspectable container entry point.
-- `scripts/adr015_native_path.py`: inspectable native-extension locator used by
+- `scripts/container.Dockerfile`: inspectable dual-venv image recipe.
+- `scripts/container_worker.sh`: inspectable container entry point.
+- `scripts/native_extension_path.py`: inspectable native-extension locator used by
   container staging; no inline Python command is embedded in shell.
-- `scripts/adr015_pytest_bootstrap.py`: inspectable import-provenance check and
+- `scripts/candidate_pytest_runner.py`: inspectable import-provenance check and
   `pytest.main()` entry point.
-- `scripts/adr015_candidate_identity.py`: inspectable candidate import,
+- `scripts/runtime_candidate_identity.py`: inspectable candidate import,
   interpreter, ABI, native-extension, and environment identity probe.
-- `scripts/adr015_source_identity.py`: shared candidate-source hash used by
+- `scripts/source_fingerprint.py`: shared candidate-source hash used by
   wheel construction and four-layer evidence; source drift fails closed.
 - `scripts/rust_port_build_wheel.py`: host orchestrator for a current-source
   Linux candidate wheel.
-- `scripts/adr015_build_host_native.py` and
-  `scripts/adr015_native_extension_smoke.py`: host-native exact-Python-ABI
+- `scripts/host_native_wheel_builder.py` and
+  `scripts/native_extension_abi_smoke.py`: host-native exact-Python-ABI
   builder and smoke gate for focused Windows/local tests.
-- `scripts/adr015_wheel_builder.Dockerfile` and
-  `scripts/adr015_build_wheel.sh`: inspectable pinned Rust/maturin build image
+- `scripts/wheel_builder.Dockerfile` and
+  `scripts/build_wheel.sh`: inspectable pinned Rust/maturin build image
   and entry point; no inline build script is generated.
 - `scripts/rust_port_test_compare.py`: identity- and coverage-checked serial
   versus parallel comparison.
-- `scripts/adr015_consumer_uat.py`: clean-wheel public selection, raw-writer
+- `scripts/wheel_consumer_uat.py`: clean-wheel public selection, raw-writer
   closure, rollback, and three fresh Rust -> Python -> Rust persisted SQLite
   processes. It deliberately rejects live mixed ownership as a release claim.
-- `scripts/adr015_sqlite_owner_uat.py`: small persisted-owner restart-only
+- `scripts/sqlite_restart_compatibility_uat.py`: small persisted-owner restart-only
   compatibility probe for focused diagnosis.
 
 No executable test logic is stored in `.codex` or generated temporary scripts.
@@ -86,7 +86,7 @@ both meta/graph selectors set to `rust` is required. Its current gates prove
 bounded implementation paths; they do not flip any PostgreSQL readiness flag.
 
 SQLite cross-owner compatibility is a restart operation only: stop the old
-process, then start the new owner. `adr015_sqlite_owner_uat.py` proves this as
+process, then start the new owner. `sqlite_restart_compatibility_uat.py` proves this as
 three separate child processes. It is not evidence for simultaneous
 multi-process SQLite ownership, HA, or live handoff.
 
@@ -148,7 +148,7 @@ Bounded consumer UAT, after installing the candidate wheel into a clean
 interpreter (or the dual-venv container):
 
 ```powershell
-<clean-python> scripts\adr015_consumer_uat.py `
+<clean-python> scripts\wheel_consumer_uat.py `
   --workdir <empty-temp-directory> `
   --report <evidence-directory>\adr015-sqlite-owner-uat.json
 ```

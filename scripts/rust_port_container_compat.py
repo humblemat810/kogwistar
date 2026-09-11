@@ -16,16 +16,16 @@ from typing import Final
 try:
     # Direct script execution places this file's directory on sys.path.
     # The package fallback keeps importlib-based test loading supported.
-    from adr015_source_identity import candidate_source_fingerprint  # type: ignore[import-not-found]
+    from source_fingerprint import candidate_source_fingerprint  # type: ignore[import-not-found]
 except ModuleNotFoundError:
-    from scripts.adr015_source_identity import candidate_source_fingerprint
+    from scripts.source_fingerprint import candidate_source_fingerprint
 
 
 ROOT: Final = Path(__file__).resolve().parents[1]
 DEFAULT_IMAGE: Final = "python:3.13.14-slim-bookworm"
 _LAYERS: Final = ("core", "parser", "sink", "application")
-_WORKER_SCRIPT: Final = ROOT / "scripts" / "adr015_container_worker.sh"
-_DOCKERFILE: Final = ROOT / "scripts" / "adr015_container.Dockerfile"
+_WORKER_SCRIPT: Final = ROOT / "scripts" / "container_worker.sh"
+_DOCKERFILE: Final = ROOT / "scripts" / "container.Dockerfile"
 
 
 def _sha256(path: Path) -> str:
@@ -59,9 +59,9 @@ def _orchestrator_fingerprint() -> str:
         Path(__file__).resolve(),
         _WORKER_SCRIPT,
         _DOCKERFILE,
-        ROOT / "scripts" / "adr015_native_path.py",
-        ROOT / "scripts" / "adr015_candidate_identity.py",
-        ROOT / "scripts" / "adr015_source_identity.py",
+        ROOT / "scripts" / "native_extension_path.py",
+        ROOT / "scripts" / "runtime_candidate_identity.py",
+        ROOT / "scripts" / "source_fingerprint.py",
         ROOT / "scripts" / "rust_port_test_compare.py",
     ):
         digest.update(path.relative_to(ROOT).as_posix().encode())
@@ -564,7 +564,7 @@ def main() -> int:
                         "/tmp:exec,size=4g",
                         image,
                         "/bin/sh",
-                        "/source/core/scripts/adr015_container_worker.sh",
+                        "/source/core/scripts/container_worker.sh",
                         *common_args,
                         "--shard-index",
                         str(shard_index),

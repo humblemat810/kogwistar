@@ -8,11 +8,11 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[2]
-SCRIPT = ROOT / "scripts" / "adr015_phase5_server_gate.py"
+SCRIPT = ROOT / "scripts" / "server_contract_gate.py"
 
 
 def _gate() -> ModuleType:
-    spec = importlib.util.spec_from_file_location("adr015_phase5_server_gate", SCRIPT)
+    spec = importlib.util.spec_from_file_location("server_contract_gate", SCRIPT)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

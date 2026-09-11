@@ -27,6 +27,8 @@ from kogwistar.conversation.models import ConversationNode
 from kogwistar.conversation.service import ConversationService
 from kogwistar.engine_core.models import Grounding, Node, Span
 from kogwistar.runtime.runtime import RunResult
+from kogwistar.runtime.telemetry import EventEmitter, TraceContext
+from kogwistar.runtime.telemetry_otel import OpenTelemetrySink
 from kogwistar.runtime.design import load_workflow_design
 from kogwistar.runtime.models import (
     WorkflowCancelledNode,
@@ -2954,3 +2956,87 @@ def test_admin_delete_doc_raises_when_backend_delete_fails(monkeypatch):
     assert exc_info.value.detail == (
         f"Failed to delete document {doc_id!r} during edge_refs_delete"
     )
+
+
+def test_workflow_run_submit_goal_payload_survives_failing_otel_sink(
+    monkeypatch, engine_triplet
+):
+    """Goal is ordinary workflow state; OTel failure cannot fail its endpoint run."""
+    engine, conversation_engine, workflow_engine = engine_triplet
+    captured: dict[str, object] = {}
+
+    class _FailingOtelTracer:
+        def start_span(self, *_args, **_kwargs):
+            raise RuntimeError("simulated OTel exporter failure")
+
+    def _runtime_runner(req: RuntimeRunRequest) -> dict[str, object]:
+        captured["claims"] = req.auth_claims
+        captured["initial_state"] = dict(req.initial_state)
+        sink = OpenTelemetrySink(_FailingOtelTracer(), queue_max=1)
+        try:
+            emitter = EventEmitter(sink=sink)
+            emitter.emit(
+                type="workflow_run_started",
+                ctx=TraceContext.new_root(
+                    run_id=req.run_id,
+                    token_id="goal-token",
+                    step_seq=0,
+                    node_id="goal-start",
+                ),
+            )
+        finally:
+            sink.close(timeout=1.0)
+        return {
+            "workflow_status": "succeeded",
+            "final_state": {
+                **req.initial_state,
+                "goal_status": "satisfied",
+            },
+        }
+
+    _configure_server(
+        monkeypatch,
+        engine,
+        conversation_engine,
+        workflow_engine,
+        _debug_rag_runner,
+        runtime_runner=_runtime_runner,
+    )
+
+    with TestClient(server.app) as client:
+        headers = _token_header(client, role="rw", ns="workflow,conversation")
+        conv = client.post(
+            "/api/conversations",
+            json={"user_id": "goal-api-user"},
+            headers=headers,
+        )
+        assert conv.status_code == 200, conv.text
+        response = client.post(
+            "/api/workflow/runs",
+            json={
+                "workflow_id": "goal.control.v1",
+                "conversation_id": conv.json()["conversation_id"],
+                "initial_state": {
+                    "goal_id": "goal-api-1",
+                    "goal_objective": "complete smoke test",
+                    "goal_iteration": 0,
+                },
+            },
+            headers=headers,
+        )
+        assert response.status_code == 202, response.text
+        result = _wait_for_status(
+            client,
+            response.json()["run_id"],
+            headers,
+            {"succeeded"},
+            path_template="/api/workflow/runs/{run_id}",
+        )
+
+    assert result["status"] == "succeeded"
+    assert captured["claims"]
+    assert captured["initial_state"] == {
+        "goal_id": "goal-api-1",
+        "goal_objective": "complete smoke test",
+        "goal_iteration": 0,
+    }

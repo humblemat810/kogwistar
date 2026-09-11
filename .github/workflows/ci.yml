@@ -43,7 +43,7 @@ jobs:
           python -m pip install -e ".[test,server,full]"
       - name: Verify package import
         run: |
-          python scripts/adr015_package_import_smoke.py
+          python scripts/package_import_provenance_smoke.py
       - name: Show CI working directory and tree
         run: |
           echo "PWD=$(pwd)"
@@ -226,7 +226,7 @@ jobs:
           python -m maturin build --release --locked --out wheelhouse
 
       - name: Install and smoke native wheel
-        run: python scripts/adr015_native_wheel_smoke.py --wheelhouse wheelhouse
+        run: python scripts/native_wheel_contract_smoke.py --wheelhouse wheelhouse
 
   ci_full:
     if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.full == true)

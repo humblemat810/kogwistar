@@ -9,9 +9,9 @@ from typing import Any
 
 try:
     # Script entry point imports its sibling without package qualification.
-    from adr015_source_identity import candidate_source_fingerprint  # type: ignore[import-not-found]
+    from source_fingerprint import candidate_source_fingerprint  # type: ignore[import-not-found]
 except ModuleNotFoundError:  # imported as a repository module in unit tests
-    from scripts.adr015_source_identity import candidate_source_fingerprint
+    from scripts.source_fingerprint import candidate_source_fingerprint
 
 
 ROOT = Path(__file__).resolve().parents[1]

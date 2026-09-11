@@ -1,6 +1,93 @@
+import hashlib
+import uuid
+from pathlib import Path
 from typing import Any, Dict
 
 from .async_compat import run_awaitable_blocking
+from .embedding_profile import EmbeddingStorageState
+
+
+_VECTOR_COLLECTION_NAMES = (
+    "nodes_index",
+    "nodes",
+    "edges",
+    "edge_endpoints",
+    "documents",
+    "domains",
+    "node_docs",
+)
+
+
+def _chroma_scope(persist_directory: str | None) -> str:
+    # The profile binding is stored in this directory's metadata database.
+    # A portable identity must therefore survive copying the complete bundle
+    # to a new host/path; the metadata database provides the physical scope.
+    if not persist_directory:
+        return "chroma:ephemeral"
+    root = Path(persist_directory)
+    marker = root / ".kogwistar-storage-identity"
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        identity = marker.read_text(encoding="ascii").strip()
+        if not identity:
+            raise ValueError("empty storage identity")
+    except (FileNotFoundError, ValueError):
+        identity = uuid.uuid4().hex
+        try:
+            with marker.open("x", encoding="ascii") as handle:
+                handle.write(identity + "\n")
+        except FileExistsError:
+            identity = marker.read_text(encoding="ascii").strip()
+    return f"chroma:bundle:{identity}"
+
+
+def _legacy_chroma_scope(persist_directory: str | None) -> str:
+    value = persist_directory or "chroma:ephemeral"
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:32]
+    return f"chroma:{digest}"
+
+
+class ChromaStorageInspector:
+    """Inspect existing collections without passing an embedder to Chroma."""
+
+    def __init__(self, client: Any, persist_directory: str | None) -> None:
+        self._client = client
+        self._persist_directory = (
+            str(Path(persist_directory).expanduser().resolve())
+            if persist_directory
+            else None
+        )
+
+    def embedding_storage_scope(self) -> str:
+        return _chroma_scope(self._persist_directory)
+
+    def embedding_storage_scope_aliases(self) -> tuple[str, ...]:
+        legacy = _legacy_chroma_scope(self._persist_directory)
+        current = self.embedding_storage_scope()
+        return (legacy,) if legacy != current else ()
+
+    def inspect_embedding_storage(self) -> EmbeddingStorageState:
+        existing = {
+            str(getattr(item, "name", item))
+            for item in self._client.list_collections()
+        }
+        counts: list[str] = []
+        total = 0
+        for name in _VECTOR_COLLECTION_NAMES:
+            count = (
+                int(self._client.get_collection(name=name).count())
+                if name in existing
+                else 0
+            )
+            total += count
+            counts.append(f"{name}={count}")
+        return EmbeddingStorageState(
+            backend_kind="chroma",
+            storage_scope=self.embedding_storage_scope(),
+            persistent=self._persist_directory is not None,
+            vector_count=total,
+            details=tuple(counts),
+        )
 
 
 def _chroma_safe_kwargs(kwargs: Dict[str, Any]) -> Dict[str, Any]:
@@ -79,6 +166,7 @@ class ChromaBackend:
         node_docs_collection: Any,
         node_refs_collection: Any,
         edge_refs_collection: Any,
+        persist_directory: str | None = None,
     ):
         self._collections: Dict[str, Any] = {
             "node_index": node_index_collection,
@@ -91,6 +179,42 @@ class ChromaBackend:
             "node_refs": node_refs_collection,
             "edge_refs": edge_refs_collection,
         }
+        self._persist_directory = (
+            str(Path(persist_directory).expanduser().resolve())
+            if persist_directory
+            else None
+        )
+
+    def embedding_storage_scope(self) -> str:
+        """Return a stable, secret-free identity for this Chroma directory."""
+
+        return _chroma_scope(self._persist_directory)
+
+    def inspect_embedding_storage(self) -> EmbeddingStorageState:
+        """Count all collections that participate in semantic vector storage."""
+
+        vector_keys = (
+            "node_index",
+            "node",
+            "edge",
+            "edge_endpoints",
+            "document",
+            "domain",
+            "node_docs",
+        )
+        counts: list[str] = []
+        total = 0
+        for key in vector_keys:
+            count = int(self._c(key).count())
+            total += count
+            counts.append(f"{key}={count}")
+        return EmbeddingStorageState(
+            backend_kind="chroma",
+            storage_scope=self.embedding_storage_scope(),
+            persistent=self._persist_directory is not None,
+            vector_count=total,
+            details=tuple(counts),
+        )
 
     def _c(self, key: str) -> Any:
         try:
@@ -165,7 +289,10 @@ class ChromaBackend:
         return self.call("edge_endpoints", "get", **kwargs)
 
     def edge_endpoints_query(self, **kwargs) -> Any:
-        return self.call("edge_endpoints", "query", **kwargs)
+        raise ValueError(
+            "edge_endpoints is structural; semantic query is unsupported; "
+            "use edge_endpoints_get with metadata filters"
+        )
 
     def edge_endpoints_add(self, **kwargs) -> Any:
         return self.call("edge_endpoints", "add", **kwargs)
@@ -276,4 +403,31 @@ class ChromaBackend:
 
 
 class AsyncChromaBackend(ChromaBackend):
-    pass
+    """Chroma facade retaining sync API while exposing non-blocking verbs."""
+
+    is_async_backend = True
+
+    async def async_call(self, collection_key: str, method: str, **kwargs) -> Any:
+        coll = self._c(collection_key)
+        result = getattr(coll, method)(**_chroma_safe_kwargs(kwargs))
+        if hasattr(result, "__await__"):
+            result = await result
+        return result
+
+    async def async_node_get(self, **kwargs) -> Any:
+        return await self.async_call("node", "get", **kwargs)
+
+    async def async_node_upsert(self, **kwargs) -> Any:
+        return await self.async_call("node", "upsert", **kwargs)
+
+    async def async_node_delete(self, **kwargs) -> Any:
+        return await self.async_call("node", "delete", **kwargs)
+
+    async def async_edge_get(self, **kwargs) -> Any:
+        return await self.async_call("edge", "get", **kwargs)
+
+    async def async_edge_upsert(self, **kwargs) -> Any:
+        return await self.async_call("edge", "upsert", **kwargs)
+
+    async def async_edge_delete(self, **kwargs) -> Any:
+        return await self.async_call("edge", "delete", **kwargs)

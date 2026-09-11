@@ -47,6 +47,7 @@ If the README uses terms like `substrate`, `harness`, `projection`, or `replay`,
 24. [24 ACL Visibility and Auditing](./tutorials/24_acl_visibility_tutorial.md)
 25. [25 Async Runtime Basics](./tutorials/25_async_runtime_tutorial.md)
 26. [26 Recovery and Durable Operational State](./tutorials/26_recovery_and_durable_operational_state.md)
+27. [27 Building Reliable Workflow Loops](./tutorials/27_building_reliable_workflow_loops.md)
 
 ## How To Use The Tutorials
 

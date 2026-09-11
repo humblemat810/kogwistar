@@ -56,7 +56,13 @@ langgraph = ["langgraph>=0.6.5"]
 ingestion-openai = ["langchain-core>=0.3.0", "langchain-openai>=0.3.0"]
 ingestion-gemini = ["langchain-core>=0.3.0", "langchain-google-genai>=2.0.0"]
 mcp-adapter = ["langchain-mcp-adapters>=0.0.8"]
+otel = [
+  "opentelemetry-api>=1.24",
+  "opentelemetry-sdk>=1.24",
+  "opentelemetry-exporter-otlp>=1.24",
+]
 viz = ["pygraphviz>=1.14"]
+browser = ["playwright>=1.45,<2"]
 test = [
   "pytest>=8",
   "pytest-asyncio>=1.1.0",
@@ -64,7 +70,8 @@ test = [
   "pytest-xdist>=3.8,<4",
   "testcontainers>=4.0"
 ]
-lint = ["ruff>=0.5"]
+# Pin lint behavior so local and CI runs use the same Ruff release.
+lint = ["ruff==0.16.7"]
 typecheck = ["mypy>=1.8"]
 build = ["build", "twine"]
 rust = ["maturin>=1.7,<2"]
@@ -100,7 +107,7 @@ include = ["kogwistar*"]
 exclude = ["*.tests*", "*.test*", "tests*", "examples*", "diagnostic*"]
 
 [tool.setuptools.package-data]
-kogwistar = ["templates/*.html"]
+kogwistar = ["templates/*.html", "templates/*.js", "templates/*.txt"]
 
 [tool.setuptools.exclude-package-data]
 kogwistar = [".env", ".env.*", "*.env", "*.env.*", "*.sqlite", "*.db", "*.pem", "*.key", "*.pfx", "*.p12", "*.crt", "*.cer"]
@@ -128,6 +135,8 @@ markers = [
 extend-exclude = ["pytest-cache-files-*", ".pytest*"]
 
 [tool.ruff.lint]
+# Preserve the project's established legacy Ruff checks across releases.
+select = ["E4", "E7", "E9", "F"]
 # Existing modules intentionally use late imports for optional dependencies and
 # tests commonly import fixtures whose names are then injected as parameters.
 ignore = ["E402", "E731", "E741", "F811", "F841"]
@@ -148,4 +157,6 @@ bindings = "pyo3"
 include = [
   { path = "contracts/**/*.json", format = "sdist" },
   { path = "kogwistar/templates/*.html", format = "sdist" },
+  { path = "kogwistar/templates/*.js", format = "sdist" },
+  { path = "kogwistar/templates/*.txt", format = "sdist" },
 ]

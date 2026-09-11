@@ -51,6 +51,34 @@ def test_in_memory_meta_index_jobs_and_event_log_contract() -> None:
     meta.mark_index_job_done("job-1")
     assert meta.list_index_jobs(namespace="ns-a", status="DONE", limit=10)[0].job_id == "job-1"
 
+
+def test_in_memory_meta_claim_result_is_first_live_winner() -> None:
+    meta = InMemoryMetaStore()
+    meta.enqueue_index_job(
+        job_id="candidate-job",
+        namespace="maintenance",
+        entity_kind="maintenance",
+        entity_id="doc-1",
+        index_kind="parse",
+        op="UPSERT",
+    )
+    claim = meta.claim_index_jobs(limit=1, lease_seconds=30, namespace="maintenance")[0]
+    first = meta.accept_index_job_result(
+        claim.job_id,
+        claim_token=claim.claim_token or "",
+        result_json='{"winner":1}',
+        result_sha256="digest-1",
+    )
+    assert first["status"] == "accepted"
+    duplicate = meta.accept_index_job_result(
+        claim.job_id,
+        claim_token="different-worker",
+        result_json='{"winner":2}',
+        result_sha256="digest-2",
+    )
+    assert duplicate["status"] == "existing"
+    assert duplicate["result_json"] == '{"winner":1}'
+
     jid2 = meta.enqueue_index_job(
         job_id="job-2",
         namespace="ns-a",

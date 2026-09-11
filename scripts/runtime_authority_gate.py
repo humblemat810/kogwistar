@@ -17,9 +17,9 @@ from typing import Any
 from xml.etree import ElementTree
 
 try:
-    from adr015_source_identity import candidate_source_fingerprint
+    from source_fingerprint import candidate_source_fingerprint
 except ModuleNotFoundError:  # imported as a repository module in tests
-    from scripts.adr015_source_identity import candidate_source_fingerprint
+    from scripts.source_fingerprint import candidate_source_fingerprint
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -68,7 +68,7 @@ def _args() -> argparse.Namespace:
 def _load_native_report(path: Path, source_sha256: str) -> dict[str, Any]:
     if not path.is_file():
         raise RuntimeError(
-            "missing current native report; run scripts/adr015_build_host_native.py first"
+            "missing current native report; run scripts/host_native_wheel_builder.py first"
         )
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict) or payload.get("schema") != "adr015-host-native/v1":

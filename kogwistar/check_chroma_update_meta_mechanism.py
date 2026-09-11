@@ -1,7 +1,8 @@
 import chromadb
+from chromadb.config import Settings
 
 # --- Connect to Chroma ---
-client = chromadb.Client()
+client = chromadb.Client(Settings(anonymized_telemetry=False))
 
 # --- Create or get collection ---
 collection = client.get_or_create_collection(name="my_collection")

@@ -14,11 +14,21 @@ from .utils import AliasBook
 from .async_compat import run_sync_or_awaitable
 from .async_compat import run_awaitable_blocking
 
-from .chroma_backend import ChromaBackend
+from .chroma_backend import ChromaBackend, ChromaStorageInspector
 
 
 from .rust_meta_sqlite import build_sqlite_meta_store
-from .storage_backend import NoopUnitOfWork, StorageBackend
+from .storage_backend import (
+    NoopUnitOfWork,
+    StorageBackend,
+    get_async_two_stage_projection_adapter,
+    get_two_stage_projection_adapter,
+    get_two_stage_projection_capability,
+)
+from .embedding_profile import (
+    EmbeddingProfile,
+    EmbeddingProfileRegistry,
+)
 from ..workers.index_job_worker import IndexJobWorker
 from ..utils.log import bind_log_context
 from .indexing import IndexingSubsystem
@@ -201,6 +211,8 @@ def _build_postgres_uow_if_needed(backend: StorageBackend):
     if not _is_pgvector_backend_instance(backend):
         return NoopUnitOfWork()
     if getattr(backend, "_is_async_engine", False):
+        # Engine.uow() is a synchronous compatibility surface. Async callers
+        # use the separate async UOW installed by GraphKnowledgeEngine.
         return NoopUnitOfWork()
     try:
         from kogwistar.engine_core.postgres_backend import (
@@ -868,31 +880,22 @@ class GraphKnowledgeEngine:
         entity_id: str,
         op: str,
         payload: dict,
+        required: bool = False,
     ) -> None:
         """
-        Best-effort append to the meta outbox. Must never block the primary write path.
-        Replay suppresses this via self._disable_event_log.
-        """
-        """
-        ### Replay vs Repair Replay (Event Sourcing / Projections)
+        Append a domain event to the meta event log.
 
-        The entity event log (`entity_events`) is the source of truth. Storage backends (Chroma / pgvector)
-        are projections derived from the event stream.
-
-        - `replay_namespace(...)` replays events to rebuild projection state.
-        - For create-only backends like Chroma (`collection.add`), normal replay can rebuild missing ids,
-            but cannot overwrite ids that already exist with corrupted/tampered content.
-
-        - `replay_namespace(..., repair_backend=True)` (or `replay_repair_namespace(...)`) performs a
-        "repair replay" that best-effort overwrites projection state to match the event log.
-        - Use this when you suspect backend drift/tampering.
-
-        Invariant: replay never emits new `entity_events` (guarded by `_disable_event_log`).
+        Ordinary lifecycle telemetry may retain best-effort behavior. Canonical
+        admission passes ``required=True`` so a backend projection cannot become
+        visible without its replay authority being durable first. Replay suppresses
+        all re-append attempts via ``self._disable_event_log``.
         """
         if getattr(self, "_disable_event_log", False):
             return
         append = getattr(self.meta_sqlite, "append_entity_event", None)
         if append is None:
+            if required:
+                raise RuntimeError("canonical event store does not support append_entity_event")
             return
 
         event_id = str(uuid.uuid4())
@@ -1241,6 +1244,9 @@ class GraphKnowledgeEngine:
         acl_enabled: bool = False,
         acl_cache_enabled: bool = True,
         acl_startup_repair_limit: int = 0,
+        persistence_mode: str = "single_stage",
+        embedding_profile: EmbeddingProfile | None = None,
+        embedding_profile_mode: str = "enforce",
     ):
         """
         embedding_function: callable(texts: List[str]) -> List[List[float]].
@@ -1249,7 +1255,21 @@ class GraphKnowledgeEngine:
           - ENV SENTENCE_TRANSFORMERS_MODEL, or
           - "all-MiniLM-L6-v2".
         """
+        if persistence_mode not in {"single_stage", "two_stage"}:
+            raise ValueError(
+                "persistence_mode must be 'single_stage' or 'two_stage', "
+                f"got {persistence_mode!r}"
+            )
+        if embedding_profile_mode not in {"enforce", "inspect", "adopt"}:
+            raise ValueError(
+                "embedding_profile_mode must be 'enforce', 'inspect', or 'adopt'"
+            )
+
         load_dotenv()
+        self.persistence_mode = persistence_mode
+        self.embedding_profile = embedding_profile
+        self.embedding_profile_mode = embedding_profile_mode
+        self.embedding_profile_report: dict[str, Any] | None = None
         self.kg_graph_type = normalize_graph_kind(kg_graph_type)
         self.persist_directory = persist_directory
         self.namespace = namespace
@@ -1335,6 +1355,7 @@ class GraphKnowledgeEngine:
             return vecs[0] if vecs else None
 
         self._embed_one = _embed_one
+        embedding_profile_checked = False
         if backend_factory is not None:
             if backend is not None:
                 raise ValueError("Backend factory and backend can only either be specified")
@@ -1344,6 +1365,34 @@ class GraphKnowledgeEngine:
                     pathlib.Path(persist_directory or "./chroma_db"), "meta.sqlite"
                 )
             self.meta_sqlite.ensure_initialized()
+            if self.persistence_mode == "two_stage" and (
+                getattr(self.backend, "_is_async_engine", False)
+                or getattr(self.backend, "is_async_backend", False)
+            ):
+                from .two_stage_async import (
+                    AsyncChromaTwoStageProjectionAdapter,
+                    AsyncPostgresTwoStageProjectionAdapter,
+                    async_transient_two_stage_capability,
+                )
+
+                if self.backend.__class__.__name__ == "AsyncChromaBackend":
+                    self.backend.two_stage_projection_capability = (
+                        async_transient_two_stage_capability(
+                            "async SQLite Stage-1 with async Chroma Stage-2"
+                        )
+                    )
+                    self.backend.async_two_stage_projection_adapter = (
+                        AsyncChromaTwoStageProjectionAdapter(self)
+                    )
+                elif getattr(self.backend, "_is_async_engine", False):
+                    self.backend.two_stage_projection_capability = (
+                        async_transient_two_stage_capability(
+                            "async PostgreSQL transient Stage-1 and pgvector Stage-2"
+                        )
+                    )
+                    self.backend.async_two_stage_projection_adapter = (
+                        AsyncPostgresTwoStageProjectionAdapter(self)
+                    )
         elif backend is None or (type(backend) is str and backend == "chroma"):
             # 2) Chroma client + collections; inject embedder on vectorized collections
             ChromaClient, ChromaSettings = _import_chroma_client()
@@ -1354,43 +1403,74 @@ class GraphKnowledgeEngine:
                     anonymized_telemetry=False,
                 )
             )
+            self.meta_sqlite = build_sqlite_meta_store(
+                pathlib.Path(persist_directory or "./chroma_db"), "meta.sqlite"
+            )
+            self.meta_sqlite.ensure_initialized()
+            if self.embedding_profile is not None:
+                inspector = ChromaStorageInspector(
+                    self.chroma_client, persist_directory or "./chroma_db"
+                )
+                registry = EmbeddingProfileRegistry(self.meta_sqlite)
+                if self.embedding_profile_mode == "inspect":
+                    self.embedding_profile_report = registry.inspect(
+                        inspector, configured=self.embedding_profile
+                    )
+                else:
+                    self.embedding_profile = registry.ensure_bound(
+                        inspector,
+                        self.embedding_profile,
+                        allow_legacy_adoption=self.embedding_profile_mode == "adopt",
+                    )
+                    self.embedding_profile_report = registry.inspect(
+                        inspector, configured=self.embedding_profile
+                    )
+                embedding_profile_checked = True
             # IMPORTANT: pass embedding_function to vector collections
+            collection_embedding_function = (
+                None if self.embedding_profile_mode == "inspect" else self._ef
+            )
+            collection_metric = (
+                self.embedding_profile.similarity_metric
+                if self.embedding_profile is not None
+                else "cosine"
+            )
             from threading import Lock
 
             self.collection_lock = {"node": Lock(), "edge": Lock()}
 
             self.node_index_collection = self.chroma_client.get_or_create_collection(
                 "nodes_index",
-                embedding_function=self._ef,
-                metadata={"hnsw:space": "cosine"},
+                embedding_function=collection_embedding_function,
+                metadata={"hnsw:space": collection_metric},
             )
             self.node_collection = self.chroma_client.get_or_create_collection(
-                "nodes", embedding_function=self._ef, metadata={"hnsw:space": "cosine"}
+                "nodes", embedding_function=collection_embedding_function, metadata={"hnsw:space": collection_metric}
             )
             self.edge_collection = self.chroma_client.get_or_create_collection(
-                "edges", embedding_function=self._ef, metadata={"hnsw:space": "cosine"}
+                "edges", embedding_function=collection_embedding_function, metadata={"hnsw:space": collection_metric}
             )
             self.edge_endpoints_collection = (
                 self.chroma_client.get_or_create_collection(
                     "edge_endpoints",
-                    embedding_function=self._ef,
-                    metadata={"hnsw:space": "cosine"},
+                    embedding_function=collection_embedding_function,
+                    metadata={"hnsw:space": collection_metric},
                 )
             )
             self.document_collection = self.chroma_client.get_or_create_collection(
                 "documents",
-                embedding_function=self._ef,
-                metadata={"hnsw:space": "cosine"},
+                embedding_function=collection_embedding_function,
+                metadata={"hnsw:space": collection_metric},
             )
             self.domain_collection = self.chroma_client.get_or_create_collection(
                 "domains",
-                embedding_function=self._ef,
-                metadata={"hnsw:space": "cosine"},
+                embedding_function=collection_embedding_function,
+                metadata={"hnsw:space": collection_metric},
             )
             self.node_docs_collection = self.chroma_client.get_or_create_collection(
                 "node_docs",
-                embedding_function=self._ef,
-                metadata={"hnsw:space": "cosine"},
+                embedding_function=collection_embedding_function,
+                metadata={"hnsw:space": collection_metric},
             )
             self.node_refs_collection = self.chroma_client.get_or_create_collection(
                 "node_refs"
@@ -1409,11 +1489,53 @@ class GraphKnowledgeEngine:
                 node_docs_collection=self.node_docs_collection,
                 node_refs_collection=self.node_refs_collection,
                 edge_refs_collection=self.edge_refs_collection,
+                persist_directory=persist_directory or "./chroma_db",
             )
-            self.meta_sqlite = build_sqlite_meta_store(
-                pathlib.Path(persist_directory or "./chroma_db"), "meta.sqlite"
-            )
-            self.meta_sqlite.ensure_initialized()
+            if self.persistence_mode == "two_stage" and (
+                getattr(self.backend, "_is_async_engine", False)
+                or getattr(self.backend, "is_async_backend", False)
+            ):
+                from .postgres_backend import PgVectorBackend
+                from .two_stage_async import (
+                    AsyncPostgresTwoStageProjectionAdapter,
+                    async_transient_two_stage_capability,
+                )
+
+                if isinstance(self.backend, PgVectorBackend):
+                    self.backend.two_stage_projection_capability = (
+                        async_transient_two_stage_capability(
+                            "async PostgreSQL transient Stage-1 and pgvector Stage-2"
+                        )
+                    )
+                    self.backend.async_two_stage_projection_adapter = (
+                        AsyncPostgresTwoStageProjectionAdapter(self)
+                    )
+                elif self.backend.__class__.__name__ == "AsyncChromaBackend":
+                    from .two_stage_async import AsyncChromaTwoStageProjectionAdapter
+
+                    self.backend.two_stage_projection_capability = (
+                        async_transient_two_stage_capability(
+                            "async SQLite Stage-1 with async Chroma Stage-2"
+                        )
+                    )
+                    self.backend.async_two_stage_projection_adapter = (
+                        AsyncChromaTwoStageProjectionAdapter(self)
+                    )
+            if self.persistence_mode == "two_stage" and not (
+                getattr(self.backend, "_is_async_engine", False)
+                or getattr(self.backend, "is_async_backend", False)
+            ):
+                from .two_stage_chroma import (
+                    SQLiteChromaTwoStageProjectionAdapter,
+                    chroma_two_stage_capability,
+                )
+
+                self.backend.two_stage_projection_capability = (
+                    chroma_two_stage_capability()
+                )
+                self.backend.two_stage_projection_adapter = (
+                    SQLiteChromaTwoStageProjectionAdapter(self)
+                )
         elif _is_pgvector_backend_instance(backend):
             from .engine_postgres_meta import EnginePostgresMetaStore
             from .rust_postgres_session import RustEnginePostgresMetaStore
@@ -1432,11 +1554,6 @@ class GraphKnowledgeEngine:
             graph_mode = graph_store_implementation_mode()
             postgres_authority_mode = postgres_authority_implementation_mode()
             sync_postgres = not getattr(backend2, "_is_async_engine", False)
-            if not sync_postgres and postgres_authority_mode == "rust":
-                raise ValueError(
-                    "async PostgreSQL Rust graph/meta authority is not available; "
-                    "use python or shadow until the native async facade is ready"
-                )
             if postgres_authority_mode == "rust" and (
                 meta_mode != "rust" or graph_mode != "rust"
             ):
@@ -1447,7 +1564,7 @@ class GraphKnowledgeEngine:
                     "transaction"
                 )
             coordinated_rust_postgres = postgres_authority_mode == "rust" and sync_postgres
-            if coordinated_rust_postgres:
+            if postgres_authority_mode == "rust":
                 dsn = backend2.engine.url.render_as_string(hide_password=False)
                 meta_postgre = RustEnginePostgresMetaStore(
                     dsn=dsn, schema=backend2.schema
@@ -1458,6 +1575,53 @@ class GraphKnowledgeEngine:
                 )
             meta_postgre.ensure_initialized()
             self.meta_sqlite = meta_postgre
+            if self.persistence_mode == "two_stage":
+                if postgres_authority_mode == "rust":
+                    from .two_stage_rust_postgres import (
+                        RustPostgresTwoStageProjectionAdapter,
+                        rust_postgres_two_stage_capability,
+                    )
+
+                    self.backend.two_stage_projection_capability = (
+                        rust_postgres_two_stage_capability()
+                    )
+                    self.backend.two_stage_projection_adapter = (
+                        RustPostgresTwoStageProjectionAdapter(self, meta_postgre)
+                    )
+                    if not sync_postgres:
+                        from .two_stage_async import (
+                            AsyncRustPostgresTwoStageProjectionAdapter,
+                        )
+
+                        self.backend.async_two_stage_projection_adapter = (
+                            AsyncRustPostgresTwoStageProjectionAdapter(self, meta_postgre)
+                        )
+                elif not sync_postgres:
+                    from .two_stage_async import (
+                        AsyncPostgresTwoStageProjectionAdapter,
+                        async_transient_two_stage_capability,
+                    )
+
+                    self.backend.two_stage_projection_capability = (
+                        async_transient_two_stage_capability(
+                            "async PostgreSQL transient Stage-1 and pgvector Stage-2"
+                        )
+                    )
+                    self.backend.async_two_stage_projection_adapter = (
+                        AsyncPostgresTwoStageProjectionAdapter(self)
+                    )
+                else:
+                    from .two_stage_postgres import (
+                        PostgresTwoStageProjectionAdapter,
+                        postgres_two_stage_capability,
+                    )
+
+                    self.backend.two_stage_projection_capability = (
+                        postgres_two_stage_capability()
+                    )
+                    self.backend.two_stage_projection_adapter = (
+                        PostgresTwoStageProjectionAdapter(self)
+                    )
         else:
             if isinstance(backend, str):
                 raise ValueError(
@@ -1468,9 +1632,84 @@ class GraphKnowledgeEngine:
                 "Unrecognised argument for backend. "
                 "Expected None/'chroma' or a PgVectorBackend instance."
             )
+        if self.embedding_profile is not None and not embedding_profile_checked:
+            inspector = self.backend
+            if not all(
+                callable(getattr(inspector, name, None))
+                for name in ("embedding_storage_scope", "inspect_embedding_storage")
+            ):
+                raise ValueError(
+                    f"{type(self.backend).__name__} does not implement the embedding "
+                    "storage compatibility protocol"
+                )
+            registry = EmbeddingProfileRegistry(self.meta_sqlite)
+            if self.embedding_profile_mode == "inspect":
+                self.embedding_profile_report = registry.inspect(
+                    inspector, configured=self.embedding_profile
+                )
+            else:
+                self.embedding_profile = registry.ensure_bound(
+                    inspector,
+                    self.embedding_profile,
+                    allow_legacy_adoption=self.embedding_profile_mode == "adopt",
+                )
+                self.embedding_profile_report = registry.inspect(
+                    inspector, configured=self.embedding_profile
+                )
+
         # Backend UoW: in Postgres mode this becomes a real SQL transaction.
         self._backend_uow = _build_postgres_uow_if_needed(
             getattr(self, "backend", None)
+        )
+        self._async_backend_uow = None
+        if getattr(getattr(self, "backend", None), "_is_async_engine", False):
+            from .postgres_backend import AsyncPostgresUnitOfWork
+
+            self._async_backend_uow = AsyncPostgresUnitOfWork(
+                engine=self.backend.engine
+            )
+        if (
+            self.persistence_mode == "two_stage"
+            and _is_pgvector_backend_instance(getattr(self, "backend", None))
+            and "postgres_authority_mode" in locals()
+            and postgres_authority_mode == "rust"
+        ):
+            # The native adapter writes through this same Rust-owned UoW.
+            self._backend_uow = self.meta_sqlite
+        self.two_stage_projection_capability = get_two_stage_projection_capability(
+            self.backend
+        )
+        self.two_stage_projection_adapter = None
+        if (
+            self.persistence_mode == "two_stage"
+            and not self.two_stage_projection_capability.is_complete()
+        ):
+            missing = ", ".join(
+                self.two_stage_projection_capability.missing_contracts()
+            )
+            raise ValueError(
+                "persistence_mode='two_stage' is unsupported for "
+                f"{type(self.backend).__name__}: "
+                f"{self.two_stage_projection_capability.reason}; "
+                f"missing capability contract: {missing}"
+            )
+        if self.persistence_mode == "two_stage":
+            self.two_stage_projection_adapter = get_two_stage_projection_adapter(
+                self.backend
+            )
+            if self.two_stage_projection_adapter is None:
+                # Async arrangements are consumed through explicit async entry
+                # points; never silently route them through sync projection IO.
+                if get_async_two_stage_projection_adapter(self.backend) is None:
+                    raise ValueError(
+                        "persistence_mode='two_stage' requires an executable "
+                        f"two-stage projection adapter for {type(self.backend).__name__}; "
+                        "refusing synchronous single-stage fallback"
+                    )
+        self.async_two_stage_projection_adapter = (
+            get_async_two_stage_projection_adapter(self.backend)
+            if self.persistence_mode == "two_stage"
+            else None
         )
 
         from .lifecycle import LifecycleSubsystem
@@ -1766,6 +2005,14 @@ class GraphKnowledgeEngine:
     @engine_context
     def add_edge(self, edge: Edge, doc_id: Optional[str] = None):
         return self.write.add_edge(edge, doc_id=doc_id)
+
+    async def async_add_node(self, node: Node, doc_id: Optional[str] = None):
+        """Use the async projection arrangement without sync IO fallback."""
+        return await self.write.add_node_async(node, doc_id=doc_id)
+
+    async def async_add_edge(self, edge: Edge, doc_id: Optional[str] = None):
+        """Use the async projection arrangement without sync IO fallback."""
+        return await self.write.add_edge_async(edge, doc_id=doc_id)
 
     @engine_context
     def add_document(self, document: Document):

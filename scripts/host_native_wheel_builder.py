@@ -14,14 +14,14 @@ import tempfile
 import zipfile
 
 try:
-    from adr015_source_identity import candidate_source_fingerprint
+    from source_fingerprint import candidate_source_fingerprint
 except ModuleNotFoundError:  # imported as a repository module in unit tests
-    from scripts.adr015_source_identity import candidate_source_fingerprint
+    from scripts.source_fingerprint import candidate_source_fingerprint
 
 
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / "rust" / "crates" / "kogwistar-python" / "Cargo.toml"
-SMOKE = ROOT / "scripts" / "adr015_native_extension_smoke.py"
+SMOKE = ROOT / "scripts" / "native_extension_abi_smoke.py"
 DEFAULT_OUTPUT = ROOT / ".codex" / "host-native-wheel"
 DEFAULT_REPORT = ROOT / ".codex" / "adr015-host-native-report.json"
 

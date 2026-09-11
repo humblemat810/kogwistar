@@ -4,7 +4,7 @@
 
 Recent work by Zitong Yang et al., *Synthetic Bootstrapped Pretraining* (arXiv:2509.15248), argues that inter-document relationships can be used to generate synthetic pretraining data rather than relying only on standard next-token prediction.
 
-One plausible extension for this repo is to replace pairwise similarity retrieval with an explicit HypergraphRAG representation during synthetic data generation.
+One plausible extension for this repo is to replace pairwise similarity retrieval with an explicit HypergraphRAG embedding during synthetic data generation.
 
 With that framing, this substrate could help:
 

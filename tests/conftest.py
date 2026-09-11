@@ -14,6 +14,7 @@ from contextlib import suppress
 from _pytest.monkeypatch import MonkeyPatch
 from typing import Any, cast
 import dataclasses
+from unittest.mock import MagicMock
 from .auth_env import TEST_JWT_ALG, TEST_JWT_SECRET, ensure_test_jwt_env
 from .net_helpers import pick_free_port
 
@@ -62,6 +63,27 @@ except Exception:  # pragma: no cover - optional hardening for Windows temp ACLs
 _TEST_ROOT = pathlib.Path(__file__).resolve().parents[1]
 for _env_name in (".env", ".env.test"):
     load_dotenv(_TEST_ROOT / _env_name, override=False)
+# Reassert after dotenv loading: no test or fixture may opt back into Chroma's
+# product telemetry, including subprocesses inheriting this environment.
+os.environ["ANONYMIZED_TELEMETRY"] = "FALSE"
+# Belt-and-suspenders test isolation: Chroma's PostHog module remains importable
+# but every network-facing operation is a no-op in the pytest process.
+try:
+    import posthog as _posthog
+
+    _posthog.disabled = True
+    for _posthog_fn in (
+        "capture",
+        "flush",
+        "shutdown",
+        "identify",
+        "alias",
+        "group_identify",
+        "set",
+    ):
+        setattr(_posthog, _posthog_fn, MagicMock(name=f"posthog.{_posthog_fn}", return_value=None))
+except Exception:  # pragma: no cover - posthog is optional
+    _posthog = None
 import pytest
 from typing import Optional, Iterator, TYPE_CHECKING
 

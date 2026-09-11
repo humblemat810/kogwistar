@@ -109,14 +109,15 @@ def _engine_query_nodes(
     include: list[str],
 ):
     reader = getattr(engine, "read", None)
-    if getattr(engine, "acl_enabled", False) and reader is not None and hasattr(reader, "query_nodes"):
-        return reader.query_nodes(
+    if reader is not None and callable(getattr(reader, "query_nodes", None)):
+        batches = reader.query_nodes(
             query_embeddings=query_embeddings,
             n_results=n_results,
             where=where,
             include=include,
             node_type=ConversationNode,
-        )[0]
+        )
+        return batches[0] if batches else []
     return engine.backend.node_query(
         query_embeddings=query_embeddings,
         n_results=n_results,
@@ -127,15 +128,20 @@ def _engine_query_nodes(
 
 def _engine_get_nodes(engine: Any, *, ids: list[str], include: list[str]):
     reader = getattr(engine, "read", None)
-    if getattr(engine, "acl_enabled", False) and reader is not None and hasattr(reader, "get_nodes"):
+    if reader is not None and callable(getattr(reader, "get_nodes", None)):
         return reader.get_nodes(ids=ids, include=include, node_type=ConversationNode)
     return engine.backend.node_get(ids=ids, include=include)
 
 
 def _engine_get_edges(engine: Any, *, ids: list[str], include: list[str]):
     reader = getattr(engine, "read", None)
-    if getattr(engine, "acl_enabled", False) and reader is not None and hasattr(reader, "get_edges"):
-        return reader.get_edges(ids=ids, include=include, edge_type=ConversationEdge)
+    if reader is not None and callable(getattr(reader, "get_edges", None)):
+        result = reader.get_edges(ids=ids, include=include, edge_type=ConversationEdge)
+        # Some lightweight adapters expose a read facade while keeping edge
+        # storage on the backend. Preserve that compatibility without making
+        # the backend the primary read path.
+        if _has_result_items(result):
+            return result
     return engine.backend.edge_get(ids=ids, include=include)
 
 
@@ -1162,7 +1168,7 @@ class AgenticAnsweringAgent:
         out_model: Type[BaseM] = AnswerWithCitations,
     ):
         """Ask the LLM to answer AND cite exact mention/span indices from the provided evidence pack."""
-        # Build a compact, indexable representation for the LLM
+        # Build a compact, indexable embedding for the LLM
         lines: list[str] = []
         for n in evidence_pack.get("nodes", []):
             nid = n["node_id"]

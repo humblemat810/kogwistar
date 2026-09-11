@@ -11,6 +11,8 @@ from kogwistar.engine_core.subsystems import ACLAwareReadSubsystem, ACLAwareWrit
 from kogwistar.engine_core.subsystems.acl import ACLSubsystem
 from kogwistar.engine_core.models import Edge, Grounding, Node, Span
 from kogwistar.server.auth_middleware import claims_ctx
+from kogwistar.server.chat_service_shared import bind_auth_claims, capture_auth_claims
+from kogwistar.conversation.agentic_answering import _engine_get_nodes
 from tests.conftest import _make_engine_pair
 from tests._helpers.embeddings import build_test_embedding_function
 from tests._helpers.fake_backend import build_fake_backend
@@ -1792,6 +1794,33 @@ def test_acl_enabled_engine_makes_normal_read_write_acl_aware():
         "node",
         "span",
     ]
+
+
+def test_agentic_read_helper_keeps_acl_filter_and_carries_identity():
+    engine = GraphKnowledgeEngine(
+        persist_directory=None,
+        backend_factory=build_fake_backend,
+        kg_graph_type="knowledge",
+        acl_enabled=True,
+    )
+    node = _mk_node(node_id="node-agentic-acl", doc_id="doc-agentic-acl")
+    node.metadata.update({"visibility": "private", "owner_agent_id": "agent-a"})
+
+    token = claims_ctx.set({"agent_id": "agent-a", "ns": "knowledge"})
+    try:
+        engine.write.add_node(node)
+        captured = capture_auth_claims()
+    finally:
+        claims_ctx.reset(token)
+
+    assert captured == {"agent_id": "agent-a", "ns": "knowledge"}
+    with bind_auth_claims(captured):
+        assert [item.id for item in _engine_get_nodes(engine, ids=[node.id], include=[])] == [
+            node.id
+        ]
+
+    with bind_auth_claims({"agent_id": "agent-b", "ns": "knowledge"}):
+        assert _engine_get_nodes(engine, ids=[node.id], include=[]) == []
 
 
 @pytest.mark.parametrize("backend_kind", ["fake", "chroma", "pg"], indirect=True)

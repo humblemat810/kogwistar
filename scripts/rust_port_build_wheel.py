@@ -11,21 +11,21 @@ import subprocess
 import tempfile
 
 try:
-    from adr015_source_identity import (
+    from source_fingerprint import (
         candidate_source_files,
         candidate_source_fingerprint,
     )
 except ModuleNotFoundError:  # imported as a repository module in unit tests
-    from scripts.adr015_source_identity import (
+    from scripts.source_fingerprint import (
         candidate_source_files,
         candidate_source_fingerprint,
     )
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DOCKERFILE = ROOT / "scripts" / "adr015_wheel_builder.Dockerfile"
-WORKER = ROOT / "scripts" / "adr015_build_wheel.sh"
-SOURCE_IDENTITY = ROOT / "scripts" / "adr015_source_identity.py"
+DOCKERFILE = ROOT / "scripts" / "wheel_builder.Dockerfile"
+WORKER = ROOT / "scripts" / "build_wheel.sh"
+SOURCE_IDENTITY = ROOT / "scripts" / "source_fingerprint.py"
 DEFAULT_IMAGE = "kogwistar-adr015-wheel-builder:rust-1.91.1"
 
 

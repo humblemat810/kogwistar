@@ -22,6 +22,8 @@ from .chat_service_shared import (
     RuntimeRunRequest,
     RuntimeResumeRequest,
     _BaseComponent,
+    bind_auth_claims,
+    capture_auth_claims,
 )
 from .run_registry import RunRegistryLaneMessageEventSink, RunRegistryTraceBridge
 
@@ -102,6 +104,7 @@ class _RunExecutionService(_BaseComponent):
                 run_id, event_type, payload
             ),
             is_cancel_requested=lambda: self.run_registry.is_cancel_requested(run_id),
+            auth_claims=capture_auth_claims(resolved_user_id),
         )
 
         thread = threading.Thread(
@@ -126,6 +129,10 @@ class _RunExecutionService(_BaseComponent):
         return [text[i : i + chunk_size] for i in range(0, len(text), chunk_size)]
 
     def _run_answer(self, req: AnswerRunRequest) -> None:
+        with bind_auth_claims(req.auth_claims):
+            self._run_answer_bound(req)
+
+    def _run_answer_bound(self, req: AnswerRunRequest) -> None:
         self._publish(
             req.run_id, "run.started", {"run_id": req.run_id, "status": "running"}
         )
@@ -310,6 +317,7 @@ class _RunExecutionService(_BaseComponent):
             capabilities=tuple(self._owner._effective_capabilities()),
             capability_subject=self._owner._capability_subject(),
             runtime_kind=str(runtime_kind or self._owner.default_runtime_kind or "sync"),
+            auth_claims=capture_auth_claims(user_id),
         )
         sched = self._owner.scheduler.submit(
             run_id=run_id,
@@ -330,6 +338,10 @@ class _RunExecutionService(_BaseComponent):
         }
 
     def _run_workflow(self, req: RuntimeRunRequest) -> None:
+        with bind_auth_claims(req.auth_claims):
+            self._run_workflow_bound(req)
+
+    def _run_workflow_bound(self, req: RuntimeRunRequest) -> None:
         self._publish(
             req.run_id,
             "run.started",

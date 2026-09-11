@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import threading
 from typing import Any, Callable
 
@@ -474,6 +475,37 @@ class ChatRunService:
         return self._conversation_queries.latest_snapshot(
             conversation_id, run_id=run_id, stage=stage
         )
+
+    def run_evidence(self, run_id: str) -> dict[str, Any]:
+        """Return stable, read-only evidence linkage for one run."""
+
+        run = self.get_run(run_id)
+        conversation_id = str(run.get("conversation_id") or "")
+        if not conversation_id:
+            raise KeyError(f"Run has no conversation_id: {run_id!r}")
+        snapshot = self.latest_snapshot(conversation_id, run_id=run_id)
+        metadata = dict(snapshot.get("metadata") or {})
+        properties = dict(snapshot.get("properties") or {})
+        digest_raw = properties.get("evidence_pack_digest") or "{}"
+        try:
+            digest = json.loads(digest_raw) if isinstance(digest_raw, str) else digest_raw
+        except (TypeError, ValueError):
+            digest = {}
+        if not isinstance(digest, dict):
+            digest = {}
+        used_node_ids = [str(item) for item in (metadata.get("used_node_ids") or [])]
+        return {
+            "version": "v1",
+            "run_id": run_id,
+            "conversation_id": conversation_id,
+            "snapshot_node_id": snapshot.get("snapshot_node_id"),
+            "snapshot_metadata": metadata,
+            "evidence_refs": used_node_ids,
+            "source_summary": {
+                "used_node_count": len(used_node_ids),
+                "evidence_pack_digest": digest,
+            },
+        }
 
     def submit_turn_for_answer(
         self,

@@ -6,11 +6,11 @@ from types import ModuleType
 
 
 ROOT = Path(__file__).resolve().parents[2]
-SCRIPT = ROOT / "scripts" / "adr015_phase3_capability_gate.py"
+SCRIPT = ROOT / "scripts" / "durable_store_capability_gate.py"
 
 
 def _gate() -> ModuleType:
-    spec = importlib.util.spec_from_file_location("adr015_phase3_capability_gate", SCRIPT)
+    spec = importlib.util.spec_from_file_location("durable_store_capability_gate", SCRIPT)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

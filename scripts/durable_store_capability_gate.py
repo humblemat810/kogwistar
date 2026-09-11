@@ -16,11 +16,11 @@ import sys
 from typing import Any
 
 try:
-    import adr015_phase3_store_gate as store_gate
-    from adr015_source_identity import candidate_source_fingerprint
+    import durable_store_gate as store_gate
+    from source_fingerprint import candidate_source_fingerprint
 except ModuleNotFoundError:  # imported as a repository module in tests
-    from scripts import adr015_phase3_store_gate as store_gate
-    from scripts.adr015_source_identity import candidate_source_fingerprint
+    from scripts import durable_store_gate as store_gate
+    from scripts.source_fingerprint import candidate_source_fingerprint
 
 
 ROOT = Path(__file__).resolve().parents[1]

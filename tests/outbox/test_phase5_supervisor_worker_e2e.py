@@ -14,8 +14,13 @@ from tests.conftest import FakeEmbeddingFunction
 TEST_EMBEDDING = FakeEmbeddingFunction(dim=3)
 
 
-def _wait_until_done(
-    eng: GraphKnowledgeEngine, *, ns: str, job_id: str, timeout_s: float = 10.0
+def _wait_until_status(
+    eng: GraphKnowledgeEngine,
+    *,
+    ns: str,
+    job_id: str,
+    status: str,
+    timeout_s: float = 10.0,
 ) -> None:
     start = time.time()
     while time.time() - start < timeout_s:
@@ -23,11 +28,11 @@ def _wait_until_done(
         for r in rows:
             if (
                 getattr(r, "job_id", None) == job_id
-                and getattr(r, "status", None) == "DONE"
+                and getattr(r, "status", None) == status
             ):
                 return
         time.sleep(0.05)
-    raise AssertionError(f"job did not complete within {timeout_s}s: {job_id}")
+    raise AssertionError(f"job did not reach {status} within {timeout_s}s: {job_id}")
 
 
 def _start_supervisor(cmd: list[str]) -> subprocess.Popen:
@@ -72,7 +77,7 @@ def _stop_supervisor(proc: subprocess.Popen) -> None:
 
 
 @pytest.mark.ci_full
-def test_phase5_supervisor_runs_worker_processes_job_then_graceful_shutdown(tmp_path):
+def test_phase5_supervisor_fails_unknown_job_then_graceful_shutdown(tmp_path):
     ns = f"phase5_sup_{uuid.uuid4().hex}"
     persist_dir = tmp_path / "persist"
     persist_dir.mkdir(parents=True, exist_ok=True)
@@ -107,7 +112,7 @@ def test_phase5_supervisor_runs_worker_processes_job_then_graceful_shutdown(tmp_
         eng.namespace = ns  # type: ignore[attr-defined]
 
         job_id = f"job_{uuid.uuid4().hex}"
-        # enqueue a NOOP job: engine.indexing.apply_index_job will just return; worker still marks DONE
+        # Unknown job kinds must fail closed rather than becoming DONE.
         eng.meta_sqlite.enqueue_index_job(
             namespace=ns,
             job_id=job_id,
@@ -115,10 +120,10 @@ def test_phase5_supervisor_runs_worker_processes_job_then_graceful_shutdown(tmp_
             entity_id="n1",
             index_kind="noop",
             op="upsert",
-            max_retries=3,
+            max_retries=1,
         )
 
-        _wait_until_done(eng, ns=ns, job_id=job_id, timeout_s=10.0)
+        _wait_until_status(eng, ns=ns, job_id=job_id, status="FAILED", timeout_s=10.0)
 
     finally:
         _stop_supervisor(proc)
@@ -169,7 +174,7 @@ def test_phase5_supervisor_restarts_worker_after_kill_and_processes_job(tmp_path
         else:
             os.kill(worker_pid, 9)
 
-        # Enqueue a job and ensure it is completed after restart.
+        # Enqueue an unknown job and ensure restarted worker fails it closed.
         eng = GraphKnowledgeEngine(
             persist_directory=str(persist_dir), embedding_function=TEST_EMBEDDING
         )
@@ -184,10 +189,10 @@ def test_phase5_supervisor_restarts_worker_after_kill_and_processes_job(tmp_path
             entity_id="n1",
             index_kind="noop",
             op="upsert",
-            max_retries=3,
+            max_retries=1,
         )
 
-        _wait_until_done(eng, ns=ns, job_id=job_id, timeout_s=10.0)
+        _wait_until_status(eng, ns=ns, job_id=job_id, status="FAILED", timeout_s=10.0)
 
     finally:
         _stop_supervisor(proc)

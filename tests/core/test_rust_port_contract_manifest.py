@@ -33,8 +33,8 @@ def test_ci_full_uses_postgres_image_with_pgvector_extension() -> None:
 def test_ci_uses_persisted_inspectable_python_smoke_scripts() -> None:
     workflow = CI_WORKFLOW_PATH.read_text(encoding="utf-8")
 
-    assert "python scripts/adr015_package_import_smoke.py" in workflow
-    assert "python scripts/adr015_native_wheel_smoke.py --wheelhouse wheelhouse" in workflow
+    assert "python scripts/package_import_provenance_smoke.py" in workflow
+    assert "python scripts/native_wheel_contract_smoke.py --wheelhouse wheelhouse" in workflow
     assert "python -c" not in workflow
     assert "python -P -c" not in workflow
 

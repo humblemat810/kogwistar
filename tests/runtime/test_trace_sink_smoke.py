@@ -261,8 +261,8 @@ def test_trace_sink_smoke_jsonl_mirror_hello_world_workflow(tmp_path: Path) -> N
         step_resolver=resolver,
         predicate_registry={},
         checkpoint_every_n_steps=1,
+        sink=JsonlEventSink(jsonl_path=jsonl_path),
     )
-    runtime.emitter.sink = JsonlEventSink(jsonl_path=jsonl_path)
 
     result = runtime.run(
         workflow_id=workflow_id,

@@ -21,6 +21,7 @@ def run_grouped_maintenance_template(
     build_node_for_group: Callable[[str, list[Any], list[Any], int], Any],
     match_where_for_group: Callable[[str], dict[str, Any]],
     replace_existing: bool = True,
+    before_write: Callable[[str], None] | None = None,
 ) -> MaintenanceTemplateResult:
     grouped_results = write_grouped_versioned_artifacts(
         source_engine,
@@ -32,6 +33,7 @@ def run_grouped_maintenance_template(
         build_node_for_group=build_node_for_group,
         match_where_for_group=match_where_for_group,
         replace_existing=replace_existing,
+        before_write=before_write,
     )
     return MaintenanceTemplateResult(
         grouped_results=grouped_results,

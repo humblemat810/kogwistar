@@ -19,12 +19,32 @@ from kogwistar.conversation.models import MetaFromLastSummary
 from kogwistar.conversation.models import ConversationNode
 from kogwistar.conversation.service import ConversationService
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.server.auth_middleware import claims_ctx
 
 from .run_registry import RunRegistry
 
 
 class RunCancelledError(RuntimeError):
     """Raised when a submitted chat run is cancelled cooperatively."""
+
+
+def capture_auth_claims(principal_id: str | None = None) -> dict[str, Any] | None:
+    """Capture request identity before work crosses a background-thread boundary."""
+    claims = claims_ctx.get()
+    if isinstance(claims, dict):
+        return dict(claims)
+    principal = str(principal_id or "").strip()
+    return {"agent_id": principal} if principal else None
+
+
+@contextlib.contextmanager
+def bind_auth_claims(claims: dict[str, Any] | None):
+    """Bind captured identity only for the lifetime of one background run."""
+    token = claims_ctx.set(dict(claims) if isinstance(claims, dict) else None)
+    try:
+        yield
+    finally:
+        claims_ctx.reset(token)
 
 
 class WorkflowProjectionRebuildingError(RuntimeError):
@@ -46,6 +66,7 @@ class AnswerRunRequest:
     registry: RunRegistry
     publish: Callable[[str, dict[str, Any] | None], dict[str, Any]]
     is_cancel_requested: Callable[[], bool]
+    auth_claims: dict[str, Any] | None = None
 
 
 @dataclass
@@ -68,6 +89,7 @@ class RuntimeRunRequest:
     capabilities: tuple[str, ...] = ()
     capability_subject: str | None = None
     runtime_kind: str = "sync"
+    auth_claims: dict[str, Any] | None = None
 
 
 @dataclass
@@ -90,6 +112,7 @@ class RuntimeResumeRequest:
     time_budget_ms: int | None = None
     capabilities: tuple[str, ...] = ()
     capability_subject: str | None = None
+    auth_claims: dict[str, Any] | None = None
 
 
 def json_safe(value: Any) -> Any:

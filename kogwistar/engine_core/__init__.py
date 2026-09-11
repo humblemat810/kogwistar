@@ -2,6 +2,7 @@
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.engine_sqlite import EngineSQLite, IndexJobRow
+from kogwistar.engine_core.event_envelope import EntityEventEnvelope
 from kogwistar.engine_core.indexing import IndexingSubsystem
 from kogwistar.engine_core.jobs import JobQueueItem, JobQueueSubsystem
 from kogwistar.engine_core.lifecycle import LifecycleSubsystem
@@ -42,6 +43,18 @@ from kogwistar.engine_core.storage_backend import (
     StorageBackend,
     UnitOfWork,
 )
+from kogwistar.engine_core.embedding_profile import (
+    CorruptEmbeddingProfileError,
+    EmbeddingProfile,
+    EmbeddingProfileError,
+    EmbeddingProfileMismatchError,
+    EmbeddingProfileRegistry,
+    EmbeddingStorageInspector,
+    EmbeddingStorageState,
+    LegacyEmbeddingProfileError,
+    NamedProjectionStore,
+    endpoint_fingerprint,
+)
 from kogwistar.engine_core.types import (
     EngineType,
     ExtractionSchemaMode,
@@ -59,6 +72,7 @@ __all__ = [
     "IndexJob",
     "EngineSQLite",
     "IndexJobRow",
+    "EntityEventEnvelope",
     "IndexingSubsystem",
     "JobQueueItem",
     "JobQueueSubsystem",
@@ -83,12 +97,24 @@ __all__ = [
     "LifecycleSubsystem",
     "PgVectorBackend",
     "PgVectorConfig",
+    "PgVectorSchemaMismatchError",
     "PostgresUnitOfWork",
     "AsyncPostgresUnitOfWork",
     "ChromaBackend",
+    "ChromaStorageInspector",
     "NoopUnitOfWork",
     "StorageBackend",
     "UnitOfWork",
+    "CorruptEmbeddingProfileError",
+    "EmbeddingProfile",
+    "EmbeddingProfileError",
+    "EmbeddingProfileMismatchError",
+    "EmbeddingProfileRegistry",
+    "EmbeddingStorageInspector",
+    "EmbeddingStorageState",
+    "LegacyEmbeddingProfileError",
+    "NamedProjectionStore",
+    "endpoint_fingerprint",
     "EngineType",
     "ExtractionSchemaMode",
     "ResolvedExtractionSchemaMode",
@@ -108,10 +134,13 @@ __all__ = [
 
 
 def __getattr__(name: str):
-    if name == "ChromaBackend":
-        from kogwistar.engine_core.chroma_backend import ChromaBackend
+    if name in {"ChromaBackend", "ChromaStorageInspector"}:
+        from kogwistar.engine_core.chroma_backend import (
+            ChromaBackend,
+            ChromaStorageInspector,
+        )
 
-        return ChromaBackend
+        return {"ChromaBackend": ChromaBackend, "ChromaStorageInspector": ChromaStorageInspector}[name]
 
     if name in {"InMemoryBackend", "build_in_memory_backend"}:
         from kogwistar.engine_core.in_memory_backend import (
@@ -157,11 +186,18 @@ def __getattr__(name: str):
             "IndexJob": IndexJob,
         }[name]
 
-    if name in {"PgVectorBackend", "PgVectorConfig", "PostgresUnitOfWork", "AsyncPostgresUnitOfWork"}:
+    if name in {
+        "PgVectorBackend",
+        "PgVectorConfig",
+        "PgVectorSchemaMismatchError",
+        "PostgresUnitOfWork",
+        "AsyncPostgresUnitOfWork",
+    }:
         try:
             from kogwistar.engine_core.postgres_backend import (
                 PgVectorBackend,
                 PgVectorConfig,
+                PgVectorSchemaMismatchError,
                 PostgresUnitOfWork,
                 AsyncPostgresUnitOfWork,
             )
@@ -173,6 +209,7 @@ def __getattr__(name: str):
         return {
             "PgVectorBackend": PgVectorBackend,
             "PgVectorConfig": PgVectorConfig,
+            "PgVectorSchemaMismatchError": PgVectorSchemaMismatchError,
             "PostgresUnitOfWork": PostgresUnitOfWork,
             "AsyncPostgresUnitOfWork": AsyncPostgresUnitOfWork,
         }[name]

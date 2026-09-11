@@ -71,7 +71,7 @@ Only these local items remain in scope before production rollout:
 - [x] Phase 3: run fake/memory, SQLite, and PostgreSQL contract gates from the
   current candidate; prove fault rollback, lease/CAS/sequence concurrency,
   Python/Rust mutual readability, rebuild equality, and update/tombstone replay.
-  `scripts/adr015_phase3_store_gate.py` produced
+  `scripts/durable_store_gate.py` produced
   `.codex/adr015-phase3-store-gate.json` for source
   `294b384b37e423ca5b08c3c3d1be443de1c2549f9b7e185da689cba2502e7f00`:
   memory 17, SQLite 27, and live pgvector PostgreSQL 36 all passed with zero
@@ -79,7 +79,7 @@ Only these local items remain in scope before production rollout:
 - [ ] Phase 3: promote each of the four pending durable-store capabilities only
   when its capability-specific evidence and rollback evidence pass. Do not flip
   one broad store flag from a narrow test. Current-source local evidence is
-  now separately recorded by `scripts/adr015_phase3_capability_gate.py` in
+  now separately recorded by `scripts/durable_store_capability_gate.py` in
   `.codex/adr015-phase3-capability-gate.json`: PostgreSQL sequence/event-log
   4, projection/snapshot/run-registry 6, queue/lease/lane 3, and graph/pgvector
   23 all passed with zero failures, errors, or skips for source
@@ -122,7 +122,7 @@ Only these local items remain in scope before production rollout:
   protocol authority, and required exit evidence.
 - [x] Phase 5: pass current-candidate local route/auth/capability/error,
   SSE-resume, MCP, and frozen OpenAPI/MCP no-drift conformance. Persisted
-  `scripts/adr015_phase5_server_gate.py` produced
+  `scripts/server_contract_gate.py` produced
   `.codex/adr015-phase5-server-gate.json` for source
   `294b384b37e423ca5b08c3c3d1be443de1c2549f9b7e185da689cba2502e7f00`:
   REST/SSE 4, auth/syscall 41, MCP 13, frozen contracts 3, and live async
@@ -293,7 +293,7 @@ not authorize a broad authority-flag promotion or replace production canaries.
   installation, import, and `pip check` passed. The installed wheel's metadata
   now declares the required `fastapi>=0.111` base dependency; this fixed the
   initial clean-consumer import failure in the public `engine_core` selector.
-  `adr015_consumer_uat.py` passed public Python/Rust selection, Rust raw-writer
+  `wheel_consumer_uat.py` passed public Python/Rust selection, Rust raw-writer
   closure, transaction rollback, and Rust -> Python -> Rust persisted SQLite
   compatibility across three fresh child processes. This is bounded library
   evidence, not live mixed SQLite ownership, multi-process authority, HA, or a

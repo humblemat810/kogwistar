@@ -18,7 +18,7 @@ It is easiest to understand as two layers:
 
 ## How The Layers Work
 
-The substrate layer is the common representation. Workflow structure, conversation structure, knowledge, governance artifacts, provenance, and replay-oriented history all share the same graph-oriented model. That makes lifecycle state and structural relationships first-class instead of incidental metadata.
+The substrate layer is the common embedding. Workflow structure, conversation structure, knowledge, governance artifacts, provenance, and replay-oriented history all share the same graph-oriented model. That makes lifecycle state and structural relationships first-class instead of incidental metadata.
 
 The harness layer is the execution surface. It runs workflows, coordinates multi-step behavior, exposes developer-facing control paths, and provides seams where policy, approval, and other governance logic can become runnable.
 

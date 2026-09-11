@@ -1,7 +1,7 @@
 //! Pure deterministic entity-event recovery reducer.
 //!
 //! Stores own transactionality. This crate owns only validation, folding, and
-//! canonical representation so SQLite and PostgreSQL have one replay meaning.
+//! canonical embedding so SQLite and PostgreSQL have one replay meaning.
 
 use kogwistar_contracts::canonical_json;
 use kogwistar_store::{EntityEvent, StoreError, StoreResult};

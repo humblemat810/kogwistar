@@ -3803,6 +3803,18 @@
               "title": "Initial State",
               "type": "object"
             },
+            "invocation_key": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Invocation Key"
+            },
             "result_state_key": {
               "anyOf": [
                 {
@@ -5337,6 +5349,18 @@
               "additionalProperties": true,
               "title": "Initial State",
               "type": "object"
+            },
+            "invocation_key": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Invocation Key"
             },
             "result_state_key": {
               "anyOf": [

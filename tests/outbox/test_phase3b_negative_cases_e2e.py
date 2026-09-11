@@ -233,17 +233,13 @@ def test_phase3b_tombstone_missing_is_idempotent(chroma_engine):
     eng.tombstone_edge("missing-edge-id-123")
 
 
-# Cross-store non-2PC expectation:
-# If meta append fails after backend write, PG should rollback; Chroma likely persists.
-# This test only runs for Chroma here; you likely already have PG atomicity coverage.
-def test_phase3b_chroma_meta_failure_after_backend_write_persists(
+# Canonical-first expectation for cross-store Chroma:
+# Meta append failure prevents projection admission. A later projection failure may
+# leave a canonical event for replay, but the inverse is forbidden.
+def test_phase3b_chroma_meta_failure_prevents_unlogged_backend_projection(
     chroma_engine, monkeypatch
 ):
-    """Chroma projection is not 2PC with meta.
-
-    If meta append fails after the backend write, we do NOT abort the write in Chroma mode.
-    Instead, the backend write persists and the system relies on later replay/repair to converge.
-    """
+    """Chroma never admits a visible node without its canonical event."""
     eng = chroma_engine
     ns = f"phase3b_meta_fail_{uuid.uuid4().hex}"
     eng.namespace = ns
@@ -255,14 +251,14 @@ def test_phase3b_chroma_meta_failure_after_backend_write_persists(
 
     monkeypatch.setattr(eng.meta_sqlite, "append_entity_event", boom)
 
-    # Should NOT raise: meta failure is swallowed in Chroma mode (non-2PC).
-    with eng.uow():
-        eng.add_node(node)
+    with pytest.raises(RuntimeError, match="meta append failed"):
+        with eng.uow():
+            eng.add_node(node)
 
-    # Backend write persisted.
+    # Backend projection was never attempted.
     got = eng.backend.node_get(ids=["n1"], include=["metadatas"])
-    assert got.get("ids") and "n1" in got["ids"]
+    assert "n1" not in (got.get("ids") or [])
 
-    # Meta event did NOT get appended (best-effort logging here).
+    # Canonical event was not appended either; caller may retry the whole admission.
     events = list(eng.meta_sqlite.iter_entity_events(namespace=ns, from_seq=1))
     assert len(events) == 0

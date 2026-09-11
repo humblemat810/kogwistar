@@ -550,7 +550,7 @@ class GraphEntityExtractionBase(GraphEntityBase):
             raise (ValueError("unrecognised type"))
 
     def coerce_to_db(self):
-        # works for single extraction, shield the inner db representation
+        # works for single extraction, shield the inner db embedding
         # convert the groundings -> mentions List[Grounding]
         temp = self.model_dump()
         temp["mentions"] = [temp.pop("groundings")]

@@ -1,0 +1,367 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Kogwistar Sigma Hypergraph CDC Lab</title>
+  <script src="{{ graphology_script_src | default('https://cdnjs.cloudflare.com/ajax/libs/graphology/0.25.4/graphology.umd.min.js', true) }}"></script>
+  <script src="{{ sigma_script_src | default('https://cdnjs.cloudflare.com/ajax/libs/sigma.js/2.4.0/sigma.min.js', true) }}"></script>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg:#071019; --panel:#0d1924e8; --panel2:#122332; --line:#23394b;
+      --text:#e7f2f7; --muted:#8ca5b5; --cyan:#35d0ba; --violet:#b08cff;
+      --amber:#ffbd59; --rose:#ff6f91; --danger:#ff6577; --focus:#fff2a8;
+    }
+    * { box-sizing:border-box }
+    html,body { width:100%; height:100%; margin:0; overflow:hidden; background:var(--bg); color:var(--text); font:13px/1.42 Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif }
+    button,input,select { font:inherit }
+    button,select,input[type="search"],input[type="text"] { color:var(--text); background:#102230; border:1px solid #294254; border-radius:8px }
+    button { padding:7px 10px; cursor:pointer }
+    button:hover,button:focus-visible,select:focus-visible,input:focus-visible { border-color:var(--cyan); outline:2px solid #35d0ba35; outline-offset:1px }
+    button.active { background:#17483f; border-color:var(--cyan); color:#c9fff5 }
+    select,input[type="search"],input[type="text"] { padding:7px 9px; min-width:0 }
+    #app { display:grid; grid-template-rows:auto 1fr; width:100%; height:100% }
+    header { min-height:64px; display:flex; align-items:center; gap:14px; padding:10px 14px; background:#091721f2; border-bottom:1px solid var(--line); box-shadow:0 8px 30px #0007; z-index:20 }
+    .brand { display:flex; align-items:center; gap:10px; min-width:228px }
+    .brand-mark { width:38px; height:38px; display:grid; place-items:center; transform:rotate(45deg); border:1px solid #6e59c9; background:linear-gradient(135deg,#223650,#321c55); box-shadow:0 0 24px #7d5cff55 }
+    .brand-mark span { transform:rotate(-45deg); font-weight:800; color:#dcd2ff }
+    .brand strong { display:block; font-size:14px; letter-spacing:.08em; text-transform:uppercase }
+    .brand small { color:var(--muted) }
+    .toolbar { flex:1; display:flex; gap:8px; align-items:center; min-width:0; flex-wrap:wrap }
+    .toolbar label { color:var(--muted); display:flex; gap:6px; align-items:center }
+    #search { width:180px }
+    #runFilter { width:120px }
+    #relationFilter { max-width:155px }
+    .stats { margin-left:auto; display:flex; gap:6px; flex-wrap:wrap; justify-content:flex-end }
+    .pill { white-space:nowrap; padding:5px 8px; border:1px solid var(--line); border-radius:999px; background:#0c1d29; color:var(--muted); font-variant-numeric:tabular-nums }
+    .pill b { color:var(--text) }
+    #cdcPill[data-state="live"] { border-color:#238f72; color:#7cf6d9 }
+    #cdcPill[data-state="paused"],#cdcPill[data-state="offline"] { border-color:#73592c; color:#ffd17f }
+    #cdcPill[data-state="error"] { border-color:#853446; color:#ff9aac }
+    main { min-height:0; display:grid; grid-template-columns:1fr 330px; position:relative }
+    #stage { min-width:0; min-height:0; position:relative; background:
+      radial-gradient(circle at 18% 18%,#12314888,transparent 34%),
+      radial-gradient(circle at 78% 76%,#25174877,transparent 38%),
+      linear-gradient(#071019,#08141e) }
+    #stage:before { content:""; position:absolute; inset:0; pointer-events:none; opacity:.24; background-image:linear-gradient(#a9e8ff0b 1px,transparent 1px),linear-gradient(90deg,#a9e8ff0b 1px,transparent 1px); background-size:34px 34px }
+    #sigma { position:absolute; inset:0 }
+    #shapeOverlay { position:absolute; inset:0; width:100%; height:100%; pointer-events:none; z-index:4 }
+    #emptyState { position:absolute; inset:0; display:grid; place-items:center; pointer-events:none; z-index:5 }
+    #emptyState.hidden { display:none }
+    .empty-card { width:min(460px,72%); padding:26px; text-align:center; border:1px solid #2b4659; border-radius:18px; background:#0b1a25d9; box-shadow:0 18px 60px #0008 }
+    .empty-card .glyph { font-size:34px; color:var(--violet) }
+    .empty-card h2 { margin:8px 0 4px; font-size:18px }
+    .empty-card p { margin:0; color:var(--muted) }
+    #modeNotice { position:absolute; left:16px; top:16px; z-index:8; max-width:440px; padding:9px 12px; border-radius:9px; border:1px solid #2d735f; background:#0d2d27dc; color:#b9f4e4; box-shadow:0 8px 30px #0006 }
+    #modeNotice[data-loss="true"] { border-color:#8a6727; background:#39290cdd; color:#ffe0a0 }
+    .float-controls { position:absolute; left:16px; bottom:16px; z-index:8; display:flex; gap:6px; padding:6px; border:1px solid var(--line); border-radius:11px; background:#0b1822df; box-shadow:0 10px 32px #0007 }
+    .float-controls button { min-width:36px; padding:6px 9px }
+    #legend { position:absolute; right:16px; bottom:16px; z-index:8; display:flex; gap:12px; padding:8px 11px; border:1px solid var(--line); border-radius:10px; background:#0b1822df; color:var(--muted); box-shadow:0 10px 32px #0007 }
+    .legend-item { display:flex; align-items:center; gap:6px; white-space:nowrap }
+    .dot { width:12px; height:12px; border:2px solid #b9e8f2; border-radius:50%; background:#2d7893 }
+    .diamond { width:11px; height:11px; transform:rotate(45deg); border:2px solid #e1d5ff; background:#7e58c8 }
+    .edge-key { width:30px; height:4px; position:relative }
+    .edge-key.source { background:linear-gradient(90deg,#effffc 0 24%,#31e6cf 58%,#034a48 100%) }
+    .edge-key.target { background:linear-gradient(90deg,#fff1f5 0 24%,#ff5c86 58%,#5b0a28 100%) }
+    .edge-key:after { content:""; position:absolute; right:-1px; top:-3px; border-left:5px solid currentColor; border-top:4px solid transparent; border-bottom:4px solid transparent }
+    .edge-key.source { color:#31e6cf }.edge-key.target { color:#ff5c86 }
+    aside { min-height:0; display:grid; grid-template-rows:auto minmax(180px,1fr) minmax(130px,.58fr); border-left:1px solid var(--line); background:var(--panel); z-index:10 }
+    .aside-title { padding:13px 14px 10px; border-bottom:1px solid var(--line); display:flex; justify-content:space-between; align-items:center }
+    .aside-title strong { letter-spacing:.05em; text-transform:uppercase; font-size:11px; color:#b7c9d4 }
+    #inspector { padding:14px; overflow:auto }
+    #inspector .hint { color:var(--muted); padding:20px 4px; text-align:center }
+    .entity-head { display:flex; gap:10px; align-items:flex-start; margin-bottom:12px }
+    .kind-icon { width:30px; height:30px; flex:0 0 auto; display:grid; place-items:center; border-radius:50%; background:#1a5365; color:#cbf6ff; font-weight:800 }
+    .kind-icon.edge { border-radius:4px; transform:rotate(45deg); background:#6647a1 }
+    .kind-icon.edge span { transform:rotate(-45deg) }
+    .entity-head h2 { font-size:15px; margin:1px 0 2px; word-break:break-word }
+    .entity-head small { color:var(--muted) }
+    .kv { display:grid; grid-template-columns:84px 1fr; gap:5px 9px; margin:10px 0; font-size:12px }
+    .kv dt { color:var(--muted) }.kv dd { margin:0; overflow-wrap:anywhere }
+    .chips { display:flex; gap:5px; flex-wrap:wrap }
+    .chip { padding:3px 6px; border-radius:6px; background:#162b39; color:#bad0db; font-size:11px }
+    details { margin-top:12px; border-top:1px solid var(--line); padding-top:10px }
+    summary { cursor:pointer; color:#b9ccd7 }
+    pre { margin:8px 0 0; padding:10px; border-radius:8px; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; background:#07121a; color:#b9d3df; font:11px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace }
+    #eventPanel { min-height:0; border-top:1px solid var(--line); display:grid; grid-template-rows:auto 1fr }
+    #eventPanel header { min-height:0; padding:9px 12px; background:#0b1822; box-shadow:none; border:0; border-bottom:1px solid var(--line) }
+    #eventLog { overflow:auto; padding:8px 10px; font:11px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace }
+    .event-row { padding:3px 4px; border-bottom:1px solid #20303b77; color:#91a9b6; overflow-wrap:anywhere }
+    .event-row.live { color:#8be9d2 }.event-row.error { color:#ff8fa0 }.event-row.ignore { color:#eac172 }
+    #bootError { display:none; position:absolute; z-index:30; inset:18px; padding:20px; border:1px solid #a43d51; border-radius:12px; background:#3b1119ed; color:#ffd7de; overflow:auto }
+    @media (max-width:980px) { header{align-items:flex-start}.brand{min-width:190px}.stats{display:none} main{grid-template-columns:1fr 280px} #legend{display:none} }
+    @media (max-width:720px) { #app{grid-template-rows:auto 1fr} header{display:block}.brand{margin-bottom:8px}.toolbar{display:grid;grid-template-columns:1fr 1fr} main{grid-template-columns:1fr} aside{display:none} #modeNotice{right:14px;max-width:none} }
+  </style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <div class="brand">
+      <div class="brand-mark"><span>KG</span></div>
+      <div><strong>Hypergraph CDC Lab</strong><small>Sigma.js projection viewer</small></div>
+    </div>
+    <div class="toolbar" aria-label="Viewer controls">
+      <label>View
+        <select id="mode" data-testid="mode-select">
+          <option value="reify">Reify · lossless</option>
+          <option value="compact">Compact · mixed</option>
+          <option value="projection">Projection · lossy</option>
+        </select>
+      </label>
+      <input id="search" data-testid="search" type="search" placeholder="Find node or hyperedge…" aria-label="Search graph">
+      <select id="relationFilter" data-testid="relation-filter" aria-label="Filter relation"><option value="">All relations</option></select>
+      <input id="runFilter" data-testid="run-filter" type="text" placeholder="run_id filter" aria-label="Filter run ID">
+      <label><input id="orphans" type="checkbox" checked> orphans</label>
+      <button id="cdcToggle" data-testid="cdc-toggle" type="button">Pause CDC</button>
+      <button id="openForge" data-testid="open-forge" type="button">Event Forge ↗</button>
+    </div>
+    <div class="stats" aria-live="polite">
+      <span class="pill" id="cdcPill" data-state="offline">CDC <b id="cdcState">offline</b></span>
+      <span class="pill">seq <b id="lastSeq">0</b></span>
+      <span class="pill">raw <b id="rawCount">0n · 0e</b></span>
+      <span class="pill">visible <b id="visibleCount">0n · 0i</b></span>
+    </div>
+  </header>
+  <main>
+    <section id="stage" aria-label="Interactive hypergraph canvas">
+      <div id="sigma" data-testid="sigma-stage"></div>
+      <canvas id="shapeOverlay"></canvas>
+      <div id="modeNotice" data-loss="false" data-testid="mode-notice">Reify is authoritative: every hyperedge and endpoint role is visible.</div>
+      <div id="emptyState">
+        <div class="empty-card"><div class="glyph">◇</div><h2>Waiting for hypergraph events</h2><p>Open the CDC Event Forge, send a scenario, then inspect the live structure here.</p></div>
+      </div>
+      <div class="float-controls" aria-label="Camera controls">
+        <button id="zoomIn" title="Zoom in" data-testid="zoom-in">＋</button>
+        <button id="zoomOut" title="Zoom out" data-testid="zoom-out">−</button>
+        <button id="cameraReset" title="Reset camera" data-testid="camera-reset">Fit</button>
+        <button id="relayout" title="Re-run layout" data-testid="relayout">Re-layout</button>
+      </div>
+      <div id="legend" aria-label="Legend">
+        <span class="legend-item"><i class="dot"></i>entity</span>
+        <span class="legend-item"><i class="diamond"></i>hyperedge</span>
+        <span class="legend-item" title="Brightness falls from source to target"><i class="edge-key source"></i>source incidence</span>
+        <span class="legend-item" title="Brightness falls from source to target"><i class="edge-key target"></i>target incidence</span>
+      </div>
+      <div id="bootError" role="alert"></div>
+    </section>
+    <aside>
+      <div class="aside-title"><strong>Inspector</strong><button id="clearSelection" type="button">Clear</button></div>
+      <div id="inspector" data-testid="inspector"><div class="hint">Select an entity or hyperedge.<br>Neighbors remain bright; unrelated structure dims.</div></div>
+      <section id="eventPanel">
+        <header><strong>CDC activity</strong><button id="clearLog" type="button">Clear</button></header>
+        <div id="eventLog" data-testid="event-log"></div>
+      </section>
+    </aside>
+  </main>
+</div>
+<script>
+(() => {
+  "use strict";
+  window.__EMBEDDED_DATA__ = {{ embedded_data | safe if embedded_data is defined else '{"nodes":[],"links":[]}' }};
+  window.__BUNDLE_GRAPH_TYPE__ = {{ bundle_graph_type | safe if bundle_graph_type is defined else '"knowledge"' }};
+  window.__CDC_ENABLED__ = {{ cdc_enabled | safe if cdc_enabled is defined else 'true' }};
+  window.__CDC_WS_URL__ = {{ cdc_ws_url | safe if cdc_ws_url is defined else 'null' }};
+  window.__INITIAL_MODE__ = {{ mode | tojson if mode is defined else '"reify"' }};
+
+  const $ = id => document.getElementById(id);
+  const raw = { nodes:new Map(), edges:new Map(), lastSeq:0, seen:new Set() };
+  const state = { renderer:null, graph:null, selected:null, hovered:null, dragged:null, cdcPaused:false, ws:null, reconnect:null, reconnectAttempt:0, changed:new Map(), positions:new Map(), viewBBox:null };
+  const colors = { entity:"#2b7d98", entityBorder:"#b9edf7", edge:"#7d56c2", edgeBorder:"#eadfff", source:"#35d0ba", target:"#ff6f91", meta:"#ffbd59", derived:"#9baebb", placeholder:"#56646e", pulse:"#fff2a8" };
+  const directionRamps = { source:["#effffc","#31e6cf","#034a48"], target:["#fff1f5","#ff5c86","#5b0a28"], meta:["#fff7df","#ffb429","#573400"], derived:["#ffffff","#a9b9c5","#28343d"] };
+
+  function arr(v) { const xs=Array.isArray(v)?v:(v===null||v===undefined||v===""?[]:[v]); return xs.map(x=>String(x&&typeof x==="object"?(x.id??""):x)).filter(Boolean); }
+  function uniq(xs) { return [...new Set(xs)]; }
+  function firstDefined(obj, keys) { for (const k of keys) if (obj && obj[k] !== undefined && obj[k] !== null) return obj[k]; return undefined; }
+  function labelOf(x, fallback) { return String(firstDefined(x,["label","relation","summary","title","type"]) || fallback || ""); }
+  function propsOf(x) { const p=firstDefined(x,["properties","props","metadata"]); return p && typeof p === "object" ? p : {}; }
+  function hash(s) { let h=2166136261; for (const ch of String(s)) { h^=ch.charCodeAt(0); h=Math.imul(h,16777619); } return h>>>0; }
+  function hashUnit(n) { n=Math.imul(n^(n>>>16),0x45d9f3b);n=Math.imul(n^(n>>>16),0x45d9f3b);return ((n^(n>>>16))>>>0)/4294967295; }
+  function escapeHtml(s) { return String(s??"").replace(/[&<>'"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[c])); }
+  function eventGraphType(ev) { const e=ev && ev.entity || {}; return String(e.kg_graph_type || e.graph_type || ev.kg_graph_type || ev.graph_type || ""); }
+  function canonicalNode(payload, ev={}) {
+    const p=payload||{}, id=String(p.id || ""); if (!id) return null;
+    const prev=raw.nodes.get(id)||{};
+    return {...prev,...p,id,label:labelOf(p,id),type:String(p.type||prev.type||"entity"),properties:{...propsOf(prev),...propsOf(p)},_placeholder:false,_cdc:{seq:ev.seq??prev._cdc?.seq,ts_unix_ms:ev.ts_unix_ms??prev._cdc?.ts_unix_ms,run_id:ev.run_id??prev._cdc?.run_id,step_id:ev.step_id??prev._cdc?.step_id,graph_type:eventGraphType(ev)||prev._cdc?.graph_type}};
+  }
+  function canonicalEdge(payload, ev={}) {
+    const p=payload||{}, id=String(p.id || ""); if (!id) return null;
+    const prev=raw.edges.get(id)||{};
+    const sources=firstDefined(p,["source_ids","source_id","source"]), targets=firstDefined(p,["target_ids","target_id","target"]);
+    const sourceEdges=firstDefined(p,["source_edge_ids","source_edge_id","source_edge"]), targetEdges=firstDefined(p,["target_edge_ids","target_edge_id","target_edge"]);
+    return {...prev,...p,id,label:labelOf(p,id),relation:String(p.relation||p.type||p.label||prev.relation||"related"),source_ids:uniq(sources===undefined?arr(prev.source_ids):arr(sources)),target_ids:uniq(targets===undefined?arr(prev.target_ids):arr(targets)),source_edge_ids:uniq(sourceEdges===undefined?arr(prev.source_edge_ids):arr(sourceEdges)),target_edge_ids:uniq(targetEdges===undefined?arr(prev.target_edge_ids):arr(targetEdges)),properties:{...propsOf(prev),...propsOf(p)},_placeholder:false,_cdc:{seq:ev.seq??prev._cdc?.seq,ts_unix_ms:ev.ts_unix_ms??prev._cdc?.ts_unix_ms,run_id:ev.run_id??prev._cdc?.run_id,step_id:ev.step_id??prev._cdc?.step_id,graph_type:eventGraphType(ev)||prev._cdc?.graph_type}};
+  }
+  function ensureNode(id) { id=String(id||""); if (id && !raw.nodes.has(id)) raw.nodes.set(id,{id,label:id,type:"entity",properties:{},_placeholder:true}); }
+  function ensureEdge(id) { id=String(id||""); if (id && !raw.edges.has(id)) raw.edges.set(id,{id,label:id,relation:"pending hyperedge",source_ids:[],target_ids:[],source_edge_ids:[],target_edge_ids:[],properties:{},_placeholder:true}); }
+  function ensureEndpoints(e) { e.source_ids.forEach(ensureNode); e.target_ids.forEach(ensureNode); e.source_edge_ids.forEach(ensureEdge); e.target_edge_ids.forEach(ensureEdge); }
+  function isTrueHyperedge(e) { return e.source_ids.length>1 || e.target_ids.length>1 || e.source_edge_ids.length>0 || e.target_edge_ids.length>0 || e.source_ids.length===0 || e.target_ids.length===0; }
+
+  function log(message, cls="") { const row=document.createElement("div"); row.className=`event-row ${cls}`; row.textContent=message; $("eventLog").prepend(row); while ($("eventLog").children.length>120) $("eventLog").lastChild.remove(); }
+  function setCdcStatus(text, kind) { $("cdcState").textContent=text; $("cdcPill").dataset.state=kind; }
+  function markChanged(kind,id) { state.changed.set(`${kind}:${id}`,Date.now()+1800); setTimeout(()=>{ state.changed.delete(`${kind}:${id}`); refreshRenderer(); },1900); }
+
+  function applyEvent(ev, {silent=false}={}) {
+    if (!ev || !ev.op) return false;
+    const gt=eventGraphType(ev), wanted=String(window.__BUNDLE_GRAPH_TYPE__||"");
+    if (wanted && gt && gt!==wanted) { if(!silent) log(`ignored ${gt} · ${ev.op}`,"ignore"); return false; }
+    const eid=String((ev.entity||{}).id || (ev.payload||{}).id || "");
+    const key=`${gt}:${ev.seq}:${ev.ts_unix_ms}:${ev.op}:${eid}`; if (raw.seen.has(key)) return false; raw.seen.add(key);
+    if (typeof ev.seq === "number") raw.lastSeq=Math.max(raw.lastSeq,ev.seq);
+    if (ev.op==="node.upsert") { const n=canonicalNode(ev.payload,ev); if(!n) return false; raw.nodes.set(n.id,n); markChanged("node",n.id); }
+    else if (ev.op==="edge.upsert") { const e=canonicalEdge(ev.payload,ev); if(!e) return false; raw.edges.set(e.id,e); ensureEndpoints(e); markChanged("edge",e.id); }
+    else if (ev.op==="node.remove") { if(eid) raw.nodes.delete(eid); if([...raw.edges.values()].some(e=>e.source_ids.includes(eid)||e.target_ids.includes(eid))) ensureNode(eid); }
+    else if (ev.op==="edge.remove") { if(eid) raw.edges.delete(eid); if([...raw.edges.values()].some(e=>e.source_edge_ids.includes(eid)||e.target_edge_ids.includes(eid))) ensureEdge(eid); }
+    else return false;
+    if(!silent) log(`#${ev.seq??"?"} ${ev.op} · ${eid}`,"live");
+    rebuild(); return true;
+  }
+
+  function seed(snapshot) {
+    if(!snapshot) return;
+    if(Array.isArray(snapshot.raw_nodes)||Array.isArray(snapshot.raw_edges)) {
+      (snapshot.raw_nodes||[]).forEach(p=>{const n=canonicalNode(p); if(n) raw.nodes.set(n.id,n)});
+      (snapshot.raw_edges||[]).forEach(p=>{const e=canonicalEdge(p); if(e){raw.edges.set(e.id,e);ensureEndpoints(e)}}); return;
+    }
+    const nodes=new Map((snapshot.nodes||[]).map(n=>[String(n.id),n]));
+    const edgeNodes=[...nodes.values()].filter(n=>n.type==="edge-node");
+    if(edgeNodes.length) {
+      [...nodes.values()].filter(n=>n.type!=="edge-node").forEach(p=>{const n=canonicalNode(p);if(n)raw.nodes.set(n.id,n)});
+      const links=(snapshot.links||[]).map(l=>({...l,source:String(typeof l.source==="object"?l.source.id:l.source),target:String(typeof l.target==="object"?l.target.id:l.target)}));
+      edgeNodes.forEach(en=>{ const incoming=links.filter(l=>l.target===String(en.id)),outgoing=links.filter(l=>l.source===String(en.id)); const e=canonicalEdge({...en,relation:en.relation||en.label,source_ids:incoming.filter(l=>nodes.get(l.source)?.type!=="edge-node").map(l=>l.source),source_edge_ids:incoming.filter(l=>nodes.get(l.source)?.type==="edge-node").map(l=>l.source),target_ids:outgoing.filter(l=>nodes.get(l.target)?.type!=="edge-node").map(l=>l.target),target_edge_ids:outgoing.filter(l=>nodes.get(l.target)?.type==="edge-node").map(l=>l.target)}); if(e){raw.edges.set(e.id,e);ensureEndpoints(e)} });
+    } else {
+      [...nodes.values()].forEach(p=>{const n=canonicalNode(p);if(n)raw.nodes.set(n.id,n)});
+      (snapshot.links||[]).forEach((l,i)=>{const e=canonicalEdge({...l,id:l.id||`snapshot-edge-${i}`,source:l.source,target:l.target});if(e){raw.edges.set(e.id,e);ensureEndpoints(e)}});
+    }
+  }
+
+  function modeInfo(mode) {
+    if(mode==="reify") return {loss:false,text:"Reify is authoritative: every hyperedge and endpoint role is visible."};
+    if(mode==="compact") return {loss:true,text:"Compact is a mixed projection: binary edges collapse; true hyperedges and meta-edges stay reified."};
+    return {loss:true,text:"Projection is lossy: node incidences expand to derived binary links. Inspect origin IDs or return to Reify."};
+  }
+  function edgeIncluded(e) { const rel=$("relationFilter").value, run=$("runFilter").value.trim().toLowerCase(); if(rel && e.relation!==rel) return false; if(run && !String(e._cdc?.run_id||"").toLowerCase().includes(run)) return false; return true; }
+  function initialPosition(id,kind) { const saved=state.positions.get(id); if(saved) return saved; const h=hash(id),scale=kind==="edge"?.78:1; return {x:(hashUnit(h)-.5)*21*scale,y:(hashUnit(h^0x9e3779b9)-.5)*17*scale}; }
+  function visualId(kind,id) { return `${kind==="edge"?"e":"n"}:${id}`; }
+  function addVisualNode(g,id,rawItem,kind) { const vid=visualId(kind,id); if(g.hasNode(vid)) return vid; const p=initialPosition(vid,kind); g.addNode(vid,{x:p.x,y:p.y,size:kind==="edge"?6.5:7,label:kind==="edge"?`◆ ${rawItem.relation||rawItem.label}`:rawItem.label||id,color:rawItem._placeholder?colors.placeholder:(kind==="edge"?colors.edge:colors.entity),kind,rawId:id,raw:rawItem,placeholder:!!rawItem._placeholder}); return vid; }
+  function addVisualEdge(g,key,source,target,attrs) { if(!g.hasNode(source)||!g.hasNode(target)) return; let k=key,n=1; while(g.hasEdge(k)) k=`${key}:${n++}`; g.addDirectedEdgeWithKey(k,source,target,{size:attrs.derived?1.2:1.7,color:attrs.role?.startsWith("src")?colors.source:attrs.role?.startsWith("tgt")?colors.target:attrs.derived?colors.derived:colors.meta,label:attrs.role||"",...attrs}); }
+  function buildProjection() {
+    const g=new graphology.MultiDirectedGraph({allowSelfLoops:true}); const mode=$("mode").value, included=[...raw.edges.values()].filter(edgeIncluded);
+    for(const n of raw.nodes.values()) addVisualNode(g,n.id,n,"node");
+    for(const e of included) {
+      const meta=e.source_edge_ids.length||e.target_edge_ids.length, incomplete=!e.source_ids.length||!e.target_ids.length;
+      const reify=mode==="reify" || (mode==="compact" && isTrueHyperedge(e)) || (mode==="projection" && (meta||incomplete));
+      if(reify) {
+        const edgeVid=addVisualNode(g,e.id,e,"edge");
+        e.source_ids.forEach(id=>addVisualEdge(g,`${e.id}:sn:${id}`,visualId("node",id),edgeVid,{role:"src-node",origin:e.id}));
+        e.target_ids.forEach(id=>addVisualEdge(g,`${e.id}:tn:${id}`,edgeVid,visualId("node",id),{role:"tgt-node",origin:e.id}));
+        e.source_edge_ids.forEach(id=>{const x=raw.edges.get(id);if(x)addVisualNode(g,id,x,"edge");addVisualEdge(g,`${e.id}:se:${id}`,visualId("edge",id),edgeVid,{role:"src-edge",origin:e.id,meta:true})});
+        e.target_edge_ids.forEach(id=>{const x=raw.edges.get(id);if(x)addVisualNode(g,id,x,"edge");addVisualEdge(g,`${e.id}:te:${id}`,edgeVid,visualId("edge",id),{role:"tgt-edge",origin:e.id,meta:true})});
+      } else {
+        e.source_ids.forEach(s=>e.target_ids.forEach(t=>addVisualEdge(g,`${e.id}:${s}->${t}`,visualId("node",s),visualId("node",t),{role:mode==="projection"?"derived":"binary",origin:e.id,derived:mode==="projection",relation:e.relation,raw:e})));
+      }
+    }
+    if(!$("orphans").checked) for(const id of [...g.nodes()]) if(g.degree(id)===0) g.dropNode(id);
+    return g;
+  }
+
+  function layoutGraph(g, iterations=90) {
+    const ids=g.nodes(), n=ids.length; if(n<2||n>450) return;
+    const pos=new Map(ids.map(id=>[id,{...initialPosition(id,g.getNodeAttribute(id,"kind"))}]));
+    for(let it=0;it<iterations;it++) {
+      const temp=1-it/iterations, force=new Map(ids.map(id=>[id,{x:0,y:0}]));
+      for(let i=0;i<n;i++) for(let j=i+1;j<n;j++){const a=pos.get(ids[i]),b=pos.get(ids[j]);let dx=a.x-b.x,dy=a.y-b.y,d2=dx*dx+dy*dy+.18,mag=2.4/d2;force.get(ids[i]).x+=dx*mag;force.get(ids[i]).y+=dy*mag;force.get(ids[j]).x-=dx*mag;force.get(ids[j]).y-=dy*mag;}
+      g.forEachEdge((key,attrs,s,t)=>{const a=pos.get(s),b=pos.get(t),dx=b.x-a.x,dy=b.y-a.y,d=Math.sqrt(dx*dx+dy*dy)+.01,ideal=attrs.meta?5.2:4.0,mag=(d-ideal)*.04;force.get(s).x+=dx/d*mag;force.get(s).y+=dy/d*mag;force.get(t).x-=dx/d*mag;force.get(t).y-=dy/d*mag;});
+      ids.forEach(id=>{const p=pos.get(id),f=force.get(id);p.x+=(f.x-p.x*.003)*temp;p.y+=(f.y-p.y*.003)*temp;});
+    }
+    ids.forEach(id=>{const p=pos.get(id);g.mergeNodeAttributes(id,p);state.positions.set(id,p)});
+  }
+
+  function graphBBox(g) {
+    if(!g.order) return {x:[-11,11],y:[-11,11]};
+    let minX=Infinity,maxX=-Infinity,minY=Infinity,maxY=-Infinity;
+    g.forEachNode((id,a)=>{minX=Math.min(minX,a.x);maxX=Math.max(maxX,a.x);minY=Math.min(minY,a.y);maxY=Math.max(maxY,a.y)});
+    const cx=(minX+maxX)/2,cy=(minY+maxY)/2,half=Math.max(12,(maxX-minX)/2+2.5,(maxY-minY)/2+2.5);
+    return {x:[cx-half,cx+half],y:[cy-half,cy+half]};
+  }
+  function clampToView(p) {
+    const b=state.viewBBox||{x:[-11,11],y:[-11,11]},pad=.8;
+    return {x:Math.max(b.x[0]+pad,Math.min(b.x[1]-pad,p.x)),y:Math.max(b.y[0]+pad,Math.min(b.y[1]-pad,p.y))};
+  }
+  function placeIncremental(g, knownIds) {
+    const fresh=g.nodes().filter(id=>!knownIds.has(id)); if(!fresh.length)return;
+    const freshSet=new Set(fresh), placed=new Set(g.nodes().filter(id=>knownIds.has(id)));
+    for(let pass=0;pass<3;pass++) for(const id of fresh) {
+      if(placed.has(id))continue;
+      const neighbors=g.neighbors(id).filter(n=>placed.has(n)); if(!neighbors.length)continue;
+      const center=neighbors.reduce((p,n)=>({x:p.x+g.getNodeAttribute(n,"x"),y:p.y+g.getNodeAttribute(n,"y")}),{x:0,y:0});
+      const angle=(hash(id)%10000)/10000*Math.PI*2,spread=2.2+(hash(id)%7)*.2;
+      const p=clampToView({x:center.x/neighbors.length+Math.cos(angle)*spread,y:center.y/neighbors.length+Math.sin(angle)*spread});
+      g.mergeNodeAttributes(id,p);placed.add(id);
+    }
+    fresh.forEach(id=>placed.add(id));
+    for(let it=0;it<26;it++) {
+      const force=new Map(fresh.map(id=>[id,{x:0,y:0}]));
+      for(const id of fresh) for(const other of g.nodes()) {if(id===other)continue;const a=g.getNodeAttributes(id),b=g.getNodeAttributes(other),dx=a.x-b.x,dy=a.y-b.y,d2=dx*dx+dy*dy+.3,mag=.65/d2;force.get(id).x+=dx*mag;force.get(id).y+=dy*mag}
+      g.forEachEdge((key,a,s,t)=>{const ps=g.getNodeAttributes(s),pt=g.getNodeAttributes(t),dx=pt.x-ps.x,dy=pt.y-ps.y,d=Math.sqrt(dx*dx+dy*dy)+.01,mag=(d-(a.meta?5.2:4.2))*.055;if(freshSet.has(s)){force.get(s).x+=dx/d*mag;force.get(s).y+=dy/d*mag}if(freshSet.has(t)){force.get(t).x-=dx/d*mag;force.get(t).y-=dy/d*mag}});
+      fresh.forEach(id=>{const p=g.getNodeAttributes(id),f=force.get(id),next=clampToView({x:p.x+f.x*.24,y:p.y+f.y*.24});g.mergeNodeAttributes(id,next)});
+    }
+    fresh.forEach(id=>state.positions.set(id,{x:g.getNodeAttribute(id,"x"),y:g.getNodeAttribute(id,"y")}));
+  }
+
+  function neighborsOf(id) { if(!state.graph||!state.graph.hasNode(id)) return new Set(); return new Set([id,...state.graph.neighbors(id)]); }
+  function nodeReducer(id,data) { const out={...data}, focus=state.selected||state.hovered, near=focus?neighborsOf(focus):null, q=$("search").value.trim().toLowerCase(), rawText=JSON.stringify(data.raw||{}).toLowerCase(), isEdge=data.kind==="edge"; if(near&&!near.has(id)){out.color="#26343d";out.label="";out.zIndex=0}else if(focus===id){out.color=isEdge?colors.edge:colors.pulse;out.size=isEdge?7:data.size*1.45;out.zIndex=3}else out.zIndex=1; if(q){const match=String(data.label||"").toLowerCase().includes(q)||rawText.includes(q);if(match){out.color=isEdge?colors.edge:colors.pulse;out.size=isEdge?7:data.size*1.35;out.forceLabel=true}else if(!focus){out.color="#26343d";out.label=""}} if(state.changed.get(`${data.kind}:${data.rawId}`)>Date.now()&&!isEdge){out.color=colors.pulse;out.size=data.size*1.35} return out; }
+  function edgeReducer(id,data) { const out={...data}, focus=state.selected||state.hovered; if(focus){const s=state.graph.source(id),t=state.graph.target(id);if(s!==focus&&t!==focus){out.color="#21303a";out.hidden=false;out.size=.5}else{out.size=2.8;out.zIndex=2}} return out; }
+  function directionRamp(a) { return a.role?.startsWith("src")?directionRamps.source:a.role?.startsWith("tgt")?directionRamps.target:a.derived?directionRamps.derived:directionRamps.meta; }
+  function refreshRenderer(){ if(state.renderer){state.renderer.refresh();drawOverlay()} }
+
+  function setupRenderer(g) {
+    if(state.renderer) { state.graph=g; state.renderer.setCustomBBox(state.viewBBox); state.renderer.setGraph(g); refreshRenderer(); return; }
+    $("sigma").innerHTML=""; state.graph=g;
+    state.renderer=new Sigma(g,$("sigma"),{renderEdgeLabels:false,labelDensity:.8,labelGridCellSize:90,labelRenderedSizeThreshold:6,labelFont:"Inter, system-ui, sans-serif",labelColor:{color:"#d8e9f0"},stagePadding:76,zIndex:true,nodeReducer,edgeReducer,minCameraRatio:.05,maxCameraRatio:8,hideEdgesOnMove:false,allowInvalidContainer:false});
+    state.renderer.setCustomBBox(state.viewBBox);
+    state.renderer.on("clickNode",({node})=>selectNode(node)); state.renderer.on("clickStage",()=>selectNode(null)); state.renderer.on("enterNode",({node})=>{state.hovered=node;refreshRenderer()}); state.renderer.on("leaveNode",()=>{state.hovered=null;refreshRenderer()}); state.renderer.on("afterRender",drawOverlay);
+    state.renderer.on("downNode",({node})=>{state.dragged=node;state.renderer.getCamera().disable();});
+    const mouse=state.renderer.getMouseCaptor(); mouse.on("mousemove",e=>{if(!state.dragged)return;const p=state.renderer.viewportToGraph(e);state.graph.mergeNodeAttributes(state.dragged,{x:p.x,y:p.y});state.positions.set(state.dragged,p);e.preventSigmaDefault();e.original?.preventDefault();}); mouse.on("mouseup",()=>{state.dragged=null;state.renderer.getCamera().enable();}); mouse.on("mouseleave",()=>{state.dragged=null;state.renderer.getCamera().enable();});
+  }
+  function rebuild({layout=false}={}) {
+    if(state.graph) state.graph.forEachNode((id,a)=>state.positions.set(id,{x:a.x,y:a.y}));
+    const knownIds=new Set(state.positions.keys()),g=buildProjection();
+    if(layout||!state.graph){layoutGraph(g);state.viewBBox=graphBBox(g)}else placeIncremental(g,knownIds);
+    setupRenderer(g); updateUi();
+  }
+  function updateUi() {
+    $("lastSeq").textContent=raw.lastSeq; $("rawCount").textContent=`${raw.nodes.size}n · ${raw.edges.size}e`; $("visibleCount").textContent=`${state.graph?.order||0}n · ${state.graph?.size||0}i`; $("emptyState").classList.toggle("hidden",(state.graph?.order||0)>0);
+    const info=modeInfo($("mode").value); $("modeNotice").textContent=info.text; $("modeNotice").dataset.loss=String(info.loss);
+    const current=$("relationFilter").value, rels=[...new Set([...raw.edges.values()].map(e=>e.relation).filter(Boolean))].sort(); $("relationFilter").innerHTML='<option value="">All relations</option>'+rels.map(r=>`<option ${r===current?"selected":""} value="${escapeHtml(r)}">${escapeHtml(r)}</option>`).join("");
+  }
+  function drawOverlay() {
+    const canvas=$("shapeOverlay"), rect=canvas.getBoundingClientRect(), dpr=window.devicePixelRatio||1; if(canvas.width!==Math.round(rect.width*dpr)||canvas.height!==Math.round(rect.height*dpr)){canvas.width=Math.round(rect.width*dpr);canvas.height=Math.round(rect.height*dpr)} const c=canvas.getContext("2d");c.setTransform(dpr,0,0,dpr,0,0);c.clearRect(0,0,rect.width,rect.height); if(!state.renderer||!state.graph)return;
+    state.graph.forEachEdge((id,a,s,t)=>{const sp=state.renderer.graphToViewport(state.graph.getNodeAttributes(s)),tp=state.renderer.graphToViewport(state.graph.getNodeAttributes(t));const focus=state.selected||state.hovered,dim=focus&&s!==focus&&t!==focus;c.globalAlpha=dim?.1:.98;const ramp=directionRamp(a),ang=Math.atan2(tp.y-sp.y,tp.x-sp.x),r=state.graph.getNodeAttribute(t,"kind")==="edge"?14:10,x=tp.x-Math.cos(ang)*r,y=tp.y-Math.sin(ang)*r,gradient=c.createLinearGradient(sp.x,sp.y,x,y);gradient.addColorStop(0,ramp[0]);gradient.addColorStop(.24,ramp[0]);gradient.addColorStop(.62,ramp[1]);gradient.addColorStop(1,ramp[2]);c.strokeStyle=gradient;c.lineWidth=dim?.7:(focus?3.5:2.4);c.setLineDash(a.derived?[6,4]:(a.meta?[2,3]:[]));c.beginPath();c.moveTo(sp.x,sp.y);c.lineTo(x,y);c.stroke();c.setLineDash([]);c.fillStyle=ramp[2];c.strokeStyle=ramp[1];c.lineWidth=1.15;c.beginPath();c.moveTo(x,y);c.lineTo(x-Math.cos(ang-.52)*8,y-Math.sin(ang-.52)*8);c.lineTo(x-Math.cos(ang+.52)*8,y-Math.sin(ang+.52)*8);c.closePath();c.fill();c.stroke();});
+    state.graph.forEachNode((id,a)=>{if(a.kind!=="edge")return;const p=state.renderer.graphToViewport(a),selected=state.selected===id,changed=state.changed.get(`edge:${a.rawId}`)>Date.now(),r=selected||changed?15:12;c.globalAlpha=1;c.fillStyle=changed?colors.pulse:(a.placeholder?colors.placeholder:colors.edge);c.strokeStyle=selected?colors.focus:colors.edgeBorder;c.lineWidth=selected?3:2;c.beginPath();c.moveTo(p.x,p.y-r);c.lineTo(p.x+r,p.y);c.lineTo(p.x,p.y+r);c.lineTo(p.x-r,p.y);c.closePath();c.fill();c.stroke();}); c.globalAlpha=1;
+  }
+  function selectNode(id) { state.selected=id&&state.graph?.hasNode(id)?id:null; renderInspector();refreshRenderer(); }
+  function renderInspector() {
+    if(!state.selected){$("inspector").innerHTML='<div class="hint">Select an entity or hyperedge.<br>Neighbors remain bright; unrelated structure dims.</div>';return}
+    const a=state.graph.getNodeAttributes(state.selected), item=a.raw||{}, cdc=item._cdc||{}, isEdge=a.kind==="edge", rawId=a.rawId||state.selected;
+    const endpointHtml=isEdge?`<div class="chips">${[...arr(item.source_ids).map(x=>`<span class="chip">src n · ${escapeHtml(x)}</span>`),...arr(item.target_ids).map(x=>`<span class="chip">tgt n · ${escapeHtml(x)}</span>`),...arr(item.source_edge_ids).map(x=>`<span class="chip">src e · ${escapeHtml(x)}</span>`),...arr(item.target_edge_ids).map(x=>`<span class="chip">tgt e · ${escapeHtml(x)}</span>`)].join("")||'<span class="chip">no endpoints yet</span>'}</div>`:"";
+    $("inspector").innerHTML=`<div class="entity-head"><div class="kind-icon ${isEdge?"edge":""}"><span>${isEdge?"◆":"●"}</span></div><div><h2>${escapeHtml(item.relation||item.label||rawId)}</h2><small>${isEdge?"hyperedge":"entity"}${item._placeholder?" · placeholder":""}</small></div></div>${endpointHtml}<dl class="kv"><dt>ID</dt><dd>${escapeHtml(rawId)}</dd><dt>Relation/type</dt><dd>${escapeHtml(item.relation||item.type||"—")}</dd><dt>run_id</dt><dd>${escapeHtml(cdc.run_id||"—")}</dd><dt>step_id</dt><dd>${escapeHtml(cdc.step_id||"—")}</dd><dt>CDC seq</dt><dd>${escapeHtml(cdc.seq??"—")}</dd></dl><details><summary>Raw payload</summary><pre>${escapeHtml(JSON.stringify(item,null,2))}</pre></details>`;
+  }
+
+  function wsUrl() { const proto=location.protocol==="https:"?"wss:":"ws:", base=window.__CDC_WS_URL__?String(window.__CDC_WS_URL__):`${proto}//${location.host}/changes/ws`; const u=new URL(base,location.href); if(window.__BUNDLE_GRAPH_TYPE__)u.searchParams.set("stream",window.__BUNDLE_GRAPH_TYPE__); u.searchParams.set("since",String(raw.lastSeq||0)); return u.toString(); }
+  function connectCdc() {
+    if(!window.__CDC_ENABLED__||state.cdcPaused)return; const url=wsUrl(); if(!url){setCdcStatus("no URL","error");return} if(state.ws&&[0,1].includes(state.ws.readyState))return;
+    setCdcStatus("connecting","offline"); try{state.ws=new WebSocket(url)}catch(e){setCdcStatus("error","error");scheduleReconnect();return}
+    state.ws.onopen=()=>{state.reconnectAttempt=0;setCdcStatus("live","live");log(`connected · ${url}`,"live")};
+    state.ws.onmessage=m=>{if(state.cdcPaused)return;try{applyEvent(JSON.parse(m.data))}catch(e){log(`event error · ${e.message}`,"error")}};
+    state.ws.onerror=()=>setCdcStatus("error","error"); state.ws.onclose=()=>{state.ws=null;if(!state.cdcPaused){setCdcStatus("retrying","offline");scheduleReconnect()}};
+  }
+  function scheduleReconnect(){if(state.reconnect||state.cdcPaused)return;const ms=Math.min(10000,500*Math.pow(1.7,state.reconnectAttempt++));state.reconnect=setTimeout(()=>{state.reconnect=null;connectCdc()},ms)}
+  function toggleCdc(){state.cdcPaused=!state.cdcPaused;$("cdcToggle").textContent=state.cdcPaused?"Resume CDC":"Pause CDC";$("cdcToggle").classList.toggle("active",state.cdcPaused);if(state.cdcPaused){clearTimeout(state.reconnect);state.reconnect=null;if(state.ws){state.ws.close();state.ws=null}setCdcStatus("paused","paused")}else connectCdc()}
+
+  function wireControls(){ $("mode").value=["reify","compact","projection"].includes(window.__INITIAL_MODE__)?window.__INITIAL_MODE__:"reify"; $("mode").onchange=()=>{state.selected=null;rebuild();renderInspector()}; $("search").oninput=refreshRenderer; $("relationFilter").onchange=()=>rebuild(); $("runFilter").oninput=()=>rebuild(); $("orphans").onchange=()=>rebuild(); $("cdcToggle").onclick=toggleCdc; $("openForge").onclick=()=>window.open("/debug/forge","kogwistar-cdc-forge"); $("clearSelection").onclick=()=>selectNode(null); $("clearLog").onclick=()=>$("eventLog").innerHTML=""; $("zoomIn").onclick=()=>state.renderer?.getCamera().animatedZoom({duration:180}); $("zoomOut").onclick=()=>state.renderer?.getCamera().animatedUnzoom({duration:180}); $("cameraReset").onclick=()=>state.renderer?.getCamera().animatedReset({duration:280}); $("relayout").onclick=()=>{state.positions.clear();rebuild({layout:true});state.renderer?.getCamera().animatedReset({duration:280})}; window.addEventListener("resize",drawOverlay); }
+  function boot(){ if(typeof graphology==="undefined"||typeof Sigma==="undefined")throw new Error("Sigma.js or Graphology failed to load."); wireControls();seed(window.__EMBEDDED_DATA__);rebuild({layout:true});renderInspector(); if(window.__CDC_ENABLED__)connectCdc();else setCdcStatus("disabled","offline"); window.__KOGWISTAR_SIGMA__={raw,state,applyEvent,rebuild,selectNode}; }
+  try{boot()}catch(e){console.error(e);$("bootError").style.display="block";$("bootError").innerHTML=`<strong>Viewer failed to start</strong><pre>${escapeHtml(e.stack||e.message||e)}</pre>`;}
+})();
+</script>
+</body>
+</html>

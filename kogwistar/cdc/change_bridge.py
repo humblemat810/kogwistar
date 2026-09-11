@@ -16,6 +16,7 @@ from typing import Any, Optional
 
 import uvicorn
 from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, HTMLResponse
 
 # Canonical ChangeEvent type (used by engine).
 from kogwistar.cdc.change_event import ChangeEvent
@@ -99,6 +100,69 @@ def create_app(*, oplog_file: Path, fsync: bool = False) -> FastAPI:
     subscribers: dict[WebSocket, Optional[str]] = {}
     subs_lock = asyncio.Lock()
     ingest_lock = asyncio.Lock()
+
+    templates_dir = Path(__file__).resolve().parents[1] / "templates"
+
+    @app.get("/debug", response_class=HTMLResponse)
+    async def debug_home() -> HTMLResponse:
+        return HTMLResponse(
+            """<!doctype html><html><head><meta charset=\"utf-8\"><title>Kogwistar CDC Lab</title>
+            <style>body{margin:0;padding:48px;background:#071019;color:#e7f2f7;font:16px system-ui}a{display:block;max-width:520px;margin:16px 0;padding:20px;border:1px solid #294254;border-radius:12px;background:#102230;color:#9ff5e2;text-decoration:none}small{display:block;color:#8ca5b5;margin-top:6px}</style></head>
+            <body><h1>Kogwistar CDC Hypergraph Lab</h1>
+            <a href=\"/debug/sigma\">Open Sigma viewer<small>Lossless reification, compact and derived projection modes.</small></a>
+            <a href=\"/debug/forge\">Open CDC event forge<small>Create nodes, hyperedges, meta-edges and live scenarios.</small></a>
+            </body></html>"""
+        )
+
+    @app.get("/debug/sigma", response_class=HTMLResponse)
+    async def debug_sigma(
+        stream: str = Query(default="knowledge"),
+        mode: str = Query(default="reify"),
+    ) -> HTMLResponse:
+        from kogwistar.utils.kge_debug_dump import _render_template_html
+
+        if mode not in {"reify", "compact", "projection"}:
+            mode = "reify"
+        template_html = (templates_dir / "sigma.html").read_text(encoding="utf-8")
+        rendered = _render_template_html(
+            template_html,
+            context={
+                "doc_id": "null",
+                "mode": mode,
+                "insertion_method": "null",
+                "is_bundle": "false",
+                "embedded_data": json.dumps(
+                    {"raw_nodes": [], "raw_edges": [], "mode": "raw-hypergraph"}
+                ),
+                "bundle_meta": None,
+                "bundle_graph_type": json.dumps(stream),
+                "cdc_enabled": "true",
+                "cdc_ws_url": "null",
+                "graphology_script_src": "/debug/assets/graphology-0.25.4.umd.min.js",
+                "sigma_script_src": "/debug/assets/sigma-2.4.0.min.js",
+            },
+        )
+        return HTMLResponse(rendered)
+
+    @app.get("/debug/assets/graphology-0.25.4.umd.min.js", response_class=FileResponse)
+    async def debug_graphology_asset() -> FileResponse:
+        return FileResponse(
+            templates_dir / "graphology-0.25.4.umd.min.js",
+            media_type="text/javascript",
+        )
+
+    @app.get("/debug/assets/sigma-2.4.0.min.js", response_class=FileResponse)
+    async def debug_sigma_asset() -> FileResponse:
+        return FileResponse(
+            templates_dir / "sigma-2.4.0.min.js",
+            media_type="text/javascript",
+        )
+
+    @app.get("/debug/forge", response_class=HTMLResponse)
+    async def debug_forge() -> HTMLResponse:
+        return HTMLResponse(
+            (templates_dir / "cdc_event_forge.html").read_text(encoding="utf-8")
+        )
 
     async def _broadcast_jsonable(evj: dict[str, Any]) -> None:
         # Snapshot subscriber list to avoid holding lock across network I/O.

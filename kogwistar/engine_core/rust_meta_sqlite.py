@@ -5,6 +5,7 @@ from contextlib import contextmanager
 from dataclasses import fields
 from pathlib import Path
 from typing import Any, Iterator
+from .event_envelope import EntityEventEnvelope
 import uuid
 
 from kogwistar._rust_bridge import store_sqlite
@@ -60,6 +61,10 @@ class RustEngineSQLite:
     def ensure_initialized(self) -> None:
         self.persistent_directory.mkdir(parents=True, exist_ok=True)
         self._call("open_init")
+
+    def close(self) -> None:
+        """Release the native cached SQLite handle for this facade path."""
+        self._call("close")
 
     def connect(self) -> None:
         raise RustSQLiteConnectionUnavailable(
@@ -144,6 +149,26 @@ class RustEngineSQLite:
 
     def mark_index_job_done(self, job_id: str, *, claim_token: str | None = None) -> bool:
         return bool(self._call("mark_index_job_done", job_id=job_id, claim_token=claim_token))
+
+    def accept_index_job_result(
+        self,
+        job_id: str,
+        *,
+        claim_token: str,
+        result_json: str,
+        result_sha256: str,
+    ) -> dict[str, Any]:
+        return dict(self._call(
+            "accept_index_job_result",
+            job_id=job_id,
+            claim_token=claim_token,
+            result_json=result_json,
+            result_sha256=result_sha256,
+        ))
+
+    def get_index_job_result(self, job_id: str) -> dict[str, Any] | None:
+        value = self._call("get_index_job_result", job_id=job_id)
+        return None if value is None else dict(value)
 
     def mark_index_job_failed(
         self,
@@ -258,6 +283,23 @@ class RustEngineSQLite:
     def append_entity_event(self, **values: Any) -> int:
         return int(self._call("raw_append", **values)["seq"])
 
+    def append_entity_event_envelope(self, event: EntityEventEnvelope) -> int:
+        """Import one lossless event through the Rust transaction boundary."""
+        if not isinstance(event, EntityEventEnvelope):
+            raise TypeError("event must be an EntityEventEnvelope")
+        result = self._call(
+            "raw_restore",
+            namespace=event.namespace,
+            seq=int(event.seq),
+            event_id=event.event_id,
+            entity_kind=event.entity_kind,
+            entity_id=event.entity_id,
+            op=event.op,
+            payload_json=event.payload_json,
+            created_at=int(event.created_at),
+        )
+        return int(result["seq"])
+
     def iter_entity_events(
         self,
         *,
@@ -288,6 +330,33 @@ class RustEngineSQLite:
                 )
             after_seq = int(rows[-1]["seq"])
             if len(rows) < batch_size or (to_seq is not None and after_seq >= to_seq):
+                return
+
+    def iter_entity_event_envelopes(
+        self,
+        *,
+        namespace: str = "default",
+        from_seq: int = 1,
+        to_seq: int | None = None,
+        batch_size: int = 500,
+    ) -> Iterator[EntityEventEnvelope]:
+        """Read the Rust raw replay envelope without changing legacy tuples."""
+        after_seq = int(from_seq) - 1
+        while True:
+            rows = self._call(
+                "exclusive_raw_replay",
+                namespace=namespace,
+                after_seq=after_seq,
+                limit=int(batch_size),
+            )
+            if to_seq is not None:
+                rows = [row for row in rows if int(row["seq"]) <= int(to_seq)]
+            if not rows:
+                return
+            for row in rows:
+                yield EntityEventEnvelope.from_mapping(row)
+            after_seq = int(rows[-1]["seq"])
+            if len(rows) < int(batch_size) or (to_seq is not None and after_seq >= int(to_seq)):
                 return
 
     def prune_entity_events_after(self, *, namespace: str = "default", to_seq: int) -> int:
@@ -344,6 +413,78 @@ class RustEngineSQLite:
 
     def clear_projection_namespace(self, namespace: str) -> None:
         self._call("clear_projection_namespace", namespace=namespace)
+
+    def get_stage1_node_projection(
+        self, namespace: str, node_id: str
+    ) -> dict[str, Any] | None:
+        return self._call(
+            "get_stage1_node_projection", namespace=namespace, key=node_id
+        )
+
+    def list_stage1_node_projections(self, namespace: str) -> list[dict[str, Any]]:
+        return list(
+            self._call("list_stage1_node_projections", namespace=namespace)
+        )
+
+    def replace_stage1_node_projection(
+        self,
+        namespace: str,
+        node_id: str,
+        payload: dict[str, Any],
+        **values: Any,
+    ) -> None:
+        self._call(
+            "replace_stage1_node_projection",
+            namespace=namespace,
+            key=node_id,
+            payload=payload,
+            **values,
+        )
+
+    def clear_stage1_node_projection(self, namespace: str, node_id: str) -> None:
+        self._call(
+            "clear_stage1_node_projection", namespace=namespace, key=node_id
+        )
+
+    def query_stage1_node_projections(
+        self,
+        namespace: str,
+        *,
+        ids: list[str] | None = None,
+        entity_kind: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        limit: int | None = 200,
+    ) -> list[dict[str, Any]]:
+        if metadata is not None and not isinstance(metadata, dict):
+            raise TypeError("metadata must be a dict or None")
+        if any(
+            str(key).startswith("$") or isinstance(value, dict)
+            for key, value in (metadata or {}).items()
+        ):
+            raise ValueError("Stage-1 metadata query supports flat equality only")
+        if limit is not None and int(limit) <= 0:
+            return []
+        wanted_ids = {str(value) for value in ids} if ids is not None else None
+        wanted_metadata = dict(metadata or {})
+        result: list[dict[str, Any]] = []
+        for row in self.list_stage1_node_projections(namespace):
+            payload = row.get("payload")
+            if not isinstance(payload, dict):
+                continue
+            if entity_kind is not None and payload.get("entity_kind") != entity_kind:
+                continue
+            payload_id = str(payload.get("id") or row["key"])
+            if wanted_ids is not None and payload_id not in wanted_ids:
+                continue
+            row_metadata = payload.get("metadata") if isinstance(payload, dict) else None
+            if not isinstance(row_metadata, dict):
+                row_metadata = {}
+            if any(row_metadata.get(key) != value for key, value in wanted_metadata.items()):
+                continue
+            result.append(row)
+            if limit is not None and len(result) >= int(limit):
+                break
+        return result
 
     def get_workflow_design_projection(self, *, workflow_id: str) -> dict[str, Any] | None:
         projection = self.get_named_projection("workflow_design", workflow_id)

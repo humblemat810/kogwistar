@@ -1,4 +1,4 @@
-﻿# ARD-P2D: Conversation Workflow v2 Parity, State-First Execution, and Resolver Governance
+# ARD-P2D: Conversation Workflow v2 Parity, State-First Execution, and Resolver Governance
 
 **Status:** Accepted (living guardrail; v2 workflow is implemented, parity work remains ongoing)\
 **Scope:** Conversation orchestrator v1 vs workflow-driven v2; workflow
@@ -426,7 +426,7 @@ If `memory_retrieve` runs multiple times in an epoch:
   - relation: `retry`
   - direction: `attempt_n -> attempt_(n-1)` (or `previous_attempt`), choose one and keep consistent
 
-### A6.2 State representation
+### A6.2 State embedding
 Store all attempts in state as an append-only list:
 - `state["artifacts"]["memory_retrievals"] = [Attempt, Attempt, ...]`
 - each Attempt must be checkpoint-safe (jsonable)

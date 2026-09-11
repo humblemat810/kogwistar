@@ -9,6 +9,7 @@ Use [docs/LEARNING_PATH.md](../LEARNING_PATH.md) as the main entrypoint. This pa
 - New ACL tutorial: [24 ACL Visibility and Auditing](./24_acl_visibility_tutorial.md)
 - New async runtime tutorial: [25 Async Runtime Basics](./25_async_runtime_tutorial.md)
 - Recovery / durable operational state: [26 Recovery and Durable Operational State](./26_recovery_and_durable_operational_state.md)
+- Reliable workflow loops: [27 Building Reliable Workflow Loops](./27_building_reliable_workflow_loops.md)
 
 ## Learning Path Docs
 
@@ -38,6 +39,7 @@ Use [docs/LEARNING_PATH.md](../LEARNING_PATH.md) as the main entrypoint. This pa
 - [24 ACL Visibility and Auditing](./24_acl_visibility_tutorial.md)
 - [25 Async Runtime Basics](./25_async_runtime_tutorial.md)
 - [26 Recovery and Durable Operational State](./26_recovery_and_durable_operational_state.md)
+- [27 Building Reliable Workflow Loops](./27_building_reliable_workflow_loops.md)
 
 ## VS Code Companion Files
 

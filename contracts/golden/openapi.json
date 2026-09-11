@@ -1757,6 +1757,22 @@
           },
           {
             "in": "query",
+            "name": "return_to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Return To"
+            }
+          },
+          {
+            "in": "query",
             "name": "provider",
             "required": false,
             "schema": {
@@ -2530,6 +2546,46 @@
           }
         },
         "summary": "Get Run Events Poll",
+        "tags": [
+          "chat"
+        ]
+      }
+    },
+    "/api/runs/{run_id}/evidence": {
+      "get": {
+        "operationId": "get_run_evidence_api_runs__run_id__evidence_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Run Evidence",
         "tags": [
           "chat"
         ]

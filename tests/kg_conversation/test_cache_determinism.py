@@ -1,5 +1,5 @@
 import pytest
-pytestmark = pytest.mark.ci_full
+pytestmark = [pytest.mark.ci_full, pytest.mark.requires_ollama]
 import shutil
 import os
 import pathlib

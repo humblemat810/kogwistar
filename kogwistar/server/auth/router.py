@@ -1,5 +1,6 @@
 from __future__ import annotations
 import os
+from urllib.parse import urlsplit
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from .service import AuthService
@@ -50,6 +51,26 @@ def _get_auth_mode(request: Request) -> str:
     return (getattr(request.app.state, "auth_mode", None) or "oidc").lower()
 
 
+def _allowed_return_targets() -> tuple[str, ...]:
+    raw = os.getenv("AUTH_ALLOWED_RETURN_URLS", "")
+    configured = tuple(item.strip() for item in raw.split(",") if item.strip())
+    if configured:
+        return configured
+    return ((os.getenv("UI_URL", "/") or "/").strip(),)
+
+
+def _resolve_return_target(value: str | None) -> str:
+    target = (value or os.getenv("UI_URL", "/") or "/").strip()
+    if target.startswith("/") and not target.startswith("//"):
+        return target
+    parsed = urlsplit(target)
+    if not parsed.scheme or not parsed.netloc or parsed.username or parsed.password:
+        raise HTTPException(status_code=400, detail="Invalid return_to target")
+    if target not in _allowed_return_targets():
+        raise HTTPException(status_code=400, detail="return_to target is not allowed")
+    return target
+
+
 def _mint_dev_token(auth_service: AuthService) -> str:
     email = os.getenv("DEV_AUTH_EMAIL", "dev@example.com")
     subject = os.getenv("DEV_AUTH_SUBJECT", "dev")
@@ -79,6 +100,7 @@ def _mint_dev_token(auth_service: AuthService) -> str:
 async def login(
     request: Request,
     redirect_uri: str | None = None,
+    return_to: str | None = None,
     provider: str | None = None,
 ):
     auth_mode = _get_auth_mode(request)
@@ -92,10 +114,11 @@ async def login(
 
     if auth_mode == "dev":
         auth_service = get_auth_service(request)
-        ui_url = redirect_uri or os.getenv("UI_URL", "/")
+        ui_url = redirect_uri or _resolve_return_target(return_to)
         token = _mint_dev_token(auth_service)
         return RedirectResponse(f"{ui_url}?token={token}")
 
+    ui_url = _resolve_return_target(return_to)
     provider_name, oidc = _get_oidc_client_for_provider(request, provider)
     state = OIDCClient.generate_state()
     pkce = OIDCClient.generate_pkce()
@@ -110,6 +133,7 @@ async def login(
     )
     response.set_cookie("auth_nonce", nonce, httponly=True, max_age=600)
     response.set_cookie("auth_provider", provider_name, httponly=True, max_age=600)
+    response.set_cookie("auth_return_to", ui_url, httponly=True, max_age=600)
     return response
 
 
@@ -140,6 +164,7 @@ async def callback(
     stored_verifier = request.cookies.get("auth_pkce_verifier")
     stored_nonce = request.cookies.get("auth_nonce")
     stored_provider = request.cookies.get("auth_provider")
+    stored_return_to = request.cookies.get("auth_return_to")
 
     if not stored_state or state != stored_state:
         raise HTTPException(status_code=400, detail="Invalid state")
@@ -149,6 +174,7 @@ async def callback(
         raise HTTPException(status_code=400, detail="Missing nonce")
     if not stored_provider:
         raise HTTPException(status_code=400, detail="Missing provider")
+    return_target = _resolve_return_target(stored_return_to)
 
     _, oidc = _get_oidc_client_for_provider(request, stored_provider)
 
@@ -190,12 +216,13 @@ async def callback(
 
     app_token = auth_service.mint_token(user_id)
 
-    ui_url = os.getenv("UI_URL", "/")
-    response = RedirectResponse(f"{ui_url}?token={app_token}")
+    separator = "&" if "?" in return_target else "?"
+    response = RedirectResponse(f"{return_target}{separator}token={app_token}")
     response.delete_cookie("auth_state")
     response.delete_cookie("auth_pkce_verifier")
     response.delete_cookie("auth_nonce")
     response.delete_cookie("auth_provider")
+    response.delete_cookie("auth_return_to")
     return response
 
 

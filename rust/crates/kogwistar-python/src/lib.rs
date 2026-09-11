@@ -14,7 +14,8 @@ use kogwistar_store_postgres::{
     PostgresUnitOfWork, RawEntityEvent as PostgresRawEntityEvent,
 };
 use kogwistar_store_sqlite::{
-    NewRawEntityEvent, RawEntityEvent, SqliteStore, SqliteStoreError, SqliteUnitOfWork,
+    NewRawEntityEvent, RawEntityEvent, RestoredRawEntityEvent, SqliteStore, SqliteStoreError,
+    SqliteUnitOfWork,
 };
 use pyo3::create_exception;
 use pyo3::exceptions::{PyAttributeError, PyRuntimeError, PyTypeError, PyValueError};
@@ -111,7 +112,10 @@ fn server_run_event_json(event: ServerRunEvent) -> Result<Value, serde_json::Err
 }
 
 fn index_job_json(job: kogwistar_store::IndexJob) -> Value {
-    json!({"job_id":job.job_id,"namespace":job.namespace,"entity_kind":job.entity_kind,"entity_id":job.entity_id,"index_kind":job.index_kind,"coalesce_key":job.coalesce_key,"op":job.op,"status":job.status,"lease_until":job.lease_until,"next_run_at":job.next_run_at,"max_retries":job.max_retries,"retry_count":job.retry_count,"last_error":job.last_error,"payload_json":job.payload_json,"created_at":job.created_at,"updated_at":job.updated_at,"claim_token":job.claim_token,"claim_attempts":job.claim_attempts})
+    json!({"job_id":job.job_id,"namespace":job.namespace,"entity_kind":job.entity_kind,"entity_id":job.entity_id,"index_kind":job.index_kind,"coalesce_key":job.coalesce_key,"op":job.op,"status":job.status,"lease_until":job.lease_until,"next_run_at":job.next_run_at,"max_retries":job.max_retries,"retry_count":job.retry_count,"last_error":job.last_error,"payload_json":job.payload_json,"created_at":job.created_at,"updated_at":job.updated_at,"claim_token":job.claim_token,"claim_attempts":job.claim_attempts,"accepted_result_json":job.accepted_result_json,"accepted_result_sha256":job.accepted_result_sha256,"accepted_at":job.accepted_at})
+}
+fn accepted_index_job_result_json(result: kogwistar_store::AcceptedIndexJobResult) -> Value {
+    json!({"status": result.status, "result_json": result.result_json, "result_sha256": result.result_sha256, "accepted_at": result.accepted_at})
 }
 fn lane_message_json(row: ProjectedLaneMessage) -> Value {
     json!({"message_id":row.message_id,"namespace":row.namespace,"purpose":row.purpose,"inbox_id":row.inbox_id,"conversation_id":row.conversation_id,"recipient_id":row.recipient_id,"sender_id":row.sender_id,"msg_type":row.msg_type,"status":row.status,"seq":row.seq,"conversation_seq":row.conversation_seq,"claimed_by":row.claimed_by,"lease_until":row.lease_until,"retry_count":row.retry_count,"created_at":row.created_at,"available_at":row.available_at,"run_id":row.run_id,"step_id":row.step_id,"correlation_id":row.correlation_id,"payload_json":row.payload_json,"error_json":row.error_json,"prev_message_id":row.prev_message_id,"next_message_id":row.next_message_id,"inbox_tail_message_id":row.inbox_tail_message_id,"conversation_tail_message_id":row.conversation_tail_message_id})
@@ -680,6 +684,7 @@ struct SqliteStoreRequest {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum SqliteStoreOperation {
     OpenInit,
+    Close,
     BeginTransaction,
     CommitTransaction,
     RollbackTransaction,
@@ -715,6 +720,16 @@ enum SqliteStoreOperation {
         entity_id: String,
         op: String,
         payload_json: String,
+    },
+    RawRestore {
+        namespace: String,
+        seq: i64,
+        event_id: String,
+        entity_kind: String,
+        entity_id: String,
+        op: String,
+        payload_json: String,
+        created_at: i64,
     },
     ExclusiveRawReplay {
         namespace: String,
@@ -792,6 +807,26 @@ enum SqliteStoreOperation {
     },
     ClearProjectionNamespace {
         namespace: String,
+    },
+    GetStage1NodeProjection {
+        namespace: String,
+        key: String,
+    },
+    ListStage1NodeProjections {
+        namespace: String,
+    },
+    ReplaceStage1NodeProjection {
+        namespace: String,
+        key: String,
+        payload: Map<String, Value>,
+        last_authoritative_seq: i64,
+        last_materialized_seq: i64,
+        projection_schema_version: i64,
+        materialization_status: String,
+    },
+    ClearStage1NodeProjection {
+        namespace: String,
+        key: String,
     },
     PutWorkflowDesignSnapshot {
         workflow_id: String,
@@ -934,6 +969,15 @@ enum SqliteStoreOperation {
         job_id: String,
         #[serde(default)]
         claim_token: Option<String>,
+    },
+    AcceptIndexJobResult {
+        job_id: String,
+        claim_token: String,
+        result_json: String,
+        result_sha256: String,
+    },
+    GetIndexJobResult {
+        job_id: String,
     },
     MarkIndexJobFailed {
         job_id: String,
@@ -1184,6 +1228,9 @@ fn sqlite_store_operation_json(
 ) -> Result<Value, SqliteStoreError> {
     match operation {
         SqliteStoreOperation::OpenInit => Ok(json!({"initialized": true})),
+        SqliteStoreOperation::Close => Err(SqliteStoreError::TransactionAborted(
+            "SQLite close must be handled by the session".to_owned(),
+        )),
         SqliteStoreOperation::BeginTransaction
         | SqliteStoreOperation::CommitTransaction
         | SqliteStoreOperation::RollbackTransaction => Err(SqliteStoreError::TransactionAborted(
@@ -1223,6 +1270,29 @@ fn sqlite_store_operation_json(
             &namespace,
             new_raw_event(event_id, entity_kind, entity_id, op, payload_json),
         )?)),
+        SqliteStoreOperation::RawRestore {
+            namespace,
+            seq,
+            event_id,
+            entity_kind,
+            entity_id,
+            op,
+            payload_json,
+            created_at,
+        } => Ok(appended_raw_event_json(
+            store.append_restored_raw_entity_event(
+                &namespace,
+                RestoredRawEntityEvent {
+                    seq,
+                    event_id,
+                    entity_kind,
+                    entity_id,
+                    op,
+                    payload_json,
+                    created_at,
+                },
+            )?,
+        )),
         SqliteStoreOperation::ExclusiveRawReplay {
             namespace,
             after_seq,
@@ -1352,6 +1422,43 @@ fn sqlite_store_operation_json(
         }
         SqliteStoreOperation::ClearProjectionNamespace { namespace } => {
             store.clear_projection_namespace(&namespace)?;
+            Ok(Value::Null)
+        }
+        SqliteStoreOperation::GetStage1NodeProjection { namespace, key } => Ok(store
+            .get_stage1_node_projection(&namespace, &key)?
+            .map(projection_json)
+            .unwrap_or(Value::Null)),
+        SqliteStoreOperation::ListStage1NodeProjections { namespace } => Ok(Value::Array(
+            store
+                .list_stage1_node_projections(&namespace)?
+                .into_iter()
+                .map(projection_json)
+                .collect(),
+        )),
+        SqliteStoreOperation::ReplaceStage1NodeProjection {
+            namespace,
+            key,
+            payload,
+            last_authoritative_seq,
+            last_materialized_seq,
+            projection_schema_version,
+            materialization_status,
+        } => {
+            store.replace_stage1_node_projection(
+                &namespace,
+                &key,
+                projection_write(
+                    payload,
+                    last_authoritative_seq,
+                    last_materialized_seq,
+                    projection_schema_version,
+                    materialization_status,
+                ),
+            )?;
+            Ok(Value::Null)
+        }
+        SqliteStoreOperation::ClearStage1NodeProjection { namespace, key } => {
+            store.clear_stage1_node_projection(&namespace, &key)?;
             Ok(Value::Null)
         }
         SqliteStoreOperation::PutWorkflowDesignSnapshot {
@@ -1584,6 +1691,18 @@ fn sqlite_store_operation_json(
         } => Ok(json!(
             store.mark_index_job_done(&job_id, claim_token.as_deref())?
         )),
+        SqliteStoreOperation::AcceptIndexJobResult {
+            job_id,
+            claim_token,
+            result_json,
+            result_sha256,
+        } => Ok(accepted_index_job_result_json(
+            store.accept_index_job_result(&job_id, &claim_token, &result_json, &result_sha256)?,
+        )),
+        SqliteStoreOperation::GetIndexJobResult { job_id } => Ok(store
+            .index_job_result(&job_id)?
+            .map(accepted_index_job_result_json)
+            .unwrap_or(Value::Null)),
         SqliteStoreOperation::MarkIndexJobFailed {
             job_id,
             error,
@@ -1856,6 +1975,29 @@ fn sqlite_batch_operation_json(
             &namespace,
             new_raw_event(event_id, entity_kind, entity_id, op, payload_json),
         )?)),
+        SqliteStoreOperation::RawRestore {
+            namespace,
+            seq,
+            event_id,
+            entity_kind,
+            entity_id,
+            op,
+            payload_json,
+            created_at,
+        } => Ok(appended_raw_event_json(
+            uow.append_restored_raw_entity_event(
+                &namespace,
+                RestoredRawEntityEvent {
+                    seq,
+                    event_id,
+                    entity_kind,
+                    entity_id,
+                    op,
+                    payload_json,
+                    created_at,
+                },
+            )?,
+        )),
         SqliteStoreOperation::PruneEntityEventsAfter { namespace, to_seq } => {
             Ok(json!(uow.prune_entity_events_after(&namespace, to_seq)?))
         }
@@ -1924,6 +2066,32 @@ fn sqlite_batch_operation_json(
         }
         SqliteStoreOperation::ClearProjectionNamespace { namespace } => {
             uow.clear_projection_namespace(&namespace)?;
+            Ok(Value::Null)
+        }
+        SqliteStoreOperation::ReplaceStage1NodeProjection {
+            namespace,
+            key,
+            payload,
+            last_authoritative_seq,
+            last_materialized_seq,
+            projection_schema_version,
+            materialization_status,
+        } => {
+            uow.replace_stage1_node_projection(
+                &namespace,
+                &key,
+                projection_write(
+                    payload,
+                    last_authoritative_seq,
+                    last_materialized_seq,
+                    projection_schema_version,
+                    materialization_status,
+                ),
+            )?;
+            Ok(Value::Null)
+        }
+        SqliteStoreOperation::ClearStage1NodeProjection { namespace, key } => {
+            uow.clear_stage1_node_projection(&namespace, &key)?;
             Ok(Value::Null)
         }
         SqliteStoreOperation::PutWorkflowDesignSnapshot {
@@ -2073,6 +2241,19 @@ fn sqlite_batch_operation_json(
         } => Ok(json!(
             uow.mark_index_job_done(&job_id, claim_token.as_deref())?
         )),
+        SqliteStoreOperation::AcceptIndexJobResult {
+            job_id,
+            claim_token,
+            result_json,
+            result_sha256,
+        } => Ok(accepted_index_job_result_json(
+            uow.accept_index_job_result(&job_id, &claim_token, &result_json, &result_sha256)?,
+        )),
+        SqliteStoreOperation::GetIndexJobResult { .. } => {
+            Err(SqliteStoreError::TransactionAborted(
+                "get_index_job_result is not available inside a transaction".to_owned(),
+            ))
+        }
         SqliteStoreOperation::MarkIndexJobFailed {
             job_id,
             error,
@@ -2252,6 +2433,10 @@ fn sqlite_store_json_impl(payload_json: &str) -> Result<String, (&'static str, S
             format!("invalid SQLite store payload: {error}"),
         )
     })?;
+    if matches!(&request.operation, SqliteStoreOperation::Close) {
+        close_cached_sqlite_store(&request.path)?;
+        return Ok("null".to_owned());
+    }
     let entry = cached_sqlite_store(&request.path)?;
     let mut entry = entry
         .lock()
@@ -2361,10 +2546,8 @@ struct CachedSqliteStore {
 type SharedCachedSqliteStore = std::sync::Arc<Mutex<CachedSqliteStore>>;
 
 fn cached_sqlite_store(path: &str) -> Result<SharedCachedSqliteStore, (&'static str, String)> {
-    static STORES: OnceLock<Mutex<BTreeMap<PathBuf, SharedCachedSqliteStore>>> = OnceLock::new();
-
     let path = PathBuf::from(path);
-    let stores = STORES.get_or_init(|| Mutex::new(BTreeMap::new()));
+    let stores = sqlite_store_cache();
     let mut stores = stores
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -2385,6 +2568,37 @@ fn cached_sqlite_store(path: &str) -> Result<SharedCachedSqliteStore, (&'static 
     }));
     stores.insert(path, entry.clone());
     Ok(entry)
+}
+
+fn sqlite_store_cache() -> &'static Mutex<BTreeMap<PathBuf, SharedCachedSqliteStore>> {
+    static STORES: OnceLock<Mutex<BTreeMap<PathBuf, SharedCachedSqliteStore>>> = OnceLock::new();
+    STORES.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+fn close_cached_sqlite_store(path: &str) -> Result<(), (&'static str, String)> {
+    let path = PathBuf::from(path);
+    let stores = sqlite_store_cache();
+    let entry = stores
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(&path)
+        .cloned();
+    if let Some(entry) = entry {
+        let entry = entry
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if entry.transaction_id.is_some() {
+            return Err((
+                STORE_INVALID_PAYLOAD,
+                "cannot close SQLite store while transaction is active".to_owned(),
+            ));
+        }
+    }
+    stores
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(&path);
+    Ok(())
 }
 
 fn validate_sqlite_operation(value: &Value) -> Result<(), (&'static str, String)> {
@@ -2770,6 +2984,15 @@ enum PostgresStoreOperation {
         job_id: String,
         #[serde(default)]
         claim_token: Option<String>,
+    },
+    AcceptIndexJobResult {
+        job_id: String,
+        claim_token: String,
+        result_json: String,
+        result_sha256: String,
+    },
+    GetIndexJobResult {
+        job_id: String,
     },
     MarkIndexJobFailed {
         job_id: String,
@@ -3661,6 +3884,24 @@ async fn postgres_store_operation_json(
                 .mark_index_job_done(&job_id, claim_token.as_deref())
                 .await?
         )),
+        PostgresStoreOperation::AcceptIndexJobResult {
+            job_id,
+            claim_token,
+            result_json,
+            result_sha256,
+        } => Ok(accepted_index_job_result_json(store.accept_index_job_result(
+            &job_id,
+            &claim_token,
+            &result_json,
+            &result_sha256,
+        ).await?)),
+        PostgresStoreOperation::GetIndexJobResult { job_id } => Ok(
+            store
+                .index_job_result(&job_id)
+                .await?
+                .map(accepted_index_job_result_json)
+                .unwrap_or(Value::Null),
+        ),
         PostgresStoreOperation::MarkIndexJobFailed {
             job_id,
             error,
@@ -4004,6 +4245,17 @@ async fn postgres_uow_operation_json(
             })
             .await?,
         )),
+        PostgresStoreOperation::ExclusiveRawReplay {
+            namespace,
+            after_seq,
+            limit,
+        } => Ok(Value::Array(
+            uow.replay_raw_events(&namespace, after_seq, limit)
+                .await?
+                .into_iter()
+                .map(postgres_raw_event_json)
+                .collect(),
+        )),
         PostgresStoreOperation::GraphMetadataPatchMutation {
             namespace,
             workspace_id,
@@ -4325,6 +4577,20 @@ async fn postgres_uow_operation_json(
             uow.mark_index_job_done(&job_id, claim_token.as_deref())
                 .await?
         )),
+        PostgresStoreOperation::AcceptIndexJobResult {
+            job_id,
+            claim_token,
+            result_json,
+            result_sha256,
+        } => Ok(accepted_index_job_result_json(
+            uow.accept_index_job_result(&job_id, &claim_token, &result_json, &result_sha256)
+                .await?,
+        )),
+        PostgresStoreOperation::GetIndexJobResult { .. } => {
+            Err(PostgresStoreError::TransactionAborted(
+                "get_index_job_result is not available inside a transaction".to_owned(),
+            ))
+        }
         PostgresStoreOperation::MarkIndexJobFailed {
             job_id,
             error,
@@ -4814,6 +5080,17 @@ fn validate_postgres_operation(value: &Value) -> Result<(), (&'static str, Strin
             "op",
             "payload_json",
         ][..],
+        "raw_restore" => &[
+            "kind",
+            "namespace",
+            "seq",
+            "event_id",
+            "entity_kind",
+            "entity_id",
+            "op",
+            "payload_json",
+            "created_at",
+        ][..],
         "graph_mutation" => &[
             "kind",
             "namespace",
@@ -4918,8 +5195,23 @@ fn validate_postgres_operation(value: &Value) -> Result<(), (&'static str, Strin
             "projection_key",
             "abort_after_projection",
         ][..],
-        "get_named_projection" | "clear_named_projection" => &["kind", "namespace", "key"][..],
-        "list_named_projections" | "clear_projection_namespace" => &["kind", "namespace"][..],
+        "get_named_projection"
+        | "clear_named_projection"
+        | "get_stage1_node_projection"
+        | "clear_stage1_node_projection" => &["kind", "namespace", "key"][..],
+        "list_named_projections"
+        | "clear_projection_namespace"
+        | "list_stage1_node_projections" => &["kind", "namespace"][..],
+        "replace_stage1_node_projection" => &[
+            "kind",
+            "namespace",
+            "key",
+            "payload",
+            "last_authoritative_seq",
+            "last_materialized_seq",
+            "projection_schema_version",
+            "materialization_status",
+        ][..],
         "put_workflow_design_snapshot" => &[
             "kind",
             "workflow_id",
@@ -4986,6 +5278,14 @@ fn validate_postgres_operation(value: &Value) -> Result<(), (&'static str, Strin
         ][..],
         "claim_index_jobs" => &["kind", "limit", "lease_seconds", "namespace"][..],
         "mark_index_job_done" => &["kind", "job_id", "claim_token"][..],
+        "accept_index_job_result" => &[
+            "kind",
+            "job_id",
+            "claim_token",
+            "result_json",
+            "result_sha256",
+        ][..],
+        "get_index_job_result" => &["kind", "job_id"][..],
         "mark_index_job_failed" => &["kind", "job_id", "error", "final", "claim_token"][..],
         "bump_retry_and_requeue" => &[
             "kind",
@@ -5399,6 +5699,7 @@ fn _rust(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn isolated_store_snapshot_reads_are_ordered_and_read_only() {
@@ -5446,5 +5747,23 @@ mod tests {
                 .0,
             STORE_INVALID_PAYLOAD
         );
+    }
+
+    #[test]
+    fn sqlite_session_close_releases_cached_handle() {
+        let path =
+            std::env::temp_dir().join(format!("kogwistar-python-close-{}.db", std::process::id()));
+        let path_text = path.to_string_lossy().into_owned();
+        let init = json!({
+            "path": path_text.clone(),
+            "operation": {"kind": "open_init"}
+        });
+        sqlite_store_json_impl(&init.to_string()).unwrap();
+        let close = json!({
+            "path": path_text,
+            "operation": {"kind": "close"}
+        });
+        sqlite_store_json_impl(&close.to_string()).unwrap();
+        fs::remove_file(path).unwrap();
     }
 }

@@ -182,6 +182,7 @@ class WorkflowInvocationRequest(BaseModel):
     initial_state: dict[str, Any] = Field(default_factory=dict)
     result_state_key: str | None = None
     run_id: str | None = None
+    invocation_key: str | None = None
     conversation_id: str | None = None
     turn_node_id: str | None = None
     workflow_design: WorkflowDesignArtifact | None = None

@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 from .postgres_backend import get_active_conn, _set_active_conn
 from ..messaging.models import ProjectedLaneMessageRow
 from .meta_lane_messages import LaneMessageMetaStoreMixin
+from .event_envelope import EntityEventEnvelope
 
 
 _SCHEMA_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -155,6 +156,9 @@ class IndexJob:
     payload_json: Optional[str] = None
     claim_token: Optional[str] = None
     claim_attempts: int = 0
+    accepted_result_json: Optional[str] = None
+    accepted_result_sha256: Optional[str] = None
+    accepted_at: Optional[str] = None
 
 
 @dataclass
@@ -259,7 +263,10 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                     next_run_at TIMESTAMPTZ NULL,
                     max_retries INTEGER NOT NULL DEFAULT 10,
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    accepted_result_json TEXT NULL,
+                    accepted_result_sha256 TEXT NULL,
+                    accepted_at TIMESTAMPTZ NULL
                 )
             """,
             f"CREATE INDEX IF NOT EXISTS idx_index_jobs_status_lease ON {ij}(status, lease_until)",
@@ -272,6 +279,9 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
             f"ALTER TABLE {ij} ADD COLUMN IF NOT EXISTS max_retries INTEGER NOT NULL DEFAULT 10",
             f"ALTER TABLE {ij} ADD COLUMN IF NOT EXISTS claim_token TEXT NULL",
             f"ALTER TABLE {ij} ADD COLUMN IF NOT EXISTS claim_attempts INTEGER NOT NULL DEFAULT 0",
+            f"ALTER TABLE {ij} ADD COLUMN IF NOT EXISTS accepted_result_json TEXT NULL",
+            f"ALTER TABLE {ij} ADD COLUMN IF NOT EXISTS accepted_result_sha256 TEXT NULL",
+            f"ALTER TABLE {ij} ADD COLUMN IF NOT EXISTS accepted_at TIMESTAMPTZ NULL",
             f"CREATE UNIQUE INDEX IF NOT EXISTS uq_index_jobs_pending_ns_ck ON {ij}(namespace, coalesce_key) WHERE status='PENDING'",
             f"""
                 CREATE TABLE IF NOT EXISTS {ias} (
@@ -733,7 +743,8 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                     FROM candidates c
                     WHERE j.job_id = c.job_id
                     RETURNING j.job_id, j.namespace, j.entity_kind, j.entity_id, j.index_kind, j.coalesce_key, j.op, j.status,
-                              j.lease_until, j.next_run_at, j.max_retries, j.retry_count, j.last_error, j.payload_json, j.claim_token, j.claim_attempts
+                              j.lease_until, j.next_run_at, j.max_retries, j.retry_count, j.last_error, j.payload_json, j.claim_token, j.claim_attempts,
+                              j.accepted_result_json, j.accepted_result_sha256, j.accepted_at
                     """
                 ),
                 params,
@@ -785,6 +796,9 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                     ),
                     claim_token=(str(r.get("claim_token")) if r.get("claim_token") is not None else None),
                     claim_attempts=int(r.get("claim_attempts") or 0),
+                    accepted_result_json=(str(r.get("accepted_result_json")) if r.get("accepted_result_json") is not None else None),
+                    accepted_result_sha256=(str(r.get("accepted_result_sha256")) if r.get("accepted_result_sha256") is not None else None),
+                    accepted_at=(str(r.get("accepted_at")) if r.get("accepted_at") is not None else None),
                 )
             )
         return out
@@ -803,6 +817,49 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                 {"job_id": job_id, "claim_token": claim_token},
             )
             return bool(getattr(result, "rowcount", 0))
+
+    def accept_index_job_result(
+        self,
+        job_id: str,
+        *,
+        claim_token: str,
+        result_json: str,
+        result_sha256: str,
+    ) -> dict[str, object]:
+        """Atomically accept the first valid leased candidate."""
+        ij = f"{self.schema}.{self.index_jobs_table}"
+        with self.transaction() as conn:
+            row = conn.execute(
+                sa.text(
+                    f"SELECT status, claim_token, lease_until, accepted_result_json, accepted_result_sha256, accepted_at FROM {ij} WHERE job_id=:job_id FOR UPDATE"
+                ),
+                {"job_id": job_id},
+            ).mappings().first()
+            if row is None:
+                return {"status": "rejected", "reason": "job_not_found"}
+            if row.get("accepted_result_json") is not None:
+                return {"status": "existing", "result_json": str(row["accepted_result_json"]), "result_sha256": str(row.get("accepted_result_sha256") or ""), "accepted_at": row.get("accepted_at")}
+            now = __import__("datetime").datetime.now(__import__("datetime").timezone.utc)
+            valid = row.get("status") == "DOING" and row.get("claim_token") == claim_token and row.get("lease_until") is not None and row["lease_until"] >= now
+            if not valid:
+                return {"status": "rejected", "reason": "claim_not_valid"}
+            result = conn.execute(
+                sa.text(
+                    f"UPDATE {ij} SET accepted_result_json=:result_json, accepted_result_sha256=:result_sha256, accepted_at=NOW(), updated_at=NOW() WHERE job_id=:job_id AND status='DOING' AND claim_token=:claim_token AND lease_until>=NOW() AND accepted_result_json IS NULL"
+                ),
+                {"job_id": job_id, "claim_token": claim_token, "result_json": result_json, "result_sha256": result_sha256},
+            )
+            if not getattr(result, "rowcount", 0):
+                return {"status": "rejected", "reason": "claim_not_valid"}
+            return {"status": "accepted", "result_json": result_json, "result_sha256": result_sha256}
+
+    def get_index_job_result(self, job_id: str) -> dict[str, object] | None:
+        ij = f"{self.schema}.{self.index_jobs_table}"
+        with self.transaction() as conn:
+            row = conn.execute(sa.text(f"SELECT accepted_result_json, accepted_result_sha256, accepted_at FROM {ij} WHERE job_id=:job_id"), {"job_id": job_id}).mappings().first()
+        if row is None or row.get("accepted_result_json") is None:
+            return None
+        return {"status": "existing", "result_json": str(row["accepted_result_json"]), "result_sha256": str(row.get("accepted_result_sha256") or ""), "accepted_at": row.get("accepted_at")}
 
     def renew_index_job_lease(self, job_id: str, *, claim_token: str, lease_seconds: int) -> bool:
         ij = f"{self.schema}.{self.index_jobs_table}"
@@ -1510,6 +1567,79 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                 )
             yield from rows
 
+    def iter_entity_event_envelopes(
+        self,
+        *,
+        namespace: str = "default",
+        from_seq: int = 1,
+        to_seq: int | None = None,
+    ) -> Iterator[EntityEventEnvelope]:
+        """Yield the complete immutable event envelope for archive export."""
+        schema = self.schema
+        with self.transaction() as conn:
+            predicates = "namespace=:ns AND seq >= :from_seq"
+            params: dict[str, Any] = {"ns": namespace, "from_seq": int(from_seq)}
+            if to_seq is not None:
+                predicates += " AND seq <= :to_seq"
+                params["to_seq"] = int(to_seq)
+            rows = conn.execute(sa.text(f"""
+                SELECT namespace, seq, event_id, entity_kind, entity_id, op,
+                       payload_json, EXTRACT(EPOCH FROM created_at)::BIGINT
+                FROM {schema}.entity_events
+                WHERE {predicates}
+                ORDER BY seq ASC
+            """), params)
+            for row in rows:
+                yield EntityEventEnvelope(
+                    namespace=str(row[0]), seq=int(row[1]), event_id=str(row[2]),
+                    entity_kind=str(row[3]), entity_id=str(row[4]), op=str(row[5]),
+                    payload_json=str(row[6]), created_at=int(row[7]),
+                )
+
+    def append_entity_event_envelope(self, event: EntityEventEnvelope) -> int:
+        """Import one lossless event, idempotently, into a fresh namespace."""
+        if not isinstance(event, EntityEventEnvelope):
+            raise TypeError("event must be an EntityEventEnvelope")
+        schema = self.schema
+        with self.transaction() as conn:
+            existing = conn.execute(sa.text(f"""
+                SELECT namespace, seq, event_id, entity_kind, entity_id, op,
+                       payload_json, EXTRACT(EPOCH FROM created_at)::BIGINT
+                FROM {schema}.entity_events WHERE event_id=:event_id
+            """), {"event_id": event.event_id}).fetchone()
+            if existing is not None:
+                actual = EntityEventEnvelope(
+                    namespace=str(existing[0]), seq=int(existing[1]), event_id=str(existing[2]),
+                    entity_kind=str(existing[3]), entity_id=str(existing[4]), op=str(existing[5]),
+                    payload_json=str(existing[6]), created_at=int(existing[7]),
+                )
+                if actual != event:
+                    raise ValueError(f"event_id {event.event_id!r} conflicts with stored event")
+                return actual.seq
+            latest = int(conn.execute(sa.text(
+                f"SELECT COALESCE(MAX(seq), 0) FROM {schema}.entity_events WHERE namespace=:ns"
+            ), {"ns": event.namespace}).scalar_one())
+            if event.seq != latest + 1:
+                raise ValueError(
+                    f"event sequence for {event.namespace!r} must be {latest + 1}, got {event.seq}"
+                )
+            json.loads(event.payload_json)
+            conn.execute(sa.text(f"""
+                INSERT INTO {schema}.entity_events(
+                    namespace, seq, event_id, entity_kind, entity_id, op, payload_json, created_at
+                ) VALUES (:namespace, :seq, :event_id, :entity_kind, :entity_id, :op,
+                          :payload_json, to_timestamp(:created_at))
+            """), {
+                "namespace": event.namespace, "seq": event.seq, "event_id": event.event_id,
+                "entity_kind": event.entity_kind, "entity_id": event.entity_id, "op": event.op,
+                "payload_json": event.payload_json, "created_at": event.created_at,
+            })
+            conn.execute(sa.text(f"""
+                INSERT INTO {schema}.namespace_seq(namespace, next_seq) VALUES (:namespace, :next_seq)
+                ON CONFLICT(namespace) DO UPDATE SET next_seq=GREATEST({schema}.namespace_seq.next_seq, EXCLUDED.next_seq)
+            """), {"namespace": event.namespace, "next_seq": event.seq + 1})
+        return event.seq
+
     def prune_entity_events_after(
         self, *, namespace: str = "default", to_seq: int
     ) -> int:
@@ -1716,6 +1846,30 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                     params,
                 )
         return bool(result.rowcount == 1)
+
+    def compare_and_swap_named_projections(self, updates: list[dict[str, Any]]) -> bool:
+        """Atomically CAS multiple named projections in one database transaction."""
+        if not updates:
+            return True
+        rows = sorted(updates, key=lambda item: (str(item["namespace"]), str(item["key"])))
+        if len({(str(x["namespace"]), str(x["key"])) for x in rows}) != len(rows):
+            raise ValueError("duplicate named projection key")
+        schema = self.schema
+        now = int(time.time() * 1000)
+        with self.transaction() as conn:
+            for item in rows:
+                current = conn.execute(sa.text(f"SELECT last_authoritative_seq, last_materialized_seq FROM {schema}.named_projections WHERE namespace=:namespace AND key=:key FOR UPDATE"), {"namespace": str(item["namespace"]), "key": str(item["key"])}).first()
+                expected_a = item.get("expected_last_authoritative_seq")
+                expected_m = item.get("expected_last_materialized_seq")
+                if expected_a is None and expected_m is None:
+                    if current is not None:
+                        return False
+                elif current is None or int(current[0]) != int(expected_a) or int(current[1]) != int(expected_m):
+                    return False
+            for item in rows:
+                params = {"namespace": str(item["namespace"]), "key": str(item["key"]), "payload_json": json.dumps(item["payload"], sort_keys=True, separators=(",", ":")), "a": int(item.get("last_authoritative_seq", 0)), "m": int(item.get("last_materialized_seq", 0)), "v": int(item.get("projection_schema_version", 1)), "status": str(item.get("materialization_status", "ready")), "now": now}
+                conn.execute(sa.text(f"""INSERT INTO {schema}.named_projections(namespace,key,payload_json,last_authoritative_seq,last_materialized_seq,projection_schema_version,materialization_status,updated_at_ms) VALUES (:namespace,:key,:payload_json,:a,:m,:v,:status,:now) ON CONFLICT(namespace,key) DO UPDATE SET payload_json=EXCLUDED.payload_json,last_authoritative_seq=EXCLUDED.last_authoritative_seq,last_materialized_seq=EXCLUDED.last_materialized_seq,projection_schema_version=EXCLUDED.projection_schema_version,materialization_status=EXCLUDED.materialization_status,updated_at_ms=EXCLUDED.updated_at_ms"""), params)
+        return True
 
     def list_named_projections(self, namespace: str) -> list[dict[str, Any]]:
         schema = self.schema

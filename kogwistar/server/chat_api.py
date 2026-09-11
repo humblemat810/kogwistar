@@ -240,6 +240,15 @@ def create_chat_router(
         except Exception as exc:  # noqa: BLE001
             raise _as_http_error(exc)
 
+    @router.get("/runs/{run_id}/evidence")
+    def get_run_evidence(run_id: str):
+        require_role("ro")
+        require_namespace(workflow_namespaces)
+        try:
+            return get_service().run_evidence(run_id)
+        except Exception as exc:  # noqa: BLE001
+            raise _as_http_error(exc)
+
     @router.get("/runs/{run_id}/checkpoints/{step_seq}")
     def get_checkpoint(run_id: str, step_seq: int):
         require_role("ro")

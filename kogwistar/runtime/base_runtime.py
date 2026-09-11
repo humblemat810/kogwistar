@@ -279,6 +279,7 @@ class BaseRuntime:
                     invocation.workflow_id,
                     invocation.result_state_key or "",
                     effective_turn_node_id,
+                    invocation.invocation_key or "",
                 )
             ),
             "conversation_id": invocation.conversation_id or conversation_id,
@@ -292,6 +293,7 @@ class BaseRuntime:
                 "workflow_id": invocation.workflow_id,
                 "result_state_key": invocation.result_state_key,
                 "run_id": invocation.run_id,
+                "invocation_key": invocation.invocation_key,
                 "parent_conversation_id": conversation_id,
                 "conversation_id": invocation.conversation_id,
                 "parent_turn_node_id": turn_node_id,

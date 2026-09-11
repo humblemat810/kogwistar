@@ -17,9 +17,9 @@ from typing import Any
 from xml.etree import ElementTree
 
 try:
-    from adr015_source_identity import candidate_source_fingerprint
+    from source_fingerprint import candidate_source_fingerprint
 except ModuleNotFoundError:  # imported as a repository module in tests
-    from scripts.adr015_source_identity import candidate_source_fingerprint
+    from scripts.source_fingerprint import candidate_source_fingerprint
 
 
 ROOT = Path(__file__).resolve().parents[1]

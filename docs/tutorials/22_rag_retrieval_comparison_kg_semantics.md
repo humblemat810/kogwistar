@@ -54,7 +54,7 @@ python scripts/rag_retrieval_comparison_kg_semantics.py --json
 
 The same dataset from the earlier tutorial is reused here.
 
-What changes is the representation:
+What changes is the embedding:
 
 - entities become `Node`
 - relations become `Edge`

@@ -1,0 +1,1027 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Kogwistar · CDC Event Forge</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #090d14;
+      --panel: rgba(18, 25, 38, 0.9);
+      --panel-2: #101827;
+      --line: #263248;
+      --line-bright: #3b4b69;
+      --text: #f2f6ff;
+      --muted: #9ba9bf;
+      --cyan: #59d4e8;
+      --cyan-2: #0e9fba;
+      --violet: #a890ff;
+      --amber: #f0b35a;
+      --danger: #ff7187;
+      --success: #61dda8;
+      --shadow: 0 18px 60px rgba(0, 0, 0, 0.32);
+      --radius: 18px;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--text);
+      background:
+        radial-gradient(circle at 14% 2%, rgba(52, 151, 184, 0.18), transparent 30rem),
+        radial-gradient(circle at 90% 18%, rgba(119, 82, 214, 0.14), transparent 34rem),
+        linear-gradient(145deg, #080c12 0%, #0b111c 54%, #080c13 100%);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      opacity: 0.26;
+      background-image:
+        linear-gradient(rgba(132, 167, 201, 0.04) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(132, 167, 201, 0.04) 1px, transparent 1px);
+      background-size: 32px 32px;
+      mask-image: linear-gradient(to bottom, black, transparent 78%);
+    }
+
+    button, input, select, textarea { font: inherit; }
+
+    button { color: inherit; }
+
+    .shell {
+      position: relative;
+      width: min(1520px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 30px 0 42px;
+    }
+
+    .masthead {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 24px;
+      margin-bottom: 22px;
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 9px;
+      margin-bottom: 9px;
+      color: var(--cyan);
+      font-size: 0.72rem;
+      font-weight: 800;
+      letter-spacing: 0.17em;
+      text-transform: uppercase;
+    }
+
+    .eyebrow::before {
+      content: "";
+      width: 8px;
+      height: 8px;
+      border: 2px solid var(--cyan);
+      transform: rotate(45deg);
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(2rem, 5vw, 3.7rem);
+      line-height: 0.98;
+      letter-spacing: -0.055em;
+    }
+
+    .lede {
+      max-width: 740px;
+      margin: 13px 0 0;
+      color: var(--muted);
+      font-size: 1rem;
+      line-height: 1.65;
+    }
+
+    .endpoint {
+      flex: 0 0 auto;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-top: 8px;
+      padding: 10px 13px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--muted);
+      background: rgba(8, 13, 21, 0.66);
+      box-shadow: inset 0 1px rgba(255, 255, 255, 0.03);
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 0.78rem;
+    }
+
+    .endpoint-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      background: var(--success);
+      box-shadow: 0 0 14px rgba(97, 221, 168, 0.75);
+    }
+
+    .panel {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: linear-gradient(150deg, rgba(20, 29, 44, 0.94), rgba(12, 18, 29, 0.94));
+      box-shadow: var(--shadow), inset 0 1px rgba(255, 255, 255, 0.035);
+      backdrop-filter: blur(16px);
+    }
+
+    .session {
+      display: grid;
+      grid-template-columns: minmax(190px, 1.2fr) 150px 165px minmax(180px, 1fr) minmax(180px, 1fr);
+      gap: 14px;
+      padding: 18px;
+      margin-bottom: 18px;
+    }
+
+    label, .field-label {
+      display: block;
+      margin-bottom: 7px;
+      color: #cbd5e6;
+      font-size: 0.74rem;
+      font-weight: 750;
+      letter-spacing: 0.055em;
+      text-transform: uppercase;
+    }
+
+    input, select, textarea {
+      width: 100%;
+      min-width: 0;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      outline: none;
+      color: var(--text);
+      background: rgba(7, 12, 20, 0.78);
+      transition: border-color 140ms ease, box-shadow 140ms ease, background 140ms ease;
+    }
+
+    input, select { height: 42px; padding: 0 12px; }
+
+    textarea {
+      min-height: 84px;
+      resize: vertical;
+      padding: 11px 12px;
+      line-height: 1.5;
+    }
+
+    input:focus, select:focus, textarea:focus {
+      border-color: var(--cyan-2);
+      background: #090f19;
+      box-shadow: 0 0 0 3px rgba(89, 212, 232, 0.11);
+    }
+
+    .seq-wrap { position: relative; }
+
+    .seq-wrap input { padding-right: 50px; }
+
+    .auto-chip {
+      position: absolute;
+      right: 7px;
+      bottom: 8px;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      height: 26px;
+      padding: 0 8px;
+      border-radius: 7px;
+      color: #cceef4;
+      background: #112a33;
+      font-size: 0.68rem;
+      font-weight: 800;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      cursor: pointer;
+    }
+
+    .auto-chip input {
+      width: 13px;
+      height: 13px;
+      margin: 0;
+      padding: 0;
+      accent-color: var(--cyan);
+    }
+
+    .workbench {
+      display: grid;
+      grid-template-columns: minmax(0, 1.35fr) minmax(380px, 0.85fr);
+      gap: 18px;
+      align-items: start;
+    }
+
+    .composer, .side-panel { overflow: hidden; }
+
+    .panel-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+      padding: 17px 19px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .panel-title {
+      margin: 0;
+      font-size: 0.9rem;
+      font-weight: 800;
+      letter-spacing: 0.04em;
+    }
+
+    .panel-kicker {
+      color: var(--muted);
+      font-size: 0.76rem;
+    }
+
+    .op-switcher {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 8px;
+      padding: 16px 18px 0;
+    }
+
+    .op-button {
+      min-height: 48px;
+      padding: 8px 9px;
+      border: 1px solid var(--line);
+      border-radius: 11px;
+      background: #0b121d;
+      color: #b7c2d3;
+      cursor: pointer;
+      font-size: 0.78rem;
+      font-weight: 750;
+      line-height: 1.2;
+      transition: 150ms ease;
+    }
+
+    .op-button:hover { border-color: var(--line-bright); transform: translateY(-1px); }
+
+    .op-button[aria-pressed="true"] {
+      border-color: rgba(89, 212, 232, 0.68);
+      color: #eaffff;
+      background: linear-gradient(135deg, rgba(15, 128, 151, 0.27), rgba(78, 56, 148, 0.22));
+      box-shadow: inset 0 0 0 1px rgba(89, 212, 232, 0.1), 0 8px 24px rgba(0, 0, 0, 0.18);
+    }
+
+    .op-mark {
+      display: block;
+      margin-bottom: 4px;
+      color: var(--cyan);
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 0.65rem;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+    }
+
+    .form-body { padding: 18px; }
+
+    .fields {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 15px;
+    }
+
+    .span-2 { grid-column: 1 / -1; }
+
+    .help {
+      margin: 6px 0 0;
+      color: #7f8da3;
+      font-size: 0.72rem;
+      line-height: 1.45;
+    }
+
+    .edge-only[hidden], .node-only[hidden], [hidden] { display: none !important; }
+
+    .sendbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      margin-top: 18px;
+      padding-top: 16px;
+      border-top: 1px solid var(--line);
+    }
+
+    .send-hint {
+      color: var(--muted);
+      font-size: 0.76rem;
+      line-height: 1.4;
+    }
+
+    .send-button, .scenario-button, .clear-button {
+      border: 0;
+      cursor: pointer;
+      transition: transform 150ms ease, filter 150ms ease, opacity 150ms ease;
+    }
+
+    .send-button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 9px;
+      min-width: 180px;
+      min-height: 46px;
+      padding: 0 17px;
+      border-radius: 11px;
+      color: #04151a;
+      background: linear-gradient(135deg, #6ce1ee, #68ddae);
+      box-shadow: 0 12px 28px rgba(44, 183, 181, 0.2);
+      font-weight: 850;
+    }
+
+    .send-button:hover, .scenario-button:hover, .clear-button:hover { transform: translateY(-1px); filter: brightness(1.06); }
+    .send-button:disabled, .scenario-button:disabled { cursor: progress; opacity: 0.55; transform: none; }
+
+    .arrow { font-size: 1.1em; }
+
+    .right-stack { display: grid; gap: 18px; }
+
+    .preview {
+      position: relative;
+      min-height: 280px;
+      max-height: 430px;
+      margin: 0;
+      padding: 16px 18px 20px;
+      overflow: auto;
+      color: #cce7eb;
+      background: rgba(5, 10, 17, 0.76);
+      font: 0.76rem/1.58 "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      tab-size: 2;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+
+    .preview.invalid { color: #ffc1ca; }
+
+    .scenarios { padding: 15px; }
+
+    .scenario-grid { display: grid; gap: 9px; }
+
+    .scenario-button {
+      display: grid;
+      grid-template-columns: 38px 1fr auto;
+      align-items: center;
+      gap: 11px;
+      width: 100%;
+      min-height: 66px;
+      padding: 9px 12px 9px 10px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      color: var(--text);
+      background: rgba(8, 14, 23, 0.72);
+      text-align: left;
+    }
+
+    .scenario-icon {
+      display: grid;
+      place-items: center;
+      width: 36px;
+      height: 36px;
+      border: 1px solid #3b5364;
+      border-radius: 10px;
+      color: var(--cyan);
+      background: #10222d;
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 0.7rem;
+      font-weight: 800;
+    }
+
+    .scenario-name { display: block; font-size: 0.8rem; font-weight: 800; }
+    .scenario-desc { display: block; margin-top: 3px; color: var(--muted); font-size: 0.69rem; line-height: 1.35; }
+    .scenario-count { color: #708198; font: 0.68rem "SFMono-Regular", Consolas, monospace; }
+
+    .activity { margin-top: 18px; overflow: hidden; }
+
+    .activity-tools { display: flex; align-items: center; gap: 10px; }
+
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      min-height: 28px;
+      padding: 0 10px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--muted);
+      font-size: 0.7rem;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .status-pill[data-state="sending"] { color: var(--amber); border-color: rgba(240,179,90,.42); }
+    .status-pill[data-state="success"] { color: var(--success); border-color: rgba(97,221,168,.42); }
+    .status-pill[data-state="error"] { color: var(--danger); border-color: rgba(255,113,135,.42); }
+
+    .clear-button {
+      min-height: 30px;
+      padding: 0 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      color: var(--muted);
+      background: #0b121d;
+      font-size: 0.72rem;
+      font-weight: 750;
+    }
+
+    .log {
+      min-height: 120px;
+      max-height: 310px;
+      margin: 0;
+      padding: 13px 16px 17px;
+      overflow: auto;
+      list-style: none;
+      background: rgba(5, 10, 17, 0.68);
+    }
+
+    .log-empty { color: #718096; font-size: 0.78rem; }
+
+    .log-row {
+      display: grid;
+      grid-template-columns: 80px 58px minmax(0, 1fr);
+      gap: 10px;
+      align-items: baseline;
+      padding: 9px 0;
+      border-bottom: 1px solid rgba(38, 50, 72, 0.62);
+      font: 0.74rem/1.45 "SFMono-Regular", Consolas, monospace;
+    }
+
+    .log-row:last-child { border-bottom: 0; }
+    .log-time { color: #697990; }
+    .log-tag { font-weight: 850; text-transform: uppercase; }
+    .log-row.success .log-tag { color: var(--success); }
+    .log-row.error .log-tag { color: var(--danger); }
+    .log-row.info .log-tag { color: var(--cyan); }
+    .log-message { min-width: 0; color: #bdc9da; overflow-wrap: anywhere; }
+
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+
+    @media (max-width: 1060px) {
+      .session { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .workbench { grid-template-columns: 1fr; }
+      .right-stack { grid-template-columns: minmax(0, 1fr) minmax(320px, .8fr); align-items: start; }
+    }
+
+    @media (max-width: 720px) {
+      .shell { width: min(100% - 20px, 1520px); padding-top: 18px; }
+      .masthead { display: block; }
+      .endpoint { width: max-content; margin-top: 16px; }
+      .session, .fields, .right-stack { grid-template-columns: 1fr; }
+      .op-switcher { grid-template-columns: repeat(2, 1fr); }
+      .span-2 { grid-column: auto; }
+      .sendbar { align-items: stretch; flex-direction: column; }
+      .send-button { width: 100%; }
+      .panel-head { align-items: flex-start; }
+      .activity .panel-head { flex-direction: column; }
+      .log-row { grid-template-columns: 66px 52px minmax(0,1fr); gap: 7px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header class="masthead">
+      <div>
+        <div class="eyebrow">Live graph tooling</div>
+        <h1>CDC Event Forge</h1>
+        <p class="lede">Compose canonical change events, stress hypergraph endpoint ordering, and drive the live viewer through the durable bridge path.</p>
+      </div>
+      <div class="endpoint" aria-label="Ingest endpoint">
+        <span class="endpoint-dot" aria-hidden="true"></span>
+        POST /ingest
+      </div>
+    </header>
+
+    <section class="panel session" aria-labelledby="session-title" data-testid="session-controls">
+      <h2 id="session-title" class="sr-only">Event session</h2>
+      <div>
+        <label for="graph-type">Graph type</label>
+        <input id="graph-type" data-testid="graph-type" list="graph-types" value="knowledge" autocomplete="off">
+        <datalist id="graph-types">
+          <option value="knowledge"></option>
+          <option value="conversation"></option>
+          <option value="workflow"></option>
+        </datalist>
+      </div>
+      <div class="seq-wrap">
+        <label for="sequence">Sequence</label>
+        <input id="sequence" data-testid="sequence" type="number" min="1" step="1" value="1" inputmode="numeric">
+        <label class="auto-chip" title="Advance sequence after a successful request">
+          <input id="auto-sequence" data-testid="auto-sequence" type="checkbox" checked>
+          auto
+        </label>
+      </div>
+      <div>
+        <label for="timestamp">Timestamp</label>
+        <select id="timestamp" data-testid="timestamp-mode">
+          <option value="now">Current time</option>
+          <option value="sequence">Sequence-derived</option>
+        </select>
+      </div>
+      <div>
+        <label for="run-id">Run ID <span aria-hidden="true">·</span> optional</label>
+        <input id="run-id" data-testid="run-id" value="forge-run" autocomplete="off">
+      </div>
+      <div>
+        <label for="step-id">Step ID <span aria-hidden="true">·</span> optional</label>
+        <input id="step-id" data-testid="step-id" value="manual" autocomplete="off">
+      </div>
+    </section>
+
+    <div class="workbench">
+      <section class="panel composer" aria-labelledby="composer-title">
+        <div class="panel-head">
+          <div>
+            <h2 id="composer-title" class="panel-title">Event composer</h2>
+            <div class="panel-kicker">Choose operation, shape payload, inspect exact JSON.</div>
+          </div>
+          <span id="operation-summary" class="status-pill" data-testid="operation-summary">node.upsert</span>
+        </div>
+
+        <div class="op-switcher" role="group" aria-label="Change operation" data-testid="operation-switcher">
+          <button class="op-button" type="button" data-operation="node.upsert" data-testid="op-node-upsert" aria-pressed="true">
+            <span class="op-mark">Node</span>Upsert
+          </button>
+          <button class="op-button" type="button" data-operation="node.remove" data-testid="op-node-remove" aria-pressed="false">
+            <span class="op-mark">Node</span>Remove
+          </button>
+          <button class="op-button" type="button" data-operation="edge.upsert" data-testid="op-edge-upsert" aria-pressed="false">
+            <span class="op-mark">Hyperedge</span>Upsert
+          </button>
+          <button class="op-button" type="button" data-operation="edge.remove" data-testid="op-edge-remove" aria-pressed="false">
+            <span class="op-mark">Hyperedge</span>Remove
+          </button>
+        </div>
+
+        <form id="event-form" class="form-body" data-testid="event-form" novalidate>
+          <div class="fields">
+            <div>
+              <label id="entity-id-label" for="entity-id">Node ID</label>
+              <input id="entity-id" data-testid="entity-id" value="signal-alpha" required autocomplete="off">
+            </div>
+
+            <div class="upsert-only">
+              <label for="entity-label">Display label</label>
+              <input id="entity-label" data-testid="entity-label" value="Signal Alpha" autocomplete="off">
+            </div>
+
+            <div class="node-only upsert-only">
+              <label for="node-type">Node type</label>
+              <input id="node-type" data-testid="node-type" value="signal" autocomplete="off">
+            </div>
+
+            <div class="edge-only upsert-only" hidden>
+              <label for="relation">Relation</label>
+              <input id="relation" data-testid="relation" value="corroborates" autocomplete="off">
+            </div>
+
+            <div class="edge-only upsert-only" hidden>
+              <label for="source-node-ids">Source node IDs</label>
+              <input id="source-node-ids" data-testid="source-node-ids" placeholder="sensor-a, sensor-b" autocomplete="off">
+              <p class="help">Comma or newline separated.</p>
+            </div>
+
+            <div class="edge-only upsert-only" hidden>
+              <label for="target-node-ids">Target node IDs</label>
+              <input id="target-node-ids" data-testid="target-node-ids" placeholder="incident, response" autocomplete="off">
+              <p class="help">Many-to-many endpoints preserved.</p>
+            </div>
+
+            <div class="edge-only upsert-only" hidden>
+              <label for="source-edge-ids">Source edge IDs</label>
+              <input id="source-edge-ids" data-testid="source-edge-ids" placeholder="evidence-link" autocomplete="off">
+              <p class="help">Meta-edge source incidences.</p>
+            </div>
+
+            <div class="edge-only upsert-only" hidden>
+              <label for="target-edge-ids">Target edge IDs</label>
+              <input id="target-edge-ids" data-testid="target-edge-ids" placeholder="decision-link" autocomplete="off">
+              <p class="help">Meta-edge target incidences.</p>
+            </div>
+
+            <div class="span-2 upsert-only">
+              <label for="props">Properties <span aria-hidden="true">·</span> JSON object</label>
+              <textarea id="props" data-testid="props" spellcheck="false">{
+  "confidence": 0.92,
+  "origin": "event-forge"
+}</textarea>
+            </div>
+          </div>
+
+          <div class="sendbar">
+            <div class="send-hint">Successful request writes oplog first, then broadcasts to live subscribers.</div>
+            <button id="send-event" data-testid="send-event" class="send-button" type="submit">
+              Send event <span class="arrow" aria-hidden="true">→</span>
+            </button>
+          </div>
+        </form>
+      </section>
+
+      <aside class="right-stack" aria-label="Preview and scenarios">
+        <section class="panel side-panel" aria-labelledby="preview-title">
+          <div class="panel-head">
+            <div>
+              <h2 id="preview-title" class="panel-title">JSON preview</h2>
+              <div class="panel-kicker">Canonical wire payload</div>
+            </div>
+            <span id="preview-state" class="status-pill" data-testid="preview-state">valid</span>
+          </div>
+          <pre id="json-preview" data-testid="json-preview" class="preview" tabindex="0" aria-live="polite"></pre>
+        </section>
+
+        <section class="panel side-panel" aria-labelledby="scenarios-title">
+          <div class="panel-head">
+            <div>
+              <h2 id="scenarios-title" class="panel-title">Scenario forge</h2>
+              <div class="panel-kicker">Curated CDC stress paths</div>
+            </div>
+          </div>
+          <div class="scenarios">
+            <div class="scenario-grid">
+              <button type="button" class="scenario-button" data-scenario="generic" data-testid="scenario-generic">
+                <span class="scenario-icon" aria-hidden="true">Hₙ</span>
+                <span><span class="scenario-name">Generic hypergraph</span><span class="scenario-desc">Multi-source, multi-target, then edge-to-edge provenance.</span></span>
+                <span class="scenario-count">11 ev</span>
+              </button>
+              <button type="button" class="scenario-button" data-scenario="endpoint-first" data-testid="scenario-endpoint-first">
+                <span class="scenario-icon" aria-hidden="true">E≺N</span>
+                <span><span class="scenario-name">Endpoint before node</span><span class="scenario-desc">Hyperedge lands first; placeholders later resolve in place.</span></span>
+                <span class="scenario-count">4 ev</span>
+              </button>
+              <button type="button" class="scenario-button" data-scenario="burst" data-testid="scenario-burst">
+                <span class="scenario-icon" aria-hidden="true">Δ×</span>
+                <span><span class="scenario-name">Burst · update · remove</span><span class="scenario-desc">Rapid batch, mutation, edge tombstone, node tombstone.</span></span>
+                <span class="scenario-count">12 ev</span>
+              </button>
+            </div>
+          </div>
+        </section>
+      </aside>
+    </div>
+
+    <section class="panel activity" aria-labelledby="activity-title">
+      <div class="panel-head">
+        <div>
+          <h2 id="activity-title" class="panel-title">Bridge activity</h2>
+          <div class="panel-kicker">Request outcomes remain visible for inspection.</div>
+        </div>
+        <div class="activity-tools">
+          <span id="request-status" class="status-pill" data-testid="request-status" data-state="idle">idle</span>
+          <button id="clear-log" data-testid="clear-log" class="clear-button" type="button">Clear log</button>
+        </div>
+      </div>
+      <ul id="activity-log" data-testid="activity-log" class="log" aria-live="polite" aria-relevant="additions">
+        <li class="log-empty">No requests yet. Send a composed event or launch a scenario.</li>
+      </ul>
+    </section>
+  </main>
+
+  <script>
+    (() => {
+      "use strict";
+
+      const byId = (id) => document.getElementById(id);
+      const controls = {
+        graphType: byId("graph-type"), sequence: byId("sequence"), autoSequence: byId("auto-sequence"),
+        timestamp: byId("timestamp"), runId: byId("run-id"), stepId: byId("step-id"),
+        entityId: byId("entity-id"), entityLabel: byId("entity-label"), nodeType: byId("node-type"),
+        relation: byId("relation"), sourceNodeIds: byId("source-node-ids"), targetNodeIds: byId("target-node-ids"),
+        sourceEdgeIds: byId("source-edge-ids"), targetEdgeIds: byId("target-edge-ids"), props: byId("props")
+      };
+
+      const form = byId("event-form");
+      const preview = byId("json-preview");
+      const previewState = byId("preview-state");
+      const requestStatus = byId("request-status");
+      const sendButton = byId("send-event");
+      const activityLog = byId("activity-log");
+      const opButtons = Array.from(document.querySelectorAll("[data-operation]"));
+      const scenarioButtons = Array.from(document.querySelectorAll("[data-scenario]"));
+      let operation = "node.upsert";
+      let requestInFlight = false;
+
+      function list(value) {
+        return String(value || "")
+          .split(/[\n,]+/)
+          .map((part) => part.trim())
+          .filter(Boolean)
+          .filter((item, index, all) => all.indexOf(item) === index);
+      }
+
+      function required(value, label) {
+        const clean = String(value || "").trim();
+        if (!clean) throw new Error(`${label} is required.`);
+        return clean;
+      }
+
+      function propsObject() {
+        const raw = controls.props.value.trim();
+        if (!raw) return {};
+        const parsed = JSON.parse(raw);
+        if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") {
+          throw new Error("Properties must be a JSON object.");
+        }
+        return parsed;
+      }
+
+      function currentSequence() {
+        const seq = Number.parseInt(controls.sequence.value, 10);
+        if (!Number.isSafeInteger(seq) || seq < 1) throw new Error("Sequence must be a positive integer.");
+        return seq;
+      }
+
+      function timestampFor(seq, offset = 0) {
+        return controls.timestamp.value === "sequence" ? 1700000000000 + seq + offset : Date.now() + offset;
+      }
+
+      function cleanOptional(value) {
+        const result = String(value || "").trim();
+        return result || null;
+      }
+
+      function eventFor(op, id, payload, seq, offset = 0) {
+        const isNode = op.startsWith("node.");
+        return {
+          seq,
+          op,
+          ts_unix_ms: timestampFor(seq, offset),
+          entity: {
+            kind: isNode ? "node" : "edge",
+            id,
+            kg_graph_type: required(controls.graphType.value, "Graph type"),
+            url: null
+          },
+          payload,
+          run_id: cleanOptional(controls.runId.value),
+          step_id: cleanOptional(controls.stepId.value)
+        };
+      }
+
+      function buildManualEvent() {
+        const seq = currentSequence();
+        const id = required(controls.entityId.value, operation.startsWith("node.") ? "Node ID" : "Hyperedge ID");
+        const remove = operation.endsWith(".remove");
+        let payload;
+
+        if (remove) {
+          payload = { id };
+        } else if (operation === "node.upsert") {
+          payload = {
+            id,
+            label: controls.entityLabel.value.trim() || id,
+            type: controls.nodeType.value.trim() || "entity",
+            props: propsObject()
+          };
+        } else {
+          const sourceIds = list(controls.sourceNodeIds.value);
+          const targetIds = list(controls.targetNodeIds.value);
+          const sourceEdgeIds = list(controls.sourceEdgeIds.value);
+          const targetEdgeIds = list(controls.targetEdgeIds.value);
+          if (!(sourceIds.length || targetIds.length || sourceEdgeIds.length || targetEdgeIds.length)) {
+            throw new Error("Hyperedge needs at least one node or edge endpoint.");
+          }
+          payload = {
+            id,
+            label: controls.entityLabel.value.trim() || id,
+            type: "relationship",
+            relation: controls.relation.value.trim() || "relates_to",
+            source_ids: sourceIds,
+            target_ids: targetIds,
+            source_edge_ids: sourceEdgeIds,
+            target_edge_ids: targetEdgeIds,
+            props: propsObject()
+          };
+        }
+        return eventFor(operation, id, payload, seq);
+      }
+
+      function updatePreview() {
+        try {
+          preview.textContent = JSON.stringify(buildManualEvent(), null, 2);
+          preview.classList.remove("invalid");
+          previewState.textContent = "valid";
+          previewState.dataset.state = "success";
+          return true;
+        } catch (error) {
+          preview.textContent = `Preview unavailable\n\n${error.message}`;
+          preview.classList.add("invalid");
+          previewState.textContent = "invalid";
+          previewState.dataset.state = "error";
+          return false;
+        }
+      }
+
+      function setOperation(next) {
+        operation = next;
+        const edge = next.startsWith("edge.");
+        const remove = next.endsWith(".remove");
+        byId("entity-id-label").textContent = edge ? "Hyperedge ID" : "Node ID";
+        byId("operation-summary").textContent = next;
+        document.querySelectorAll(".edge-only, .node-only, .upsert-only").forEach((el) => {
+          el.hidden = (el.classList.contains("edge-only") && !edge)
+            || (el.classList.contains("node-only") && edge)
+            || (el.classList.contains("upsert-only") && remove);
+        });
+        opButtons.forEach((button) => button.setAttribute("aria-pressed", String(button.dataset.operation === next)));
+        if (edge && controls.entityId.value === "signal-alpha") {
+          controls.entityId.value = "corroboration-link";
+          controls.entityLabel.value = "Corroborates";
+          controls.sourceNodeIds.value = "sensor-a, sensor-b";
+          controls.targetNodeIds.value = "incident, response";
+        } else if (!edge && controls.entityId.value === "corroboration-link") {
+          controls.entityId.value = "signal-alpha";
+          controls.entityLabel.value = "Signal Alpha";
+        }
+        updatePreview();
+      }
+
+      function setBusy(busy) {
+        requestInFlight = busy;
+        sendButton.disabled = busy;
+        scenarioButtons.forEach((button) => { button.disabled = busy; });
+      }
+
+      function status(state, label) {
+        requestStatus.dataset.state = state;
+        requestStatus.textContent = label;
+      }
+
+      function addLog(kind, message) {
+        const empty = activityLog.querySelector(".log-empty");
+        if (empty) empty.remove();
+        const row = document.createElement("li");
+        row.className = `log-row ${kind}`;
+        const time = new Date().toLocaleTimeString([], { hour12: false });
+        const tag = kind === "success" ? "OK" : kind === "error" ? "ERROR" : "INFO";
+        row.innerHTML = `<span class="log-time"></span><span class="log-tag"></span><span class="log-message"></span>`;
+        row.querySelector(".log-time").textContent = time;
+        row.querySelector(".log-tag").textContent = tag;
+        row.querySelector(".log-message").textContent = message;
+        activityLog.prepend(row);
+      }
+
+      function advanceSequence(count) {
+        if (!controls.autoSequence.checked) return;
+        controls.sequence.value = String(currentSequence() + count);
+        updatePreview();
+      }
+
+      async function postEvents(events, label) {
+        if (requestInFlight) return;
+        setBusy(true);
+        status("sending", "sending");
+        addLog("info", `${label}: POST /ingest · ${events.length} event${events.length === 1 ? "" : "s"} · seq ${events[0].seq}${events.length > 1 ? `–${events.at(-1).seq}` : ""}`);
+        try {
+          const body = events.length === 1 ? events[0] : { events };
+          const response = await fetch("/ingest", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "Accept": "application/json" },
+            body: JSON.stringify(body),
+            credentials: "same-origin"
+          });
+          const text = await response.text();
+          let result;
+          try { result = text ? JSON.parse(text) : {}; } catch (_) { result = { detail: text }; }
+          if (!response.ok) {
+            const detail = typeof result.detail === "string" ? result.detail : JSON.stringify(result.detail || result);
+            throw new Error(`HTTP ${response.status}: ${detail}`);
+          }
+          status("success", "accepted");
+          addLog("success", `${label}: accepted ${result.accepted ?? events.length}; bridge last_seq=${result.last_seq ?? events.at(-1).seq}`);
+          advanceSequence(events.length);
+          return result;
+        } catch (error) {
+          status("error", "error");
+          addLog("error", `${label}: ${error.message}`);
+          throw error;
+        } finally {
+          setBusy(false);
+        }
+      }
+
+      function nodeEvent(seq, id, label, type, props = {}, step = "scenario") {
+        const ev = eventFor("node.upsert", id, { id, label, type, props }, seq, seq % 17);
+        ev.step_id = step;
+        return ev;
+      }
+
+      function edgeEvent(seq, id, label, relation, sourceIds, targetIds, sourceEdgeIds = [], targetEdgeIds = [], props = {}, step = "scenario") {
+        const ev = eventFor("edge.upsert", id, {
+          id, label, type: "relationship", relation,
+          source_ids: sourceIds, target_ids: targetIds,
+          source_edge_ids: sourceEdgeIds, target_edge_ids: targetEdgeIds,
+          props
+        }, seq, seq % 17);
+        ev.step_id = step;
+        return ev;
+      }
+
+      function removeEvent(seq, kind, id, step = "scenario-cleanup") {
+        const op = `${kind}.remove`;
+        const ev = eventFor(op, id, { id }, seq, seq % 17);
+        ev.step_id = step;
+        return ev;
+      }
+
+      function scenarioGeneric(start) {
+        return [
+          nodeEvent(start, "obs-radar", "Radar observation", "observation", { confidence: .86, channel: "radar" }),
+          nodeEvent(start + 1, "obs-visual", "Visual confirmation", "observation", { confidence: .94, channel: "visual" }),
+          nodeEvent(start + 2, "analyst-mira", "Analyst Mira", "actor", { team: "north" }),
+          nodeEvent(start + 3, "incident-aurora", "Aurora anomaly", "incident", { severity: "high" }),
+          nodeEvent(start + 4, "response-watch", "Increase watch", "response", { priority: 1 }),
+          nodeEvent(start + 5, "response-probe", "Launch probe", "response", { priority: 2 }),
+          edgeEvent(start + 6, "e-observed-by", "Radar observed by analyst", "observed_by", ["obs-radar"], ["analyst-mira"], [], [], { binary_control: true }),
+          edgeEvent(start + 7, "e-corroborates", "Signals corroborate incident", "corroborates", ["obs-radar", "obs-visual"], ["incident-aurora"], [], [], { confidence: .91 }),
+          edgeEvent(start + 8, "e-recommends", "Joint response recommendation", "recommends", ["analyst-mira", "incident-aurora"], ["response-watch", "response-probe"], [], [], { rationale: "cross-channel confirmation" }),
+          edgeEvent(start + 9, "e-evidence-governs", "Evidence governs response", "governs", [], [], ["e-corroborates"], ["e-recommends"], { provenance: true }),
+          edgeEvent(start + 10, "e-audit-trace", "Analyst audits provenance", "audits", ["analyst-mira"], [], [], ["e-evidence-governs"], { layer: "meta" })
+        ];
+      }
+
+      function scenarioEndpointFirst(start) {
+        return [
+          edgeEvent(start, "e-early-arrival", "Arrived before endpoints", "predicts", ["future-signal-a", "future-signal-b"], ["future-outcome"], [], [], { ordering_test: "edge-before-node" }, "edge-first"),
+          nodeEvent(start + 1, "future-signal-a", "Late signal A", "signal", { resolved_placeholder: true }, "resolve-endpoints"),
+          nodeEvent(start + 2, "future-outcome", "Late outcome", "outcome", { resolved_placeholder: true }, "resolve-endpoints"),
+          nodeEvent(start + 3, "future-signal-b", "Late signal B", "signal", { resolved_placeholder: true }, "resolve-endpoints")
+        ];
+      }
+
+      function scenarioBurst(start) {
+        return [
+          nodeEvent(start, "burst-source", "Burst source", "source", { phase: "created" }, "burst-create"),
+          nodeEvent(start + 1, "burst-a", "Burst candidate A", "candidate", { score: .51 }, "burst-create"),
+          nodeEvent(start + 2, "burst-b", "Burst candidate B", "candidate", { score: .67 }, "burst-create"),
+          nodeEvent(start + 3, "burst-c", "Burst candidate C", "candidate", { score: .72 }, "burst-create"),
+          edgeEvent(start + 4, "e-burst-rank", "Initial ranking", "ranks", ["burst-source"], ["burst-a", "burst-b", "burst-c"], [], [], { revision: 1 }, "burst-create"),
+          edgeEvent(start + 5, "e-burst-shortlist", "Initial shortlist", "shortlists", ["burst-b", "burst-c"], ["burst-a"], [], [], { revision: 1 }, "burst-create"),
+          nodeEvent(start + 6, "burst-b", "Burst candidate B · promoted", "candidate", { score: .93, phase: "updated" }, "burst-update"),
+          edgeEvent(start + 7, "e-burst-rank", "Ranking revised", "ranks", ["burst-source"], ["burst-b", "burst-c"], [], [], { revision: 2, removed_candidate: "burst-a" }, "burst-update"),
+          edgeEvent(start + 8, "e-burst-audit", "Revision audit", "audits", [], [], ["e-burst-shortlist"], ["e-burst-rank"], { revision: 2 }, "burst-update"),
+          removeEvent(start + 9, "edge", "e-burst-shortlist"),
+          removeEvent(start + 10, "node", "burst-a"),
+          edgeEvent(start + 11, "e-burst-final", "Final selection", "selects", ["burst-source"], ["burst-b"], [], ["e-burst-rank"], { status: "final" }, "burst-final")
+        ];
+      }
+
+      opButtons.forEach((button) => button.addEventListener("click", () => setOperation(button.dataset.operation)));
+      Object.values(controls).forEach((control) => control.addEventListener("input", updatePreview));
+      Object.values(controls).forEach((control) => control.addEventListener("change", updatePreview));
+
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        let change;
+        try {
+          change = buildManualEvent();
+        } catch (error) {
+          status("error", "invalid");
+          addLog("error", error.message);
+          updatePreview();
+          return;
+        }
+        try { await postEvents([change], operation); } catch (_) { /* postEvents logs bridge failures */ }
+      });
+
+      scenarioButtons.forEach((button) => button.addEventListener("click", async () => {
+        try {
+          const start = currentSequence();
+          const name = button.dataset.scenario;
+          const events = name === "generic" ? scenarioGeneric(start) : name === "endpoint-first" ? scenarioEndpointFirst(start) : scenarioBurst(start);
+          const label = button.querySelector(".scenario-name").textContent;
+          await postEvents(events, label);
+        } catch (error) {
+          if (!requestInFlight && requestStatus.dataset.state !== "error") {
+            status("error", "invalid");
+            addLog("error", error.message);
+          }
+        }
+      }));
+
+      byId("clear-log").addEventListener("click", () => {
+        activityLog.innerHTML = '<li class="log-empty">Log cleared. Ready for the next request.</li>';
+        status("idle", "idle");
+      });
+
+      setOperation(operation);
+    })();
+  </script>
+</body>
+</html>

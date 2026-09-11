@@ -37,7 +37,7 @@ and join work before terminal persistence.
 
 Nested `workflow_invocations`, sandboxed resolver execution, lane-message
 sends, and direct trace/event emission are not silently degraded. Until each
-has a versioned worker protocol representation, the Rust worker adapter must
+has a versioned worker protocol embedding, the Rust worker adapter must
 reject it before executing the callback (when discoverable from the resolver)
 or reject the returned effect before persistence.
 

@@ -59,7 +59,7 @@ class KnowledgeRetriever:
     def _shallow_query(
         self, *, query_embedding: List[float], max_retrieval_level
     ) -> RetrievalResult:
-        nodes = self.ref_knowledge_engine.read.query_nodes(
+        node_batches = self.ref_knowledge_engine.read.query_nodes(
             query_embeddings=[query_embedding],
             n_results=self.shallow_n_results,
             where={
@@ -68,8 +68,9 @@ class KnowledgeRetriever:
                 }
             },
             include=["metadatas", "documents", "embeddings"],
-        )[0]
-        edges = self.ref_knowledge_engine.read.query_edges(
+        )
+        nodes = node_batches[0] if node_batches else []
+        edge_batches = self.ref_knowledge_engine.read.query_edges(
             query_embeddings=[query_embedding],
             n_results=self.shallow_n_results,
             where={
@@ -78,7 +79,8 @@ class KnowledgeRetriever:
                 }
             },
             include=["metadatas", "documents", "embeddings"],
-        )[0]
+        )
+        edges = edge_batches[0] if edge_batches else []
         return RetrievalResult(nodes, edges)
         # nodes = self.ref_knowledge_engine.query_nodes(query_embeddings=[query_embedding],
         #     n_results=self.shallow_n_results,

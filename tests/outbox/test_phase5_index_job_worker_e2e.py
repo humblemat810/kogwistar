@@ -50,6 +50,46 @@ def test_phase5_job_claim_sets_lease_until(eng):
     assert j.lease_until is not None
 
 
+def test_phase5_worker_passes_payload_and_fails_unknown_kind(eng, monkeypatch):
+    ns = f"phase5_payload_{uuid.uuid4().hex}"
+    payload_json = '{"source_fingerprint":"v1","embedding_model":"test"}'
+    received: dict[str, object] = {}
+
+    eng.meta_sqlite.enqueue_index_job(
+        namespace=ns,
+        job_id=f"job_{uuid.uuid4().hex}",
+        entity_kind="node",
+        entity_id="n1",
+        index_kind="node_docs",
+        op="upsert",
+        payload_json=payload_json,
+    )
+
+    monkeypatch.setattr(
+        eng.indexing, "apply_index_job", lambda **kwargs: received.update(kwargs)
+    )
+    worker = IndexJobWorker(
+        engine=eng, batch_size=1, lease_seconds=60, max_jobs_per_tick=1, namespace=ns
+    )
+    assert worker.tick().done == 1
+    assert received["payload_json"] == payload_json
+
+    bad_id = f"job_{uuid.uuid4().hex}"
+    eng.meta_sqlite.enqueue_index_job(
+        namespace=ns,
+        job_id=bad_id,
+        entity_kind="node",
+        entity_id="n1",
+        index_kind="unknown_kind",
+        op="upsert",
+        max_retries=1,
+    )
+    monkeypatch.undo()
+    metrics = worker.tick()
+    assert metrics.failed == 1
+    assert _get_job(eng.meta_sqlite, bad_id, ns).status == "FAILED"
+
+
 def test_phase5_job_fail_increments_retry_and_requeues(eng, monkeypatch):
     ns = f"phase5_retry_{uuid.uuid4().hex}"
     job_id = f"job_{uuid.uuid4().hex}"

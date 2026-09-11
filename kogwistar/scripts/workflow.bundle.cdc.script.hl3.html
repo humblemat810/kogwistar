@@ -1141,7 +1141,7 @@ Created: 2026-03-01
             const e = ev.payload || {};
             if (!e.id) return;
 
-            // Remove the previous representation of this edge (links + optional edge-node)
+            // Remove the previous embedding of this edge (links + optional edge-node)
             removeLinksByPrefix(e.id + ":");
             // In reify mode, the edge-node id is the edge id.
             if (MODE === "reify") model.nodesById.delete(e.id);

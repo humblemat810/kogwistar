@@ -13,6 +13,7 @@ from typing import Any, Iterator, Optional
 from .engine_sqlite import IndexJobRow
 from .meta_lane_messages import LaneMessageMetaStoreMixin
 from ..messaging.models import ProjectedLaneMessageRow
+from .event_envelope import EntityEventEnvelope
 
 
 _active_in_memory_meta_txn: contextvars.ContextVar["_TxnView | None"] = contextvars.ContextVar(
@@ -36,6 +37,7 @@ class _EntityEventRow:
     entity_id: str
     op: str
     payload_json: str
+    created_at: int
 
 
 @dataclass
@@ -57,6 +59,9 @@ class _JobState:
     created_at: int
     updated_at: int
     claim_token: str | None = None
+    accepted_result_json: str | None = None
+    accepted_result_sha256: str | None = None
+    accepted_at: int | None = None
 
     def as_row(self) -> IndexJobRow:
         return IndexJobRow(
@@ -77,6 +82,9 @@ class _JobState:
             created_at=self.created_at,
             updated_at=self.updated_at,
             claim_token=self.claim_token,
+            accepted_result_json=self.accepted_result_json,
+            accepted_result_sha256=self.accepted_result_sha256,
+            accepted_at=self.accepted_at,
         )
 
 
@@ -433,6 +441,51 @@ class InMemoryMetaStore(LaneMessageMetaStoreMixin):
             job.updated_at = now
             return True
 
+    def accept_index_job_result(
+        self,
+        job_id: str,
+        *,
+        claim_token: str,
+        result_json: str,
+        result_sha256: str,
+    ) -> dict[str, object]:
+        now = _now_epoch()
+        with self.transaction() as txn:
+            job = txn.state.index_jobs.get(str(job_id))
+            if job is None:
+                return {"status": "rejected", "reason": "job_not_found"}
+            if job.accepted_result_json is not None:
+                return {
+                    "status": "existing",
+                    "result_json": job.accepted_result_json,
+                    "result_sha256": job.accepted_result_sha256 or "",
+                    "accepted_at": job.accepted_at,
+                }
+            if (
+                job.status != "DOING"
+                or job.claim_token != claim_token
+                or job.lease_until is None
+                or job.lease_until < now
+            ):
+                return {"status": "rejected", "reason": "claim_not_valid"}
+            job.accepted_result_json = result_json
+            job.accepted_result_sha256 = result_sha256
+            job.accepted_at = now
+            job.updated_at = now
+            return {"status": "accepted", "result_json": result_json, "result_sha256": result_sha256, "accepted_at": now}
+
+    def get_index_job_result(self, job_id: str) -> dict[str, object] | None:
+        with self._lock:
+            job = self._state.index_jobs.get(str(job_id))
+            if job is None or job.accepted_result_json is None:
+                return None
+            return {
+                "status": "existing",
+                "result_json": job.accepted_result_json,
+                "result_sha256": job.accepted_result_sha256 or "",
+                "accepted_at": job.accepted_at,
+            }
+
     def mark_index_job_failed(self, job_id: str, error: str, *, final: bool = True, claim_token: str | None = None) -> None:
         now = _now_epoch()
         with self.transaction() as txn:
@@ -693,6 +746,7 @@ class InMemoryMetaStore(LaneMessageMetaStoreMixin):
                     entity_id=str(entity_id),
                     op=str(op),
                     payload_json=str(payload_json),
+                    created_at=_now_epoch(),
                 )
             )
         return seq
@@ -727,6 +781,67 @@ class InMemoryMetaStore(LaneMessageMetaStoreMixin):
                     str(row.payload_json),
                 )
             next_seq = int(rows[-1].seq) + 1
+
+    def iter_entity_event_envelopes(
+        self,
+        *,
+        namespace: str = "default",
+        from_seq: int = 1,
+        to_seq: int | None = None,
+        batch_size: int = 500,
+    ) -> Iterator[EntityEventEnvelope]:
+        next_seq = int(from_seq)
+        while True:
+            with self._lock:
+                events = [
+                    event for event in self._state.entity_events.get(str(namespace), [])
+                    if int(event.seq) >= next_seq
+                    and (to_seq is None or int(event.seq) <= int(to_seq))
+                ]
+                events = sorted(events, key=lambda item: item.seq)[: int(batch_size)]
+            if not events:
+                return
+            for event in events:
+                yield EntityEventEnvelope(
+                    namespace=str(namespace), seq=int(event.seq), event_id=str(event.event_id),
+                    entity_kind=str(event.entity_kind), entity_id=str(event.entity_id),
+                    op=str(event.op), payload_json=str(event.payload_json),
+                    created_at=int(event.created_at),
+                )
+            next_seq = int(events[-1].seq) + 1
+
+    def append_entity_event_envelope(self, event: EntityEventEnvelope) -> int:
+        """Import one lossless event, idempotently, into a fresh namespace."""
+        if not isinstance(event, EntityEventEnvelope):
+            raise TypeError("event must be an EntityEventEnvelope")
+        with self.transaction() as txn:
+            events = txn.state.entity_events.setdefault(str(event.namespace), [])
+            existing = next((item for item in events if item.event_id == event.event_id), None)
+            if existing is not None:
+                actual = EntityEventEnvelope(
+                    namespace=str(event.namespace), seq=int(existing.seq), event_id=str(existing.event_id),
+                    entity_kind=str(existing.entity_kind), entity_id=str(existing.entity_id),
+                    op=str(existing.op), payload_json=str(existing.payload_json),
+                    created_at=int(existing.created_at),
+                )
+                if actual != event:
+                    raise ValueError(f"event_id {event.event_id!r} conflicts with stored event")
+                return actual.seq
+            latest = max((int(item.seq) for item in events), default=0)
+            if event.seq != latest + 1:
+                raise ValueError(
+                    f"event sequence for {event.namespace!r} must be {latest + 1}, got {event.seq}"
+                )
+            json.loads(event.payload_json)
+            events.append(_EntityEventRow(
+                seq=int(event.seq), event_id=event.event_id, entity_kind=event.entity_kind,
+                entity_id=event.entity_id, op=event.op, payload_json=event.payload_json,
+                created_at=int(event.created_at),
+            ))
+            txn.state.namespace_next_seq[str(event.namespace)] = max(
+                int(txn.state.namespace_next_seq.get(str(event.namespace), 1)), int(event.seq) + 1
+            )
+        return event.seq
 
     def prune_entity_events_after(self, *, namespace: str = "default", to_seq: int) -> int:
         with self.transaction() as txn:
@@ -830,6 +945,33 @@ class InMemoryMetaStore(LaneMessageMetaStoreMixin):
                 "materialization_status": str(materialization_status),
                 "updated_at_ms": _now_ms(),
             }
+        return True
+
+    def compare_and_swap_named_projections(self, updates: list[dict[str, Any]]) -> bool:
+        if not updates:
+            return True
+        rows = sorted(updates, key=lambda item: (str(item["namespace"]), str(item["key"])))
+        if len({(str(x["namespace"]), str(x["key"])) for x in rows}) != len(rows):
+            raise ValueError("duplicate named projection key")
+        with self.transaction() as txn:
+            for item in rows:
+                existing = txn.state.named_projections.get((str(item["namespace"]), str(item["key"])))
+                ea, em = item.get("expected_last_authoritative_seq"), item.get("expected_last_materialized_seq")
+                if ea is None and em is None:
+                    if existing is not None:
+                        return False
+                elif (
+                    existing is None
+                    or int(existing.get("last_authoritative_seq", -1)) != int(ea)
+                    or int(existing.get("last_materialized_seq", -1)) != int(em)
+                ):
+                    return False
+            for item in rows:
+                txn.state.named_projections[(str(item["namespace"]), str(item["key"]))] = {
+                    "namespace": str(item["namespace"]), "key": str(item["key"]), "payload": copy.deepcopy(item["payload"]),
+                    "last_authoritative_seq": int(item.get("last_authoritative_seq", 0)), "last_materialized_seq": int(item.get("last_materialized_seq", 0)),
+                    "projection_schema_version": int(item.get("projection_schema_version", 1)), "materialization_status": str(item.get("materialization_status", "ready")), "updated_at_ms": _now_ms(),
+                }
         return True
 
     def list_named_projections(self, namespace: str) -> list[dict[str, Any]]:

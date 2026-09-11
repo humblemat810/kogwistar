@@ -34,6 +34,18 @@ class _RunInspectionService(_BaseComponent):
         latest = checkpoints[-1] if checkpoints else None
         state = latest.get("state") if isinstance(latest, dict) else None
         latest_node = self._latest_checkpoint_node(run_id)
+        resume_options: list[dict[str, str]] = []
+        if isinstance(state, dict):
+            suspended = state.get("suspended_tokens") or state.get("_suspended_tokens") or {}
+            if isinstance(suspended, dict):
+                for token_id, item in suspended.items():
+                    if isinstance(item, (list, tuple)) and item:
+                        resume_options.append(
+                            {
+                                "suspended_node_id": str(item[0]),
+                                "suspended_token_id": str(token_id),
+                            }
+                        )
         resume_keys = {
             "run_id": run_id,
             "latest_checkpoint_step_seq": None if latest is None else latest.get("step_seq"),
@@ -54,6 +66,7 @@ class _RunInspectionService(_BaseComponent):
             "supported_wait_reasons": list(self._WAIT_REASONS),
             "compatible": bool(checkpoints),
             "state_keys": sorted(state.keys()) if isinstance(state, dict) else [],
+            "resume_options": resume_options,
         }
         return resume_keys
 

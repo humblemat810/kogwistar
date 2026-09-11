@@ -121,21 +121,26 @@ class LifecycleSubsystem(NamespaceProxy):
             op="TOMBSTONE",
             **kw,
         )
-        ok = native if native is not None else self._e._backend_update_record_lifecycle(
-            backend=self._e.backend,
-            kind="node",
-            record_id=node_id,
-            lifecycle_patch=patch,
-        )
-
-        if ok and native is None:
-            self._best_effort_event(
+        if native is None:
+            self._append_lifecycle_event(
                 entity_kind="node",
                 entity_id=node_id,
                 op="TOMBSTONE",
                 lifecycle_patch=patch,
                 **kw,
             )
+            ok = self._e._backend_update_record_lifecycle(
+                backend=self._e.backend,
+                kind="node",
+                record_id=node_id,
+                lifecycle_patch=patch,
+            )
+            if not ok:
+                ok = self._cleanup_pending_two_stage(entity_kind="node", entity_id=node_id)
+        else:
+            ok = native
+
+        if ok and native is None:
             self._maybe_index_delete(entity_kind="node", entity_id=node_id)
 
         return ok
@@ -167,12 +172,24 @@ class LifecycleSubsystem(NamespaceProxy):
             op="REPLACE",
             **kw,
         )
-        ok = native if native is not None else self._e._backend_update_record_lifecycle(
-            backend=self._e.backend,
-            kind="node",
-            record_id=from_id,
-            lifecycle_patch=patch,
-        )
+        if native is None:
+            self._append_lifecycle_event(
+                entity_kind="node",
+                entity_id=from_id,
+                op="REPLACE",
+                lifecycle_patch=patch,
+                **kw,
+            )
+            ok = self._e._backend_update_record_lifecycle(
+                backend=self._e.backend,
+                kind="node",
+                record_id=from_id,
+                lifecycle_patch=patch,
+            )
+            if not ok:
+                ok = self._cleanup_pending_two_stage(entity_kind="node", entity_id=from_id)
+        else:
+            ok = native
         if ok and native is None:
             self._maybe_index_delete(entity_kind="node", entity_id=from_id)
         return ok
@@ -195,21 +212,26 @@ class LifecycleSubsystem(NamespaceProxy):
             op="TOMBSTONE",
             **kw,
         )
-        ok = native if native is not None else self._e._backend_update_record_lifecycle(
-            backend=self._e.backend,
-            kind="edge",
-            record_id=edge_id,
-            lifecycle_patch=patch,
-        )
-
-        if ok and native is None:
-            self._best_effort_event(
+        if native is None:
+            self._append_lifecycle_event(
                 entity_kind="edge",
                 entity_id=edge_id,
                 op="TOMBSTONE",
                 lifecycle_patch=patch,
                 **kw,
             )
+            ok = self._e._backend_update_record_lifecycle(
+                backend=self._e.backend,
+                kind="edge",
+                record_id=edge_id,
+                lifecycle_patch=patch,
+            )
+            if not ok:
+                ok = self._cleanup_pending_two_stage(entity_kind="edge", entity_id=edge_id)
+        else:
+            ok = native
+
+        if ok and native is None:
             self._maybe_index_delete(entity_kind="edge", entity_id=edge_id)
 
         return ok
@@ -236,12 +258,24 @@ class LifecycleSubsystem(NamespaceProxy):
             op="REPLACE",
             **kw,
         )
-        ok = native if native is not None else self._e._backend_update_record_lifecycle(
-            backend=self._e.backend,
-            kind="edge",
-            record_id=from_id,
-            lifecycle_patch=patch,
-        )
+        if native is None:
+            self._append_lifecycle_event(
+                entity_kind="edge",
+                entity_id=from_id,
+                op="REPLACE",
+                lifecycle_patch=patch,
+                **kw,
+            )
+            ok = self._e._backend_update_record_lifecycle(
+                backend=self._e.backend,
+                kind="edge",
+                record_id=from_id,
+                lifecycle_patch=patch,
+            )
+            if not ok:
+                ok = self._cleanup_pending_two_stage(entity_kind="edge", entity_id=from_id)
+        else:
+            ok = native
         if ok and native is None:
             self._maybe_index_delete(entity_kind="edge", entity_id=from_id)
         return ok
@@ -249,6 +283,24 @@ class LifecycleSubsystem(NamespaceProxy):
     # -----------------------
     # Internals
     # -----------------------
+
+    def _cleanup_pending_two_stage(self, *, entity_kind: str, entity_id: str) -> bool:
+        """Apply lifecycle deletion to a transient row with no Stage-2 row yet."""
+        if getattr(self._e, "persistence_mode", "single_stage") != "two_stage":
+            return False
+        adapter = getattr(self._e, "two_stage_projection_adapter", None)
+        capability = getattr(self._e, "two_stage_projection_capability", None)
+        if getattr(capability, "atomic_promotion", None) != "same_store":
+            return False
+        query = getattr(adapter, "stage1_query", None)
+        remove = getattr(adapter, "remove_stage1", None)
+        if not callable(query) or not callable(remove):
+            return False
+        rows = query(entity_kind=entity_kind, ids=[entity_id], limit=1)
+        if not rows:
+            return False
+        remove(entity_kind=entity_kind, entity_id=entity_id)
+        return True
 
     def _rust_postgres_lifecycle_patch(
         self,
@@ -356,27 +408,25 @@ class LifecycleSubsystem(NamespaceProxy):
             self._maybe_index_delete(entity_kind=entity_kind, entity_id=entity_id)
         return bool(updated)
 
-    def _best_effort_event(
+    def _append_lifecycle_event(
         self, *, entity_kind: str, entity_id: str, op: str, **kw
     ) -> None:
-        try:
-            payload = {"entity_id": entity_id}
-            if kw.get("reason") is not None:
-                payload["reason"] = kw.get("reason")
-            if kw.get("deleted_by") is not None:
-                payload["deleted_by"] = kw.get("deleted_by")
-            if isinstance(kw.get("lifecycle_patch"), dict):
-                payload["lifecycle_patch"] = dict(kw["lifecycle_patch"])
-            self._e._append_event_for_entity(
-                namespace=getattr(self._e, "namespace", "default"),
-                entity_kind=entity_kind,
-                entity_id=entity_id,
-                op=op,
-                payload=payload,
-            )
-        except Exception:
-            # never block primary write path
-            pass
+        """Require lifecycle mutation event before non-native projection changes."""
+        payload = {"entity_id": entity_id}
+        if kw.get("reason") is not None:
+            payload["reason"] = kw.get("reason")
+        if kw.get("deleted_by") is not None:
+            payload["deleted_by"] = kw.get("deleted_by")
+        if isinstance(kw.get("lifecycle_patch"), dict):
+            payload["lifecycle_patch"] = dict(kw["lifecycle_patch"])
+        self._e._append_event_for_entity(
+            namespace=getattr(self._e, "namespace", "default"),
+            entity_kind=entity_kind,
+            entity_id=entity_id,
+            op=op,
+            payload=payload,
+            required=True,
+        )
 
     def _maybe_index_delete(self, *, entity_kind: str, entity_id: str) -> None:
         if not getattr(self._e, "_phase1_enable_index_jobs", False):

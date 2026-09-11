@@ -1,4 +1,4 @@
-﻿# ARD-P2D Appendix A: State, Effects, Retries, Ordering, and Chain Semantics
+# ARD-P2D Appendix A: State, Effects, Retries, Ordering, and Chain Semantics
 
 **Status:** Accepted as workflow/conversation governance appendix  
 **Last Updated:** 2026-03-14  
@@ -149,7 +149,7 @@ If `memory_retrieve` runs multiple times in an epoch:
   - relation: `retry`
   - direction: `attempt_n -> attempt_(n-1)` (or `previous_attempt`), choose one and keep consistent
 
-### A6.2 State representation
+### A6.2 State embedding
 Store all attempts in state as an append-only list:
 - `state["artifacts"]["memory_retrievals"] = [Attempt, Attempt, ...]`
 - each Attempt must be checkpoint-safe (jsonable)

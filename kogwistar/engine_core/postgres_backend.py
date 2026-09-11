@@ -40,10 +40,13 @@ Index/materialization collections (non-vector):
 """
 
 import asyncio
+import hashlib
 import inspect
 import os
+import re
 import threading
 import sys
+import time
 from dataclasses import dataclass
 from contextlib import asynccontextmanager, contextmanager
 import contextvars
@@ -55,6 +58,8 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 from sqlalchemy.dialects import postgresql as psql
 
 from ..utils.embedding_vectors import normalize_embedding_rows, normalize_embedding_vector
+from .async_compat import run_awaitable_blocking
+from .embedding_profile import EmbeddingProfileError, EmbeddingStorageState
 
 try:
     # pip install pgvector
@@ -68,6 +73,53 @@ else:
 
 Json = Dict[str, Any]
 JSONB = psql.JSONB
+
+
+_VECTOR_TYPE_RE = re.compile(r"^vector\((?P<dimension>\d+)\)$")
+
+
+@dataclass(frozen=True)
+class PgVectorColumnDimension:
+    """Observed physical type for one pgvector embedding column."""
+
+    table_name: str
+    column_name: str
+    type_name: str
+    dimension: int | None
+
+
+class PgVectorSchemaMismatchError(EmbeddingProfileError):
+    """Raised before writes when an existing pgvector column has the wrong shape."""
+
+    def __init__(
+        self,
+        *,
+        schema: str,
+        expected_dimension: int,
+        mismatches: Sequence[PgVectorColumnDimension],
+    ) -> None:
+        self.schema = schema
+        self.expected_dimension = expected_dimension
+        self.mismatches = tuple(mismatches)
+        observed = "; ".join(
+            f'{schema}.{item.table_name}.{item.column_name} is {item.type_name}'
+            for item in self.mismatches
+        )
+        super().__init__(
+            "PostgreSQL pgvector schema mismatch: "
+            f"configured embedding dimension is {expected_dimension}, but {observed}. "
+            "No data was written. Do not alter the live vector column in place: "
+            "existing embeddings and HNSW indexes must be rebuilt. Stop writers, "
+            "create an isolated target schema or database configured for the new "
+            "dimension, replay canonical state, re-embed, validate, then cut over."
+        )
+
+
+def _parse_vector_dimension(type_name: object) -> int | None:
+    """Extract a dimension from PostgreSQL's stable ``format_type`` output."""
+
+    match = _VECTOR_TYPE_RE.fullmatch(str(type_name or "").strip())
+    return int(match.group("dimension")) if match is not None else None
 
 
 class _AwaitableValue:
@@ -235,6 +287,7 @@ class PgVectorConfig:
     schema: str = "public"
     nodes_table: str = "gke_nodes"
     edges_table: str = "gke_edges"
+    stage1_table: str = "gke_stage1_projections"
     documents_table: str = "gke_documents"
     domains_table: str = "gke_domains"
     edge_endpoints_table: str = "gke_edge_endpoints"
@@ -653,6 +706,7 @@ class PgVectorBackend:
         schema: str = "public",
         nodes_table: str = "gke_nodes",
         edges_table: str = "gke_edges",
+        stage1_table: str = "gke_stage1_projections",
         documents_table: str = "gke_documents",
         domains_table: str = "gke_domains",
         edge_endpoints_table: str = "gke_edge_endpoints",
@@ -671,6 +725,7 @@ class PgVectorBackend:
         self.embedding_dim = int(embedding_dim)
         self.distance = str(self._normalize_distance(distance)).lower()
         self.schema = schema
+        self.stage1_table_name = stage1_table
         self.numeric_keys = numeric_keys or set(_NUMERIC_KEYS_DEFAULT)
 
         if self.distance not in {"cosine", "l2", "ip"}:
@@ -725,6 +780,23 @@ class PgVectorBackend:
                 onupdate=sa.func.now(),
                 nullable=False,
             ),
+        )
+
+        # High-churn, non-semantic staging projection.  It is deliberately
+        # separate from named projections and vector serving tables.
+        self.stage1_projections = sa.Table(
+            stage1_table,
+            md,
+            sa.Column("namespace", sa.String, nullable=False, server_default="default"),
+            sa.Column("entity_kind", sa.String, nullable=False),
+            sa.Column("entity_id", sa.String, nullable=False),
+            sa.Column("document", sa.Text, nullable=False),
+            sa.Column("metadata", JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")),
+            sa.Column("source_fingerprint", sa.String, nullable=False),
+            sa.Column("revision", sa.BigInteger, nullable=False, server_default="0"),
+            sa.Column("materialization_status", sa.String, nullable=False, server_default="'pending'"),
+            sa.Column("updated_at_ms", sa.BigInteger, nullable=False),
+            sa.PrimaryKeyConstraint("namespace", "entity_kind", "entity_id"),
         )
 
         self.documents = sa.Table(
@@ -882,12 +954,81 @@ class PgVectorBackend:
         )
 
         self._init_facades()
+        self._md = md
         if self._is_async_engine:
             self._install_async_passthroughs()
-
-        self._md = md
         self.ensure_schema()
 
+    def embedding_storage_scope(self) -> str:
+        """Return a stable identity for the shared PostgreSQL vector bundle."""
+
+        url = self.engine.url
+        # Credentials, dialect drivers, and query parameters describe an
+        # access path, not the physical vector bundle.  Excluding them keeps
+        # profile compatibility stable when operators rotate credentials or
+        # switch between sync and async SQLAlchemy drivers.
+        host = str(getattr(url, "host", None) or "localhost").lower()
+        port = int(getattr(url, "port", None) or 5432)
+        database = str(getattr(url, "database", None) or "").strip()
+        tables = ":".join(
+            table.name
+            for table in (self.nodes, self.edges, self.documents, self.domains)
+        )
+        value = f"host={host}|port={port}|database={database}|schema={self.schema}|tables={tables}"
+        return "pgvector:" + hashlib.sha256(value.encode("utf-8")).hexdigest()[:32]
+
+    def embedding_storage_scope_aliases(self) -> tuple[str, ...]:
+        """Return the pre-profile-guard URL-derived scope for migration."""
+
+        rendered = self.engine.url.render_as_string(hide_password=True)
+        tables = ":".join(
+            table.name
+            for table in (self.nodes, self.edges, self.documents, self.domains)
+        )
+        value = f"{rendered}|schema={self.schema}|tables={tables}"
+        legacy = "pgvector:" + hashlib.sha256(value.encode("utf-8")).hexdigest()[:32]
+        current = self.embedding_storage_scope()
+        return (legacy,) if legacy != current else ()
+
+    def inspect_embedding_storage(self) -> EmbeddingStorageState:
+        """Report whether the physical vector tables already contain rows."""
+
+        if self._is_async_engine:
+            return run_awaitable_blocking(self.inspect_embedding_storage_async())
+        tables = (self.nodes, self.edges, self.documents, self.domains)
+        with self.engine.connect() as conn:
+            counts = tuple(
+                (
+                    table.name,
+                    int(conn.execute(sa.select(sa.func.count()).select_from(table)).scalar_one()),
+                )
+                for table in tables
+            )
+        return EmbeddingStorageState(
+            backend_kind="pgvector",
+            storage_scope=self.embedding_storage_scope(),
+            persistent=True,
+            vector_count=sum(count for _name, count in counts),
+            details=tuple(f"{name}={count}" for name, count in counts),
+        )
+
+    async def inspect_embedding_storage_async(self) -> EmbeddingStorageState:
+        """Async counterpart used by async engine bootstrap paths."""
+
+        tables = (self.nodes, self.edges, self.documents, self.domains)
+        async with self.engine.connect() as conn:
+            counts_list: list[tuple[str, int]] = []
+            for table in tables:
+                result = await conn.execute(sa.select(sa.func.count()).select_from(table))
+                counts_list.append((table.name, int(result.scalar_one())))
+            counts = tuple(counts_list)
+        return EmbeddingStorageState(
+            backend_kind="pgvector",
+            storage_scope=self.embedding_storage_scope(),
+            persistent=True,
+            vector_count=sum(count for _name, count in counts),
+            details=tuple(f"{name}={count}" for name, count in counts),
+        )
     # ----------------------------
     # DDL / bootstrap
     # ----------------------------
@@ -928,11 +1069,211 @@ class PgVectorBackend:
         async with self.engine.begin() as conn:
             yield conn
 
+    # ----------------------------
+    # ADR-018 PostgreSQL Stage-1 projection
+    # ----------------------------
+
+    def stage1_projection_upsert(
+        self,
+        *,
+        namespace: str,
+        entity_kind: str,
+        entity_id: str,
+        document: str,
+        metadata: dict[str, Any],
+        source_fingerprint: str,
+        revision: int = 0,
+    ) -> None:
+        if entity_kind not in {"node", "edge"}:
+            raise ValueError(f"unsupported Stage-1 entity kind: {entity_kind!r}")
+        table = self.stage1_projections
+        stmt = psql.insert(table).values(
+            namespace=str(namespace),
+            entity_kind=entity_kind,
+            entity_id=str(entity_id),
+            document=str(document),
+            metadata=dict(metadata or {}),
+            source_fingerprint=str(source_fingerprint or ""),
+            revision=int(revision),
+            materialization_status="pending",
+            updated_at_ms=int(time.time() * 1000),
+        )
+        stmt = stmt.on_conflict_do_update(
+            index_elements=[table.c.namespace, table.c.entity_kind, table.c.entity_id],
+            set_={
+                "document": stmt.excluded.document,
+                "metadata": stmt.excluded.metadata,
+                "source_fingerprint": stmt.excluded.source_fingerprint,
+                "revision": stmt.excluded.revision,
+                "materialization_status": "pending",
+                "updated_at_ms": stmt.excluded.updated_at_ms,
+            },
+        )
+        with self._conn() as conn:
+            conn.execute(stmt)
+
+    def stage1_projection_get(
+        self, *, namespace: str, entity_kind: str, entity_id: str
+    ) -> dict[str, Any] | None:
+        if entity_kind not in {"node", "edge"}:
+            raise ValueError(f"unsupported Stage-1 entity kind: {entity_kind!r}")
+        with self._conn() as conn:
+            row = conn.execute(
+                sa.select(self.stage1_projections).where(
+                    self.stage1_projections.c.namespace == str(namespace),
+                    self.stage1_projections.c.entity_kind == entity_kind,
+                    self.stage1_projections.c.entity_id == str(entity_id),
+                )
+            ).mappings().first()
+        return dict(row) if row is not None else None
+
+    def stage1_projection_query(
+        self,
+        *,
+        namespace: str,
+        entity_kind: str,
+        ids: Sequence[str] | None = None,
+        metadata: dict[str, Any] | None = None,
+        limit: int | None = 200,
+    ) -> list[dict[str, Any]]:
+        if entity_kind not in {"node", "edge"}:
+            raise ValueError(f"unsupported Stage-1 entity kind: {entity_kind!r}")
+        table = self.stage1_projections
+        q = sa.select(table).where(
+            table.c.namespace == str(namespace), table.c.entity_kind == entity_kind
+        )
+        if ids is not None:
+            q = q.where(table.c.entity_id.in_([str(item) for item in ids]))
+        # Keep Stage-1 query semantics aligned with the existing narrow adapter.
+        for key, value in (metadata or {}).items():
+            if not isinstance(key, str) or isinstance(value, (dict, list, tuple, set)):
+                raise ValueError("PostgreSQL Stage-1 supports flat metadata equality only")
+            q = q.where(table.c.metadata[key].astext == str(value))
+        q = q.order_by(table.c.updated_at_ms, table.c.entity_id)
+        if limit is not None:
+            q = q.limit(int(limit))
+        with self._conn() as conn:
+            rows = conn.execute(q).mappings().all()
+        return [dict(row) for row in rows]
+
+    def stage1_projection_delete(
+        self, *, namespace: str, entity_kind: str, entity_id: str
+    ) -> None:
+        if entity_kind not in {"node", "edge"}:
+            raise ValueError(f"unsupported Stage-1 entity kind: {entity_kind!r}")
+        with self._conn() as conn:
+            conn.execute(
+                sa.delete(self.stage1_projections).where(
+                    self.stage1_projections.c.namespace == str(namespace),
+                    self.stage1_projections.c.entity_kind == entity_kind,
+                    self.stage1_projections.c.entity_id == str(entity_id),
+                )
+            )
+
+    async def stage1_projection_upsert_async(
+        self,
+        *,
+        namespace: str,
+        entity_kind: str,
+        entity_id: str,
+        document: str,
+        metadata: dict[str, Any],
+        source_fingerprint: str,
+        revision: int = 0,
+    ) -> None:
+        if entity_kind not in {"node", "edge"}:
+            raise ValueError(f"unsupported Stage-1 entity kind: {entity_kind!r}")
+        table = self.stage1_projections
+        stmt = psql.insert(table).values(
+            namespace=str(namespace), entity_kind=entity_kind,
+            entity_id=str(entity_id), document=str(document),
+            metadata=dict(metadata or {}), source_fingerprint=str(source_fingerprint or ""),
+            revision=int(revision), materialization_status="pending",
+            updated_at_ms=int(time.time() * 1000),
+        )
+        stmt = stmt.on_conflict_do_update(
+            index_elements=[table.c.namespace, table.c.entity_kind, table.c.entity_id],
+            set_={
+                "document": stmt.excluded.document,
+                "metadata": stmt.excluded.metadata,
+                "source_fingerprint": stmt.excluded.source_fingerprint,
+                "revision": stmt.excluded.revision,
+                "materialization_status": "pending",
+                "updated_at_ms": stmt.excluded.updated_at_ms,
+            },
+        )
+        async with self._async_conn() as conn:
+            await conn.execute(stmt)
+
+    async def stage1_projection_get_async(
+        self, *, namespace: str, entity_kind: str, entity_id: str
+    ) -> dict[str, Any] | None:
+        if entity_kind not in {"node", "edge"}:
+            raise ValueError(f"unsupported Stage-1 entity kind: {entity_kind!r}")
+        async with self._async_conn() as conn:
+            row = (await conn.execute(
+                sa.select(self.stage1_projections).where(
+                    self.stage1_projections.c.namespace == str(namespace),
+                    self.stage1_projections.c.entity_kind == entity_kind,
+                    self.stage1_projections.c.entity_id == str(entity_id),
+                )
+            )).mappings().first()
+        return dict(row) if row is not None else None
+
+    async def stage1_projection_query_async(
+        self,
+        *,
+        namespace: str,
+        entity_kind: str,
+        ids: Sequence[str] | None = None,
+        metadata: dict[str, Any] | None = None,
+        limit: int | None = 200,
+    ) -> list[dict[str, Any]]:
+        if entity_kind not in {"node", "edge"}:
+            raise ValueError(f"unsupported Stage-1 entity kind: {entity_kind!r}")
+        table = self.stage1_projections
+        query = sa.select(table).where(
+            table.c.namespace == str(namespace),
+            table.c.entity_kind == entity_kind,
+        )
+        if ids is not None:
+            query = query.where(table.c.entity_id.in_([str(item) for item in ids]))
+        for key, value in (metadata or {}).items():
+            if not isinstance(key, str) or isinstance(value, (dict, list, tuple, set)):
+                raise ValueError("PostgreSQL Stage-1 supports flat metadata equality only")
+            query = query.where(table.c.metadata[key].astext == str(value))
+        query = query.order_by(table.c.updated_at_ms, table.c.entity_id)
+        if limit is not None:
+            query = query.limit(int(limit))
+        async with self._async_conn() as conn:
+            rows = (await conn.execute(query)).mappings().all()
+        return [dict(row) for row in rows]
+
+    async def stage1_projection_delete_async(
+        self, *, namespace: str, entity_kind: str, entity_id: str
+    ) -> None:
+        if entity_kind not in {"node", "edge"}:
+            raise ValueError(f"unsupported Stage-1 entity kind: {entity_kind!r}")
+        async with self._async_conn() as conn:
+            await conn.execute(sa.delete(self.stage1_projections).where(
+                self.stage1_projections.c.namespace == str(namespace),
+                self.stage1_projections.c.entity_kind == entity_kind,
+                self.stage1_projections.c.entity_id == str(entity_id),
+            ))
+
     def _ensure_schema_sync(self, conn: sa.Connection) -> None:
         conn.execute(sa.text("CREATE EXTENSION IF NOT EXISTS vector"))
         if self.schema and self.schema != "public":
             conn.execute(sa.text(f'CREATE SCHEMA IF NOT EXISTS "{self.schema}"'))
         self._md.create_all(conn)
+        self._validate_vector_column_dimensions_sync(conn)
+        conn.execute(
+            sa.text(
+                f'CREATE INDEX IF NOT EXISTS "idx_{self.stage1_table_name}_namespace_status" '
+                f'ON "{self.schema}"."{self.stage1_table_name}" '
+                "(namespace, materialization_status, updated_at_ms)"
+            )
+        )
 
         # Optional-but-useful vector indexes. We default to HNSW because it's
         # generally strong out of the box and doesn't require ANALYZE/training.
@@ -952,6 +1293,60 @@ class PgVectorBackend:
                     f'CREATE INDEX IF NOT EXISTS "{idx}" ON "{self.schema}"."{tbl}" '
                     f"USING hnsw (embedding {ops})"
                 )
+            )
+
+    def _validate_vector_column_dimensions_sync(self, conn: sa.Connection) -> None:
+        """Reject stale ``vector(N)`` columns before any graph write can occur.
+
+        SQLAlchemy's ``create_all`` is intentionally additive. It cannot alter an
+        existing pgvector typmod, so reopening a database with a new embedding
+        model would otherwise fail later during an opaque provider/graph write.
+        ``format_type`` keeps this independent of PostgreSQL's internal typmod
+        embedding.
+        """
+        table_names = (
+            self.nodes.name,
+            self.edges.name,
+            self.documents.name,
+            self.domains.name,
+        )
+        rows = conn.execute(
+            sa.text(
+                """
+                SELECT c.relname AS table_name,
+                       a.attname AS column_name,
+                       format_type(a.atttypid, a.atttypmod) AS type_name
+                  FROM pg_catalog.pg_attribute AS a
+                  JOIN pg_catalog.pg_class AS c ON c.oid = a.attrelid
+                  JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
+                 WHERE n.nspname = :schema
+                   AND c.relname IN :table_names
+                   AND c.relkind IN ('r', 'p')
+                   AND a.attname = 'embedding'
+                   AND a.attnum > 0
+                   AND NOT a.attisdropped
+                """
+            ).bindparams(sa.bindparam("table_names", expanding=True)),
+            {"schema": self.schema, "table_names": list(table_names)},
+        ).mappings().all()
+        mismatches: list[PgVectorColumnDimension] = []
+        for row in rows:
+            type_name = str(row["type_name"])
+            dimension = _parse_vector_dimension(type_name)
+            if dimension != self.embedding_dim:
+                mismatches.append(
+                    PgVectorColumnDimension(
+                        table_name=str(row["table_name"]),
+                        column_name=str(row["column_name"]),
+                        type_name=type_name,
+                        dimension=dimension,
+                    )
+                )
+        if mismatches:
+            raise PgVectorSchemaMismatchError(
+                schema=self.schema,
+                expected_dimension=self.embedding_dim,
+                mismatches=mismatches,
             )
 
     async def _ensure_schema_async(self) -> None:
@@ -1195,6 +1590,14 @@ class PgVectorBackend:
 
         async with self._async_conn() as conn:
             await conn.execute(stmt)
+
+    async def async_node_upsert(self, **kwargs: Any) -> None:
+        """Public async semantic write used by single-stage admission."""
+        await self._upsert_async(self.nodes, **kwargs)
+
+    async def async_edge_upsert(self, **kwargs: Any) -> None:
+        """Public async semantic write used by single-stage admission."""
+        await self._upsert_async(self.edges, **kwargs)
 
     def _query_vector(
         self,
@@ -2234,6 +2637,7 @@ def build_postgres_backend(
         schema=cfg.schema,
         nodes_table=cfg.nodes_table,
         edges_table=cfg.edges_table,
+        stage1_table=cfg.stage1_table,
         documents_table=cfg.documents_table,
         domains_table=cfg.domains_table,
         edge_endpoints_table=cfg.edge_endpoints_table,
@@ -2267,6 +2671,7 @@ def build_async_postgres_backend(
         schema=cfg.schema,
         nodes_table=cfg.nodes_table,
         edges_table=cfg.edges_table,
+        stage1_table=cfg.stage1_table,
         documents_table=cfg.documents_table,
         domains_table=cfg.domains_table,
         edge_endpoints_table=cfg.edge_endpoints_table,

@@ -102,6 +102,35 @@ def test_login_rejects_redirect_override_outside_dev(client):
     )
 
 
+def test_login_accepts_allowlisted_return_to_in_oidc(client, monkeypatch):
+    app.state.auth_mode = "oidc"
+    monkeypatch.setenv("AUTH_ALLOWED_RETURN_URLS", "https://chat.example.local/")
+    app.state.oidc_clients["test"].get_auth_url = AsyncMock(
+        return_value="https://example.com/auth"
+    )
+
+    response = client.get(
+        "/api/auth/login?return_to=https://chat.example.local/",
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 307
+    assert response.cookies["auth_return_to"].strip('"') == "https://chat.example.local/"
+
+
+def test_login_rejects_unallowlisted_return_to_in_oidc(client, monkeypatch):
+    app.state.auth_mode = "oidc"
+    monkeypatch.setenv("AUTH_ALLOWED_RETURN_URLS", "https://chat.example.local/")
+
+    response = client.get(
+        "/api/auth/login?return_to=https://attacker.example.local/",
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "return_to target is not allowed"
+
+
 def test_dev_token_accepts_comma_separated_namespaces(client):
     response = client.post(
         "/auth/dev-token",
@@ -188,6 +217,7 @@ def test_callback_success_redirects_with_token(client, monkeypatch):
     client.cookies.set("auth_pkce_verifier", "verifier-123")
     client.cookies.set("auth_nonce", "nonce-123")
     client.cookies.set("auth_provider", "test")
+    client.cookies.set("auth_return_to", "https://ui.example.local/")
     response = client.get(
         "/api/auth/callback?code=abc&state=state-123", follow_redirects=False
     )

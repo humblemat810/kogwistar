@@ -730,7 +730,7 @@ def get_messages(image_file_path):
     # Base64-encode the binary data.
     encoded_bytes = base64.b64encode(image_bytes)
 
-    # Convert the encoded bytes to a UTF-8 string (optional, if you need a string representation)
+    # Convert the encoded bytes to a UTF-8 string (optional, if you need a string embedding)
     encoded_str = encoded_bytes.decode("utf-8")
 
     # Print the Base64-encoded string.

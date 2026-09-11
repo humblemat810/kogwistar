@@ -14,18 +14,18 @@ use kogwistar_runtime::{
     transition_digest, worker_effect_digest,
 };
 use kogwistar_store::{
-    AppendedEvent, AuthIdentityStore, AuthUser, EntityEvent, EntityRebuildRequest,
-    EntityRecoveryReport, EntityRecoveryRequest, EventPruneStore, EventReadStore, EventWriteStore,
-    ExternalIdentity, IndexJob, IndexJobReadStore, IndexJobWriteStore, LaneMessageFilter,
-    LaneMessageReadStore, LaneMessageWriteStore, NamedProjection, NamedProjectionWrite,
-    NewEntityEvent, NewIndexJob, NewProjectedLaneMessage, ProjectedLaneMessage,
-    ProjectionReadStore, ProjectionWriteStore, RUNTIME_CURRENT_STATE_NAMESPACE, ReplayCursor,
-    ResolveExternalIdentity, ServerRun, ServerRunCreate, ServerRunEvent, ServerRunReadStore,
-    ServerRunUpdate, ServerRunWriteStore, StoreError, StoreResult, WorkflowDesignDelta,
-    WorkflowDesignDeltaWrite, WorkflowDesignHistoryReadStore, WorkflowDesignHistoryWriteStore,
-    WorkflowDesignSnapshot, WorkflowDesignSnapshotWrite, runtime_checkpoint_namespace,
-    runtime_projection_write, runtime_status_namespace, validate_entity_rebuild_request,
-    validate_entity_recovery_request,
+    AcceptedIndexJobResult, AppendedEvent, AuthIdentityStore, AuthUser, EntityEvent,
+    EntityRebuildRequest, EntityRecoveryReport, EntityRecoveryRequest, EventPruneStore,
+    EventReadStore, EventWriteStore, ExternalIdentity, IndexJob, IndexJobReadStore,
+    IndexJobWriteStore, LaneMessageFilter, LaneMessageReadStore, LaneMessageWriteStore,
+    NamedProjection, NamedProjectionWrite, NewEntityEvent, NewIndexJob, NewProjectedLaneMessage,
+    ProjectedLaneMessage, ProjectionReadStore, ProjectionWriteStore,
+    RUNTIME_CURRENT_STATE_NAMESPACE, ReplayCursor, ResolveExternalIdentity, ServerRun,
+    ServerRunCreate, ServerRunEvent, ServerRunReadStore, ServerRunUpdate, ServerRunWriteStore,
+    StoreError, StoreResult, WorkflowDesignDelta, WorkflowDesignDeltaWrite,
+    WorkflowDesignHistoryReadStore, WorkflowDesignHistoryWriteStore, WorkflowDesignSnapshot,
+    WorkflowDesignSnapshotWrite, runtime_checkpoint_namespace, runtime_projection_write,
+    runtime_status_namespace, validate_entity_rebuild_request, validate_entity_recovery_request,
 };
 use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 use serde_json::{Map, Value};
@@ -95,6 +95,18 @@ pub struct NewRawEntityEvent {
     pub entity_id: String,
     pub op: String,
     pub payload_json: String,
+}
+
+/// An event imported from a portable archive with authoritative identity.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RestoredRawEntityEvent {
+    pub seq: i64,
+    pub event_id: String,
+    pub entity_kind: String,
+    pub entity_id: String,
+    pub op: String,
+    pub payload_json: String,
+    pub created_at: i64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -432,6 +444,14 @@ impl SqliteStore {
         self.immediate_transaction(|uow| uow.append_raw_entity_event(namespace, event))
     }
 
+    pub fn append_restored_raw_entity_event(
+        &self,
+        namespace: &str,
+        event: RestoredRawEntityEvent,
+    ) -> SqliteStoreResult<AppendedRawEvent> {
+        self.immediate_transaction(|uow| uow.append_restored_raw_entity_event(namespace, event))
+    }
+
     /// Raw replay is exclusive of `after_seq`, preserving stored JSON text.
     pub fn replay_raw_events(
         &self,
@@ -554,6 +574,40 @@ impl SqliteStore {
         namespace: &str,
     ) -> SqliteStoreResult<Vec<NamedProjection>> {
         self.with_connection(|conn| named_projections(conn, namespace))
+    }
+
+    pub fn get_stage1_node_projection(
+        &self,
+        namespace: &str,
+        key: &str,
+    ) -> SqliteStoreResult<Option<NamedProjection>> {
+        self.with_connection(|conn| stage1_node_projection(conn, namespace, key))
+    }
+
+    pub fn list_stage1_node_projections(
+        &self,
+        namespace: &str,
+    ) -> SqliteStoreResult<Vec<NamedProjection>> {
+        self.with_connection(|conn| stage1_node_projections(conn, namespace))
+    }
+
+    pub fn replace_stage1_node_projection(
+        &self,
+        namespace: &str,
+        key: &str,
+        projection: NamedProjectionWrite,
+    ) -> SqliteStoreResult<()> {
+        self.immediate_transaction(|uow| {
+            uow.replace_stage1_node_projection(namespace, key, projection)
+        })
+    }
+
+    pub fn clear_stage1_node_projection(
+        &self,
+        namespace: &str,
+        key: &str,
+    ) -> SqliteStoreResult<()> {
+        self.immediate_transaction(|uow| uow.clear_stage1_node_projection(namespace, key))
     }
 
     pub fn replace_named_projection(
@@ -884,6 +938,23 @@ impl SqliteStore {
         claim_token: Option<&str>,
     ) -> SqliteStoreResult<bool> {
         self.immediate_transaction(|uow| uow.mark_index_job_done(job_id, claim_token))
+    }
+    pub fn accept_index_job_result(
+        &self,
+        job_id: &str,
+        claim_token: &str,
+        result_json: &str,
+        result_sha256: &str,
+    ) -> SqliteStoreResult<AcceptedIndexJobResult> {
+        self.immediate_transaction(|uow| {
+            uow.accept_index_job_result(job_id, claim_token, result_json, result_sha256)
+        })
+    }
+    pub fn index_job_result(
+        &self,
+        job_id: &str,
+    ) -> SqliteStoreResult<Option<AcceptedIndexJobResult>> {
+        self.with_connection(|conn| index_job_result(conn, job_id))
     }
     pub fn mark_index_job_failed(
         &self,
@@ -1245,6 +1316,21 @@ impl SqliteUnitOfWork<'_> {
     ) -> SqliteStoreResult<bool> {
         mark_index_job_done(self.transaction, job_id, claim_token)
     }
+    pub fn accept_index_job_result(
+        &mut self,
+        job_id: &str,
+        claim_token: &str,
+        result_json: &str,
+        result_sha256: &str,
+    ) -> SqliteStoreResult<AcceptedIndexJobResult> {
+        accept_index_job_result(
+            self.transaction,
+            job_id,
+            claim_token,
+            result_json,
+            result_sha256,
+        )
+    }
     pub fn mark_index_job_failed(
         &mut self,
         job_id: &str,
@@ -1360,6 +1446,14 @@ impl SqliteUnitOfWork<'_> {
         append_raw_entity_event(self.transaction, namespace, event)
     }
 
+    pub fn append_restored_raw_entity_event(
+        &mut self,
+        namespace: &str,
+        event: RestoredRawEntityEvent,
+    ) -> SqliteStoreResult<AppendedRawEvent> {
+        append_restored_raw_entity_event(self.transaction, namespace, event)
+    }
+
     pub fn replay_raw_events(
         &self,
         namespace: &str,
@@ -1430,6 +1524,15 @@ impl SqliteUnitOfWork<'_> {
         replace_named_projection(self.transaction, namespace, key, projection)
     }
 
+    pub fn replace_stage1_node_projection(
+        &mut self,
+        namespace: &str,
+        key: &str,
+        projection: NamedProjectionWrite,
+    ) -> SqliteStoreResult<()> {
+        replace_stage1_node_projection(self.transaction, namespace, key, projection)
+    }
+
     pub fn get_named_projection(
         &mut self,
         namespace: &str,
@@ -1458,6 +1561,14 @@ impl SqliteUnitOfWork<'_> {
 
     pub fn clear_named_projection(&mut self, namespace: &str, key: &str) -> SqliteStoreResult<()> {
         clear_named_projection(self.transaction, namespace, key)
+    }
+
+    pub fn clear_stage1_node_projection(
+        &mut self,
+        namespace: &str,
+        key: &str,
+    ) -> SqliteStoreResult<()> {
+        clear_stage1_node_projection(self.transaction, namespace, key)
     }
 
     pub fn clear_projection_namespace(&mut self, namespace: &str) -> SqliteStoreResult<()> {
@@ -1641,6 +1752,19 @@ impl IndexJobWriteStore for SqliteStore {
         claim_token: Option<&str>,
     ) -> StoreResult<bool> {
         SqliteStore::mark_index_job_done(self, job_id, claim_token).map_err(trait_error)
+    }
+    async fn accept_index_job_result(
+        &self,
+        job_id: &str,
+        claim_token: &str,
+        result_json: &str,
+        result_sha256: &str,
+    ) -> StoreResult<AcceptedIndexJobResult> {
+        SqliteStore::accept_index_job_result(self, job_id, claim_token, result_json, result_sha256)
+            .map_err(trait_error)
+    }
+    async fn index_job_result(&self, job_id: &str) -> StoreResult<Option<AcceptedIndexJobResult>> {
+        SqliteStore::index_job_result(self, job_id).map_err(trait_error)
     }
     async fn mark_index_job_failed(
         &self,
@@ -1997,6 +2121,19 @@ fn initialize_schema(conn: &Connection) -> SqliteStoreResult<()> {
         );
         CREATE INDEX IF NOT EXISTS idx_named_projections_namespace
         ON named_projections(namespace, updated_at_ms);
+        CREATE TABLE IF NOT EXISTS stage1_node_projections (
+            namespace TEXT NOT NULL,
+            key TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            last_authoritative_seq INTEGER NOT NULL,
+            last_materialized_seq INTEGER NOT NULL,
+            projection_schema_version INTEGER NOT NULL,
+            materialization_status TEXT NOT NULL,
+            updated_at_ms INTEGER NOT NULL,
+            PRIMARY KEY(namespace, key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_stage1_node_projections_namespace
+        ON stage1_node_projections(namespace, updated_at_ms);
         CREATE TABLE IF NOT EXISTS workflow_design_snapshots (
             workflow_id TEXT NOT NULL,
             version INTEGER NOT NULL,
@@ -2062,7 +2199,10 @@ fn initialize_schema(conn: &Connection) -> SqliteStoreResult<()> {
             payload_json TEXT,
             created_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL,
-            claim_token TEXT
+            claim_token TEXT,
+            accepted_result_json TEXT,
+            accepted_result_sha256 TEXT,
+            accepted_at INTEGER
         );
         CREATE TABLE IF NOT EXISTS index_applied_state (
             namespace TEXT NOT NULL DEFAULT 'default',
@@ -2129,6 +2269,30 @@ fn initialize_schema(conn: &Connection) -> SqliteStoreResult<()> {
         .any(|column| column == "claim_token")
     {
         conn.execute("ALTER TABLE index_jobs ADD COLUMN claim_token TEXT", [])?;
+    }
+    if !index_job_columns
+        .iter()
+        .any(|column| column == "accepted_result_json")
+    {
+        conn.execute(
+            "ALTER TABLE index_jobs ADD COLUMN accepted_result_json TEXT",
+            [],
+        )?;
+    }
+    if !index_job_columns
+        .iter()
+        .any(|column| column == "accepted_result_sha256")
+    {
+        conn.execute(
+            "ALTER TABLE index_jobs ADD COLUMN accepted_result_sha256 TEXT",
+            [],
+        )?;
+    }
+    if !index_job_columns
+        .iter()
+        .any(|column| column == "accepted_at")
+    {
+        conn.execute("ALTER TABLE index_jobs ADD COLUMN accepted_at INTEGER", [])?;
     }
     let lane_columns = conn
         .prepare("PRAGMA table_info(projected_lane_messages)")?
@@ -2225,7 +2389,7 @@ fn claim_index_jobs(
         ""
     };
     let sql = format!(
-        "WITH candidates AS (SELECT job_id FROM index_jobs WHERE ((status='PENDING' AND (next_run_at IS NULL OR next_run_at <= ?1)) OR (status='DOING' AND lease_until IS NOT NULL AND lease_until < ?1)) {namespace_sql} ORDER BY created_at ASC,job_id ASC LIMIT ?2) UPDATE index_jobs SET status='DOING',lease_until=?4,claim_token=?5,updated_at=?1 WHERE job_id IN (SELECT job_id FROM candidates) RETURNING job_id,namespace,entity_kind,entity_id,index_kind,coalesce_key,op,status,lease_until,next_run_at,max_retries,retry_count,last_error,payload_json,created_at,updated_at,claim_token"
+        "WITH candidates AS (SELECT job_id FROM index_jobs WHERE ((status='PENDING' AND (next_run_at IS NULL OR next_run_at <= ?1)) OR (status='DOING' AND lease_until IS NOT NULL AND lease_until < ?1)) {namespace_sql} ORDER BY created_at ASC,job_id ASC LIMIT ?2) UPDATE index_jobs SET status='DOING',lease_until=?4,claim_token=?5,updated_at=?1 WHERE job_id IN (SELECT job_id FROM candidates) RETURNING job_id,namespace,entity_kind,entity_id,index_kind,coalesce_key,op,status,lease_until,next_run_at,max_retries,retry_count,last_error,payload_json,created_at,updated_at,claim_token,accepted_result_json,accepted_result_sha256,accepted_at"
     );
     let mut statement = conn.prepare(&sql)?;
     let rows = if let Some(namespace) = namespace {
@@ -2260,6 +2424,57 @@ fn mark_index_job_done(
     claim_token: Option<&str>,
 ) -> SqliteStoreResult<bool> {
     Ok(conn.execute("UPDATE index_jobs SET status='DONE',lease_until=NULL,claim_token=NULL,updated_at=?1 WHERE job_id=?2 AND status='DOING' AND (?3 IS NULL OR claim_token=?3)", params![unix_epoch_seconds(), job_id, claim_token])? != 0)
+}
+fn index_job_result(
+    conn: &Connection,
+    job_id: &str,
+) -> SqliteStoreResult<Option<AcceptedIndexJobResult>> {
+    conn.query_row(
+        "SELECT accepted_result_json, accepted_result_sha256, accepted_at FROM index_jobs WHERE job_id=?1",
+        [job_id],
+        |row| {
+            Ok(AcceptedIndexJobResult {
+                status: "existing".to_owned(),
+                result_json: row.get(0)?,
+                result_sha256: row.get(1)?,
+                accepted_at: row.get::<_, Option<i64>>(2)?.map(serde_json::Value::from),
+            })
+        },
+    )
+    .optional()
+    .map_err(Into::into)
+}
+fn accept_index_job_result(
+    conn: &Connection,
+    job_id: &str,
+    claim_token: &str,
+    result_json: &str,
+    result_sha256: &str,
+) -> SqliteStoreResult<AcceptedIndexJobResult> {
+    if let Some(existing) = index_job_result(conn, job_id)?
+        && existing.result_json.is_some()
+    {
+        return Ok(existing);
+    }
+    let now = unix_epoch_seconds();
+    let changed = conn.execute(
+        "UPDATE index_jobs SET accepted_result_json=?1, accepted_result_sha256=?2, accepted_at=?3 WHERE job_id=?4 AND status='DOING' AND claim_token=?5 AND (lease_until IS NULL OR lease_until>=?3) AND accepted_result_json IS NULL",
+        params![result_json, result_sha256, now, job_id, claim_token],
+    )?;
+    if changed == 0 {
+        return Ok(AcceptedIndexJobResult {
+            status: "rejected".to_owned(),
+            result_json: None,
+            result_sha256: None,
+            accepted_at: None,
+        });
+    }
+    Ok(AcceptedIndexJobResult {
+        status: "accepted".to_owned(),
+        result_json: Some(result_json.to_owned()),
+        result_sha256: Some(result_sha256.to_owned()),
+        accepted_at: Some(serde_json::Value::from(now)),
+    })
 }
 fn mark_index_job_failed(
     conn: &Connection,
@@ -2316,7 +2531,7 @@ fn list_index_jobs(
     index_kind: Option<&str>,
     limit: usize,
 ) -> SqliteStoreResult<Vec<IndexJob>> {
-    let query = "SELECT job_id,namespace,entity_kind,entity_id,index_kind,coalesce_key,op,status,lease_until,next_run_at,max_retries,retry_count,last_error,payload_json,created_at,updated_at,claim_token FROM index_jobs WHERE (?1 IS NULL OR namespace=?1) AND (?2 IS NULL OR status=?2) AND (?3 IS NULL OR entity_kind=?3) AND (?4 IS NULL OR entity_id=?4) AND (?5 IS NULL OR index_kind=?5) ORDER BY created_at ASC,job_id ASC LIMIT ?6";
+    let query = "SELECT job_id,namespace,entity_kind,entity_id,index_kind,coalesce_key,op,status,lease_until,next_run_at,max_retries,retry_count,last_error,payload_json,created_at,updated_at,claim_token,accepted_result_json,accepted_result_sha256,accepted_at FROM index_jobs WHERE (?1 IS NULL OR namespace=?1) AND (?2 IS NULL OR status=?2) AND (?3 IS NULL OR entity_kind=?3) AND (?4 IS NULL OR entity_id=?4) AND (?5 IS NULL OR index_kind=?5) ORDER BY created_at ASC,job_id ASC LIMIT ?6";
     let mut statement = conn.prepare(query)?;
     let rows = statement.query_map(
         params![
@@ -2351,6 +2566,9 @@ fn index_job_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<IndexJob> {
         updated_at: serde_json::Value::from(row.get::<_, i64>(15)?),
         claim_token: row.get(16)?,
         claim_attempts: 0,
+        accepted_result_json: row.get(17)?,
+        accepted_result_sha256: row.get(18)?,
+        accepted_at: row.get::<_, Option<i64>>(19)?.map(serde_json::Value::from),
     })
 }
 fn require_queue_namespace(namespace: &str) -> SqliteStoreResult<()> {
@@ -2686,6 +2904,35 @@ fn named_projections(
         .map_err(Into::into)
 }
 
+const STAGE1_NODE_PROJECTIONS_TABLE: &str = "stage1_node_projections";
+
+fn stage1_node_projection(
+    conn: &Connection,
+    namespace: &str,
+    key: &str,
+) -> SqliteStoreResult<Option<NamedProjection>> {
+    conn.query_row(
+        &format!("SELECT namespace, key, payload_json, last_authoritative_seq, last_materialized_seq, projection_schema_version, materialization_status, updated_at_ms FROM {STAGE1_NODE_PROJECTIONS_TABLE} WHERE namespace = ?1 AND key = ?2"),
+        params![namespace, key],
+        projection_from_row,
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+fn stage1_node_projections(
+    conn: &Connection,
+    namespace: &str,
+) -> SqliteStoreResult<Vec<NamedProjection>> {
+    let mut statement = conn.prepare(&format!(
+        "SELECT namespace, key, payload_json, last_authoritative_seq, last_materialized_seq, projection_schema_version, materialization_status, updated_at_ms FROM {STAGE1_NODE_PROJECTIONS_TABLE} WHERE namespace = ?1 ORDER BY key ASC"
+    ))?;
+    statement
+        .query_map([namespace], projection_from_row)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(Into::into)
+}
+
 fn replace_named_projection(
     conn: &Connection,
     namespace: &str,
@@ -2695,6 +2942,20 @@ fn replace_named_projection(
     let payload_json = projection_payload_json(&projection.payload)?;
     conn.execute(
         "INSERT INTO named_projections(namespace, key, payload_json, last_authoritative_seq, last_materialized_seq, projection_schema_version, materialization_status, updated_at_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) ON CONFLICT(namespace, key) DO UPDATE SET payload_json = excluded.payload_json, last_authoritative_seq = excluded.last_authoritative_seq, last_materialized_seq = excluded.last_materialized_seq, projection_schema_version = excluded.projection_schema_version, materialization_status = excluded.materialization_status, updated_at_ms = excluded.updated_at_ms",
+        params![namespace, key, payload_json, projection.last_authoritative_seq, projection.last_materialized_seq, projection.projection_schema_version, projection.materialization_status, unix_epoch_millis()],
+    )?;
+    Ok(())
+}
+
+fn replace_stage1_node_projection(
+    conn: &Connection,
+    namespace: &str,
+    key: &str,
+    projection: NamedProjectionWrite,
+) -> SqliteStoreResult<()> {
+    let payload_json = projection_payload_json(&projection.payload)?;
+    conn.execute(
+        &format!("INSERT INTO {STAGE1_NODE_PROJECTIONS_TABLE}(namespace, key, payload_json, last_authoritative_seq, last_materialized_seq, projection_schema_version, materialization_status, updated_at_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) ON CONFLICT(namespace, key) DO UPDATE SET payload_json = excluded.payload_json, last_authoritative_seq = excluded.last_authoritative_seq, last_materialized_seq = excluded.last_materialized_seq, projection_schema_version = excluded.projection_schema_version, materialization_status = excluded.materialization_status, updated_at_ms = excluded.updated_at_ms"),
         params![namespace, key, payload_json, projection.last_authoritative_seq, projection.last_materialized_seq, projection.projection_schema_version, projection.materialization_status, unix_epoch_millis()],
     )?;
     Ok(())
@@ -2727,6 +2988,18 @@ fn compare_and_swap_named_projection(
 fn clear_named_projection(conn: &Connection, namespace: &str, key: &str) -> SqliteStoreResult<()> {
     conn.execute(
         "DELETE FROM named_projections WHERE namespace = ?1 AND key = ?2",
+        params![namespace, key],
+    )?;
+    Ok(())
+}
+
+fn clear_stage1_node_projection(
+    conn: &Connection,
+    namespace: &str,
+    key: &str,
+) -> SqliteStoreResult<()> {
+    conn.execute(
+        &format!("DELETE FROM {STAGE1_NODE_PROJECTIONS_TABLE} WHERE namespace = ?1 AND key = ?2"),
         params![namespace, key],
     )?;
     Ok(())
@@ -2808,6 +3081,87 @@ fn append_raw_entity_event(
             stored.payload_json,
             stored.created_at,
         ],
+    )?;
+    Ok(AppendedRawEvent {
+        event: stored,
+        inserted: true,
+    })
+}
+
+fn append_restored_raw_entity_event(
+    conn: &Connection,
+    namespace: &str,
+    event: RestoredRawEntityEvent,
+) -> SqliteStoreResult<AppendedRawEvent> {
+    if namespace.is_empty() {
+        return Err(SqliteStoreError::EmptyNamespace);
+    }
+    if event.seq < 1 {
+        return Err(SqliteStoreError::NegativeSequenceValue { value: event.seq });
+    }
+    serde_json::from_str::<Value>(&event.payload_json)?;
+    if let Some(existing) = event_by_id(conn, &event.event_id)? {
+        if existing.namespace != namespace {
+            return Err(SqliteStoreError::EventIdNamespaceCollision {
+                event_id: event.event_id,
+                existing_namespace: existing.namespace,
+                requested_namespace: namespace.to_owned(),
+            });
+        }
+        let same = existing.seq == event.seq
+            && existing.entity_kind == event.entity_kind
+            && existing.entity_id == event.entity_id
+            && existing.op == event.op
+            && existing.payload_json == event.payload_json
+            && existing.created_at == event.created_at;
+        if !same {
+            return Err(SqliteStoreError::TransactionAborted(format!(
+                "restored event_id {:?} conflicts with stored event",
+                event.event_id
+            )));
+        }
+        return Ok(AppendedRawEvent {
+            event: existing,
+            inserted: false,
+        });
+    }
+    let latest = latest_retained_event_seq(conn, namespace)?;
+    if event.seq != latest + 1 {
+        return Err(SqliteStoreError::TransactionAborted(format!(
+            "restored event sequence for {:?} must be {}, got {}",
+            namespace,
+            latest + 1,
+            event.seq
+        )));
+    }
+    let stored = RawEntityEvent {
+        namespace: namespace.to_owned(),
+        seq: event.seq,
+        event_id: event.event_id,
+        entity_kind: event.entity_kind,
+        entity_id: event.entity_id,
+        op: event.op,
+        payload_json: event.payload_json,
+        created_at: event.created_at,
+    };
+    conn.execute(
+        "INSERT INTO entity_events(namespace, seq, event_id, entity_kind, entity_id, op, payload_json, created_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            stored.namespace,
+            stored.seq,
+            stored.event_id,
+            stored.entity_kind,
+            stored.entity_id,
+            stored.op,
+            stored.payload_json,
+            stored.created_at,
+        ],
+    )?;
+    conn.execute(
+        "INSERT INTO namespace_seq(namespace, next_seq) VALUES (?1, ?2) \
+         ON CONFLICT(namespace) DO UPDATE SET next_seq = excluded.next_seq",
+        params![namespace, event.seq + 1],
     )?;
     Ok(AppendedRawEvent {
         event: stored,
@@ -4178,6 +4532,99 @@ mod tests {
         (SqliteStore::open(&path).unwrap(), path)
     }
 
+    #[test]
+    fn restored_raw_event_preserves_identity_and_is_idempotent() {
+        let (store, path) = store("restored-raw-event");
+        let event = RestoredRawEntityEvent {
+            seq: 1,
+            event_id: "archive-event".to_owned(),
+            entity_kind: "node".to_owned(),
+            entity_id: "node-1".to_owned(),
+            op: "UPSERT".to_owned(),
+            payload_json: "{\"value\":1}".to_owned(),
+            created_at: 123,
+        };
+        assert!(
+            store
+                .append_restored_raw_entity_event("archive", event.clone())
+                .unwrap()
+                .inserted
+        );
+        assert!(
+            !store
+                .append_restored_raw_entity_event("archive", event.clone())
+                .unwrap()
+                .inserted
+        );
+        assert_eq!(
+            store.replay_raw_events("archive", 0, 10).unwrap()[0].created_at,
+            123
+        );
+        assert!(
+            store
+                .append_restored_raw_entity_event(
+                    "archive",
+                    RestoredRawEntityEvent { seq: 3, ..event },
+                )
+                .is_err()
+        );
+        drop(store);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn stage1_node_projection_isolated_crud() {
+        let (store, path) = store("stage1-crud");
+        let projection = NamedProjectionWrite {
+            payload: serde_json::json!({
+                "id": "node-1",
+                "metadata": {"kind": "person"}
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+            last_authoritative_seq: 7,
+            last_materialized_seq: 7,
+            projection_schema_version: 1,
+            materialization_status: "pending".to_owned(),
+        };
+        store
+            .replace_stage1_node_projection("tenant-a", "node-1", projection)
+            .unwrap();
+        assert_eq!(
+            store
+                .get_stage1_node_projection("tenant-a", "node-1")
+                .unwrap()
+                .unwrap()
+                .payload["metadata"]["kind"],
+            "person"
+        );
+        assert_eq!(
+            store
+                .list_stage1_node_projections("tenant-a")
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(
+            store
+                .get_named_projection("tenant-a", "node-1")
+                .unwrap()
+                .is_none()
+        );
+        store
+            .clear_stage1_node_projection("tenant-a", "node-1")
+            .unwrap();
+        assert!(
+            store
+                .get_stage1_node_projection("tenant-a", "node-1")
+                .unwrap()
+                .is_none()
+        );
+        drop(store);
+        fs::remove_file(path).unwrap();
+    }
+
     fn event(event_id: &str, entity_id: &str) -> NewEntityEvent {
         NewEntityEvent {
             event_id: event_id.to_owned(),
@@ -4628,6 +5075,7 @@ mod tests {
                 "server_run_events",
                 "server_runs",
                 "sqlite_sequence",
+                "stage1_node_projections",
                 "user_seq",
                 "workflow_design_snapshots",
                 "workflow_design_version_deltas",
@@ -5221,6 +5669,43 @@ mod tests {
         issued.sort_unstable();
         assert_eq!(issued, [2, 3, 4, 5, 6, 7]);
         drop(reopened);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn accepted_index_job_result_is_first_live_claim_wins() {
+        let (store, path) = store("accepted-result");
+        store
+            .enqueue_index_job(NewIndexJob {
+                job_id: "candidate-job".to_owned(),
+                namespace: "maintenance".to_owned(),
+                entity_kind: "maintenance".to_owned(),
+                entity_id: "doc-1".to_owned(),
+                index_kind: "parse".to_owned(),
+                op: "UPSERT".to_owned(),
+                payload_json: Some("{}".to_owned()),
+                max_retries: 3,
+            })
+            .unwrap();
+        let claim = store
+            .claim_index_jobs(1, 30, Some("maintenance"))
+            .unwrap()
+            .remove(0);
+        let accepted = store
+            .accept_index_job_result(
+                &claim.job_id,
+                claim.claim_token.as_deref().unwrap(),
+                "{\"winner\":1}",
+                "digest-1",
+            )
+            .unwrap();
+        assert_eq!(accepted.status, "accepted");
+        let existing = store
+            .accept_index_job_result(&claim.job_id, "stale-worker", "{\"winner\":2}", "digest-2")
+            .unwrap();
+        assert_eq!(existing.status, "existing");
+        assert_eq!(existing.result_json.as_deref(), Some("{\"winner\":1}"));
+        drop(store);
         fs::remove_file(path).unwrap();
     }
 }

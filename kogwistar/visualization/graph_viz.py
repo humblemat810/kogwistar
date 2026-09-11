@@ -505,6 +505,67 @@ def to_d3_force(
     }
 
 
+def to_sigma_hypergraph(
+    engine,
+    doc_id: Optional[str] = None,
+    insertion_method: Optional[str] = None,
+) -> Dict:
+    """Return the lossless raw hypergraph contract used by the Sigma viewer.
+
+    Unlike a D3 force projection, this payload keeps hyperedges as first-class
+    records with all four endpoint collections. Render modes are browser-side
+    projections of this raw model.
+    """
+
+    node_ids, edge_ids = _collect_ids(engine, doc_id, insertion_method)
+    node_map = _load_node_map(engine, node_ids)
+    edge_map = _load_edge_map(engine, edge_ids)
+
+    def _dump(value) -> dict:
+        if hasattr(value, "model_dump"):
+            return value.model_dump(exclude={"embedding"})
+        if isinstance(value, dict):
+            return dict(value)
+        raise TypeError(f"unsupported visualization value: {type(value)!r}")
+
+    raw_nodes = []
+    for node_id, node in node_map.items():
+        item = _dump(node)
+        item["id"] = node_id
+        item.setdefault("label", getattr(node, "label", node_id))
+        item.setdefault("properties", getattr(node, "properties", {}) or {})
+        raw_nodes.append(item)
+
+    raw_edges = []
+    for edge_id, edge in edge_map.items():
+        item = _dump(edge)
+        item.update(
+            {
+                "id": edge_id,
+                "relation": getattr(edge, "relation", None)
+                or getattr(edge, "label", None)
+                or "edge",
+                "source_ids": list(getattr(edge, "source_ids", None) or []),
+                "target_ids": list(getattr(edge, "target_ids", None) or []),
+                "source_edge_ids": list(
+                    getattr(edge, "source_edge_ids", None) or []
+                ),
+                "target_edge_ids": list(
+                    getattr(edge, "target_edge_ids", None) or []
+                ),
+                "properties": getattr(edge, "properties", {}) or {},
+            }
+        )
+        raw_edges.append(item)
+
+    return {
+        "raw_nodes": raw_nodes,
+        "raw_edges": raw_edges,
+        "mode": "raw-hypergraph",
+        "doc_id": doc_id,
+    }
+
+
 def to_cytoscape(
     engine,
     doc_id: Optional[str] = None,

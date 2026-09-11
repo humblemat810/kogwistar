@@ -637,7 +637,7 @@ def test_run_layer_shards_existing_boundaries_and_enables_xdist(
     assert command[command.index("-n") + 1] == "2"
     assert "--dist" in command
     bootstrap = Path(command[2])
-    assert bootstrap.name == "adr015_pytest_bootstrap.py"
+    assert bootstrap.name == "candidate_pytest_runner.py"
     source = bootstrap.read_text(encoding="utf-8")
     assert "pytest.main(args)" in source
     assert "console_main" not in source

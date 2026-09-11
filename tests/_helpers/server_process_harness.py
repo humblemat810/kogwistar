@@ -44,9 +44,12 @@ def start_cdc_bridge(
         "warning",
     ]
     log_buf: list[str] = []
+    env = os.environ.copy()
+    env["ANONYMIZED_TELEMETRY"] = "FALSE"
     proc = subprocess.Popen(
         cmd,
         cwd=str(Path(__file__).resolve().parents[2]),
+        env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
