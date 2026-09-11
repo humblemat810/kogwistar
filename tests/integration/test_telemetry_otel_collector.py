@@ -23,7 +23,6 @@ def test_otel_otlp_receiver_smoke() -> None:
     collector is not part of the normal unit-test process.
     """
     try:
-        from opentelemetry import trace
         from opentelemetry.sdk.trace import TracerProvider
         from opentelemetry.sdk.trace.export import BatchSpanProcessor
         from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter

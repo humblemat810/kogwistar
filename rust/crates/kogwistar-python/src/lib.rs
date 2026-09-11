@@ -1696,18 +1696,13 @@ fn sqlite_store_operation_json(
             claim_token,
             result_json,
             result_sha256,
-        } => Ok(accepted_index_job_result_json(store.accept_index_job_result(
-            &job_id,
-            &claim_token,
-            &result_json,
-            &result_sha256,
-        )?)),
-        SqliteStoreOperation::GetIndexJobResult { job_id } => Ok(
-            store
-                .index_job_result(&job_id)?
-                .map(accepted_index_job_result_json)
-                .unwrap_or(Value::Null),
-        ),
+        } => Ok(accepted_index_job_result_json(
+            store.accept_index_job_result(&job_id, &claim_token, &result_json, &result_sha256)?,
+        )),
+        SqliteStoreOperation::GetIndexJobResult { job_id } => Ok(store
+            .index_job_result(&job_id)?
+            .map(accepted_index_job_result_json)
+            .unwrap_or(Value::Null)),
         SqliteStoreOperation::MarkIndexJobFailed {
             job_id,
             error,
@@ -2251,15 +2246,14 @@ fn sqlite_batch_operation_json(
             claim_token,
             result_json,
             result_sha256,
-        } => Ok(accepted_index_job_result_json(uow.accept_index_job_result(
-            &job_id,
-            &claim_token,
-            &result_json,
-            &result_sha256,
-        )?)),
-        SqliteStoreOperation::GetIndexJobResult { .. } => Err(SqliteStoreError::TransactionAborted(
-            "get_index_job_result is not available inside a transaction".to_owned(),
+        } => Ok(accepted_index_job_result_json(
+            uow.accept_index_job_result(&job_id, &claim_token, &result_json, &result_sha256)?,
         )),
+        SqliteStoreOperation::GetIndexJobResult { .. } => {
+            Err(SqliteStoreError::TransactionAborted(
+                "get_index_job_result is not available inside a transaction".to_owned(),
+            ))
+        }
         SqliteStoreOperation::MarkIndexJobFailed {
             job_id,
             error,
@@ -4588,15 +4582,15 @@ async fn postgres_uow_operation_json(
             claim_token,
             result_json,
             result_sha256,
-        } => Ok(accepted_index_job_result_json(uow.accept_index_job_result(
-            &job_id,
-            &claim_token,
-            &result_json,
-            &result_sha256,
-        ).await?)),
-        PostgresStoreOperation::GetIndexJobResult { .. } => Err(PostgresStoreError::TransactionAborted(
-            "get_index_job_result is not available inside a transaction".to_owned(),
+        } => Ok(accepted_index_job_result_json(
+            uow.accept_index_job_result(&job_id, &claim_token, &result_json, &result_sha256)
+                .await?,
         )),
+        PostgresStoreOperation::GetIndexJobResult { .. } => {
+            Err(PostgresStoreError::TransactionAborted(
+                "get_index_job_result is not available inside a transaction".to_owned(),
+            ))
+        }
         PostgresStoreOperation::MarkIndexJobFailed {
             job_id,
             error,
@@ -5284,7 +5278,13 @@ fn validate_postgres_operation(value: &Value) -> Result<(), (&'static str, Strin
         ][..],
         "claim_index_jobs" => &["kind", "limit", "lease_seconds", "namespace"][..],
         "mark_index_job_done" => &["kind", "job_id", "claim_token"][..],
-        "accept_index_job_result" => &["kind", "job_id", "claim_token", "result_json", "result_sha256"][..],
+        "accept_index_job_result" => &[
+            "kind",
+            "job_id",
+            "claim_token",
+            "result_json",
+            "result_sha256",
+        ][..],
         "get_index_job_result" => &["kind", "job_id"][..],
         "mark_index_job_failed" => &["kind", "job_id", "error", "final", "claim_token"][..],
         "bump_retry_and_requeue" => &[

@@ -958,8 +958,14 @@ class InMemoryMetaStore(LaneMessageMetaStoreMixin):
                 existing = txn.state.named_projections.get((str(item["namespace"]), str(item["key"])))
                 ea, em = item.get("expected_last_authoritative_seq"), item.get("expected_last_materialized_seq")
                 if ea is None and em is None:
-                    if existing is not None: return False
-                elif existing is None or int(existing.get("last_authoritative_seq", -1)) != int(ea) or int(existing.get("last_materialized_seq", -1)) != int(em): return False
+                    if existing is not None:
+                        return False
+                elif (
+                    existing is None
+                    or int(existing.get("last_authoritative_seq", -1)) != int(ea)
+                    or int(existing.get("last_materialized_seq", -1)) != int(em)
+                ):
+                    return False
             for item in rows:
                 txn.state.named_projections[(str(item["namespace"]), str(item["key"]))] = {
                     "namespace": str(item["namespace"]), "key": str(item["key"]), "payload": copy.deepcopy(item["payload"]),

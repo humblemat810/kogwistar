@@ -16,13 +16,13 @@ use kogwistar_runtime::{
     transition_digest, worker_effect_digest,
 };
 use kogwistar_store::{
-    AcceptedIndexJobResult, AppendedEvent, AppliedGraphMutation, AuthIdentityStore, AuthUser, EntityEvent,
-    EntityRebuildRequest, EntityRecoveryReport, EntityRecoveryRequest, EventPruneStore,
-    EventReadStore, EventWriteStore, ExternalIdentity, GraphMutation, GraphMutationStore,
-    GraphProjectionRead, GraphProjectionVectorQuery, GraphRecord, IndexJob, IndexJobReadStore,
-    IndexJobWriteStore, LaneMessageFilter, LaneMessageReadStore, LaneMessageWriteStore,
-    NamedProjection, NamedProjectionWrite, NewEntityEvent, NewIndexJob, NewProjectedLaneMessage,
-    ProjectedLaneMessage, ProjectionReadStore, ProjectionWriteStore,
+    AcceptedIndexJobResult, AppendedEvent, AppliedGraphMutation, AuthIdentityStore, AuthUser,
+    EntityEvent, EntityRebuildRequest, EntityRecoveryReport, EntityRecoveryRequest,
+    EventPruneStore, EventReadStore, EventWriteStore, ExternalIdentity, GraphMutation,
+    GraphMutationStore, GraphProjectionRead, GraphProjectionVectorQuery, GraphRecord, IndexJob,
+    IndexJobReadStore, IndexJobWriteStore, LaneMessageFilter, LaneMessageReadStore,
+    LaneMessageWriteStore, NamedProjection, NamedProjectionWrite, NewEntityEvent, NewIndexJob,
+    NewProjectedLaneMessage, ProjectedLaneMessage, ProjectionReadStore, ProjectionWriteStore,
     RUNTIME_CURRENT_STATE_NAMESPACE, ReplayCursor, ResolveExternalIdentity, ServerRun,
     ServerRunCreate, ServerRunEvent, ServerRunReadStore, ServerRunUpdate, ServerRunWriteStore,
     StoreError, StoreResult, VectorMatch, WorkflowDesignDelta, WorkflowDesignDeltaWrite,
@@ -1273,11 +1273,18 @@ impl PostgresStore {
         let claim_token = claim_token.to_owned();
         let result_json = result_json.to_owned();
         let result_sha256 = result_sha256.to_owned();
-        self.transaction(move |uow| Box::pin(async move {
-            uow.accept_index_job_result(&job_id, &claim_token, &result_json, &result_sha256).await
-        })).await
+        self.transaction(move |uow| {
+            Box::pin(async move {
+                uow.accept_index_job_result(&job_id, &claim_token, &result_json, &result_sha256)
+                    .await
+            })
+        })
+        .await
     }
-    pub async fn index_job_result(&self, job_id: &str) -> PostgresStoreResult<Option<AcceptedIndexJobResult>> {
+    pub async fn index_job_result(
+        &self,
+        job_id: &str,
+    ) -> PostgresStoreResult<Option<AcceptedIndexJobResult>> {
         index_job_result(&**self.client().await?, &self.tables, job_id).await
     }
     pub async fn mark_index_job_failed(
@@ -1832,7 +1839,15 @@ impl PostgresUnitOfWork<'_> {
         result_json: &str,
         result_sha256: &str,
     ) -> PostgresStoreResult<AcceptedIndexJobResult> {
-        accept_index_job_result(&self.transaction, &self.tables, job_id, claim_token, result_json, result_sha256).await
+        accept_index_job_result(
+            &self.transaction,
+            &self.tables,
+            job_id,
+            claim_token,
+            result_json,
+            result_sha256,
+        )
+        .await
     }
     pub async fn mark_index_job_failed(
         &mut self,
@@ -2357,12 +2372,20 @@ impl IndexJobWriteStore for PostgresStore {
         result_json: &str,
         result_sha256: &str,
     ) -> StoreResult<AcceptedIndexJobResult> {
-        PostgresStore::accept_index_job_result(self, job_id, claim_token, result_json, result_sha256)
-            .await
-            .map_err(trait_error)
+        PostgresStore::accept_index_job_result(
+            self,
+            job_id,
+            claim_token,
+            result_json,
+            result_sha256,
+        )
+        .await
+        .map_err(trait_error)
     }
     async fn index_job_result(&self, job_id: &str) -> StoreResult<Option<AcceptedIndexJobResult>> {
-        PostgresStore::index_job_result(self, job_id).await.map_err(trait_error)
+        PostgresStore::index_job_result(self, job_id)
+            .await
+            .map_err(trait_error)
     }
     async fn mark_index_job_failed(
         &self,
@@ -5411,26 +5434,57 @@ where
 {
     Ok(client.execute(&format!("UPDATE {} SET status='DONE',lease_until=NULL,claim_token=NULL,updated_at=NOW() WHERE job_id=$1 AND status='DOING' AND ($2::TEXT IS NULL OR claim_token=$2)",tables.index_jobs), &[&job_id,&claim_token]).await.map_err(backend)?!=0)
 }
-async fn index_job_result<C>(client: &C, tables: &Tables, job_id: &str) -> PostgresStoreResult<Option<AcceptedIndexJobResult>>
-where C: GenericClient + Sync {
+async fn index_job_result<C>(
+    client: &C,
+    tables: &Tables,
+    job_id: &str,
+) -> PostgresStoreResult<Option<AcceptedIndexJobResult>>
+where
+    C: GenericClient + Sync,
+{
     let row = client.query_opt(&format!("SELECT accepted_result_json, accepted_result_sha256, accepted_at::TEXT FROM {} WHERE job_id=$1", tables.index_jobs), &[&job_id]).await.map_err(backend)?;
     Ok(row.map(|row| AcceptedIndexJobResult {
         status: "existing".to_owned(),
         result_json: row.get(0),
         result_sha256: row.get(1),
-        accepted_at: row.get::<_, Option<String>>(2).map(serde_json::Value::String),
+        accepted_at: row
+            .get::<_, Option<String>>(2)
+            .map(serde_json::Value::String),
     }))
 }
-async fn accept_index_job_result<C>(client: &C, tables: &Tables, job_id: &str, claim_token: &str, result_json: &str, result_sha256: &str) -> PostgresStoreResult<AcceptedIndexJobResult>
-where C: GenericClient + Sync {
+async fn accept_index_job_result<C>(
+    client: &C,
+    tables: &Tables,
+    job_id: &str,
+    claim_token: &str,
+    result_json: &str,
+    result_sha256: &str,
+) -> PostgresStoreResult<AcceptedIndexJobResult>
+where
+    C: GenericClient + Sync,
+{
     if let Some(existing) = index_job_result(client, tables, job_id).await? {
-        if existing.result_json.is_some() { return Ok(existing); }
+        if existing.result_json.is_some() {
+            return Ok(existing);
+        }
     }
     let row = client.query_opt(&format!("UPDATE {} SET accepted_result_json=$1,accepted_result_sha256=$2,accepted_at=NOW() WHERE job_id=$3 AND status='DOING' AND claim_token=$4 AND (lease_until IS NULL OR lease_until>=NOW()) AND accepted_result_json IS NULL RETURNING accepted_at::TEXT", tables.index_jobs), &[&result_json, &result_sha256, &job_id, &claim_token]).await.map_err(backend)?;
     if let Some(row) = row {
-        return Ok(AcceptedIndexJobResult { status: "accepted".to_owned(), result_json: Some(result_json.to_owned()), result_sha256: Some(result_sha256.to_owned()), accepted_at: row.get::<_, Option<String>>(0).map(serde_json::Value::String) });
+        return Ok(AcceptedIndexJobResult {
+            status: "accepted".to_owned(),
+            result_json: Some(result_json.to_owned()),
+            result_sha256: Some(result_sha256.to_owned()),
+            accepted_at: row
+                .get::<_, Option<String>>(0)
+                .map(serde_json::Value::String),
+        });
     }
-    Ok(AcceptedIndexJobResult { status: "rejected".to_owned(), result_json: None, result_sha256: None, accepted_at: None })
+    Ok(AcceptedIndexJobResult {
+        status: "rejected".to_owned(),
+        result_json: None,
+        result_sha256: None,
+        accepted_at: None,
+    })
 }
 async fn mark_index_job_failed<C>(
     client: &C,
@@ -5535,7 +5589,10 @@ fn index_job_from_row(row: &Row) -> PostgresStoreResult<IndexJob> {
         claim_attempts: i64::from(row.try_get::<_, i32>(17).map_err(backend)?),
         accepted_result_json: row.try_get(18).map_err(backend)?,
         accepted_result_sha256: row.try_get(19).map_err(backend)?,
-        accepted_at: row.try_get::<_, Option<String>>(20).map_err(backend)?.map(serde_json::Value::String),
+        accepted_at: row
+            .try_get::<_, Option<String>>(20)
+            .map_err(backend)?
+            .map(serde_json::Value::String),
     })
 }
 fn truncate_error(error: &str) -> String {

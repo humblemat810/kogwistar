@@ -14,18 +14,18 @@ use kogwistar_runtime::{
     transition_digest, worker_effect_digest,
 };
 use kogwistar_store::{
-    AcceptedIndexJobResult, AppendedEvent, AuthIdentityStore, AuthUser, EntityEvent, EntityRebuildRequest,
-    EntityRecoveryReport, EntityRecoveryRequest, EventPruneStore, EventReadStore, EventWriteStore,
-    ExternalIdentity, IndexJob, IndexJobReadStore, IndexJobWriteStore, LaneMessageFilter,
-    LaneMessageReadStore, LaneMessageWriteStore, NamedProjection, NamedProjectionWrite,
-    NewEntityEvent, NewIndexJob, NewProjectedLaneMessage, ProjectedLaneMessage,
-    ProjectionReadStore, ProjectionWriteStore, RUNTIME_CURRENT_STATE_NAMESPACE, ReplayCursor,
-    ResolveExternalIdentity, ServerRun, ServerRunCreate, ServerRunEvent, ServerRunReadStore,
-    ServerRunUpdate, ServerRunWriteStore, StoreError, StoreResult, WorkflowDesignDelta,
-    WorkflowDesignDeltaWrite, WorkflowDesignHistoryReadStore, WorkflowDesignHistoryWriteStore,
-    WorkflowDesignSnapshot, WorkflowDesignSnapshotWrite, runtime_checkpoint_namespace,
-    runtime_projection_write, runtime_status_namespace, validate_entity_rebuild_request,
-    validate_entity_recovery_request,
+    AcceptedIndexJobResult, AppendedEvent, AuthIdentityStore, AuthUser, EntityEvent,
+    EntityRebuildRequest, EntityRecoveryReport, EntityRecoveryRequest, EventPruneStore,
+    EventReadStore, EventWriteStore, ExternalIdentity, IndexJob, IndexJobReadStore,
+    IndexJobWriteStore, LaneMessageFilter, LaneMessageReadStore, LaneMessageWriteStore,
+    NamedProjection, NamedProjectionWrite, NewEntityEvent, NewIndexJob, NewProjectedLaneMessage,
+    ProjectedLaneMessage, ProjectionReadStore, ProjectionWriteStore,
+    RUNTIME_CURRENT_STATE_NAMESPACE, ReplayCursor, ResolveExternalIdentity, ServerRun,
+    ServerRunCreate, ServerRunEvent, ServerRunReadStore, ServerRunUpdate, ServerRunWriteStore,
+    StoreError, StoreResult, WorkflowDesignDelta, WorkflowDesignDeltaWrite,
+    WorkflowDesignHistoryReadStore, WorkflowDesignHistoryWriteStore, WorkflowDesignSnapshot,
+    WorkflowDesignSnapshotWrite, runtime_checkpoint_namespace, runtime_projection_write,
+    runtime_status_namespace, validate_entity_rebuild_request, validate_entity_recovery_request,
 };
 use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 use serde_json::{Map, Value};
@@ -950,7 +950,10 @@ impl SqliteStore {
             uow.accept_index_job_result(job_id, claim_token, result_json, result_sha256)
         })
     }
-    pub fn index_job_result(&self, job_id: &str) -> SqliteStoreResult<Option<AcceptedIndexJobResult>> {
+    pub fn index_job_result(
+        &self,
+        job_id: &str,
+    ) -> SqliteStoreResult<Option<AcceptedIndexJobResult>> {
         self.with_connection(|conn| index_job_result(conn, job_id))
     }
     pub fn mark_index_job_failed(
@@ -1320,7 +1323,13 @@ impl SqliteUnitOfWork<'_> {
         result_json: &str,
         result_sha256: &str,
     ) -> SqliteStoreResult<AcceptedIndexJobResult> {
-        accept_index_job_result(self.transaction, job_id, claim_token, result_json, result_sha256)
+        accept_index_job_result(
+            self.transaction,
+            job_id,
+            claim_token,
+            result_json,
+            result_sha256,
+        )
     }
     pub fn mark_index_job_failed(
         &mut self,
@@ -2261,13 +2270,28 @@ fn initialize_schema(conn: &Connection) -> SqliteStoreResult<()> {
     {
         conn.execute("ALTER TABLE index_jobs ADD COLUMN claim_token TEXT", [])?;
     }
-    if !index_job_columns.iter().any(|column| column == "accepted_result_json") {
-        conn.execute("ALTER TABLE index_jobs ADD COLUMN accepted_result_json TEXT", [])?;
+    if !index_job_columns
+        .iter()
+        .any(|column| column == "accepted_result_json")
+    {
+        conn.execute(
+            "ALTER TABLE index_jobs ADD COLUMN accepted_result_json TEXT",
+            [],
+        )?;
     }
-    if !index_job_columns.iter().any(|column| column == "accepted_result_sha256") {
-        conn.execute("ALTER TABLE index_jobs ADD COLUMN accepted_result_sha256 TEXT", [])?;
+    if !index_job_columns
+        .iter()
+        .any(|column| column == "accepted_result_sha256")
+    {
+        conn.execute(
+            "ALTER TABLE index_jobs ADD COLUMN accepted_result_sha256 TEXT",
+            [],
+        )?;
     }
-    if !index_job_columns.iter().any(|column| column == "accepted_at") {
+    if !index_job_columns
+        .iter()
+        .any(|column| column == "accepted_at")
+    {
         conn.execute("ALTER TABLE index_jobs ADD COLUMN accepted_at INTEGER", [])?;
     }
     let lane_columns = conn
@@ -2401,7 +2425,10 @@ fn mark_index_job_done(
 ) -> SqliteStoreResult<bool> {
     Ok(conn.execute("UPDATE index_jobs SET status='DONE',lease_until=NULL,claim_token=NULL,updated_at=?1 WHERE job_id=?2 AND status='DOING' AND (?3 IS NULL OR claim_token=?3)", params![unix_epoch_seconds(), job_id, claim_token])? != 0)
 }
-fn index_job_result(conn: &Connection, job_id: &str) -> SqliteStoreResult<Option<AcceptedIndexJobResult>> {
+fn index_job_result(
+    conn: &Connection,
+    job_id: &str,
+) -> SqliteStoreResult<Option<AcceptedIndexJobResult>> {
     conn.query_row(
         "SELECT accepted_result_json, accepted_result_sha256, accepted_at FROM index_jobs WHERE job_id=?1",
         [job_id],
@@ -2435,9 +2462,19 @@ fn accept_index_job_result(
         params![result_json, result_sha256, now, job_id, claim_token],
     )?;
     if changed == 0 {
-        return Ok(AcceptedIndexJobResult { status: "rejected".to_owned(), result_json: None, result_sha256: None, accepted_at: None });
+        return Ok(AcceptedIndexJobResult {
+            status: "rejected".to_owned(),
+            result_json: None,
+            result_sha256: None,
+            accepted_at: None,
+        });
     }
-    Ok(AcceptedIndexJobResult { status: "accepted".to_owned(), result_json: Some(result_json.to_owned()), result_sha256: Some(result_sha256.to_owned()), accepted_at: Some(serde_json::Value::from(now)) })
+    Ok(AcceptedIndexJobResult {
+        status: "accepted".to_owned(),
+        result_json: Some(result_json.to_owned()),
+        result_sha256: Some(result_sha256.to_owned()),
+        accepted_at: Some(serde_json::Value::from(now)),
+    })
 }
 fn mark_index_job_failed(
     conn: &Connection,
@@ -5650,7 +5687,10 @@ mod tests {
                 max_retries: 3,
             })
             .unwrap();
-        let claim = store.claim_index_jobs(1, 30, Some("maintenance")).unwrap().remove(0);
+        let claim = store
+            .claim_index_jobs(1, 30, Some("maintenance"))
+            .unwrap()
+            .remove(0);
         let accepted = store
             .accept_index_job_result(
                 &claim.job_id,

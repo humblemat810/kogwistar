@@ -2,13 +2,13 @@
   "baseline_version": 1,
   "postgresql": {
     "schema_placeholder": "kogwistar",
-    "sha256": "791f41fc59b40598d41dbe2154ee453f0a9456544bb4681b62b545c63141571f",
+    "sha256": "d8a828fa7b00d451ca876e6c7fef8b0b06bc83438aee4f369edc042abd9b5e5f",
     "statements": [
       "CREATE SCHEMA IF NOT EXISTS kogwistar",
       "CREATE TABLE IF NOT EXISTS kogwistar.global_seq (value BIGINT NOT NULL)",
       "INSERT INTO kogwistar.global_seq(value) SELECT 0 WHERE NOT EXISTS (SELECT 1 FROM kogwistar.global_seq)",
       "CREATE TABLE IF NOT EXISTS kogwistar.user_seq (user_id TEXT PRIMARY KEY, value BIGINT NOT NULL)",
-      "CREATE TABLE IF NOT EXISTS kogwistar.index_jobs ( job_id TEXT PRIMARY KEY, namespace TEXT NOT NULL DEFAULT 'default', entity_kind TEXT NOT NULL, entity_id TEXT NOT NULL, index_kind TEXT NOT NULL, coalesce_key TEXT NOT NULL, op TEXT NOT NULL, status TEXT NOT NULL, lease_until TIMESTAMPTZ NULL, retry_count INTEGER NOT NULL DEFAULT 0, last_error TEXT NULL, payload_json TEXT NULL, next_run_at TIMESTAMPTZ NULL, max_retries INTEGER NOT NULL DEFAULT 10, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW() )",
+      "CREATE TABLE IF NOT EXISTS kogwistar.index_jobs ( job_id TEXT PRIMARY KEY, namespace TEXT NOT NULL DEFAULT 'default', entity_kind TEXT NOT NULL, entity_id TEXT NOT NULL, index_kind TEXT NOT NULL, coalesce_key TEXT NOT NULL, op TEXT NOT NULL, status TEXT NOT NULL, lease_until TIMESTAMPTZ NULL, retry_count INTEGER NOT NULL DEFAULT 0, last_error TEXT NULL, payload_json TEXT NULL, next_run_at TIMESTAMPTZ NULL, max_retries INTEGER NOT NULL DEFAULT 10, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), accepted_result_json TEXT NULL, accepted_result_sha256 TEXT NULL, accepted_at TIMESTAMPTZ NULL )",
       "CREATE INDEX IF NOT EXISTS idx_index_jobs_status_lease ON kogwistar.index_jobs(status, lease_until)",
       "CREATE INDEX IF NOT EXISTS idx_index_jobs_status_next_run ON kogwistar.index_jobs(status, next_run_at)",
       "CREATE INDEX IF NOT EXISTS idx_index_jobs_entity ON kogwistar.index_jobs(entity_kind, entity_id, index_kind)",
@@ -19,6 +19,9 @@
       "ALTER TABLE kogwistar.index_jobs ADD COLUMN IF NOT EXISTS max_retries INTEGER NOT NULL DEFAULT 10",
       "ALTER TABLE kogwistar.index_jobs ADD COLUMN IF NOT EXISTS claim_token TEXT NULL",
       "ALTER TABLE kogwistar.index_jobs ADD COLUMN IF NOT EXISTS claim_attempts INTEGER NOT NULL DEFAULT 0",
+      "ALTER TABLE kogwistar.index_jobs ADD COLUMN IF NOT EXISTS accepted_result_json TEXT NULL",
+      "ALTER TABLE kogwistar.index_jobs ADD COLUMN IF NOT EXISTS accepted_result_sha256 TEXT NULL",
+      "ALTER TABLE kogwistar.index_jobs ADD COLUMN IF NOT EXISTS accepted_at TIMESTAMPTZ NULL",
       "CREATE UNIQUE INDEX IF NOT EXISTS uq_index_jobs_pending_ns_ck ON kogwistar.index_jobs(namespace, coalesce_key) WHERE status='PENDING'",
       "CREATE TABLE IF NOT EXISTS kogwistar.index_applied_state ( namespace TEXT NOT NULL DEFAULT 'default', coalesce_key TEXT NOT NULL, applied_fingerprint TEXT NULL, applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), last_job_id TEXT NULL, PRIMARY KEY(namespace, coalesce_key) )",
       "CREATE INDEX IF NOT EXISTS idx_index_applied_state_key ON kogwistar.index_applied_state(coalesce_key)",
@@ -142,7 +145,7 @@
       },
       {
         "name": "index_jobs",
-        "sql": "CREATE TABLE index_jobs ( job_id TEXT PRIMARY KEY, namespace TEXT NOT NULL DEFAULT 'default', entity_kind TEXT NOT NULL, entity_id TEXT NOT NULL, index_kind TEXT NOT NULL, coalesce_key TEXT NOT NULL, op TEXT NOT NULL, status TEXT NOT NULL, lease_until INTEGER, next_run_at INTEGER, max_retries INTEGER NOT NULL DEFAULT 10, retry_count INTEGER NOT NULL DEFAULT 0, last_error TEXT, payload_json TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL ,claim_token TEXT )",
+        "sql": "CREATE TABLE index_jobs ( job_id TEXT PRIMARY KEY, namespace TEXT NOT NULL DEFAULT 'default', entity_kind TEXT NOT NULL, entity_id TEXT NOT NULL, index_kind TEXT NOT NULL, coalesce_key TEXT NOT NULL, op TEXT NOT NULL, status TEXT NOT NULL, lease_until INTEGER, next_run_at INTEGER, max_retries INTEGER NOT NULL DEFAULT 10, retry_count INTEGER NOT NULL DEFAULT 0, last_error TEXT, payload_json TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL ,claim_token TEXT ,accepted_result_json TEXT ,accepted_result_sha256 TEXT ,accepted_at INTEGER )",
         "table": "index_jobs",
         "type": "table"
       },
@@ -207,6 +210,6 @@
         "type": "table"
       }
     ],
-    "sha256": "8531ef1c79223b8712dfb6bb23d5153f4e3bfd65af7f4022be65561e487742ea"
+    "sha256": "021858ca25eeda22fcc1994735e7fd783df98217884f9085399ad7d26d674697"
   }
 }

@@ -20,7 +20,6 @@ from kogwistar.conversation.models import ConversationNode
 from kogwistar.runtime.models import WorkflowCheckpointNode
 from kogwistar.engine_core.models import Grounding, Span
 from kogwistar.graph_query import GraphQuery
-from kogwistar.engine_core.two_stage_chroma import SQLiteChromaTwoStageProjectionAdapter
 from tests._helpers.graph_builders import build_entity_node, build_relationship_edge
 from kogwistar.server.chat_service import (
     AnswerRunRequest,
