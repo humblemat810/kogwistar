@@ -68,4 +68,23 @@ def pick_edge_type(*, metadata: dict[str, Any], fallback: Type):
         cls = _resolve_class_name(class_name)
         if cls is not None:
             return cls
+
+    # Older rows can contain ordinary relationship edges in a workflow graph
+    # without a class marker.  Do not validate those rows as WorkflowEdge:
+    # WorkflowEdgeMetadata requires workflow_id, while base relationship rows
+    # intentionally do not carry workflow fields.
+    if fallback.__name__ == "WorkflowEdge" and not _looks_like_workflow_edge(metadata):
+        from .engine_core.models import Edge
+
+        return Edge
     return fallback
+
+
+def _looks_like_workflow_edge(metadata: dict[str, Any]) -> bool:
+    """Return whether metadata contains the workflow-edge contract."""
+
+    if metadata.get("entity_type") == "workflow_edge":
+        return True
+    return "workflow_id" in metadata or any(
+        key.startswith("wf_") for key in metadata
+    )
