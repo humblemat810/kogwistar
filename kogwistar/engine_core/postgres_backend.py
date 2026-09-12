@@ -1402,14 +1402,16 @@ class PgVectorBackend:
         ids: Optional[Sequence[str]],
         where: Optional[Json],
         include: List[str],
-        limit: int,
+        limit: Optional[int],
     ) -> Dict[str, Any]:
         has_embedding = "embedding" in table.c
         cols = [table.c.id, table.c.document, table.c.metadata]
         if has_embedding:
             cols.append(table.c.embedding)
 
-        q = sa.select(*cols).limit(int(limit))
+        q = sa.select(*cols)
+        if limit is not None:
+            q = q.limit(int(limit))
         if ids is not None:
             q = q.where(table.c.id.in_(list(ids)))
         if where:
@@ -1438,14 +1440,16 @@ class PgVectorBackend:
         ids: Optional[Sequence[str]],
         where: Optional[Json],
         include: List[str],
-        limit: int,
+        limit: Optional[int],
     ) -> Dict[str, Any]:
         has_embedding = "embedding" in table.c
         cols = [table.c.id, table.c.document, table.c.metadata]
         if has_embedding:
             cols.append(table.c.embedding)
 
-        q = sa.select(*cols).limit(int(limit))
+        q = sa.select(*cols)
+        if limit is not None:
+            q = q.limit(int(limit))
         if ids is not None:
             q = q.where(table.c.id.in_(list(ids)))
         if where:
