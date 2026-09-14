@@ -19,6 +19,12 @@ from .contracts import (
 )
 from .default_provider import DefaultTaskProviderConfig, build_default_llm_tasks
 from .errors import LLMTaskError, MissingTaskError, ProviderDependencyError
+from .providers import (
+    ProviderChainChatModel,
+    StructuredBridgeChatModel,
+    SupportsStructuredOutput,
+    bridge_messages,
+)
 
 __all__ = [
     "LLMTaskError",
@@ -43,4 +49,8 @@ __all__ = [
     "DefaultTaskProviderConfig",
     "build_default_llm_tasks",
     "validate_llm_task_set",
+    "ProviderChainChatModel",
+    "StructuredBridgeChatModel",
+    "SupportsStructuredOutput",
+    "bridge_messages",
 ]
