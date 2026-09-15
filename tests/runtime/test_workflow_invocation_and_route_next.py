@@ -14,6 +14,9 @@ from kogwistar.runtime.models import (
     WorkflowInvocationRequest,
     WorkflowNode,
 )
+from kogwistar.runtime.telemetry import EventEmitter, TraceContext
+from kogwistar.server.chat_service import ChatRunService
+from kogwistar.server.run_registry import RunRegistry
 from tests._helpers.embeddings import ConstantEmbeddingFunction
 from tests._helpers.fake_backend import build_fake_backend
 from tests._helpers.graph_builders import build_entity_node
@@ -496,6 +499,12 @@ def test_nested_workflow_synthesized_design_is_persisted_and_used(engine_pair):
             st["ended"] = True
         return RunSuccess(state_update=[])
 
+    emitted: list[dict] = []
+
+    class _Sink:
+        def emit(self, event):
+            emitted.append(dict(event))
+
     rt = WorkflowRuntime(
         workflow_engine=workflow_engine,
         conversation_engine=conversation_engine,
@@ -503,6 +512,7 @@ def test_nested_workflow_synthesized_design_is_persisted_and_used(engine_pair):
         predicate_registry={},
         checkpoint_every_n_steps=1,
         max_workers=4,
+        events=EventEmitter(sink=_Sink()),
     )
 
     rr = rt.run(
@@ -511,6 +521,12 @@ def test_nested_workflow_synthesized_design_is_persisted_and_used(engine_pair):
         turn_node_id="turn_nested_design",
         initial_state={"_deps": {}, "seed": "present"},
         run_id="run_nested_design",
+        _trace_context=TraceContext.new_root(
+            run_id="run_nested_design",
+            token_id="run_nested_design",
+            step_seq=0,
+            node_id=f"wf|{parent_id}|start",
+        ),
     )
 
     assert rr.status == "succeeded"
@@ -533,6 +549,30 @@ def test_nested_workflow_synthesized_design_is_persisted_and_used(engine_pair):
     )
     assert len(lineage_edges) == 1
     assert lineage_edges[0].relation == "wf_invoked"
+    parent_trace_ids = {
+        event["trace_id"]
+        for event in emitted
+        if event["run_id"] == "run_nested_design"
+    }
+    child_trace_ids = {
+        event["trace_id"]
+        for event in emitted
+        if event["run_id"] == child_run_id
+    }
+    assert len(parent_trace_ids) == 1
+    assert child_trace_ids == parent_trace_ids
+    assert all(event["run_id"] != event["trace_id"] for event in emitted)
+    inspection = ChatRunService(
+        get_knowledge_engine=lambda: conversation_engine,
+        get_conversation_engine=lambda: conversation_engine,
+        get_workflow_engine=lambda: workflow_engine,
+        run_registry=RunRegistry(conversation_engine.meta_sqlite),
+    )
+    lineage = inspection.workflow_run_lineage(child_run_id)["lineage"]
+    assert [item["run_id"] for item in lineage[:2]] == [
+        child_run_id,
+        "run_nested_design",
+    ]
 
     rt._persist_workflow_run(
         conversation_id="conv_nested_design",

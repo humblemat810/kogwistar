@@ -39,7 +39,12 @@ empty_cdc_streamer/bundle.meta.json
 test_d3_litmus_workflow_self_and_parallel/d3/*.html
 kogwistar/scripts/*.bundle.cdc.script.hl3.html
 
-# Local Codex state. Keep project-scoped .codex/agents/*.toml and config.toml trackable.
+# Local Codex state. Ignore generated runs, caches, wheels, PID files, and
+# scratch work. Keep project policy/config files explicitly trackable.
+.codex/*
+!.codex/agents/
+!.codex/agents/*.toml
+!.codex/config.toml
 .codex/AGENTS.md
 
 # Reproducible ADR/Codex run output. Keep reusable .codex/*_smoke.py scripts

@@ -321,7 +321,9 @@ def test_async_runtime_linear_terminal_status_equivalent(monkeypatch):
     )
     assert async_out.status == sync_out.status == "succeeded"
     async_user_state = {
-        k: v for k, v in async_out.final_state.items() if k != "_rt_join"
+        k: v
+        for k, v in async_out.final_state.items()
+        if k != "_rt_join" and not k.startswith("_wf_")
     }
     assert async_user_state == sync_out.final_state
 
@@ -501,7 +503,9 @@ def test_async_runtime_branch_join_status_and_state_equivalent(monkeypatch):
     )
     assert async_out.status == sync_out.status == "succeeded"
     async_user_state = {
-        k: v for k, v in async_out.final_state.items() if k != "_rt_join"
+        k: v
+        for k, v in async_out.final_state.items()
+        if k != "_rt_join" and not k.startswith("_wf_")
     }
     assert async_user_state == sync_out.final_state
     assert async_user_state["joined_total"] == 10

@@ -334,6 +334,7 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
                     conversation_id=plan["conversation_id"],
                     turn_node_id=plan["turn_node_id"],
                     cache_dir=cache_dir,
+                    _parent_trace_context=parent_trace_context,
                 )
             else:
                 child_result = await self.run(
@@ -370,10 +371,8 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
         conversation_id: str,
         turn_node_id: str,
         cache_dir: str | None = None,
+        _parent_trace_context: TraceContext | None = None,
     ) -> RunResult:
-        self.workflow_id = str(workflow_id)
-        initial_state.setdefault("_wf_invocation_path", [str(workflow_id)])
-        initial_state.setdefault("_wf_current_run_id", str(run_id or ""))
         """Resume an async run without blocking the event loop.
 
         Checkpoint storage remains owned by the shared runtime persistence
@@ -417,6 +416,13 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
             )
             if candidate.has_valid_w3c_ids:
                 continuation_context = candidate
+        if continuation_context is None and _parent_trace_context is not None:
+            continuation_context = _parent_trace_context.child_run(
+                run_id=str(run_id),
+                token_id=str(run_id),
+                step_seq=step_seq,
+                node_id="resume",
+            )
         return await self.run(
             workflow_id=workflow_id,
             conversation_id=conversation_id,

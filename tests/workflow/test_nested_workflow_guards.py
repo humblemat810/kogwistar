@@ -3,6 +3,8 @@ import pytest
 from kogwistar.runtime.base_runtime import BaseRuntime
 from kogwistar.runtime.models import WorkflowInvocationRequest
 
+pytestmark = [pytest.mark.workflow, pytest.mark.runtime]
+
 
 def _runtime(depth=8):
     runtime = BaseRuntime.__new__(BaseRuntime)

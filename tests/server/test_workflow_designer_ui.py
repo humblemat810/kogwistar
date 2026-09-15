@@ -5,6 +5,10 @@ from fastapi.testclient import TestClient
 
 from kogwistar.server.runtime_api import create_runtime_router
 
+import pytest
+
+pytestmark = [pytest.mark.integration]
+
 
 def _app() -> FastAPI:
     app = FastAPI()
@@ -92,3 +96,12 @@ def test_workflow_designer_template_contains_graph_semantics() -> None:
     assert "Authorization" in template
     assert "/api/auth/me" in template
     assert "/api/auth/login?return_to=" in template
+    for feature in (
+        'id="runId"',
+        "edge_selected",
+        "wf_priority",
+        "wf_multiplicity",
+        "selectedEdges",
+        "data-edge",
+    ):
+        assert feature in template

@@ -17,6 +17,7 @@ from kogwistar.runtime.runtime import (
     RunResult,
     apply_state_update_inplace,
 )
+from kogwistar.runtime.telemetry import TraceContext
 import queue
 
 pytestmark = [pytest.mark.ci, pytest.mark.runtime, pytest.mark.runtime_async]
@@ -1940,12 +1941,22 @@ def test_async_runtime_nested_workflow_invocation_matches_sync():
             turn_node_id="turn-1",
             initial_state={},
             run_id=run_id,
+            _trace_context=TraceContext.new_root(
+                run_id=run_id,
+                token_id=run_id,
+                step_seq=0,
+                node_id="p|start",
+            ),
         )
     )
     assert sync_out.status == async_out.status == "succeeded"
     assert sync_out.final_state == async_out.final_state
     assert sync_out.final_state["parent_seen"] is True
     assert sync_out.final_state["child_result"]["child_value"] == 7
+    parent_node = async_conv.read.get_nodes(ids=[f"wf_run|{run_id}"], limit=1)[0]
+    child_node = async_conv.read.get_nodes(ids=["wf_run|child-run"], limit=1)[0]
+    assert parent_node.metadata["trace_id"] == child_node.metadata["trace_id"]
+    assert parent_node.metadata["trace_id"] != run_id
 
 
 @pytest.mark.ci_full
@@ -2605,7 +2616,17 @@ def test_async_runtime_native_scheduler_applies_completed_tasks_in_step_order(mo
         )
     )
     assert out1.status == out2.status == "succeeded"
-    assert out1.final_state == out2.final_state
+    # Each top-level run gets a fresh runtime run id; compare the workflow
+    # result rather than that intentionally volatile plumbing key.
+    stable_state_1 = {
+        key: value for key, value in out1.final_state.items()
+        if key != "_wf_current_run_id"
+    }
+    stable_state_2 = {
+        key: value for key, value in out2.final_state.items()
+        if key != "_wf_current_run_id"
+    }
+    assert stable_state_1 == stable_state_2
 
 
 @pytest.mark.ci_full

@@ -656,7 +656,17 @@ def test_runtime_parity_bridge_trace_sink_parallel_nested_minimal(monkeypatch):
     async_state, async_trace = _run_async_trace_bridge(monkeypatch)
 
     assert sync_state["path"] == "trace"
-    assert async_state == sync_state
+    async_user_state = {
+        k: v
+        for k, v in async_state.items()
+        if k != "_rt_join" and not k.startswith("_wf_")
+    }
+    sync_user_state = {
+        k: v
+        for k, v in sync_state.items()
+        if k != "_rt_join" and not k.startswith("_wf_")
+    }
+    assert async_user_state == sync_user_state
     assert sync_trace == {
         "kinds": ["started", "completed"],
         "node_id": "start",

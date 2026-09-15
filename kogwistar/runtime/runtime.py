@@ -739,6 +739,7 @@ class WorkflowRuntime(BaseRuntime):
                     conversation_id=plan["conversation_id"],
                     turn_node_id=plan["turn_node_id"],
                     cache_dir=cache_dir,
+                    _parent_trace_context=parent_trace_context,
                 )
             else:
                 child_result = self.run(
@@ -897,7 +898,8 @@ class WorkflowRuntime(BaseRuntime):
         workflow_id: str,
         conversation_id: str,
         turn_node_id: str,
-        cache_dir = None
+        cache_dir = None,
+        _parent_trace_context: TraceContext | None = None,
     ) -> RunResult:
         """
         Resumes a suspended workflow run using the results of an externally executed task
@@ -952,6 +954,40 @@ class WorkflowRuntime(BaseRuntime):
         else:
             raise ValueError(
                 f"Cannot resume run {run_id}: checkpoint state_json is not a dict/json string."
+            )
+
+        persisted_trace = getattr(latest_ckpt, "metadata", {}).get("trace_id")
+        persisted_span = getattr(latest_ckpt, "metadata", {}).get("run_execution_span_id")
+        resume_trace_context = _parent_trace_context
+        if resume_trace_context is None and persisted_trace and persisted_span:
+            candidate = TraceContext(
+                run_id=str(run_id),
+                token_id=str(suspended_token_id),
+                step_seq=int(getattr(latest_ckpt, "metadata", {}).get("step_seq") or 0),
+                node_id=str(suspended_node_id),
+                trace_id=str(persisted_trace),
+                span_id=str(persisted_span),
+            )
+            if candidate.has_valid_w3c_ids:
+                resume_trace_context = candidate
+
+        def _resume_lifecycle_trace_context(
+            *, token_id: str, step_seq: int, node_id: str, attempt: int = 1
+        ) -> TraceContext:
+            base = resume_trace_context or TraceContext(
+                run_id=str(run_id),
+                token_id=str(token_id),
+                step_seq=int(step_seq),
+                node_id=str(node_id),
+                attempt=int(attempt),
+                conversation_id=str(conversation_id),
+                turn_node_id=str(turn_node_id),
+            )
+            return base.child_span(
+                token_id=str(token_id),
+                step_seq=int(step_seq),
+                node_id=str(node_id),
+                attempt=int(attempt),
             )
 
         # Apply the client's state update directly to the initial state for all resumable result types.
@@ -1067,7 +1103,7 @@ class WorkflowRuntime(BaseRuntime):
         node_id = suspended_node_id
         # Trace routing decision (includes rejections) at orchestration choke point
         try:
-            tc = TraceContext(
+            tc = _resume_lifecycle_trace_context(
                 run_id=str(run_id),
                 token_id=str(token_id),
                 step_seq=int(step_seq_current),
@@ -1201,7 +1237,7 @@ class WorkflowRuntime(BaseRuntime):
                 last_exec_node=resumed_exec_node,
             )
             try:
-                tc_ck = TraceContext(
+                tc_ck = _resume_lifecycle_trace_context(
                     run_id=str(run_id),
                     token_id=str(suspended_token_id),
                     step_seq=int(step_seq_current),
@@ -1223,7 +1259,7 @@ class WorkflowRuntime(BaseRuntime):
                 try:
                     self.emitter.emit(
                         type="workflow_step_suspended",
-                        ctx=TraceContext(
+                        ctx=_resume_lifecycle_trace_context(
                             run_id=str(run_id),
                             token_id=str(suspended_token_id),
                             step_seq=int(step_seq_current),
@@ -1273,7 +1309,7 @@ class WorkflowRuntime(BaseRuntime):
                     errors=list(getattr(client_result, "errors", []) or []),
                     last_processed_node_id=str(suspended_node_id),
                 )
-                tc_done = TraceContext(
+                tc_done = _resume_lifecycle_trace_context(
                     run_id=str(run_id),
                     token_id=str(suspended_token_id),
                     step_seq=int(step_seq_current),
@@ -1314,7 +1350,7 @@ class WorkflowRuntime(BaseRuntime):
             last_processed_node_id=str(suspended_node_id),
         )
         try:
-            tc_done = TraceContext(
+            tc_done = _resume_lifecycle_trace_context(
                 run_id=str(run_id),
                 token_id=str(suspended_token_id),
                 step_seq=int(step_seq_current),
@@ -1345,6 +1381,7 @@ class WorkflowRuntime(BaseRuntime):
         conversation_id: str,
         turn_node_id: str,
         cache_dir=None,
+        _parent_trace_context: TraceContext | None = None,
     ) -> RunResult:
         """Continue a run from its latest ordinary workflow checkpoint.
 
@@ -1389,6 +1426,13 @@ class WorkflowRuntime(BaseRuntime):
             )
             if candidate.has_valid_w3c_ids:
                 continuation_context = candidate
+        if continuation_context is None and _parent_trace_context is not None:
+            continuation_context = _parent_trace_context.child_run(
+                run_id=str(run_id),
+                token_id=str(run_id),
+                step_seq=step_seq,
+                node_id="resume",
+            )
         return self.run(
             workflow_id=workflow_id,
             conversation_id=conversation_id,
@@ -1678,6 +1722,30 @@ class WorkflowRuntime(BaseRuntime):
                 else None
             )
 
+            def _lifecycle_trace_context(
+                *, token_id: str, step_seq: int, node_id: str, attempt: int = 1
+            ) -> TraceContext:
+                """Keep lifecycle events in this run's trace across all choke points."""
+                base = run_trace_context or TraceContext(
+                    run_id=str(run_id),
+                    token_id=str(run_id),
+                    step_seq=0,
+                    node_id=str(getattr(start, "id", "start")),
+                    attempt=1,
+                    conversation_id=str(conversation_id)
+                    if conversation_id is not None
+                    else None,
+                    turn_node_id=str(turn_node_id)
+                    if turn_node_id is not None
+                    else None,
+                )
+                return base.child_span(
+                    token_id=str(token_id),
+                    step_seq=int(step_seq),
+                    node_id=str(node_id),
+                    attempt=int(attempt),
+                )
+
             # Persist workflow_run node in conversation_engine
             wf_run_root_node = self._persist_workflow_run(
                 conversation_id=conversation_id,
@@ -1690,18 +1758,8 @@ class WorkflowRuntime(BaseRuntime):
             )
             # trace: workflow run started
             try:
-                tc_run = run_trace_context or TraceContext(
-                    run_id=str(run_id),
-                    token_id=str(run_id),  # root token id is run_id for now
-                    step_seq=0,
-                    node_id=str(start_id) if "start_id" in locals() else "start", # type: ignore  # noqa: F821
-                    attempt=1,
-                    conversation_id=str(conversation_id)
-                    if conversation_id is not None
-                    else None,
-                    turn_node_id=str(turn_node_id)
-                    if turn_node_id is not None
-                    else None,
+                tc_run = _lifecycle_trace_context(
+                    token_id=str(run_id), step_seq=0, node_id=str(start_id)
                 )
                 self.emitter.emit(
                     type="workflow_run_started",
@@ -1829,7 +1887,7 @@ class WorkflowRuntime(BaseRuntime):
                         break
                 _persist_rt_join_runtime()
                 try:
-                    tc_cancel = TraceContext(
+                    tc_cancel = _lifecycle_trace_context(
                         run_id=str(run_id),
                         token_id=str(token_id or run_id),
                         step_seq=int(step_seq),
@@ -2080,18 +2138,8 @@ class WorkflowRuntime(BaseRuntime):
                         )
                         # self._update_workflow_run_status(conversation_id, run_id, "cancelled")
                         try:
-                            tc_done = TraceContext(
-                                run_id=str(run_id),
-                                token_id=str(run_id),
-                                step_seq=int(step_seq),
-                                node_id="run",
-                                attempt=1,
-                                conversation_id=str(conversation_id)
-                                if conversation_id is not None
-                                else None,
-                                turn_node_id=str(turn_node_id)
-                                if turn_node_id is not None
-                                else None,
+                            tc_done = _lifecycle_trace_context(
+                                token_id=str(run_id), step_seq=int(step_seq), node_id="run"
                             )
                             self.emitter.emit(
                                 type="workflow_run_cancelled",
@@ -2116,18 +2164,8 @@ class WorkflowRuntime(BaseRuntime):
                         # They are persisted in _rt_join and should not keep the run alive.
                         _persist_rt_join_runtime()
                         try:
-                            tc_done = TraceContext(
-                                run_id=str(run_id),
-                                token_id=str(run_id),
-                                step_seq=int(step_seq),
-                                node_id="run",
-                                attempt=1,
-                                conversation_id=str(conversation_id)
-                                if conversation_id is not None
-                                else None,
-                                turn_node_id=str(turn_node_id)
-                                if turn_node_id is not None
-                                else None,
+                            tc_done = _lifecycle_trace_context(
+                                token_id=str(run_id), step_seq=int(step_seq), node_id="run"
                             )
                             self.emitter.emit(
                                 type="workflow_run_suspended",
@@ -2165,18 +2203,8 @@ class WorkflowRuntime(BaseRuntime):
                                 ),
                             )
                             try:
-                                tc_done = TraceContext(
-                                    run_id=str(run_id),
-                                    token_id=str(run_id),
-                                    step_seq=int(step_seq),
-                                    node_id="run",
-                                    attempt=1,
-                                    conversation_id=str(conversation_id)
-                                    if conversation_id is not None
-                                    else None,
-                                    turn_node_id=str(turn_node_id)
-                                    if turn_node_id is not None
-                                    else None,
+                                tc_done = _lifecycle_trace_context(
+                                    token_id=str(run_id), step_seq=int(step_seq), node_id="run"
                                 )
                                 self.emitter.emit(
                                     type="workflow_run_failed",
@@ -2202,18 +2230,8 @@ class WorkflowRuntime(BaseRuntime):
                             # self._update_workflow_run_status(conversation_id, run_id, "suspended")
                             # trace: workflow run suspended
                             try:
-                                tc_done = TraceContext(
-                                    run_id=str(run_id),
-                                    token_id=str(run_id),
-                                    step_seq=int(step_seq),
-                                    node_id="run",
-                                    attempt=1,
-                                    conversation_id=str(conversation_id)
-                                    if conversation_id is not None
-                                    else None,
-                                    turn_node_id=str(turn_node_id)
-                                    if turn_node_id is not None
-                                    else None,
+                                tc_done = _lifecycle_trace_context(
+                                    token_id=str(run_id), step_seq=int(step_seq), node_id="run"
                                 )
                                 self.emitter.emit(
                                     type="workflow_run_suspended",
@@ -2246,18 +2264,8 @@ class WorkflowRuntime(BaseRuntime):
                             )
                             # trace: workflow run completed
                             try:
-                                tc_done = TraceContext(
-                                    run_id=str(run_id),
-                                    token_id=str(run_id),
-                                    step_seq=int(step_seq),
-                                    node_id="run",
-                                    attempt=1,
-                                    conversation_id=str(conversation_id)
-                                    if conversation_id is not None
-                                    else None,
-                                    turn_node_id=str(turn_node_id)
-                                    if turn_node_id is not None
-                                    else None,
+                                tc_done = _lifecycle_trace_context(
+                                    token_id=str(run_id), step_seq=int(step_seq), node_id="run"
                                 )
                                 self.emitter.emit(
                                     type="workflow_run_completed",
@@ -2425,7 +2433,7 @@ class WorkflowRuntime(BaseRuntime):
                                         )
                             # trace: token arrived at join
                             try:
-                                tcj = TraceContext(
+                                tcj = _lifecycle_trace_context(
                                     run_id=str(run_id),
                                     token_id=str(token_id),
                                     step_seq=int(step_seq),
@@ -2448,7 +2456,7 @@ class WorkflowRuntime(BaseRuntime):
                                 pass
                             # trace: token waiting at join
                             try:
-                                tcj = TraceContext(
+                                tcj = _lifecycle_trace_context(
                                     run_id=str(run_id),
                                     token_id=str(token_id),
                                     step_seq=int(step_seq),
@@ -2475,7 +2483,7 @@ class WorkflowRuntime(BaseRuntime):
                                     _persist_rt_join_runtime()
                                     continue
                                 try:
-                                    tcj = TraceContext(
+                                    tcj = _lifecycle_trace_context(
                                         run_id=str(run_id),
                                         token_id=str(released[1]),
                                         step_seq=int(step_seq),
@@ -2719,14 +2727,10 @@ class WorkflowRuntime(BaseRuntime):
                                     trace_context=run_trace_context,
                                 )
                             try:
-                                tc_ck = TraceContext(
-                                    run_id=str(run_id),
+                                tc_ck = _lifecycle_trace_context(
                                     token_id=str(token_id),
                                     step_seq=int(step_seq_current),
                                     node_id=str(node_id),
-                                    attempt=1,
-                                    conversation_id=str(conversation_id),
-                                    turn_node_id=str(turn_node_id),
                                 )
                                 self.emitter.emit(
                                     type="checkpoint_saved",
@@ -2753,14 +2757,10 @@ class WorkflowRuntime(BaseRuntime):
                             try:
                                 self.emitter.emit(
                                     type="workflow_step_suspended",
-                                    ctx=TraceContext(
-                                        run_id=str(run_id),
+                                    ctx=_lifecycle_trace_context(
                                         token_id=str(token_id),
                                         step_seq=int(step_seq_current),
                                         node_id=str(node_id),
-                                        attempt=1,
-                                        conversation_id=str(conversation_id),
-                                        turn_node_id=str(turn_node_id),
                                     ),
                                     payload=getattr(run_result, "resume_payload"),
                                 )
@@ -2800,14 +2800,10 @@ class WorkflowRuntime(BaseRuntime):
 
                     # Trace routing decision (includes rejections) at orchestration choke point
                     try:
-                        tc = TraceContext(
-                            run_id=str(run_id),
+                        tc = _lifecycle_trace_context(
                             token_id=str(token_id),
                             step_seq=int(step_seq_current),
                             node_id=str(node_id),
-                            attempt=1,
-                            conversation_id=str(conversation_id),
-                            turn_node_id=str(turn_node_id),
                         )
                         self.emitter.emit(
                             type="routing_decision",
@@ -2886,14 +2882,10 @@ class WorkflowRuntime(BaseRuntime):
                                     trace_context=run_trace_context,
                                 )
                             try:
-                                tc_ck = TraceContext(
-                                    run_id=str(run_id),
+                                tc_ck = _lifecycle_trace_context(
                                     token_id=str(token_id),
                                     step_seq=int(step_seq_current),
                                     node_id=str(node_id),
-                                    attempt=1,
-                                    conversation_id=str(conversation_id),
-                                    turn_node_id=str(turn_node_id),
                                 )
 
                                 self.emitter.emit(
@@ -2993,7 +2985,7 @@ class WorkflowRuntime(BaseRuntime):
                                 try:
                                     self.emitter.emit(
                                         type="token_spawned",
-                                        ctx=TraceContext(
+                                        ctx=_lifecycle_trace_context(
                                             run_id=str(run_id),
                                             token_id=str(token_id),
                                             step_seq=int(step_seq_current),
@@ -3075,7 +3067,7 @@ class WorkflowRuntime(BaseRuntime):
                                 pass
                             # trace token spawn
                             try:
-                                tc_spawn = TraceContext(
+                                tc_spawn = _lifecycle_trace_context(
                                     run_id=str(run_id),
                                     token_id=str(token_id),
                                     step_seq=int(step_seq_current),

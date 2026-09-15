@@ -149,6 +149,11 @@ def _resolve_start_nodes_and_adj(
     )
 
 
+def _export_node_metadata(node: Any) -> dict[str, Any]:
+    """Copy design metadata into LangGraph node metadata without sharing state."""
+    return dict(getattr(node, "metadata", {}) or {})
+
+
 def _route_next(
     *,
     edges: List[Any],
@@ -197,11 +202,15 @@ def _invoke_step(*, resolver: Any, fn: Any, op: str, node_id: str, state: Any) -
 
         return fn(
             StepContext(
+                workflow_id="langgraph",
                 workflow_node_id=str(node_id),
                 op=str(op),
-                state_view=dict(state.get("__blob__", state) or {}),
                 run_id=f"langgraph:{node_id}",
+                token_id="root",
+                attempt=1,
                 step_seq=0,
+                cache_dir=None,
+                state=dict(state.get("__blob__", state) or {}),
             )
         )
     return fn(state)
@@ -349,7 +358,11 @@ def to_langgraph(
 
                 return step_node
 
-            sg.add_node(node_id, make_step(node_id, node, fn, op))
+            sg.add_node(
+                node_id,
+                make_step(node_id, node, fn, op),
+                metadata=_export_node_metadata(node),
+            )
 
         sg.add_edge(START, start.id)
         for src, edges in adj.items():
@@ -421,7 +434,11 @@ def to_langgraph(
 
                 return step_node
 
-            sg.add_node(node_id, make_step_update(node_id, node, fn, op))
+            sg.add_node(
+                node_id,
+                make_step_update(node_id, node, fn, op),
+                metadata=_export_node_metadata(node),
+            )
 
         # Wire graph edges:
         # - fanout nodes: connect directly to all outgoing destinations (LangGraph will schedule all).
@@ -644,7 +661,11 @@ def to_langgraph(
 
                 return step_node
 
-            sg.add_node(node_id, make_step_send(node_id, node, fn, op))
+            sg.add_node(
+                node_id,
+                make_step_send(node_id, node, fn, op),
+                metadata=_export_node_metadata(node),
+            )
             continue
 
         # --- Exclusive-choice node: routing via conditional edges (nice diagram + correct semantics) ---
@@ -678,7 +699,11 @@ def to_langgraph(
 
             return step_node
 
-        sg.add_node(node_id, make_step_update(node_id, node, fn, op))
+        sg.add_node(
+            node_id,
+            make_step_update(node_id, node, fn, op),
+            metadata=_export_node_metadata(node),
+        )
 
         # Conditional router that recomputes next node(s) using the updated blob state.
         def make_router(nid: str, node_obj: Any):

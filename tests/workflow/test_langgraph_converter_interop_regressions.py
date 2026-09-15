@@ -8,6 +8,8 @@ from kogwistar.runtime.langgraph_converter import (
     _route_next,
     from_langgraph,
 )
+from kogwistar.runtime.models import RunSuccess
+from kogwistar.runtime.resolvers import MappingStepResolver
 
 
 @dataclass
@@ -59,3 +61,27 @@ def test_converter_preserves_same_priority_fanout_and_feedback_targets():
 def test_compiled_langgraph_reverse_import_is_deterministically_unsupported():
     with pytest.raises(LangGraphImportUnsupportedError, match="WorkflowDesignArtifact"):
         from_langgraph(object(), workflow_id="wf")
+
+
+@pytest.mark.runtime
+def test_converter_invokes_production_mapping_resolver_with_step_context():
+    seen = {}
+    resolver = MappingStepResolver()
+
+    @resolver.register("record")
+    def record(ctx):
+        seen.update({"node": ctx.workflow_node_id, "op": ctx.op, "value": ctx.state_view["value"]})
+        return RunSuccess(conversation_node_id=None, state_update=[])
+
+    result = resolver.resolve("record")
+    from kogwistar.runtime.langgraph_converter import _invoke_step
+
+    out = _invoke_step(
+        resolver=resolver,
+        fn=result,
+        op="record",
+        node_id="node-1",
+        state={"value": 7},
+    )
+    assert out.status == "success"
+    assert seen == {"node": "node-1", "op": "record", "value": 7}
