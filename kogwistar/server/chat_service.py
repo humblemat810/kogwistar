@@ -565,6 +565,14 @@ class ChatRunService:
         )
         return self._run_execution.get_run(run_id)
 
+    def workflow_run_lineage(self, run_id: str) -> dict[str, Any]:
+        self._require_capability(
+            "workflow.run.read",
+            ["workflow.run.read"],
+            approval_message="Reading workflow run lineage requires workflow.run.read capability",
+        )
+        return self._run_inspection.workflow_run_lineage(run_id)
+
     async def aget_run(self, run_id: str) -> dict[str, Any]:
         return await asyncio.to_thread(self.get_run, run_id)
 

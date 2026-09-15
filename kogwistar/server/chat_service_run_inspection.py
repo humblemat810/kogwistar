@@ -127,6 +127,33 @@ class _RunInspectionService(_BaseComponent):
         out.sort(key=lambda item: int(item["step_seq"]))
         return out
 
+    def workflow_run_lineage(self, run_id: str) -> dict[str, Any]:
+        """Return the persisted parent chain without exposing graph contents."""
+        lineage: list[dict[str, Any]] = []
+        current = str(run_id)
+        seen: set[str] = set()
+        while current and current not in seen:
+            seen.add(current)
+            rows = self._conversation_engine().read.get_nodes(
+                ids=[f"wf_run|{current}"], limit=1
+            )
+            if not rows:
+                if not lineage:
+                    raise KeyError(f"Workflow run not found: {run_id}")
+                break
+            metadata = dict(getattr(rows[0], "metadata", {}) or {})
+            lineage.append(
+                {
+                    "run_id": current,
+                    "workflow_id": str(metadata.get("workflow_id") or ""),
+                    "parent_run_id": metadata.get("parent_run_id"),
+                    "status": str(metadata.get("status") or ""),
+                    "wf_invoked": metadata.get("wf_invoked"),
+                }
+            )
+            current = str(metadata.get("parent_run_id") or "")
+        return {"run_id": str(run_id), "lineage": lineage}
+
     def list_checkpoints(self, run_id: str) -> list[dict[str, Any]]:
         nodes = self._workflow_nodes(entity_type="workflow_checkpoint", run_id=run_id)
         out: list[dict[str, Any]] = []

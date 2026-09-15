@@ -27,6 +27,7 @@ from typing_extensions import TypedDict
 
 from kogwistar.runtime import design as wf_design
 from kogwistar.runtime.contract import BasePredicate, WorkflowEdgeInfo
+from kogwistar.runtime.routing import compute_route_next
 
 if TYPE_CHECKING:
     from langgraph.graph import StateGraph as LangGraphStateGraph
@@ -167,74 +168,43 @@ def _route_next(
       we *fan out* (return all best-priority destinations).
     - For fanout nodes or edges with multiplicity=='many', multiple destinations may be returned.
     """
-    # Explicit routing override (duplicates preserved)
-    ns = list(getattr(last_result, "next_step_names", []) or [])
-    if ns:
-        return ns
-        # valid = {WorkflowEdgeInfo.from_workflow_edge(e).dst for e in edges}
-        # return [n for n in ns if n in valid]
+    return compute_route_next(
+        edges=list(edges),
+        state=state,
+        last_result=last_result,
+        fanout=fanout,
+        predicate_registry=predicate_registry,
+    ).next_node_ids
 
-    candidates: list[tuple[int, str, str]] = []  # (priority, dst, multiplicity)
 
-    def _add_candidate(info: WorkflowEdgeInfo):
-        pr = int(info.priority or 0)
-        candidates.append((pr, info.dst, info.multiplicity or "one"))
+class LangGraphImportUnsupportedError(NotImplementedError):
+    """Raised because arbitrary compiled LangGraph callables are not lossless."""
 
-    # 1) predicate edges
-    for e in edges:
-        info = WorkflowEdgeInfo.from_workflow_edge(e)
-        if info.predicate is None:
-            continue
-        pred = predicate_registry.get(info.predicate)
-        if pred is None:
-            continue
-        try:
-            ok = bool(pred(info, state, last_result))
-        except Exception:
-            ok = False
-        if ok:
-            _add_candidate(info)
 
-    # 2) node-decide via BasePredicate (result.next_step_names empty => always true)
-    if not candidates:
-        node_decider = BasePredicate()
-        for e in edges:
-            info = WorkflowEdgeInfo.from_workflow_edge(e)
-            try:
-                ok = bool(node_decider(info, state, last_result))
-            except Exception:
-                ok = False
-            if ok:
-                _add_candidate(info)
+def from_langgraph(graph: Any, *, workflow_id: str) -> Any:
+    """Reject reverse import until a declarative, lossless contract exists."""
+    del graph
+    raise LangGraphImportUnsupportedError(
+        "LangGraph -> Kogwistar import is unsupported for compiled graphs; "
+        "use a WorkflowDesignArtifact as the canonical interchange format."
+    )
 
-    # 3) defaults (only if still nothing)
-    if not candidates:
-        for e in edges:
-            info = WorkflowEdgeInfo.from_workflow_edge(e)
-            if info.is_default:
-                _add_candidate(info)
 
-    if not candidates:
-        return []
+def _invoke_step(*, resolver: Any, fn: Any, op: str, node_id: str, state: Any) -> Any:
+    """Invoke production resolvers with StepContext while retaining test doubles."""
+    if resolver.__class__.__name__ == "MappingStepResolver":
+        from kogwistar.runtime.runtime import StepContext
 
-    # Sort by priority then dst for stability
-    candidates.sort(key=lambda t: (t[0], t[1]))
-
-    allow_many = bool(fanout) or any(m == "many" for _, __, m in candidates)
-
-    best_prio = candidates[0][0]
-    best = [dst for pr, dst, _m in candidates if pr == best_prio]
-
-    # If fanout/many: return all best-priority destinations (may be >1)
-    if allow_many:
-        return best
-
-    # # Exclusive choice but tie on best priority => fanout (policy)
-    # this will create problem to the undeterminate shape
-    # if len(best) > 1:
-    #     return best
-
-    return [best[0]]
+        return fn(
+            StepContext(
+                workflow_node_id=str(node_id),
+                op=str(op),
+                state_view=dict(state.get("__blob__", state) or {}),
+                run_id=f"langgraph:{node_id}",
+                step_seq=0,
+            )
+        )
+    return fn(state)
 
 
 # ----------------------------
@@ -334,9 +304,9 @@ def to_langgraph(
                 else step_resolver(op)
             )
 
-            def make_step(nid: str, node_obj: Any, fn_):
+            def make_step(nid: str, node_obj: Any, fn_, op_name: str):
                 def step_node(state: LGApplyState) -> Command:
-                    out = fn_(state)
+                    out = _invoke_step(resolver=step_resolver, fn=fn_, op=op_name, node_id=nid, state=state)
                     updates: List[StateUpdate]
                     if isinstance(out, dict):
                         updates = _delta_to_updates(out, schema)
@@ -379,7 +349,7 @@ def to_langgraph(
 
                 return step_node
 
-            sg.add_node(node_id, make_step(node_id, node, fn))
+            sg.add_node(node_id, make_step(node_id, node, fn, op))
 
         sg.add_edge(START, start.id)
         for src, edges in adj.items():
@@ -423,10 +393,10 @@ def to_langgraph(
                 else step_resolver(op)
             )
 
-            def make_step_update(nid: str, node_obj: Any, fn_):
+            def make_step_update(nid: str, node_obj: Any, fn_, op_name: str):
                 def step_node(state: LGBlobState) -> dict:
                     blob = cast(dict, state.get(opt.blob_key) or {})
-                    out = fn_(blob)
+                    out = _invoke_step(resolver=step_resolver, fn=fn_, op=op_name, node_id=nid, state=blob)
 
                     if isinstance(out, dict):
                         updates = _delta_to_updates(out, schema)
@@ -451,7 +421,7 @@ def to_langgraph(
 
                 return step_node
 
-            sg.add_node(node_id, make_step_update(node_id, node, fn))
+            sg.add_node(node_id, make_step_update(node_id, node, fn, op))
 
         # Wire graph edges:
         # - fanout nodes: connect directly to all outgoing destinations (LangGraph will schedule all).
@@ -579,7 +549,7 @@ def to_langgraph(
 
         if use_send:
             # --- Fanout-capable node: routing via Command(goto=Send/...) to preserve token semantics ---
-            def make_step_send(nid: str, node_obj: Any, fn_):
+            def make_step_send(nid: str, node_obj: Any, fn_, op_name: str):
                 def step_node(state: LGBlobState) -> Command:
                     blob = cast(dict, state.get(opt.blob_key) or {})
                     token_id = cast(str, blob.get("__token_id__", "root"))
@@ -601,7 +571,7 @@ def to_langgraph(
                                 goto=END, update={opt.blob_key: {opt.blob_ops_key: []}}
                             )
 
-                    out = fn_(blob)
+                    out = _invoke_step(resolver=step_resolver, fn=fn_, op=op_name, node_id=nid, state=blob)
 
                     if isinstance(out, dict):
                         updates = _delta_to_updates(out, schema)
@@ -674,14 +644,14 @@ def to_langgraph(
 
                 return step_node
 
-            sg.add_node(node_id, make_step_send(node_id, node, fn))
+            sg.add_node(node_id, make_step_send(node_id, node, fn, op))
             continue
 
         # --- Exclusive-choice node: routing via conditional edges (nice diagram + correct semantics) ---
-        def make_step_update(nid: str, node_obj: Any, fn_):
+        def make_step_update(nid: str, node_obj: Any, fn_, op_name: str):
             def step_node(state: LGBlobState) -> dict:
                 blob = cast(dict, state.get(opt.blob_key) or {})
-                out = fn_(blob)
+                out = _invoke_step(resolver=step_resolver, fn=fn_, op=op_name, node_id=nid, state=blob)
 
                 if isinstance(out, dict):
                     updates = _delta_to_updates(out, schema)
@@ -708,7 +678,7 @@ def to_langgraph(
 
             return step_node
 
-        sg.add_node(node_id, make_step_update(node_id, node, fn))
+        sg.add_node(node_id, make_step_update(node_id, node, fn, op))
 
         # Conditional router that recomputes next node(s) using the updated blob state.
         def make_router(nid: str, node_obj: Any):

@@ -530,6 +530,7 @@ class WorkflowRuntime(BaseRuntime):
         lane_message_sender: Callable[..., Any] | None = None,
         lane_message_event_sink: Callable[[dict[str, Json]], Any] | None = None,
         fast_trace_persistence: bool | None = None,
+        max_nested_workflow_depth: int = 8,
     ) -> None:
         from kogwistar.engine_core.engine import GraphKnowledgeEngine
 
@@ -541,6 +542,7 @@ class WorkflowRuntime(BaseRuntime):
         self.predicate_registry = predicate_registry
         self.checkpoint_every_n_steps = max(1, int(checkpoint_every_n_steps))
         self.max_workers = max_workers
+        self.max_nested_workflow_depth = max(0, int(max_nested_workflow_depth))
         self.cancel_requested = cancel_requested
         self.lane_message_sender = lane_message_sender
         if self.lane_message_sender is None:
@@ -1421,6 +1423,9 @@ class WorkflowRuntime(BaseRuntime):
         with bind_log_context(
             conversation_id=conversation_id, workflow_run_id=f"{workflow_id}--{run_id}"
         ):
+            self.workflow_id = str(workflow_id)
+            initial_state.setdefault("_wf_invocation_path", [str(workflow_id)])
+            initial_state.setdefault("_wf_current_run_id", str(run_id or ""))
             # repair fields auto set by default schema
             state_schema = getattr(self.step_resolver, "_state_schema", None)
             if state_schema and isinstance(state_schema, dict):
@@ -3798,6 +3803,14 @@ class WorkflowRuntime(BaseRuntime):
         for key, value in (run_metadata or {}).items():
             if key not in metadata and value is not None:
                 metadata[str(key)] = value
+        if metadata.get("parent_run_id"):
+            metadata.setdefault(
+                "wf_invoked",
+                {
+                    "parent_run_id": str(metadata["parent_run_id"]),
+                    "workflow_id": str(workflow_id),
+                },
+            )
         if trace_context is not None and trace_context.has_valid_w3c_ids:
             metadata["trace_id"] = trace_context.trace_id
             metadata["run_execution_span_id"] = trace_context.span_id

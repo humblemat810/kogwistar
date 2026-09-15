@@ -98,6 +98,7 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
         lane_message_event_sink: Callable[[dict[str, Any]], Any] | None = None,
         fast_trace_persistence: bool | None = None,
         experimental_native_scheduler: bool = True,
+        max_nested_workflow_depth: int = 8,
     ) -> None:
         self._raw_step_resolver = step_resolver
         self.step_resolver = step_resolver
@@ -108,6 +109,7 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
         self.workflow_engine = workflow_engine
         self.conversation_engine = conversation_engine
         self.max_workers = max_workers
+        self.max_nested_workflow_depth = max(0, int(max_nested_workflow_depth))
         self.cancel_requested = cancel_requested
         self.lane_message_sender = lane_message_sender
         self.lane_message_event_sink = lane_message_event_sink
@@ -131,6 +133,7 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
             lane_message_sender=lane_message_sender,
             lane_message_event_sink=lane_message_event_sink,
             fast_trace_persistence=fast_trace_persistence,
+            max_nested_workflow_depth=self.max_nested_workflow_depth,
         )
         # Contract anchors for tests/docs: async runtime reuses sync runtime context/result shape.
         self.step_context_type = StepContext
@@ -368,6 +371,9 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
         turn_node_id: str,
         cache_dir: str | None = None,
     ) -> RunResult:
+        self.workflow_id = str(workflow_id)
+        initial_state.setdefault("_wf_invocation_path", [str(workflow_id)])
+        initial_state.setdefault("_wf_current_run_id", str(run_id or ""))
         """Resume an async run without blocking the event loop.
 
         Checkpoint storage remains owned by the shared runtime persistence
@@ -459,8 +465,11 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
         trace_context: TraceContext | None = None,
     ) -> RunResult:
         state: WorkflowState = dict(initial_state)
-        validate_initial_state(state)
         run_id = str(run_id or f"run|{uuid.uuid4()}")
+        state.setdefault("_wf_invocation_path", [str(workflow_id)])
+        state.setdefault("_wf_current_run_id", run_id)
+        self.workflow_id = str(workflow_id)
+        validate_initial_state(state)
         mq: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=10000)
 
         start, nodes, adj = validate_workflow_design(

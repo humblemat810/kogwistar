@@ -279,7 +279,7 @@ def compute_route_next(
             matched.append((edge, tgt))
             selected.append((_edge_id(edge), tgt, "predicate"))
 
-    matched.sort(key=lambda item: item[0].priority, reverse=True)
+    matched.sort(key=lambda item: _edge_info(item[0]).priority, reverse=True)
 
     candidate_edges: list[Any] = []
     candidate_ids: list[str] = []
