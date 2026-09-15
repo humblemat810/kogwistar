@@ -1689,7 +1689,7 @@ class WorkflowRuntime(BaseRuntime):
                     run_id=str(run_id),
                     token_id=str(run_id),  # root token id is run_id for now
                     step_seq=0,
-                    node_id=str(start_id) if "start_id" in locals() else "start", # type: ignore  # noqa: F821
+                    node_id="start",
                     attempt=1,
                     conversation_id=str(conversation_id)
                     if conversation_id is not None
