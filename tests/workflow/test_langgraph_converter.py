@@ -183,6 +183,7 @@ def test_converter_predicate_default_is_exclusive_choice_and_auto_inits_blob():
             "set_b": lambda state: RR([("u", {"path": "b"})]),
         }
     )
+    nodes[0].metadata["wf_mode"] = "goal"
 
     compiled = to_langgraph(
         workflow_engine=engine,
@@ -190,6 +191,12 @@ def test_converter_predicate_default_is_exclusive_choice_and_auto_inits_blob():
         step_resolver=resolver,
         predicate_registry={"p_true": PredAlwaysTrue()},
     )
+    # LangGraph receives a copied metadata payload for graph tooling/export;
+    # execution still uses ordinary node functions and edges.
+    exported_start_metadata = compiled.get_graph().nodes["start"].metadata
+    assert exported_start_metadata["workflow_id"] == wid
+    assert exported_start_metadata["wf_start"] is True
+    assert exported_start_metadata["wf_mode"] == "goal"
     dump_langgraph_image(
         compiled,
         "test_converter_predicate_default_is_exclusive_choice_and_auto_inits_blob",

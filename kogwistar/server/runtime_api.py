@@ -619,6 +619,24 @@ def create_runtime_router(
         except Exception as exc:  # noqa: BLE001
             raise _as_http_error(exc)
 
+    @router.get("/runs/{run_id}/lineage")
+    def get_workflow_run_lineage(run_id: str):
+        require_role("ro")
+        require_namespace(runtime_namespaces)
+        try:
+            run = get_service_r().get_run(run_id)
+            if require_workflow_access:
+                require_workflow_access(run["workflow_id"], "ro")
+            payload = get_service_r().workflow_run_lineage(run_id)
+            if require_workflow_access:
+                for item in payload.get("lineage", []):
+                    workflow_id = str(item.get("workflow_id") or "")
+                    if workflow_id:
+                        require_workflow_access(workflow_id, "ro")
+            return payload
+        except Exception as exc:  # noqa: BLE001
+            raise _as_http_error(exc)
+
     @router.get("/runs/{run_id}/checkpoints")
     def get_workflow_checkpoints(run_id: str):
         require_role("ro")

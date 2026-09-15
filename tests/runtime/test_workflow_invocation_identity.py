@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import queue
 from types import SimpleNamespace
 
-from kogwistar.runtime.models import WorkflowInvocationRequest
+import pytest
+
+from kogwistar.runtime.models import WorkflowDesignArtifact, WorkflowInvocationRequest
+from kogwistar.runtime.async_runtime import AsyncWorkflowRuntime
 from kogwistar.runtime.runtime import RunResult, WorkflowRuntime
 from kogwistar.runtime.telemetry import TraceContext
 
@@ -48,6 +52,50 @@ def test_nested_invocation_without_key_preserves_existing_identity() -> None:
         parent_run_id="parent-run-1",
     )
     assert plan["child_run_id"]
+
+
+def _mismatched_dynamic_invocation() -> WorkflowInvocationRequest:
+    # Isolate the request/design identity guard from design-topology validation.
+    # A production design is still validated through normal Pydantic construction.
+    mismatched_design = WorkflowDesignArtifact.model_construct(
+        workflow_id="wf-different",
+        workflow_version="v1",
+        start_node_id="start",
+        nodes=[],
+        edges=[],
+    )
+    return WorkflowInvocationRequest.model_construct(
+        workflow_id="wf-requested",
+        workflow_design=mismatched_design,
+    )
+
+
+def test_dynamic_invocation_rejects_mismatched_design_before_materialization() -> None:
+    runtime = WorkflowRuntime.__new__(WorkflowRuntime)
+    with pytest.raises(ValueError, match="workflow_design.workflow_id"):
+        runtime._run_workflow_invocation(
+            invocation=_mismatched_dynamic_invocation(),
+            parent_state={},
+            conversation_id="conversation-1",
+            turn_node_id="turn-1",
+            parent_run_id="parent-run-1",
+        )
+
+
+def test_async_dynamic_invocation_rejects_mismatched_design_before_materialization() -> None:
+    runtime = AsyncWorkflowRuntime.__new__(AsyncWorkflowRuntime)
+
+    async def invoke() -> None:
+        with pytest.raises(ValueError, match="workflow_design.workflow_id"):
+            await runtime._run_workflow_invocation_async(
+                invocation=_mismatched_dynamic_invocation(),
+                parent_state={},
+                conversation_id="conversation-1",
+                turn_node_id="turn-1",
+                parent_run_id="parent-run-1",
+            )
+
+    asyncio.run(invoke())
 
 
 def test_resume_loads_persisted_w3c_trace_as_continuation_parent(monkeypatch) -> None:
@@ -120,13 +168,11 @@ def test_supplied_trace_context_is_persisted_on_workflow_run(monkeypatch) -> Non
 def test_nested_invocation_resumes_existing_child_checkpoint(monkeypatch) -> None:
     runtime = WorkflowRuntime.__new__(WorkflowRuntime)
     checkpoint = SimpleNamespace(metadata={"step_seq": 4})
-    calls: list[str] = []
+    calls: list[dict] = []
     runtime._terminal_run_result = lambda **_: None
     runtime._latest_checkpoint_for_run = lambda **_: checkpoint
     runtime._persist_workflow_invocation_lineage = lambda **_: True
-    runtime.resume_from_latest_checkpoint = lambda **kwargs: calls.append(
-        f"resume:{kwargs['run_id']}"
-    ) or RunResult(
+    runtime.resume_from_latest_checkpoint = lambda **kwargs: calls.append(kwargs) or RunResult(
         final_state={}, run_id="child-run", mq=queue.Queue(), status="succeeded"
     )
     runtime._workflow_invocation_plan = staticmethod(
@@ -136,6 +182,9 @@ def test_nested_invocation_resumes_existing_child_checkpoint(monkeypatch) -> Non
             "turn_node_id": "turn-1",
             "result_state_key": "child",
         }
+    )
+    parent = TraceContext.new_root(
+        run_id="parent", token_id="token", step_seq=1, node_id="act"
     )
     invocation = WorkflowInvocationRequest(
         workflow_id="child-workflow", result_state_key="child", invocation_key="act-1"
@@ -147,10 +196,12 @@ def test_nested_invocation_resumes_existing_child_checkpoint(monkeypatch) -> Non
         conversation_id="conversation-1",
         turn_node_id="turn-1",
         parent_run_id="parent-run",
+        parent_trace_context=parent,
     )
 
     assert result.run_id == "child-run"
-    assert calls == ["resume:child-run"]
+    assert calls[0]["run_id"] == "child-run"
+    assert calls[0]["_parent_trace_context"] is parent
 
 
 def test_nested_invocation_passes_parent_trace_context_to_new_child() -> None:

@@ -82,7 +82,10 @@ def validate_initial_state(initial_state: WorkflowState):
     Workflow state is user-land except for a small set of underscore-prefixed
     keys reserved for runtime/DI plumbing.
     """
-    allowed_underscore = {"_deps", "_rt_join"}
+    allowed_underscore = {
+        "_deps", "_rt_join", "_wf_invocation_path", "_wf_parent_run_id",
+        "_wf_current_run_id", "_wf_invoked",
+    }
 
     for key in initial_state:
         if key in allowed_underscore:
@@ -252,6 +255,24 @@ class BaseRuntime:
         invocation: WorkflowInvocationRequest,
     ) -> WorkflowState:
         child_state: WorkflowState = dict(parent_state)  # type: ignore[arg-type]
+        path = [str(item) for item in (parent_state.get("_wf_invocation_path") or [])]
+        child_workflow = str(invocation.workflow_id)
+        if child_workflow in path:
+            raise ValueError(
+                "Nested workflow cycle rejected: "
+                + " -> ".join(path + [child_workflow])
+            )
+        max_depth = int(getattr(self, "max_nested_workflow_depth", 8))
+        if len(path) >= max_depth:
+            raise ValueError(
+                f"Nested workflow depth limit {max_depth} exceeded at {child_workflow!r}"
+            )
+        child_state["_wf_invocation_path"] = path + [child_workflow]
+        child_state["_wf_parent_run_id"] = str(parent_state.get("_wf_current_run_id") or "")
+        child_state["_wf_invoked"] = {
+            "workflow_id": child_workflow,
+            "parent_run_id": child_state["_wf_parent_run_id"],
+        }
         child_state.pop("_rt_join", None)
         if invocation.initial_state:
             child_state.update(copy.deepcopy(invocation.initial_state))  # type: ignore[arg-type]
