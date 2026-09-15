@@ -1759,7 +1759,7 @@ class WorkflowRuntime(BaseRuntime):
             # trace: workflow run started
             try:
                 tc_run = _lifecycle_trace_context(
-                    token_id=str(run_id), step_seq=0, node_id=str(start_id)
+                    token_id=str(run_id), step_seq=0, node_id="start"
                 )
                 self.emitter.emit(
                     type="workflow_run_started",
