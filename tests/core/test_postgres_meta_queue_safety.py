@@ -4,7 +4,10 @@ from contextlib import contextmanager
 
 import pytest
 
-from kogwistar.engine_core.engine_postgres_meta import EnginePostgresMetaStore
+from kogwistar.engine_core.engine_postgres_meta import (
+    POSTGRES_BOOTSTRAP_ADVISORY_LOCK_KEY,
+    EnginePostgresMetaStore,
+)
 from kogwistar.engine_core.postgres_backend import _set_active_conn
 from kogwistar.engine_core.in_memory_meta import InMemoryMetaStore
 
@@ -17,6 +20,7 @@ class _Result:
 class _Connection:
     def __init__(self) -> None:
         self.statements: list[str] = []
+        self.parameters: list[object] = []
         self.savepoints = 0
 
     @contextmanager
@@ -28,8 +32,8 @@ class _Connection:
             raise
 
     def execute(self, statement, params=None):
-        del params
         self.statements.append(str(statement))
+        self.parameters.append(params)
         return _Result()
 
 
@@ -52,6 +56,18 @@ def test_enqueue_uses_atomic_pending_coalesce_upsert_inside_savepoint() -> None:
     sql = connection.statements[0]
     assert "ON CONFLICT (namespace, coalesce_key) WHERE status='PENDING'" in sql
     assert "FOR UPDATE" not in sql
+
+
+def test_postgres_bootstrap_serializes_startup_ddl_with_transaction_lock() -> None:
+    connection = _Connection()
+    meta = EnginePostgresMetaStore(engine=object(), schema="public")
+
+    with _set_active_conn(connection):
+        meta._run_bootstrap(connection)
+
+    assert connection.statements
+    assert "pg_advisory_xact_lock" in connection.statements[0]
+    assert connection.parameters[0] == {"lock_key": POSTGRES_BOOTSTRAP_ADVISORY_LOCK_KEY}
 
 
 def test_nested_metadata_failure_does_not_escape_as_outer_transaction_failure() -> None:
