@@ -23,6 +23,10 @@ from .event_envelope import EntityEventEnvelope
 
 
 _SCHEMA_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+# All processes must serialize the startup DDL batch.  This is deliberately a
+# literal, stable PostgreSQL advisory-lock key rather than Python's randomized
+# hash so independent processes and releases use the same lock.
+POSTGRES_BOOTSTRAP_ADVISORY_LOCK_KEY = 748219503
 logger = logging.getLogger(__name__)
 
 
@@ -438,6 +442,10 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
         ]
 
     def _run_bootstrap(self, conn: Any) -> None:
+        conn.execute(
+            sa.text("SELECT pg_advisory_xact_lock(:lock_key)"),
+            {"lock_key": POSTGRES_BOOTSTRAP_ADVISORY_LOCK_KEY},
+        )
         for stmt in self._bootstrap_statements():
             conn.execute(sa.text(stmt))
 
@@ -450,6 +458,10 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
 
     async def _ensure_initialized_async(self) -> None:
         async with self.engine.begin() as conn:
+            await conn.execute(
+                sa.text("SELECT pg_advisory_xact_lock(:lock_key)"),
+                {"lock_key": POSTGRES_BOOTSTRAP_ADVISORY_LOCK_KEY},
+            )
             for stmt in self._bootstrap_statements():
                 await conn.execute(sa.text(stmt))
 
