@@ -19,9 +19,11 @@ from .chroma_backend import ChromaBackend, ChromaStorageInspector
 
 from .rust_meta_sqlite import build_sqlite_meta_store
 from .storage_backend import (
+    AtomicMutationCapability,
     NoopUnitOfWork,
     StorageBackend,
     get_async_two_stage_projection_adapter,
+    get_atomic_mutation_capability,
     get_two_stage_projection_adapter,
     get_two_stage_projection_capability,
 )
@@ -1660,6 +1662,9 @@ class GraphKnowledgeEngine:
         # Backend UoW: in Postgres mode this becomes a real SQL transaction.
         self._backend_uow = _build_postgres_uow_if_needed(
             getattr(self, "backend", None)
+        )
+        self.atomic_mutation_capability: AtomicMutationCapability = (
+            get_atomic_mutation_capability(getattr(self, "backend", None))
         )
         self._async_backend_uow = None
         if getattr(getattr(self, "backend", None), "_is_async_engine", False):

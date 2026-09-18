@@ -40,6 +40,18 @@ JSONDict = Dict[str, Any]
 
 
 @dataclass(frozen=True)
+class AtomicMutationCapability:
+    """Describe whether a backend can commit a multi-operation mutation atomically."""
+
+    mode: Literal["atomic", "eventual", "none"] = "none"
+    reason: str = "backend does not declare atomic mutation support"
+
+    @property
+    def supports_atomic_mutation(self) -> bool:
+        return self.mode == "atomic"
+
+
+@dataclass(frozen=True)
 class TwoStageProjectionCapability:
     """Backend arrangement contract for ADR-018 deferred semantic projection."""
 
@@ -164,6 +176,25 @@ def get_two_stage_projection_capability(backend: Any) -> TwoStageProjectionCapab
     return TwoStageProjectionCapability()
 
 
+def get_atomic_mutation_capability(backend: Any) -> AtomicMutationCapability:
+    """Read the optional generic mutation capability from a backend."""
+
+    # The synchronous engine.uow() surface is deliberately a no-op for async
+    # PostgreSQL backends. Do not let the backend's class-level declaration
+    # authorize a replacement patch on that incompatible surface.
+    if getattr(backend, "_is_async_engine", False):
+        return AtomicMutationCapability(
+            mode="none",
+            reason="async PostgreSQL requires the async unit-of-work surface",
+        )
+    declared = getattr(backend, "atomic_mutation_capability", None)
+    if callable(declared):
+        declared = declared()
+    if isinstance(declared, AtomicMutationCapability):
+        return declared
+    return AtomicMutationCapability()
+
+
 def get_two_stage_projection_adapter(backend: Any) -> TwoStageProjectionAdapter | None:
     """Read an optional executable arrangement without widening StorageBackend."""
     adapter = getattr(backend, "two_stage_projection_adapter", None)
@@ -206,6 +237,11 @@ class AsyncUnitOfWork(Protocol):
 
 @dataclass
 class NoopUnitOfWork(UnitOfWork):
+    atomic_mutation_capability = AtomicMutationCapability(
+        mode="none",
+        reason="no-op unit of work does not provide rollback",
+    )
+
     @contextmanager
     def transaction(self) -> Iterator[None]:
         yield
