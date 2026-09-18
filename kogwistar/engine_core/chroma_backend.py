@@ -5,6 +5,7 @@ from typing import Any, Dict
 
 from .async_compat import run_awaitable_blocking
 from .embedding_profile import EmbeddingStorageState
+from .storage_backend import AtomicMutationCapability
 
 
 _VECTOR_COLLECTION_NAMES = (
@@ -153,6 +154,11 @@ class ChromaBackend:
     Important: this class does NOT try to implement transactions; callers should
     treat vector writes as best-effort unless they use an outbox pattern.
     """
+
+    atomic_mutation_capability = AtomicMutationCapability(
+        mode="eventual",
+        reason="Chroma writes are durable but do not provide multi-operation rollback",
+    )
 
     def __init__(
         self,

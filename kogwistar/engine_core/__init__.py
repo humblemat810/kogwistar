@@ -39,9 +39,11 @@ from kogwistar.engine_core.subsystems import (
     WriteSubsystem,
 )
 from kogwistar.engine_core.storage_backend import (
+    AtomicMutationCapability,
     NoopUnitOfWork,
     StorageBackend,
     UnitOfWork,
+    get_atomic_mutation_capability,
 )
 from kogwistar.engine_core.embedding_profile import (
     CorruptEmbeddingProfileError,
@@ -104,8 +106,10 @@ __all__ = [
     "ChromaBackend",
     "ChromaStorageInspector",
     "NoopUnitOfWork",
+    "AtomicMutationCapability",
     "StorageBackend",
     "UnitOfWork",
+    "get_atomic_mutation_capability",
     "CorruptEmbeddingProfileError",
     "EmbeddingProfile",
     "EmbeddingProfileError",

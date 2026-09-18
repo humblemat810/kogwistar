@@ -60,6 +60,7 @@ from sqlalchemy.dialects import postgresql as psql
 from ..utils.embedding_vectors import normalize_embedding_rows, normalize_embedding_vector
 from .async_compat import run_awaitable_blocking
 from .embedding_profile import EmbeddingProfileError, EmbeddingStorageState
+from .storage_backend import AtomicMutationCapability
 
 try:
     # pip install pgvector
@@ -668,6 +669,11 @@ def where_jsonb(
 
 class PgVectorBackend:
     """pgvector backend implementing a Chroma-shaped interface for engine usage."""
+
+    atomic_mutation_capability = AtomicMutationCapability(
+        mode="atomic",
+        reason="PostgreSQL backend joins the engine SQL transaction",
+    )
 
     @staticmethod
     def _normalize_distance(distance: str) -> str:
