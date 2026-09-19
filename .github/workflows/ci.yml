@@ -277,6 +277,63 @@ jobs:
           python -m pip install -c constraints-pypy-3.12.txt \
             'pytest>=8' pytest-asyncio pytest-dotenv pytest-xdist sqlalchemy
 
+      - name: Rebuild pydantic-core with the PyPy 3.12 FFI workaround
+        # pydantic-core is an application dependency, not a Kogwistar
+        # production override. The PyPy 3.12 beta currently lacks the
+        # PyPyLong_FromLong symbol that PyO3 0.26 requests. Rebuild only this
+        # experimental CI lane with the symbol mapping disabled for PyPy 3.12.
+        run: |
+          set -euo pipefail
+          version="$(python -c 'import importlib.metadata as m; print(m.version("pydantic-core"))')"
+          test "$version" = "2.41.5"
+          source_root="$RUNNER_TEMP/pydantic-core"
+          download_root="$RUNNER_TEMP/pydantic-core-download"
+          pyo3_root="$RUNNER_TEMP/pyo3-ffi-0.26.0"
+          wheelhouse="$RUNNER_TEMP/pydantic-core-wheelhouse"
+          rm -rf "$source_root" "$download_root" "$pyo3_root" "$wheelhouse"
+          mkdir -p "$download_root" "$wheelhouse"
+          python -m pip download --no-deps --no-binary=pydantic-core \
+            "pydantic-core==$version" --dest "$download_root"
+          archive="$(find "$download_root" -maxdepth 1 -name 'pydantic_core-*.tar.gz' -print -quit)"
+          test -n "$archive"
+          mkdir -p "$source_root"
+          tar --extract --gzip --strip-components=1 --file "$archive" \
+            --directory "$source_root"
+
+          grep -Fq 'pyo3 = { version = "0.26"' "$source_root/Cargo.toml"
+          pyo3_archive="$RUNNER_TEMP/pyo3-ffi-0.26.0.crate"
+          curl --fail --show-error --location --retry 3 \
+            'https://crates.io/api/v1/crates/pyo3-ffi/0.26.0/download' \
+            --output "$pyo3_archive"
+          mkdir -p "$pyo3_root"
+          tar --extract --gzip --strip-components=1 --file "$pyo3_archive" \
+            --directory "$pyo3_root"
+          PYO3_ROOT="$pyo3_root" python - <<'PY'
+          import os
+          from pathlib import Path
+
+          path = Path(os.environ["PYO3_ROOT"]) / "src" / "longobject.rs"
+          text = path.read_text(encoding="utf-8")
+          old = '#[cfg_attr(PyPy, link_name = "PyPyLong_'
+          new = '#[cfg_attr(all(PyPy, not(Py_3_12)), link_name = "PyPyLong_'
+          assert text.count(old) >= 10, "unexpected PyO3 long-object bindings"
+          path.write_text(text.replace(old, new), encoding="utf-8")
+          PY
+          cat >> "$source_root/Cargo.toml" <<EOF
+
+          [patch.crates-io]
+          pyo3-ffi = { path = "$pyo3_root" }
+          EOF
+          python -m pip wheel --no-deps --no-build-isolation "$source_root" \
+            --wheel-dir "$wheelhouse"
+          python -m pip install --no-deps --force-reinstall \
+            "$wheelhouse"/pydantic_core-*.whl
+          python - <<'PY'
+          import pydantic_core
+
+          print("pydantic_core:", pydantic_core.__version__)
+          PY
+
       - name: Diagnose PyPy application dependency imports
         id: pypy_dependency_verify
         continue-on-error: true

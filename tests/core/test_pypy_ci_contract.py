@@ -29,6 +29,12 @@ def test_ci_keeps_automatic_nonblocking_pypy_native_probe() -> None:
     assert "'fastapi>=0.111' 'mcp>=1.27.0' 'httpx>=0.28.1'" in workflow
     assert "'python-jose[cryptography]>=3.3' 'PyJWT>=2.8' 'RapidFuzz>=3.13.0'" in workflow
     assert "'pytest>=8' pytest-asyncio pytest-dotenv pytest-xdist sqlalchemy" in workflow
+    assert "Rebuild pydantic-core with the PyPy 3.12 FFI workaround" in workflow
+    assert "--no-binary=pydantic-core" in workflow
+    assert "pyo3-ffi/0.26.0/download" in workflow
+    assert "not(Py_3_12)" in workflow
+    assert "pyo3-ffi = { path = \"$pyo3_root\" }" in workflow
+    assert "python -m pip wheel --no-deps --no-build-isolation" in workflow
     assert 'cargo update --manifest-path rust/Cargo.toml --package pyo3 --precise 0.28.3' in workflow
     assert 'old = \'pyo3 = { version = "0.29.0", features = ["extension-module", "abi3-py312", "generate-import-lib"] }\'' in workflow
     assert 'new = \'pyo3 = { version = "0.28.3", features = ["extension-module"] }\'' in workflow
