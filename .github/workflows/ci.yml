@@ -323,6 +323,8 @@ jobs:
               print("native origin:", native.__file__)
 
       - name: Verify PyPy and native extension
+        id: native_verify
+        continue-on-error: true
         run: |
           python - <<'PY'
           import sys
@@ -342,7 +344,8 @@ jobs:
           print("native extension:", kogwistar._rust.__file__)
           PY
 
-      - name: Run provider-free PyPy CI tests
+      - name: Run provider-free PyPy CI tests with native extension
+        if: steps.native_verify.outcome == 'success'
         env:
           ANONYMIZED_TELEMETRY: "FALSE"
           KOGWISTAR_LOG_LEVEL: "WARNING"
@@ -355,6 +358,32 @@ jobs:
           --durations=25
           --durations-min=0
           -p no:cacheprovider
+
+      - name: Run provider-free PyPy CI tests with Python authorities
+        if: steps.native_verify.outcome != 'success'
+        env:
+          ANONYMIZED_TELEMETRY: "FALSE"
+          KOGWISTAR_IMPL_MODE: "python"
+          KOGWISTAR_IMPL_CONTRACTS: "python"
+          KOGWISTAR_IMPL_RUNTIME: "python"
+          KOGWISTAR_IMPL_GRAPH_STORE: "python"
+          KOGWISTAR_IMPL_META_STORE: "python"
+          KOGWISTAR_IMPL_POSTGRES_AUTHORITY: "python"
+          KOGWISTAR_LOG_LEVEL: "WARNING"
+          LOG_LEVEL: "WARNING"
+        run: >-
+          time python -m pytest
+          -m "ci and not ci_full and not slow and not manual and not llm_real and not requires_ollama"
+          -q
+          --durations=25
+          --durations-min=0
+          -p no:cacheprovider
+
+      - name: Keep native PyPy gate visible
+        if: always() && steps.native_verify.outcome != 'success'
+        run: |
+          echo "PyPy native extension verification failed; Python-authority fallback was run." >&2
+          exit 1
 
       - name: Publish PyPy result summary
         if: always()

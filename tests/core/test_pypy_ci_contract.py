@@ -34,6 +34,10 @@ def test_ci_keeps_automatic_nonblocking_pypy_native_probe() -> None:
     assert 'python -m pip install --no-deps --force-reinstall "$wheelhouse"/*.whl' in workflow
     assert 'Diagnose PyPy native extension import' in workflow
     assert 'traceback.print_exc()' in workflow
+    assert "id: native_verify" in workflow
+    assert "Run provider-free PyPy CI tests with Python authorities" in workflow
+    assert 'KOGWISTAR_IMPL_MODE: "python"' in workflow
+    assert "Keep native PyPy gate visible" in workflow
     assert 'not slow and not manual and not llm_real and not requires_ollama' in workflow
     assert '("numpy", "chromadb")' in workflow
     assert "import kogwistar._rust" in workflow
