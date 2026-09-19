@@ -312,7 +312,12 @@ impl SqliteStore {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         if conn.is_autocommit() {
-            let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            // Python EngineSQLite may commit between Rust calls. Do not start
+            // an immediate transaction from the cached handle, whose read
+            // snapshot can predate that external commit. Keep the store mutex
+            // held while refreshing so native calls remain serialized.
+            let mut fresh = configured_connection(self.path.as_ref())?;
+            let transaction = fresh.transaction_with_behavior(TransactionBehavior::Immediate)?;
             let result = {
                 let mut uow = SqliteUnitOfWork {
                     transaction: &transaction,
