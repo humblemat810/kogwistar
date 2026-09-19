@@ -238,11 +238,23 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up PyPy 3.12
-        uses: actions/setup-python@v5
-        with:
-          python-version: "pypy3.12"
-          cache: pip
+      - name: Install pinned PyPy 3.12 beta
+        env:
+          PYPY_URL: https://buildbot.pypy.org/nightly/main/pypy-c-jit-171509-4db12e5e6f4d-linux64.tar.gz
+          PYPY_SHA256: 22142124b451f3c6e93845796c411642864d7e446d23eb7ab3835ce03b537d3d
+        run: |
+          set -euo pipefail
+          pypy_home="$RUNNER_TEMP/pypy"
+          archive="$RUNNER_TEMP/pypy.tar.gz"
+          mkdir -p "$pypy_home"
+          curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+            "$PYPY_URL" --output "$archive"
+          echo "$PYPY_SHA256  $archive" | sha256sum --check --status
+          tar --extract --gzip --strip-components=1 --file "$archive" \
+            --directory "$pypy_home"
+          echo "$pypy_home/bin" >> "$GITHUB_PATH"
+          "$pypy_home/bin/pypy3" -m ensurepip
+          "$pypy_home/bin/pypy3" -m pip install --no-cache-dir --upgrade pip setuptools wheel
 
       - name: Set up pinned Rust toolchain
         uses: dtolnay/rust-toolchain@stable
