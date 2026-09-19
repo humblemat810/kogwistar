@@ -228,6 +228,80 @@ jobs:
       - name: Install and smoke native wheel
         run: python scripts/native_wheel_contract_smoke.py --wheelhouse wheelhouse
 
+  pypy-beta-best-effort:
+    # PyPy support is an automatic compatibility signal, not a required
+    # release gate while PyPy 3.12 and the PyO3 toolchain remain beta.
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up PyPy 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "pypy3.12"
+          cache: pip
+
+      - name: Set up pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.91.1
+
+      - name: Install PyPy build and test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "maturin>=1.8,<2"
+          python -m pip install pytest pytest-asyncio pytest-dotenv pytest-xdist sqlalchemy
+
+      - name: Build and install the native package on PyPy
+        run: python -m pip install -e .
+
+      - name: Verify PyPy and native extension
+        run: |
+          python - <<'PY'
+          import sys
+
+          assert sys.implementation.name == "pypy", sys.implementation
+          assert sys.version_info[:2] == (3, 12), sys.version
+          import importlib.util
+
+          for optional_name in ("numpy", "chromadb"):
+              assert importlib.util.find_spec(optional_name) is None, optional_name
+          import kogwistar
+          import kogwistar._rust
+
+          print("implementation:", sys.implementation)
+          print("version:", sys.version)
+          print("kogwistar:", kogwistar.__file__)
+          print("native extension:", kogwistar._rust.__file__)
+          PY
+
+      - name: Run provider-free PyPy CI tests
+        env:
+          ANONYMIZED_TELEMETRY: "FALSE"
+          KOGWISTAR_LOG_LEVEL: "WARNING"
+          LOG_LEVEL: "WARNING"
+          UVICORN_LOG_LEVEL: "WARNING"
+        run: >-
+          time python -m pytest
+          -m "ci and not ci_full and not slow and not manual and not llm_real and not requires_ollama"
+          -q
+          --durations=25
+          --durations-min=0
+          -p no:cacheprovider
+
+      - name: Publish PyPy result summary
+        if: always()
+        run: |
+          {
+            echo "## PyPy 3.12 best-effort compatibility"
+            echo
+            echo "This job is automatic and non-blocking while PyPy 3.12 remains beta."
+            echo "A failure is intentionally visible here without blocking the required CPython/Rust jobs."
+          } >> "$GITHUB_STEP_SUMMARY"
+
   ci_full:
     if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.full == true)
     runs-on: ubuntu-latest
