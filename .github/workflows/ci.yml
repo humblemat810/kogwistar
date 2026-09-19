@@ -371,6 +371,10 @@ jobs:
             tail -n 200 "$report"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$status" -ne 0 ]; then
+            detail=$(tail -n 12 "$report" | tr '\r\n' ' ' | sed 's/%/%25/g')
+            echo "::error title=PyPy native verification::${detail}"
+          fi
           exit "$status"
 
       - name: Run provider-free PyPy CI tests with native extension
@@ -432,6 +436,10 @@ jobs:
             tail -n 160 "$report"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$status" -ne 0 ]; then
+            detail=$(tail -n 12 "$report" | tr '\r\n' ' ' | sed 's/%/%25/g')
+            echo "::error title=PyPy Python-authority tests::${detail}"
+          fi
           exit "$status"
 
       - name: Keep native PyPy gate visible

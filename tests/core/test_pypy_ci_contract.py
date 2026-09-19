@@ -54,6 +54,8 @@ def test_ci_keeps_automatic_nonblocking_pypy_native_probe() -> None:
     assert "import kogwistar._rust" in workflow
     assert "-p no:cacheprovider" in workflow
     assert "not slow and not manual" in workflow
+    assert "::error title=PyPy native verification::" in workflow
+    assert "::error title=PyPy Python-authority tests::" in workflow
 
 
 def test_pypy_rpds_constraint_is_ci_only_and_exact() -> None:
