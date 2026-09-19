@@ -66,4 +66,6 @@ def test_pypy_rpds_constraint_is_ci_only_and_exact() -> None:
         line.strip().startswith("rpds-py") and line.strip() != "rpds-py==2026.5.1"
         for line in constraints
     )
+    assert "pydantic==2.12.5" in constraints
+    assert "pydantic-core==2.41.5" in constraints
     assert "constraints-pypy-3.12.txt" in WORKFLOW.read_text(encoding="utf-8")

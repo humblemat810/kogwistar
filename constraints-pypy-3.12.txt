@@ -5,3 +5,9 @@
 # release. Do not use this constraint for production CPython environments;
 # remove it when upstream PyO3/rpds-py publishes a compatible fix.
 rpds-py==2026.5.1
+
+# Pydantic 2.13 currently resolves pydantic-core 2.46, whose PyO3 0.29
+# extension cannot import on the current PyPy 3.12 beta. This older pair uses
+# the PyO3 0.26 source path and is limited to the experimental PyPy lane.
+pydantic==2.12.5
+pydantic-core==2.41.5
