@@ -286,8 +286,8 @@ jobs:
 
           path = Path("rust/Cargo.toml")
           text = path.read_text(encoding="utf-8")
-          old = 'pyo3 = { version = "0.29.0"'
-          new = 'pyo3 = { version = "0.28.3"'
+          old = 'pyo3 = { version = "0.29.0", features = ["extension-module", "abi3-py312", "generate-import-lib"] }'
+          new = 'pyo3 = { version = "0.28.3", features = ["extension-module"] }'
           assert text.count(old) == 1, "unexpected PyO3 workspace dependency layout"
           path.write_text(text.replace(old, new), encoding="utf-8")
           PY
