@@ -25,6 +25,8 @@ def test_ci_keeps_automatic_nonblocking_pypy_native_probe() -> None:
     assert 'assert sys.version_info[:2] == (3, 12)' in workflow
     assert 'constraints-pypy-3.12.txt' in workflow
     assert 'cargo update --manifest-path rust/Cargo.toml --package pyo3 --precise 0.28.3' in workflow
+    assert 'old = \'pyo3 = { version = "0.29.0"\'' in workflow
+    assert 'new = \'pyo3 = { version = "0.28.3"\'' in workflow
     assert 'Production and normal' in workflow
     assert 'python -m pip install -c constraints-pypy-3.12.txt -e .' in workflow
     assert 'not slow and not manual and not llm_real and not requires_ollama' in workflow

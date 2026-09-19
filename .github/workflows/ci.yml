@@ -275,6 +275,16 @@ jobs:
         # This changes only the ephemeral CI checkout. Production and normal
         # CPython builds retain the security-fixed PyO3 0.29 dependency.
         run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("rust/Cargo.toml")
+          text = path.read_text(encoding="utf-8")
+          old = 'pyo3 = { version = "0.29.0"'
+          new = 'pyo3 = { version = "0.28.3"'
+          assert text.count(old) == 1, "unexpected PyO3 workspace dependency layout"
+          path.write_text(text.replace(old, new), encoding="utf-8")
+          PY
           cargo update --manifest-path rust/Cargo.toml --package pyo3 --precise 0.28.3
           cargo tree --manifest-path rust/Cargo.toml --package pyo3
 
