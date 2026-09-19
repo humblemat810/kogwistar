@@ -10,6 +10,7 @@ pytestmark = [pytest.mark.ci, pytest.mark.core]
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
+CONSTRAINTS = ROOT / "constraints-pypy-3.12.txt"
 
 
 def test_ci_keeps_automatic_nonblocking_pypy_native_probe() -> None:
@@ -49,3 +50,14 @@ def test_ci_keeps_automatic_nonblocking_pypy_native_probe() -> None:
     assert "import kogwistar._rust" in workflow
     assert "-p no:cacheprovider" in workflow
     assert "not slow and not manual" in workflow
+
+
+def test_pypy_rpds_constraint_is_ci_only_and_exact() -> None:
+    constraints = CONSTRAINTS.read_text(encoding="utf-8").splitlines()
+
+    assert "rpds-py==2026.5.1" in constraints
+    assert not any(
+        line.strip().startswith("rpds-py") and line.strip() != "rpds-py==2026.5.1"
+        for line in constraints
+    )
+    assert "constraints-pypy-3.12.txt" in WORKFLOW.read_text(encoding="utf-8")

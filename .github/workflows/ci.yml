@@ -312,7 +312,9 @@ jobs:
         continue-on-error: true
         working-directory: ${{ runner.temp }}
         run: |
-          python - <<'PY'
+          set -o pipefail
+          report="$RUNNER_TEMP/pypy-native-verification.txt"
+          python - <<'PY' 2>&1 | tee "$report"
           import importlib.util
           import sys
           import traceback
@@ -328,6 +330,15 @@ jobs:
               traceback.print_exc()
           else:
               print("native origin:", native.__file__)
+
+      - name: Upload PyPy native diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pypy-native-diagnostics
+          path: ${{ runner.temp }}/pypy-native-verification.txt
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Verify PyPy and native extension
         id: native_verify
