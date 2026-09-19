@@ -228,6 +228,338 @@ jobs:
       - name: Install and smoke native wheel
         run: python scripts/native_wheel_contract_smoke.py --wheelhouse wheelhouse
 
+  pypy-beta-best-effort:
+    # PyPy support is an automatic compatibility signal, not a required
+    # release gate while PyPy 3.12 and the PyO3 toolchain remain beta.
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install official PyPy 3.12 beta
+        env:
+          PYPY_URL: https://buildbot.pypy.org/nightly/py3.12/pypy-c-jit-latest-linux64.tar.gz
+        run: |
+          set -euo pipefail
+          pypy_home="$RUNNER_TEMP/pypy"
+          archive="$RUNNER_TEMP/pypy.tar.gz"
+          mkdir -p "$pypy_home"
+          echo "Downloading official PyPy beta archive: $PYPY_URL"
+          curl --fail --show-error --location --retry 3 --proto '=https' --tlsv1.2 \
+            "$PYPY_URL" --output "$archive"
+          test -s "$archive"
+          echo "Downloaded PyPy archive metadata:"
+          stat --format='bytes=%s modified=%y' "$archive"
+          echo "sha256=$(sha256sum "$archive" | cut -d' ' -f1)"
+          tar --extract --gzip --strip-components=1 --file "$archive" \
+            --directory "$pypy_home"
+          test -x "$pypy_home/bin/pypy3"
+          echo "$pypy_home/bin" >> "$GITHUB_PATH"
+          "$pypy_home/bin/pypy3" -m ensurepip
+          "$pypy_home/bin/pypy3" -m pip install --no-cache-dir --upgrade pip setuptools wheel
+
+      - name: Set up pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.91.1
+
+      - name: Install PyPy build and smoke-test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -c constraints-pypy-3.12.txt "maturin>=1.8,<2"
+          python -m pip install -c constraints-pypy-3.12.txt \
+            'pydantic-extension>=0.0.7' 'pydantic>=2.6' 'anyio>=4.0' 'Jinja2>=3.1' \
+            'fastapi>=0.111' 'mcp>=1.27.0' 'httpx>=0.28.1' \
+            'python-jose[cryptography]>=3.3' 'PyJWT>=2.8' 'RapidFuzz>=3.13.0' \
+            'joblib>=1.3' 'python-dotenv>=1.0.1' 'requests>=2.32' 'typing-extensions>=4.8'
+          python -m pip install -c constraints-pypy-3.12.txt \
+            'pytest>=8' pytest-asyncio pytest-dotenv pytest-xdist sqlalchemy
+
+      - name: Rebuild pydantic-core with the PyPy 3.12 FFI workaround
+        # pydantic-core is an application dependency, not a Kogwistar
+        # production override. The PyPy 3.12 beta currently lacks the
+        # PyPyLong_FromLong symbol that PyO3 0.26 requests. Rebuild only this
+        # experimental CI lane with the symbol mapping disabled for PyPy 3.12.
+        run: |
+          set -euo pipefail
+          version="$(python scripts/pypy_pydantic_core_smoke.py --metadata-version)"
+          test "$version" = "2.41.5"
+          source_root="$RUNNER_TEMP/pydantic-core"
+          download_root="$RUNNER_TEMP/pydantic-core-download"
+          pyo3_root="$RUNNER_TEMP/pyo3-ffi-0.26.0"
+          wheelhouse="$RUNNER_TEMP/pydantic-core-wheelhouse"
+          rm -rf "$source_root" "$download_root" "$pyo3_root" "$wheelhouse"
+          mkdir -p "$download_root" "$wheelhouse"
+          python -m pip download --no-deps --no-binary=pydantic-core \
+            "pydantic-core==$version" --dest "$download_root"
+          archive="$(find "$download_root" -maxdepth 1 -name 'pydantic_core-*.tar.gz' -print -quit)"
+          test -n "$archive"
+          mkdir -p "$source_root"
+          tar --extract --gzip --strip-components=1 --file "$archive" \
+            --directory "$source_root"
+
+          grep -Fq 'pyo3 = { version = "0.26"' "$source_root/Cargo.toml"
+          pyo3_archive="$RUNNER_TEMP/pyo3-ffi-0.26.0.crate"
+          curl --fail --show-error --location --retry 3 \
+            'https://crates.io/api/v1/crates/pyo3-ffi/0.26.0/download' \
+            --output "$pyo3_archive"
+          mkdir -p "$pyo3_root"
+          tar --extract --gzip --strip-components=1 --file "$pyo3_archive" \
+            --directory "$pyo3_root"
+          PYO3_ROOT="$pyo3_root" python - <<'PY'
+          import os
+          from pathlib import Path
+
+          path = Path(os.environ["PYO3_ROOT"]) / "src" / "longobject.rs"
+          text = path.read_text(encoding="utf-8")
+          old = '#[cfg_attr(PyPy, link_name = "PyPyLong_'
+          new = '#[cfg_attr(all(PyPy, not(Py_3_12)), link_name = "PyPyLong_'
+          assert text.count(old) >= 10, "unexpected PyO3 long-object bindings"
+          path.write_text(text.replace(old, new), encoding="utf-8")
+          PY
+          cat >> "$source_root/Cargo.toml" <<EOF
+
+          [patch.crates-io]
+          pyo3-ffi = { path = "$pyo3_root" }
+          EOF
+          cargo update --manifest-path "$source_root/Cargo.toml" --package pyo3-ffi
+          cargo tree --manifest-path "$source_root/Cargo.toml" --package pyo3-ffi
+          python -m maturin build \
+            --manifest-path "$source_root/Cargo.toml" \
+            --release \
+            --interpreter "$(command -v python)" \
+            --out "$wheelhouse"
+          python -m pip install --no-deps --force-reinstall \
+            "$wheelhouse"/pydantic_core-*.whl
+          python scripts/pypy_pydantic_core_smoke.py \
+            --verify --expected-version "$version"
+
+      - name: Diagnose PyPy application dependency imports
+        id: pypy_dependency_verify
+        continue-on-error: true
+        working-directory: ${{ runner.temp }}
+        run: |
+          set -o pipefail
+          report="$RUNNER_TEMP/pypy-dependency-verification.txt"
+          python - <<'PY' 2>&1 | tee "$report"
+          import pydantic
+          import pydantic_core
+          import sys
+
+          print("implementation:", sys.implementation)
+          print("pydantic:", pydantic.__version__)
+          print("pydantic_core:", pydantic_core.__version__)
+          PY
+          status=${PIPESTATUS[0]}
+          {
+            echo "## PyPy application dependency diagnostic"
+            echo
+            echo '```text'
+            tail -n 80 "$report"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$status" -ne 0 ]; then
+            detail=$(tail -n 12 "$report" | tr '\r\n' ' ' | sed 's/%/%25/g')
+            echo "::error title=PyPy application dependencies::${detail}"
+          fi
+          exit "$status"
+
+      - name: Apply PyO3 compatibility override for PyPy beta
+        # This changes only the ephemeral CI checkout. Production and normal
+        # CPython builds retain the security-fixed PyO3 0.29 dependency.
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("rust/Cargo.toml")
+          text = path.read_text(encoding="utf-8")
+          old = 'pyo3 = { version = "0.29.0", features = ["extension-module", "abi3-py312", "generate-import-lib"] }'
+          new = 'pyo3 = { version = "0.28.3", features = ["extension-module"] }'
+          assert text.count(old) == 1, "unexpected PyO3 workspace dependency layout"
+          path.write_text(text.replace(old, new), encoding="utf-8")
+          PY
+          cargo update --manifest-path rust/Cargo.toml --package pyo3 --precise 0.28.3
+          cargo tree --manifest-path rust/Cargo.toml --package pyo3
+
+      - name: Build and install the native package on PyPy
+        # This beta-only constraint avoids the current rpds-py/PyO3 PyPy
+        # 3.12 source-build incompatibility without changing production deps.
+        run: |
+          set -euo pipefail
+          wheelhouse="$RUNNER_TEMP/pypy-wheelhouse"
+          mkdir -p "$wheelhouse"
+          python -m maturin build --release --locked \
+            --interpreter "$(command -v python)" \
+            --out "$wheelhouse"
+          python -m zipfile -l "$wheelhouse"/*.whl | sed -n '1,80p'
+          python -m pip install --no-deps --force-reinstall "$wheelhouse"/*.whl
+
+      - name: Diagnose PyPy native extension import
+        if: always()
+        continue-on-error: true
+        working-directory: ${{ runner.temp }}
+        run: |
+          set -o pipefail
+          report="$RUNNER_TEMP/pypy-native-verification.txt"
+          python - <<'PY' 2>&1 | tee "$report"
+          import importlib.util
+          import sys
+          import traceback
+
+          print("implementation:", sys.implementation)
+          print("executable:", sys.executable)
+          print("sys.path:", sys.path)
+          spec = importlib.util.find_spec("kogwistar._rust")
+          print("native spec:", spec)
+          try:
+              import kogwistar._rust as native
+          except BaseException:
+              traceback.print_exc()
+          else:
+              print("native origin:", native.__file__)
+          PY
+          {
+            echo "## PyPy native-import diagnostic"
+            echo
+            echo '```text'
+            tail -n 200 "$report"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify PyPy and native extension
+        id: native_verify
+        continue-on-error: true
+        working-directory: ${{ runner.temp }}
+        run: |
+          set -o pipefail
+          report="$RUNNER_TEMP/pypy-native-verification.txt"
+          python - <<'PY' 2>&1 | tee -a "$report"
+          import sys
+
+          assert sys.implementation.name == "pypy", sys.implementation
+          assert sys.version_info[:2] == (3, 12), sys.version
+          import importlib.util
+
+          for optional_name in ("numpy", "chromadb"):
+              assert importlib.util.find_spec(optional_name) is None, optional_name
+          import kogwistar
+          import kogwistar._rust
+
+          print("implementation:", sys.implementation)
+          print("version:", sys.version)
+          print("kogwistar:", kogwistar.__file__)
+          print("native extension:", kogwistar._rust.__file__)
+          PY
+          status=${PIPESTATUS[0]}
+          {
+            echo "## PyPy native verification"
+            echo
+            echo '```text'
+            tail -n 200 "$report"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$status" -ne 0 ]; then
+            detail=$(tail -n 12 "$report" | tr '\r\n' ' ' | sed 's/%/%25/g')
+            echo "::error title=PyPy native verification::${detail}"
+          fi
+          exit "$status"
+
+      - name: Run provider-free PyPy CI tests with native extension
+        if: steps.native_verify.outcome == 'success'
+        working-directory: ${{ runner.temp }}
+        env:
+          ANONYMIZED_TELEMETRY: "FALSE"
+          KOGWISTAR_LOG_LEVEL: "WARNING"
+          LOG_LEVEL: "WARNING"
+          UVICORN_LOG_LEVEL: "WARNING"
+        run: |
+          set +e
+          report="$RUNNER_TEMP/pypy-native-tests.txt"
+          time python -m pytest \
+            "$GITHUB_WORKSPACE/tests" \
+            -m "ci and not ci_full and not slow and not manual and not llm_real and not requires_ollama" \
+            -q \
+            --durations=25 \
+            -p no:cacheprovider >"$report" 2>&1
+          status=$?
+          tail -n 160 "$report"
+          {
+            echo "## PyPy provider-free native-extension tests"
+            echo
+            echo '```text'
+            tail -n 160 "$report"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+
+      - name: Run provider-free PyPy CI tests with Python authorities
+        if: steps.native_verify.outcome != 'success'
+        working-directory: ${{ runner.temp }}
+        env:
+          ANONYMIZED_TELEMETRY: "FALSE"
+          KOGWISTAR_IMPL_MODE: "python"
+          KOGWISTAR_IMPL_CONTRACTS: "python"
+          KOGWISTAR_IMPL_RUNTIME: "python"
+          KOGWISTAR_IMPL_GRAPH_STORE: "python"
+          KOGWISTAR_IMPL_META_STORE: "python"
+          KOGWISTAR_IMPL_POSTGRES_AUTHORITY: "python"
+          KOGWISTAR_LOG_LEVEL: "WARNING"
+          LOG_LEVEL: "WARNING"
+        run: |
+          set +e
+          report="$RUNNER_TEMP/pypy-provider-free-tests.txt"
+          time python -m pytest \
+            "$GITHUB_WORKSPACE/tests" \
+            -m "ci and not ci_full and not slow and not manual and not llm_real and not requires_ollama" \
+            -q \
+            --durations=25 \
+            -p no:cacheprovider >"$report" 2>&1
+          status=$?
+          tail -n 160 "$report"
+          {
+            echo "## PyPy provider-free fallback tests"
+            echo
+            echo '```text'
+            tail -n 160 "$report"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$status" -ne 0 ]; then
+            detail=$(tail -n 12 "$report" | tr '\r\n' ' ' | sed 's/%/%25/g')
+            echo "::error title=PyPy Python-authority tests::${detail}"
+          fi
+          exit "$status"
+
+      - name: Keep native PyPy gate visible
+        if: always() && (steps.native_verify.outcome != 'success' || steps.pypy_dependency_verify.outcome != 'success')
+        run: |
+          echo "PyPy native extension or application dependency verification failed; the profile remains experimental." >&2
+          exit 1
+
+      - name: Upload PyPy native diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pypy-native-diagnostics
+          path: |
+            ${{ runner.temp }}/pypy-native-verification.txt
+            ${{ runner.temp }}/pypy-dependency-verification.txt
+            ${{ runner.temp }}/pypy-native-tests.txt
+            ${{ runner.temp }}/pypy-provider-free-tests.txt
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Publish PyPy result summary
+        if: always()
+        run: |
+          {
+            echo "## PyPy 3.12 best-effort compatibility"
+            echo
+            echo "This job is automatic and non-blocking while PyPy 3.12 remains beta."
+            echo "A failure is intentionally visible here without blocking the required CPython/Rust jobs."
+          } >> "$GITHUB_STEP_SUMMARY"
+
   ci_full:
     if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.full == true)
     runs-on: ubuntu-latest

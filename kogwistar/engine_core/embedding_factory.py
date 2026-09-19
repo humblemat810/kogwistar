@@ -16,9 +16,8 @@ from __future__ import annotations
 import logging
 import os
 import importlib
+import math
 from typing import Any, Sequence, cast
-
-import numpy as np
 
 from ..utils.embedding_vectors import normalize_embedding_vector
 
@@ -44,12 +43,23 @@ except Exception:
 
 
 def _l2_normalize(vectors: list[list[float]]) -> list[list[float]]:
-    """L2-normalise each vector; skip zero-vectors."""
+    """L2-normalise vectors without requiring NumPy.
+
+    Scaling by the largest absolute component keeps the norm calculation
+    finite for very large or very small provider outputs.
+    """
     normed: list[list[float]] = []
     for vec in vectors:
-        r = np.asarray(vec, dtype=float)
-        norm_val = float(np.linalg.norm(r))
-        normed.append(r.tolist() if norm_val == 0.0 else (r / norm_val).tolist())
+        values = [float(value) for value in vec]
+        if any(not math.isfinite(value) for value in values):
+            raise ValueError("embedding vector must contain only finite values")
+        scale = max((abs(value) for value in values), default=0.0)
+        if scale == 0.0:
+            normed.append(values)
+            continue
+        scaled = [value / scale for value in values]
+        unit_norm = math.sqrt(math.fsum(value * value for value in scaled))
+        normed.append([value / unit_norm for value in scaled])
     return normed
 
 
