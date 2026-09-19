@@ -28,7 +28,8 @@ def test_ci_keeps_automatic_nonblocking_pypy_native_probe() -> None:
     assert 'old = \'pyo3 = { version = "0.29.0"\'' in workflow
     assert 'new = \'pyo3 = { version = "0.28.3"\'' in workflow
     assert 'Production and normal' in workflow
-    assert 'python -m pip install -c constraints-pypy-3.12.txt -e .' in workflow
+    assert 'python -m maturin build --release --locked --out "$wheelhouse"' in workflow
+    assert 'python -m pip install --no-deps --force-reinstall "$wheelhouse"/*.whl' in workflow
     assert 'not slow and not manual and not llm_real and not requires_ollama' in workflow
     assert '("numpy", "chromadb")' in workflow
     assert "import kogwistar._rust" in workflow

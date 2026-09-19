@@ -291,7 +291,12 @@ jobs:
       - name: Build and install the native package on PyPy
         # This beta-only constraint avoids the current rpds-py/PyO3 PyPy
         # 3.12 source-build incompatibility without changing production deps.
-        run: python -m pip install -c constraints-pypy-3.12.txt -e .
+        run: |
+          set -euo pipefail
+          wheelhouse="$RUNNER_TEMP/pypy-wheelhouse"
+          mkdir -p "$wheelhouse"
+          python -m maturin build --release --locked --out "$wheelhouse"
+          python -m pip install --no-deps --force-reinstall "$wheelhouse"/*.whl
 
       - name: Verify PyPy and native extension
         run: |
