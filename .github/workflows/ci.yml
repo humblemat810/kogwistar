@@ -310,6 +310,7 @@ jobs:
       - name: Diagnose PyPy native extension import
         if: always()
         continue-on-error: true
+        working-directory: ${{ runner.temp }}
         run: |
           python - <<'PY'
           import importlib.util
@@ -331,6 +332,7 @@ jobs:
       - name: Verify PyPy and native extension
         id: native_verify
         continue-on-error: true
+        working-directory: ${{ runner.temp }}
         run: |
           python - <<'PY'
           import sys
@@ -352,6 +354,7 @@ jobs:
 
       - name: Run provider-free PyPy CI tests with native extension
         if: steps.native_verify.outcome == 'success'
+        working-directory: ${{ runner.temp }}
         env:
           ANONYMIZED_TELEMETRY: "FALSE"
           KOGWISTAR_LOG_LEVEL: "WARNING"
@@ -359,6 +362,7 @@ jobs:
           UVICORN_LOG_LEVEL: "WARNING"
         run: >-
           time python -m pytest
+          "$GITHUB_WORKSPACE/tests"
           -m "ci and not ci_full and not slow and not manual and not llm_real and not requires_ollama"
           -q
           --durations=25
@@ -366,6 +370,7 @@ jobs:
 
       - name: Run provider-free PyPy CI tests with Python authorities
         if: steps.native_verify.outcome != 'success'
+        working-directory: ${{ runner.temp }}
         env:
           ANONYMIZED_TELEMETRY: "FALSE"
           KOGWISTAR_IMPL_MODE: "python"
@@ -378,6 +383,7 @@ jobs:
           LOG_LEVEL: "WARNING"
         run: >-
           time python -m pytest
+          "$GITHUB_WORKSPACE/tests"
           -m "ci and not ci_full and not slow and not manual and not llm_real and not requires_ollama"
           -q
           --durations=25

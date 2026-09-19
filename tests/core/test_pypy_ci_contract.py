@@ -39,6 +39,8 @@ def test_ci_keeps_automatic_nonblocking_pypy_native_probe() -> None:
     assert 'Diagnose PyPy native extension import' in workflow
     assert 'traceback.print_exc()' in workflow
     assert "id: native_verify" in workflow
+    assert workflow.count("working-directory: ${{ runner.temp }}") >= 4
+    assert '"$GITHUB_WORKSPACE/tests"' in workflow
     assert "Run provider-free PyPy CI tests with Python authorities" in workflow
     assert 'KOGWISTAR_IMPL_MODE: "python"' in workflow
     assert "Keep native PyPy gate visible" in workflow
