@@ -318,12 +318,18 @@ jobs:
           import os
           from pathlib import Path
 
-          path = Path(os.environ["PYO3_ROOT"]) / "src" / "longobject.rs"
-          text = path.read_text(encoding="utf-8")
-          old = '#[cfg_attr(PyPy, link_name = "PyPyLong_'
-          new = '#[cfg_attr(all(PyPy, not(Py_3_12)), link_name = "PyPyLong_'
-          assert text.count(old) >= 10, "unexpected PyO3 long-object bindings"
-          path.write_text(text.replace(old, new), encoding="utf-8")
+          root = Path(os.environ["PYO3_ROOT"]) / "src"
+          old = "#[cfg_attr(PyPy, link_name = \""
+          new = "#[cfg_attr(all(PyPy, not(Py_3_12)), link_name = \""
+          patched = 0
+          for path in root.rglob("*.rs"):
+              text = path.read_text(encoding="utf-8")
+              count = text.count(old)
+              if count:
+                  path.write_text(text.replace(old, new), encoding="utf-8")
+                  patched += count
+          assert patched >= 100, f"unexpected PyO3 PyPy binding count: {patched}"
+          print(f"patched {patched} legacy PyPy link mappings")
           PY
           cat >> "$source_root/Cargo.toml" <<EOF
 

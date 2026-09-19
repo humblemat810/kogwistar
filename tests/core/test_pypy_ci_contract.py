@@ -34,6 +34,9 @@ def test_ci_keeps_automatic_nonblocking_pypy_native_probe() -> None:
     assert "--no-binary=pydantic-core" in workflow
     assert "pyo3-ffi/0.26.0/download" in workflow
     assert "not(Py_3_12)" in workflow
+    assert 'old = "#[cfg_attr(PyPy, link_name = \\"' in workflow
+    assert 'root.rglob("*.rs")' in workflow
+    assert "patched >= 100" in workflow
     assert "pyo3-ffi = { path = \"$pyo3_root\" }" in workflow
     assert 'cargo update --manifest-path "$source_root/Cargo.toml" --package pyo3-ffi' in workflow
     assert 'cargo tree --manifest-path "$source_root/Cargo.toml" --package pyo3-ffi' in workflow
