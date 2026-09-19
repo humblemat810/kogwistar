@@ -298,7 +298,29 @@ jobs:
           python -m maturin build --release --locked \
             --interpreter "$(command -v python)" \
             --out "$wheelhouse"
+          python -m zipfile -l "$wheelhouse"/*.whl | sed -n '1,80p'
           python -m pip install --no-deps --force-reinstall "$wheelhouse"/*.whl
+
+      - name: Diagnose PyPy native extension import
+        if: always()
+        continue-on-error: true
+        run: |
+          python - <<'PY'
+          import importlib.util
+          import sys
+          import traceback
+
+          print("implementation:", sys.implementation)
+          print("executable:", sys.executable)
+          print("sys.path:", sys.path)
+          spec = importlib.util.find_spec("kogwistar._rust")
+          print("native spec:", spec)
+          try:
+              import kogwistar._rust as native
+          except BaseException:
+              traceback.print_exc()
+          else:
+              print("native origin:", native.__file__)
 
       - name: Verify PyPy and native extension
         run: |
