@@ -271,6 +271,13 @@ jobs:
           python -m pip install -c constraints-pypy-3.12.txt "maturin>=1.8,<2"
           python -m pip install -c constraints-pypy-3.12.txt pytest pytest-asyncio pytest-dotenv pytest-xdist sqlalchemy
 
+      - name: Apply PyO3 compatibility override for PyPy beta
+        # This changes only the ephemeral CI checkout. Production and normal
+        # CPython builds retain the security-fixed PyO3 0.29 dependency.
+        run: |
+          cargo update --manifest-path rust/Cargo.toml --package pyo3 --precise 0.28.3
+          cargo tree --manifest-path rust/Cargo.toml --package pyo3
+
       - name: Build and install the native package on PyPy
         # This beta-only constraint avoids the current rpds-py/PyO3 PyPy
         # 3.12 source-build incompatibility without changing production deps.
