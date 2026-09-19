@@ -44,7 +44,7 @@ DropReason = Literal[
 ]
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ContextMessage:
     role: Role
     content: str
@@ -84,7 +84,7 @@ class ContextItem:
     token_cost: int = 0
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class DroppedItem:
     kind: ItemKind
     node_id: str | None

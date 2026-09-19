@@ -20,7 +20,7 @@ def test_ci_keeps_automatic_nonblocking_pypy_native_probe() -> None:
 
     assert "pypy-beta-best-effort:" in workflow
     assert "continue-on-error: true" in workflow
-    assert "nightly/py3.12/pypy-c-jit-latest-linux64.tar.gz" in workflow
+    assert "pypy-c-jit-171509-4db12e5e6f4d-linux64.tar.gz" in workflow
     assert 'sha256sum "$archive"' in workflow
     assert 'stat --format=' in workflow
     assert 'test -x "$pypy_home/bin/pypy3"' in workflow
@@ -52,6 +52,11 @@ def test_ci_keeps_automatic_nonblocking_pypy_native_probe() -> None:
     assert "Audit built Kogwistar Python ABI" in workflow
     assert "Dlopen built Kogwistar extension" in workflow
     assert "scripts/pypy_ffi_symbol_audit.py" in workflow
+    assert "::error title=PyPy pydantic-core ABI::" in workflow
+    assert "::error title=Kogwistar PyPy ABI::" in workflow
+    assert "PYPY_SHA256" in workflow
+    assert "actual_sha256" in workflow
+    assert "pypy-c-jit-171509-4db12e5e6f4d-linux64.tar.gz" in workflow
     assert "--extension" in workflow
     assert "scripts/pypy_native_extension_dlopen.py" in workflow
     assert 'cargo update --manifest-path rust/Cargo.toml --package pyo3 --precise 0.28.3' in workflow
@@ -192,3 +197,17 @@ def test_pypy_binary_audit_uses_undefined_nm_and_python_abi_filter() -> None:
     assert "split(\"@\", 1)" in audit_source
     assert "ctypes.CDLL" in dlopen_source
     assert "RTLD_NOW" in dlopen_source
+
+
+def test_pypy_311_experimental_workflow_is_pinned_and_nonblocking() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "pypy-311-experimental.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "continue-on-error: true" in workflow
+    assert "pypy3.11-v7.3.20-linux64.tar.bz2" in workflow
+    assert "1410db3a7ae47603e2b7cbfd7ff6390b891b2e041c9eb4f1599f333677bccb3e" in workflow
+    assert "actual_sha256" in workflow
+    assert "--bzip2" in workflow
+    assert "KOGWISTAR_IMPL_MODE: python" in workflow
+    assert "no image is published" in workflow

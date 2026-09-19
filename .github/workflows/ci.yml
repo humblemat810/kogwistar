@@ -14,6 +14,16 @@ on:
         required: false
         type: boolean
         default: false
+      pypy_url:
+        description: Optional immutable PyPy 3.12 beta archive URL
+        required: false
+        type: string
+        default: https://buildbot.pypy.org/nightly/main/pypy-c-jit-171509-4db12e5e6f4d-linux64.tar.gz
+      pypy_sha256:
+        description: SHA-256 for the selected PyPy archive
+        required: false
+        type: string
+        default: 22142124b451f3c6e93845796c411642864d7e446d23eb7ab3835ce03b537d3d
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -240,7 +250,8 @@ jobs:
 
       - name: Install official PyPy 3.12 beta
         env:
-          PYPY_URL: https://buildbot.pypy.org/nightly/py3.12/pypy-c-jit-latest-linux64.tar.gz
+          PYPY_URL: ${{ inputs.pypy_url || 'https://buildbot.pypy.org/nightly/main/pypy-c-jit-171509-4db12e5e6f4d-linux64.tar.gz' }}
+          PYPY_SHA256: ${{ inputs.pypy_sha256 || '22142124b451f3c6e93845796c411642864d7e446d23eb7ab3835ce03b537d3d' }}
         run: |
           set -euo pipefail
           pypy_home="$RUNNER_TEMP/pypy"
@@ -252,7 +263,10 @@ jobs:
           test -s "$archive"
           echo "Downloaded PyPy archive metadata:"
           stat --format='bytes=%s modified=%y' "$archive"
-          echo "sha256=$(sha256sum "$archive" | cut -d' ' -f1)"
+          actual_sha256="$(sha256sum "$archive" | cut -d' ' -f1)"
+          echo "expected_sha256=$PYPY_SHA256"
+          echo "actual_sha256=$actual_sha256"
+          test "$actual_sha256" = "$PYPY_SHA256"
           tar --extract --gzip --strip-components=1 --file "$archive" \
             --directory "$pypy_home"
           test -x "$pypy_home/bin/pypy3"
@@ -368,6 +382,22 @@ jobs:
             cat "$report"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+          missing=$(python - "$report" <<'PY'
+          import json
+          import sys
+
+          report = json.loads(open(sys.argv[1], encoding="utf-8").read())
+          missing = sorted({
+              symbol
+              for extension in report.get("extensions", [])
+              for symbol in extension.get("missing_python_symbols", [])
+          })
+          print(", ".join(missing))
+          PY
+          )
+          if [ -n "$missing" ]; then
+            echo "::error title=PyPy pydantic-core ABI::Missing Python ABI symbols: $missing"
+          fi
           exit "$status"
 
       - name: Dlopen built pydantic-core extension
@@ -531,6 +561,22 @@ jobs:
             cat "$report"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+          missing=$(python - "$report" <<'PY'
+          import json
+          import sys
+
+          report = json.loads(open(sys.argv[1], encoding="utf-8").read())
+          missing = sorted({
+              symbol
+              for extension in report.get("extensions", [])
+              for symbol in extension.get("missing_python_symbols", [])
+          })
+          print(", ".join(missing))
+          PY
+          )
+          if [ -n "$missing" ]; then
+            echo "::error title=Kogwistar PyPy ABI::Missing Python ABI symbols: $missing"
+          fi
           exit "$status"
 
       - name: Dlopen built Kogwistar extension
