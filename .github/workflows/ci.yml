@@ -265,14 +265,16 @@ jobs:
         with:
           toolchain: 1.91.1
 
-      - name: Install PyPy build and test dependencies
+      - name: Install PyPy build and smoke-test dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install "maturin>=1.8,<2"
-          python -m pip install pytest pytest-asyncio pytest-dotenv pytest-xdist sqlalchemy
+          python -m pip install pytest
 
       - name: Build and install the native package on PyPy
-        run: python -m pip install -e .
+        # Keep the beta probe independent of optional/third-party extension
+        # wheels which may not yet support PyPy 3.12 (for example rpds-py).
+        run: python -m pip install -e . --no-deps
 
       - name: Verify PyPy and native extension
         run: |
@@ -294,15 +296,14 @@ jobs:
           print("native extension:", kogwistar._rust.__file__)
           PY
 
-      - name: Run provider-free PyPy CI tests
+      - name: Run PyPy-native contract tests
         env:
           ANONYMIZED_TELEMETRY: "FALSE"
           KOGWISTAR_LOG_LEVEL: "WARNING"
           LOG_LEVEL: "WARNING"
           UVICORN_LOG_LEVEL: "WARNING"
         run: >-
-          time python -m pytest
-          -m "ci and not ci_full and not slow and not manual and not llm_real and not requires_ollama"
+          time python -m pytest tests/core/test_pypy_ci_contract.py
           -q
           --durations=25
           --durations-min=0

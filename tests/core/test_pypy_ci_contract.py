@@ -23,6 +23,8 @@ def test_ci_keeps_automatic_nonblocking_pypy_native_probe() -> None:
     assert 'test -x "$pypy_home/bin/pypy3"' in workflow
     assert 'assert sys.implementation.name == "pypy"' in workflow
     assert 'assert sys.version_info[:2] == (3, 12)' in workflow
+    assert 'python -m pip install -e . --no-deps' in workflow
+    assert 'python -m pytest tests/core/test_pypy_ci_contract.py' in workflow
     assert '("numpy", "chromadb")' in workflow
     assert "import kogwistar._rust" in workflow
     assert "-p no:cacheprovider" in workflow
