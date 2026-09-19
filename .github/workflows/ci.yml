@@ -324,8 +324,13 @@ jobs:
           [patch.crates-io]
           pyo3-ffi = { path = "$pyo3_root" }
           EOF
-          python -m pip wheel --no-deps --no-build-isolation "$source_root" \
-            --wheel-dir "$wheelhouse"
+          cargo update --manifest-path "$source_root/Cargo.toml" --package pyo3-ffi
+          cargo tree --manifest-path "$source_root/Cargo.toml" --package pyo3-ffi
+          python -m maturin build \
+            --manifest-path "$source_root/Cargo.toml" \
+            --release \
+            --interpreter "$(command -v python)" \
+            --out "$wheelhouse"
           python -m pip install --no-deps --force-reinstall \
             "$wheelhouse"/pydantic_core-*.whl
           python - <<'PY'

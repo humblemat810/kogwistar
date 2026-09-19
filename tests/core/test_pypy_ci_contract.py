@@ -34,7 +34,10 @@ def test_ci_keeps_automatic_nonblocking_pypy_native_probe() -> None:
     assert "pyo3-ffi/0.26.0/download" in workflow
     assert "not(Py_3_12)" in workflow
     assert "pyo3-ffi = { path = \"$pyo3_root\" }" in workflow
-    assert "python -m pip wheel --no-deps --no-build-isolation" in workflow
+    assert 'cargo update --manifest-path "$source_root/Cargo.toml" --package pyo3-ffi' in workflow
+    assert 'cargo tree --manifest-path "$source_root/Cargo.toml" --package pyo3-ffi' in workflow
+    assert 'python -m maturin build \\' in workflow
+    assert '--manifest-path "$source_root/Cargo.toml"' in workflow
     assert 'cargo update --manifest-path rust/Cargo.toml --package pyo3 --precise 0.28.3' in workflow
     assert 'old = \'pyo3 = { version = "0.29.0", features = ["extension-module", "abi3-py312", "generate-import-lib"] }\'' in workflow
     assert 'new = \'pyo3 = { version = "0.28.3", features = ["extension-module"] }\'' in workflow
