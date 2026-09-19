@@ -238,20 +238,24 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install pinned PyPy 3.12 beta
+      - name: Install official PyPy 3.12 beta
         env:
-          PYPY_URL: https://buildbot.pypy.org/nightly/main/pypy-c-jit-171509-4db12e5e6f4d-linux64.tar.gz
-          PYPY_SHA256: 22142124b451f3c6e93845796c411642864d7e446d23eb7ab3835ce03b537d3d
+          PYPY_URL: https://buildbot.pypy.org/nightly/py3.12/pypy-c-jit-latest-linux64.tar.gz
         run: |
           set -euo pipefail
           pypy_home="$RUNNER_TEMP/pypy"
           archive="$RUNNER_TEMP/pypy.tar.gz"
           mkdir -p "$pypy_home"
-          curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+          echo "Downloading official PyPy beta archive: $PYPY_URL"
+          curl --fail --show-error --location --retry 3 --proto '=https' --tlsv1.2 \
             "$PYPY_URL" --output "$archive"
-          echo "$PYPY_SHA256  $archive" | sha256sum --check --status
+          test -s "$archive"
+          echo "Downloaded PyPy archive metadata:"
+          stat --format='bytes=%s modified=%y' "$archive"
+          echo "sha256=$(sha256sum "$archive" | cut -d' ' -f1)"
           tar --extract --gzip --strip-components=1 --file "$archive" \
             --directory "$pypy_home"
+          test -x "$pypy_home/bin/pypy3"
           echo "$pypy_home/bin" >> "$GITHUB_PATH"
           "$pypy_home/bin/pypy3" -m ensurepip
           "$pypy_home/bin/pypy3" -m pip install --no-cache-dir --upgrade pip setuptools wheel

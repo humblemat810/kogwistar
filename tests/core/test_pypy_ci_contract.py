@@ -17,9 +17,10 @@ def test_ci_keeps_automatic_nonblocking_pypy_native_probe() -> None:
 
     assert "pypy-beta-best-effort:" in workflow
     assert "continue-on-error: true" in workflow
-    assert "pypy-c-jit-171509-4db12e5e6f4d-linux64.tar.gz" in workflow
-    assert "22142124b451f3c6e93845796c411642864d7e446d23eb7ab3835ce03b537d3d" in workflow
-    assert "sha256sum --check --status" in workflow
+    assert "nightly/py3.12/pypy-c-jit-latest-linux64.tar.gz" in workflow
+    assert 'sha256sum "$archive"' in workflow
+    assert 'stat --format=' in workflow
+    assert 'test -x "$pypy_home/bin/pypy3"' in workflow
     assert 'assert sys.implementation.name == "pypy"' in workflow
     assert 'assert sys.version_info[:2] == (3, 12)' in workflow
     assert '("numpy", "chromadb")' in workflow
