@@ -330,22 +330,23 @@ jobs:
               traceback.print_exc()
           else:
               print("native origin:", native.__file__)
-
-      - name: Upload PyPy native diagnostics
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: pypy-native-diagnostics
-          path: ${{ runner.temp }}/pypy-native-verification.txt
-          if-no-files-found: ignore
-          retention-days: 7
+          PY
+          {
+            echo "## PyPy native-import diagnostic"
+            echo
+            echo '```text'
+            tail -n 200 "$report"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Verify PyPy and native extension
         id: native_verify
         continue-on-error: true
         working-directory: ${{ runner.temp }}
         run: |
-          python - <<'PY'
+          set -o pipefail
+          report="$RUNNER_TEMP/pypy-native-verification.txt"
+          python - <<'PY' 2>&1 | tee -a "$report"
           import sys
 
           assert sys.implementation.name == "pypy", sys.implementation
@@ -362,6 +363,15 @@ jobs:
           print("kogwistar:", kogwistar.__file__)
           print("native extension:", kogwistar._rust.__file__)
           PY
+          status=${PIPESTATUS[0]}
+          {
+            echo "## PyPy native verification"
+            echo
+            echo '```text'
+            tail -n 200 "$report"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
 
       - name: Run provider-free PyPy CI tests with native extension
         if: steps.native_verify.outcome == 'success'
@@ -371,13 +381,25 @@ jobs:
           KOGWISTAR_LOG_LEVEL: "WARNING"
           LOG_LEVEL: "WARNING"
           UVICORN_LOG_LEVEL: "WARNING"
-        run: >-
-          time python -m pytest
-          "$GITHUB_WORKSPACE/tests"
-          -m "ci and not ci_full and not slow and not manual and not llm_real and not requires_ollama"
-          -q
-          --durations=25
-          -p no:cacheprovider
+        run: |
+          set +e
+          report="$RUNNER_TEMP/pypy-native-tests.txt"
+          time python -m pytest \
+            "$GITHUB_WORKSPACE/tests" \
+            -m "ci and not ci_full and not slow and not manual and not llm_real and not requires_ollama" \
+            -q \
+            --durations=25 \
+            -p no:cacheprovider >"$report" 2>&1
+          status=$?
+          tail -n 160 "$report"
+          {
+            echo "## PyPy provider-free native-extension tests"
+            echo
+            echo '```text'
+            tail -n 160 "$report"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
 
       - name: Run provider-free PyPy CI tests with Python authorities
         if: steps.native_verify.outcome != 'success'
@@ -392,19 +414,43 @@ jobs:
           KOGWISTAR_IMPL_POSTGRES_AUTHORITY: "python"
           KOGWISTAR_LOG_LEVEL: "WARNING"
           LOG_LEVEL: "WARNING"
-        run: >-
-          time python -m pytest
-          "$GITHUB_WORKSPACE/tests"
-          -m "ci and not ci_full and not slow and not manual and not llm_real and not requires_ollama"
-          -q
-          --durations=25
-          -p no:cacheprovider
+        run: |
+          set +e
+          report="$RUNNER_TEMP/pypy-provider-free-tests.txt"
+          time python -m pytest \
+            "$GITHUB_WORKSPACE/tests" \
+            -m "ci and not ci_full and not slow and not manual and not llm_real and not requires_ollama" \
+            -q \
+            --durations=25 \
+            -p no:cacheprovider >"$report" 2>&1
+          status=$?
+          tail -n 160 "$report"
+          {
+            echo "## PyPy provider-free fallback tests"
+            echo
+            echo '```text'
+            tail -n 160 "$report"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
 
       - name: Keep native PyPy gate visible
         if: always() && steps.native_verify.outcome != 'success'
         run: |
           echo "PyPy native extension verification failed; Python-authority fallback was run." >&2
           exit 1
+
+      - name: Upload PyPy native diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pypy-native-diagnostics
+          path: |
+            ${{ runner.temp }}/pypy-native-verification.txt
+            ${{ runner.temp }}/pypy-native-tests.txt
+            ${{ runner.temp }}/pypy-provider-free-tests.txt
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Publish PyPy result summary
         if: always()

@@ -39,6 +39,10 @@ def test_ci_keeps_automatic_nonblocking_pypy_native_probe() -> None:
     assert 'python -m pip install --no-deps --force-reinstall "$wheelhouse"/*.whl' in workflow
     assert 'Diagnose PyPy native extension import' in workflow
     assert 'traceback.print_exc()' in workflow
+    assert 'GITHUB_STEP_SUMMARY' in workflow
+    assert 'pypy-native-tests.txt' in workflow
+    assert 'pypy-provider-free-tests.txt' in workflow
+    assert 'uses: actions/upload-artifact@v4' in workflow
     assert "id: native_verify" in workflow
     assert workflow.count("working-directory: ${{ runner.temp }}") >= 4
     assert '"$GITHUB_WORKSPACE/tests"' in workflow
