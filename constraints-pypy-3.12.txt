@@ -1,0 +1,7 @@
+# Temporary PyPy 3.12 beta compatibility constraint.
+#
+# rpds-py 2026.6.3 selects PyO3 0.29.0, whose PyPy 3.12 source build is not
+# currently usable. This CI-only pin selects the last known PyO3 0.28-based
+# release. Do not use this constraint for production CPython environments;
+# remove it when upstream PyO3/rpds-py publishes a compatible fix.
+rpds-py==2026.5.1
