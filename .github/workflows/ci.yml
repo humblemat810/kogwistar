@@ -295,7 +295,9 @@ jobs:
           set -euo pipefail
           wheelhouse="$RUNNER_TEMP/pypy-wheelhouse"
           mkdir -p "$wheelhouse"
-          python -m maturin build --release --locked --out "$wheelhouse"
+          python -m maturin build --release --locked \
+            --interpreter "$(command -v python)" \
+            --out "$wheelhouse"
           python -m pip install --no-deps --force-reinstall "$wheelhouse"/*.whl
 
       - name: Verify PyPy and native extension
