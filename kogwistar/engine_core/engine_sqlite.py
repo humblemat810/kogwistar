@@ -51,7 +51,7 @@ def _set_active_sqlite_conn(
         _active_sqlite_conn.reset(conn_token)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class IndexJobRow:
     job_id: str
     namespace: str
@@ -75,7 +75,7 @@ class IndexJobRow:
     accepted_at: Optional[int] = None
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ProjectedLaneMessageSqlRow:
     message_id: str
     namespace: str
