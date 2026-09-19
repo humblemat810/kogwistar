@@ -277,6 +277,36 @@ jobs:
           python -m pip install -c constraints-pypy-3.12.txt \
             'pytest>=8' pytest-asyncio pytest-dotenv pytest-xdist sqlalchemy
 
+      - name: Diagnose PyPy application dependency imports
+        id: pypy_dependency_verify
+        continue-on-error: true
+        working-directory: ${{ runner.temp }}
+        run: |
+          set -o pipefail
+          report="$RUNNER_TEMP/pypy-dependency-verification.txt"
+          python - <<'PY' 2>&1 | tee "$report"
+          import pydantic
+          import pydantic_core
+          import sys
+
+          print("implementation:", sys.implementation)
+          print("pydantic:", pydantic.__version__)
+          print("pydantic_core:", pydantic_core.__version__)
+          PY
+          status=${PIPESTATUS[0]}
+          {
+            echo "## PyPy application dependency diagnostic"
+            echo
+            echo '```text'
+            tail -n 80 "$report"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$status" -ne 0 ]; then
+            detail=$(tail -n 12 "$report" | tr '\r\n' ' ' | sed 's/%/%25/g')
+            echo "::error title=PyPy application dependencies::${detail}"
+          fi
+          exit "$status"
+
       - name: Apply PyO3 compatibility override for PyPy beta
         # This changes only the ephemeral CI checkout. Production and normal
         # CPython builds retain the security-fixed PyO3 0.29 dependency.
@@ -443,9 +473,9 @@ jobs:
           exit "$status"
 
       - name: Keep native PyPy gate visible
-        if: always() && steps.native_verify.outcome != 'success'
+        if: always() && (steps.native_verify.outcome != 'success' || steps.pypy_dependency_verify.outcome != 'success')
         run: |
-          echo "PyPy native extension verification failed; Python-authority fallback was run." >&2
+          echo "PyPy native extension or application dependency verification failed; the profile remains experimental." >&2
           exit 1
 
       - name: Upload PyPy native diagnostics
@@ -455,6 +485,7 @@ jobs:
           name: pypy-native-diagnostics
           path: |
             ${{ runner.temp }}/pypy-native-verification.txt
+            ${{ runner.temp }}/pypy-dependency-verification.txt
             ${{ runner.temp }}/pypy-native-tests.txt
             ${{ runner.temp }}/pypy-provider-free-tests.txt
           if-no-files-found: ignore

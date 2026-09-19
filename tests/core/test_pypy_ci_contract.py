@@ -38,6 +38,9 @@ def test_ci_keeps_automatic_nonblocking_pypy_native_probe() -> None:
     assert '--out "$wheelhouse"' in workflow
     assert 'python -m pip install --no-deps --force-reinstall "$wheelhouse"/*.whl' in workflow
     assert 'Diagnose PyPy native extension import' in workflow
+    assert 'Diagnose PyPy application dependency imports' in workflow
+    assert 'import pydantic_core' in workflow
+    assert 'pypy-dependency-verification.txt' in workflow
     assert 'traceback.print_exc()' in workflow
     assert 'GITHUB_STEP_SUMMARY' in workflow
     assert 'pypy-native-tests.txt' in workflow
@@ -55,6 +58,7 @@ def test_ci_keeps_automatic_nonblocking_pypy_native_probe() -> None:
     assert "-p no:cacheprovider" in workflow
     assert "not slow and not manual" in workflow
     assert "::error title=PyPy native verification::" in workflow
+    assert "::error title=PyPy application dependencies::" in workflow
     assert "::error title=PyPy Python-authority tests::" in workflow
 
 
