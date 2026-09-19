@@ -282,8 +282,13 @@ jobs:
         # production override. The PyPy 3.12 beta currently lacks the
         # PyPyLong_FromLong symbol that PyO3 0.26 requests. Rebuild only this
         # experimental CI lane with the symbol mapping disabled for PyPy 3.12.
+        # Keep the lane diagnostic: a pydantic-core source-build failure must
+        # not hide the later dependency and native-extension diagnostics.
+        continue-on-error: true
         run: |
           set -euo pipefail
+          log="$RUNNER_TEMP/pydantic-core-rebuild.log"
+          exec > >(tee "$log") 2>&1
           version="$(python scripts/pypy_pydantic_core_smoke.py --metadata-version)"
           test "$version" = "2.41.5"
           source_root="$RUNNER_TEMP/pydantic-core"
@@ -335,6 +340,21 @@ jobs:
             "$wheelhouse"/pydantic_core-*.whl
           python scripts/pypy_pydantic_core_smoke.py \
             --verify --expected-version "$version"
+
+      - name: Summarize pydantic-core rebuild
+        if: always()
+        working-directory: ${{ runner.temp }}
+        run: |
+          log="$RUNNER_TEMP/pydantic-core-rebuild.log"
+          if [ -f "$log" ]; then
+            {
+              echo "## PyPy pydantic-core rebuild diagnostic"
+              echo
+              echo '```text'
+              tail -n 120 "$log"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Diagnose PyPy application dependency imports
         id: pypy_dependency_verify
