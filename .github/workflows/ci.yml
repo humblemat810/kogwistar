@@ -284,7 +284,7 @@ jobs:
         # experimental CI lane with the symbol mapping disabled for PyPy 3.12.
         run: |
           set -euo pipefail
-          version="$(python -c 'import importlib.metadata as m; print(m.version("pydantic-core"))')"
+          version="$(python scripts/pypy_pydantic_core_smoke.py --metadata-version)"
           test "$version" = "2.41.5"
           source_root="$RUNNER_TEMP/pydantic-core"
           download_root="$RUNNER_TEMP/pydantic-core-download"
@@ -333,11 +333,8 @@ jobs:
             --out "$wheelhouse"
           python -m pip install --no-deps --force-reinstall \
             "$wheelhouse"/pydantic_core-*.whl
-          python - <<'PY'
-          import pydantic_core
-
-          print("pydantic_core:", pydantic_core.__version__)
-          PY
+          python scripts/pypy_pydantic_core_smoke.py \
+            --verify --expected-version "$version"
 
       - name: Diagnose PyPy application dependency imports
         id: pypy_dependency_verify
