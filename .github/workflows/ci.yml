@@ -277,11 +277,12 @@ jobs:
           python -m pip install -c constraints-pypy-3.12.txt \
             'pytest>=8' pytest-asyncio pytest-dotenv pytest-xdist sqlalchemy
 
-      - name: Rebuild pydantic-core with the PyPy 3.12 FFI workaround
+      - name: Build patched pydantic-core wheel
+        id: pydantic_build
         # pydantic-core is an application dependency, not a Kogwistar
-        # production override. The PyPy 3.12 beta currently lacks the
-        # PyPyLong_FromLong symbol that PyO3 0.26 requests. Rebuild only this
-        # experimental CI lane with the symbol mapping disabled for PyPy 3.12.
+        # production override. PyPy 3.12 beta is not ABI-compatible with all
+        # legacy PyO3 0.26 PyPy symbol mappings. Rebuild only this experimental
+        # CI lane with the currently validated long-object mapping disabled.
         # Keep the lane diagnostic: a pydantic-core source-build failure must
         # not hide the later dependency and native-extension diagnostics.
         continue-on-error: true
@@ -338,8 +339,49 @@ jobs:
             --out "$wheelhouse"
           python -m pip install --no-deps --force-reinstall \
             "$wheelhouse"/pydantic_core-*.whl
+          echo "Built pydantic-core wheel; import validation runs in a separate step."
+
+      - name: Import patched pydantic-core wheel
+        id: pydantic_import
+        if: always()
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          report="$RUNNER_TEMP/pydantic-core-import.txt"
+          version="$(python scripts/pypy_pydantic_core_smoke.py --metadata-version)"
           python scripts/pypy_pydantic_core_smoke.py \
-            --verify --expected-version "$version"
+            --verify --expected-version "$version" 2>&1 | tee "$report"
+          status=${PIPESTATUS[0]}
+          {
+            echo "## PyPy pydantic-core import diagnostic"
+            echo
+            echo '```text'
+            tail -n 120 "$report"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$status" -ne 0 ]; then
+            detail=$(tail -n 12 "$report" | tr '\r\n' ' ' | sed 's/%/%25/g')
+            echo "::error title=PyPy pydantic-core import::${detail}"
+          fi
+          exit "$status"
+
+      - name: Audit PyO3 PyPy 3.12 legacy symbols
+        if: always()
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          report="$RUNNER_TEMP/pypy-ffi-symbol-audit.json"
+          python scripts/pypy_ffi_symbol_audit.py \
+            --pyo3-root "$RUNNER_TEMP/pyo3-ffi-0.26.0" \
+            --pypy-root "$RUNNER_TEMP/pypy" \
+            --json | tee "$report"
+          {
+            echo "## PyPy FFI symbol audit"
+            echo
+            echo '```json'
+            cat "$report"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Summarize pydantic-core rebuild
         if: always()
@@ -416,30 +458,17 @@ jobs:
           python -m zipfile -l "$wheelhouse"/*.whl | sed -n '1,80p'
           python -m pip install --no-deps --force-reinstall "$wheelhouse"/*.whl
 
-      - name: Diagnose PyPy native extension import
+      - name: Directly probe PyPy native extension import
+        id: native_direct_verify
         if: always()
         continue-on-error: true
         working-directory: ${{ runner.temp }}
         run: |
           set -o pipefail
           report="$RUNNER_TEMP/pypy-native-verification.txt"
-          python - <<'PY' 2>&1 | tee "$report"
-          import importlib.util
-          import sys
-          import traceback
-
-          print("implementation:", sys.implementation)
-          print("executable:", sys.executable)
-          print("sys.path:", sys.path)
-          spec = importlib.util.find_spec("kogwistar._rust")
-          print("native spec:", spec)
-          try:
-              import kogwistar._rust as native
-          except BaseException:
-              traceback.print_exc()
-          else:
-              print("native origin:", native.__file__)
-          PY
+          python "$GITHUB_WORKSPACE/scripts/pypy_native_extension_smoke.py" \
+            2>&1 | tee "$report"
+          status=${PIPESTATUS[0]}
           {
             echo "## PyPy native-import diagnostic"
             echo
@@ -447,9 +476,15 @@ jobs:
             tail -n 200 "$report"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$status" -ne 0 ]; then
+            detail=$(tail -n 12 "$report" | tr '\r\n' ' ' | sed 's/%/%25/g')
+            echo "::error title=PyPy native extension import::${detail}"
+          fi
+          exit "$status"
 
       - name: Verify PyPy and native extension
         id: native_verify
+        if: always()
         continue-on-error: true
         working-directory: ${{ runner.temp }}
         run: |
@@ -552,7 +587,7 @@ jobs:
           exit "$status"
 
       - name: Keep native PyPy gate visible
-        if: always() && (steps.native_verify.outcome != 'success' || steps.pypy_dependency_verify.outcome != 'success')
+        if: always() && (steps.native_verify.outcome != 'success' || steps.native_direct_verify.outcome != 'success' || steps.pypy_dependency_verify.outcome != 'success' || steps.pydantic_import.outcome != 'success')
         run: |
           echo "PyPy native extension or application dependency verification failed; the profile remains experimental." >&2
           exit 1
@@ -564,6 +599,8 @@ jobs:
           name: pypy-native-diagnostics
           path: |
             ${{ runner.temp }}/pypy-native-verification.txt
+            ${{ runner.temp }}/pypy-ffi-symbol-audit.json
+            ${{ runner.temp }}/pydantic-core-import.txt
             ${{ runner.temp }}/pypy-dependency-verification.txt
             ${{ runner.temp }}/pypy-native-tests.txt
             ${{ runner.temp }}/pypy-provider-free-tests.txt

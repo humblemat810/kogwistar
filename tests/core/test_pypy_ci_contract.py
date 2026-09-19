@@ -29,7 +29,8 @@ def test_ci_keeps_automatic_nonblocking_pypy_native_probe() -> None:
     assert "'fastapi>=0.111' 'mcp>=1.27.0' 'httpx>=0.28.1'" in workflow
     assert "'python-jose[cryptography]>=3.3' 'PyJWT>=2.8' 'RapidFuzz>=3.13.0'" in workflow
     assert "'pytest>=8' pytest-asyncio pytest-dotenv pytest-xdist sqlalchemy" in workflow
-    assert "Rebuild pydantic-core with the PyPy 3.12 FFI workaround" in workflow
+    assert "Build patched pydantic-core wheel" in workflow
+    assert "Import patched pydantic-core wheel" in workflow
     assert "--no-binary=pydantic-core" in workflow
     assert "pyo3-ffi/0.26.0/download" in workflow
     assert "not(Py_3_12)" in workflow
@@ -40,6 +41,8 @@ def test_ci_keeps_automatic_nonblocking_pypy_native_probe() -> None:
     assert '--manifest-path "$source_root/Cargo.toml"' in workflow
     assert 'python scripts/pypy_pydantic_core_smoke.py --metadata-version' in workflow
     assert 'python scripts/pypy_pydantic_core_smoke.py \\' in workflow
+    assert "Audit PyO3 PyPy 3.12 legacy symbols" in workflow
+    assert "scripts/pypy_ffi_symbol_audit.py" in workflow
     assert 'cargo update --manifest-path rust/Cargo.toml --package pyo3 --precise 0.28.3' in workflow
     assert 'old = \'pyo3 = { version = "0.29.0", features = ["extension-module", "abi3-py312", "generate-import-lib"] }\'' in workflow
     assert 'new = \'pyo3 = { version = "0.28.3", features = ["extension-module"] }\'' in workflow
@@ -48,7 +51,8 @@ def test_ci_keeps_automatic_nonblocking_pypy_native_probe() -> None:
     assert '--interpreter "$(command -v python)"' in workflow
     assert '--out "$wheelhouse"' in workflow
     assert 'python -m pip install --no-deps --force-reinstall "$wheelhouse"/*.whl' in workflow
-    assert 'Diagnose PyPy native extension import' in workflow
+    assert 'Directly probe PyPy native extension import' in workflow
+    assert 'scripts/pypy_native_extension_smoke.py' in workflow
     assert 'Diagnose PyPy application dependency imports' in workflow
     assert 'import pydantic_core' in workflow
     assert 'pypy-dependency-verification.txt' in workflow
@@ -58,6 +62,7 @@ def test_ci_keeps_automatic_nonblocking_pypy_native_probe() -> None:
     assert 'pypy-provider-free-tests.txt' in workflow
     assert 'uses: actions/upload-artifact@v4' in workflow
     assert "id: native_verify" in workflow
+    assert "id: native_direct_verify" in workflow
     assert workflow.count("working-directory: ${{ runner.temp }}") >= 4
     assert '"$GITHUB_WORKSPACE/tests"' in workflow
     assert "Run provider-free PyPy CI tests with Python authorities" in workflow
@@ -84,3 +89,36 @@ def test_pypy_rpds_constraint_is_ci_only_and_exact() -> None:
     assert "pydantic==2.12.5" in constraints
     assert "pydantic-core==2.41.5" in constraints
     assert "constraints-pypy-3.12.txt" in WORKFLOW.read_text(encoding="utf-8")
+
+
+def test_pypy_symbol_audit_reports_expected_and_missing_symbols(tmp_path, monkeypatch) -> None:
+    from scripts import pypy_ffi_symbol_audit as audit_module
+
+    pyo3_root = tmp_path / "pyo3"
+    source = pyo3_root / "src" / "setobject.rs"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        '#[cfg_attr(PyPy, link_name = "PyPySet_New")]\n'
+        'fn new();\n'
+        '#[cfg_attr(PyPy, link_name = "PyPySet_Add")]\n'
+        'fn add();\n',
+        encoding="utf-8",
+    )
+    pypy_root = tmp_path / "pypy"
+    binary = pypy_root / "bin" / "pypy3"
+    binary.parent.mkdir(parents=True)
+    binary.write_bytes(b"not an ELF file")
+
+    monkeypatch.setattr(audit_module.shutil, "which", lambda _: "nm")
+
+    class Result:
+        returncode = 0
+        stderr = ""
+        stdout = "000000 T PyPySet_New\n"
+
+    monkeypatch.setattr(audit_module.subprocess, "run", lambda *args, **kwargs: Result())
+    result = audit_module.audit(pyo3_root=pyo3_root, pypy_root=pypy_root)
+
+    assert result["expected_symbols"] == ["PyPySet_Add", "PyPySet_New"]
+    assert result["library_candidates"] == [str(binary)]
+    assert result["missing_symbols"] == ["PyPySet_Add"]
