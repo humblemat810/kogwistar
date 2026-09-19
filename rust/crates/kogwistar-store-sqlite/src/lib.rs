@@ -1132,7 +1132,7 @@ impl SqliteStore {
             // calls. A fresh read handle prevents an autocommit snapshot from
             // hiding those external commits while transaction reads still
             // use the Rust-owned connection above.
-            let fresh = self.connection()?;
+            let fresh = configured_connection(self.path.as_ref())?;
             operation(&fresh)
         } else {
             operation(&conn)
