@@ -24,9 +24,9 @@ def test_ci_keeps_automatic_nonblocking_pypy_native_probe() -> None:
     assert 'assert sys.implementation.name == "pypy"' in workflow
     assert 'assert sys.version_info[:2] == (3, 12)' in workflow
     assert 'constraints-pypy-3.12.txt' in workflow
-    assert "pydantic-extension>=0.0.7 pydantic>=2.6 anyio>=4.0" in workflow
-    assert "fastapi>=0.111 mcp>=1.27.0 httpx>=0.28.1" in workflow
-    assert "python-jose[cryptography]>=3.3' PyJWT>=2.8" in workflow
+    assert "'pydantic-extension>=0.0.7' 'pydantic>=2.6' 'anyio>=4.0' 'Jinja2>=3.1'" in workflow
+    assert "'fastapi>=0.111' 'mcp>=1.27.0' 'httpx>=0.28.1'" in workflow
+    assert "'python-jose[cryptography]>=3.3' 'PyJWT>=2.8' 'RapidFuzz>=3.13.0'" in workflow
     assert 'cargo update --manifest-path rust/Cargo.toml --package pyo3 --precise 0.28.3' in workflow
     assert 'old = \'pyo3 = { version = "0.29.0"\'' in workflow
     assert 'new = \'pyo3 = { version = "0.28.3"\'' in workflow
