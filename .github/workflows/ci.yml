@@ -275,7 +275,7 @@ jobs:
             'python-jose[cryptography]>=3.3' 'PyJWT>=2.8' 'RapidFuzz>=3.13.0' \
             'joblib>=1.3' 'python-dotenv>=1.0.1' 'requests>=2.32' 'typing-extensions>=4.8'
           python -m pip install -c constraints-pypy-3.12.txt \
-            pytest pytest-asyncio pytest-dotenv pytest-xdist sqlalchemy
+            'pytest>=8' pytest-asyncio pytest-dotenv pytest-xdist sqlalchemy
 
       - name: Apply PyO3 compatibility override for PyPy beta
         # This changes only the ephemeral CI checkout. Production and normal
@@ -362,7 +362,6 @@ jobs:
           -m "ci and not ci_full and not slow and not manual and not llm_real and not requires_ollama"
           -q
           --durations=25
-          --durations-min=0
           -p no:cacheprovider
 
       - name: Run provider-free PyPy CI tests with Python authorities
@@ -382,7 +381,6 @@ jobs:
           -m "ci and not ci_full and not slow and not manual and not llm_real and not requires_ollama"
           -q
           --durations=25
-          --durations-min=0
           -p no:cacheprovider
 
       - name: Keep native PyPy gate visible

@@ -27,6 +27,7 @@ def test_ci_keeps_automatic_nonblocking_pypy_native_probe() -> None:
     assert "'pydantic-extension>=0.0.7' 'pydantic>=2.6' 'anyio>=4.0' 'Jinja2>=3.1'" in workflow
     assert "'fastapi>=0.111' 'mcp>=1.27.0' 'httpx>=0.28.1'" in workflow
     assert "'python-jose[cryptography]>=3.3' 'PyJWT>=2.8' 'RapidFuzz>=3.13.0'" in workflow
+    assert "'pytest>=8' pytest-asyncio pytest-dotenv pytest-xdist sqlalchemy" in workflow
     assert 'cargo update --manifest-path rust/Cargo.toml --package pyo3 --precise 0.28.3' in workflow
     assert 'old = \'pyo3 = { version = "0.29.0"\'' in workflow
     assert 'new = \'pyo3 = { version = "0.28.3"\'' in workflow
