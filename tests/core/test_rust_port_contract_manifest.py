@@ -37,6 +37,7 @@ def test_ci_uses_persisted_inspectable_python_smoke_scripts() -> None:
     assert "python scripts/native_wheel_contract_smoke.py --wheelhouse wheelhouse" in workflow
     assert "python scripts/pypy_pydantic_core_smoke.py --metadata-version" in workflow
     assert "python scripts/pypy_ffi_symbol_audit.py" in workflow
+    assert "python scripts/pypy_native_extension_dlopen.py" in workflow
     assert 'python "$GITHUB_WORKSPACE/scripts/pypy_native_extension_smoke.py"' in workflow
     assert (
         "python scripts/pypy_pydantic_core_smoke.py \\\n"

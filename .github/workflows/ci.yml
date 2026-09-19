@@ -347,9 +347,72 @@ jobs:
             "$wheelhouse"/pydantic_core-*.whl
           echo "Built pydantic-core wheel; import validation runs in a separate step."
 
+      - name: Audit built pydantic-core Python ABI
+        id: pydantic_binary_abi
+        if: always()
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          report="$RUNNER_TEMP/pydantic-core-abi-audit.json"
+          extension="$(find "$RUNNER_TEMP/pypy" -type f -name '_pydantic_core*.so' -print -quit)"
+          test -n "$extension"
+          python scripts/pypy_ffi_symbol_audit.py \
+            --extension "$extension" \
+            --pypy-root "$RUNNER_TEMP/pypy" \
+            --json | tee "$report"
+          status=${PIPESTATUS[0]}
+          {
+            echo "## PyPy pydantic-core binary ABI audit"
+            echo
+            echo '```json'
+            cat "$report"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+
+      - name: Dlopen built pydantic-core extension
+        id: pydantic_dlopen
+        if: always()
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          report="$RUNNER_TEMP/pydantic-core-dlopen.txt"
+          extension="$(find "$RUNNER_TEMP/pypy" -type f -name '_pydantic_core*.so' -print -quit)"
+          test -n "$extension"
+          python scripts/pypy_native_extension_dlopen.py \
+            --extension "$extension" 2>&1 | tee "$report"
+          status=${PIPESTATUS[0]}
+          {
+            echo "## PyPy pydantic-core dynamic-loader preflight"
+            echo
+            echo '```text'
+            cat "$report"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+
+      - name: Supplementary PyO3 source symbol audit
+        if: always()
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          report="$RUNNER_TEMP/pypy-ffi-source-audit.json"
+          python scripts/pypy_ffi_symbol_audit.py \
+            --pyo3-root "$RUNNER_TEMP/pyo3-ffi-0.26.0" \
+            --pypy-root "$RUNNER_TEMP/pypy" \
+            --source-only \
+            --json | tee "$report"
+          {
+            echo "## Supplementary PyO3 source audit"
+            echo
+            echo '```json'
+            cat "$report"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Import patched pydantic-core wheel
         id: pydantic_import
-        if: always()
+        if: steps.pydantic_binary_abi.outcome == 'success' && steps.pydantic_dlopen.outcome == 'success'
         continue-on-error: true
         run: |
           set -o pipefail
@@ -371,24 +434,6 @@ jobs:
           fi
           exit "$status"
 
-      - name: Audit PyO3 PyPy 3.12 legacy symbols
-        if: always()
-        continue-on-error: true
-        run: |
-          set -o pipefail
-          report="$RUNNER_TEMP/pypy-ffi-symbol-audit.json"
-          python scripts/pypy_ffi_symbol_audit.py \
-            --pyo3-root "$RUNNER_TEMP/pyo3-ffi-0.26.0" \
-            --pypy-root "$RUNNER_TEMP/pypy" \
-            --json | tee "$report"
-          {
-            echo "## PyPy FFI symbol audit"
-            echo
-            echo '```json'
-            cat "$report"
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-
       - name: Summarize pydantic-core rebuild
         if: always()
         working-directory: ${{ runner.temp }}
@@ -406,6 +451,7 @@ jobs:
 
       - name: Diagnose PyPy application dependency imports
         id: pypy_dependency_verify
+        if: steps.pydantic_import.outcome == 'success'
         continue-on-error: true
         working-directory: ${{ runner.temp }}
         run: |
@@ -464,9 +510,53 @@ jobs:
           python -m zipfile -l "$wheelhouse"/*.whl | sed -n '1,80p'
           python -m pip install --no-deps --force-reinstall "$wheelhouse"/*.whl
 
+      - name: Audit built Kogwistar Python ABI
+        id: native_binary_abi
+        if: always()
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          report="$RUNNER_TEMP/kogwistar-native-abi-audit.json"
+          extension="$(find "$RUNNER_TEMP/pypy" -type f -name '_rust*.so' -print -quit)"
+          test -n "$extension"
+          python scripts/pypy_ffi_symbol_audit.py \
+            --extension "$extension" \
+            --pypy-root "$RUNNER_TEMP/pypy" \
+            --json | tee "$report"
+          status=${PIPESTATUS[0]}
+          {
+            echo "## Kogwistar PyPy binary ABI audit"
+            echo
+            echo '```json'
+            cat "$report"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+
+      - name: Dlopen built Kogwistar extension
+        id: native_dlopen
+        if: always()
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          report="$RUNNER_TEMP/kogwistar-native-dlopen.txt"
+          extension="$(find "$RUNNER_TEMP/pypy" -type f -name '_rust*.so' -print -quit)"
+          test -n "$extension"
+          python scripts/pypy_native_extension_dlopen.py \
+            --extension "$extension" 2>&1 | tee "$report"
+          status=${PIPESTATUS[0]}
+          {
+            echo "## Kogwistar PyPy dynamic-loader preflight"
+            echo
+            echo '```text'
+            cat "$report"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+
       - name: Directly probe PyPy native extension import
         id: native_direct_verify
-        if: always()
+        if: steps.native_binary_abi.outcome == 'success' && steps.native_dlopen.outcome == 'success'
         continue-on-error: true
         working-directory: ${{ runner.temp }}
         run: |
@@ -490,7 +580,7 @@ jobs:
 
       - name: Verify PyPy and native extension
         id: native_verify
-        if: always()
+        if: steps.native_direct_verify.outcome == 'success'
         continue-on-error: true
         working-directory: ${{ runner.temp }}
         run: |
@@ -528,7 +618,7 @@ jobs:
           exit "$status"
 
       - name: Run provider-free PyPy CI tests with native extension
-        if: steps.native_verify.outcome == 'success'
+        if: steps.native_verify.outcome == 'success' && steps.native_binary_abi.outcome == 'success' && steps.native_dlopen.outcome == 'success'
         working-directory: ${{ runner.temp }}
         env:
           ANONYMIZED_TELEMETRY: "FALSE"
@@ -556,7 +646,7 @@ jobs:
           exit "$status"
 
       - name: Run provider-free PyPy CI tests with Python authorities
-        if: steps.native_verify.outcome != 'success'
+        if: steps.native_verify.outcome != 'success' || steps.native_binary_abi.outcome != 'success' || steps.native_dlopen.outcome != 'success'
         working-directory: ${{ runner.temp }}
         env:
           ANONYMIZED_TELEMETRY: "FALSE"
@@ -593,7 +683,7 @@ jobs:
           exit "$status"
 
       - name: Keep native PyPy gate visible
-        if: always() && (steps.native_verify.outcome != 'success' || steps.native_direct_verify.outcome != 'success' || steps.pypy_dependency_verify.outcome != 'success' || steps.pydantic_import.outcome != 'success')
+        if: always() && (steps.pydantic_binary_abi.outcome != 'success' || steps.pydantic_dlopen.outcome != 'success' || steps.native_binary_abi.outcome != 'success' || steps.native_dlopen.outcome != 'success' || steps.native_verify.outcome != 'success' || steps.native_direct_verify.outcome != 'success' || steps.pypy_dependency_verify.outcome != 'success' || steps.pydantic_import.outcome != 'success')
         run: |
           echo "PyPy native extension or application dependency verification failed; the profile remains experimental." >&2
           exit 1
@@ -605,7 +695,11 @@ jobs:
           name: pypy-native-diagnostics
           path: |
             ${{ runner.temp }}/pypy-native-verification.txt
-            ${{ runner.temp }}/pypy-ffi-symbol-audit.json
+            ${{ runner.temp }}/pydantic-core-abi-audit.json
+            ${{ runner.temp }}/pydantic-core-dlopen.txt
+            ${{ runner.temp }}/kogwistar-native-abi-audit.json
+            ${{ runner.temp }}/kogwistar-native-dlopen.txt
+            ${{ runner.temp }}/pypy-ffi-source-audit.json
             ${{ runner.temp }}/pydantic-core-import.txt
             ${{ runner.temp }}/pypy-dependency-verification.txt
             ${{ runner.temp }}/pypy-native-tests.txt

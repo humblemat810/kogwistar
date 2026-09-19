@@ -11,6 +11,8 @@ pytestmark = [pytest.mark.ci, pytest.mark.core]
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 CONSTRAINTS = ROOT / "constraints-pypy-3.12.txt"
+ABI_AUDIT = ROOT / "scripts" / "pypy_ffi_symbol_audit.py"
+DLOPEN_PROBE = ROOT / "scripts" / "pypy_native_extension_dlopen.py"
 
 
 def test_ci_keeps_automatic_nonblocking_pypy_native_probe() -> None:
@@ -44,8 +46,14 @@ def test_ci_keeps_automatic_nonblocking_pypy_native_probe() -> None:
     assert '--manifest-path "$source_root/Cargo.toml"' in workflow
     assert 'python scripts/pypy_pydantic_core_smoke.py --metadata-version' in workflow
     assert 'python scripts/pypy_pydantic_core_smoke.py \\' in workflow
-    assert "Audit PyO3 PyPy 3.12 legacy symbols" in workflow
+    assert "Audit built pydantic-core Python ABI" in workflow
+    assert "Dlopen built pydantic-core extension" in workflow
+    assert "Supplementary PyO3 source symbol audit" in workflow
+    assert "Audit built Kogwistar Python ABI" in workflow
+    assert "Dlopen built Kogwistar extension" in workflow
     assert "scripts/pypy_ffi_symbol_audit.py" in workflow
+    assert "--extension" in workflow
+    assert "scripts/pypy_native_extension_dlopen.py" in workflow
     assert 'cargo update --manifest-path rust/Cargo.toml --package pyo3 --precise 0.28.3' in workflow
     assert 'old = \'pyo3 = { version = "0.29.0", features = ["extension-module", "abi3-py312", "generate-import-lib"] }\'' in workflow
     assert 'new = \'pyo3 = { version = "0.28.3", features = ["extension-module"] }\'' in workflow
@@ -66,6 +74,16 @@ def test_ci_keeps_automatic_nonblocking_pypy_native_probe() -> None:
     assert 'uses: actions/upload-artifact@v4' in workflow
     assert "id: native_verify" in workflow
     assert "id: native_direct_verify" in workflow
+    assert "id: pydantic_binary_abi" in workflow
+    assert "id: pydantic_dlopen" in workflow
+    assert "id: native_binary_abi" in workflow
+    assert "id: native_dlopen" in workflow
+    assert workflow.index("Audit built pydantic-core Python ABI") < workflow.index(
+        "Import patched pydantic-core wheel"
+    )
+    assert workflow.index("Audit built Kogwistar Python ABI") < workflow.index(
+        "Directly probe PyPy native extension import"
+    )
     assert workflow.count("working-directory: ${{ runner.temp }}") >= 4
     assert '"$GITHUB_WORKSPACE/tests"' in workflow
     assert "Run provider-free PyPy CI tests with Python authorities" in workflow
@@ -94,7 +112,7 @@ def test_pypy_rpds_constraint_is_ci_only_and_exact() -> None:
     assert "constraints-pypy-3.12.txt" in WORKFLOW.read_text(encoding="utf-8")
 
 
-def test_pypy_symbol_audit_reports_expected_and_missing_symbols(tmp_path, monkeypatch) -> None:
+def test_pypy_binary_audit_reports_exact_missing_symbols(tmp_path, monkeypatch) -> None:
     from scripts import pypy_ffi_symbol_audit as audit_module
 
     pyo3_root = tmp_path / "pyo3"
@@ -108,20 +126,69 @@ def test_pypy_symbol_audit_reports_expected_and_missing_symbols(tmp_path, monkey
         encoding="utf-8",
     )
     pypy_root = tmp_path / "pypy"
-    binary = pypy_root / "bin" / "pypy3"
-    binary.parent.mkdir(parents=True)
-    binary.write_bytes(b"not an ELF file")
+    runtime = pypy_root / "bin" / "pypy3"
+    runtime.parent.mkdir(parents=True)
+    runtime.write_bytes(b"not an ELF file")
+    extension = tmp_path / "_rust.pypy312-pp80-x86_64-linux-gnu.so"
+    extension.write_bytes(b"not an ELF file")
 
     monkeypatch.setattr(audit_module.shutil, "which", lambda _: "nm")
 
-    class Result:
-        returncode = 0
-        stderr = ""
-        stdout = "000000 T PyPySet_New\n"
+    def fake_run(command, **kwargs):
+        class Result:
+            returncode = 0
+            stderr = ""
+            stdout = ""
 
-    monkeypatch.setattr(audit_module.subprocess, "run", lambda *args, **kwargs: Result())
-    result = audit_module.audit(pyo3_root=pyo3_root, pypy_root=pypy_root)
+        if command[2] == "--undefined-only":
+            Result.stdout = "                 U PyList_GET_SIZE\n                 U PyPySet_New@PYTHON\n"
+        else:
+            Result.stdout = "000000 T PyPySet_New\n000000 T PyObject_Call\n"
+        return Result()
 
-    assert result["expected_symbols"] == ["PyPySet_Add", "PyPySet_New"]
-    assert result["library_candidates"] == [str(binary)]
-    assert result["missing_symbols"] == ["PyPySet_Add"]
+    monkeypatch.setattr(audit_module.subprocess, "run", fake_run)
+    result = audit_module.audit(
+        extensions=[extension],
+        pyo3_root=pyo3_root,
+        pypy_root=pypy_root,
+    )
+
+    assert result["runtime_paths"] == [str(runtime)]
+    assert result["extensions"][0]["required_python_symbols"] == [
+        "PyList_GET_SIZE",
+        "PyPySet_New",
+    ]
+    assert result["extensions"][0]["missing_python_symbols"] == ["PyList_GET_SIZE"]
+    assert result["extensions"][0]["ok"] is False
+    assert result["binary_abi_ok"] is False
+    assert result["source_audit"]["missing_symbols"] == ["PyPySet_Add"]
+
+
+def test_pypy_dlopen_preflight_uses_rtld_now(monkeypatch, tmp_path) -> None:
+    from scripts import pypy_native_extension_dlopen as dlopen_module
+
+    extension = tmp_path / "native.so"
+    seen: dict[str, object] = {}
+
+    def fake_cdll(path, *, mode):
+        seen["path"] = path
+        seen["mode"] = mode
+
+    monkeypatch.setattr(dlopen_module.ctypes, "CDLL", fake_cdll)
+
+    assert dlopen_module.preflight(extension) is None
+    assert seen == {
+        "path": str(extension),
+        "mode": getattr(dlopen_module.os, "RTLD_NOW", 2),
+    }
+
+
+def test_pypy_binary_audit_uses_undefined_nm_and_python_abi_filter() -> None:
+    audit_source = ABI_AUDIT.read_text(encoding="utf-8")
+    dlopen_source = DLOPEN_PROBE.read_text(encoding="utf-8")
+
+    assert '"--undefined-only"' in audit_source
+    assert "_PYTHON_ABI_SYMBOL" in audit_source
+    assert "split(\"@\", 1)" in audit_source
+    assert "ctypes.CDLL" in dlopen_source
+    assert "RTLD_NOW" in dlopen_source
