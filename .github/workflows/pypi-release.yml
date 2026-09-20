@@ -22,7 +22,7 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -74,15 +74,15 @@ jobs:
             artifact: wheel-macos-arm64
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.91.1
+          toolchain: 1.97.1
 
       - name: Build native wheel
         run: |
@@ -93,7 +93,7 @@ jobs:
         run: python scripts/native_wheel_contract_smoke.py --wheelhouse dist
 
       - name: Upload tested wheel
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.artifact }}
           path: dist/*.whl
@@ -103,15 +103,15 @@ jobs:
     needs: verify-release
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.91.1
+          toolchain: 1.97.1
 
       - name: Build source distribution with Maturin
         run: |
@@ -149,7 +149,7 @@ jobs:
           PY
 
       - name: Upload audited source distribution
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: source-distribution
           path: dist/*.tar.gz
@@ -159,7 +159,7 @@ jobs:
     needs: [wheels, sdist]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -185,7 +185,7 @@ jobs:
     permissions:
       id-token: write
     steps:
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 

@@ -2,18 +2,18 @@
 from __future__ import annotations
 from typing import List, Optional
 from pydantic import BaseModel
-from mcp.server.fastmcp import FastMCP
 import os
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.graph_query import GraphQuery
 from kogwistar.engine_core.models import Document
+from kogwistar.server.mcp_registry import McpRegistry
 
 # ---------- Engine + MCP ----------
 persist_directory = os.environ.get("MCP_CHROMA_DIR") or "./.chroma-mcp"
 engine = GraphKnowledgeEngine(persist_directory=persist_directory)
 gq = GraphQuery(engine)
-mcp = FastMCP("KnowledgeEngine")
+mcp = McpRegistry("KnowledgeEngine")
 
 
 # ---------- Query I/O models ----------

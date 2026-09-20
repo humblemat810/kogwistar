@@ -7,7 +7,7 @@ from urllib.parse import parse_qs, urlparse
 import httpx
 import pytest
 pytest.importorskip("fastapi")
-pytest.importorskip("fastmcp")
+pytest.importorskip("mcp")
 pytest.importorskip("sqlalchemy")
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import sessionmaker

@@ -312,7 +312,12 @@ impl SqliteStore {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         if conn.is_autocommit() {
-            let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            // Python EngineSQLite may commit between Rust calls. Do not start
+            // an immediate transaction from the cached handle, whose read
+            // snapshot can predate that external commit. Keep the store mutex
+            // held while refreshing so native calls remain serialized.
+            let mut fresh = configured_connection(self.path.as_ref())?;
+            let transaction = fresh.transaction_with_behavior(TransactionBehavior::Immediate)?;
             let result = {
                 let mut uow = SqliteUnitOfWork {
                     transaction: &transaction,
@@ -1126,7 +1131,17 @@ impl SqliteStore {
             .connection
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        operation(&conn)
+        if conn.is_autocommit() {
+            drop(conn);
+            // A Python EngineSQLite connection may commit between native
+            // calls. A fresh read handle prevents an autocommit snapshot from
+            // hiding those external commits while transaction reads still
+            // use the Rust-owned connection above.
+            let fresh = configured_connection(self.path.as_ref())?;
+            operation(&fresh)
+        } else {
+            operation(&conn)
+        }
     }
 }
 
@@ -4973,6 +4988,19 @@ mod tests {
             .unwrap();
         assert_eq!(row, (7, "{\"original\": true }".to_owned()));
         drop(conn);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn autocommit_reads_observe_commits_from_an_external_connection() {
+        let (store, path) = store("external-read");
+        let external = Connection::open(&path).unwrap();
+        external
+            .execute("UPDATE global_seq SET value = 1 WHERE rowid = 1", [])
+            .unwrap();
+        assert_eq!(store.current_global_seq().unwrap(), 1);
+        drop(external);
+        drop(store);
         fs::remove_file(path).unwrap();
     }
 

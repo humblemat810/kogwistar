@@ -1,0 +1,80 @@
+name: Experimental PyPy 3.11 Python authority
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+    inputs:
+      pypy_url:
+        description: Optional immutable PyPy 3.11 release archive URL
+        required: false
+        default: https://downloads.python.org/pypy/pypy3.11-v7.3.20-linux64.tar.bz2
+        type: string
+      pypy_sha256:
+        description: SHA-256 for the selected PyPy archive
+        required: false
+        default: 1410db3a7ae47603e2b7cbfd7ff6390b891b2e041c9eb4f1599f333677bccb3e
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  pypy-311:
+    name: PyPy 3.11 core Python-authority probe
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install official PyPy 3.11 release
+        env:
+          PYPY_URL: ${{ inputs.pypy_url || 'https://downloads.python.org/pypy/pypy3.11-v7.3.20-linux64.tar.bz2' }}
+          PYPY_SHA256: ${{ inputs.pypy_sha256 || '1410db3a7ae47603e2b7cbfd7ff6390b891b2e041c9eb4f1599f333677bccb3e' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          pypy_home="$RUNNER_TEMP/pypy311"
+          archive="$RUNNER_TEMP/pypy311.tar.bz2"
+          mkdir -p "$pypy_home"
+          curl --fail --show-error --location --retry 3 --proto '=https' --tlsv1.2 \
+            "$PYPY_URL" --output "$archive"
+          test -s "$archive"
+          actual_sha256="$(sha256sum "$archive" | cut -d' ' -f1)"
+          echo "expected_sha256=$PYPY_SHA256"
+          echo "actual_sha256=$actual_sha256"
+          test "$actual_sha256" = "$PYPY_SHA256"
+          tar --extract --bzip2 --strip-components=1 --file "$archive" --directory "$pypy_home"
+          test -x "$pypy_home/bin/pypy3"
+          echo "$pypy_home/bin" >> "$GITHUB_PATH"
+          "$pypy_home/bin/pypy3" -m ensurepip
+          "$pypy_home/bin/pypy3" -m pip install --no-cache-dir --upgrade pip setuptools wheel
+
+      - name: Verify interpreter and install bounded dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -c 'import sys; assert sys.implementation.name == "pypy"; assert sys.version_info[:2] == (3, 11); print(sys.implementation); print(sys.version)'
+          python -m pip install -r requirements-pypy-3.11-experimental.txt
+
+      - name: Run Python-authority contract tests
+        shell: bash
+        env:
+          KOGWISTAR_IMPL_MODE: python
+        run: >-
+          python -m pytest
+          tests/core/test_pypy_ci_contract.py
+          tests/core/test_high_cardinality_layout.py
+          -m "ci and not ci_full and not slow and not manual and not llm_real and not requires_ollama"
+          -q --durations=25 --durations-min=0 -p no:cacheprovider
+
+      - name: Report native boundary
+        run: |
+          echo "PyPy 3.11 Python-authority probe completed."
+          echo "Native extension compatibility remains covered by the separate ABI gate; no image is published here."

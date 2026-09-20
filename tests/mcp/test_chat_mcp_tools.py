@@ -9,7 +9,7 @@ import uuid
 
 import pytest
 pytest.importorskip("fastapi")
-pytest.importorskip("fastmcp")
+pytest.importorskip("mcp")
 
 pytestmark = pytest.mark.ci_full
 

@@ -4,7 +4,7 @@ import asyncio
 import contextlib
 import pytest
 pytest.importorskip("fastapi")
-pytest.importorskip("fastmcp")
+pytest.importorskip("mcp")
 import threading
 
 from fastapi import FastAPI

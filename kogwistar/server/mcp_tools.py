@@ -18,15 +18,6 @@ from typing import (
 )
 
 from fastapi import HTTPException
-
-try:
-    from fastmcp import FastMCP
-    from fastmcp.tools.function_tool import FunctionTool
-except ModuleNotFoundError as exc:
-    raise RuntimeError(
-        "Knowledge MCP support requires the optional 'server' extra. "
-        "Install with: pip install 'kogwistar[server]'"
-    ) from exc
 from pydantic import BaseModel, Field
 from starlette.types import Receive, Scope, Send
 
@@ -62,6 +53,7 @@ from kogwistar.server.chat_mcp import (
     build_conversation_mcp,
     build_workflow_mcp,
 )
+from kogwistar.server.mcp_registry import McpRegistry
 from kogwistar.server.resources import (
     engine,
     gq,
@@ -199,10 +191,10 @@ def _filter_tool_list(lst: list[dict]) -> list[dict]:
     nss = get_current_namespaces()
     out = []
     for item in lst:
-        name = (
-            getattr(item, "name", None)
-            if type(item) is FunctionTool
-            else None or item.get("name") or item.get("tool") or ""
+        name = getattr(item, "name", None) or (
+            item.get("name") or item.get("tool") or ""
+            if isinstance(item, dict)
+            else ""
         )
         if name:
             tool_roles_value = {Role.RO.value}
@@ -217,14 +209,6 @@ def _filter_tool_list(lst: list[dict]) -> list[dict]:
     return out
 
 
-try:
-    from fastmcp.server.middleware import Middleware  # type: ignore
-except Exception:  # pragma: no cover
-
-    class Middleware:  # type: ignore[no-redef]
-        pass
-
-
 def _tool_allowed(tool_name: str, *, role: str, namespaces: set[str]) -> bool:
     allowed_roles = {Role.RO.value}
     allowed_namespaces = {NameSpace.DOCS.value}
@@ -236,41 +220,6 @@ def _tool_allowed(tool_name: str, *, role: str, namespaces: set[str]) -> bool:
     if "*" in namespaces:
         return True
     return not allowed_namespaces.isdisjoint(namespaces)
-
-
-class RbacMiddleware(Middleware):
-    async def on_list_tools(self, context, call_next):
-        tools = await call_next(context)
-        role = get_current_role()
-        nss = get_current_namespaces()
-        out = []
-        for t in list(tools):
-            name = getattr(t, "name", None) or (
-                t.get("name") if isinstance(t, dict) else None
-            )
-            if not name or _tool_allowed(str(name), role=role, namespaces=nss):
-                out.append(t)
-        return out
-
-    async def on_call_tool(self, context, call_next):
-        role = get_current_role()
-        nss = get_current_namespaces()
-        req = getattr(context, "request", None)
-        tool_name = None
-        for attr in ("name", "tool_name", "tool"):
-            if req is not None and hasattr(req, attr):
-                tool_name = getattr(req, attr)
-                break
-        if tool_name is None and isinstance(req, dict):
-            tool_name = req.get("name") or req.get("tool_name") or req.get("tool")
-        if isinstance(tool_name, dict):
-            tool_name = tool_name.get("name")
-        if tool_name and not _tool_allowed(str(tool_name), role=role, namespaces=nss):
-            raise HTTPException(
-                status_code=403,
-                detail=f"Tool '{tool_name}' not permitted for role '{role}' in namespaces {nss}",
-            )
-        return await call_next(context)
 
 
 def require_ns(
@@ -301,7 +250,7 @@ def require_ns(
     return deco
 
 
-mcp = FastMCP("KnowledgeEngine + MCP + Admin", middleware=[RbacMiddleware()])
+mcp = McpRegistry("KnowledgeEngine + MCP + Admin", filter_tools=True)
 
 
 def _server_chat_service():

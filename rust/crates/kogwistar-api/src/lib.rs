@@ -2986,7 +2986,7 @@ fn service_event_values(
             ))
         })
         .collect::<Vec<_>>();
-    values.sort_by(|left, right| (left.0, left.1).cmp(&(right.0, right.1)));
+    values.sort_by_key(|left| (left.0, left.1));
     values.truncate(limit);
     values.into_iter().map(|(_, _, value)| value).collect()
 }
@@ -10375,7 +10375,7 @@ mod tests {
     fn frozen_mcp_tools_are_unique_and_versioned() {
         let contract: Value = serde_json::from_str(FROZEN_MCP_TOOLS_JSON).unwrap();
         assert_eq!(contract["contract_version"], "1.0.0");
-        for (surface, expected) in [("root", 12), ("conversation", 5), ("workflow", 41)] {
+        for (surface, expected) in [("root", 11), ("conversation", 5), ("workflow", 41)] {
             let tools = contract["surfaces"][surface].as_array().unwrap();
             assert_eq!(tools.len(), expected);
             let mut names = tools

@@ -14,6 +14,16 @@ on:
         required: false
         type: boolean
         default: false
+      pypy_url:
+        description: Optional immutable PyPy 3.12 beta archive URL
+        required: false
+        type: string
+        default: https://buildbot.pypy.org/nightly/main/pypy-c-jit-171509-4db12e5e6f4d-linux64.tar.gz
+      pypy_sha256:
+        description: SHA-256 for the selected PyPy archive
+        required: false
+        type: string
+        default: 22142124b451f3c6e93845796c411642864d7e446d23eb7ab3835ce03b537d3d
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -29,10 +39,10 @@ jobs:
         python-version: ["3.12", "3.13", "3.14"]
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -144,10 +154,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.13"
           cache: pip
@@ -168,12 +178,12 @@ jobs:
         working-directory: rust
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up pinned Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.91.1
+          toolchain: 1.97.1
           components: clippy,rustfmt
 
       - name: Check formatting
@@ -207,10 +217,10 @@ jobs:
         python-version: ["3.12", "3.13", "3.14"]
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -218,7 +228,7 @@ jobs:
       - name: Set up pinned Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.91.1
+          toolchain: 1.97.1
 
       - name: Build native wheel
         run: |
@@ -228,15 +238,540 @@ jobs:
       - name: Install and smoke native wheel
         run: python scripts/native_wheel_contract_smoke.py --wheelhouse wheelhouse
 
+  pypy-beta-best-effort:
+    # PyPy support is an automatic compatibility signal, not a required
+    # release gate while PyPy 3.12 and the PyO3 toolchain remain beta.
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install official PyPy 3.12 beta
+        env:
+          PYPY_URL: ${{ inputs.pypy_url || 'https://buildbot.pypy.org/nightly/main/pypy-c-jit-171509-4db12e5e6f4d-linux64.tar.gz' }}
+          PYPY_SHA256: ${{ inputs.pypy_sha256 || '22142124b451f3c6e93845796c411642864d7e446d23eb7ab3835ce03b537d3d' }}
+        run: |
+          set -euo pipefail
+          pypy_home="$RUNNER_TEMP/pypy"
+          archive="$RUNNER_TEMP/pypy.tar.gz"
+          mkdir -p "$pypy_home"
+          echo "Downloading official PyPy beta archive: $PYPY_URL"
+          curl --fail --show-error --location --retry 3 --proto '=https' --tlsv1.2 \
+            "$PYPY_URL" --output "$archive"
+          test -s "$archive"
+          echo "Downloaded PyPy archive metadata:"
+          stat --format='bytes=%s modified=%y' "$archive"
+          actual_sha256="$(sha256sum "$archive" | cut -d' ' -f1)"
+          echo "expected_sha256=$PYPY_SHA256"
+          echo "actual_sha256=$actual_sha256"
+          test "$actual_sha256" = "$PYPY_SHA256"
+          tar --extract --gzip --strip-components=1 --file "$archive" \
+            --directory "$pypy_home"
+          test -x "$pypy_home/bin/pypy3"
+          echo "$pypy_home/bin" >> "$GITHUB_PATH"
+          "$pypy_home/bin/pypy3" -m ensurepip
+          "$pypy_home/bin/pypy3" -m pip install --no-cache-dir --upgrade pip setuptools wheel
+
+      - name: Set up pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.1
+
+      - name: Install PyPy build and smoke-test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -c constraints-pypy-3.12.txt "maturin>=1.8,<2"
+          python -m pip install -c constraints-pypy-3.12.txt \
+            'pydantic-extension>=0.0.7' 'pydantic>=2.6' 'anyio>=4.0' 'Jinja2>=3.1' \
+            'fastapi>=0.111' 'mcp>=1.27,<2' 'httpx>=0.28.1' \
+            'python-jose[cryptography]>=3.3' 'PyJWT>=2.8' 'RapidFuzz>=3.13.0' \
+            'joblib>=1.3' 'python-dotenv>=1.0.1' 'requests>=2.32' 'typing-extensions>=4.8'
+          python -m pip install -c constraints-pypy-3.12.txt \
+            'pytest>=8' pytest-asyncio pytest-dotenv pytest-xdist sqlalchemy
+
+      - name: Build patched pydantic-core wheel
+        id: pydantic_build
+        # pydantic-core is an application dependency, not a Kogwistar
+        # production override. PyPy 3.12 beta is not ABI-compatible with all
+        # legacy PyO3 0.26 PyPy symbol mappings. Rebuild only this experimental
+        # CI lane with the currently validated long-object mapping disabled.
+        # Keep the lane diagnostic: a pydantic-core source-build failure must
+        # not hide the later dependency and native-extension diagnostics.
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          log="$RUNNER_TEMP/pydantic-core-rebuild.log"
+          exec > >(tee "$log") 2>&1
+          version="$(python scripts/pypy_pydantic_core_smoke.py --metadata-version)"
+          test "$version" = "2.41.5"
+          source_root="$RUNNER_TEMP/pydantic-core"
+          download_root="$RUNNER_TEMP/pydantic-core-download"
+          pyo3_root="$RUNNER_TEMP/pyo3-ffi-0.26.0"
+          wheelhouse="$RUNNER_TEMP/pydantic-core-wheelhouse"
+          rm -rf "$source_root" "$download_root" "$pyo3_root" "$wheelhouse"
+          mkdir -p "$download_root" "$wheelhouse"
+          python -m pip download --no-deps --no-binary=pydantic-core \
+            "pydantic-core==$version" --dest "$download_root"
+          archive="$(find "$download_root" -maxdepth 1 -name 'pydantic_core-*.tar.gz' -print -quit)"
+          test -n "$archive"
+          mkdir -p "$source_root"
+          tar --extract --gzip --strip-components=1 --file "$archive" \
+            --directory "$source_root"
+
+          grep -Fq 'pyo3 = { version = "0.26"' "$source_root/Cargo.toml"
+          pyo3_archive="$RUNNER_TEMP/pyo3-ffi-0.26.0.crate"
+          curl --fail --show-error --location --retry 3 \
+            'https://crates.io/api/v1/crates/pyo3-ffi/0.26.0/download' \
+            --output "$pyo3_archive"
+          mkdir -p "$pyo3_root"
+          tar --extract --gzip --strip-components=1 --file "$pyo3_archive" \
+            --directory "$pyo3_root"
+          PYO3_ROOT="$pyo3_root" python - <<'PY'
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["PYO3_ROOT"]) / "src"
+          old = "#[cfg_attr(PyPy, link_name = \""
+          new = "#[cfg_attr(all(PyPy, not(Py_3_12)), link_name = \""
+          patched = 0
+          for path in root.rglob("*.rs"):
+              text = path.read_text(encoding="utf-8")
+              count = text.count(old)
+              if count:
+                  path.write_text(text.replace(old, new), encoding="utf-8")
+                  patched += count
+          assert patched >= 100, f"unexpected PyO3 PyPy binding count: {patched}"
+          print(f"patched {patched} legacy PyPy link mappings")
+          PY
+          cat >> "$source_root/Cargo.toml" <<EOF
+
+          [patch.crates-io]
+          pyo3-ffi = { path = "$pyo3_root" }
+          EOF
+          cargo update --manifest-path "$source_root/Cargo.toml" --package pyo3-ffi
+          cargo tree --manifest-path "$source_root/Cargo.toml" --package pyo3-ffi
+          python -m maturin build \
+            --manifest-path "$source_root/Cargo.toml" \
+            --release \
+            --interpreter "$(command -v python)" \
+            --out "$wheelhouse"
+          python -m pip install --no-deps --force-reinstall \
+            "$wheelhouse"/pydantic_core-*.whl
+          echo "Built pydantic-core wheel; import validation runs in a separate step."
+
+      - name: Audit built pydantic-core Python ABI
+        id: pydantic_binary_abi
+        if: always()
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          report="$RUNNER_TEMP/pydantic-core-abi-audit.json"
+          extension="$(find "$RUNNER_TEMP/pypy" -type f -name '_pydantic_core*.so' -print -quit)"
+          test -n "$extension"
+          python scripts/pypy_ffi_symbol_audit.py \
+            --extension "$extension" \
+            --pypy-root "$RUNNER_TEMP/pypy" \
+            --json | tee "$report"
+          status=${PIPESTATUS[0]}
+          {
+            echo "## PyPy pydantic-core binary ABI audit"
+            echo
+            echo '```json'
+            cat "$report"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          missing=$(python - "$report" <<'PY'
+          import json
+          import sys
+
+          report = json.loads(open(sys.argv[1], encoding="utf-8").read())
+          missing = sorted({
+              symbol
+              for extension in report.get("extensions", [])
+              for symbol in extension.get("missing_python_symbols", [])
+          })
+          print(", ".join(missing))
+          PY
+          )
+          if [ -n "$missing" ]; then
+            echo "::error title=PyPy pydantic-core ABI::Missing Python ABI symbols: $missing"
+          fi
+          exit "$status"
+
+      - name: Dlopen built pydantic-core extension
+        id: pydantic_dlopen
+        if: always()
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          report="$RUNNER_TEMP/pydantic-core-dlopen.txt"
+          extension="$(find "$RUNNER_TEMP/pypy" -type f -name '_pydantic_core*.so' -print -quit)"
+          test -n "$extension"
+          python scripts/pypy_native_extension_dlopen.py \
+            --extension "$extension" 2>&1 | tee "$report"
+          status=${PIPESTATUS[0]}
+          {
+            echo "## PyPy pydantic-core dynamic-loader preflight"
+            echo
+            echo '```text'
+            cat "$report"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+
+      - name: Supplementary PyO3 source symbol audit
+        if: always()
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          report="$RUNNER_TEMP/pypy-ffi-source-audit.json"
+          python scripts/pypy_ffi_symbol_audit.py \
+            --pyo3-root "$RUNNER_TEMP/pyo3-ffi-0.26.0" \
+            --pypy-root "$RUNNER_TEMP/pypy" \
+            --source-only \
+            --json | tee "$report"
+          {
+            echo "## Supplementary PyO3 source audit"
+            echo
+            echo '```json'
+            cat "$report"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Import patched pydantic-core wheel
+        id: pydantic_import
+        if: steps.pydantic_binary_abi.outcome == 'success' && steps.pydantic_dlopen.outcome == 'success'
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          report="$RUNNER_TEMP/pydantic-core-import.txt"
+          version="$(python scripts/pypy_pydantic_core_smoke.py --metadata-version)"
+          python scripts/pypy_pydantic_core_smoke.py \
+            --verify --expected-version "$version" 2>&1 | tee "$report"
+          status=${PIPESTATUS[0]}
+          {
+            echo "## PyPy pydantic-core import diagnostic"
+            echo
+            echo '```text'
+            tail -n 120 "$report"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$status" -ne 0 ]; then
+            detail=$(tail -n 12 "$report" | tr '\r\n' ' ' | sed 's/%/%25/g')
+            echo "::error title=PyPy pydantic-core import::${detail}"
+          fi
+          exit "$status"
+
+      - name: Summarize pydantic-core rebuild
+        if: always()
+        working-directory: ${{ runner.temp }}
+        run: |
+          log="$RUNNER_TEMP/pydantic-core-rebuild.log"
+          if [ -f "$log" ]; then
+            {
+              echo "## PyPy pydantic-core rebuild diagnostic"
+              echo
+              echo '```text'
+              tail -n 120 "$log"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Diagnose PyPy application dependency imports
+        id: pypy_dependency_verify
+        if: steps.pydantic_import.outcome == 'success'
+        continue-on-error: true
+        working-directory: ${{ runner.temp }}
+        run: |
+          set -o pipefail
+          report="$RUNNER_TEMP/pypy-dependency-verification.txt"
+          python - <<'PY' 2>&1 | tee "$report"
+          import pydantic
+          import pydantic_core
+          import sys
+
+          print("implementation:", sys.implementation)
+          print("pydantic:", pydantic.__version__)
+          print("pydantic_core:", pydantic_core.__version__)
+          PY
+          status=${PIPESTATUS[0]}
+          {
+            echo "## PyPy application dependency diagnostic"
+            echo
+            echo '```text'
+            tail -n 80 "$report"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$status" -ne 0 ]; then
+            detail=$(tail -n 12 "$report" | tr '\r\n' ' ' | sed 's/%/%25/g')
+            echo "::error title=PyPy application dependencies::${detail}"
+          fi
+          exit "$status"
+
+      - name: Apply PyO3 compatibility override for PyPy beta
+        # This changes only the ephemeral CI checkout. Production and normal
+        # CPython builds retain the security-fixed PyO3 0.29 dependency.
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("rust/Cargo.toml")
+          text = path.read_text(encoding="utf-8")
+          old = 'pyo3 = { version = "0.29.0", features = ["extension-module", "abi3-py312", "generate-import-lib"] }'
+          new = 'pyo3 = { version = "0.28.3", features = ["extension-module"] }'
+          assert text.count(old) == 1, "unexpected PyO3 workspace dependency layout"
+          path.write_text(text.replace(old, new), encoding="utf-8")
+          PY
+          cargo update --manifest-path rust/Cargo.toml --package pyo3 --precise 0.28.3
+          cargo tree --manifest-path rust/Cargo.toml --package pyo3
+
+      - name: Build and install the native package on PyPy
+        # This beta-only constraint avoids the current rpds-py/PyO3 PyPy
+        # 3.12 source-build incompatibility without changing production deps.
+        run: |
+          set -euo pipefail
+          wheelhouse="$RUNNER_TEMP/pypy-wheelhouse"
+          mkdir -p "$wheelhouse"
+          python -m maturin build --release --locked \
+            --interpreter "$(command -v python)" \
+            --out "$wheelhouse"
+          python -m zipfile -l "$wheelhouse"/*.whl | sed -n '1,80p'
+          python -m pip install --no-deps --force-reinstall "$wheelhouse"/*.whl
+
+      - name: Audit built Kogwistar Python ABI
+        id: native_binary_abi
+        if: always()
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          report="$RUNNER_TEMP/kogwistar-native-abi-audit.json"
+          extension="$(find "$RUNNER_TEMP/pypy" -type f -name '_rust*.so' -print -quit)"
+          test -n "$extension"
+          python scripts/pypy_ffi_symbol_audit.py \
+            --extension "$extension" \
+            --pypy-root "$RUNNER_TEMP/pypy" \
+            --json | tee "$report"
+          status=${PIPESTATUS[0]}
+          {
+            echo "## Kogwistar PyPy binary ABI audit"
+            echo
+            echo '```json'
+            cat "$report"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          missing=$(python - "$report" <<'PY'
+          import json
+          import sys
+
+          report = json.loads(open(sys.argv[1], encoding="utf-8").read())
+          missing = sorted({
+              symbol
+              for extension in report.get("extensions", [])
+              for symbol in extension.get("missing_python_symbols", [])
+          })
+          print(", ".join(missing))
+          PY
+          )
+          if [ -n "$missing" ]; then
+            echo "::error title=Kogwistar PyPy ABI::Missing Python ABI symbols: $missing"
+          fi
+          exit "$status"
+
+      - name: Dlopen built Kogwistar extension
+        id: native_dlopen
+        if: always()
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          report="$RUNNER_TEMP/kogwistar-native-dlopen.txt"
+          extension="$(find "$RUNNER_TEMP/pypy" -type f -name '_rust*.so' -print -quit)"
+          test -n "$extension"
+          python scripts/pypy_native_extension_dlopen.py \
+            --extension "$extension" 2>&1 | tee "$report"
+          status=${PIPESTATUS[0]}
+          {
+            echo "## Kogwistar PyPy dynamic-loader preflight"
+            echo
+            echo '```text'
+            cat "$report"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+
+      - name: Directly probe PyPy native extension import
+        id: native_direct_verify
+        if: steps.native_binary_abi.outcome == 'success' && steps.native_dlopen.outcome == 'success'
+        continue-on-error: true
+        working-directory: ${{ runner.temp }}
+        run: |
+          set -o pipefail
+          report="$RUNNER_TEMP/pypy-native-verification.txt"
+          python "$GITHUB_WORKSPACE/scripts/pypy_native_extension_smoke.py" \
+            2>&1 | tee "$report"
+          status=${PIPESTATUS[0]}
+          {
+            echo "## PyPy native-import diagnostic"
+            echo
+            echo '```text'
+            tail -n 200 "$report"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$status" -ne 0 ]; then
+            detail=$(tail -n 12 "$report" | tr '\r\n' ' ' | sed 's/%/%25/g')
+            echo "::error title=PyPy native extension import::${detail}"
+          fi
+          exit "$status"
+
+      - name: Verify PyPy and native extension
+        id: native_verify
+        if: steps.native_direct_verify.outcome == 'success'
+        continue-on-error: true
+        working-directory: ${{ runner.temp }}
+        run: |
+          set -o pipefail
+          report="$RUNNER_TEMP/pypy-native-verification.txt"
+          python - <<'PY' 2>&1 | tee -a "$report"
+          import sys
+
+          assert sys.implementation.name == "pypy", sys.implementation
+          assert sys.version_info[:2] == (3, 12), sys.version
+          import importlib.util
+
+          for optional_name in ("numpy", "chromadb"):
+              assert importlib.util.find_spec(optional_name) is None, optional_name
+          import kogwistar
+          import kogwistar._rust
+
+          print("implementation:", sys.implementation)
+          print("version:", sys.version)
+          print("kogwistar:", kogwistar.__file__)
+          print("native extension:", kogwistar._rust.__file__)
+          PY
+          status=${PIPESTATUS[0]}
+          {
+            echo "## PyPy native verification"
+            echo
+            echo '```text'
+            tail -n 200 "$report"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$status" -ne 0 ]; then
+            detail=$(tail -n 12 "$report" | tr '\r\n' ' ' | sed 's/%/%25/g')
+            echo "::error title=PyPy native verification::${detail}"
+          fi
+          exit "$status"
+
+      - name: Run provider-free PyPy CI tests with native extension
+        if: steps.native_verify.outcome == 'success' && steps.native_binary_abi.outcome == 'success' && steps.native_dlopen.outcome == 'success'
+        working-directory: ${{ runner.temp }}
+        env:
+          ANONYMIZED_TELEMETRY: "FALSE"
+          KOGWISTAR_LOG_LEVEL: "WARNING"
+          LOG_LEVEL: "WARNING"
+          UVICORN_LOG_LEVEL: "WARNING"
+        run: |
+          set +e
+          report="$RUNNER_TEMP/pypy-native-tests.txt"
+          time python -m pytest \
+            "$GITHUB_WORKSPACE/tests" \
+            -m "ci and not ci_full and not slow and not manual and not llm_real and not requires_ollama" \
+            -q \
+            --durations=25 \
+            -p no:cacheprovider >"$report" 2>&1
+          status=$?
+          tail -n 160 "$report"
+          {
+            echo "## PyPy provider-free native-extension tests"
+            echo
+            echo '```text'
+            tail -n 160 "$report"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+
+      - name: Run provider-free PyPy CI tests with Python authorities
+        if: steps.native_verify.outcome != 'success' || steps.native_binary_abi.outcome != 'success' || steps.native_dlopen.outcome != 'success'
+        working-directory: ${{ runner.temp }}
+        env:
+          ANONYMIZED_TELEMETRY: "FALSE"
+          KOGWISTAR_IMPL_MODE: "python"
+          KOGWISTAR_IMPL_CONTRACTS: "python"
+          KOGWISTAR_IMPL_RUNTIME: "python"
+          KOGWISTAR_IMPL_GRAPH_STORE: "python"
+          KOGWISTAR_IMPL_META_STORE: "python"
+          KOGWISTAR_IMPL_POSTGRES_AUTHORITY: "python"
+          KOGWISTAR_LOG_LEVEL: "WARNING"
+          LOG_LEVEL: "WARNING"
+        run: |
+          set +e
+          report="$RUNNER_TEMP/pypy-provider-free-tests.txt"
+          time python -m pytest \
+            "$GITHUB_WORKSPACE/tests" \
+            -m "ci and not ci_full and not slow and not manual and not llm_real and not requires_ollama" \
+            -q \
+            --durations=25 \
+            -p no:cacheprovider >"$report" 2>&1
+          status=$?
+          tail -n 160 "$report"
+          {
+            echo "## PyPy provider-free fallback tests"
+            echo
+            echo '```text'
+            tail -n 160 "$report"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$status" -ne 0 ]; then
+            detail=$(tail -n 12 "$report" | tr '\r\n' ' ' | sed 's/%/%25/g')
+            echo "::error title=PyPy Python-authority tests::${detail}"
+          fi
+          exit "$status"
+
+      - name: Keep native PyPy gate visible
+        if: always() && (steps.pydantic_binary_abi.outcome != 'success' || steps.pydantic_dlopen.outcome != 'success' || steps.native_binary_abi.outcome != 'success' || steps.native_dlopen.outcome != 'success' || steps.native_verify.outcome != 'success' || steps.native_direct_verify.outcome != 'success' || steps.pypy_dependency_verify.outcome != 'success' || steps.pydantic_import.outcome != 'success')
+        run: |
+          echo "PyPy native extension or application dependency verification failed; the profile remains experimental." >&2
+          exit 1
+
+      - name: Upload PyPy native diagnostics
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: pypy-native-diagnostics
+          path: |
+            ${{ runner.temp }}/pypy-native-verification.txt
+            ${{ runner.temp }}/pydantic-core-abi-audit.json
+            ${{ runner.temp }}/pydantic-core-dlopen.txt
+            ${{ runner.temp }}/kogwistar-native-abi-audit.json
+            ${{ runner.temp }}/kogwistar-native-dlopen.txt
+            ${{ runner.temp }}/pypy-ffi-source-audit.json
+            ${{ runner.temp }}/pydantic-core-import.txt
+            ${{ runner.temp }}/pypy-dependency-verification.txt
+            ${{ runner.temp }}/pypy-native-tests.txt
+            ${{ runner.temp }}/pypy-provider-free-tests.txt
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Publish PyPy result summary
+        if: always()
+        run: |
+          {
+            echo "## PyPy 3.12 best-effort compatibility"
+            echo
+            echo "This job is automatic and non-blocking while PyPy 3.12 remains beta."
+            echo "A failure is intentionally visible here without blocking the required CPython/Rust jobs."
+          } >> "$GITHUB_STEP_SUMMARY"
+
   ci_full:
     if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.full == true)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.13"
           cache: pip

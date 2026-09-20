@@ -26,7 +26,7 @@ def _run_uvicorn(app_import: str, host: str, port: int) -> None:
 
 @pytest.fixture(scope="session")
 def running_server() -> Dict[str, Any]:
-    """Start the FastAPI+FastMCP server for these tests.
+    """Start the FastAPI plus official MCP server for these tests.
 
     The previous version of this test assumed a developer had a server already
     running on a fixed port (28110). That makes CI and local runs fragile.

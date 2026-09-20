@@ -73,7 +73,12 @@ def _resolve_return_target(value: str | None) -> str:
 
 def _mint_dev_token(auth_service: AuthService) -> str:
     email = os.getenv("DEV_AUTH_EMAIL", "dev@example.com")
-    subject = os.getenv("DEV_AUTH_SUBJECT", "dev")
+    # Keep the historical seeded identity by default, but make an explicit
+    # development email identify a distinct local user unless a subject was
+    # deliberately supplied.
+    subject = os.getenv("DEV_AUTH_SUBJECT") or (
+        email if os.getenv("DEV_AUTH_EMAIL") else "dev"
+    )
     display_name = os.getenv("DEV_AUTH_NAME", "Dev User")
     role = os.getenv("DEV_AUTH_ROLE", "ro")
     ns_raw = os.getenv("DEV_AUTH_NS")

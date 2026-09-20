@@ -28,12 +28,11 @@ dependencies = [
   "anyio>=4.0",
   "Jinja2>=3.1",
   "fastapi>=0.111",
-  "mcp>=1.2",
+  "mcp>=1.27,<2",
   "httpx>=0.28.1",
   "python-jose[cryptography]>=3.3",
   "PyJWT>=2.8",
   "RapidFuzz>=3.13.0",
-  "numpy>=1.26",
   "joblib>=1.3",
   "python-dotenv>=1.0.1",
   "requests>=2.32",
@@ -48,7 +47,7 @@ Issues = "https://github.com/humblemat810/kogwistar/issues"
 [project.optional-dependencies]
 chroma = ["chromadb>=1.0.15"]
 pgvector = ["sqlalchemy>=2.0", "pgvector>=0.3.6", "psycopg[binary]>=3.1"]
-server = ["uvicorn[standard]>=0.30", "fastmcp==3.0.0"]
+server = ["uvicorn[standard]>=0.30", "mcp>=1.27,<2"]
 openai = ["langchain-core>=0.3.0", "langchain-openai>=0.3.0"]
 gemini = ["langchain-core>=0.3.0", "langchain-google-genai>=2.0.0"]
 ollama = ["ollama>=0.5.3", "langchain-core>=0.3.0", "langchain-ollama>=0.3.0"]
@@ -68,7 +67,8 @@ test = [
   "pytest-asyncio>=1.1.0",
   "pytest-dotenv>=0.5.2",
   "pytest-xdist>=3.8,<4",
-  "testcontainers>=4.0"
+  "testcontainers>=4.0",
+  "numpy>=1.26"
 ]
 # Pin lint behavior so local and CI runs use the same Ruff release.
 lint = ["ruff==0.16.7"]
@@ -82,7 +82,7 @@ full = [
   "sqlalchemy>=2.0",
   "pgvector>=0.3.6",
   "psycopg[binary]>=3.1",
-  "fastmcp==3.0.0",
+  "mcp>=1.27,<2",
   "langchain-core>=0.3.0",
   "langchain-openai>=0.3.0",
   "langchain-google-genai>=2.0.0",

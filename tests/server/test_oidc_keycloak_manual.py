@@ -14,7 +14,7 @@ from pathlib import Path
 import httpx
 import pytest
 pytest.importorskip("fastapi")
-pytest.importorskip("fastmcp")
+pytest.importorskip("mcp")
 pytest.importorskip("sqlalchemy")
 from sqlalchemy.orm import sessionmaker
 

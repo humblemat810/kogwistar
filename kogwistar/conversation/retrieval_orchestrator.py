@@ -12,7 +12,7 @@ from .knowledge_retriever import KnowledgeRetriever
 from ..engine_core.models import Span
 
 
-@dataclass
+@dataclass(slots=True)
 class RetrievalOutcome:
     memory: MemoryRetrievalResult
     knowledge: KnowledgeRetrievalResult
