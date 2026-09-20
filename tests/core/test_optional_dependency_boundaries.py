@@ -88,7 +88,7 @@ print("ok")
     assert proc.returncode == 0, proc.stderr
 
 
-def test_server_entrypoint_requires_server_dependency() -> None:
+def test_server_module_keeps_mcp_base_and_cli_runner_optional() -> None:
     code = _script_with_blocked_imports(
         blocked_roots=(
             "chromadb",
@@ -98,17 +98,20 @@ def test_server_entrypoint_requires_server_dependency() -> None:
             "langchain_openai",
             "langchain_google_genai",
             "langgraph",
-            "mcp",
+            "uvicorn",
         ),
         body="""
+import kogwistar.server_mcp_with_admin as server
+assert server.app is not None
+assert server.mcp_app is not None
+
 try:
-    import kogwistar.server_mcp_with_admin as server
-except RuntimeError as e:
-    msg = str(e)
-    assert "kogwistar[server]" in msg
+    server.main()
+except ModuleNotFoundError as e:
+    assert "uvicorn" in str(e)
     print("ok")
 else:
-    raise AssertionError("expected missing server dependency error")
+    raise AssertionError("expected missing optional uvicorn dependency")
 """,
     )
     proc = _run_python(code)
