@@ -211,5 +211,8 @@ def test_pypy_311_experimental_workflow_is_pinned_and_nonblocking() -> None:
     assert "Install official PyPy 3.11 release" not in workflow
     assert "pypy_url" not in workflow
     assert "pypy_sha256" not in workflow
+    assert "pypy3.11-v7.3.20-linux64.tar.bz2" not in workflow
+    assert "actual_sha256" not in workflow
+    assert "--bzip2" not in workflow
     assert "KOGWISTAR_IMPL_MODE: python" in workflow
     assert "no image is published" in workflow
