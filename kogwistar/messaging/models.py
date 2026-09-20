@@ -33,7 +33,7 @@ class ProjectedLaneMessageRow:
     conversation_tail_message_id: str | None = None
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class LaneMessageSendResult:
     message_id: str
     conversation_anchor_id: str
@@ -42,7 +42,7 @@ class LaneMessageSendResult:
     recipient_anchor_id: str
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class LaneMessageProjectionRepairResult:
     namespace: str
     scanned_count: int
@@ -51,7 +51,7 @@ class LaneMessageProjectionRepairResult:
     rebuilt: bool
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class LaneMessageLookup:
     namespace: str | None = None
     inbox_id: str | None = None

@@ -1,7 +1,12 @@
 from dataclasses import replace
 
 from kogwistar.engine_core.engine_sqlite import IndexJobRow, ProjectedLaneMessageSqlRow
-from kogwistar.messaging.models import ProjectedLaneMessageRow
+from kogwistar.messaging.models import (
+    LaneMessageLookup,
+    LaneMessageProjectionRepairResult,
+    LaneMessageSendResult,
+    ProjectedLaneMessageRow,
+)
 
 
 def test_projected_lane_message_row_uses_slots_without_changing_copy_contract() -> None:
@@ -32,6 +37,29 @@ def test_projected_lane_message_row_uses_slots_without_changing_copy_contract() 
     assert row.status == "pending"
     assert updated.status == "completed"
     assert updated.error_json == '{"error":true}'
+
+
+def test_lane_message_result_and_lookup_dtos_use_slots() -> None:
+    send_result = LaneMessageSendResult(
+        message_id="message-1",
+        conversation_anchor_id="conversation-1",
+        inbox_anchor_id="inbox-1",
+        sender_anchor_id="sender-1",
+        recipient_anchor_id="recipient-1",
+    )
+    repair_result = LaneMessageProjectionRepairResult(
+        namespace="demo",
+        scanned_count=3,
+        repaired_count=2,
+        skipped_count=1,
+        rebuilt=False,
+    )
+    lookup = LaneMessageLookup(namespace="demo", limit=10, newest_first=True)
+
+    assert not hasattr(send_result, "__dict__")
+    assert not hasattr(repair_result, "__dict__")
+    assert not hasattr(lookup, "__dict__")
+    assert lookup.namespace == "demo"
 
 
 def test_sqlite_row_dtos_use_slots_without_changing_copy_contract() -> None:

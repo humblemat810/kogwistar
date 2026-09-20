@@ -76,7 +76,7 @@ def test_ci_keeps_automatic_nonblocking_pypy_native_probe() -> None:
     assert 'GITHUB_STEP_SUMMARY' in workflow
     assert 'pypy-native-tests.txt' in workflow
     assert 'pypy-provider-free-tests.txt' in workflow
-    assert 'uses: actions/upload-artifact@v4' in workflow
+    assert 'uses: actions/upload-artifact@v6' in workflow
     assert "id: native_verify" in workflow
     assert "id: native_direct_verify" in workflow
     assert "id: pydantic_binary_abi" in workflow
