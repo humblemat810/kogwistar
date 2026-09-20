@@ -598,7 +598,7 @@ fn push_python_json(out: &mut String, value: &Value, ensure_ascii: bool) {
         Value::Object(values) => {
             out.push('{');
             let mut entries: Vec<_> = values.iter().collect();
-            entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+            entries.sort_by_key(|(left, _)| *left);
             for (index, (key, value)) in entries.into_iter().enumerate() {
                 if index > 0 {
                     out.push(',');

@@ -286,7 +286,7 @@ pub fn select_runtime_route(request: &RuntimeRouteRequest) -> RuntimeRouteDecisi
             ));
         }
     }
-    matched.sort_by(|left, right| right.1.priority.cmp(&left.1.priority));
+    matched.sort_by_key(|right| std::cmp::Reverse(right.1.priority));
 
     let mut candidate_indices = Vec::new();
     let mut candidate_ids = Vec::new();

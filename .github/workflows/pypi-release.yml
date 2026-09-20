@@ -82,7 +82,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.91.1
+          toolchain: 1.97.1
 
       - name: Build native wheel
         run: |
@@ -111,7 +111,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.91.1
+          toolchain: 1.97.1
 
       - name: Build source distribution with Maturin
         run: |

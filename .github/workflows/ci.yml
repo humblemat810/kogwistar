@@ -183,7 +183,7 @@ jobs:
       - name: Set up pinned Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.91.1
+          toolchain: 1.97.1
           components: clippy,rustfmt
 
       - name: Check formatting
@@ -228,7 +228,7 @@ jobs:
       - name: Set up pinned Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.91.1
+          toolchain: 1.97.1
 
       - name: Build native wheel
         run: |
@@ -277,7 +277,7 @@ jobs:
       - name: Set up pinned Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.91.1
+          toolchain: 1.97.1
 
       - name: Install PyPy build and smoke-test dependencies
         run: |
