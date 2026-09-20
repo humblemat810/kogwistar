@@ -362,10 +362,9 @@ class SQLiteEventSink:
 
     def _run(self) -> None:
         conn = sqlite3.connect(self.db_path, check_same_thread=False)
-        conn.execute("PRAGMA journal_mode=WAL;")
-        conn.execute("PRAGMA synchronous=NORMAL;")
-        cur = conn.cursor()
-
+        for pragma in ("PRAGMA journal_mode=WAL;", "PRAGMA synchronous=NORMAL;"):
+            pragma_cursor = conn.execute(pragma)
+            pragma_cursor.close()
         batch: list[dict] = []
         last_flush = _now_ms()
 
@@ -396,18 +395,26 @@ class SQLiteEventSink:
                     )
                 )
 
-            cur.executemany(
-                f"""
-                INSERT OR REPLACE INTO {self.table} (
-                    event_id, ts_ms, type,
-                    trace_id, span_id, parent_span_id,
-                    run_id, token_id, step_seq, node_id, attempt,
-                    conversation_id, turn_node_id,
-                    payload_json
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                """,
-                rows,
-            )
+            # PyPy's sqlite wrapper can keep an executemany statement active
+            # until its cursor is finalized.  Finalize the batch cursor before
+            # committing so the writer does not hit "SQL statements in
+            # progress" during periodic or shutdown flushes.
+            batch_cursor = conn.cursor()
+            try:
+                batch_cursor.executemany(
+                    f"""
+                    INSERT OR REPLACE INTO {self.table} (
+                        event_id, ts_ms, type,
+                        trace_id, span_id, parent_span_id,
+                        run_id, token_id, step_seq, node_id, attempt,
+                        conversation_id, turn_node_id,
+                        payload_json
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    rows,
+                )
+            finally:
+                batch_cursor.close()
             conn.commit()
             batch = []
             last_flush = _now_ms()
