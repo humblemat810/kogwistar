@@ -99,7 +99,13 @@ class McpRegistry:
         *,
         name: str | None = None,
         description: str | None = None,
+        structured_output: bool = False,
     ) -> Callable[..., Any]:
+        # Keep accepting the former decorator keyword.  The official SDK
+        # carries the equivalent contract in Tool.outputSchema, which this
+        # registry derives from the function return annotation below.
+        del structured_output
+
         def register(fn: Callable[..., Any]) -> Callable[..., Any]:
             tool_name = name or getattr(fn, "name", None) or fn.__name__
             input_model = _input_model(tool_name, fn)
@@ -268,6 +274,11 @@ class McpRegistry:
         # Kogwistar's combined FastAPI lifespan enters this context explicitly.
         app.lifespan = lifespan  # type: ignore[attr-defined]
         return app
+
+    def streamable_http_app(self, *, path: str = "/mcp") -> Starlette:
+        """Compatibility factory backed by the official streamable HTTP app."""
+
+        return self.http_app(path=path)
 
     def run(
         self,
