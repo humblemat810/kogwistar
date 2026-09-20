@@ -99,7 +99,14 @@ class McpRegistry:
         *,
         name: str | None = None,
         description: str | None = None,
+        structured_output: bool = False,
     ) -> Callable[..., Any]:
+        # Existing Kogwistar declarations use this FastMCP-era keyword. The
+        # official SDK derives outputSchema from the return annotation below,
+        # so accepting the keyword preserves the declaration contract without
+        # creating a second MCP implementation.
+        del structured_output
+
         def register(fn: Callable[..., Any]) -> Callable[..., Any]:
             tool_name = name or getattr(fn, "name", None) or fn.__name__
             input_model = _input_model(tool_name, fn)
@@ -268,6 +275,11 @@ class McpRegistry:
         # Kogwistar's combined FastAPI lifespan enters this context explicitly.
         app.lifespan = lifespan  # type: ignore[attr-defined]
         return app
+
+    def streamable_http_app(self, *, path: str = "/mcp") -> Starlette:
+        """Compatibility factory backed by the official streamable HTTP app."""
+
+        return self.http_app(path=path)
 
     def run(
         self,

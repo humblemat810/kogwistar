@@ -68,3 +68,26 @@ def test_committed_mcp_tool_schema_matches_live_registry() -> None:
         Path("contracts/golden/mcp-tools.json").read_text(encoding="utf-8")
     )
     assert frozen == {"contract_version": "1.0.0", "surfaces": live}
+
+
+def test_official_registry_preserves_legacy_decorator_and_http_factory() -> None:
+    from kogwistar.server.mcp_registry import McpRegistry
+
+    registry = McpRegistry("compatibility")
+
+    @registry.tool(structured_output=True)
+    def echo(value: int) -> dict[str, int]:
+        return {"value": value}
+
+    async def inspect_registry() -> dict:
+        tools = await registry.list_tools()
+        return {
+            "name": tools[0].name,
+            "output_schema": tools[0].outputSchema,
+        }
+
+    contract = asyncio.run(inspect_registry())
+    assert contract["name"] == "echo"
+    assert contract["output_schema"]["type"] == "object"
+    assert contract["output_schema"]["additionalProperties"]["type"] == "integer"
+    assert registry.streamable_http_app().routes
