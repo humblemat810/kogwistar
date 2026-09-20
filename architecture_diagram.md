@@ -70,7 +70,7 @@ In sample conversation pipelines primitives
 - **MCP Server**: Exposes system capabilities via the Model Context Protocol.
 - **Security & RBAC**: Implements a comprehensive security model:
     - **JWT Auth**: Verifies identity via Bearer tokens (HS256/RS256).
-    - **RBAC Middleware**: Enforces `RO` (Read-Only) and `RW` (Read-Write) roles at the tool level using `FastMCP` middleware hooks.
+    - **RBAC Middleware**: Enforces `RO` (Read-Only) and `RW` (Read-Write) roles at the tool level through the official MCP adapter.
     - **Namespace Isolation**: Segregates access between `DOCS` and `WISDOM` namespaces.
 - **Conversation Orchestrator**: Acts as the command dispatcher, initiating workflows that generate events.
 
