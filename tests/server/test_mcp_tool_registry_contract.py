@@ -48,8 +48,8 @@ def test_committed_mcp_tool_schema_matches_live_registry() -> None:
                     "name": tool.name,
                     "title": tool.title,
                     "description": tool.description,
-                    "inputSchema": tool.parameters,
-                    "outputSchema": tool.output_schema,
+                    "inputSchema": tool.inputSchema,
+                    "outputSchema": tool.outputSchema,
                 }
                 for tool in tools
             ),

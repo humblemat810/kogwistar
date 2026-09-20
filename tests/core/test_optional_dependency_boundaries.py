@@ -98,7 +98,7 @@ def test_server_entrypoint_requires_server_dependency() -> None:
             "langchain_openai",
             "langchain_google_genai",
             "langgraph",
-            "fastmcp",
+            "mcp",
         ),
         body="""
 try:

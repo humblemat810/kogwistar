@@ -25,7 +25,7 @@ from tests._helpers.server_wait_helpers import wait_for_run_terminal as _wait_fo
 from tests._helpers.span_consistent_seed import build_span_consistent_debug_rag_seed
 
 pytest.importorskip("fastapi")
-pytest.importorskip("fastmcp")
+pytest.importorskip("mcp")
 pytest.importorskip("sqlalchemy")
 
 pytestmark = [pytest.mark.manual]

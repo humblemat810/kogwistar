@@ -2,7 +2,7 @@ import pytest
 pytestmark = pytest.mark.ci_full
 
 pytest.importorskip("fastapi")
-pytest.importorskip("fastmcp")
+pytest.importorskip("mcp")
 
 from fastapi.testclient import TestClient
 

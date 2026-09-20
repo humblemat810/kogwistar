@@ -2,13 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-try:
-    from fastmcp import FastMCP
-except ModuleNotFoundError as exc:
-    raise RuntimeError(
-        "Knowledge MCP support requires the optional 'server' extra. "
-        "Install with: pip install 'kogwistar[server]'"
-    ) from exc
+from kogwistar.server.mcp_registry import McpRegistry
 
 
 def build_conversation_mcp(
@@ -20,7 +14,7 @@ def build_conversation_mcp(
     role_rw: Any,
     ns_conversation: Any,
 ):
-    mcp = FastMCP("Conversation MCP")
+    mcp = McpRegistry("Conversation MCP")
 
     @tool_roles({role_rw})
     @require_ns({ns_conversation})
@@ -88,7 +82,7 @@ def build_workflow_mcp(
     get_user_id: Callable[[], str | None] | None = None,
     require_workflow_access: Callable[[str, str], None] | None = None,
 ):
-    mcp = FastMCP("Workflow Diagnostics MCP")
+    mcp = McpRegistry("Workflow Diagnostics MCP")
 
     def _actor_sub() -> str | None:
         if not callable(get_subject):

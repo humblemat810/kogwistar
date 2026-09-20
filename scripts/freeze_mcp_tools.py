@@ -13,8 +13,8 @@ async def _tool_contracts(registry) -> list[dict]:
             "name": tool.name,
             "title": tool.title,
             "description": tool.description,
-            "inputSchema": tool.parameters,
-            "outputSchema": tool.output_schema,
+            "inputSchema": tool.inputSchema,
+            "outputSchema": tool.outputSchema,
         }
         for tool in tools
     ]
