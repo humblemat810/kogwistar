@@ -192,7 +192,7 @@ jobs:
           LOG_LEVEL: "WARNING"
         run: >-
           python -m pytest
-          -m "ci and not ci_full and not slow and not manual and not llm_real and not requires_ollama and not requires_rust and not requires_langgraph"
+          -m "ci and not ci_full and not slow and not manual and not llm_real and not requires_ollama and not requires_rust and not requires_langgraph and not requires_pgvector"
           -q --durations=25 --durations-min=0 -p no:cacheprovider
 
   lint:
