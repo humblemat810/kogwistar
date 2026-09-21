@@ -21,9 +21,31 @@ Open-source substrate and harness for graph-backed AI systems.
 <p align="center">
   <img src="https://img.shields.io/github/stars/humblemat810/kogwistar?style=flat-square"/>
   <img src="https://img.shields.io/github/license/humblemat810/kogwistar?style=flat-square"/>
-  <img src="https://img.shields.io/badge/python-3.13+-blue?style=flat-square"/>
+  <img src="https://img.shields.io/badge/python-3.12%2B%20%7C%20PyPy%203.11-blue?style=flat-square"/>
   <img src="https://img.shields.io/badge/runtime-graph--native-purple?style=flat-square"/>
 </p>
+
+## Supported Python Runtimes
+
+Kogwistar's tested runtime support is:
+
+- CPython 3.12 and newer for the normal package and native Rust wheel path.
+- PyPy 3.11 for the supported Python-authority compatibility profile. This
+  profile runs the provider-free CI suite with `KOGWISTAR_IMPL_MODE=python`.
+- PyPy 3.12 remains an experimental, best-effort native-extension profile.
+
+To run the supported PyPy 3.11 profile from a checkout, use a PyPy 3.11
+interpreter:
+
+```bash
+pypy3.11 scripts/pypy311_profile.py --import-package
+pypy3.11 scripts/run_pypy311_ci.py
+```
+
+The current published package metadata still declares `Requires-Python >=3.12`.
+Until that metadata is changed in a future release, install the PyPy 3.11
+profile from the source checkout rather than from the published wheel.
+
 <p align="center">
   <b>The Substrate and implementation for Karpathy's **LLM Knowledge Base** has been already here for long. With all the foundation substrate
   implemented, an implementation that link the susbtrate compoenent together is completed in https://github.com/humblemat810/kogwistar-llm-wiki</b>
