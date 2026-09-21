@@ -33,7 +33,6 @@ jobs:
   ci:
     if: github.event_name != 'schedule' && (github.event_name != 'workflow_dispatch' || inputs.full == false)
     name: CI (${{ matrix.label }})
-    continue-on-error: ${{ matrix.is_pypy }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
