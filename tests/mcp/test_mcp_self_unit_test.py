@@ -256,7 +256,6 @@ async def test_doc_node_edge_adjudicate(
         async with streamable_http_client(base_mcp, http_client=ro_http) as (
             r_read,
             r_write,
-            _,
         ):
             async with ClientSession(r_read, r_write) as ro_sess:
                 await ro_sess.initialize()
@@ -273,7 +272,6 @@ async def test_doc_node_edge_adjudicate(
         async with streamable_http_client(base_mcp, http_client=http_client) as (
             read,
             write,
-            _,
         ):
             async with ClientSession(read, write) as session:
                 await session.initialize()

@@ -728,7 +728,7 @@ async def test_mcp_run_events_sees_live_updates_for_async_backends(
                 {"run_id": run_id, "after_seq": 0, "limit": 20},
             )
 
-        data = getattr(result, "structuredContent", None) or getattr(
+        data = getattr(result, "structured_content", None) or getattr(
             result, "structured_content", None
         )
         if data is None and hasattr(result, "model_dump"):
@@ -748,7 +748,7 @@ async def test_mcp_run_events_sees_live_updates_for_async_backends(
                 status = await server_mod.mcp.call_tool(
                     "conversation.run_status", {"run_id": run_id}
                 )
-            status_data = getattr(status, "structuredContent", None) or getattr(
+                status_data = getattr(status, "structured_content", None) or getattr(
                 status, "structured_content", None
             )
             if status_data is None and hasattr(status, "model_dump"):

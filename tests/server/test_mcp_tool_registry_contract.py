@@ -27,10 +27,10 @@ def test_registry_accepts_structured_output_compatibility_option() -> None:
     async def exercise() -> None:
         tools = await registry.list_tools()
         tool = next(item for item in tools if item.name == "answer")
-        assert tool.outputSchema is not None
+        assert tool.output_schema is not None
 
         result = await registry.call_tool("answer")
-        assert result.structuredContent == {"value": 42}
+        assert result.structured_content == {"value": 42}
 
     asyncio.run(exercise())
 
@@ -73,8 +73,8 @@ def test_committed_mcp_tool_schema_matches_live_registry() -> None:
                     "name": tool.name,
                     "title": tool.title,
                     "description": tool.description,
-                    "inputSchema": tool.inputSchema,
-                    "outputSchema": tool.outputSchema,
+                    "inputSchema": tool.input_schema,
+                    "outputSchema": tool.output_schema,
                 }
                 for tool in tools
             ),

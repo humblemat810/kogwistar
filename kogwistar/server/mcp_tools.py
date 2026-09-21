@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import functools
-import json
 import os
 from typing import (
     Any,
@@ -114,60 +113,8 @@ class MCPRoleMiddleware:
                 reset_current_role(token)
             return
 
-        started = {}
-        body_chunks: list[bytes] = []
-
-        async def _send(message):
-            if message["type"] == "http.response.start":
-                started["message"] = message
-            elif message["type"] == "http.response.body":
-                chunk = message.get("body", b"") or b""
-                more = message.get("more_body", False)
-                body_chunks.append(chunk)
-                if not more:
-                    raw = b"".join(body_chunks)
-                    if raw.startswith(b"event: message\r\n"):
-                        raw_lines = raw.split(b"\r\n")
-                        try:
-                            _, json_str = raw_lines[1].decode("utf-8").split("data: ")
-                            prefix = "data: "
-                            data = json.loads(json_str)
-                            changed = False
-                            res = data.get("result")
-                            if isinstance(res, dict) and isinstance(
-                                res.get("tools"), list
-                            ):
-                                res["tools"] = _filter_tool_list(res["tools"])
-                                changed = True
-                            elif isinstance(data.get("tools"), list):
-                                data["tools"] = _filter_tool_list(data["tools"])
-                                changed = True
-                            if changed:
-                                raw_lines[1] = (prefix + json.dumps(data)).encode(
-                                    "utf-8"
-                                )
-                                raw = b"\r\n".join(raw_lines)
-                        except Exception:
-                            pass
-
-                    await send(
-                        started.get(
-                            "message",
-                            {
-                                "type": "http.response.start",
-                                "status": 200,
-                                "headers": [],
-                            },
-                        )
-                    )
-                    await send(
-                        {"type": "http.response.body", "body": raw, "more_body": False}
-                    )
-            else:
-                await send(message)
-
         try:
-            await self.app(scope, receive, _send)
+            await self.app(scope, receive, send)
         finally:
             reset_current_role(token)
 

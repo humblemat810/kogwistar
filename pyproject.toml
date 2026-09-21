@@ -28,7 +28,7 @@ dependencies = [
   "anyio>=4.0",
   "Jinja2>=3.1",
   "fastapi>=0.111",
-  "mcp>=1.27,<2",
+  "mcp>=2.2.0,<3",
   "httpx>=0.28.1",
   "python-jose[cryptography]>=3.3",
   "PyJWT>=2.8",
@@ -48,7 +48,7 @@ Issues = "https://github.com/humblemat810/kogwistar/issues"
 [project.optional-dependencies]
 chroma = ["chromadb>=1.0.15"]
 pgvector = ["sqlalchemy>=2.0", "pgvector>=0.3.6", "psycopg[binary]>=3.1"]
-server = ["uvicorn[standard]>=0.30", "mcp>=1.27,<2"]
+server = ["uvicorn[standard]>=0.30", "mcp>=2.2.0,<3"]
 openai = ["langchain-core>=0.3.0", "langchain-openai>=0.3.0"]
 gemini = ["langchain-core>=0.3.0", "langchain-google-genai>=2.0.0"]
 ollama = ["ollama>=0.5.3", "langchain-core>=0.3.0", "langchain-ollama>=0.3.0"]
@@ -83,7 +83,7 @@ full = [
   "sqlalchemy>=2.0",
   "pgvector>=0.3.6",
   "psycopg[binary]>=3.1",
-  "mcp>=1.27,<2",
+  "mcp>=2.2.0,<3",
   "langchain-core>=0.3.0",
   "langchain-openai>=0.3.0",
   "langchain-google-genai>=2.0.0",

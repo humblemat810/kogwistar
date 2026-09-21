@@ -87,11 +87,14 @@ class McpRegistry:
     """Decorator-friendly registry backed by an official low-level Server."""
 
     def __init__(self, name: str, *, filter_tools: bool = False) -> None:
-        self.server = Server(name)
+        self.server = Server(
+            name,
+            on_list_tools=self._handle_list_tools,
+            on_call_tool=self._handle_call_tool,
+        )
         self._filter_tools = filter_tools
         self._records: dict[str, _ToolRecord] = {}
         self._children: list[McpRegistry] = []
-        self._register_handlers()
 
     def tool(
         self,
@@ -102,8 +105,8 @@ class McpRegistry:
         structured_output: bool | None = None,
     ) -> Callable[..., Any]:
         # Keep the historical decorator contract used by server_mcp.py. The
-        # official SDK already receives the structured schema from the return
-        # annotation and structuredContent is emitted by _execute().
+        # The official SDK receives the explicit schemas from the registry and
+        # structured content is emitted by _execute().
         del structured_output
 
         def register(fn: Callable[..., Any]) -> Callable[..., Any]:
@@ -116,8 +119,8 @@ class McpRegistry:
                 tool=types.Tool(
                     name=tool_name,
                     description=description,
-                    inputSchema=_schema_for_model(input_model),
-                    outputSchema=_output_schema(fn),
+                    input_schema=_schema_for_model(input_model),
+                    output_schema=_output_schema(fn),
                 ),
             )
             self._records[tool_name] = record
@@ -141,16 +144,26 @@ class McpRegistry:
                 return record
         return None
 
-    def _register_handlers(self) -> None:
-        @self.server.list_tools()
-        async def _list_tools() -> list[types.Tool]:
-            return await self._visible_tools()
+    async def _handle_list_tools(self, _context: Any, _params: Any) -> types.ListToolsResult:
+        return types.ListToolsResult(tools=await self._visible_tools())
 
-        @self.server.call_tool()
-        async def _call_tool(
-            name: str, arguments: dict[str, Any]
-        ) -> types.CallToolResult:
-            return await self._execute(name, arguments, enforce_visibility=True)
+    async def _handle_call_tool(
+        self, _context: Any, params: types.CallToolRequestParams
+    ) -> types.CallToolResult:
+        try:
+            return await self._execute(
+                params.name,
+                params.arguments or {},
+                enforce_visibility=True,
+            )
+        except Exception as exc:
+            # Keep protocol callers on the historical isError result path while
+            # direct registry callers continue to receive the original exception.
+            message = f"403 Forbidden: {exc}" if isinstance(exc, PermissionError) else str(exc)
+            return types.CallToolResult(
+                content=[types.TextContent(type="text", text=message)],
+                is_error=True,
+            )
 
     def _local_tools(self) -> list[types.Tool]:
         tools = [record.tool for record in self._records.values()]
@@ -223,7 +236,7 @@ class McpRegistry:
                         type="text", text=json.dumps(result, default=str)
                     )
                 ],
-                structuredContent=result,
+                structured_content=result,
             )
         return types.CallToolResult(
             content=[types.TextContent(type="text", text=json.dumps(result, default=str))]

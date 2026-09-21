@@ -12,7 +12,7 @@ pytestmark = pytest.mark.ci_full
 import httpx
 
 from mcp import ClientSession
-from mcp.client.streamable_http import streamablehttp_client
+from mcp.client.streamable_http import streamable_http_client
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 CALL_TIMEOUT_S = 20
@@ -138,10 +138,9 @@ async def test_streamable_http_e2e(tmp_path):
             )
 
             async def _exercise() -> None:
-                async with streamablehttp_client(f"http://127.0.0.1:{port}/mcp") as (
+                async with streamable_http_client(f"http://127.0.0.1:{port}/mcp") as (
                     read,
                     write,
-                    _,
                 ):
                     async with ClientSession(read, write) as session:
                         await asyncio.wait_for(session.initialize(), timeout=CALL_TIMEOUT_S)

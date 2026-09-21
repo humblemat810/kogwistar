@@ -29,7 +29,7 @@ def test_ci_keeps_automatic_nonblocking_pypy_native_probe() -> None:
     assert 'assert sys.version_info[:2] == (3, 12)' in workflow
     assert 'constraints-pypy-3.12.txt' in workflow
     assert "'pydantic-extension>=0.0.7' 'pydantic>=2.6' 'anyio>=4.0' 'Jinja2>=3.1'" in workflow
-    assert "'fastapi>=0.111' 'mcp>=1.27,<2' 'httpx>=0.28.1'" in workflow
+    assert "'fastapi>=0.111' 'mcp>=2.2.0,<3' 'httpx>=0.28.1'" in workflow
     assert "'python-jose[cryptography]>=3.3' 'PyJWT>=2.8' 'RapidFuzz>=3.13.0'" in workflow
     assert "'pytest>=8' pytest-asyncio pytest-dotenv pytest-xdist sqlalchemy" in workflow
     assert "Build patched pydantic-core wheel" in workflow
@@ -108,8 +108,8 @@ def test_ci_keeps_automatic_nonblocking_pypy_native_probe() -> None:
 def test_pypy311_profile_pins_the_supported_mcp_contract() -> None:
     requirements = PYPI_REQUIREMENTS.read_text(encoding="utf-8")
 
-    assert "mcp==1.27.0" in requirements
-    assert "mcp>=1.27" not in requirements
+    assert "mcp>=2.2.0,<3" in requirements
+    assert "mcp<2" not in requirements
 
 
 def test_pypy_rpds_constraint_is_ci_only_and_exact() -> None:
