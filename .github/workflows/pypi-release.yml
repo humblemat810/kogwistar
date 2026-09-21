@@ -36,8 +36,14 @@ jobs:
       - id: version
         name: Verify tag, package version, and PyPI availability
         env:
-          RELEASE_VERSION: ${{ github.event_name == 'push' && github.ref_name || inputs.version }}
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
+          if [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            RELEASE_VERSION="${GITHUB_REF_NAME#v}"
+          else
+            RELEASE_VERSION="$INPUT_VERSION"
+          fi
+          export RELEASE_VERSION
           test "$GITHUB_REF_TYPE" = tag
           test "$GITHUB_REF_NAME" = "v$RELEASE_VERSION"
           python - <<'PY'
