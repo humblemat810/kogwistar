@@ -44,7 +44,7 @@ async def _find_tool(session, name: str) -> dict | None:
         if t.name == name:
             return {
                 "name": t.name,
-                "input_schema": t.inputSchema,
+                "input_schema": t.input_schema,
                 "output_schema": t.outputSchema,
             }
     return None

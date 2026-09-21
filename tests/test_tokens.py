@@ -1,12 +1,14 @@
 import json
 import os
+from contextlib import asynccontextmanager
 from typing import Dict
 
+import httpx
 import jwt
 import pytest
 import requests
 from mcp import ClientSession
-from mcp.client.streamable_http import streamablehttp_client
+from mcp.client.streamable_http import streamable_http_client
 from .auth_env import TEST_JWT_ALG, TEST_JWT_SECRET
 
 pytestmark = pytest.mark.ci_full
@@ -19,6 +21,13 @@ WRITE_TOOLS = {
     "store_document",
     "kg_crossdoc_adjudicate_anykind",
 }
+
+
+@asynccontextmanager
+async def _mcp_client(url: str, headers: Dict[str, str]):
+    async with httpx.AsyncClient(headers=headers, timeout=None) as http_client:
+        async with streamable_http_client(url, http_client=http_client) as streams:
+            yield streams
 
 READ_TOOLS_MIN = {
     "kg_find_edges",
@@ -61,12 +70,7 @@ async def test_readonly_token_blocks_writes_and_allows_reads(mcp_admin_server):
         f"Expected 403 for RO delete, got {resp.status_code}: {resp.text}"
     )
 
-    async with streamablehttp_client(
-        mcp_url,
-        headers=headers,
-        sse_read_timeout=None,
-        timeout=None,
-    ) as (read, write, _):
+    async with _mcp_client(mcp_url, headers) as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()
 
@@ -102,12 +106,7 @@ async def test_tools_visibility_filtered_by_role(mcp_admin_server):
     ro_headers = {"Authorization": f"Bearer {_mint('ro')}"}
     rw_headers = {"Authorization": f"Bearer {_mint('rw')}"}
 
-    async with streamablehttp_client(
-        mcp_url,
-        headers=ro_headers,
-        sse_read_timeout=None,
-        timeout=None,
-    ) as (read, write, _):
+    async with _mcp_client(mcp_url, ro_headers) as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()
             tools = await session.list_tools()
@@ -120,12 +119,7 @@ async def test_tools_visibility_filtered_by_role(mcp_admin_server):
                 f"RO client should not see write tools, but got: {WRITE_TOOLS & names}"
             )
 
-    async with streamablehttp_client(
-        mcp_url,
-        headers=rw_headers,
-        sse_read_timeout=None,
-        timeout=None,
-    ) as (read, write, _):
+    async with _mcp_client(mcp_url, rw_headers) as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()
             tools = await session.list_tools()
@@ -146,12 +140,7 @@ async def test_ro_blocked_on_write_tool_and_rw_allowed(mcp_admin_server):
     rw_headers = {"Authorization": f"Bearer {_mint('rw')}"}
     write_tool = "kg_extract"
 
-    async with streamablehttp_client(
-        mcp_url,
-        headers=ro_headers,
-        sse_read_timeout=None,
-        timeout=None,
-    ) as (read, write, _):
+    async with _mcp_client(mcp_url, ro_headers) as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()
             try:
@@ -183,12 +172,7 @@ async def test_ro_blocked_on_write_tool_and_rw_allowed(mcp_admin_server):
                     or ("not permitted" in text)
                 )
 
-    async with streamablehttp_client(
-        mcp_url,
-        headers=rw_headers,
-        sse_read_timeout=None,
-        timeout=None,
-    ) as (read, write, _):
+    async with _mcp_client(mcp_url, rw_headers) as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()
             res = await session.call_tool(

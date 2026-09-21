@@ -125,7 +125,7 @@ def _claims(role: str, ns: str, sub: str | None = None):
 
 
 def _structured(result):
-    data = getattr(result, "structuredContent", None) or getattr(
+    data = getattr(result, "structured_content", None) or getattr(
         result, "structured_content", None
     )
     if data:
