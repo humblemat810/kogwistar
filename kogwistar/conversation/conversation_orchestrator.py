@@ -1489,8 +1489,8 @@ class ConversationOrchestrator:
 
         # LLM Summarize
         if cache_dir:
-            import joblib
-            memory = joblib.Memory(cache_dir)
+            from ..utils import cache_backend
+            memory = cache_backend.Memory(cache_dir)
         else:
             memory = self.conversation_engine.memory  # .memory.cache
         @memory.cache

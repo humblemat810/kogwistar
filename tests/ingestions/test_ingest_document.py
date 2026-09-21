@@ -57,7 +57,7 @@ def test_ingest_documentS_with_llm(engine: GraphKnowledgeEngine) -> None:
         "use source_ids or target_ids for nodes; use source_edge_ids or target_edge_ids for nodes. "
     )
     import pathlib
-    from joblib import Memory
+    from kogwistar.utils.cache_backend import Memory
 
     cache_dir = os.path.join(".cache", "test", pathlib.Path(__file__).name, "extract")
     os.makedirs(cache_dir, exist_ok=True)

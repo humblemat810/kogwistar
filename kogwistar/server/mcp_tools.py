@@ -458,7 +458,7 @@ def kg_extract(inp: KGExtractIn) -> KGExtractOut:
     content = eng.extract.fetch_document_text(inp.id)
     if not content:
         raise ValueError(f"Document '{inp.id}' not found; run store_document first.")
-    from joblib import Memory
+    from ..utils.cache_backend import Memory
 
     location = os.path.join(".", ".kg_extract")
     os.makedirs(location, exist_ok=True)

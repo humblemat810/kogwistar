@@ -12,7 +12,7 @@ import json
 import os
 from types import SimpleNamespace
 from typing import Callable, ParamSpec, TypeVar, cast
-from joblib import Memory
+from kogwistar.utils.cache_backend import Memory
 from pydantic import BaseModel
 
 

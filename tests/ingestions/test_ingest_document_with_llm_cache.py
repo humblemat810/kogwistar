@@ -1,7 +1,7 @@
 # tests/test_ingest_document_with_llm_cache.py
 import json
 import pytest
-from joblib import Memory
+from kogwistar.utils.cache_backend import Memory
 import os
 import pathlib
 

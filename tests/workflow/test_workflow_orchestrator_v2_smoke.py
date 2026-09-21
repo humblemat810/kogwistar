@@ -42,7 +42,7 @@ def test_workflow_runtime_uses_default_resolver(tmp_path):
     from kogwistar.conversation.tool_runner import ToolRunner
 
     from typing import Callable, TypeVar, ParamSpec, cast
-    from joblib import Memory
+    from kogwistar.utils.cache_backend import Memory
 
     P = ParamSpec("P")
     R = TypeVar("R")

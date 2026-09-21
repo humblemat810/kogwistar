@@ -6,7 +6,7 @@ import pytest
 # It is retained for explicit slow model validation, not deterministic CI.
 pytestmark = pytest.mark.slow
 import requests
-from joblib import Memory
+from kogwistar.utils.cache_backend import Memory
 from tests._helpers.embeddings import build_test_embedding_function
 
 # Project imports (adjust if your package name/layout differs)

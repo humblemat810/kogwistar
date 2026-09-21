@@ -3,7 +3,7 @@ import pathlib
 from typing import List, cast
 
 import pytest
-from joblib import Memory
+from kogwistar.utils.cache_backend import Memory
 from pydantic import BaseModel
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine

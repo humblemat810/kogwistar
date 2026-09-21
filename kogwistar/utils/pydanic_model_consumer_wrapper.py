@@ -5,7 +5,7 @@ import inspect
 import json
 from typing import Any, Callable, ParamSpec, Type, TypeVar, cast, overload
 
-from joblib import Memory
+from .cache_backend import Memory
 from pydantic import BaseModel
 
 P = ParamSpec("P")
@@ -72,7 +72,7 @@ def cache_pydantic_structured(
     Generic example
     --------------------------------------------------------------------
 
-    >>> from joblib import Memory
+    >>> from kogwistar.utils.cache_backend import Memory
     >>> from pydantic import BaseModel
     >>>
     >>> class Result(BaseModel):
@@ -132,7 +132,7 @@ def cache_pydantic_structured(
 
 if __name__ == "__main__":
     from pathlib import Path
-    from joblib import Memory
+    from .cache_backend import Memory
     from pydantic import BaseModel
     import shutil
     import tempfile

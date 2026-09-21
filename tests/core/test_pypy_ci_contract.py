@@ -10,6 +10,7 @@ pytestmark = [pytest.mark.ci, pytest.mark.core]
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
+PYPI_REQUIREMENTS = ROOT / "requirements-pypy-3.11-experimental.txt"
 CONSTRAINTS = ROOT / "constraints-pypy-3.12.txt"
 ABI_AUDIT = ROOT / "scripts" / "pypy_ffi_symbol_audit.py"
 DLOPEN_PROBE = ROOT / "scripts" / "pypy_native_extension_dlopen.py"
@@ -102,6 +103,13 @@ def test_ci_keeps_automatic_nonblocking_pypy_native_probe() -> None:
     assert "::error title=PyPy native verification::" in workflow
     assert "::error title=PyPy application dependencies::" in workflow
     assert "::error title=PyPy Python-authority tests::" in workflow
+
+
+def test_pypy311_profile_pins_the_supported_mcp_contract() -> None:
+    requirements = PYPI_REQUIREMENTS.read_text(encoding="utf-8")
+
+    assert "mcp==1.27.0" in requirements
+    assert "mcp>=1.27" not in requirements
 
 
 def test_pypy_rpds_constraint_is_ci_only_and_exact() -> None:

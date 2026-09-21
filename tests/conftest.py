@@ -346,7 +346,7 @@ def llm_tasks(llm_provider_name, llm_cache_dir, llm_cache_tracker) -> Iterator[L
     Function-scoped LLM task set with centralized joblib caching.
     Supports gemini, openai, and ollama.
     """
-    from joblib import Memory
+    from kogwistar.utils.cache_backend import Memory
     from kogwistar.llm_tasks import (
         build_default_llm_tasks,
         DefaultTaskProviderConfig,
