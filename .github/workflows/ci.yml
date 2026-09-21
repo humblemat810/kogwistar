@@ -72,7 +72,7 @@ jobs:
         env:
           KOGWISTAR_IMPL_MODE: python
         run: |
-          python -c 'import sys; assert sys.implementation.name == "pypy"; assert sys.version_info[:2] == (3, 11); print(sys.implementation); print(sys.version)'
+          python scripts/pypy311_profile.py
           python -m pip install --upgrade pip
           python -m pip install -r requirements-pypy-3.11-experimental.txt
 
@@ -86,7 +86,7 @@ jobs:
         env:
           KOGWISTAR_IMPL_MODE: python
         run: |
-          python -c 'import kogwistar; print(kogwistar.__file__)'
+          python scripts/pypy311_profile.py --import-package
       - name: Show CI working directory and tree
         run: |
           echo "PWD=$(pwd)"
