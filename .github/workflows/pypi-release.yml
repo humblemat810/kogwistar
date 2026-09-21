@@ -164,7 +164,7 @@ jobs:
           python-version: "3.12"
 
       - name: Download every tested release artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           path: dist
           merge-multiple: true
@@ -190,7 +190,7 @@ jobs:
           python-version: "3.12"
 
       - name: Download all tested artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           path: dist
           merge-multiple: true
