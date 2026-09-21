@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Callable, Any, TypeVar, ParamSpec, cast
 
 import pytest
-from joblib import Memory
+from kogwistar.utils.cache_backend import Memory
 
 pytest.importorskip("chromadb")
 pytest.importorskip("langchain_core")

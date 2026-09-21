@@ -25,6 +25,8 @@ graphify-out/
 .joblib/
 .kg_cache/
 .tmp_pytest_schema_modes
+.tmp-mcp-1.30
+.tmp*
 .pytest*/
 pytest_tmp*/
 tmp_pytest*/

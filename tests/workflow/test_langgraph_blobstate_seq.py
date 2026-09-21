@@ -4,13 +4,15 @@ from typing import Any, Dict, List
 
 import pytest
 
+pytest.importorskip("langgraph")
+
 from kogwistar.runtime.langgraph_converter import (
     LGConverterOptions,
     to_langgraph,
 )
 from kogwistar.runtime.models import RunSuccess
 
-pytestmark = pytest.mark.ci
+pytestmark = [pytest.mark.ci, pytest.mark.requires_langgraph]
 
 
 # ---- Minimum fake shapes (match tests/workflow/test_workflow_join.py) ----

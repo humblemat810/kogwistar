@@ -99,7 +99,13 @@ class McpRegistry:
         *,
         name: str | None = None,
         description: str | None = None,
+        structured_output: bool | None = None,
     ) -> Callable[..., Any]:
+        # Keep the historical decorator contract used by server_mcp.py. The
+        # official SDK already receives the structured schema from the return
+        # annotation and structuredContent is emitted by _execute().
+        del structured_output
+
         def register(fn: Callable[..., Any]) -> Callable[..., Any]:
             tool_name = name or getattr(fn, "name", None) or fn.__name__
             input_model = _input_model(tool_name, fn)
@@ -297,6 +303,11 @@ class McpRegistry:
         if transport != "streamable-http":
             raise ValueError(f"unsupported MCP transport: {transport}")
         uvicorn.run(self.http_app(path=path), host=host, port=port)
+
+    def streamable_http_app(self) -> Starlette:
+        """Return the compatibility ASGI factory used by existing deployments."""
+
+        return self.http_app()
 
 
 __all__ = ["McpRegistry"]

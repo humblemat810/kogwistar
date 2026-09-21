@@ -8,7 +8,7 @@ pytestmark = pytest.mark.slow
 
 pytest.importorskip("chromadb")
 
-from joblib import Memory
+from kogwistar.utils.cache_backend import Memory
 from typing import Callable, ParamSpec, TypeVar, cast
 
 from kogwistar.conversation.models import (

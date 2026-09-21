@@ -13,7 +13,13 @@ from kogwistar._rust_bridge import (
 pytestmark = [pytest.mark.ci]
 
 
-@pytest.mark.parametrize("mode", ["python", "rust"])
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "python",
+        pytest.param("rust", marks=pytest.mark.requires_rust),
+    ],
+)
 def test_rust_api_health_preserves_python_contract(monkeypatch, mode: str) -> None:
     monkeypatch.setenv("KOGWISTAR_IMPL_SERVER", mode)
     payload = {
@@ -29,6 +35,7 @@ def test_rust_api_health_preserves_python_contract(monkeypatch, mode: str) -> No
     assert api_health(payload=payload, python_value=python_value) == python_value
 
 
+@pytest.mark.requires_rust
 def test_rust_api_auth_sse_mcp_and_cli_contracts() -> None:
     assert api_authorize(roles=["admin"], required_roles=["admin"]) is True
     assert api_authorize(roles=["reader"], required_roles=["admin"]) is False

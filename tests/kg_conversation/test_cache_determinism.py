@@ -6,7 +6,7 @@ import pathlib
 import dataclasses
 import json
 from typing import Any
-from joblib import Memory
+from kogwistar.utils.cache_backend import Memory
 
 from kogwistar.conversation.agentic_answering import AnswerWithCitations
 from kogwistar.conversation.conversation_orchestrator import ConversationOrchestrator

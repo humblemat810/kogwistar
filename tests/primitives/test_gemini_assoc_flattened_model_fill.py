@@ -5,7 +5,7 @@ import os
 from typing import Any, Literal
 
 import pytest
-from joblib import Memory
+from kogwistar.utils.cache_backend import Memory
 
 from kogwistar.engine_core.models import (
     AssocFlattenedLLMGraphExtraction,

@@ -114,6 +114,7 @@ def test_pgvector_dimension_guard_accepts_matching_live_columns() -> None:
     )
 
 
+@pytest.mark.requires_pgvector
 def test_pgvector_constructor_initializes_metadata_and_schema(monkeypatch: pytest.MonkeyPatch) -> None:
     called: list[bool] = []
     monkeypatch.setattr(

@@ -33,7 +33,8 @@ dependencies = [
   "python-jose[cryptography]>=3.3",
   "PyJWT>=2.8",
   "RapidFuzz>=3.13.0",
-  "joblib>=1.3",
+  "joblib>=1.3; implementation_name == 'cpython'",
+  "diskcache>=5.6,<6; implementation_name == 'pypy'",
   "python-dotenv>=1.0.1",
   "requests>=2.32",
   "typing-extensions>=4.8"
@@ -125,10 +126,14 @@ markers = [
   "runtime_async: async runtime contracts",
   "runtime_sync: sync runtime contracts",
   "runtime_bridge_parity: bridge parity contract",
+  "server: server-layer tests",
   "llm_real: tests requiring non-fake LLM behavior or external LLM credentials",
   "requires_ollama: tests requiring a live local Ollama service or model",
   "manual: manual smoke tests that require a live service",
   "e2e: end-to-end tests against real services",
+  "requires_rust: tests that require the built kogwistar native extension",
+  "requires_langgraph: tests that require the optional LangGraph dependency",
+  "requires_pgvector: tests that require the optional pgvector dependency",
 ]
 
 [tool.ruff]

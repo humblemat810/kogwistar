@@ -5,7 +5,7 @@ import os
 from typing import Any
 
 import pytest
-from joblib import Memory
+from kogwistar.utils.cache_backend import Memory
 from pydantic import BaseModel, Field, create_model
 
 

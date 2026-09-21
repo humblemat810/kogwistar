@@ -550,7 +550,8 @@ class WorkerResultJournal:
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path, timeout=30.0)
-        connection.execute("PRAGMA busy_timeout=30000")
+        with closing(connection.execute("PRAGMA busy_timeout=30000")):
+            pass
         return connection
 
     def begin(self, *, message_id: str, work_digest: str) -> dict[str, Any] | None:

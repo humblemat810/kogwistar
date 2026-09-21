@@ -5,7 +5,7 @@ import uuid
 from dataclasses import dataclass
 from typing import List, Optional, Sequence, TYPE_CHECKING
 
-from joblib import Memory
+from .utils.cache_backend import Memory
 from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:

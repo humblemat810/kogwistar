@@ -1,0 +1,41 @@
+# syntax=docker/dockerfile:1.7
+
+# Local development image for Kogwistar's provider-free PyPy profile.
+ARG UBUNTU_IMAGE=ubuntu:24.04
+FROM ${UBUNTU_IMAGE}
+
+ARG PYPY_URL=https://downloads.python.org/pypy/pypy3.11-v7.3.20-linux64.tar.bz2
+ARG PYPY_SHA256=1410db3a7ae47603e2b7cbfd7ff6390b891b2e041c9eb4f1599f333677bccb3e
+ARG PYPY_VERSION=3.11
+ARG RUST_VERSION=1.91.1
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYPY_HOME=/opt/pypy \
+    PATH=/opt/pypy/bin:/root/.cargo/bin:$PATH \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+RUN test "${#PYPY_SHA256}" -eq 64 \
+    && apt-get update \
+    && apt-get install --no-install-recommends -y \
+        bzip2 ca-certificates curl gcc g++ git libffi-dev libssl-dev make \
+        pkg-config zlib1g-dev \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p "${PYPY_HOME}" \
+    && curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+        "${PYPY_URL}" --output /tmp/pypy.tar.bz2 \
+    && echo "${PYPY_SHA256}  /tmp/pypy.tar.bz2" | sha256sum --check --status \
+    && tar --extract --bzip2 --strip-components=1 --file /tmp/pypy.tar.bz2 --directory "${PYPY_HOME}" \
+    && rm /tmp/pypy.tar.bz2 \
+    && test -x "${PYPY_HOME}/bin/pypy3" \
+    && "${PYPY_HOME}/bin/pypy3" -c "import sys; expected = tuple(map(int, '${PYPY_VERSION}'.split('.'))); assert sys.version_info[:2] == expected" \
+    && "${PYPY_HOME}/bin/pypy3" -m ensurepip \
+    && pypy3 -m pip install --no-cache-dir --upgrade pip setuptools wheel \
+    && curl --fail --silent --show-error --location https://sh.rustup.rs \
+        | sh -s -- -y --profile minimal --default-toolchain "${RUST_VERSION}" \
+    && rustup component add rust-src
+
+WORKDIR /workspace
+ENTRYPOINT ["pypy3"]
+CMD ["--version"]

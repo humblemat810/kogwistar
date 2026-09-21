@@ -5,6 +5,8 @@ from typing import Any, Dict, List, Optional
 
 import pytest
 
+pytest.importorskip("langgraph")
+
 
 from kogwistar.runtime.langgraph_converter import (
     to_langgraph,
@@ -12,7 +14,7 @@ from kogwistar.runtime.langgraph_converter import (
 )
 from kogwistar.runtime.contract import BasePredicate
 
-pytestmark = pytest.mark.ci
+pytestmark = [pytest.mark.ci, pytest.mark.requires_langgraph]
 
 
 # --- Minimum fake shapes (aligned with test_workflow_join.py) ---

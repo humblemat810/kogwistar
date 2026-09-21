@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from os import PathLike
 from typing import Any, Dict, List, Optional, Tuple
 
-from joblib import Memory
+from ..utils.cache_backend import Memory
 from pydantic import BaseModel
 
 from .types import EngineLike, IAdjudicator

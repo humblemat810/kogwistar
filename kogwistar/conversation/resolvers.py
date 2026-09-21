@@ -1344,7 +1344,7 @@ def _aa_materialize_evidence_pack(ctx: StepContext) -> StepRunResult:
     )
 
     from ..utils.pydanic_model_consumer_wrapper import cache_pydantic_structured
-    from joblib import Memory
+    from ..utils.cache_backend import Memory
     from .models import EvidencePackDigest
 
     mem = Memory(
@@ -1419,7 +1419,7 @@ def _aa_generate_answer_with_citations(ctx: StepContext) -> StepRunResult:
             state.setdefault("_rt", {})["view"] = view
 
     from ..utils.pydanic_model_consumer_wrapper import cache_pydantic_structured
-    from joblib import Memory
+    from ..utils.cache_backend import Memory
 
     mem = Memory(
         location=os.path.join(agent.cache_dir, "_generate_answer_with_citations")
@@ -1514,7 +1514,7 @@ def _aa_validate_or_repair_citations(ctx: StepContext) -> StepRunResult:
             state.setdefault("_rt", {})["view"] = view
 
     from ..utils.pydanic_model_consumer_wrapper import cache_pydantic_structured
-    from joblib import Memory
+    from ..utils.cache_backend import Memory
 
     mem = Memory(
         location=os.path.join(agent.cache_dir, "_generate_answer_with_citations")

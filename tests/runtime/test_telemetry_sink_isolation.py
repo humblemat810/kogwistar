@@ -63,6 +63,31 @@ def test_sqlite_sink_flush_commits_prior_events_and_close_stops_writer(tmp_path)
     assert not sink._thr.is_alive()
 
 
+def test_sqlite_sink_repeated_batch_flushes_finalize_statements(tmp_path) -> None:
+    """Repeated PyPy flushes must not leave SQLite statements in progress."""
+    path = tmp_path / "telemetry-batches.sqlite"
+    sink = SQLiteEventSink(path, batch_size=8, flush_interval_ms=60_000)
+    emitter = EventEmitter(sink=sink)
+
+    for index in range(32):
+        emitter.emit(
+            type="step_attempt_completed",
+            ctx=TraceContext(
+                run_id=f"run-{index}",
+                token_id="t",
+                step_seq=index,
+                node_id="n",
+            ),
+        )
+
+    assert sink.flush(2.0)
+    sink.close(2.0)
+    assert not sink._thr.is_alive()
+
+    with sqlite3.connect(path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM wf_trace_events").fetchone() == (32,)
+
+
 def test_fanout_flush_isolates_peer_failure() -> None:
     class _BrokenSink:
         def flush(self, timeout=1.0):

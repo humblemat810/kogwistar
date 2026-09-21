@@ -129,7 +129,7 @@ from ..integrations.openai_embeddings import build_azure_embedding_fn_from_env
 import json
 import os
 from dotenv import load_dotenv
-from joblib import Memory
+from ..utils.cache_backend import Memory
 from functools import wraps
 import warnings
 from .models import (

@@ -244,7 +244,7 @@ class AnswerWithCitations(BaseModel):
 
 
 from typing import TypeVar, ParamSpec, cast
-from joblib import Memory
+from ..utils.cache_backend import Memory
 
 P = ParamSpec("P")
 R = TypeVar("R")
@@ -479,7 +479,7 @@ class AgenticAnsweringAgent:
             used_edge_ids = list(getattr(selection, "used_edge_ids", []) or [])
             last_used = used_node_ids
             from ..utils.pydanic_model_consumer_wrapper import cache_pydantic_structured
-            from joblib import Memory
+            from ..utils.cache_backend import Memory
 
             # 5) Materialize evidence pack for answering + citation picking
             mem = Memory(
