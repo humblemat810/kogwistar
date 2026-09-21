@@ -216,3 +216,15 @@ def test_pypy_311_experimental_workflow_is_pinned_and_nonblocking() -> None:
     assert "--bzip2" not in workflow
     assert "KOGWISTAR_IMPL_MODE: python" in workflow
     assert "no image is published" in workflow
+
+
+def test_main_ci_matrix_uses_hosted_cpython_and_pypy_runtimes() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+
+    assert "label: cpython312" in workflow
+    assert "label: cpython313" in workflow
+    assert "label: cpython314" in workflow
+    assert "python-version: pypy-3.11-v7.3.20" in workflow
+    assert "uses: actions/setup-python@v7" in workflow
+    assert "Install PyPy 3.11 Python-authority dependencies" in workflow
+    assert "Run PyPy 3.11 CI tests" in workflow

@@ -32,11 +32,25 @@ concurrency:
 jobs:
   ci:
     if: github.event_name != 'schedule' && (github.event_name != 'workflow_dispatch' || inputs.full == false)
+    name: CI (${{ matrix.label }})
+    continue-on-error: ${{ matrix.is_pypy }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.12", "3.13", "3.14"]
+        include:
+          - label: cpython312
+            python-version: "3.12"
+            is_pypy: false
+          - label: cpython313
+            python-version: "3.13"
+            is_pypy: false
+          - label: cpython314
+            python-version: "3.14"
+            is_pypy: false
+          - label: pypy311
+            python-version: pypy-3.11-v7.3.20
+            is_pypy: true
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -47,13 +61,32 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
 
-      - name: Install dependencies
+      - name: Install CPython dependencies
+        if: matrix.is_pypy == false
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e ".[test,server,full]"
-      - name: Verify package import
+
+      - name: Install PyPy 3.11 Python-authority dependencies
+        if: matrix.is_pypy
+        env:
+          KOGWISTAR_IMPL_MODE: python
+        run: |
+          python -c 'import sys; assert sys.implementation.name == "pypy"; assert sys.version_info[:2] == (3, 11); print(sys.implementation); print(sys.version)'
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-pypy-3.11-experimental.txt
+
+      - name: Verify CPython package import
+        if: matrix.is_pypy == false
         run: |
           python scripts/package_import_provenance_smoke.py
+
+      - name: Verify PyPy package import
+        if: matrix.is_pypy
+        env:
+          KOGWISTAR_IMPL_MODE: python
+        run: |
+          python -c 'import kogwistar; print(kogwistar.__file__)'
       - name: Show CI working directory and tree
         run: |
           echo "PWD=$(pwd)"
@@ -133,7 +166,8 @@ jobs:
       - name: Search for shadowing names
         run: |
           find . -iname "kogwistar.py" -o -type d -iname "kogwistar"
-      - name: Run CI tests
+      - name: Run CPython CI tests
+        if: matrix.is_pypy == false
         env:
           ANONYMIZED_TELEMETRY: "FALSE"
           KOGWISTAR_LOG_LEVEL: "WARNING"
@@ -148,6 +182,18 @@ jobs:
             --log-disable=urllib3.connectionpool
             --show-capture=no
         run: python -m pytest -m "ci and not ci_full" -q
+
+      - name: Run PyPy 3.11 CI tests
+        if: matrix.is_pypy
+        env:
+          KOGWISTAR_IMPL_MODE: python
+          ANONYMIZED_TELEMETRY: "FALSE"
+          KOGWISTAR_LOG_LEVEL: "WARNING"
+          LOG_LEVEL: "WARNING"
+        run: >-
+          python -m pytest
+          -m "ci and not ci_full and not slow and not manual and not llm_real and not requires_ollama"
+          -q --durations=25 --durations-min=0 -p no:cacheprovider
 
   lint:
     if: github.event_name != 'schedule' && (github.event_name != 'workflow_dispatch' || inputs.full == false)
