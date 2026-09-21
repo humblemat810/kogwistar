@@ -8,7 +8,6 @@ import os
 from pathlib import Path
 import sys
 import time
-import tracemalloc
 from typing import Any, Callable
 
 from kogwistar.runtime.models import RunSuccess
@@ -86,20 +85,33 @@ def _artifact_bytes(root: Path) -> int:
 
 
 def _measure(fn: Callable[[], int]) -> dict[str, int | float | None]:
-    tracemalloc.start()
+    # PyPy builds may omit the optional _tracemalloc extension. Keep the
+    # benchmark runnable there and retain RSS/process metrics as the portable
+    # memory signals.
+    try:
+        import tracemalloc
+    except ModuleNotFoundError:
+        tracemalloc = None
+    if tracemalloc is not None:
+        tracemalloc.start()
     rss_before, peak_rss_before = _memory_info()
     cpu_before = time.process_time()
     wall_before = time.perf_counter()
     output_count = int(fn())
     wall_seconds = time.perf_counter() - wall_before
     cpu_seconds = time.process_time() - cpu_before
-    _, peak_traced = tracemalloc.get_traced_memory()
-    tracemalloc.stop()
+    if tracemalloc is not None:
+        _, peak_traced = tracemalloc.get_traced_memory()
+        tracemalloc.stop()
+    else:
+        peak_traced = None
     rss_after, peak_rss_after = _memory_info()
     return {
         "wall_ms": round(wall_seconds * 1000.0, 6),
         "cpu_ms": round(cpu_seconds * 1000.0, 6),
-        "peak_traced_bytes": int(peak_traced),
+        "peak_traced_bytes": (
+            int(peak_traced) if peak_traced is not None else None
+        ),
         "rss_before_bytes": rss_before,
         "rss_after_bytes": rss_after,
         "peak_rss_bytes": peak_rss_after or peak_rss_before,

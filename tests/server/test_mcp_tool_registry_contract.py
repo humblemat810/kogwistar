@@ -6,23 +6,23 @@ import json
 from pathlib import Path
 
 import pytest
+from pydantic import BaseModel
 
 pytestmark = [pytest.mark.ci]
 
 
+class _StructuredResult(BaseModel):
+    value: int
+
+
 def test_registry_accepts_structured_output_compatibility_option() -> None:
-    from pydantic import BaseModel
-
     from kogwistar.server.mcp_registry import McpRegistry
-
-    class Result(BaseModel):
-        value: int
 
     registry = McpRegistry("structured-output-test")
 
     @registry.tool(structured_output=True)
-    def answer() -> Result:
-        return Result(value=42)
+    def answer() -> _StructuredResult:
+        return _StructuredResult(value=42)
 
     async def exercise() -> None:
         tools = await registry.list_tools()

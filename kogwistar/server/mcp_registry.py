@@ -304,5 +304,10 @@ class McpRegistry:
             raise ValueError(f"unsupported MCP transport: {transport}")
         uvicorn.run(self.http_app(path=path), host=host, port=port)
 
+    def streamable_http_app(self) -> Starlette:
+        """Return the compatibility ASGI factory used by existing deployments."""
+
+        return self.http_app()
+
 
 __all__ = ["McpRegistry"]
