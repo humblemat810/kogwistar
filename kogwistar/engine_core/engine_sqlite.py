@@ -4,7 +4,7 @@ import contextvars
 import json
 import sqlite3
 import uuid
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -534,10 +534,17 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
             timeout=30.0,
             isolation_level=None,
         )
-        conn.execute("PRAGMA foreign_keys = ON")
-        conn.execute("PRAGMA busy_timeout=30000")
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
+        for statement in (
+            "PRAGMA foreign_keys = ON",
+            "PRAGMA busy_timeout=30000",
+            "PRAGMA journal_mode=WAL",
+            "PRAGMA synchronous=NORMAL",
+        ):
+            # PyPy can retain an ignored sqlite cursor past the connection
+            # setup call. Finalize each PRAGMA before another connection uses
+            # the database, especially while WAL mode is being established.
+            with closing(conn.execute(statement)):
+                pass
         return conn
 
     @contextmanager

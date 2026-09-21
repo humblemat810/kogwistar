@@ -181,7 +181,7 @@ jobs:
             --log-disable=urllib3
             --log-disable=urllib3.connectionpool
             --show-capture=no
-        run: python -m pytest -m "ci and not ci_full" -q
+        run: python -m pytest -m "ci and not ci_full and not requires_rust" -q
 
       - name: Run PyPy 3.11 CI tests
         if: matrix.is_pypy
@@ -192,7 +192,7 @@ jobs:
           LOG_LEVEL: "WARNING"
         run: >-
           python -m pytest
-          -m "ci and not ci_full and not slow and not manual and not llm_real and not requires_ollama"
+          -m "ci and not ci_full and not slow and not manual and not llm_real and not requires_ollama and not requires_rust and not requires_langgraph"
           -q --durations=25 --durations-min=0 -p no:cacheprovider
 
   lint:

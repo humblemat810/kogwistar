@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import pathlib
 import sqlite3
+from contextlib import closing
 from typing import Any
 
 from ...cdc.change_event import EntityRefModel
@@ -27,7 +28,8 @@ class SearchIndexService(NamespaceProxy):
             pathlib.Path(self.index_db_path).parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(self.index_db_path)
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys = ON;")
+        with closing(conn.execute("PRAGMA foreign_keys = ON;")):
+            pass
         return conn
 
     def ensure_initialized(self) -> None:
@@ -40,8 +42,8 @@ class SearchIndexService(NamespaceProxy):
     def upsert_entries(self, items: list[IndexingItem]) -> None:
 
         conn = self._connect()
+        cur = conn.cursor()
         try:
-            cur = conn.cursor()
             for item in items:
                 kw = " ".join(item.keywords) if item.keywords else ""
                 al = " ".join(item.aliases) if item.aliases else ""
@@ -116,6 +118,7 @@ class SearchIndexService(NamespaceProxy):
 
             conn.commit()
         finally:
+            cur.close()
             conn.close()
 
     def search_hybrid(
@@ -123,9 +126,8 @@ class SearchIndexService(NamespaceProxy):
     ) -> dict[str, Any]:
 
         conn = self._connect()
+        cur = conn.cursor()
         try:
-            cur = conn.cursor()
-
             cur.execute(
                 """
                 SELECT
@@ -215,6 +217,7 @@ class SearchIndexService(NamespaceProxy):
 
             return {"query": q, "results": ranked[:limit]}
         finally:
+            cur.close()
             conn.close()
 
     def _normalize_fts_rows(self, rows: list[sqlite3.Row]) -> dict[str, float]:

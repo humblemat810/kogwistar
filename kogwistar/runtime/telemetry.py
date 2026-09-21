@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import atexit
+from contextlib import closing
 import json
 import logging
 import queue
@@ -301,9 +302,9 @@ class SQLiteEventSink:
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(self.db_path)
         try:
-            conn.execute("PRAGMA journal_mode=WAL;")
-            conn.execute("PRAGMA synchronous=NORMAL;")
-            conn.execute(
+            for statement in (
+                "PRAGMA journal_mode=WAL;",
+                "PRAGMA synchronous=NORMAL;",
                 f"""
                 CREATE TABLE IF NOT EXISTS {self.table} (
                     event_id TEXT PRIMARY KEY,
@@ -325,17 +326,15 @@ class SQLiteEventSink:
 
                     payload_json TEXT NOT NULL
                 );
-                """
-            )
-            conn.execute(
-                f"CREATE INDEX IF NOT EXISTS idx_{self.table}_run_seq ON {self.table}(run_id, step_seq);"
-            )
-            conn.execute(
-                f"CREATE INDEX IF NOT EXISTS idx_{self.table}_span ON {self.table}(span_id);"
-            )
-            conn.execute(
-                f"CREATE INDEX IF NOT EXISTS idx_{self.table}_trace ON {self.table}(trace_id);"
-            )
+                """,
+                f"CREATE INDEX IF NOT EXISTS idx_{self.table}_run_seq ON {self.table}(run_id, step_seq);",
+                f"CREATE INDEX IF NOT EXISTS idx_{self.table}_span ON {self.table}(span_id);",
+                f"CREATE INDEX IF NOT EXISTS idx_{self.table}_trace ON {self.table}(trace_id);",
+            ):
+                # PyPy may keep an ignored sqlite cursor alive until a later
+                # GC cycle. Finalize every statement before committing.
+                with closing(conn.execute(statement)):
+                    pass
             conn.commit()
         finally:
             conn.close()
@@ -363,8 +362,8 @@ class SQLiteEventSink:
     def _run(self) -> None:
         conn = sqlite3.connect(self.db_path, check_same_thread=False)
         for pragma in ("PRAGMA journal_mode=WAL;", "PRAGMA synchronous=NORMAL;"):
-            pragma_cursor = conn.execute(pragma)
-            pragma_cursor.close()
+            with closing(conn.execute(pragma)):
+                pass
         batch: list[dict] = []
         last_flush = _now_ms()
 

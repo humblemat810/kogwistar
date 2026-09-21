@@ -6,6 +6,7 @@ import sqlite3
 import threading
 import os
 import traceback
+from contextlib import closing
 
 
 def safe_format_exception(exc: Exception, base_path: str = None):
@@ -63,18 +64,18 @@ class SQLiteHandler(logging.Handler):
         Creates the logs table if it doesn't already exist.
         """
         with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS logs (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    timestamp TEXT,
-                    level TEXT,
-                    module TEXT,
-                    filename TEXT,
-                    line_number INTEGER,
-                    message TEXT
-                )
-            """)
+            with closing(conn.cursor()) as cursor:
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS logs (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        timestamp TEXT,
+                        level TEXT,
+                        module TEXT,
+                        filename TEXT,
+                        line_number INTEGER,
+                        message TEXT
+                    )
+                """)
             conn.commit()
 
     def emit(self, record):
@@ -88,21 +89,21 @@ class SQLiteHandler(logging.Handler):
             timestamp = self.formatter.formatTime(record)
             # with self.lock:
             with sqlite3.connect(self.db_path, timeout=10) as conn:
-                cursor = conn.cursor()
-                cursor.execute(
-                    """
-                    INSERT INTO logs (timestamp, level, module, filename, line_number, message)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                    (
-                        timestamp,
-                        record.levelname,
-                        record.module,
-                        record.filename,
-                        record.lineno,
-                        record.getMessage(),
-                    ),
-                )
+                with closing(conn.cursor()) as cursor:
+                    cursor.execute(
+                        """
+                        INSERT INTO logs (timestamp, level, module, filename, line_number, message)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                        (
+                            timestamp,
+                            record.levelname,
+                            record.module,
+                            record.filename,
+                            record.lineno,
+                            record.getMessage(),
+                        ),
+                    )
                 conn.commit()
         except Exception:
             self.handleError(record)
@@ -113,7 +114,8 @@ class SQLiteHandler(logging.Handler):
         """
         try:
             with sqlite3.connect(self.db_path) as conn:
-                conn.execute("PRAGMA wal_checkpoint;")
+                with closing(conn.execute("PRAGMA wal_checkpoint;")):
+                    pass
                 conn.commit()
         except Exception as e:
             print(f"Error during WAL checkpoint: {e}")

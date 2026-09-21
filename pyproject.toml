@@ -130,6 +130,8 @@ markers = [
   "requires_ollama: tests requiring a live local Ollama service or model",
   "manual: manual smoke tests that require a live service",
   "e2e: end-to-end tests against real services",
+  "requires_rust: tests that require the built kogwistar native extension",
+  "requires_langgraph: tests that require the optional LangGraph dependency",
 ]
 
 [tool.ruff]

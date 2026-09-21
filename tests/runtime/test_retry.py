@@ -63,7 +63,13 @@ def test_retry_with_context_raises_when_budget_is_exhausted() -> None:
     assert len(exc_info.value.attempts) == 2
 
 
-@pytest.mark.parametrize("mode", ["shadow", "rust"])
+@pytest.mark.parametrize(
+    "mode",
+    [
+        pytest.param("shadow", marks=pytest.mark.requires_rust),
+        pytest.param("rust", marks=pytest.mark.requires_rust),
+    ],
+)
 def test_retry_native_policy_does_not_double_invoke_callbacks(monkeypatch, mode: str) -> None:
     monkeypatch.setenv("KOGWISTAR_IMPL_RUNTIME", mode)
     invocations: list[int] = []
