@@ -1,6 +1,9 @@
 name: PyPI Release
 
 on:
+  push:
+    tags:
+      - "v*.*.*"
   workflow_dispatch:
     inputs:
       version:
@@ -16,6 +19,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: pypi-release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   verify-release:
     runs-on: ubuntu-latest
@@ -29,7 +36,7 @@ jobs:
       - id: version
         name: Verify tag, package version, and PyPI availability
         env:
-          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_VERSION: ${{ github.event_name == 'push' && github.ref_name || inputs.version }}
         run: |
           test "$GITHUB_REF_TYPE" = tag
           test "$GITHUB_REF_NAME" = "v$RELEASE_VERSION"
@@ -177,7 +184,9 @@ jobs:
 
   publish:
     needs: [verify-release, audit-artifacts]
-    if: inputs.publish
+    # Version tags are the normal release path. The manual input remains useful
+    # for a deliberately controlled rerun from a tag.
+    if: github.event_name == 'push' || inputs.publish == true
     runs-on: ubuntu-latest
     environment:
       name: pypi
