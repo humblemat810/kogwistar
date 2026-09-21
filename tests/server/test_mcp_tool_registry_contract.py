@@ -10,6 +10,31 @@ import pytest
 pytestmark = [pytest.mark.ci]
 
 
+def test_registry_accepts_structured_output_compatibility_option() -> None:
+    from pydantic import BaseModel
+
+    from kogwistar.server.mcp_registry import McpRegistry
+
+    class Result(BaseModel):
+        value: int
+
+    registry = McpRegistry("structured-output-test")
+
+    @registry.tool(structured_output=True)
+    def answer() -> Result:
+        return Result(value=42)
+
+    async def exercise() -> None:
+        tools = await registry.list_tools()
+        tool = next(item for item in tools if item.name == "answer")
+        assert tool.outputSchema is not None
+
+        result = await registry.call_tool("answer")
+        assert result.structuredContent == {"value": 42}
+
+    asyncio.run(exercise())
+
+
 def test_workflow_mcp_tool_names_are_declared_once() -> None:
     source = Path("kogwistar/server/chat_mcp.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
