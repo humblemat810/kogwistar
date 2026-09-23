@@ -102,6 +102,73 @@ class VideoRegionTrackLocator(BaseModel):
         return self
 
 
+class VideoTrackRegion(BaseModel):
+    """One per-frame region in an external video-track manifest."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    kind: Literal["bounding_box", "polygon", "mask_ref"]
+    x: float | None = Field(None, ge=0.0)
+    y: float | None = Field(None, ge=0.0)
+    width: float | None = Field(None, gt=0.0)
+    height: float | None = Field(None, gt=0.0)
+    points: tuple[tuple[float, float], ...] = ()
+    mask_ref: str | None = None
+    mask_sha256: str | None = Field(None, min_length=64, max_length=64)
+
+    @model_validator(mode="after")
+    def validate_shape(self) -> "VideoTrackRegion":
+        if self.kind == "bounding_box":
+            if None in {self.x, self.y, self.width, self.height}:
+                raise ValueError("bounding_box regions require x, y, width, and height")
+        elif self.kind == "polygon":
+            if len(self.points) < 3:
+                raise ValueError("polygon regions require at least three points")
+        elif not self.mask_ref or not self.mask_sha256:
+            raise ValueError("mask_ref regions require mask_ref and mask_sha256")
+        if self.mask_sha256 is not None:
+            try:
+                int(self.mask_sha256, 16)
+            except ValueError as exc:
+                raise ValueError("mask_sha256 must be hexadecimal") from exc
+        if self.x is not None and self.width is not None and self.x + self.width > 1.0:
+            raise ValueError("video region x bounds must stay within 0..1")
+        if self.y is not None and self.height is not None and self.y + self.height > 1.0:
+            raise ValueError("video region y bounds must stay within 0..1")
+        if any(not 0.0 <= coordinate <= 1.0 for point in self.points for coordinate in point):
+            raise ValueError("video polygon coordinates must stay within 0..1")
+        return self
+
+
+class VideoTrackFrame(BaseModel):
+    """All regions associated with one frame or timestamp."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    frame_index: int = Field(..., ge=0)
+    timestamp_ms: int = Field(..., ge=0)
+    regions: tuple[VideoTrackRegion, ...] = Field(..., min_length=1)
+
+
+class VideoTrackManifest(BaseModel):
+    """Versioned, immutable external manifest for per-frame video grounding."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    schema_version: Literal[1] = 1
+    frames: tuple[VideoTrackFrame, ...] = Field(..., min_length=1)
+
+    @model_validator(mode="after")
+    def validate_order(self) -> "VideoTrackManifest":
+        frame_indices = [frame.frame_index for frame in self.frames]
+        timestamps = [frame.timestamp_ms for frame in self.frames]
+        if frame_indices != sorted(set(frame_indices)):
+            raise ValueError("video track frame indices must be unique and ordered")
+        if timestamps != sorted(timestamps):
+            raise ValueError("video track timestamps must be ordered")
+        return self
+
+
 class LegacyLocator(BaseModel):
     """Read-only compatibility wrapper for historical locator payloads."""
 
@@ -142,17 +209,25 @@ class MultimodalSpan(BaseModel):
             int(self.content_sha256, 16)
         except ValueError as exc:
             raise ValueError("content_sha256 must be hexadecimal") from exc
-        if self.modality == "text" and self.locator.kind not in {"text_range", "legacy"}:
-            raise ValueError("text evidence requires a text_range locator")
-        if self.modality == "audio" and self.locator.kind not in {"temporal_interval", "legacy"}:
-            raise ValueError("audio evidence requires a temporal_interval locator")
-        if self.modality == "video" and self.locator.kind not in {
+        allowed_locators = {
+            "text": {"text_range", "legacy"},
+            "image": {"spatial_region", "legacy"},
+            "audio": {"temporal_interval", "legacy"},
+            "video": {
             "temporal_interval",
             "spatial_region",
             "video_region_track",
             "legacy",
-        }:
-            raise ValueError("video evidence requires a temporal or spatial locator")
+            },
+            "pdf_page": {"text_range", "spatial_region", "legacy"},
+            "table": {"text_range", "spatial_region", "legacy"},
+            "chart": {"spatial_region", "legacy"},
+            "webpage": {"text_range", "spatial_region", "legacy"},
+        }
+        if self.locator.kind not in allowed_locators[self.modality]:
+            raise ValueError(
+                f"{self.modality} evidence has incompatible locator {self.locator.kind}"
+            )
         return self
 
     @property
@@ -221,6 +296,8 @@ class EmbeddingReference(BaseModel):
         source_maps = [target for target in self.targets if target.role == "source_map"]
         if not source_maps:
             raise ValueError("embedding references require a source_map target")
+        if self.span.source_namespace != self.source_namespace:
+            raise ValueError("embedding span must stay in the source namespace")
         if any(target.logical_ref.target_namespace != self.source_namespace for target in self.targets):
             raise ValueError("embedding targets must stay in the source namespace")
         try:
@@ -254,4 +331,7 @@ __all__ = [
     "TemporalIntervalLocator",
     "TextRangeLocator",
     "VideoRegionTrackLocator",
+    "VideoTrackFrame",
+    "VideoTrackManifest",
+    "VideoTrackRegion",
 ]

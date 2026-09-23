@@ -16,6 +16,9 @@ from kogwistar.engine_core.multimodal import (
     TemporalIntervalLocator,
     TextRangeLocator,
     VideoRegionTrackLocator,
+    VideoTrackFrame,
+    VideoTrackManifest,
+    VideoTrackRegion,
     PinnedLogicalRef,
 )
 from kogwistar.logical_refs import LogicalRef
@@ -82,6 +85,46 @@ def test_multimodal_locators_validate_temporal_and_spatial_boundaries() -> None:
     assert span.locator_digest
     assert span.evidence_key == span.evidence_key
 
+    manifest = VideoTrackManifest(
+        frames=(
+            VideoTrackFrame(
+                frame_index=0,
+                timestamp_ms=0,
+                regions=(
+                    VideoTrackRegion(
+                        kind="bounding_box",
+                        x=0.1,
+                        y=0.2,
+                        width=0.2,
+                        height=0.2,
+                    ),
+                ),
+            ),
+        )
+    )
+    assert manifest.frames[0].regions[0].kind == "bounding_box"
+    with pytest.raises(ValidationError):
+        VideoTrackManifest(
+            frames=(
+                VideoTrackFrame(
+                    frame_index=1,
+                    timestamp_ms=100,
+                    regions=(VideoTrackRegion(kind="polygon", points=((0.0, 0.0),)),),
+                ),
+            )
+        )
+    with pytest.raises(ValidationError, match="polygon coordinates"):
+        VideoTrackRegion(
+            kind="polygon",
+            points=((0.0, 0.0), (0.5, 0.0), (1.1, 0.5)),
+        )
+    with pytest.raises(ValidationError, match="mask_sha256"):
+        VideoTrackRegion(
+            kind="mask_ref",
+            mask_ref="lake://masks/frame-0.png",
+            mask_sha256="not-a-hash",
+        )
+
 
 def test_embedding_reference_requires_pinned_source_map_and_preserves_higher_order_targets() -> None:
     semantic_edge = PinnedLogicalRef(
@@ -105,6 +148,15 @@ def test_embedding_reference_requires_pinned_source_map_and_preserves_higher_ord
             embedding_set_id="view:lecture-1",
             span=_image_span(),
             targets=(semantic_edge,),
+        )
+
+    with pytest.raises(ValidationError, match="source namespace"):
+        EmbeddingReference(
+            source_namespace="project-b",
+            profile_fingerprint=PROFILE_SHA,
+            embedding_set_id="view:lecture-1",
+            span=_image_span(),
+            targets=(_source_map_ref(),),
         )
 
 
