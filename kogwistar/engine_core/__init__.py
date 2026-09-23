@@ -66,6 +66,9 @@ from kogwistar.engine_core.multimodal import (
     TemporalIntervalLocator,
     TextRangeLocator,
     VideoRegionTrackLocator,
+    VideoTrackFrame,
+    VideoTrackManifest,
+    VideoTrackRegion,
 )
 from kogwistar.typing_interfaces import TokenAwareEmbeddingFunction
 from kogwistar.engine_core.types import (
@@ -138,6 +141,9 @@ __all__ = [
     "TemporalIntervalLocator",
     "TextRangeLocator",
     "VideoRegionTrackLocator",
+    "VideoTrackFrame",
+    "VideoTrackManifest",
+    "VideoTrackRegion",
     "TokenAwareEmbeddingFunction",
     "EngineType",
     "ExtractionSchemaMode",

@@ -21,6 +21,9 @@ if TYPE_CHECKING:
         EmbeddingReference,
         MultimodalSpan,
         PinnedLogicalRef,
+        VideoTrackFrame,
+        VideoTrackManifest,
+        VideoTrackRegion,
     )
     from kogwistar.provenance import EvidencePackDigest
     from kogwistar.llm_tasks import (
@@ -47,6 +50,9 @@ __all__ = [
     "MultimodalSpan",
     "PinnedLogicalRef",
     "EmbeddingReference",
+    "VideoTrackFrame",
+    "VideoTrackManifest",
+    "VideoTrackRegion",
     "EvidencePackDigest",
     "evidence_pack_digest_hash",
     "shortids",
@@ -95,6 +101,9 @@ _EXPORTS: dict[str, tuple[str, str | None]] = {
     "MultimodalSpan": ("kogwistar.engine_core.multimodal", "MultimodalSpan"),
     "PinnedLogicalRef": ("kogwistar.engine_core.multimodal", "PinnedLogicalRef"),
     "EmbeddingReference": ("kogwistar.engine_core.multimodal", "EmbeddingReference"),
+    "VideoTrackFrame": ("kogwistar.engine_core.multimodal", "VideoTrackFrame"),
+    "VideoTrackManifest": ("kogwistar.engine_core.multimodal", "VideoTrackManifest"),
+    "VideoTrackRegion": ("kogwistar.engine_core.multimodal", "VideoTrackRegion"),
     "shortids": ("kogwistar.shortids", None),
 }
 
