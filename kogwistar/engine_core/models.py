@@ -43,6 +43,7 @@ from pydantic_extension.model_slicing import (
     BackendType,
 )
 from pydantic_extension.model_slicing.mixin import ExcludeMode, DtoField
+from .multimodal import MultimodalSpan
 
 JsonPrimitive = Union[str, int, float, bool, None]
 
@@ -458,11 +459,10 @@ class GraphEntityBase(ModeSlicingMixin, BaseModel):
 class Grounding(ModeSlicingMixin, BaseModel):
     spans: Annotated[
         List[Span], FrontendField(), BackendField(), DtoField(), LLMField()
-    ] = Field(
-        ...,
-        min_length=1,
-        description="One or more locatable span across chunks/text-clusters supporting this entity",
-    )
+    ] = Field(default_factory=list)
+    multimodal_spans: Annotated[
+        List[MultimodalSpan], FrontendField(), BackendField(), DtoField()
+    ] = Field(default_factory=list)
 
     def __init__(self, spans=None, /, **data):
         if spans is not None and "spans" not in data:
@@ -475,16 +475,28 @@ class Grounding(ModeSlicingMixin, BaseModel):
 
     @field_validator("spans")
     def spans_validate(cls, spans: Span | list[Span]):
+        if spans is None:
+            return []
         if type(spans) is Span:
             spans = [spans]
         elif type(spans) is list:
             spans = spans
         return spans
 
+    @model_validator(mode="after")
+    def _require_evidence(self):
+        if not self.spans and not self.multimodal_spans:
+            raise ValueError("At least one text or multimodal span is required")
+        return self
+
     def validate_from_source(self):
         for sp in self.spans:
             self.validate_span(sp)
         pass
+
+    def iter_evidence(self):
+        yield from self.spans
+        yield from self.multimodal_spans
 
 
 def _coerce_mentions_payload(mentions):
@@ -577,6 +589,10 @@ class GraphEntityRefBase(GraphEntityBase):
         for g in self.mentions:
             for sp in g.spans:
                 yield sp
+
+    def iter_evidence(self):
+        for g in self.mentions:
+            yield from g.iter_evidence()
 
     # NEED-FIX
     @field_validator("mentions")
@@ -895,8 +911,17 @@ class LLMNode(LLMMixin, GraphEntityRefBase):
       `kogwistar/docs/ARD-postgresql-inclusive.md`.
     """
 
-    def to_flattened(self, *, span_to_id: dict[tuple, str]) -> "FlattenedLLMNode":
-        return FlattenedLLMNode.from_canonical(self, span_to_id=span_to_id)
+    def to_flattened(
+        self,
+        *,
+        span_to_id: dict[tuple, str],
+        multimodal_span_to_id: dict[str, str] | None = None,
+    ) -> "FlattenedLLMNode":
+        return FlattenedLLMNode.from_canonical(
+            self,
+            span_to_id=span_to_id,
+            multimodal_span_to_id=multimodal_span_to_id,
+        )
 
 
 class LLMEdge(LLMMixin, EdgeMixin, GraphEntityRefBase):
@@ -919,8 +944,17 @@ class LLMEdge(LLMMixin, EdgeMixin, GraphEntityRefBase):
       `kogwistar/docs/ARD-postgresql-inclusive.md`.
     """
 
-    def to_flattened(self, *, span_to_id: dict[tuple, str]) -> "FlattenedLLMEdge":
-        return FlattenedLLMEdge.from_canonical(self, span_to_id=span_to_id)
+    def to_flattened(
+        self,
+        *,
+        span_to_id: dict[tuple, str],
+        multimodal_span_to_id: dict[str, str] | None = None,
+    ) -> "FlattenedLLMEdge":
+        return FlattenedLLMEdge.from_canonical(
+            self,
+            span_to_id=span_to_id,
+            multimodal_span_to_id=multimodal_span_to_id,
+        )
 
 
 class GroundginMandatoryExcerpt(Span):
@@ -1091,6 +1125,15 @@ class FlattenedSpan(Span):
         )
 
 
+class FlattenedMultimodalSpan(ModeSlicingMixin, BaseModel):
+    """Root-level multimodal evidence record referenced by a grounding."""
+
+    include_unmarked_for_modes: ClassVar[set[str]] = {"llm"}
+
+    id: str = Field(..., description="Temporary multimodal span id")
+    span: MultimodalSpan
+
+
 class FlattenedGrounding(ModeSlicingMixin, BaseModel):
     """Grouped support that references one or more root-level spans by id."""
 
@@ -1098,28 +1141,46 @@ class FlattenedGrounding(ModeSlicingMixin, BaseModel):
 
     span_ids: Annotated[
         List[str], FrontendField(), BackendField(), DtoField(), LLMField()
-    ] = Field(
-        ...,
-        min_length=1,
-        description="One or more root-level span ids supporting this grounding",
-    )
+    ] = Field(default_factory=list)
+    multimodal_span_ids: Annotated[
+        List[str], FrontendField(), BackendField(), DtoField()
+    ] = Field(default_factory=list)
 
     @field_validator("span_ids")
     @classmethod
-    def _require_non_empty_span_ids(cls, span_ids: List[str]):
-        if not span_ids:
-            raise ValueError("At least one span_id is required")
+    def _normalize_span_ids(cls, span_ids: List[str] | None):
+        if span_ids is None:
+            return []
         return span_ids
+
+    @model_validator(mode="after")
+    def _require_evidence_ids(self):
+        if not self.span_ids and not self.multimodal_span_ids:
+            raise ValueError("At least one text or multimodal span id is required")
+        return self
 
     @classmethod
     def from_canonical(
-        cls, grounding: Grounding, *, span_to_id: dict[tuple, str]
+        cls,
+        grounding: Grounding,
+        *,
+        span_to_id: dict[tuple, str],
+        multimodal_span_to_id: dict[str, str] | None = None,
     ) -> "FlattenedGrounding":
         return cls(
-            span_ids=[span_to_id[_span_identity_key(span)] for span in grounding.spans]
+            span_ids=[span_to_id[_span_identity_key(span)] for span in grounding.spans],
+            multimodal_span_ids=[
+                multimodal_span_to_id[span.evidence_key]
+                for span in grounding.multimodal_spans
+            ] if multimodal_span_to_id is not None else []
         )
 
-    def to_canonical(self, *, span_by_id: dict[str, Span]) -> Grounding:
+    def to_canonical(
+        self,
+        *,
+        span_by_id: dict[str, Span],
+        multimodal_span_by_id: dict[str, MultimodalSpan] | None = None,
+    ) -> Grounding:
         spans: list[Span] = []
         for span_id in self.span_ids:
             try:
@@ -1128,7 +1189,12 @@ class FlattenedGrounding(ModeSlicingMixin, BaseModel):
                 raise KeyError(
                     f"Unknown span id referenced by grounding: {span_id}"
                 ) from e
-        return Grounding(spans=spans)
+        multimodal_spans = []
+        for span_id in self.multimodal_span_ids:
+            if multimodal_span_by_id is None or span_id not in multimodal_span_by_id:
+                raise KeyError(f"Unknown multimodal span id referenced by grounding: {span_id}")
+            multimodal_spans.append(multimodal_span_by_id[span_id])
+        return Grounding(spans=spans, multimodal_spans=multimodal_spans)
 
 
 class FlattenedLLMNode(LLMMixin, GraphEntityBase):
@@ -1155,7 +1221,11 @@ class FlattenedLLMNode(LLMMixin, GraphEntityBase):
 
     @classmethod
     def from_canonical(
-        cls, node: "LLMNode", *, span_to_id: dict[tuple, str]
+        cls,
+        node: "LLMNode",
+        *,
+        span_to_id: dict[tuple, str],
+        multimodal_span_to_id: dict[str, str] | None = None,
     ) -> "FlattenedLLMNode":
         return cls(
             id=node.id,
@@ -1167,12 +1237,21 @@ class FlattenedLLMNode(LLMMixin, GraphEntityBase):
             canonical_entity_id=node.canonical_entity_id,
             properties=node.properties,
             mentions=[
-                FlattenedGrounding.from_canonical(g, span_to_id=span_to_id)
+                FlattenedGrounding.from_canonical(
+                    g,
+                    span_to_id=span_to_id,
+                    multimodal_span_to_id=multimodal_span_to_id,
+                )
                 for g in node.mentions
             ],
         )
 
-    def to_canonical(self, *, span_by_id: dict[str, Span]) -> "LLMNode":
+    def to_canonical(
+        self,
+        *,
+        span_by_id: dict[str, Span],
+        multimodal_span_by_id: dict[str, MultimodalSpan] | None = None,
+    ) -> "LLMNode":
         return LLMNode(
             id=self.id,
             local_id=self.local_id,
@@ -1182,7 +1261,13 @@ class FlattenedLLMNode(LLMMixin, GraphEntityBase):
             domain_id=self.domain_id,
             canonical_entity_id=self.canonical_entity_id,
             properties=self.properties,
-            mentions=[g.to_canonical(span_by_id=span_by_id) for g in self.mentions],
+            mentions=[
+                g.to_canonical(
+                    span_by_id=span_by_id,
+                    multimodal_span_by_id=multimodal_span_by_id,
+                )
+                for g in self.mentions
+            ],
         )
 
 
@@ -1210,7 +1295,11 @@ class FlattenedLLMEdge(LLMMixin, EdgeMixin, GraphEntityBase):
 
     @classmethod
     def from_canonical(
-        cls, edge: "LLMEdge", *, span_to_id: dict[tuple, str]
+        cls,
+        edge: "LLMEdge",
+        *,
+        span_to_id: dict[tuple, str],
+        multimodal_span_to_id: dict[str, str] | None = None,
     ) -> "FlattenedLLMEdge":
         return cls(
             id=edge.id,
@@ -1227,12 +1316,21 @@ class FlattenedLLMEdge(LLMMixin, EdgeMixin, GraphEntityBase):
             source_edge_ids=edge.source_edge_ids,
             target_edge_ids=edge.target_edge_ids,
             mentions=[
-                FlattenedGrounding.from_canonical(g, span_to_id=span_to_id)
+                FlattenedGrounding.from_canonical(
+                    g,
+                    span_to_id=span_to_id,
+                    multimodal_span_to_id=multimodal_span_to_id,
+                )
                 for g in edge.mentions
             ],
         )
 
-    def to_canonical(self, *, span_by_id: dict[str, Span]) -> "LLMEdge":
+    def to_canonical(
+        self,
+        *,
+        span_by_id: dict[str, Span],
+        multimodal_span_by_id: dict[str, MultimodalSpan] | None = None,
+    ) -> "LLMEdge":
         return LLMEdge(
             id=self.id,
             local_id=self.local_id,
@@ -1247,7 +1345,13 @@ class FlattenedLLMEdge(LLMMixin, EdgeMixin, GraphEntityBase):
             relation=self.relation,
             source_edge_ids=self.source_edge_ids,
             target_edge_ids=self.target_edge_ids,
-            mentions=[g.to_canonical(span_by_id=span_by_id) for g in self.mentions],
+            mentions=[
+                g.to_canonical(
+                    span_by_id=span_by_id,
+                    multimodal_span_by_id=multimodal_span_by_id,
+                )
+                for g in self.mentions
+            ],
         )
 
 
@@ -1257,6 +1361,7 @@ class FlattenedLLMGraphExtraction(ModeSlicingMixin, BaseModel):
     spans: List[FlattenedSpan] = Field(
         ..., description="Root-level spans referenced by node/edge groundings"
     )
+    multimodal_spans: List[FlattenedMultimodalSpan] = Field(default_factory=list)
     nodes: List[FlattenedLLMNode] = Field(
         ..., description="List of extracted flattened nodes"
     )
@@ -1274,25 +1379,57 @@ class FlattenedLLMGraphExtraction(ModeSlicingMixin, BaseModel):
             seen.add(sp.id)
         return spans
 
+    @field_validator("multimodal_spans")
+    @classmethod
+    def _validate_unique_multimodal_span_ids(
+        cls, spans: List[FlattenedMultimodalSpan]
+    ):
+        seen: set[str] = set()
+        for span in spans:
+            if span.id in seen:
+                raise ValueError(f"Duplicate multimodal span id found: {span.id}")
+            seen.add(span.id)
+        return spans
+
     @model_validator(mode="after")
     def _validate_references(self):
         span_ids = {sp.id for sp in self.spans}
+        multimodal_span_ids = {sp.id for sp in self.multimodal_spans}
         referenced: set[str] = set()
+        referenced_multimodal: set[str] = set()
         for node in self.nodes:
             for grounding in node.mentions:
                 for span_id in grounding.span_ids:
                     if span_id not in span_ids:
                         raise ValueError(f"Node references unknown span id: {span_id}")
                     referenced.add(span_id)
+                for span_id in grounding.multimodal_span_ids:
+                    if span_id not in multimodal_span_ids:
+                        raise ValueError(
+                            f"Node references unknown multimodal span id: {span_id}"
+                        )
+                    referenced_multimodal.add(span_id)
         for edge in self.edges:
             for grounding in edge.mentions:
                 for span_id in grounding.span_ids:
                     if span_id not in span_ids:
                         raise ValueError(f"Edge references unknown span id: {span_id}")
                     referenced.add(span_id)
+                for span_id in grounding.multimodal_span_ids:
+                    if span_id not in multimodal_span_ids:
+                        raise ValueError(
+                            f"Edge references unknown multimodal span id: {span_id}"
+                        )
+                    referenced_multimodal.add(span_id)
         orphaned = span_ids - referenced
         if orphaned:
             raise ValueError(f"Unreferenced spans are not allowed: {sorted(orphaned)}")
+        orphaned_multimodal = multimodal_span_ids - referenced_multimodal
+        if orphaned_multimodal:
+            raise ValueError(
+                "Unreferenced multimodal spans are not allowed: "
+                f"{sorted(orphaned_multimodal)}"
+            )
         return self
 
     @classmethod
@@ -1304,7 +1441,10 @@ class FlattenedLLMGraphExtraction(ModeSlicingMixin, BaseModel):
     ) -> "FlattenedLLMGraphExtraction":
         span_to_id: dict[tuple, str] = {}
         flat_spans: list[FlattenedSpan] = []
+        multimodal_span_to_id: dict[str, str] = {}
+        flat_multimodal_spans: list[FlattenedMultimodalSpan] = []
         seq = 0
+        multimodal_seq = 0
 
         def intern_span(span: Span) -> str:
             nonlocal seq
@@ -1329,19 +1469,50 @@ class FlattenedLLMGraphExtraction(ModeSlicingMixin, BaseModel):
             )
             return span_id
 
+        def intern_multimodal_span(span: MultimodalSpan) -> str:
+            nonlocal multimodal_seq
+            key = span.evidence_key
+            existing = multimodal_span_to_id.get(key)
+            if existing is not None:
+                return existing
+            multimodal_seq += 1
+            span_id = f"msp:{multimodal_seq}"
+            multimodal_span_to_id[key] = span_id
+            flat_multimodal_spans.append(
+                FlattenedMultimodalSpan(id=span_id, span=span)
+            )
+            return span_id
+
         for node in graph.nodes:
             for grounding in node.mentions:
                 for span in grounding.spans:
                     intern_span(span)
+                for span in grounding.multimodal_spans:
+                    intern_multimodal_span(span)
         for edge in graph.edges:
             for grounding in edge.mentions:
                 for span in grounding.spans:
                     intern_span(span)
+                for span in grounding.multimodal_spans:
+                    intern_multimodal_span(span)
 
         return cls(
             spans=flat_spans,
-            nodes=[node.to_flattened(span_to_id=span_to_id) for node in graph.nodes],
-            edges=[edge.to_flattened(span_to_id=span_to_id) for edge in graph.edges],
+            multimodal_spans=flat_multimodal_spans,
+            nodes=[
+                node.to_flattened(
+                    span_to_id=span_to_id,
+                    multimodal_span_to_id=multimodal_span_to_id,
+                )
+                for node in graph.nodes
+            ],
+            edges=[
+                edge.to_flattened(
+                    span_to_id=span_to_id,
+                    multimodal_span_to_id=multimodal_span_to_id,
+                )
+                for edge in graph.edges
+            ],
         )
 
     def to_canonical(
@@ -1351,9 +1522,24 @@ class FlattenedLLMGraphExtraction(ModeSlicingMixin, BaseModel):
             sp.id: sp.to_canonical(insertion_method=insertion_method)
             for sp in self.spans
         }
+        multimodal_span_by_id = {
+            span.id: span.span for span in self.multimodal_spans
+        }
         return LLMGraphExtraction(
-            nodes=[node.to_canonical(span_by_id=span_by_id) for node in self.nodes],
-            edges=[edge.to_canonical(span_by_id=span_by_id) for edge in self.edges],
+            nodes=[
+                node.to_canonical(
+                    span_by_id=span_by_id,
+                    multimodal_span_by_id=multimodal_span_by_id,
+                )
+                for node in self.nodes
+            ],
+            edges=[
+                edge.to_canonical(
+                    span_by_id=span_by_id,
+                    multimodal_span_by_id=multimodal_span_by_id,
+                )
+                for edge in self.edges
+            ],
         )
 
 
@@ -1364,6 +1550,7 @@ class AssocFlattenedGroundingRow(ModeSlicingMixin, BaseModel):
         ...,
         description="Required temporary grounding id within this extraction payload, e.g. 'gr:1'",
     )
+    multimodal_span_ids: List[str] = Field(default_factory=list)
 
 
 class AssocNodeGroundingLink(ModeSlicingMixin, BaseModel):
@@ -1467,6 +1654,7 @@ class AssocFlattenedLLMGraphExtraction(ModeSlicingMixin, BaseModel):
     spans: List[FlattenedSpan] = Field(
         ..., description="Root-level spans referenced by grounding-span link table"
     )
+    multimodal_spans: List[FlattenedMultimodalSpan] = Field(default_factory=list)
     nodes: List[AssocFlattenedLLMNode] = Field(
         ..., description="Flattened nodes without nested mentions"
     )
@@ -1499,6 +1687,18 @@ class AssocFlattenedLLMGraphExtraction(ModeSlicingMixin, BaseModel):
             seen.add(sp.id)
         return spans
 
+    @field_validator("multimodal_spans")
+    @classmethod
+    def _validate_unique_multimodal_span_ids(
+        cls, spans: List[FlattenedMultimodalSpan]
+    ):
+        seen: set[str] = set()
+        for span in spans:
+            if span.id in seen:
+                raise ValueError(f"Duplicate multimodal span id found: {span.id}")
+            seen.add(span.id)
+        return spans
+
     @field_validator("groundings")
     @classmethod
     def _validate_unique_grounding_ids(
@@ -1514,6 +1714,7 @@ class AssocFlattenedLLMGraphExtraction(ModeSlicingMixin, BaseModel):
     @model_validator(mode="after")
     def _validate_references(self):
         span_ids = {sp.id for sp in self.spans}
+        multimodal_span_ids = {sp.id for sp in self.multimodal_spans}
         grounding_ids = {g.id for g in self.groundings}
 
         node_ref_counts = {idx: 0 for idx in range(len(self.nodes))}
@@ -1521,6 +1722,7 @@ class AssocFlattenedLLMGraphExtraction(ModeSlicingMixin, BaseModel):
         grounding_entity_ref_counts = {gid: 0 for gid in grounding_ids}
         grounding_span_counts = {gid: 0 for gid in grounding_ids}
         referenced_spans: set[str] = set()
+        referenced_multimodal_spans: set[str] = set()
 
         for link in self.node_groundings:
             if link.node_index not in node_ref_counts:
@@ -1565,6 +1767,15 @@ class AssocFlattenedLLMGraphExtraction(ModeSlicingMixin, BaseModel):
             grounding_span_counts[link.grounding_id] += 1
             referenced_spans.add(link.span_id)
 
+        for grounding in self.groundings:
+            for span_id in grounding.multimodal_span_ids:
+                if span_id not in multimodal_span_ids:
+                    raise ValueError(
+                        "Grounding references unknown multimodal span id: "
+                        f"{span_id}"
+                    )
+                referenced_multimodal_spans.add(span_id)
+
         unreferenced_groundings = [
             gid for gid, count in grounding_entity_ref_counts.items() if count == 0
         ]
@@ -1573,8 +1784,14 @@ class AssocFlattenedLLMGraphExtraction(ModeSlicingMixin, BaseModel):
                 f"Unreferenced groundings are not allowed: {sorted(unreferenced_groundings)}"
             )
 
+        multimodal_by_grounding = {
+            grounding.id: grounding.multimodal_span_ids
+            for grounding in self.groundings
+        }
         groundings_without_spans = [
-            gid for gid, count in grounding_span_counts.items() if count == 0
+            gid
+            for gid, count in grounding_span_counts.items()
+            if count == 0 and not multimodal_by_grounding.get(gid)
         ]
         if groundings_without_spans:
             raise ValueError(
@@ -1585,6 +1802,12 @@ class AssocFlattenedLLMGraphExtraction(ModeSlicingMixin, BaseModel):
         if orphaned_spans:
             raise ValueError(
                 f"Unreferenced spans are not allowed: {sorted(orphaned_spans)}"
+            )
+        orphaned_multimodal = multimodal_span_ids - referenced_multimodal_spans
+        if orphaned_multimodal:
+            raise ValueError(
+                "Unreferenced multimodal spans are not allowed: "
+                f"{sorted(orphaned_multimodal)}"
             )
 
         return self
@@ -1598,6 +1821,8 @@ class AssocFlattenedLLMGraphExtraction(ModeSlicingMixin, BaseModel):
     ) -> "AssocFlattenedLLMGraphExtraction":
         span_to_id: dict[tuple, str] = {}
         flat_spans: list[FlattenedSpan] = []
+        multimodal_span_to_id: dict[str, str] = {}
+        flat_multimodal_spans: list[FlattenedMultimodalSpan] = []
         flat_groundings: list[AssocFlattenedGroundingRow] = []
         node_grounding_links: list[AssocNodeGroundingLink] = []
         edge_grounding_links: list[AssocEdgeGroundingLink] = []
@@ -1605,6 +1830,7 @@ class AssocFlattenedLLMGraphExtraction(ModeSlicingMixin, BaseModel):
 
         span_seq = 0
         grounding_seq = 0
+        multimodal_seq = 0
 
         def intern_span(span: Span) -> str:
             nonlocal span_seq
@@ -1629,11 +1855,33 @@ class AssocFlattenedLLMGraphExtraction(ModeSlicingMixin, BaseModel):
             )
             return span_id
 
+        def intern_multimodal_span(span: MultimodalSpan) -> str:
+            nonlocal multimodal_seq
+            key = span.evidence_key
+            existing = multimodal_span_to_id.get(key)
+            if existing is not None:
+                return existing
+            multimodal_seq += 1
+            span_id = f"msp:{multimodal_seq}"
+            multimodal_span_to_id[key] = span_id
+            flat_multimodal_spans.append(
+                FlattenedMultimodalSpan(id=span_id, span=span)
+            )
+            return span_id
+
         for node_idx, node in enumerate(graph.nodes):
             for grounding in node.mentions:
                 grounding_seq += 1
                 grounding_id = f"gr:{grounding_seq}"
-                flat_groundings.append(AssocFlattenedGroundingRow(id=grounding_id))
+                flat_groundings.append(
+                    AssocFlattenedGroundingRow(
+                        id=grounding_id,
+                        multimodal_span_ids=[
+                            intern_multimodal_span(span)
+                            for span in grounding.multimodal_spans
+                        ],
+                    )
+                )
                 node_grounding_links.append(
                     AssocNodeGroundingLink(
                         node_index=node_idx, grounding_id=grounding_id
@@ -1650,7 +1898,15 @@ class AssocFlattenedLLMGraphExtraction(ModeSlicingMixin, BaseModel):
             for grounding in edge.mentions:
                 grounding_seq += 1
                 grounding_id = f"gr:{grounding_seq}"
-                flat_groundings.append(AssocFlattenedGroundingRow(id=grounding_id))
+                flat_groundings.append(
+                    AssocFlattenedGroundingRow(
+                        id=grounding_id,
+                        multimodal_span_ids=[
+                            intern_multimodal_span(span)
+                            for span in grounding.multimodal_spans
+                        ],
+                    )
+                )
                 edge_grounding_links.append(
                     AssocEdgeGroundingLink(
                         edge_index=edge_idx, grounding_id=grounding_id
@@ -1665,6 +1921,7 @@ class AssocFlattenedLLMGraphExtraction(ModeSlicingMixin, BaseModel):
 
         return cls(
             spans=flat_spans,
+            multimodal_spans=flat_multimodal_spans,
             nodes=[AssocFlattenedLLMNode.from_canonical(node) for node in graph.nodes],
             edges=[AssocFlattenedLLMEdge.from_canonical(edge) for edge in graph.edges],
             groundings=flat_groundings,
@@ -1684,12 +1941,21 @@ class AssocFlattenedLLMGraphExtraction(ModeSlicingMixin, BaseModel):
         grounding_spans_by_id: dict[str, list[Span]] = {
             g.id: [] for g in self.groundings
         }
+        multimodal_span_by_id = {
+            span.id: span.span for span in self.multimodal_spans
+        }
         for link in self.grounding_spans:
             grounding_spans_by_id[link.grounding_id].append(span_by_id[link.span_id])
 
         grounding_by_id: dict[str, Grounding] = {
-            grounding_id: Grounding(spans=spans)
-            for grounding_id, spans in grounding_spans_by_id.items()
+            grounding.id: Grounding(
+                spans=grounding_spans_by_id[grounding.id],
+                multimodal_spans=[
+                    multimodal_span_by_id[span_id]
+                    for span_id in grounding.multimodal_span_ids
+                ],
+            )
+            for grounding in self.groundings
         }
 
         node_mentions_by_index: dict[int, list[Grounding]] = {
@@ -2319,6 +2585,7 @@ for _llm_in_cls in [
     LLMEdge,
     LLMGraphExtraction,
     FlattenedSpan,
+    FlattenedMultimodalSpan,
     FlattenedGrounding,
     FlattenedLLMNode,
     FlattenedLLMEdge,

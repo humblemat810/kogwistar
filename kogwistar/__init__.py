@@ -17,6 +17,11 @@ if TYPE_CHECKING:
     from kogwistar.conversation.service import ConversationService
     from kogwistar.engine_core.engine import GraphKnowledgeEngine
     from kogwistar.engine_core.models import Document, Edge, Grounding, Node, Span
+    from kogwistar.engine_core.multimodal import (
+        EmbeddingReference,
+        MultimodalSpan,
+        PinnedLogicalRef,
+    )
     from kogwistar.provenance import EvidencePackDigest
     from kogwistar.llm_tasks import (
         DefaultTaskProviderConfig,
@@ -39,6 +44,9 @@ __all__ = [
     "Document",
     "Span",
     "Grounding",
+    "MultimodalSpan",
+    "PinnedLogicalRef",
+    "EmbeddingReference",
     "EvidencePackDigest",
     "evidence_pack_digest_hash",
     "shortids",
@@ -84,6 +92,9 @@ _EXPORTS: dict[str, tuple[str, str | None]] = {
     "Document": ("kogwistar.engine_core.models", "Document"),
     "Span": ("kogwistar.engine_core.models", "Span"),
     "Grounding": ("kogwistar.engine_core.models", "Grounding"),
+    "MultimodalSpan": ("kogwistar.engine_core.multimodal", "MultimodalSpan"),
+    "PinnedLogicalRef": ("kogwistar.engine_core.multimodal", "PinnedLogicalRef"),
+    "EmbeddingReference": ("kogwistar.engine_core.multimodal", "EmbeddingReference"),
     "shortids": ("kogwistar.shortids", None),
 }
 
