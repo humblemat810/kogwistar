@@ -632,19 +632,21 @@
       },
       "Grounding": {
         "properties": {
+          "multimodal_spans": {
+            "items": {
+              "$ref": "#/components/schemas/MultimodalSpan"
+            },
+            "title": "Multimodal Spans",
+            "type": "array"
+          },
           "spans": {
-            "description": "One or more locatable span across chunks/text-clusters supporting this entity",
             "items": {
               "$ref": "#/components/schemas/Span"
             },
-            "minItems": 1,
             "title": "Spans",
             "type": "array"
           }
         },
-        "required": [
-          "spans"
-        ],
         "title": "Grounding",
         "type": "object"
       },
@@ -709,6 +711,28 @@
         "title": "IndexingItem",
         "type": "object"
       },
+      "LegacyLocator": {
+        "additionalProperties": false,
+        "description": "Read-only compatibility wrapper for historical locator payloads.",
+        "properties": {
+          "kind": {
+            "const": "legacy",
+            "default": "legacy",
+            "title": "Kind",
+            "type": "string"
+          },
+          "payload": {
+            "additionalProperties": true,
+            "title": "Payload",
+            "type": "object"
+          }
+        },
+        "required": [
+          "payload"
+        ],
+        "title": "LegacyLocator",
+        "type": "object"
+      },
       "MentionVerification": {
         "description": "Result of verifying a mention span against the source text.",
         "properties": {
@@ -763,6 +787,93 @@
           "is_verified"
         ],
         "title": "MentionVerification",
+        "type": "object"
+      },
+      "MultimodalSpan": {
+        "additionalProperties": false,
+        "description": "Immutable source evidence for text, image, audio, or video content.",
+        "properties": {
+          "content_sha256": {
+            "maxLength": 64,
+            "minLength": 64,
+            "title": "Content Sha256",
+            "type": "string"
+          },
+          "locator": {
+            "discriminator": {
+              "mapping": {
+                "legacy": "#/components/schemas/LegacyLocator",
+                "spatial_region": "#/components/schemas/SpatialRegionLocator",
+                "temporal_interval": "#/components/schemas/TemporalIntervalLocator",
+                "text_range": "#/components/schemas/TextRangeLocator",
+                "video_region_track": "#/components/schemas/VideoRegionTrackLocator"
+              },
+              "propertyName": "kind"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/TextRangeLocator"
+              },
+              {
+                "$ref": "#/components/schemas/SpatialRegionLocator"
+              },
+              {
+                "$ref": "#/components/schemas/TemporalIntervalLocator"
+              },
+              {
+                "$ref": "#/components/schemas/VideoRegionTrackLocator"
+              },
+              {
+                "$ref": "#/components/schemas/LegacyLocator"
+              }
+            ],
+            "title": "Locator"
+          },
+          "modality": {
+            "enum": [
+              "text",
+              "image",
+              "audio",
+              "video",
+              "pdf_page",
+              "table",
+              "chart",
+              "webpage"
+            ],
+            "title": "Modality",
+            "type": "string"
+          },
+          "resource_id": {
+            "minLength": 1,
+            "title": "Resource Id",
+            "type": "string"
+          },
+          "resource_revision_id": {
+            "minLength": 1,
+            "title": "Resource Revision Id",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "source_namespace": {
+            "minLength": 1,
+            "title": "Source Namespace",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_namespace",
+          "resource_id",
+          "resource_revision_id",
+          "content_sha256",
+          "modality",
+          "locator"
+        ],
+        "title": "MultimodalSpan",
         "type": "object"
       },
       "Node": {
@@ -1258,6 +1369,90 @@
         "title": "Span",
         "type": "object"
       },
+      "SpatialRegionLocator": {
+        "additionalProperties": false,
+        "properties": {
+          "coordinate_system": {
+            "default": "normalized_0_1",
+            "enum": [
+              "normalized_0_1",
+              "pixels"
+            ],
+            "title": "Coordinate System",
+            "type": "string"
+          },
+          "frame_index": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Frame Index"
+          },
+          "height": {
+            "exclusiveMinimum": 0.0,
+            "title": "Height",
+            "type": "number"
+          },
+          "kind": {
+            "const": "spatial_region",
+            "default": "spatial_region",
+            "title": "Kind",
+            "type": "string"
+          },
+          "page_number": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page Number"
+          },
+          "timestamp_ms": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timestamp Ms"
+          },
+          "width": {
+            "exclusiveMinimum": 0.0,
+            "title": "Width",
+            "type": "number"
+          },
+          "x": {
+            "minimum": 0.0,
+            "title": "X",
+            "type": "number"
+          },
+          "y": {
+            "minimum": 0.0,
+            "title": "Y",
+            "type": "number"
+          }
+        },
+        "required": [
+          "x",
+          "y",
+          "width",
+          "height"
+        ],
+        "title": "SpatialRegionLocator",
+        "type": "object"
+      },
       "SubmitAnswerIn": {
         "properties": {
           "text": {
@@ -1389,6 +1584,72 @@
           "op"
         ],
         "title": "SyscallRequest",
+        "type": "object"
+      },
+      "TemporalIntervalLocator": {
+        "additionalProperties": false,
+        "properties": {
+          "end_ms": {
+            "exclusiveMinimum": 0.0,
+            "title": "End Ms",
+            "type": "integer"
+          },
+          "kind": {
+            "const": "temporal_interval",
+            "default": "temporal_interval",
+            "title": "Kind",
+            "type": "string"
+          },
+          "start_ms": {
+            "minimum": 0.0,
+            "title": "Start Ms",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "start_ms",
+          "end_ms"
+        ],
+        "title": "TemporalIntervalLocator",
+        "type": "object"
+      },
+      "TextRangeLocator": {
+        "additionalProperties": false,
+        "properties": {
+          "end_char": {
+            "exclusiveMinimum": 0.0,
+            "title": "End Char",
+            "type": "integer"
+          },
+          "kind": {
+            "const": "text_range",
+            "default": "text_range",
+            "title": "Kind",
+            "type": "string"
+          },
+          "page_number": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page Number"
+          },
+          "start_char": {
+            "minimum": 0.0,
+            "title": "Start Char",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "start_char",
+          "end_char"
+        ],
+        "title": "TextRangeLocator",
         "type": "object"
       },
       "UpsertWorkflowEdgeIn": {
@@ -1564,6 +1825,53 @@
           "type"
         ],
         "title": "ValidationError",
+        "type": "object"
+      },
+      "VideoRegionTrackLocator": {
+        "additionalProperties": false,
+        "description": "A bounded locator for an external per-frame region manifest.",
+        "properties": {
+          "end_ms": {
+            "exclusiveMinimum": 0.0,
+            "title": "End Ms",
+            "type": "integer"
+          },
+          "kind": {
+            "const": "video_region_track",
+            "default": "video_region_track",
+            "title": "Kind",
+            "type": "string"
+          },
+          "manifest_schema_version": {
+            "default": 1,
+            "minimum": 1.0,
+            "title": "Manifest Schema Version",
+            "type": "integer"
+          },
+          "start_ms": {
+            "minimum": 0.0,
+            "title": "Start Ms",
+            "type": "integer"
+          },
+          "track_manifest_ref": {
+            "minLength": 1,
+            "title": "Track Manifest Ref",
+            "type": "string"
+          },
+          "track_manifest_sha256": {
+            "maxLength": 64,
+            "minLength": 64,
+            "title": "Track Manifest Sha256",
+            "type": "string"
+          }
+        },
+        "required": [
+          "start_ms",
+          "end_ms",
+          "track_manifest_ref",
+          "track_manifest_sha256"
+        ],
+        "title": "VideoRegionTrackLocator",
         "type": "object"
       }
     }

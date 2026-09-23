@@ -17,6 +17,14 @@ if TYPE_CHECKING:
     from kogwistar.conversation.service import ConversationService
     from kogwistar.engine_core.engine import GraphKnowledgeEngine
     from kogwistar.engine_core.models import Document, Edge, Grounding, Node, Span
+    from kogwistar.engine_core.multimodal import (
+        EmbeddingReference,
+        MultimodalSpan,
+        PinnedLogicalRef,
+        VideoTrackFrame,
+        VideoTrackManifest,
+        VideoTrackRegion,
+    )
     from kogwistar.provenance import EvidencePackDigest
     from kogwistar.llm_tasks import (
         DefaultTaskProviderConfig,
@@ -39,6 +47,12 @@ __all__ = [
     "Document",
     "Span",
     "Grounding",
+    "MultimodalSpan",
+    "PinnedLogicalRef",
+    "EmbeddingReference",
+    "VideoTrackFrame",
+    "VideoTrackManifest",
+    "VideoTrackRegion",
     "EvidencePackDigest",
     "evidence_pack_digest_hash",
     "shortids",
@@ -84,6 +98,12 @@ _EXPORTS: dict[str, tuple[str, str | None]] = {
     "Document": ("kogwistar.engine_core.models", "Document"),
     "Span": ("kogwistar.engine_core.models", "Span"),
     "Grounding": ("kogwistar.engine_core.models", "Grounding"),
+    "MultimodalSpan": ("kogwistar.engine_core.multimodal", "MultimodalSpan"),
+    "PinnedLogicalRef": ("kogwistar.engine_core.multimodal", "PinnedLogicalRef"),
+    "EmbeddingReference": ("kogwistar.engine_core.multimodal", "EmbeddingReference"),
+    "VideoTrackFrame": ("kogwistar.engine_core.multimodal", "VideoTrackFrame"),
+    "VideoTrackManifest": ("kogwistar.engine_core.multimodal", "VideoTrackManifest"),
+    "VideoTrackRegion": ("kogwistar.engine_core.multimodal", "VideoTrackRegion"),
     "shortids": ("kogwistar.shortids", None),
 }
 

@@ -57,6 +57,19 @@ from kogwistar.engine_core.embedding_profile import (
     NamedProjectionStore,
     endpoint_fingerprint,
 )
+from kogwistar.engine_core.multimodal import (
+    EmbeddingReference,
+    LegacyLocator,
+    MultimodalSpan,
+    PinnedLogicalRef,
+    SpatialRegionLocator,
+    TemporalIntervalLocator,
+    TextRangeLocator,
+    VideoRegionTrackLocator,
+    VideoTrackFrame,
+    VideoTrackManifest,
+    VideoTrackRegion,
+)
 from kogwistar.typing_interfaces import TokenAwareEmbeddingFunction
 from kogwistar.engine_core.types import (
     EngineType,
@@ -120,6 +133,17 @@ __all__ = [
     "LegacyEmbeddingProfileError",
     "NamedProjectionStore",
     "endpoint_fingerprint",
+    "EmbeddingReference",
+    "LegacyLocator",
+    "MultimodalSpan",
+    "PinnedLogicalRef",
+    "SpatialRegionLocator",
+    "TemporalIntervalLocator",
+    "TextRangeLocator",
+    "VideoRegionTrackLocator",
+    "VideoTrackFrame",
+    "VideoTrackManifest",
+    "VideoTrackRegion",
     "TokenAwareEmbeddingFunction",
     "EngineType",
     "ExtractionSchemaMode",

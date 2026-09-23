@@ -55,6 +55,10 @@ class EmbeddingProfile:
     crop_token_budget: int | None = None
     tokenizer_fingerprint: str | None = None
     crop_policy: str | None = None
+    embedding_kind: str | None = None
+    model_revision: str | None = None
+    preprocessing_fingerprint: str | None = None
+    max_image_patches: int | None = None
 
     def __post_init__(self) -> None:
         if not str(self.provider).strip():
@@ -77,6 +81,20 @@ class EmbeddingProfile:
             raise ValueError("embedding profile crop_token_budget cannot exceed max_sequence_length")
         if self.crop_policy is not None and not str(self.crop_policy).strip():
             raise ValueError("embedding profile crop_policy must not be empty")
+        if self.embedding_kind is not None and str(self.embedding_kind).lower() not in {
+            "single_vector",
+            "dense",
+            "late_interaction",
+        }:
+            raise ValueError(
+                "embedding profile embedding_kind must be single_vector, dense, or late_interaction"
+            )
+        if self.model_revision is not None and not str(self.model_revision).strip():
+            raise ValueError("embedding profile model_revision must not be empty")
+        if self.preprocessing_fingerprint is not None and not str(self.preprocessing_fingerprint).strip():
+            raise ValueError("embedding profile preprocessing_fingerprint must not be empty")
+        if self.max_image_patches is not None and int(self.max_image_patches) <= 0:
+            raise ValueError("embedding profile max_image_patches must be positive")
 
     def as_dict(self) -> dict[str, Any]:
         result = {
@@ -91,6 +109,10 @@ class EmbeddingProfile:
             "crop_token_budget": self.crop_token_budget,
             "tokenizer_fingerprint": self.tokenizer_fingerprint,
             "crop_policy": self.crop_policy,
+            "embedding_kind": self.embedding_kind,
+            "model_revision": self.model_revision,
+            "preprocessing_fingerprint": self.preprocessing_fingerprint,
+            "max_image_patches": self.max_image_patches,
         }
         result.update({key: value for key, value in optional.items() if value is not None})
         return result
@@ -131,6 +153,22 @@ class EmbeddingProfile:
                 else None
             ),
             crop_policy=(str(value["crop_policy"]) if value.get("crop_policy") is not None else None),
+            embedding_kind=(
+                str(value["embedding_kind"]) if value.get("embedding_kind") is not None else None
+            ),
+            model_revision=(
+                str(value["model_revision"]) if value.get("model_revision") is not None else None
+            ),
+            preprocessing_fingerprint=(
+                str(value["preprocessing_fingerprint"])
+                if value.get("preprocessing_fingerprint") is not None
+                else None
+            ),
+            max_image_patches=(
+                int(value["max_image_patches"])
+                if value.get("max_image_patches") is not None
+                else None
+            ),
         )
 
 
