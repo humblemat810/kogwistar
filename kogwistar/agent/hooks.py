@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import inspect
 import threading
 from collections.abc import Awaitable, Callable, Mapping
@@ -46,8 +47,11 @@ class HookResult:
 class HookRegistry:
     """Deterministic registry with capability checks and bounded disposal."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, max_concurrent_callbacks: int = 32) -> None:
+        if int(max_concurrent_callbacks) < 1:
+            raise ValueError("max_concurrent_callbacks must be positive")
         self._hooks: dict[str, HookSpec] = {}
+        self._callback_slots = threading.BoundedSemaphore(int(max_concurrent_callbacks))
 
     def register(self, spec: HookSpec) -> HookSpec:
         if spec.hook_id in self._hooks:
@@ -70,8 +74,7 @@ class HookRegistry:
     def _allowed(spec: HookSpec, capabilities: set[str]) -> bool:
         return set(spec.required_capabilities) <= capabilities
 
-    @staticmethod
-    def _run_sync(spec: HookSpec, payload: Mapping[str, Any]) -> Any:
+    def _run_sync(self, spec: HookSpec, payload: Mapping[str, Any]) -> Any:
         """Run sync hooks with a bounded caller wait.
 
         Python cannot safely kill an arbitrary callback.  A timed-out callback
@@ -81,6 +84,8 @@ class HookRegistry:
         result_box: list[Any] = []
         error_box: list[BaseException] = []
         finished = threading.Event()
+        if not self._callback_slots.acquire(blocking=False):
+            raise TimeoutError("hook concurrency limit reached")
 
         def invoke() -> None:
             try:
@@ -88,6 +93,7 @@ class HookRegistry:
             except BaseException as exc:  # propagate callback failures below
                 error_box.append(exc)
             finally:
+                self._callback_slots.release()
                 finished.set()
 
         thread = threading.Thread(
@@ -95,7 +101,11 @@ class HookRegistry:
             name=f"kogwistar-hook-{spec.hook_id}",
             daemon=True,
         )
-        thread.start()
+        try:
+            thread.start()
+        except BaseException:
+            self._callback_slots.release()
+            raise
         if not finished.wait(spec.timeout_ms / 1000):
             raise TimeoutError(f"hook timed out after {spec.timeout_ms} ms: {spec.hook_id}")
         if error_box:
@@ -122,10 +132,15 @@ class HookRegistry:
             try:
                 if _is_async_callable(spec.callback):
                     value = await asyncio.wait_for(
-                        _await_value(spec.callback(payload)), spec.timeout_ms / 1000
+                        _await_value(spec.callback(copy.deepcopy(dict(payload)))),
+                        spec.timeout_ms / 1000,
                     )
                 else:
-                    value = await _run_sync_async(spec, payload)
+                    value = await _run_sync_async(
+                        spec,
+                        copy.deepcopy(dict(payload)),
+                        callback_slots=self._callback_slots,
+                    )
                     if inspect.isawaitable(value):
                         value = await asyncio.wait_for(
                             _await_value(value), spec.timeout_ms / 1000
@@ -159,7 +174,7 @@ class HookRegistry:
                 results.append(HookResult(spec.hook_id, "skipped", {}, "capability denied"))
                 continue
             try:
-                value = self._run_sync(spec, payload)
+                value = self._run_sync(spec, copy.deepcopy(dict(payload)))
                 annotations = dict(value) if isinstance(value, Mapping) else {}
                 results.append(HookResult(spec.hook_id, "applied", annotations))
             except Exception as exc:
@@ -181,7 +196,12 @@ def _is_async_callable(callback: HookCallback) -> bool:
     )
 
 
-async def _run_sync_async(spec: HookSpec, payload: Mapping[str, Any]) -> Any:
+async def _run_sync_async(
+    spec: HookSpec,
+    payload: Mapping[str, Any],
+    *,
+    callback_slots: threading.BoundedSemaphore,
+) -> Any:
     """Run sync callback in a daemon thread without executor shutdown waits."""
 
     import asyncio
@@ -189,6 +209,8 @@ async def _run_sync_async(spec: HookSpec, payload: Mapping[str, Any]) -> Any:
     result_box: list[Any] = []
     error_box: list[BaseException] = []
     finished = threading.Event()
+    if not callback_slots.acquire(blocking=False):
+        raise TimeoutError("hook concurrency limit reached")
 
     def invoke() -> None:
         try:
@@ -196,13 +218,18 @@ async def _run_sync_async(spec: HookSpec, payload: Mapping[str, Any]) -> Any:
         except BaseException as exc:
             error_box.append(exc)
         finally:
+            callback_slots.release()
             finished.set()
 
-    threading.Thread(
-        target=invoke,
-        name=f"kogwistar-hook-{spec.hook_id}",
-        daemon=True,
-    ).start()
+    try:
+        threading.Thread(
+            target=invoke,
+            name=f"kogwistar-hook-{spec.hook_id}",
+            daemon=True,
+        ).start()
+    except BaseException:
+        callback_slots.release()
+        raise
     deadline = asyncio.get_running_loop().time() + spec.timeout_ms / 1000
     while not finished.is_set():
         remaining = deadline - asyncio.get_running_loop().time()

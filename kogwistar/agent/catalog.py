@@ -303,6 +303,17 @@ class CatalogStore:
         tenant_id: str | None,
         project_id: str | None,
     ) -> bool:
+        explicitly_global = bool(
+            getattr(entry, "is_global", False)
+            or entry.metadata.get("visibility") == "global"
+        )
+        if (
+            self.acl_enabled
+            and scope is None
+            and entry.scope is not None
+            and not explicitly_global
+        ):
+            return False
         if scope is not None and entry.scope not in (None, scope):
             return False
         exact_scope = self.tenant_id is not None or self.project_id is not None
@@ -312,10 +323,6 @@ class CatalogStore:
             return False
         expected_tenant = self.tenant_id if exact_scope else tenant_id
         expected_project = self.project_id if exact_scope else project_id
-        explicitly_global = bool(
-            getattr(entry, "is_global", False)
-            or entry.metadata.get("visibility") == "global"
-        )
         if (
             self.acl_enabled
             and expected_tenant is None
@@ -351,6 +358,8 @@ class CatalogStore:
         tenant_id: str | None,
         project_id: str | None,
     ) -> bool:
+        if self.acl_enabled and scope is None and group.scope is not None:
+            return False
         if scope is not None and group.scope not in (None, scope):
             return False
         if self.tenant_id is not None and tenant_id != self.tenant_id:
@@ -360,7 +369,19 @@ class CatalogStore:
         exact_scope = self.tenant_id is not None or self.project_id is not None
         expected_tenant = self.tenant_id if exact_scope else tenant_id
         expected_project = self.project_id if exact_scope else project_id
+        if (
+            self.acl_enabled
+            and expected_tenant is None
+            and group.tenant_id is not None
+        ):
+            return False
         if expected_tenant is not None and group.tenant_id != expected_tenant:
+            return False
+        if (
+            self.acl_enabled
+            and expected_project is None
+            and group.project_id is not None
+        ):
             return False
         if expected_project is not None and group.project_id != expected_project:
             return False
@@ -401,10 +422,13 @@ class CatalogStore:
                 tenant_id=tenant_id,
                 project_id=project_id,
             )
-            and (mode != "semantic" or entry.semantic_ready)
         ]
         if mode == "semantic" and self.semantic_ranker is not None:
-            candidates = tuple(entry.model_copy(deep=True) for entry in visible_entries)
+            candidates = tuple(
+                entry.model_copy(deep=True)
+                for entry in visible_entries
+                if entry.semantic_ready
+            )
             try:
                 scores = self.semantic_ranker(query, candidates)
                 if not isinstance(scores, Mapping):
@@ -429,8 +453,8 @@ class CatalogStore:
                     exc_info=True,
                 )
             # Semantic mode remains useful when the optional ranker is absent,
-            # unavailable, or has no score for the query. Pending projections
-            # remain excluded; lexical fallback only searches ready entries.
+            # unavailable, or has no score. Lexical fallback searches all ACL
+            # visible entries, including pending semantic projections.
         # Semantic mode degrades to the strongest built-in lexical surface;
         # BM25 keeps search useful without pretending it was vector-ranked.
         lexical_mode = "bm25" if mode == "semantic" else mode

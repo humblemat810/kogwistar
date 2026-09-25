@@ -238,6 +238,7 @@ class RustStepResolverAdapter:
             message_queue=message_queue,
             lane_message_sender=record_lane_message,
             state=state,
+            authority_context={"effective_capabilities": ()},
         )
         try:
             result = resolver(ctx)
@@ -484,6 +485,7 @@ class AsyncRustStepResolverAdapter(RustStepResolverAdapter):
             message_queue=message_queue,
             lane_message_sender=record_lane_message,
             state=state,
+            authority_context={"effective_capabilities": ()},
         )
         try:
             result = resolver(ctx)

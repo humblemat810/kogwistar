@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import logging
 import warnings
+from collections.abc import Mapping
 from typing import Any
 
 from .._rust_bridge import (
@@ -200,7 +201,11 @@ class BaseRuntime:
     checkpointable_state_copy = staticmethod(checkpointable_state_copy)
 
     @staticmethod
-    def ensure_budget_ledger(state: WorkflowState) -> StateBackedBudgetLedger | None:
+    def ensure_budget_ledger(
+        state: WorkflowState,
+        *,
+        ceilings: Mapping[str, int | float] | None = None,
+    ) -> StateBackedBudgetLedger | None:
         """Rehydrate generic budget DI after checkpoint serialization.
 
         ``_deps`` is intentionally omitted from checkpoints.  Persisted budget
@@ -226,8 +231,10 @@ class BaseRuntime:
             raise ValueError("workflow state _deps must be a dict")
         ledger = deps.get("budget_ledger")
         if isinstance(ledger, StateBackedBudgetLedger) and ledger.state is budget_state:
+            ledger.set_ceilings(ceilings)
             return ledger
         ledger = StateBackedBudgetLedger(budget_state)
+        ledger.set_ceilings(ceilings)
         deps["budget_ledger"] = ledger
         return ledger
 

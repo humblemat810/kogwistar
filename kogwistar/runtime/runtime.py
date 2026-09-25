@@ -248,6 +248,8 @@ def derive_child_authority_context(
             for item in child_state.get("effective_capabilities", parent_caps)
         }
         context["effective_capabilities"] = tuple(sorted(parent_caps & requested))
+    if "budget_limits" in context:
+        context["budget_limits"] = dict(context["budget_limits"] or {})
     return MappingProxyType(context)
 
 
@@ -1566,7 +1568,14 @@ class WorkflowRuntime(BaseRuntime):
                 )
             initial_state.setdefault("_wf_invocation_path", [str(workflow_id)])
             initial_state.setdefault("_wf_current_run_id", str(run_id or ""))
-            self.ensure_budget_ledger(initial_state)
+            self.ensure_budget_ledger(
+                initial_state,
+                ceilings=(
+                    _authority_context.get("budget_limits")
+                    if _authority_context is not None
+                    else None
+                ),
+            )
             # repair fields auto set by default schema
             state_schema = getattr(self.step_resolver, "_state_schema", None)
             if state_schema and isinstance(state_schema, dict):

@@ -204,6 +204,28 @@ def test_provider_failure_mode_and_unload_cleanup_retract_current_projection_onl
     assert catalog.history("broken:a")
 
 
+def test_provider_unload_keeps_owner_when_cleanup_fails_then_allows_retry() -> None:
+    class Provider:
+        def close(self) -> None:
+            return None
+
+    registry = ProviderRegistry()
+    registration = registry.register(provider_id="retry", provider=Provider())
+    attempts = {"count": 0}
+
+    def cleanup(_token: str) -> None:
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            raise RuntimeError("cleanup interrupted")
+
+    with pytest.raises(RuntimeError, match="cleanup interrupted"):
+        registry.unload("retry", cleanup=cleanup)
+    assert registry.get("retry") is registration
+    registry.unload("retry", cleanup=cleanup)
+    with pytest.raises(KeyError):
+        registry.get("retry")
+
+
 def test_provider_cleanup_token_does_not_remove_newer_generation() -> None:
     class Provider:
         provider_id = "project"

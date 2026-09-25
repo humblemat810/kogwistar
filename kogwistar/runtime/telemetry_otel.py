@@ -377,12 +377,7 @@ class OpenTelemetrySink:
         try:
             from opentelemetry.trace import Status, StatusCode
 
-            if event_type in {
-                "workflow_run_failed",
-                "workflow_run_cancelled",
-                "workflow_run_suspended",
-                "workflow_run_indeterminate",
-            }:
+            if event_type in {"workflow_run_failed", "workflow_run_indeterminate"}:
                 setter(Status(StatusCode.ERROR, "Kogwistar workflow run did not complete successfully"))
             elif event_type == "workflow_run_completed":
                 setter(Status(StatusCode.OK))

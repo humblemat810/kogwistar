@@ -496,7 +496,14 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
         state.setdefault("_wf_invocation_path", [str(workflow_id)])
         state.setdefault("_wf_current_run_id", run_id)
         self.workflow_id = str(workflow_id)
-        self.ensure_budget_ledger(state)
+        self.ensure_budget_ledger(
+            state,
+            ceilings=(
+                authority_context.get("budget_limits")
+                if authority_context is not None
+                else None
+            ),
+        )
         validate_initial_state(state)
         mq: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=10000)
 

@@ -6,6 +6,7 @@ import inspect
 from types import MappingProxyType
 from typing import Any
 
+from .limits import AgentBudgetPolicy
 from .profile import AgentProfile
 
 
@@ -39,6 +40,7 @@ class AgentHarness:
             caller_capabilities=caller_capabilities,
             revoked_capabilities=revoked_capabilities,
         )
+        self._budget_policy = AgentBudgetPolicy(**dict(profile.budget_policy))
         self._authority_context = MappingProxyType(
             {
                 "principal_id": principal_id or profile.agent_id,
@@ -46,6 +48,7 @@ class AgentHarness:
                 "project_id": project_id,
                 "security_scope": security_scope,
                 "effective_capabilities": self._effective_capabilities,
+                "budget_limits": MappingProxyType(self._budget_policy.limits()),
             }
         )
         self.validate_bindings()
@@ -54,6 +57,8 @@ class AgentHarness:
         state = dict(initial_state)
         if self._effective_capabilities:
             state["effective_capabilities"] = list(self._effective_capabilities)
+        if self._budget_policy.limits():
+            self._budget_policy.seed(state)
         return state
 
     def validate_bindings(self) -> None:
@@ -80,6 +85,12 @@ class AgentHarness:
             **kwargs,
         )
 
+    def resume_from_latest_checkpoint(self, **kwargs: Any) -> Any:
+        """Resume with current trusted ACL/budget authority."""
+
+        kwargs["_parent_authority_context"] = self._authority_context
+        return self.workflow_runtime.resume_from_latest_checkpoint(**kwargs)
+
 
 class AsyncAgentHarness(AgentHarness):
     async def run(
@@ -100,4 +111,9 @@ class AsyncAgentHarness(AgentHarness):
             _authority_context=self._authority_context,
             **kwargs,
         )
+        return await result if inspect.isawaitable(result) else result
+
+    async def resume_from_latest_checkpoint(self, **kwargs: Any) -> Any:
+        kwargs["_parent_authority_context"] = self._authority_context
+        result = self.workflow_runtime.resume_from_latest_checkpoint(**kwargs)
         return await result if inspect.isawaitable(result) else result

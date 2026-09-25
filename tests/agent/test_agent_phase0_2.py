@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 
 import pytest
@@ -137,7 +138,9 @@ def test_catalog_applies_acl_scope_group_and_lexical_fallback() -> None:
         ("skill:deploy", "exact")
     ]
     assert catalog.search("private", principal="alice", scope="project-a") == ()
-    assert [entry.logical_id for entry in catalog.browse("group:deploy", principal="alice")] == [
+    assert [entry.logical_id for entry in catalog.browse(
+        "group:deploy", principal="alice", scope="project-a"
+    )] == [
         "skill:deploy"
     ]
 
@@ -145,7 +148,7 @@ def test_catalog_applies_acl_scope_group_and_lexical_fallback() -> None:
 def test_catalog_semantic_mode_requires_ready_projection_and_revision_is_monotonic() -> None:
     catalog = CatalogStore(acl_enabled=False)
     catalog.upsert(_entry("skill:one", semantic_ready=False))
-    assert catalog.search("one", mode="semantic") == ()
+    assert catalog.search("one", mode="semantic")[0].match == "exact"
     catalog.upsert(_entry("skill:one", revision=2, fingerprint="fp-2", semantic_ready=True))
     assert catalog.search("one", mode="semantic")[0].entry.revision == 2
     with pytest.raises(ValueError, match="stale"):
@@ -170,7 +173,9 @@ def test_catalog_optional_semantic_ranker_runs_after_acl_and_readiness_filter() 
     catalog.upsert(_entry("skill:first", semantic_ready=True))
     catalog.upsert(_entry("skill:private", semantic_ready=True))
     catalog.upsert(_entry("skill:pending", semantic_ready=False))
-    results = catalog.search("deploy", mode="semantic", principal="alice", limit=10)
+    results = catalog.search(
+        "deploy", mode="semantic", principal="alice", scope="project-a", limit=10
+    )
     assert [result.entry.logical_id for result in results] == ["skill:first"]
     assert seen == ["skill:first"]
     assert results[0].match == "semantic"
@@ -301,6 +306,37 @@ def test_agent_harness_supplies_trusted_authority_and_overwrites_state_claims() 
     assert result["_authority_context"]["effective_capabilities"] == ("tool.echo",)
 
 
+def test_agent_harness_carries_budget_authority_and_resume_context() -> None:
+    class FakeRuntime:
+        def run(self, **kwargs: object) -> dict[str, object]:
+            return kwargs
+
+        def resume_from_latest_checkpoint(self, **kwargs: object) -> dict[str, object]:
+            return kwargs
+
+    harness = AgentHarness(
+        profile=AgentProfile(
+            agent_id="a",
+            workflow_id="wf",
+            budget_policy={"max_steps": 3, "max_tokens": 20},
+        ),
+        workflow_runtime=FakeRuntime(),
+    )
+    result = harness.run(initial_state={}, conversation_id="c")
+    assert result["initial_state"]["step_budget"] == 3
+    assert result["_authority_context"]["budget_limits"] == {
+        "step_budget": 3,
+        "token_budget": 20,
+    }
+    resumed = harness.resume_from_latest_checkpoint(
+        run_id="run-1",
+        workflow_id="wf",
+        conversation_id="c",
+        turn_node_id="t",
+    )
+    assert resumed["_parent_authority_context"]["budget_limits"]["token_budget"] == 20
+
+
 @pytest.mark.asyncio
 async def test_async_agent_harness_awaits_existing_async_runtime() -> None:
     class FakeRuntime:
@@ -402,6 +438,38 @@ def test_hook_failure_modes_timeout_and_disposal_are_deterministic() -> None:
     assert results[0].status == "failed"
     hooks.unregister("close")
     assert closed["value"] is True
+
+
+def test_hook_payload_isolated_and_callback_concurrency_is_bounded() -> None:
+    payload = {"nested": {"value": 1}}
+
+    def mutate(value: dict[str, object]) -> dict[str, object]:
+        value["nested"]["value"] = 99  # type: ignore[index]
+        return {}
+
+    hooks = HookRegistry()
+    hooks.register(HookSpec(hook_id="mutate", callback=mutate))
+    assert hooks.run(payload)[0].status == "applied"
+    assert payload["nested"]["value"] == 1
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    def blocked(_payload: object) -> dict[str, object]:
+        entered.set()
+        release.wait(timeout=1)
+        return {}
+
+    bounded = HookRegistry(max_concurrent_callbacks=1)
+    bounded.register(HookSpec(hook_id="blocked", callback=blocked, timeout_ms=10))
+    worker = threading.Thread(target=lambda: bounded.run({}), daemon=True)
+    worker.start()
+    assert entered.wait(timeout=1)
+    second = bounded.run({})
+    assert second[0].status == "failed"
+    assert "concurrency limit" in (second[0].error or "")
+    release.set()
+    worker.join(timeout=1)
 
 
 def test_sync_hook_timeout_bounds_run_without_blocking_agent_path() -> None:

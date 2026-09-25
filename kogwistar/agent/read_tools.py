@@ -177,6 +177,10 @@ class AgentReadTools:
             ("security_scope", scope.security_scope),
         ):
             actual = item.get(key)
+            if key == "security_scope" and actual is None:
+                # CatalogEntry calls this field ``scope``; read tools expose
+                # one common security vocabulary without weakening isolation.
+                actual = item.get("scope")
             if explicitly_global and actual is None:
                 continue
             if expected is None and actual is not None:
@@ -240,6 +244,8 @@ class AgentReadTools:
             project_id=scope.project_id,
         )
         if entry is None:
+            return None
+        if not self._catalog_visible(entry, scope):
             return None
         return entry.model_dump(mode="json")
 

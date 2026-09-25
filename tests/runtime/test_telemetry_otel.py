@@ -273,8 +273,8 @@ def test_otel_maps_terminal_outcomes_to_span_status_when_supported():
     for event_type, expected_name in (
         ("workflow_run_completed", "OK"),
         ("workflow_run_failed", "ERROR"),
-        ("workflow_run_cancelled", "ERROR"),
-        ("workflow_run_suspended", "ERROR"),
+        ("workflow_run_cancelled", "UNSET"),
+        ("workflow_run_suspended", "UNSET"),
         ("workflow_run_indeterminate", "ERROR"),
     ):
         tracer = _Tracer()
@@ -283,7 +283,12 @@ def test_otel_maps_terminal_outcomes_to_span_status_when_supported():
         sink.emit({"type": event_type, "run_id": "r"})
         assert sink.flush(1.0)
         sink.close()
-        assert str(tracer.spans[0].status.status_code.name) == expected_name
+        actual = (
+            str(tracer.spans[0].status.status_code.name)
+            if tracer.spans[0].status is not None
+            else "UNSET"
+        )
+        assert actual == expected_name
 
 
 def test_otel_terminal_event_displaces_queued_telemetry_to_close_span():
