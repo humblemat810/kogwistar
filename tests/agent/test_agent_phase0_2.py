@@ -176,6 +176,18 @@ def test_catalog_optional_semantic_ranker_runs_after_acl_and_readiness_filter() 
     assert results[0].match == "semantic"
 
 
+def test_catalog_semantic_mode_falls_back_when_ranker_is_unavailable() -> None:
+    def unavailable(_query: str, _entries: tuple[CatalogEntry, ...]) -> dict[str, float]:
+        raise RuntimeError("embedding provider unavailable")
+
+    catalog = CatalogStore(semantic_ranker=unavailable, acl_enabled=False)
+    catalog.upsert(_entry("skill:ready", semantic_ready=True))
+    results = catalog.search("deploy", mode="semantic")
+    assert results
+    assert results[0].entry.logical_id == "skill:ready"
+    assert results[0].match in {"bm25", "prefix", "exact", "partial"}
+
+
 def test_catalog_supports_bm25_alias_and_graph_group_projection() -> None:
     catalog = CatalogStore(acl_enabled=False)
     catalog.upsert(
@@ -266,6 +278,27 @@ def test_agent_harness_delegates_to_existing_runtime() -> None:
     ).run(initial_state={"x": 1}, conversation_id="c")
     assert result["workflow_id"] == "wf"
     assert result["initial_state"] == {"x": 1}
+
+
+def test_agent_harness_supplies_trusted_authority_and_overwrites_state_claims() -> None:
+    class FakeRuntime:
+        def run(self, **kwargs: object) -> dict[str, object]:
+            return kwargs
+
+    result = AgentHarness(
+        profile=AgentProfile(
+            agent_id="a",
+            workflow_id="wf",
+            requested_tool_capabilities=["tool.echo"],
+        ),
+        workflow_runtime=FakeRuntime(),
+        caller_capabilities=("tool.echo",),
+    ).run(
+        initial_state={"effective_capabilities": ["admin"]},
+        conversation_id="c",
+    )
+    assert result["initial_state"] == {"effective_capabilities": ["tool.echo"]}
+    assert result["_authority_context"]["effective_capabilities"] == ("tool.echo",)
 
 
 @pytest.mark.asyncio

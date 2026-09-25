@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import re
 from collections.abc import Mapping
@@ -16,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from kogwistar.engine_core.embedding_profile import NamedProjectionStore
 
 _TOKEN_RE = re.compile(r"[\w.-]+", re.UNICODE)
+_LOG = logging.getLogger(__name__)
 CatalogAcl = Callable[["CatalogEntry", str], bool]
 CatalogGroupAcl = Callable[["CatalogGroup", str], bool]
 CatalogSemanticRanker = Callable[
@@ -201,11 +203,22 @@ class CatalogStore:
 
         return tuple(self.upsert(entry) for entry in entries)
 
-    def remove_provider(self, provider_id: str) -> tuple[str, ...]:
+    def remove_provider(
+        self,
+        provider_id: str,
+        *,
+        provider_version: str | None = None,
+        lifecycle_token: str | None = None,
+    ) -> tuple[str, ...]:
         removed = tuple(
             logical_id
             for logical_id, entry in self._entries.items()
-            if entry.provider_id == provider_id
+            if entry.provider_id == str(provider_id)
+            and (provider_version is None or entry.provider_version == provider_version)
+            and (
+                lifecycle_token is None
+                or entry.metadata.get("provider_lifecycle_token") == lifecycle_token
+            )
         )
         for logical_id in removed:
             self._entries.pop(logical_id, None)
@@ -299,10 +312,30 @@ class CatalogStore:
             return False
         expected_tenant = self.tenant_id if exact_scope else tenant_id
         expected_project = self.project_id if exact_scope else project_id
+        explicitly_global = bool(
+            getattr(entry, "is_global", False)
+            or entry.metadata.get("visibility") == "global"
+        )
+        if (
+            self.acl_enabled
+            and expected_tenant is None
+            and entry.tenant_id is not None
+            and not explicitly_global
+        ):
+            return False
+        if (
+            self.acl_enabled
+            and expected_project is None
+            and entry.project_id is not None
+            and not explicitly_global
+        ):
+            return False
         if expected_tenant is not None and entry.tenant_id != expected_tenant:
-            return False
+            if not (entry.tenant_id is None and explicitly_global):
+                return False
         if expected_project is not None and entry.project_id != expected_project:
-            return False
+            if not (entry.project_id is None and explicitly_global):
+                return False
         if not self.acl_enabled:
             return True
         if self.acl_checker is None:
@@ -372,22 +405,35 @@ class CatalogStore:
         ]
         if mode == "semantic" and self.semantic_ranker is not None:
             candidates = tuple(entry.model_copy(deep=True) for entry in visible_entries)
-            scores = self.semantic_ranker(query, candidates)
-            if not isinstance(scores, Mapping):
-                raise TypeError("semantic_ranker must return a mapping of logical_id to score")
-            ranked: list[CatalogSearchResult] = []
-            for entry in candidates:
-                score = float(scores.get(entry.logical_id, 0.0))
-                if math.isfinite(score) and score > 0.0:
-                    ranked.append(
-                        CatalogSearchResult(entry, score, "semantic")
+            try:
+                scores = self.semantic_ranker(query, candidates)
+                if not isinstance(scores, Mapping):
+                    raise TypeError(
+                        "semantic_ranker must return a mapping of logical_id to score"
                     )
-            return tuple(
-                sorted(
-                    ranked,
-                    key=lambda result: (-result.score, result.entry.logical_id),
-                )[:limit]
-            )
+                ranked: list[CatalogSearchResult] = []
+                for entry in candidates:
+                    score = float(scores.get(entry.logical_id, 0.0))
+                    if math.isfinite(score) and score > 0.0:
+                        ranked.append(CatalogSearchResult(entry, score, "semantic"))
+                if ranked:
+                    return tuple(
+                        sorted(
+                            ranked,
+                            key=lambda result: (-result.score, result.entry.logical_id),
+                        )[:limit]
+                    )
+            except Exception:
+                _LOG.warning(
+                    "semantic catalog ranking unavailable; using lexical fallback",
+                    exc_info=True,
+                )
+            # Semantic mode remains useful when the optional ranker is absent,
+            # unavailable, or has no score for the query. Pending projections
+            # remain excluded; lexical fallback only searches ready entries.
+        # Semantic mode degrades to the strongest built-in lexical surface;
+        # BM25 keeps search useful without pretending it was vector-ranked.
+        lexical_mode = "bm25" if mode == "semantic" else mode
         document_frequency: dict[str, int] = {}
         for entry in visible_entries:
             for token in self._tokens(entry):
@@ -418,7 +464,7 @@ class CatalogStore:
             tokens = self._tokens(entry)
             overlap = len(tokens & query_tokens)
             if overlap:
-                if mode == "bm25":
+                if lexical_mode == "bm25":
                     document_length = max(len(tokens), 1)
                     score = 0.0
                     for term in query_tokens:
@@ -440,9 +486,7 @@ class CatalogStore:
                             term_frequency * 2.2 / (term_frequency + normalization)
                         )
                     results.append(
-                        CatalogSearchResult(
-                            entry.model_copy(deep=True), score, "bm25"
-                        )
+                        CatalogSearchResult(entry.model_copy(deep=True), score, "bm25")
                     )
                     continue
                 results.append(
@@ -685,12 +729,23 @@ class DurableCatalogStore(CatalogStore):
         self.apply_prepared_updates(updates)
         return prepared
 
-    def remove_provider(self, provider_id: str) -> tuple[str, ...]:
+    def remove_provider(
+        self,
+        provider_id: str,
+        *,
+        provider_version: str | None = None,
+        lifecycle_token: str | None = None,
+    ) -> tuple[str, ...]:
         self._refresh()
         removed = tuple(
             logical_id
             for logical_id, entry in self._entries.items()
-            if entry.provider_id == provider_id
+            if entry.provider_id == str(provider_id)
+            and (provider_version is None or entry.provider_version == provider_version)
+            and (
+                lifecycle_token is None
+                or entry.metadata.get("provider_lifecycle_token") == lifecycle_token
+            )
         )
         for logical_id in removed:
             pointer_key = self._pointer_key(logical_id)

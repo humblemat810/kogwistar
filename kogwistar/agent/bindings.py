@@ -173,7 +173,13 @@ def register_tool_step(
 
     @resolver.register(op)
     def _tool(ctx: Any) -> RunSuccess | RunFailure:
-        effective = ctx.state_view.get("effective_capabilities", ())
+        trusted = getattr(ctx, "authority_context", None)
+        if trusted and "effective_capabilities" in trusted:
+            effective = trusted.get("effective_capabilities", ())
+        else:
+            # Preserve the direct-resolver contract for legacy unit callers
+            # that do not yet have a runtime authority carrier.
+            effective = ctx.state_view.get("effective_capabilities", ())
         if capability not in {str(item) for item in effective}:
             return _failure(ctx, f"capability denied: {capability}")
         arguments = ctx.state_view.get(arguments_key, {})

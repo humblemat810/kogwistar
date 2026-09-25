@@ -271,12 +271,27 @@ def make_skill_projection_cleanup(
         )
 
     def cleanup(provider_id: str) -> None:
+        provider_version = getattr(provider_id, "provider_version", None)
+        lifecycle_token = getattr(provider_id, "lifecycle_token", None)
+        provider_key = str(provider_id)
         if materializer is not None:
-            materializer.remove_provider(provider_id)
+            materializer.remove_provider(
+                provider_key,
+                provider_version=provider_version,
+                lifecycle_token=lifecycle_token,
+            )
             return
-        projection.remove_provider(provider_id)
+        projection.remove_provider(
+            provider_key,
+            provider_version=provider_version,
+            lifecycle_token=lifecycle_token,
+        )
         if catalog is not None:
-            catalog.remove_provider(provider_id)
+            catalog.remove_provider(
+                provider_key,
+                provider_version=provider_version,
+                lifecycle_token=lifecycle_token,
+            )
 
     return cleanup
 

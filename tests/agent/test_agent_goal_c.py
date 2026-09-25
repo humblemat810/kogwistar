@@ -264,6 +264,46 @@ def test_tool_binding_is_acl_fail_closed_and_does_not_self_grant() -> None:
     assert tool.calls == [{"value": "x"}]
 
 
+def test_tool_binding_prefers_trusted_authority_over_mutable_state() -> None:
+    tool = FunctionFakeTool(lambda args: {"echo": args["value"]})
+    resolver = MappingStepResolver()
+    register_tool_step(resolver, tool, required_capability="tool.echo")
+    state = {"agent_tool_arguments": {"value": "x"}, "effective_capabilities": ["tool.echo"]}
+    denied = resolver.resolve("agent.tool_call")(
+        StepContext(
+            run_id="run-agent-c",
+            workflow_id="agent-test",
+            workflow_node_id="node-agent.tool_call",
+            op="agent.tool_call",
+            token_id="token-agent-c",
+            attempt=1,
+            step_seq=1,
+            cache_dir=None,
+            state=state,
+            authority_context={"effective_capabilities": ()},
+        )
+    )
+    assert denied.status == "failure"
+    assert tool.calls == []
+
+    allowed = resolver.resolve("agent.tool_call")(
+        StepContext(
+            run_id="run-agent-c",
+            workflow_id="agent-test",
+            workflow_node_id="node-agent.tool_call",
+            op="agent.tool_call",
+            token_id="token-agent-c",
+            attempt=1,
+            step_seq=1,
+            cache_dir=None,
+            state={"agent_tool_arguments": {"value": "y"}},
+            authority_context={"effective_capabilities": ("tool.echo",)},
+        )
+    )
+    assert allowed.status == "success"
+    assert tool.calls == [{"value": "y"}]
+
+
 def test_tool_failure_retries_within_bounded_step_attempt() -> None:
     calls = {"count": 0}
 

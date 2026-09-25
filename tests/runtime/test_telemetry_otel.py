@@ -241,6 +241,20 @@ def test_otel_keeps_kogwistar_w3c_ids_as_attributes():
     assert tracer.spans[0].attributes["kogwistar.span_id"] == root.span_id
 
 
+def test_otel_attributes_do_not_export_raw_payload_and_keep_lifecycle_fields():
+    attrs = OpenTelemetrySink._attributes(
+        {
+            "type": "step_attempt_completed",
+            "run_id": "run-1",
+            "payload_json": '{"status":"failure","duration_ms":12,"secret":"do-not-export"}',
+        }
+    )
+    assert attrs["kogwistar.status"] == "failure"
+    assert attrs["kogwistar.duration_ms"] == 12.0
+    assert "kogwistar.payload_json" not in attrs
+    assert "secret" not in str(attrs)
+
+
 def test_otel_queue_drops_and_export_failure_isolated():
     tracer = _BlockingTracer()
     sink = OpenTelemetrySink(tracer, queue_max=1)
@@ -386,6 +400,8 @@ def test_real_workflow_runtime_projects_lifecycle_to_otel_sink(tmp_path):
         assert tracer.spans[0].ended
         assert all(span.ended for span in tracer.spans[1:])
         assert any(event[0] == "checkpoint_saved" for event in tracer.spans[0].events)
+        assert len(tracer.spans[0].attributes["kogwistar.trace_id"]) == 32
+        assert len(tracer.spans[0].attributes["kogwistar.span_id"]) == 16
     finally:
         sink.close()
         workflow_engine.close()

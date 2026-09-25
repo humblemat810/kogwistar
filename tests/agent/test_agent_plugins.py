@@ -29,6 +29,7 @@ from kogwistar.agent.skills import (
     parse_skill_text,
     validate_skill_artifact,
 )
+from kogwistar.agent.plugins import make_skill_projection_cleanup
 from kogwistar.agent import SkillProjectionRequest, prepare_skill_execution
 
 
@@ -201,6 +202,39 @@ def test_provider_failure_mode_and_unload_cleanup_retract_current_projection_onl
     assert projection.get("broken", "a") is None
     assert catalog.get("broken:a") is None
     assert catalog.history("broken:a")
+
+
+def test_provider_cleanup_token_does_not_remove_newer_generation() -> None:
+    class Provider:
+        provider_id = "project"
+        provider_version = "v1"
+
+        def close(self):
+            return None
+
+    registry = ProviderRegistry()
+    first = registry.register(provider_id="project", provider=Provider(), version="v1")
+    second = registry.register(provider_id="project", provider=Provider(), version="v2")
+    projection = SkillProjectionStore()
+    catalog = CatalogStore(acl_enabled=False)
+    for registration, local_id in ((first, "old"), (second, "new")):
+        artifact = parse_skill_text(
+            f"# {local_id}", provider_id="project", provider_local_id=local_id
+        ).model_copy(
+            update={
+                "provenance": {
+                    "provider_version": registration.identity.version,
+                    "provider_lifecycle_token": registration.lifecycle_token,
+                }
+            }
+        )
+        projection.upsert(artifact)
+        catalog.ingest_descriptors(catalog_entries_from_artifact(artifact))
+    cleanup = make_skill_projection_cleanup(projection=projection, catalog=catalog)
+    registry.unload("project", "v1", cleanup=cleanup)
+    assert projection.get("project", "old") is None
+    assert projection.get("project", "new") is not None
+    assert catalog.get("project:new") is not None
 
 
 def test_project_glossary_knowledge_records_and_skill_refs_remain_separate() -> None:

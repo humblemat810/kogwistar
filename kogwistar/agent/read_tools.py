@@ -177,9 +177,11 @@ class AgentReadTools:
             ("security_scope", scope.security_scope),
         ):
             actual = item.get(key)
-            if expected is not None and actual != expected and not (
-                actual is None and explicitly_global
-            ):
+            if explicitly_global and actual is None:
+                continue
+            if expected is None and actual is not None:
+                return False
+            if expected is not None and actual != expected:
                 return False
         if self.visibility_checker is not None:
             return bool(self.visibility_checker(item, scope))
@@ -243,15 +245,16 @@ class AgentReadTools:
 
     def _catalog_visible(self, entry: CatalogEntry, scope: ReadScope) -> bool:
         if self.catalog.acl_enabled:
-            visible = self.catalog.search(
+            visible = self.catalog.get(
                 entry.logical_id,
                 principal=scope.principal_id,
                 scope=scope.security_scope,
                 tenant_id=scope.tenant_id,
                 project_id=scope.project_id,
-                limit=1,
             )
-            return bool(visible and visible[0].entry.logical_id == entry.logical_id)
+            return visible is not None and self._visible(
+                visible.model_dump(mode="python"), scope
+            )
         return self._visible(entry.model_dump(mode="python"), scope)
 
     @staticmethod

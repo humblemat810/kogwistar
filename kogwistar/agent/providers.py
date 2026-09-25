@@ -122,6 +122,21 @@ class ProviderRegistration:
         return f"{self.generation}:{self.registration_fingerprint}"
 
 
+class ProviderCleanupToken(str):
+    """String-compatible unload identity for one provider incarnation."""
+
+    provider_version: str
+    generation: int
+    lifecycle_token: str
+
+    def __new__(cls, registration: ProviderRegistration) -> "ProviderCleanupToken":
+        value = str.__new__(cls, registration.identity.provider_id)
+        value.provider_version = registration.identity.version
+        value.generation = registration.generation
+        value.lifecycle_token = registration.lifecycle_token
+        return value
+
+
 class ProviderRegistry:
     """Ordered registry with explicit collision and disposal semantics."""
 
@@ -340,7 +355,7 @@ class ProviderRegistry:
         registration = self.get(provider_id, version)
         self.dispose(registration)
         if cleanup is not None:
-            cleanup(registration.identity.provider_id)
+            cleanup(ProviderCleanupToken(registration))
 
     def discovery_descriptors(
         self, *, isolate_failures: bool | None = None

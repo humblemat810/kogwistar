@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+from types import MappingProxyType
 from typing import Any
 
 from .profile import AgentProfile
@@ -19,6 +20,11 @@ class AgentHarness:
         known_model_profiles: set[str] | frozenset[str] | None = None,
         known_hooks: set[str] | frozenset[str] | None = None,
         caller_capabilities: tuple[str, ...] = (),
+        revoked_capabilities: tuple[str, ...] = (),
+        principal_id: str | None = None,
+        tenant_id: str | None = None,
+        project_id: str | None = None,
+        security_scope: str | None = None,
     ) -> None:
         self.profile = profile
         self.workflow_runtime = workflow_runtime
@@ -29,7 +35,26 @@ class AgentHarness:
             "known_hooks": known_hooks,
             "caller_capabilities": caller_capabilities,
         }
+        self._effective_capabilities = profile.effective_capabilities(
+            caller_capabilities=caller_capabilities,
+            revoked_capabilities=revoked_capabilities,
+        )
+        self._authority_context = MappingProxyType(
+            {
+                "principal_id": principal_id or profile.agent_id,
+                "tenant_id": tenant_id,
+                "project_id": project_id,
+                "security_scope": security_scope,
+                "effective_capabilities": self._effective_capabilities,
+            }
+        )
         self.validate_bindings()
+
+    def _prepared_state(self, initial_state: dict[str, Any]) -> dict[str, Any]:
+        state = dict(initial_state)
+        if self._effective_capabilities:
+            state["effective_capabilities"] = list(self._effective_capabilities)
+        return state
 
     def validate_bindings(self) -> None:
         """Fail closed before dispatch when registries/caller scope are supplied."""
@@ -50,7 +75,8 @@ class AgentHarness:
         return self.workflow_runtime.run(
             workflow_id=selected_workflow,
             conversation_id=conversation_id,
-            initial_state=initial_state,
+            initial_state=self._prepared_state(initial_state),
+            _authority_context=self._authority_context,
             **kwargs,
         )
 
@@ -70,7 +96,8 @@ class AsyncAgentHarness(AgentHarness):
         result = self.workflow_runtime.run(
             workflow_id=selected_workflow,
             conversation_id=conversation_id,
-            initial_state=initial_state,
+            initial_state=self._prepared_state(initial_state),
+            _authority_context=self._authority_context,
             **kwargs,
         )
         return await result if inspect.isawaitable(result) else result

@@ -345,9 +345,26 @@ class SkillProjectionStore:
     def remove(self, provider_id: str, provider_local_id: str) -> None:
         self._current.pop(f"{provider_id}:{provider_local_id}", None)
 
-    def remove_provider(self, provider_id: str) -> tuple[str, ...]:
+    def remove_provider(
+        self,
+        provider_id: str,
+        *,
+        provider_version: str | None = None,
+        lifecycle_token: str | None = None,
+    ) -> tuple[str, ...]:
         removed = tuple(
-            key for key in self._current if key.startswith(f"{provider_id}:")
+            key
+            for key, artifact in self._current.items()
+            if key.startswith(f"{provider_id}:")
+            and (
+                provider_version is None
+                or str(artifact.provenance.get("provider_version") or "v1")
+                == provider_version
+            )
+            and (
+                lifecycle_token is None
+                or artifact.provenance.get("provider_lifecycle_token") == lifecycle_token
+            )
         )
         for key in removed:
             self._current.pop(key, None)
@@ -798,9 +815,28 @@ class DurableSkillProjectionStore(SkillProjectionStore):
                     raise ValueError("skill projection changed concurrently")
         self._current.pop(key, None)
 
-    def remove_provider(self, provider_id: str) -> tuple[str, ...]:
+    def remove_provider(
+        self,
+        provider_id: str,
+        *,
+        provider_version: str | None = None,
+        lifecycle_token: str | None = None,
+    ) -> tuple[str, ...]:
         self._refresh()
-        removed = tuple(key for key in self._current if key.startswith(f"{provider_id}:"))
+        removed = tuple(
+            key
+            for key, artifact in self._current.items()
+            if key.startswith(f"{provider_id}:")
+            and (
+                provider_version is None
+                or str(artifact.provenance.get("provider_version") or "v1")
+                == provider_version
+            )
+            and (
+                lifecycle_token is None
+                or artifact.provenance.get("provider_lifecycle_token") == lifecycle_token
+            )
+        )
         for key in removed:
             local_id = key[len(provider_id) + 1 :]
             self.remove(provider_id, local_id)
@@ -854,18 +890,40 @@ class DurableSkillCatalogMaterializer:
             self.catalog._refresh()
         return projected
 
-    def remove_provider(self, provider_id: str) -> tuple[str, ...]:
+    def remove_provider(
+        self,
+        provider_id: str,
+        *,
+        provider_version: str | None = None,
+        lifecycle_token: str | None = None,
+    ) -> tuple[str, ...]:
         """Retire skill, graph, and catalog current pointers in one CAS batch."""
 
         self.projections._refresh()
         self.catalog._refresh()
         skill_keys = tuple(
-            key for key in self.projections._current if key.startswith(f"{provider_id}:")
+            key
+            for key, artifact in self.projections._current.items()
+            if key.startswith(f"{provider_id}:")
+            and (
+                provider_version is None
+                or str(artifact.provenance.get("provider_version") or "v1")
+                == provider_version
+            )
+            and (
+                lifecycle_token is None
+                or artifact.provenance.get("provider_lifecycle_token") == lifecycle_token
+            )
         )
         catalog_keys = tuple(
             key
             for key, entry in self.catalog._entries.items()
             if entry.provider_id == provider_id
+            and (provider_version is None or entry.provider_version == provider_version)
+            and (
+                lifecycle_token is None
+                or entry.metadata.get("provider_lifecycle_token") == lifecycle_token
+            )
         )
         updates: list[dict[str, Any]] = []
         for logical_key in skill_keys:
@@ -1122,9 +1180,19 @@ class AsyncDurableSkillCatalogMaterializer:
         await self._apply(snapshot)
         return result
 
-    async def remove_provider(self, provider_id: str) -> tuple[str, ...]:
+    async def remove_provider(
+        self,
+        provider_id: str,
+        *,
+        provider_version: str | None = None,
+        lifecycle_token: str | None = None,
+    ) -> tuple[str, ...]:
         snapshot, materializer = await self._prepare()
-        result = materializer.remove_provider(provider_id)
+        result = materializer.remove_provider(
+            provider_id,
+            provider_version=provider_version,
+            lifecycle_token=lifecycle_token,
+        )
         await self._apply(snapshot)
         return result
 
@@ -1434,6 +1502,15 @@ def catalog_entries_from_artifact(artifact: SkillGraphArtifact) -> list[CatalogE
                     "artifact_node_id": node.node_id,
                     "artifact_fingerprint": artifact.artifact_fingerprint(),
                     **node.metadata,
+                    **(
+                        {
+                            "provider_lifecycle_token": artifact.provenance[
+                                "provider_lifecycle_token"
+                            ]
+                        }
+                        if artifact.provenance.get("provider_lifecycle_token") is not None
+                        else {}
+                    ),
                 },
                 tenant_id=artifact.tenant_id,
                 project_id=artifact.project_id,
