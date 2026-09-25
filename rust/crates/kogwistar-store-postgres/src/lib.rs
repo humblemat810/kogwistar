@@ -5844,13 +5844,22 @@ async fn claim_projected_lane_messages<C>(
 where
     C: GenericClient + Sync,
 {
-    if limit == 0 {
-        return Ok(vec![]);
-    }
-    let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-    let lease = lease.to_string();
-    let rows=c.query(&format!("WITH picked AS (SELECT message_id FROM {} WHERE namespace=$1 AND inbox_id=$2 AND ((status='pending' AND available_at<=EXTRACT(EPOCH FROM NOW())::BIGINT) OR (status='claimed' AND lease_until IS NOT NULL AND lease_until<NOW())) ORDER BY seq ASC,created_at ASC LIMIT $3 FOR UPDATE SKIP LOCKED) UPDATE {} x SET status='claimed',claimed_by=$4,lease_until=NOW()+($5::TEXT||' seconds')::interval FROM picked WHERE x.message_id=picked.message_id RETURNING {}",t.projected_lane_messages,t.projected_lane_messages,LANE_RETURNING),&[&namespace,&inbox,&limit,&owner,&lease]).await.map_err(backend)?;
-    rows.iter().map(lane_from_row).collect()
+    claim_projected_lane_messages_filtered(
+        c,
+        t,
+        &LaneMessageClaimFilter {
+            namespace: namespace.to_owned(),
+            inbox_id: inbox.to_owned(),
+            claimed_by: owner.to_owned(),
+            message_ids: None,
+            run_id: None,
+            msg_type: None,
+            recipient_id: None,
+            limit,
+            lease_seconds: lease,
+        },
+    )
+    .await
 }
 #[allow(clippy::too_many_arguments)]
 async fn claim_projected_lane_messages_for_run<C>(
@@ -5866,13 +5875,22 @@ async fn claim_projected_lane_messages_for_run<C>(
 where
     C: GenericClient + Sync,
 {
-    if limit == 0 {
-        return Ok(vec![]);
-    }
-    let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-    let lease = lease.to_string();
-    let rows=c.query(&format!("WITH picked AS (SELECT message_id FROM {} WHERE namespace=$1 AND inbox_id=$2 AND run_id=$3 AND ((status='pending' AND available_at<=EXTRACT(EPOCH FROM NOW())::BIGINT) OR (status='claimed' AND lease_until IS NOT NULL AND lease_until<NOW())) ORDER BY seq ASC,created_at ASC LIMIT $4 FOR UPDATE SKIP LOCKED) UPDATE {} x SET status='claimed',claimed_by=$5,lease_until=NOW()+($6::TEXT||' seconds')::interval FROM picked WHERE x.message_id=picked.message_id RETURNING {}",t.projected_lane_messages,t.projected_lane_messages,LANE_RETURNING),&[&namespace,&inbox,&run_id,&limit,&owner,&lease]).await.map_err(backend)?;
-    rows.iter().map(lane_from_row).collect()
+    claim_projected_lane_messages_filtered(
+        c,
+        t,
+        &LaneMessageClaimFilter {
+            namespace: namespace.to_owned(),
+            inbox_id: inbox.to_owned(),
+            claimed_by: owner.to_owned(),
+            message_ids: None,
+            run_id: Some(run_id.to_owned()),
+            msg_type: None,
+            recipient_id: None,
+            limit,
+            lease_seconds: lease,
+        },
+    )
+    .await
 }
 async fn ack_projected_lane_message<C>(
     c: &C,
