@@ -17,9 +17,9 @@ use kogwistar_store::{
     AcceptedIndexJobResult, AppendedEvent, AuthIdentityStore, AuthUser, EntityEvent,
     EntityRebuildRequest, EntityRecoveryReport, EntityRecoveryRequest, EventPruneStore,
     EventReadStore, EventWriteStore, ExternalIdentity, IndexJob, IndexJobReadStore,
-    IndexJobWriteStore, LaneMessageFilter, LaneMessageReadStore, LaneMessageWriteStore,
-    NamedProjection, NamedProjectionWrite, NewEntityEvent, NewIndexJob, NewProjectedLaneMessage,
-    ProjectedLaneMessage, ProjectionReadStore, ProjectionWriteStore,
+    IndexJobWriteStore, LaneMessageClaimFilter, LaneMessageFilter, LaneMessageReadStore,
+    LaneMessageWriteStore, NamedProjection, NamedProjectionWrite, NewEntityEvent, NewIndexJob,
+    NewProjectedLaneMessage, ProjectedLaneMessage, ProjectionReadStore, ProjectionWriteStore,
     RUNTIME_CURRENT_STATE_NAMESPACE, ReplayCursor, ResolveExternalIdentity, ServerRun,
     ServerRunCreate, ServerRunEvent, ServerRunReadStore, ServerRunUpdate, ServerRunWriteStore,
     StoreError, StoreResult, WorkflowDesignDelta, WorkflowDesignDeltaWrite,
@@ -1084,6 +1084,12 @@ impl SqliteStore {
             uow.claim_projected_lane_messages(namespace, inbox_id, claimed_by, limit, lease_seconds)
         })
     }
+    pub fn claim_projected_lane_messages_filtered(
+        &self,
+        filter: LaneMessageClaimFilter,
+    ) -> SqliteStoreResult<Vec<ProjectedLaneMessage>> {
+        self.immediate_transaction(|uow| uow.claim_projected_lane_messages_filtered(filter))
+    }
     pub fn ack_projected_lane_message(
         &self,
         message_id: &str,
@@ -1274,6 +1280,12 @@ impl SqliteUnitOfWork<'_> {
             limit,
             lease_seconds,
         )
+    }
+    pub fn claim_projected_lane_messages_filtered(
+        &mut self,
+        filter: LaneMessageClaimFilter,
+    ) -> SqliteStoreResult<Vec<ProjectedLaneMessage>> {
+        claim_projected_lane_messages_filtered(self.transaction, &filter)
     }
     pub fn ack_projected_lane_message(
         &mut self,
@@ -1882,6 +1894,12 @@ impl LaneMessageWriteStore for SqliteStore {
     ) -> StoreResult<Vec<ProjectedLaneMessage>> {
         SqliteStore::claim_projected_lane_messages(self, namespace, inbox, owner, limit, lease)
             .map_err(trait_error)
+    }
+    async fn claim_projected_lane_messages_filtered(
+        &self,
+        filter: LaneMessageClaimFilter,
+    ) -> StoreResult<Vec<ProjectedLaneMessage>> {
+        SqliteStore::claim_projected_lane_messages_filtered(self, filter).map_err(trait_error)
     }
     async fn ack_projected_lane_message(&self, id: &str, owner: &str) -> StoreResult<()> {
         SqliteStore::ack_projected_lane_message(self, id, owner).map_err(trait_error)
@@ -2678,33 +2696,79 @@ fn claim_projected_lane_messages(
     limit: usize,
     lease: i64,
 ) -> SqliteStoreResult<Vec<ProjectedLaneMessage>> {
-    if limit == 0 {
+    claim_projected_lane_messages_filtered(
+        conn,
+        &LaneMessageClaimFilter {
+            namespace: namespace.to_owned(),
+            inbox_id: inbox.to_owned(),
+            claimed_by: owner.to_owned(),
+            message_ids: None,
+            run_id: None,
+            msg_type: None,
+            recipient_id: None,
+            limit,
+            lease_seconds: lease,
+        },
+    )
+}
+
+fn claim_projected_lane_messages_filtered(
+    conn: &Connection,
+    filter: &LaneMessageClaimFilter,
+) -> SqliteStoreResult<Vec<ProjectedLaneMessage>> {
+    if filter.limit == 0 {
         return Ok(vec![]);
     }
     let now = unix_epoch_seconds();
-    let until = now + lease;
-    let mut stmt=conn.prepare("SELECT message_id FROM projected_lane_messages WHERE namespace=?1 AND inbox_id=?2 AND ((status='pending' AND available_at<=?3) OR (status='claimed' AND lease_until IS NOT NULL AND lease_until<?3)) ORDER BY seq ASC,created_at ASC LIMIT ?4")?;
-    let ids = stmt
-        .query_map(
-            params![
-                namespace,
-                inbox,
-                now,
-                i64::try_from(limit).unwrap_or(i64::MAX)
-            ],
-            |r| r.get::<_, String>(0),
-        )?
-        .collect::<Result<Vec<_>, _>>()?;
-    for id in &ids {
-        conn.execute("UPDATE projected_lane_messages SET status='claimed',claimed_by=?1,lease_until=?2 WHERE message_id=?3",params![owner,until,id])?;
+    let read_filter = LaneMessageFilter {
+        namespace: Some(filter.namespace.clone()),
+        purpose: None,
+        inbox_id: Some(filter.inbox_id.clone()),
+        conversation_id: None,
+        status: None,
+        msg_type: filter.msg_type.clone(),
+        sender_id: None,
+        recipient_id: filter.recipient_id.clone(),
+        correlation_id: None,
+        reply_to_message_id: None,
+        created_at_gte: None,
+        created_at_lte: None,
+        available_at_gte: None,
+        available_at_lte: None,
+        limit: usize::MAX,
+        newest_first: false,
+    };
+    let allowed_ids = filter
+        .message_ids
+        .as_ref()
+        .map(|ids| ids.iter().collect::<std::collections::HashSet<_>>());
+    let mut rows = list_projected_lane_messages(conn, &read_filter)?;
+    rows.retain(|row| {
+        allowed_ids
+            .as_ref()
+            .is_none_or(|ids| ids.contains(&row.message_id))
+            && filter
+                .run_id
+                .as_ref()
+                .is_none_or(|value| row.run_id.as_deref() == Some(value))
+            && ((row.status == "pending" && row.available_at <= now)
+                || (row.status == "claimed"
+                    && row
+                        .lease_until
+                        .as_ref()
+                        .and_then(Value::as_i64)
+                        .is_some_and(|value| value < now)))
+    });
+    rows.sort_by_key(|row| (row.seq, row.created_at, row.message_id.clone()));
+    rows.truncate(filter.limit);
+    let until = now + filter.lease_seconds;
+    for row in &mut rows {
+        conn.execute("UPDATE projected_lane_messages SET status='claimed',claimed_by=?1,lease_until=?2 WHERE message_id=?3",params![filter.claimed_by,until,row.message_id])?;
+        row.status = "claimed".to_owned();
+        row.claimed_by = Some(filter.claimed_by.clone());
+        row.lease_until = Some(Value::from(until));
     }
-    let mut out = Vec::with_capacity(ids.len());
-    for id in ids {
-        if let Some(row) = projected_lane_message(conn, &id)? {
-            out.push(row)
-        }
-    }
-    Ok(out)
+    Ok(rows)
 }
 fn claim_projected_lane_messages_for_run(
     conn: &Connection,
@@ -4807,6 +4871,61 @@ mod tests {
                 .status,
             "pending"
         );
+        drop(store);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn filtered_lane_claim_is_atomic_for_run_kind_recipient_and_ids() {
+        let (store, path) = store("filtered-control-claim");
+        store
+            .project_lane_message(runtime_worker_lane("run-target", "lane-good"))
+            .unwrap();
+        let mut wrong_kind = runtime_worker_lane("run-target", "lane-kind");
+        wrong_kind.msg_type = "agent.queue".to_owned();
+        store.project_lane_message(wrong_kind).unwrap();
+        let mut wrong_recipient = runtime_worker_lane("run-target", "lane-recipient");
+        wrong_recipient.recipient_id = "other-agent".to_owned();
+        store.project_lane_message(wrong_recipient).unwrap();
+        let wrong_run = runtime_worker_lane("run-other", "lane-run");
+        store.project_lane_message(wrong_run).unwrap();
+
+        let claimed = store
+            .claim_projected_lane_messages_filtered(LaneMessageClaimFilter {
+                namespace: "runtime".to_owned(),
+                inbox_id: "python-workers".to_owned(),
+                claimed_by: "target-worker".to_owned(),
+                message_ids: Some(vec![
+                    "lane-good".to_owned(),
+                    "lane-kind".to_owned(),
+                    "lane-recipient".to_owned(),
+                    "lane-run".to_owned(),
+                ]),
+                run_id: Some("run-target".to_owned()),
+                msg_type: Some("workflow.worker.request.v1".to_owned()),
+                recipient_id: Some("python-worker".to_owned()),
+                limit: 10,
+                lease_seconds: 60,
+            })
+            .unwrap();
+
+        assert_eq!(
+            claimed
+                .iter()
+                .map(|row| row.message_id.as_str())
+                .collect::<Vec<_>>(),
+            ["lane-good"]
+        );
+        for message_id in ["lane-kind", "lane-recipient", "lane-run"] {
+            assert_eq!(
+                store
+                    .get_projected_lane_message(message_id)
+                    .unwrap()
+                    .unwrap()
+                    .status,
+                "pending"
+            );
+        }
         drop(store);
         fs::remove_file(path).unwrap();
     }

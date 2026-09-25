@@ -70,6 +70,17 @@ not alter runtime scheduling semantics.
 Implementation work is tracked in
 `PLAN-agent-harness-implementation.md`.
 
+Goal labels group numbered phases only:
+
+```text
+Goal A -> Phase 0-2
+Goal B -> Phase 3-5
+Goal C -> Phase 6-8
+```
+
+The numbered phase checklist in the implementation plan remains authoritative;
+Goal labels do not create a second completion checklist.
+
 ### Goal A Phase 0-2 Core Slice
 
 The first implementation slice is deliberately offline and provider-neutral:
@@ -99,7 +110,7 @@ graph skill paths, and adapters over existing execution/memory/knowledge/
 wisdom service callables. REST and MCP transport registration remains a separate
 compatibility-gated step; discovery must not become invocation or approval.
 
-### Goal C Phase 3 implementation slice
+### Goal B Phase 3-4 implementation slice
 
 The first workflow-composition slice is now implemented without adding an agent
 runtime. `kogwistar.agent.workflows` builds ordinary
@@ -111,7 +122,8 @@ edges, predicates, cycles, and terminal reachability unchanged.
 bindings through `MappingStepResolver` and `RunSuccess`/`RunFailure`. Catalog
 lookup calls the Goal B descriptor-first read facade. Static and dynamic action
 helpers return the existing `WorkflowInvocationRequest`; dynamic identity is
-validated before the result reaches `WorkflowRuntime`.
+validated before the result reaches `WorkflowRuntime`. Phase 5 delegation is
+not included in this slice.
 
 `kogwistar.agent.limits.AgentBudgetPolicy` seeds the existing
 `StateBackedBudgetLedger`. Remaining steps, model calls, tokens, time, and cost
@@ -125,9 +137,15 @@ two-iteration goal, stop a cyclic goal at a hard step ceiling, validate static
 and dynamic action identity, and verify fail-closed tool capability checks.
 No real LLM, network provider, or remote telemetry is required.
 
-This slice deliberately defers queued/steering input, context compression,
-subagent profile delegation, wisdom hooks, A2A/CrewAI adapters, and LLM-Wiki
-integration.
+This slice now includes the minimal queued/steering control-point contract:
+typed policy metadata, bounded target-run claims, checkpoint-before-ack
+delivery, terminalization, ACL filtering, and ordered reconnectable reads. It
+does not claim transport-level disconnect/cancellation behavior or automatic
+run-specific inbox provisioning; those remain runtime/adapter follow-up work.
+Context compression, subagent profile delegation, wisdom hooks, A2A/CrewAI
+adapters, and LLM-Wiki integration remain deferred under their numbered
+phases; Goal C covers the later Phase 6-8 compression, wisdom/skill
+projection, and plugin work.
 
 ## Existing Primitive Map
 
@@ -792,7 +810,9 @@ A2A is an optional transport adapter, not an internal subagent mechanism.
 An A2A Agent Card should be generated from the versioned capability catalog.
 An external A2A task may map to one root workflow run and any number of child
 runs. The adapter persists external context/task identifiers and their mapping
-to local runs, status events, and artifact/evidence references.
+to local runs, status events, and artifact/evidence references through a
+host-injected durable mapping store; its in-memory map is only a process-local
+cache and test fallback.
 
 Identifier meanings remain separate:
 
@@ -806,6 +826,15 @@ A2A artifact != canonical Kogwistar truth
 Messages expose task negotiation and results, not internal chain-of-thought or
 self-monologue. Authentication advertised by A2A does not replace Kogwistar
 authorization or engine ACL.
+
+Push callbacks, when enabled, are an outbound projection only. The adapter
+accepts callback URLs only from trusted HTTPS host allowlists, signs bounded
+payloads through an injected authenticator, and submits them to existing
+durable delivery infrastructure with a deterministic `task_id + event_seq`
+delivery ID, bounded retry metadata, and delivery audit. It performs no
+synchronous network I/O and cannot make callback failure alter workflow truth.
+An adapter without durable enqueue and signing capabilities rejects push
+registration rather than silently falling back to unauthenticated delivery.
 
 The adapter belongs under a server or interoperability package, not in the
 agent execution core.

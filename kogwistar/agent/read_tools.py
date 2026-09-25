@@ -143,6 +143,7 @@ class AgentReadTools:
         memory_source: Any | None = None,
         knowledge_source: Any | None = None,
         wisdom_source: Any | None = None,
+        glossary_source: Any | None = None,
         visibility_checker: VisibilityChecker | None = None,
         acl_required: bool = True,
         max_limit: int = 100,
@@ -159,6 +160,7 @@ class AgentReadTools:
         self.memory_source = memory_source
         self.knowledge_source = knowledge_source
         self.wisdom_source = wisdom_source
+        self.glossary_source = glossary_source
         self.visibility_checker = visibility_checker
         self.acl_required = acl_required
         self.max_limit = max_limit
@@ -443,6 +445,36 @@ class AgentReadTools:
         )
         return _page(items, cursor=cursor, limit=_effective_limit(limit, self.max_limit), max_limit=self.max_limit)
 
+    def knowledge_get(
+        self, entity_id: str, *, scope: ReadScope
+    ) -> dict[str, Any] | None:
+        items = self._filter(
+            _source_items(self.knowledge_source, "get", entity_id=entity_id), scope
+        )
+        return items[0] if items else None
+
+    def knowledge_expand(
+        self,
+        entity_id: str,
+        *,
+        scope: ReadScope,
+        depth: int = 1,
+        limit: int | None = None,
+    ) -> ReadPage:
+        if depth < 0 or depth > 4:
+            raise ValueError("knowledge expansion depth must be between 0 and 4")
+        items = self._filter(
+            _source_items(
+                self.knowledge_source,
+                "expand",
+                entity_id=entity_id,
+                depth=depth,
+                limit=_effective_limit(limit, self.max_limit),
+            ),
+            scope,
+        )
+        return _page(items, cursor=None, limit=_effective_limit(limit, self.max_limit), max_limit=self.max_limit)
+
     def wisdom_search(
         self,
         query: str,
@@ -460,6 +492,32 @@ class AgentReadTools:
         if scope.approved_wisdom_only:
             items = [item for item in items if item.get("status") == "approved"]
         return _page(items, cursor=cursor, limit=_effective_limit(limit, self.max_limit), max_limit=self.max_limit)
+
+    def glossary_search(
+        self,
+        query: str,
+        *,
+        scope: ReadScope,
+        cursor: str | None = None,
+        limit: int | None = None,
+    ) -> ReadPage:
+        if self.glossary_source is None:
+            return ReadPage((), None, _effective_limit(limit, self.max_limit), False)
+        items = _source_items(
+            self.glossary_source,
+            "search",
+            query=query,
+            tenant_id=scope.tenant_id,
+            project_id=scope.project_id,
+            authorize=lambda item: self._visible(item, scope),
+            limit=_effective_limit(limit, self.max_limit),
+        )
+        return _page(
+            self._filter(items, scope),
+            cursor=cursor,
+            limit=_effective_limit(limit, self.max_limit),
+            max_limit=self.max_limit,
+        )
 
     def dispatch(
         self,
@@ -503,8 +561,14 @@ class AgentReadTools:
             result = self.memory_search(scope=scope, **data)
         elif operation == "knowledge.search":
             result = self.knowledge_search(scope=scope, **data)
+        elif operation == "knowledge.get":
+            result = self.knowledge_get(data.pop("entity_id"), scope=scope)
+        elif operation == "knowledge.expand":
+            result = self.knowledge_expand(data.pop("entity_id"), scope=scope, **data)
         elif operation == "wisdom.search":
             result = self.wisdom_search(scope=scope, **data)
+        elif operation == "glossary.search":
+            result = self.glossary_search(scope=scope, **data)
         else:
             raise ValueError(f"unsupported read operation: {operation}")
         if isinstance(result, ReadPage):

@@ -2,11 +2,11 @@ use kogwistar_contracts as contracts;
 use kogwistar_runtime::{RecordedRuntimeTransition, RecordedWorkerHandoff};
 use kogwistar_store::{
     DistanceMetric, EntityRebuildRequest, EntityRecoveryReport, EntityRecoveryRequest,
-    EventReadStore, GraphReadStore, GraphRecord, GraphWriteStore, LaneMessageFilter,
-    MetadataFilter, NamedProjection, NamedProjectionWrite, NewProjectedLaneMessage,
-    ProjectedLaneMessage, ProjectionReadStore, ReplayCursor, ServerRun, ServerRunCreate,
-    ServerRunEvent, ServerRunUpdate, VectorQuery, WorkflowDesignDelta, WorkflowDesignDeltaWrite,
-    WorkflowDesignSnapshot, WorkflowDesignSnapshotWrite,
+    EventReadStore, GraphReadStore, GraphRecord, GraphWriteStore, LaneMessageClaimFilter,
+    LaneMessageFilter, MetadataFilter, NamedProjection, NamedProjectionWrite,
+    NewProjectedLaneMessage, ProjectedLaneMessage, ProjectionReadStore, ReplayCursor, ServerRun,
+    ServerRunCreate, ServerRunEvent, ServerRunUpdate, VectorQuery, WorkflowDesignDelta,
+    WorkflowDesignDeltaWrite, WorkflowDesignSnapshot, WorkflowDesignSnapshotWrite,
 };
 use kogwistar_store_memory::InMemoryStore;
 use kogwistar_store_postgres::{
@@ -194,6 +194,31 @@ fn lane_filter(
         available_at_lte,
         limit,
         newest_first,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn lane_claim_filter(
+    namespace: String,
+    inbox_id: String,
+    claimed_by: String,
+    message_ids: Option<Vec<String>>,
+    run_id: Option<String>,
+    msg_type: Option<String>,
+    recipient_id: Option<String>,
+    limit: usize,
+    lease_seconds: i64,
+) -> LaneMessageClaimFilter {
+    LaneMessageClaimFilter {
+        namespace,
+        inbox_id,
+        claimed_by,
+        message_ids,
+        run_id,
+        msg_type,
+        recipient_id,
+        limit,
+        lease_seconds,
     }
 }
 #[allow(clippy::too_many_arguments)]
@@ -1076,6 +1101,8 @@ enum SqliteStoreOperation {
         #[serde(default)]
         conversation_id: Option<String>,
         #[serde(default)]
+        run_id: Option<String>,
+        #[serde(default)]
         status: Option<String>,
         #[serde(default)]
         msg_type: Option<String>,
@@ -1112,6 +1139,14 @@ enum SqliteStoreOperation {
         limit: usize,
         #[serde(default = "default_lease_seconds")]
         lease_seconds: i64,
+        #[serde(default)]
+        message_ids: Option<Vec<String>>,
+        #[serde(default)]
+        run_id: Option<String>,
+        #[serde(default)]
+        msg_type: Option<String>,
+        #[serde(default)]
+        recipient_id: Option<String>,
     },
     AckProjectedLaneMessage {
         message_id: String,
@@ -1841,6 +1876,7 @@ fn sqlite_store_operation_json(
             purpose,
             inbox_id,
             conversation_id,
+            run_id,
             status,
             msg_type,
             sender_id,
@@ -1853,30 +1889,38 @@ fn sqlite_store_operation_json(
             available_at_lte,
             limit,
             newest_first,
-        } => Ok(Value::Array(
-            store
-                .list_projected_lane_messages(lane_filter(
-                    namespace,
-                    purpose,
-                    inbox_id,
-                    conversation_id,
-                    status,
-                    msg_type,
-                    sender_id,
-                    recipient_id,
-                    correlation_id,
-                    reply_to_message_id,
-                    created_at_gte,
-                    created_at_lte,
-                    available_at_gte,
-                    available_at_lte,
-                    limit,
-                    newest_first,
-                ))?
-                .into_iter()
-                .map(lane_message_json)
-                .collect(),
-        )),
+        } => {
+            let native_limit = if run_id.is_some() { usize::MAX } else { limit };
+            let rows = store.list_projected_lane_messages(lane_filter(
+                namespace,
+                purpose,
+                inbox_id,
+                conversation_id,
+                status,
+                msg_type,
+                sender_id,
+                recipient_id,
+                correlation_id,
+                reply_to_message_id,
+                created_at_gte,
+                created_at_lte,
+                available_at_gte,
+                available_at_lte,
+                native_limit,
+                newest_first,
+            ))?;
+            Ok(Value::Array(
+                rows.into_iter()
+                    .filter(|row| {
+                        run_id
+                            .as_ref()
+                            .is_none_or(|value| row.run_id.as_deref() == Some(value))
+                    })
+                    .take(limit)
+                    .map(lane_message_json)
+                    .collect(),
+            ))
+        }
         SqliteStoreOperation::ClearProjectedLaneMessages { namespace } => {
             Ok(json!(store.clear_projected_lane_messages(&namespace)?))
         }
@@ -1886,15 +1930,23 @@ fn sqlite_store_operation_json(
             claimed_by,
             limit,
             lease_seconds,
+            message_ids,
+            run_id,
+            msg_type,
+            recipient_id,
         } => Ok(Value::Array(
             store
-                .claim_projected_lane_messages(
-                    &namespace,
-                    &inbox_id,
-                    &claimed_by,
+                .claim_projected_lane_messages_filtered(lane_claim_filter(
+                    namespace,
+                    inbox_id,
+                    claimed_by,
+                    message_ids,
+                    run_id,
+                    msg_type,
+                    recipient_id,
                     limit,
                     lease_seconds,
-                )?
+                ))?
                 .into_iter()
                 .map(lane_message_json)
                 .collect(),
@@ -2371,14 +2423,22 @@ fn sqlite_batch_operation_json(
             claimed_by,
             limit,
             lease_seconds,
+            message_ids,
+            run_id,
+            msg_type,
+            recipient_id,
         } => Ok(Value::Array(
-            uow.claim_projected_lane_messages(
-                &namespace,
-                &inbox_id,
-                &claimed_by,
+            uow.claim_projected_lane_messages_filtered(lane_claim_filter(
+                namespace,
+                inbox_id,
+                claimed_by,
+                message_ids,
+                run_id,
+                msg_type,
+                recipient_id,
                 limit,
                 lease_seconds,
-            )?
+            ))?
             .into_iter()
             .map(lane_message_json)
             .collect(),
@@ -3091,6 +3151,8 @@ enum PostgresStoreOperation {
         #[serde(default)]
         conversation_id: Option<String>,
         #[serde(default)]
+        run_id: Option<String>,
+        #[serde(default)]
         status: Option<String>,
         #[serde(default)]
         msg_type: Option<String>,
@@ -3127,6 +3189,14 @@ enum PostgresStoreOperation {
         limit: usize,
         #[serde(default = "default_lease_seconds")]
         lease_seconds: i64,
+        #[serde(default)]
+        message_ids: Option<Vec<String>>,
+        #[serde(default)]
+        run_id: Option<String>,
+        #[serde(default)]
+        msg_type: Option<String>,
+        #[serde(default)]
+        recipient_id: Option<String>,
     },
     AckProjectedLaneMessage {
         message_id: String,
@@ -4054,6 +4124,7 @@ async fn postgres_store_operation_json(
             purpose,
             inbox_id,
             conversation_id,
+            run_id,
             status,
             msg_type,
             sender_id,
@@ -4066,8 +4137,9 @@ async fn postgres_store_operation_json(
             available_at_lte,
             limit,
             newest_first,
-        } => Ok(Value::Array(
-            store
+        } => {
+            let native_limit = if run_id.is_some() { usize::MAX } else { limit };
+            let rows = store
                 .list_projected_lane_messages(lane_filter(
                     namespace,
                     purpose,
@@ -4083,14 +4155,22 @@ async fn postgres_store_operation_json(
                     created_at_lte,
                     available_at_gte,
                     available_at_lte,
-                    limit,
+                    native_limit,
                     newest_first,
                 ))
-                .await?
-                .into_iter()
-                .map(lane_message_json)
-                .collect(),
-        )),
+                .await?;
+            Ok(Value::Array(
+                rows.into_iter()
+                    .filter(|row| {
+                        run_id
+                            .as_ref()
+                            .is_none_or(|value| row.run_id.as_deref() == Some(value))
+                    })
+                    .take(limit)
+                    .map(lane_message_json)
+                    .collect(),
+            ))
+        }
         PostgresStoreOperation::ClearProjectedLaneMessages { namespace } => Ok(json!(
             store.clear_projected_lane_messages(&namespace).await?
         )),
@@ -4100,15 +4180,23 @@ async fn postgres_store_operation_json(
             claimed_by,
             limit,
             lease_seconds,
+            message_ids,
+            run_id,
+            msg_type,
+            recipient_id,
         } => Ok(Value::Array(
             store
-                .claim_projected_lane_messages(
-                    &namespace,
-                    &inbox_id,
-                    &claimed_by,
+                .claim_projected_lane_messages_filtered(lane_claim_filter(
+                    namespace,
+                    inbox_id,
+                    claimed_by,
+                    message_ids,
+                    run_id,
+                    msg_type,
+                    recipient_id,
                     limit,
                     lease_seconds,
-                )
+                ))
                 .await?
                 .into_iter()
                 .map(lane_message_json)
@@ -4713,14 +4801,22 @@ async fn postgres_uow_operation_json(
             claimed_by,
             limit,
             lease_seconds,
+            message_ids,
+            run_id,
+            msg_type,
+            recipient_id,
         } => Ok(Value::Array(
-            uow.claim_projected_lane_messages(
-                &namespace,
-                &inbox_id,
-                &claimed_by,
+            uow.claim_projected_lane_messages_filtered(lane_claim_filter(
+                namespace,
+                inbox_id,
+                claimed_by,
+                message_ids,
+                run_id,
+                msg_type,
+                recipient_id,
                 limit,
                 lease_seconds,
-            )
+            ))
             .await?
             .into_iter()
             .map(lane_message_json)
@@ -5348,6 +5444,7 @@ fn validate_postgres_operation(value: &Value) -> Result<(), (&'static str, Strin
             "purpose",
             "inbox_id",
             "conversation_id",
+            "run_id",
             "status",
             "msg_type",
             "sender_id",
@@ -5369,6 +5466,10 @@ fn validate_postgres_operation(value: &Value) -> Result<(), (&'static str, Strin
             "claimed_by",
             "limit",
             "lease_seconds",
+            "message_ids",
+            "run_id",
+            "msg_type",
+            "recipient_id",
         ][..],
         "ack_projected_lane_message" => &["kind", "message_id", "claimed_by"][..],
         "requeue_projected_lane_message" => &[

@@ -4,9 +4,9 @@ use kogwistar_store::{
     AcceptedIndexJobResult, AppendedEvent, AppliedGraphMutation, DistanceMetric, EntityEvent,
     EventPruneStore, EventReadStore, EventWriteStore, GraphMutation, GraphMutationStore,
     GraphProjectionRead, GraphProjectionVectorQuery, GraphReadStore, GraphRecord, GraphScope,
-    GraphWriteStore, IndexJob, IndexJobReadStore, IndexJobWriteStore, LaneMessageFilter,
-    LaneMessageReadStore, LaneMessageWriteStore, MetadataFilter, NamedProjection,
-    NamedProjectionWrite, NewEntityEvent, NewIndexJob, NewProjectedLaneMessage,
+    GraphWriteStore, IndexJob, IndexJobReadStore, IndexJobWriteStore, LaneMessageClaimFilter,
+    LaneMessageFilter, LaneMessageReadStore, LaneMessageWriteStore, MetadataFilter,
+    NamedProjection, NamedProjectionWrite, NewEntityEvent, NewIndexJob, NewProjectedLaneMessage,
     ProjectedLaneMessage, ProjectionReadStore, ProjectionWriteStore, ReplayCursor, ServerRun,
     ServerRunCreate, ServerRunEvent, ServerRunReadStore, ServerRunUpdate, ServerRunWriteStore,
     StoreError, StoreResult, VectorMatch, VectorQuery, WorkflowDesignDelta,
@@ -302,6 +302,68 @@ impl LaneMessageWriteStore for InMemoryStore {
             row.status = "claimed".to_owned();
             row.claimed_by = Some(claimed_by.to_owned());
             row.lease_until = Some(integer_timestamp(now + lease_seconds));
+        }
+        Ok(ids
+            .into_iter()
+            .map(|id| state.lane_messages[&id].clone())
+            .collect())
+    }
+    async fn claim_projected_lane_messages_filtered(
+        &self,
+        filter: LaneMessageClaimFilter,
+    ) -> StoreResult<Vec<ProjectedLaneMessage>> {
+        if filter.limit == 0 {
+            return Ok(vec![]);
+        }
+        let now = now_seconds();
+        let allowed_ids = filter
+            .message_ids
+            .as_ref()
+            .map(|ids| ids.iter().collect::<std::collections::HashSet<_>>());
+        let mut state = self.state.write().expect("in-memory store lock poisoned");
+        let mut ids = state
+            .lane_messages
+            .values()
+            .filter(|row| {
+                row.namespace == filter.namespace
+                    && row.inbox_id == filter.inbox_id
+                    && allowed_ids
+                        .as_ref()
+                        .is_none_or(|ids| ids.contains(&row.message_id))
+                    && filter
+                        .run_id
+                        .as_ref()
+                        .is_none_or(|value| row.run_id.as_deref() == Some(value))
+                    && filter
+                        .msg_type
+                        .as_ref()
+                        .is_none_or(|value| row.msg_type == *value)
+                    && filter
+                        .recipient_id
+                        .as_ref()
+                        .is_none_or(|value| row.recipient_id == *value)
+                    && ((row.status == "pending" && row.available_at <= now)
+                        || (row.status == "claimed"
+                            && row
+                                .lease_until
+                                .as_ref()
+                                .is_some_and(|value| timestamp_i64(value) < now)))
+            })
+            .map(|row| row.message_id.clone())
+            .collect::<Vec<_>>();
+        ids.sort_by_key(|id| {
+            let row = &state.lane_messages[id];
+            (row.seq, row.created_at)
+        });
+        ids.truncate(filter.limit);
+        for id in &ids {
+            let row = state
+                .lane_messages
+                .get_mut(id)
+                .expect("selected lane row missing");
+            row.status = "claimed".to_owned();
+            row.claimed_by = Some(filter.claimed_by.clone());
+            row.lease_until = Some(integer_timestamp(now + filter.lease_seconds));
         }
         Ok(ids
             .into_iter()

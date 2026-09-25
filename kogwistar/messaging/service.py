@@ -517,18 +517,46 @@ class LaneMessagingService:
         claimed_by: str,
         limit: int,
         lease_seconds: int,
+        message_ids: list[str] | tuple[str, ...] | None = None,
+        run_id: str | None = None,
+        msg_type: str | None = None,
+        recipient_id: str | None = None,
     ) -> list[ProjectedLaneMessageRow]:
         claim = getattr(self.engine.meta_sqlite, "claim_projected_lane_messages", None)
         if not callable(claim):
             return []
         namespace = str(getattr(self.engine, "namespace", "default") or "default")
-        return claim(
-            namespace=namespace,
+        visible_rows = self.list_projected(
             inbox_id=inbox_id,
-            claimed_by=claimed_by,
-            limit=int(limit),
-            lease_seconds=int(lease_seconds),
+            run_id=run_id,
+            msg_type=msg_type,
+            recipient_id=recipient_id,
+            limit=max(int(limit), len(message_ids or ()), 1000),
+            newest_first=False,
         )
+        # list_projected applies the same ACL visibility predicate before an
+        # ID can enter the atomic native claim filter.
+        visible_ids = [str(row.message_id) for row in visible_rows]
+        if message_ids is not None:
+            requested_ids = {str(item) for item in message_ids}
+            visible_ids = [message_id for message_id in visible_ids if message_id in requested_ids]
+        if not visible_ids:
+            return []
+        claim_kwargs: dict[str, Any] = {
+            "namespace": namespace,
+            "inbox_id": inbox_id,
+            "claimed_by": claimed_by,
+            "limit": int(limit),
+            "lease_seconds": int(lease_seconds),
+            "message_ids": visible_ids,
+        }
+        if run_id is not None:
+            claim_kwargs["run_id"] = run_id
+        if msg_type is not None:
+            claim_kwargs["msg_type"] = msg_type
+        if recipient_id is not None:
+            claim_kwargs["recipient_id"] = recipient_id
+        return claim(**claim_kwargs)
 
     def ack(self, *, message_id: str, claimed_by: str) -> None:
         ack = getattr(self.engine.meta_sqlite, "ack_projected_lane_message", None)
@@ -579,6 +607,7 @@ class LaneMessagingService:
         self,
         *,
         inbox_id: str | None = None,
+        run_id: str | None = None,
         status: str | None = None,
         purpose: str | None = None,
         conversation_id: str | None = None,
@@ -606,6 +635,7 @@ class LaneMessagingService:
         rows = list_fn(
             namespace=namespace,
             inbox_id=inbox_id,
+            run_id=run_id,
             status=status,
             purpose=purpose,
             conversation_id=conversation_id,

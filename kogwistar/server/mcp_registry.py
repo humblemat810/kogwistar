@@ -16,7 +16,7 @@ from typing import Any, get_type_hints
 
 from mcp import types
 from mcp.server.lowlevel import Server
-from pydantic import BaseModel, ConfigDict, TypeAdapter, create_model
+from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError, create_model
 from starlette.applications import Starlette
 from starlette.routing import Mount
 
@@ -83,15 +83,69 @@ class _ToolRecord:
     tool: types.Tool
 
 
+class _CompatTool(types.Tool):
+    """Expose historical snake-case schema access on newer MCP SDK models."""
+
+    @property
+    def input_schema(self) -> dict[str, Any]:
+        return self.inputSchema
+
+    @property
+    def output_schema(self) -> dict[str, Any] | None:
+        return self.outputSchema
+
+
+def _make_tool(
+    *,
+    name: str,
+    description: str | None,
+    input_schema: dict[str, Any],
+    output_schema: dict[str, Any] | None,
+) -> types.Tool:
+    try:
+        return types.Tool(
+            name=name,
+            description=description,
+            input_schema=input_schema,
+            output_schema=output_schema,
+        )
+    except (TypeError, ValidationError):
+        return _CompatTool(
+            name=name,
+            description=description,
+            inputSchema=input_schema,
+            outputSchema=output_schema,
+        )
+
+
 class McpRegistry:
     """Decorator-friendly registry backed by an official low-level Server."""
 
     def __init__(self, name: str, *, filter_tools: bool = False) -> None:
-        self.server = Server(
-            name,
-            on_list_tools=self._handle_list_tools,
-            on_call_tool=self._handle_call_tool,
-        )
+        # MCP SDK changed from constructor callbacks to decorator handlers.
+        # Keep both paths so the registry remains importable across supported
+        # SDK minor versions without changing the public registry contract.
+        try:
+            self.server = Server(
+                name,
+                on_list_tools=self._handle_list_tools,
+                on_call_tool=self._handle_call_tool,
+            )
+        except TypeError:
+            self.server = Server(name)
+
+            @self.server.list_tools()
+            async def _list_tools(_request: Any) -> types.ListToolsResult:
+                return await self._handle_list_tools(None, _request)
+
+            @self.server.call_tool()
+            async def _call_tool(
+                tool_name: str, arguments: dict[str, Any]
+            ) -> types.CallToolResult:
+                params = types.CallToolRequestParams(name=tool_name, arguments=arguments)
+                return await self._handle_call_tool(None, params)
+
+            del _list_tools, _call_tool
         self._filter_tools = filter_tools
         self._records: dict[str, _ToolRecord] = {}
         self._children: list[McpRegistry] = []
@@ -116,7 +170,7 @@ class McpRegistry:
                 name=tool_name,
                 function=fn,
                 input_model=input_model,
-                tool=types.Tool(
+                tool=_make_tool(
                     name=tool_name,
                     description=description,
                     input_schema=_schema_for_model(input_model),

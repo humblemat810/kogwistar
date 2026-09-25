@@ -154,12 +154,22 @@ def register_tool_step(
     op: str = "agent.tool_call",
     arguments_key: str = "agent_tool_arguments",
     output_key: str = "agent_tool_output",
+    max_attempts: int = 1,
+    retry_exceptions: tuple[type[BaseException], ...] = (Exception,),
 ) -> None:
-    """Register tool call using caller-supplied effective capabilities only."""
+    """Register bounded retry using caller-supplied capabilities only.
+
+    Retries stay inside one ordinary step attempt.  Durable external effects
+    still require an idempotent tool; this helper does not claim exactly once.
+    """
 
     capability = str(required_capability).strip()
     if not capability:
         raise ValueError("required_capability must be non-empty")
+    if int(max_attempts) < 1:
+        raise ValueError("max_attempts must be positive")
+    if not retry_exceptions:
+        raise ValueError("retry_exceptions must be non-empty")
 
     @resolver.register(op)
     def _tool(ctx: Any) -> RunSuccess | RunFailure:
@@ -169,11 +179,25 @@ def register_tool_step(
         arguments = ctx.state_view.get(arguments_key, {})
         if not isinstance(arguments, Mapping):
             return _failure(ctx, f"{arguments_key} must be an object")
-        try:
-            result = tool.invoke(arguments)
-        except Exception as exc:
-            return _failure(ctx, f"fake tool failed: {exc}")
-        return RunSuccess(state_update=[("u", {output_key: result})])
+        last_error: BaseException | None = None
+        for attempt in range(1, int(max_attempts) + 1):
+            try:
+                result = tool.invoke(arguments)
+                return RunSuccess(
+                    state_update=[
+                        (
+                            "u",
+                            {output_key: result, "agent_tool_attempts": attempt},
+                        )
+                    ]
+                )
+            except retry_exceptions as exc:
+                last_error = exc
+        return RunFailure(
+            conversation_node_id=None,
+            state_update=[("u", {"agent_tool_attempts": int(max_attempts)})],
+            errors=[f"fake tool failed after {max_attempts} attempts: {last_error}"],
+        )
 
 
 def register_catalog_search_step(

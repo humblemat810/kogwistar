@@ -28,6 +28,9 @@ class CatalogEntry(BaseModel):
     source_fingerprint: str
     revision: int = 1
     group_ids: list[str] = Field(default_factory=list)
+    group_parent_ids: list[str] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
+    aliases: list[str] = Field(default_factory=list)
     required_capabilities: list[str] = Field(default_factory=list)
     scope: str | None = None
     tenant_id: str | None = None
@@ -58,6 +61,17 @@ class CatalogSearchResult:
     match: str
 
 
+class CatalogGroup(BaseModel):
+    """Graph-native group descriptor; tree is only a browsing projection."""
+
+    group_id: str
+    name: str
+    parent_ids: list[str] = Field(default_factory=list)
+    scope: str | None = None
+    tenant_id: str | None = None
+    project_id: str | None = None
+
+
 class CatalogStore:
     """Deterministic catalog with ACL/scope filtering before ranking."""
 
@@ -72,6 +86,22 @@ class CatalogStore:
         self._entries: dict[str, CatalogEntry] = {}
         self._revisions: dict[tuple[str, int], str] = {}
         self._history: dict[str, list[CatalogEntry]] = {}
+        self._groups: dict[str, CatalogGroup] = {}
+
+    def upsert_group(self, group: CatalogGroup) -> CatalogGroup:
+        self._groups[group.group_id] = group
+        return group
+
+    def group_tree(self, *, root_id: str | None = None) -> tuple[CatalogGroup, ...]:
+        values = tuple(self._groups.values())
+        if root_id is None:
+            return tuple(sorted(values, key=lambda item: item.group_id))
+        return tuple(
+            sorted(
+                (item for item in values if root_id in item.parent_ids or item.group_id == root_id),
+                key=lambda item: item.group_id,
+            )
+        )
 
     def upsert(self, entry: CatalogEntry) -> CatalogEntry:
         current = self._entries.get(entry.logical_id)
@@ -86,6 +116,13 @@ class CatalogStore:
         self._revisions[(entry.logical_id, entry.revision)] = entry.source_fingerprint
         self._history.setdefault(entry.logical_id, []).append(entry)
         return entry
+
+    def ingest_descriptors(
+        self, entries: list[CatalogEntry] | tuple[CatalogEntry, ...]
+    ) -> tuple[CatalogEntry, ...]:
+        """Materialize validated read descriptors; provider remains source owner."""
+
+        return tuple(self.upsert(entry) for entry in entries)
 
     def remove_provider(self, provider_id: str) -> tuple[str, ...]:
         removed = tuple(
@@ -171,8 +208,8 @@ class CatalogStore:
         query = str(query).strip().lower()
         if not query:
             return ()
-        if mode not in {"lexical", "semantic"}:
-            raise ValueError("mode must be lexical or semantic")
+        if mode not in {"lexical", "bm25", "semantic"}:
+            raise ValueError("mode must be lexical, bm25, or semantic")
         results: list[CatalogSearchResult] = []
         for entry in self._entries.values():
             if not self._visible(
@@ -186,11 +223,12 @@ class CatalogStore:
             if mode == "semantic" and not entry.semantic_ready:
                 continue
             names = {entry.logical_id.lower(), entry.name.lower()}
-            raw_aliases = entry.metadata.get("aliases", [])
-            if isinstance(raw_aliases, str):
-                raw_aliases = [raw_aliases]
-            elif not isinstance(raw_aliases, (list, tuple, set)):
-                raw_aliases = []
+            raw_metadata_aliases = entry.metadata.get("aliases", [])
+            if isinstance(raw_metadata_aliases, str):
+                raw_metadata_aliases = [raw_metadata_aliases]
+            elif not isinstance(raw_metadata_aliases, (list, tuple, set)):
+                raw_metadata_aliases = []
+            raw_aliases = (*entry.aliases, *raw_metadata_aliases)
             aliases = {str(value).lower() for value in raw_aliases}
             if query in names or query in aliases:
                 results.append(CatalogSearchResult(entry, 1.0, "exact"))
@@ -204,7 +242,11 @@ class CatalogStore:
             overlap = len(tokens & query_tokens)
             if overlap:
                 results.append(
-                    CatalogSearchResult(entry, 0.5 + overlap / max(len(query_tokens), 1) / 10, "lexical")
+                    CatalogSearchResult(
+                        entry,
+                        0.5 + overlap / max(len(query_tokens), 1) / 10,
+                        "bm25" if mode == "bm25" else "lexical",
+                    )
                 )
                 continue
             if any(query in value for value in (*searchable, entry.summary.lower())):

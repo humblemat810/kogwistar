@@ -1670,6 +1670,52 @@
           "properties": {
             "run_id": {
               "type": "string"
+            }
+          },
+          "required": [
+            "run_id"
+          ],
+          "type": "object"
+        },
+        "name": "workflow.run_evidence",
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "title": null
+      },
+      {
+        "description": null,
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "limit": {
+              "default": 200,
+              "type": "integer"
+            },
+            "run_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "run_id"
+          ],
+          "type": "object"
+        },
+        "name": "workflow.run_lineage",
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "title": null
+      },
+      {
+        "description": null,
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "run_id": {
+              "type": "string"
             },
             "target_step_seq": {
               "type": "integer"
@@ -1781,6 +1827,31 @@
           "type": "object"
         },
         "name": "workflow.run_status",
+        "outputSchema": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "title": null
+      },
+      {
+        "description": null,
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "limit": {
+              "default": 200,
+              "type": "integer"
+            },
+            "run_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "run_id"
+          ],
+          "type": "object"
+        },
+        "name": "workflow.run_steps",
         "outputSchema": {
           "additionalProperties": true,
           "type": "object"

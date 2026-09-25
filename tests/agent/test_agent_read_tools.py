@@ -7,6 +7,8 @@ import pytest
 from kogwistar.agent import (
     AgentReadTools,
     CatalogStore,
+    ProjectGlossaryProvider,
+    ProjectPluginManifest,
     ProviderRegistry,
     ReadScope,
     catalog_entries_from_artifact,
@@ -87,6 +89,38 @@ def _tools() -> tuple[AgentReadTools, object]:
             {"id": "w2", "status": "pending", "tenant_id": "tenant-a"},
             {"id": "w3", "tenant_id": "tenant-a"},
         ],
+        glossary_source=ProjectGlossaryProvider(
+            ProjectPluginManifest("project.glossary", "project-a", "tenant-a"),
+            [
+                {
+                    "id": "term-1",
+                    "term": "Deploy Window",
+                    "aliases": ["DW"],
+                    "definition": "release period",
+                    "tenant_id": "tenant-a",
+                    "project_id": "project-a",
+                },
+                {
+                    "id": "term-2",
+                    "term": "Private Secret",
+                    "aliases": ["PS"],
+                    "definition": "hidden",
+                    "tenant_id": "other",
+                    "project_id": "other",
+                },
+            ],
+        ),
+        knowledge_source={
+            "search": [
+                {"entity_id": "e1", "name": "deploy", "tenant_id": "tenant-a", "project_id": "project-a"}
+            ],
+            "get": [
+                {"entity_id": "e1", "name": "deploy", "tenant_id": "tenant-a", "project_id": "project-a"}
+            ],
+            "expand": [
+                {"entity_id": "e2", "relation": "uses", "tenant_id": "tenant-a", "project_id": "project-a"}
+            ],
+        },
         visibility_checker=lambda item, scope: (
             item.get("tenant_id") in (None, scope.tenant_id)
             and item.get("project_id") in (None, scope.project_id)
@@ -117,6 +151,13 @@ def test_skill_descriptor_graph_and_raw_paths_are_additive() -> None:
     assert raw and raw["resource"]["body"] == "provider-native source"
 
 
+def test_bootstrap_catalog_never_contains_full_skill_body() -> None:
+    tools, _ = _tools()
+    page = tools.catalog_search("deploy", scope=_scope(), limit=2)
+    assert page.items
+    assert all("body" not in item and "resource" not in item for item in page.items)
+
+
 def test_memory_defaults_to_current_conversation_and_requires_opt_in() -> None:
     tools, _ = _tools()
     assert tools.memory_search("deploy", scope=_scope(conversation_id="c1")).items
@@ -135,6 +176,22 @@ def test_wisdom_default_only_serves_approved_and_capability_is_descriptive() -> 
     assert tools.capability_describe("skill.read", scope=_scope())["name"] == "skill.read"
 
 
+def test_glossary_context_is_query_relevant_and_acl_filtered() -> None:
+    tools, _ = _tools()
+    page = tools.glossary_search("DW", scope=_scope())
+    assert [item["id"] for item in page.items] == ["term-1"]
+    assert tools.glossary_search("PS", scope=_scope()).items == ()
+
+
+def test_knowledge_search_get_and_bounded_graph_expansion_are_acl_filtered() -> None:
+    tools, _ = _tools()
+    assert tools.knowledge_search("deploy", scope=_scope()).items[0]["entity_id"] == "e1"
+    assert tools.knowledge_get("e1", scope=_scope())["entity_id"] == "e1"
+    assert tools.knowledge_expand("e1", scope=_scope(), depth=2).items[0]["entity_id"] == "e2"
+    with pytest.raises(ValueError):
+        tools.knowledge_expand("e1", scope=_scope(), depth=5)
+
+
 def test_execution_read_filters_scope_and_does_not_mutate_source() -> None:
     tools, _ = _tools()
     source = tools.execution_source
@@ -150,6 +207,27 @@ def test_explicit_run_read_methods_remain_bounded_and_read_only() -> None:
     assert page.items == ()
     assert tools.run_status("r1", scope=_scope())["run_id"] == "r1"
     assert tools.skill_resource_get("project:deploy", "README.md", scope=_scope()) is None
+
+
+def test_run_event_reads_reconnect_from_ordered_cursor_without_reexecution() -> None:
+    tools, _ = _tools()
+    events = [
+        {"run_id": "r1", "seq": seq, "kind": f"event-{seq}", "tenant_id": "tenant-a", "project_id": "project-a"}
+        for seq in (1, 2, 3)
+    ]
+    tools.execution_source["list_run_events"] = events
+    before = list(events)
+
+    first = tools.run_events("r1", scope=_scope(), limit=2)
+    assert [item["seq"] for item in first.items] == [1, 2]
+    assert first.next_cursor is not None
+
+    # A reconnect resumes after the durable cursor; it does not rerun steps.
+    resumed = tools.run_events(
+        "r1", scope=_scope(), cursor=first.next_cursor, limit=2
+    )
+    assert [item["seq"] for item in resumed.items] == [3]
+    assert tools.execution_source["list_run_events"] == before
 
 
 def test_mcp_describe_is_discovery_only_and_scope_filtered() -> None:

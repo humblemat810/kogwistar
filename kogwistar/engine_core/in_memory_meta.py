@@ -636,6 +636,7 @@ class InMemoryMetaStore(LaneMessageMetaStoreMixin):
         namespace: str = "default",
         purpose: str | None = None,
         inbox_id: str | None = None,
+        run_id: str | None = None,
         status: str | None = None,
         conversation_id: str | None = None,
         msg_type: str | None = None,
@@ -658,6 +659,8 @@ class InMemoryMetaStore(LaneMessageMetaStoreMixin):
             if purpose is not None and row.purpose != str(purpose):
                 continue
             if inbox_id is not None and row.inbox_id != str(inbox_id):
+                continue
+            if run_id is not None and row.run_id != str(run_id):
                 continue
             if conversation_id is not None and row.conversation_id != str(conversation_id):
                 continue

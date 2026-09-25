@@ -116,7 +116,12 @@ def _artifact(
 
 
 def build_normal_workflow(
-    *, workflow_id: str = "agent.normal.v1", execute_op: str = "agent.execute"
+    *,
+    workflow_id: str = "agent.normal.v1",
+    execute_op: str = "agent.execute",
+    control_op: str | None = None,
+    ack_op: str | None = None,
+    control_metadata: dict[str, object] | None = None,
 ) -> WorkflowDesignArtifact:
     """Build a one-pass ordinary workflow."""
 
@@ -128,10 +133,61 @@ def build_normal_workflow(
         _node(workflow_id=workflow_id, node_id=execute, op=execute_op, label="Execute"),
         _node(workflow_id=workflow_id, node_id=done, op="agent.done", label="Done", terminal=True),
     ]
+    control = f"wf:{workflow_id}:control"
+    ack = f"wf:{workflow_id}:control-ack"
+    if ack_op and not control_op:
+        raise ValueError("ack_op requires control_op")
+    if control_op:
+        nodes.insert(
+            1,
+            _node(
+                workflow_id=workflow_id,
+                node_id=control,
+                op=control_op,
+                label="Control point",
+                metadata={"wf_control_point": True, **(control_metadata or {})},
+            ),
+        )
+        if ack_op:
+            nodes.insert(
+                2,
+                _node(
+                    workflow_id=workflow_id,
+                    node_id=ack,
+                    op=ack_op,
+                    label="Control acknowledgement",
+                    metadata={"wf_control_ack": True},
+                ),
+            )
     edges = [
-        _edge(workflow_id=workflow_id, edge_id=f"{start}->{execute}", source=start, target=execute),
+        _edge(
+            workflow_id=workflow_id,
+            edge_id=f"{start}->{control if control_op else execute}",
+            source=start,
+            target=control if control_op else execute,
+        ),
         _edge(workflow_id=workflow_id, edge_id=f"{execute}->{done}", source=execute, target=done),
     ]
+    if control_op:
+        edges.insert(
+            1,
+            _edge(
+                workflow_id=workflow_id,
+                edge_id=f"{control}->{ack if ack_op else execute}",
+                source=control,
+                target=ack if ack_op else execute,
+            ),
+        )
+        if ack_op:
+            edges.insert(
+                2,
+                _edge(
+                    workflow_id=workflow_id,
+                    edge_id=f"{ack}->{execute}",
+                    source=ack,
+                    target=execute,
+                ),
+            )
     return _artifact(
         workflow_id=workflow_id,
         mode="normal",
@@ -142,25 +198,92 @@ def build_normal_workflow(
 
 
 def build_plan_workflow(
-    *, workflow_id: str = "agent.plan.v1", execute_op: str = "agent.execute"
+    *,
+    workflow_id: str = "agent.plan.v1",
+    execute_op: str = "agent.execute",
+    control_op: str | None = None,
+    ack_op: str | None = None,
+    control_metadata: dict[str, object] | None = None,
 ) -> WorkflowDesignArtifact:
     """Build a plan/approve/execute graph; approval remains ordinary routing."""
 
-    names = ("observe", "plan", "approve", "execute", "done")
+    names = ("observe", "plan", "approve", "execute", "rejected", "done")
     ids = {name: f"wf:{workflow_id}:{name}" for name in names}
     nodes = [
         _node(workflow_id=workflow_id, node_id=ids["observe"], op="agent.observe", label="Observe", start=True),
         _node(workflow_id=workflow_id, node_id=ids["plan"], op="agent.plan", label="Plan"),
         _node(workflow_id=workflow_id, node_id=ids["approve"], op="agent.approve", label="Approve"),
         _node(workflow_id=workflow_id, node_id=ids["execute"], op=execute_op, label="Execute"),
+        _node(workflow_id=workflow_id, node_id=ids["rejected"], op="agent.rejected", label="Rejected", terminal=True),
         _node(workflow_id=workflow_id, node_id=ids["done"], op="agent.done", label="Done", terminal=True),
     ]
+    control = f"wf:{workflow_id}:control"
+    ack = f"wf:{workflow_id}:control-ack"
+    if ack_op and not control_op:
+        raise ValueError("ack_op requires control_op")
+    if control_op:
+        nodes.insert(
+            4,
+            _node(
+                workflow_id=workflow_id,
+                node_id=control,
+                op=control_op,
+                label="Control point",
+                metadata={"wf_control_point": True, **(control_metadata or {})},
+            ),
+        )
+        if ack_op:
+            nodes.insert(
+                5,
+                _node(
+                    workflow_id=workflow_id,
+                    node_id=ack,
+                    op=ack_op,
+                    label="Control acknowledgement",
+                    metadata={"wf_control_ack": True},
+                ),
+            )
     edges = [
         _edge(workflow_id=workflow_id, edge_id=f"{ids['observe']}->{ids['plan']}", source=ids["observe"], target=ids["plan"]),
         _edge(workflow_id=workflow_id, edge_id=f"{ids['plan']}->{ids['approve']}", source=ids["plan"], target=ids["approve"]),
-        _edge(workflow_id=workflow_id, edge_id=f"{ids['approve']}->{ids['execute']}", source=ids["approve"], target=ids["execute"], predicate="approved"),
+        _edge(
+            workflow_id=workflow_id,
+            edge_id=f"{ids['approve']}->{control if control_op else ids['execute']}",
+            source=ids["approve"],
+            target=control if control_op else ids["execute"],
+            predicate="approved",
+        ),
+        _edge(
+            workflow_id=workflow_id,
+            edge_id=f"{ids['approve']}->{ids['rejected']}",
+            source=ids["approve"],
+            target=ids["rejected"],
+            predicate="rejected",
+            is_default=False,
+            priority=101,
+        ),
         _edge(workflow_id=workflow_id, edge_id=f"{ids['execute']}->{ids['done']}", source=ids["execute"], target=ids["done"]),
     ]
+    if control_op:
+        edges.insert(
+            3,
+            _edge(
+                workflow_id=workflow_id,
+                edge_id=f"{control}->{ack if ack_op else ids['execute']}",
+                source=control,
+                target=ack if ack_op else ids["execute"],
+            ),
+        )
+        if ack_op:
+            edges.insert(
+                4,
+                _edge(
+                    workflow_id=workflow_id,
+                    edge_id=f"{ack}->{ids['execute']}",
+                    source=ack,
+                    target=ids["execute"],
+                ),
+            )
     return _artifact(
         workflow_id=workflow_id,
         mode="plan",
@@ -174,6 +297,9 @@ def build_goal_workflow(
     *,
     workflow_id: str = "agent.goal.v1",
     act_op: str = "agent.act",
+    control_op: str | None = None,
+    ack_op: str | None = None,
+    control_metadata: dict[str, object] | None = None,
     satisfied_predicate: str = "goal_satisfied",
     continue_predicate: str = "goal_not_satisfied",
 ) -> WorkflowDesignArtifact:
@@ -188,13 +314,64 @@ def build_goal_workflow(
         _node(workflow_id=workflow_id, node_id=ids["check"], op="agent.check", label="Check"),
         _node(workflow_id=workflow_id, node_id=ids["done"], op="agent.done", label="Done", terminal=True),
     ]
+    control = f"wf:{workflow_id}:control"
+    ack = f"wf:{workflow_id}:control-ack"
+    if ack_op and not control_op:
+        raise ValueError("ack_op requires control_op")
+    if control_op:
+        nodes.insert(
+            2,
+            _node(
+                workflow_id=workflow_id,
+                node_id=control,
+                op=control_op,
+                label="Control point",
+                metadata={"wf_control_point": True, **(control_metadata or {})},
+            ),
+        )
+        if ack_op:
+            nodes.insert(
+                3,
+                _node(
+                    workflow_id=workflow_id,
+                    node_id=ack,
+                    op=ack_op,
+                    label="Control acknowledgement",
+                    metadata={"wf_control_ack": True},
+                ),
+            )
     edges = [
         _edge(workflow_id=workflow_id, edge_id=f"{ids['observe']}->{ids['decide']}", source=ids["observe"], target=ids["decide"]),
-        _edge(workflow_id=workflow_id, edge_id=f"{ids['decide']}->{ids['act']}", source=ids["decide"], target=ids["act"]),
+        _edge(
+            workflow_id=workflow_id,
+            edge_id=f"{ids['decide']}->{control if control_op else ids['act']}",
+            source=ids["decide"],
+            target=control if control_op else ids["act"],
+        ),
         _edge(workflow_id=workflow_id, edge_id=f"{ids['act']}->{ids['check']}", source=ids["act"], target=ids["check"]),
         _edge(workflow_id=workflow_id, edge_id=f"{ids['check']}->{ids['done']}", source=ids["check"], target=ids["done"], predicate=satisfied_predicate, is_default=False),
         _edge(workflow_id=workflow_id, edge_id=f"{ids['check']}->{ids['observe']}", source=ids["check"], target=ids["observe"], predicate=continue_predicate, is_default=False),
     ]
+    if control_op:
+        edges.insert(
+            2,
+            _edge(
+                workflow_id=workflow_id,
+                edge_id=f"{control}->{ack if ack_op else ids['act']}",
+                source=control,
+                target=ack if ack_op else ids["act"],
+            ),
+        )
+        if ack_op:
+            edges.insert(
+                3,
+                _edge(
+                    workflow_id=workflow_id,
+                    edge_id=f"{ack}->{ids['act']}",
+                    source=ack,
+                    target=ids["act"],
+                ),
+            )
     return _artifact(
         workflow_id=workflow_id,
         mode="goal",
@@ -231,3 +408,63 @@ def graph_signature(design: WorkflowDesignArtifact) -> tuple[tuple[str, ...], tu
         )
     )
     return nodes, edges
+
+
+def validate_agent_design(
+    design: WorkflowDesignArtifact,
+    *,
+    mode: AgentWorkflowMode | None = None,
+) -> tuple[str, ...]:
+    """Return design-lint diagnostics without changing runtime semantics."""
+
+    diagnostics: list[str] = []
+    if mode is not None and mode not in {"normal", "plan", "goal"}:
+        diagnostics.append(f"unsupported agent mode: {mode}")
+    starts = [node for node in design.nodes if node.metadata.get("wf_start")]
+    terminals = [node for node in design.nodes if node.metadata.get("wf_terminal")]
+    if len(starts) != 1:
+        diagnostics.append("agent design must have exactly one start node")
+    if not terminals:
+        diagnostics.append("agent design must retain a terminal node")
+    declared = design.nodes[0].metadata.get("wf_mode") if design.nodes else None
+    if mode is not None and declared not in (None, mode):
+        diagnostics.append("advisory workflow mode metadata disagrees with requested mode")
+    if mode == "plan":
+        ops = {str(node.metadata.get("wf_op")) for node in design.nodes}
+        if "agent.plan" not in ops or "agent.approve" not in ops:
+            diagnostics.append("plan design should contain plan and approve nodes")
+    if mode == "goal":
+        ops = {str(node.metadata.get("wf_op")) for node in design.nodes}
+        if "agent.decide" not in ops or "agent.check" not in ops:
+            diagnostics.append("goal design should contain decide and check nodes")
+    return tuple(diagnostics)
+
+
+def validate_control_point_placement(
+    design: WorkflowDesignArtifact,
+) -> tuple[str, ...]:
+    """Lint placement metadata without changing runtime guards or branches."""
+
+    diagnostics: list[str] = []
+    node_ids = {str(node.safe_get_id()) for node in design.nodes}
+    incoming = {node_id: 0 for node_id in node_ids}
+    outgoing = {node_id: 0 for node_id in node_ids}
+    for edge in design.edges:
+        source = str(edge.source_ids[0]) if edge.source_ids else ""
+        target = str(edge.target_ids[0]) if edge.target_ids else ""
+        if source in outgoing:
+            outgoing[source] += 1
+        if target in incoming:
+            incoming[target] += 1
+    forbidden = {"wf_budget_override", "wf_capability_grant", "wf_cancel_runtime"}
+    for node in design.nodes:
+        if not node.metadata.get("wf_control_point"):
+            continue
+        node_id = str(node.safe_get_id())
+        if node.metadata.get("wf_terminal"):
+            diagnostics.append(f"control point cannot be terminal: {node_id}")
+        if incoming.get(node_id, 0) == 0 or outgoing.get(node_id, 0) == 0:
+            diagnostics.append(f"control point must be reachable and continue: {node_id}")
+        if forbidden.intersection(node.metadata):
+            diagnostics.append(f"control point metadata cannot override runtime guards: {node_id}")
+    return tuple(diagnostics)

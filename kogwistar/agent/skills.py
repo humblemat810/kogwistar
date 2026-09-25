@@ -6,7 +6,8 @@ import hashlib
 import json
 import re
 import shlex
-from typing import Literal
+from collections.abc import Mapping
+from typing import Any, Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -90,6 +91,10 @@ class SkillGraphArtifact(BaseModel):
     source_fingerprint: str
     parser_id: str = "kogwistar.core.markdown"
     parser_version: str = "v1"
+    projection_revision: int = 1
+    tenant_id: str | None = None
+    project_id: str | None = None
+    namespace: str | None = None
     nodes: list[SkillGraphNode] = Field(default_factory=list)
     edges: list[SkillGraphEdge] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
@@ -108,6 +113,11 @@ class SkillGraphArtifact(BaseModel):
                 raise ValueError("skill graph edges require source and target IDs")
             if not set(edge.source_ids + edge.target_ids) <= node_ids:
                 raise ValueError(f"skill graph edge references unknown node: {edge.edge_id}")
+        if self.projection_revision < 1:
+            raise ValueError("projection_revision must be positive")
+        for node in self.nodes:
+            if not str(node.source_ref or "").strip():
+                raise ValueError(f"skill node lacks source reference: {node.node_id}")
         return self
 
     def artifact_fingerprint(self) -> str:
@@ -115,6 +125,274 @@ class SkillGraphArtifact(BaseModel):
         return hashlib.sha256(
             json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest()
+
+
+class SkillProjectionRequest(BaseModel):
+    """Typed projection work item; providers cannot choose arbitrary lanes."""
+
+    provider_id: str
+    provider_local_id: str
+    source_fingerprint: str
+    project_id: str
+    tenant_id: str
+    projection_revision: int = Field(1, ge=1)
+    lane_id: str = ""
+
+    @model_validator(mode="after")
+    def _derive_lane(self) -> "SkillProjectionRequest":
+        self.lane_id = f"ws:{self.project_id}:g:projection:lane:skills"
+        return self
+
+
+class SkillExecutionPlan(BaseModel):
+    """Bounded graph-guided plan; executing workflow still owns effects."""
+
+    skill_id: str
+    node_ids: list[str] = Field(default_factory=list)
+    source_refs: list[str] = Field(default_factory=list)
+    required_capabilities: list[str] = Field(default_factory=list)
+    mcp_schema_refs: list[str] = Field(default_factory=list)
+    evidence_refs: list[str] = Field(default_factory=list)
+    source_fingerprint: str
+    projection_revision: int
+    execution_policy: "SkillExecutionPolicy | None" = None
+
+
+class SkillExecutionPolicy(BaseModel):
+    """Explicit limits for effectful skill steps.
+
+    This is a plan contract, not an executor. The ordinary workflow/tool
+    binding remains responsible for enforcing the declared capabilities.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    max_output_bytes: int = Field(default=64 * 1024, ge=1, le=16 * 1024 * 1024)
+    max_time_ms: int = Field(default=30_000, ge=1, le=10 * 60 * 1000)
+    cwd: str | None = None
+    environment_keys: list[str] = Field(default_factory=list)
+    sandbox: str = "default"
+    allow_network: bool = False
+
+    @model_validator(mode="after")
+    def _safe_policy(self) -> "SkillExecutionPolicy":
+        if self.cwd is not None:
+            validate_package_relative_path(self.cwd)
+        if any(not str(key).strip() or "=" in str(key) for key in self.environment_keys):
+            raise ValueError("environment_keys must contain names, not assignments")
+        if not self.sandbox.strip():
+            raise ValueError("sandbox must be non-empty")
+        return self
+
+
+SkillExecutionPlan.model_rebuild()
+
+
+class SkillExecutionEvidence(BaseModel):
+    """Auditable references emitted by an ordinary skill workflow step."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str
+    workflow_step_ref: str
+    skill_id: str
+    node_ids: list[str] = Field(default_factory=list)
+    source_refs: list[str] = Field(default_factory=list)
+    required_capabilities: list[str] = Field(default_factory=list)
+    mcp_schema_refs: list[str] = Field(default_factory=list)
+    source_fingerprint: str
+    projection_revision: int
+    result_ref: str | None = None
+    outcome: Literal["success", "failure", "cancelled"]
+
+    def state_patch(self) -> dict[str, object]:
+        """Return JSON-compatible state for ordinary checkpoint/evidence writes."""
+        return {"skill_execution_evidence": self.model_dump(mode="json")}
+
+
+@runtime_checkable
+class SemanticSkillIngestionProvider(Protocol):
+    """Optional bounded parser; it proposes data, never materializes it."""
+
+    provider_id: str
+    parser_id: str
+    parser_version: str
+
+    def parse(self, source: Mapping[str, Any]) -> SkillGraphArtifact: ...
+
+
+def validate_skill_artifact(
+    artifact: SkillGraphArtifact,
+    *,
+    expected_fingerprint: str | None = None,
+    tenant_id: str | None = None,
+    project_id: str | None = None,
+    allowed_node_kinds: set[str] | frozenset[str] | None = None,
+) -> SkillGraphArtifact:
+    """Validate source/scope/bindings before any projection write."""
+
+    if expected_fingerprint is not None and artifact.source_fingerprint != expected_fingerprint:
+        raise ValueError("skill source fingerprint mismatch")
+    if tenant_id is not None and artifact.tenant_id not in (None, tenant_id):
+        raise PermissionError("skill artifact tenant scope mismatch")
+    if project_id is not None and artifact.project_id not in (None, project_id):
+        raise PermissionError("skill artifact project scope mismatch")
+    if allowed_node_kinds is not None:
+        unknown = {str(node.kind) for node in artifact.nodes} - set(allowed_node_kinds)
+        if unknown:
+            raise ValueError(f"unsupported skill node kinds: {sorted(unknown)}")
+    return artifact
+
+
+class SkillProjectionStore:
+    """Rebuildable current projection with stale-revision rejection."""
+
+    def __init__(self) -> None:
+        self._current: dict[str, SkillGraphArtifact] = {}
+        self._history: dict[str, list[SkillGraphArtifact]] = {}
+
+    def upsert(self, artifact: SkillGraphArtifact) -> SkillGraphArtifact:
+        validate_skill_artifact(artifact)
+        key = f"{artifact.provider_id}:{artifact.provider_local_id}"
+        current = self._current.get(key)
+        if current is not None:
+            if artifact.projection_revision < current.projection_revision:
+                raise ValueError("stale skill projection revision")
+            if (
+                artifact.projection_revision == current.projection_revision
+                and artifact.source_fingerprint != current.source_fingerprint
+            ):
+                raise ValueError("skill projection revision fingerprint collision")
+            if artifact.projection_revision == current.projection_revision:
+                return current
+        self._current[key] = artifact
+        self._history.setdefault(key, []).append(artifact)
+        return artifact
+
+    def get(self, provider_id: str, provider_local_id: str) -> SkillGraphArtifact | None:
+        return self._current.get(f"{provider_id}:{provider_local_id}")
+
+    def remove(self, provider_id: str, provider_local_id: str) -> None:
+        self._current.pop(f"{provider_id}:{provider_local_id}", None)
+
+    def remove_provider(self, provider_id: str) -> tuple[str, ...]:
+        removed = tuple(
+            key for key in self._current if key.startswith(f"{provider_id}:")
+        )
+        for key in removed:
+            self._current.pop(key, None)
+        return removed
+
+    def history(self, provider_id: str, provider_local_id: str) -> tuple[SkillGraphArtifact, ...]:
+        return tuple(self._history.get(f"{provider_id}:{provider_local_id}", ()))
+
+
+def select_skill_subgraph(
+    artifact: SkillGraphArtifact, *, node_ids: list[str], max_nodes: int = 32
+) -> SkillGraphArtifact:
+    """Return bounded selected nodes/edges, preserving source attribution."""
+
+    selected = set(node_ids)
+    if len(selected) > max_nodes:
+        raise ValueError("selected skill subgraph exceeds bound")
+    nodes = [node for node in artifact.nodes if node.node_id in selected]
+    node_set = {node.node_id for node in nodes}
+    edges = [
+        edge
+        for edge in artifact.edges
+        if set(edge.source_ids + edge.target_ids) <= node_set
+    ]
+    return artifact.model_copy(update={"nodes": nodes, "edges": edges})
+
+
+def prepare_skill_execution(
+    artifact: SkillGraphArtifact,
+    *,
+    node_ids: list[str],
+    effective_capabilities: set[str] | frozenset[str],
+    execution_policy: SkillExecutionPolicy | None = None,
+) -> SkillExecutionPlan:
+    """Prepare evidence/capability references; never runs a skill itself."""
+
+    selected = select_skill_subgraph(artifact, node_ids=node_ids)
+    caps = sorted(
+        {
+            cap
+            for node in selected.nodes
+            for cap in (
+                list(node.required_capabilities)
+                + ([node.name] if node.kind == "capability" else [])
+            )
+        }
+    )
+    missing = set(caps) - set(effective_capabilities)
+    if missing:
+        raise PermissionError(
+            "skill execution requires absent capabilities: " + ", ".join(sorted(missing))
+        )
+    for node in selected.nodes:
+        if node.invocable and node.binding_status != "validated":
+            raise ValueError(f"skill node is not validated: {node.node_id}")
+    effectful = {"script_call", "command_template", "capability_call", "mcp_call", "nested_workflow"}
+    if any(node.kind in effectful for node in selected.nodes) and execution_policy is None:
+        raise PermissionError("effectful skill execution requires an explicit execution policy")
+    return SkillExecutionPlan(
+        skill_id=f"{artifact.provider_id}:{artifact.provider_local_id}",
+        node_ids=[node.node_id for node in selected.nodes],
+        source_refs=[str(node.source_ref) for node in selected.nodes if node.source_ref],
+        required_capabilities=caps,
+        mcp_schema_refs=sorted(
+            {node.name for node in selected.nodes if node.kind == "mcp"}
+        ),
+        evidence_refs=[str(node.source_ref) for node in selected.nodes if node.source_ref],
+        source_fingerprint=artifact.source_fingerprint,
+        projection_revision=artifact.projection_revision,
+        execution_policy=execution_policy,
+    )
+
+
+def attach_glossary_references(
+    artifact: SkillGraphArtifact,
+    *,
+    glossary_entity_ids: Mapping[str, str],
+) -> SkillGraphArtifact:
+    """Attach project-knowledge references without copying glossary authority."""
+
+    nodes = []
+    for node in artifact.nodes:
+        reference = glossary_entity_ids.get(node.node_id)
+        if reference is None:
+            nodes.append(node)
+            continue
+        metadata = dict(node.metadata)
+        metadata["glossary_entity_ids"] = [str(reference)]
+        nodes.append(node.model_copy(update={"metadata": metadata}))
+    return artifact.model_copy(update={"nodes": nodes})
+
+
+def build_skill_execution_evidence(
+    plan: SkillExecutionPlan,
+    *,
+    run_id: str,
+    workflow_step_ref: str,
+    outcome: Literal["success", "failure", "cancelled"],
+    result_ref: str | None = None,
+) -> SkillExecutionEvidence:
+    """Build evidence payload; caller persists it through normal workflow state."""
+
+    return SkillExecutionEvidence(
+        run_id=run_id,
+        workflow_step_ref=workflow_step_ref,
+        skill_id=plan.skill_id,
+        node_ids=list(plan.node_ids),
+        source_refs=list(plan.source_refs),
+        required_capabilities=list(plan.required_capabilities),
+        mcp_schema_refs=list(plan.mcp_schema_refs),
+        source_fingerprint=plan.source_fingerprint,
+        projection_revision=plan.projection_revision,
+        result_ref=result_ref,
+        outcome=outcome,
+    )
 
 
 def _frontmatter(text: str) -> tuple[dict[str, str], list[str], int]:
@@ -300,6 +578,8 @@ def catalog_entries_from_artifact(artifact: SkillGraphArtifact) -> list[CatalogE
                     "invocable": node.invocable,
                     **node.metadata,
                 },
+                tenant_id=artifact.tenant_id,
+                project_id=artifact.project_id,
             )
         )
     return entries
