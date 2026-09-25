@@ -5802,7 +5802,7 @@ where
         let rows = c
             .query(
                 &format!(
-                    "UPDATE {} SET status='claimed',claimed_by=$1,lease_until=NOW()+($2::TEXT||' seconds')::interval \
+                    "UPDATE {} AS x SET status='claimed',claimed_by=$1,lease_until=NOW()+($2::TEXT||' seconds')::interval \
                      WHERE message_id=$3 AND namespace=$4 AND inbox_id=$5 \
                      AND ($6::TEXT IS NULL OR run_id=$6) \
                      AND ($7::TEXT IS NULL OR msg_type=$7) \
