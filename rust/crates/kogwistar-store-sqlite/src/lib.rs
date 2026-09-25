@@ -29,7 +29,7 @@ use kogwistar_store::{
 };
 use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 use serde_json::{Map, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -70,6 +70,15 @@ pub enum SqliteStoreError {
     RecordedRuntimeConflict(String),
     #[error(transparent)]
     Store(#[from] StoreError),
+}
+
+/// One compare-and-swap mutation for an atomic named-projection batch.
+pub struct NamedProjectionCas {
+    pub namespace: String,
+    pub key: String,
+    pub expected_last_authoritative_seq: Option<i64>,
+    pub expected_last_materialized_seq: Option<i64>,
+    pub projection: NamedProjectionWrite,
 }
 
 pub type SqliteStoreResult<T> = Result<T, SqliteStoreError>;
@@ -641,6 +650,13 @@ impl SqliteStore {
                 projection,
             )
         })
+    }
+
+    pub fn compare_and_swap_named_projections(
+        &self,
+        updates: Vec<NamedProjectionCas>,
+    ) -> SqliteStoreResult<bool> {
+        self.immediate_transaction(|uow| uow.compare_and_swap_named_projections(updates))
     }
 
     pub fn clear_named_projection(&self, namespace: &str, key: &str) -> SqliteStoreResult<()> {
@@ -1584,6 +1600,13 @@ impl SqliteUnitOfWork<'_> {
             expected_last_materialized_seq,
             projection,
         )
+    }
+
+    pub fn compare_and_swap_named_projections(
+        &mut self,
+        updates: Vec<NamedProjectionCas>,
+    ) -> SqliteStoreResult<bool> {
+        compare_and_swap_named_projections(self.transaction, updates)
     }
 
     pub fn clear_named_projection(&mut self, namespace: &str, key: &str) -> SqliteStoreResult<()> {
@@ -3062,6 +3085,83 @@ fn compare_and_swap_named_projection(
         _ => 0,
     };
     Ok(changes == 1)
+}
+
+fn compare_and_swap_named_projections(
+    conn: &Connection,
+    mut updates: Vec<NamedProjectionCas>,
+) -> SqliteStoreResult<bool> {
+    updates
+        .sort_by(|left, right| (&left.namespace, &left.key).cmp(&(&right.namespace, &right.key)));
+    let mut identities = BTreeSet::new();
+    for update in &updates {
+        if !identities.insert((update.namespace.as_str(), update.key.as_str())) {
+            return Err(SqliteStoreError::TransactionAborted(
+                "duplicate named projection key".to_owned(),
+            ));
+        }
+        let current = conn
+            .query_row(
+                "SELECT last_authoritative_seq,last_materialized_seq FROM named_projections WHERE namespace=?1 AND key=?2",
+                params![update.namespace, update.key],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .optional()?;
+        match (
+            update.expected_last_authoritative_seq,
+            update.expected_last_materialized_seq,
+            current,
+        ) {
+            (None, None, None) => {}
+            (Some(expected_authoritative), Some(expected_materialized), Some(actual))
+                if actual == (expected_authoritative, expected_materialized) => {}
+            _ => return Ok(false),
+        }
+    }
+    for update in updates {
+        let payload_json = projection_payload_json(&update.projection.payload)?;
+        let updated_at_ms = unix_epoch_millis();
+        let result = match (
+            update.expected_last_authoritative_seq,
+            update.expected_last_materialized_seq,
+        ) {
+            (None, None) => conn.execute(
+                "INSERT INTO named_projections(namespace,key,payload_json,last_authoritative_seq,last_materialized_seq,projection_schema_version,materialization_status,updated_at_ms) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+                params![
+                    update.namespace,
+                    update.key,
+                    payload_json,
+                    update.projection.last_authoritative_seq,
+                    update.projection.last_materialized_seq,
+                    update.projection.projection_schema_version,
+                    update.projection.materialization_status,
+                    updated_at_ms,
+                ],
+            )?,
+            (Some(expected_authoritative), Some(expected_materialized)) => conn.execute(
+                "UPDATE named_projections SET payload_json=?1,last_authoritative_seq=?2,last_materialized_seq=?3,projection_schema_version=?4,materialization_status=?5,updated_at_ms=?6 WHERE namespace=?7 AND key=?8 AND last_authoritative_seq=?9 AND last_materialized_seq=?10",
+                params![
+                    payload_json,
+                    update.projection.last_authoritative_seq,
+                    update.projection.last_materialized_seq,
+                    update.projection.projection_schema_version,
+                    update.projection.materialization_status,
+                    updated_at_ms,
+                    update.namespace,
+                    update.key,
+                    expected_authoritative,
+                    expected_materialized,
+                ],
+            )?,
+            _ => unreachable!("mixed named projection CAS expectations validated above"),
+        };
+        if result != 1 {
+            return Err(SqliteStoreError::TransactionAborted(
+                "named projection CAS changed during batch".to_owned(),
+            ));
+        }
+    }
+    Ok(true)
 }
 
 fn clear_named_projection(conn: &Connection, namespace: &str, key: &str) -> SqliteStoreResult<()> {
@@ -4699,6 +4799,87 @@ mod tests {
                 .get_stage1_node_projection("tenant-a", "node-1")
                 .unwrap()
                 .is_none()
+        );
+        drop(store);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn named_projection_batch_cas_is_all_or_nothing() {
+        let (store, path) = store("named-projection-batch-cas");
+        let projection = |value: i64| NamedProjectionWrite {
+            payload: serde_json::json!({"value": value})
+                .as_object()
+                .unwrap()
+                .clone(),
+            last_authoritative_seq: value,
+            last_materialized_seq: value,
+            projection_schema_version: 1,
+            materialization_status: "ready".to_owned(),
+        };
+
+        assert!(
+            !store
+                .compare_and_swap_named_projections(vec![
+                    NamedProjectionCas {
+                        namespace: "skills".to_owned(),
+                        key: "provider".to_owned(),
+                        expected_last_authoritative_seq: None,
+                        expected_last_materialized_seq: None,
+                        projection: projection(1),
+                    },
+                    NamedProjectionCas {
+                        namespace: "catalog".to_owned(),
+                        key: "provider".to_owned(),
+                        expected_last_authoritative_seq: Some(99),
+                        expected_last_materialized_seq: Some(99),
+                        projection: projection(1),
+                    },
+                ])
+                .unwrap()
+        );
+        assert!(
+            store
+                .get_named_projection("skills", "provider")
+                .unwrap()
+                .is_none()
+        );
+
+        assert!(
+            store
+                .compare_and_swap_named_projections(vec![
+                    NamedProjectionCas {
+                        namespace: "skills".to_owned(),
+                        key: "provider".to_owned(),
+                        expected_last_authoritative_seq: None,
+                        expected_last_materialized_seq: None,
+                        projection: projection(1),
+                    },
+                    NamedProjectionCas {
+                        namespace: "catalog".to_owned(),
+                        key: "provider".to_owned(),
+                        expected_last_authoritative_seq: None,
+                        expected_last_materialized_seq: None,
+                        projection: projection(1),
+                    },
+                ])
+                .unwrap()
+        );
+        assert_eq!(
+            store
+                .get_named_projection("skills", "provider")
+                .unwrap()
+                .unwrap()
+                .payload["value"],
+            1
+        );
+        assert_eq!(
+            store
+                .get_named_projection("catalog", "provider")
+                .unwrap()
+                .unwrap()
+                .payload["value"],
+            1
         );
         drop(store);
         fs::remove_file(path).unwrap();

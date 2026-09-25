@@ -10,12 +10,13 @@ use kogwistar_store::{
 };
 use kogwistar_store_memory::InMemoryStore;
 use kogwistar_store_postgres::{
+    NamedProjectionCas as PostgresNamedProjectionCas,
     NewRawEntityEvent as PostgresNewRawEntityEvent, PostgresStore, PostgresStoreError,
     PostgresUnitOfWork, RawEntityEvent as PostgresRawEntityEvent,
 };
 use kogwistar_store_sqlite::{
-    NewRawEntityEvent, RawEntityEvent, RestoredRawEntityEvent, SqliteStore, SqliteStoreError,
-    SqliteUnitOfWork,
+    NamedProjectionCas, NewRawEntityEvent, RawEntityEvent, RestoredRawEntityEvent, SqliteStore,
+    SqliteStoreError, SqliteUnitOfWork,
 };
 use pyo3::create_exception;
 use pyo3::exceptions::{PyAttributeError, PyRuntimeError, PyTypeError, PyValueError};
@@ -706,6 +707,20 @@ struct SqliteStoreRequest {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NamedProjectionCasOperation {
+    namespace: String,
+    key: String,
+    payload: Map<String, Value>,
+    expected_last_authoritative_seq: Option<i64>,
+    expected_last_materialized_seq: Option<i64>,
+    last_authoritative_seq: i64,
+    last_materialized_seq: i64,
+    projection_schema_version: i64,
+    materialization_status: String,
+}
+
+#[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum SqliteStoreOperation {
     OpenInit,
@@ -825,6 +840,9 @@ enum SqliteStoreOperation {
         last_materialized_seq: i64,
         projection_schema_version: i64,
         materialization_status: String,
+    },
+    CompareAndSwapNamedProjections {
+        updates: Vec<NamedProjectionCasOperation>,
     },
     ClearNamedProjection {
         namespace: String,
@@ -1451,6 +1469,25 @@ fn sqlite_store_operation_json(
                 materialization_status
             ),
         )?)),
+        SqliteStoreOperation::CompareAndSwapNamedProjections { updates } => {
+            let updates = updates
+                .into_iter()
+                .map(|update| NamedProjectionCas {
+                    namespace: update.namespace,
+                    key: update.key,
+                    expected_last_authoritative_seq: update.expected_last_authoritative_seq,
+                    expected_last_materialized_seq: update.expected_last_materialized_seq,
+                    projection: projection_write(
+                        update.payload,
+                        update.last_authoritative_seq,
+                        update.last_materialized_seq,
+                        update.projection_schema_version,
+                        update.materialization_status,
+                    ),
+                })
+                .collect();
+            Ok(json!(store.compare_and_swap_named_projections(updates)?))
+        }
         SqliteStoreOperation::ClearNamedProjection { namespace, key } => {
             store.clear_named_projection(&namespace, &key)?;
             Ok(Value::Null)
@@ -2112,6 +2149,25 @@ fn sqlite_batch_operation_json(
                 materialization_status
             ),
         )?)),
+        SqliteStoreOperation::CompareAndSwapNamedProjections { updates } => {
+            let updates = updates
+                .into_iter()
+                .map(|update| NamedProjectionCas {
+                    namespace: update.namespace,
+                    key: update.key,
+                    expected_last_authoritative_seq: update.expected_last_authoritative_seq,
+                    expected_last_materialized_seq: update.expected_last_materialized_seq,
+                    projection: projection_write(
+                        update.payload,
+                        update.last_authoritative_seq,
+                        update.last_materialized_seq,
+                        update.projection_schema_version,
+                        update.materialization_status,
+                    ),
+                })
+                .collect();
+            Ok(json!(uow.compare_and_swap_named_projections(updates)?))
+        }
         SqliteStoreOperation::ClearNamedProjection { namespace, key } => {
             uow.clear_named_projection(&namespace, &key)?;
             Ok(Value::Null)
@@ -2915,6 +2971,9 @@ enum PostgresStoreOperation {
         projection_schema_version: i64,
         materialization_status: String,
     },
+    CompareAndSwapNamedProjections {
+        updates: Vec<NamedProjectionCasOperation>,
+    },
     ClearNamedProjection {
         namespace: String,
         key: String,
@@ -3710,6 +3769,25 @@ async fn postgres_store_operation_json(
                 )
                 .await?
         )),
+        PostgresStoreOperation::CompareAndSwapNamedProjections { updates } => {
+            let updates = updates
+                .into_iter()
+                .map(|update| PostgresNamedProjectionCas {
+                    namespace: update.namespace,
+                    key: update.key,
+                    expected_last_authoritative_seq: update.expected_last_authoritative_seq,
+                    expected_last_materialized_seq: update.expected_last_materialized_seq,
+                    projection: projection_write(
+                        update.payload,
+                        update.last_authoritative_seq,
+                        update.last_materialized_seq,
+                        update.projection_schema_version,
+                        update.materialization_status,
+                    ),
+                })
+                .collect();
+            Ok(json!(store.compare_and_swap_named_projections(updates).await?))
+        }
         PostgresStoreOperation::ClearNamedProjection { namespace, key } => {
             store.clear_named_projection(&namespace, &key).await?;
             Ok(Value::Null)
@@ -4499,6 +4577,27 @@ async fn postgres_uow_operation_json(
             )
             .await?
         )),
+        PostgresStoreOperation::CompareAndSwapNamedProjections { updates } => {
+            let updates = updates
+                .into_iter()
+                .map(|update| PostgresNamedProjectionCas {
+                    namespace: update.namespace,
+                    key: update.key,
+                    expected_last_authoritative_seq: update.expected_last_authoritative_seq,
+                    expected_last_materialized_seq: update.expected_last_materialized_seq,
+                    projection: projection_write(
+                        update.payload,
+                        update.last_authoritative_seq,
+                        update.last_materialized_seq,
+                        update.projection_schema_version,
+                        update.materialization_status,
+                    ),
+                })
+                .collect();
+            Ok(json!(
+                uow.compare_and_swap_named_projections(updates).await?
+            ))
+        }
         PostgresStoreOperation::ClearNamedProjection { namespace, key } => {
             uow.clear_named_projection(&namespace, &key).await?;
             Ok(Value::Null)
@@ -5504,6 +5603,7 @@ fn validate_postgres_operation(value: &Value) -> Result<(), (&'static str, Strin
             "projection_schema_version",
             "materialization_status",
         ][..],
+        "compare_and_swap_named_projections" => &["kind", "updates"][..],
         "batch" => {
             require_postgres_fields(value, &["kind", "operations", "abort"])?;
             let operations = operation

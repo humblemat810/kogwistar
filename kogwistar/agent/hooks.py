@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import threading
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -71,7 +72,35 @@ class HookRegistry:
 
     @staticmethod
     def _run_sync(spec: HookSpec, payload: Mapping[str, Any]) -> Any:
-        result = spec.callback(payload)
+        """Run sync hooks with a bounded caller wait.
+
+        Python cannot safely kill an arbitrary callback.  A timed-out callback
+        therefore finishes in a daemon thread, while the agent path returns
+        according to the hook failure policy and never holds a worker hostage.
+        """
+        result_box: list[Any] = []
+        error_box: list[BaseException] = []
+        finished = threading.Event()
+
+        def invoke() -> None:
+            try:
+                result_box.append(spec.callback(payload))
+            except BaseException as exc:  # propagate callback failures below
+                error_box.append(exc)
+            finally:
+                finished.set()
+
+        thread = threading.Thread(
+            target=invoke,
+            name=f"kogwistar-hook-{spec.hook_id}",
+            daemon=True,
+        )
+        thread.start()
+        if not finished.wait(spec.timeout_ms / 1000):
+            raise TimeoutError(f"hook timed out after {spec.timeout_ms} ms: {spec.hook_id}")
+        if error_box:
+            raise error_box[0]
+        result = result_box[0] if result_box else None
         if inspect.isawaitable(result):
             raise RuntimeError("async hook requires HookRegistry.arun()")
         return result
@@ -91,9 +120,16 @@ class HookRegistry:
                 results.append(HookResult(spec.hook_id, "skipped", {}, "capability denied"))
                 continue
             try:
-                value = await asyncio.wait_for(
-                    _await_value(spec.callback(payload)), spec.timeout_ms / 1000
-                )
+                if _is_async_callable(spec.callback):
+                    value = await asyncio.wait_for(
+                        _await_value(spec.callback(payload)), spec.timeout_ms / 1000
+                    )
+                else:
+                    value = await _run_sync_async(spec, payload)
+                    if inspect.isawaitable(value):
+                        value = await asyncio.wait_for(
+                            _await_value(value), spec.timeout_ms / 1000
+                        )
                 annotations = dict(value) if isinstance(value, Mapping) else {}
                 results.append(HookResult(spec.hook_id, "applied", annotations))
             except Exception as exc:
@@ -137,6 +173,45 @@ async def _await_value(value: Any) -> Any:
     if isinstance(value, Awaitable):
         return await value
     return value
+
+
+def _is_async_callable(callback: HookCallback) -> bool:
+    return inspect.iscoroutinefunction(callback) or inspect.iscoroutinefunction(
+        getattr(callback, "__call__", None)
+    )
+
+
+async def _run_sync_async(spec: HookSpec, payload: Mapping[str, Any]) -> Any:
+    """Run sync callback in a daemon thread without executor shutdown waits."""
+
+    import asyncio
+
+    result_box: list[Any] = []
+    error_box: list[BaseException] = []
+    finished = threading.Event()
+
+    def invoke() -> None:
+        try:
+            result_box.append(spec.callback(payload))
+        except BaseException as exc:
+            error_box.append(exc)
+        finally:
+            finished.set()
+
+    threading.Thread(
+        target=invoke,
+        name=f"kogwistar-hook-{spec.hook_id}",
+        daemon=True,
+    ).start()
+    deadline = asyncio.get_running_loop().time() + spec.timeout_ms / 1000
+    while not finished.is_set():
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            raise TimeoutError(f"hook timed out after {spec.timeout_ms} ms: {spec.hook_id}")
+        await asyncio.sleep(min(0.01, remaining))
+    if error_box:
+        raise error_box[0]
+    return result_box[0] if result_box else None
 
 
 __all__ = ["HookFailureMode", "HookEffect", "HookSpec", "HookResult", "HookRegistry"]

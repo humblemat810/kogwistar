@@ -96,6 +96,14 @@ durability, ordering, retries, subscriptions, or canonical state.
 `OpenTelemetryEventSink` lives in a separate optional module such as
 `kogwistar.runtime.telemetry_otel`. Core `TraceContext` imports no OTel package.
 
+`WorkflowRuntime(..., otel_enabled=True)` is the explicit runtime opt-in. The
+default is `False`; no environment variable, installed package, or exporter
+configuration silently enables OTel. When enabled, the runtime lazily creates
+the optional sink and composes it with the configured SQLite sink. A caller
+that supplies an existing `EventEmitter` must compose its sinks before creating
+that emitter; the runtime rejects the ambiguous combination rather than
+rewiring a shared emitter.
+
 ### Trace propagation
 
 The runtime must carry one validated `TraceContext` through `run`, scheduler,
@@ -185,6 +193,11 @@ SDK-owned OTel spans; OTel still does not become authority for runtime or
 canonical state. Preserving supplied runtime IDs as native OTel IDs would
 require a separately tested SDK integration and is deferred; Phase 1 does not
 promise that equivalence.
+
+An explicitly opted-in runtime exposes bounded `close(timeout)` shutdown for
+the OTel sink it created. Caller-owned and process-shared sinks remain
+caller-owned; closing one runtime must not close a sibling runtime's shared
+SQLite sink.
 
 ## Interaction with Existing Runtime
 

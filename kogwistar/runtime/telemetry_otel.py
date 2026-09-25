@@ -59,6 +59,7 @@ class OpenTelemetrySink:
         "workflow_run_failed",
         "workflow_run_cancelled",
         "workflow_run_suspended",
+        "workflow_run_indeterminate",
     }
     _STEP_EVENTS = {"step_attempt_started", "step_attempt_completed"}
 
@@ -107,14 +108,27 @@ class OpenTelemetrySink:
         )
 
     def emit(self, evt: dict[str, Any]) -> None:
-        """Best-effort non-blocking enqueue; full queues drop newest event."""
-        if self._stop.is_set():
-            return
-        try:
-            self._queue.put_nowait(dict(evt))
-        except queue.Full:
-            self.dropped_events += 1
-            self._log.warning("OpenTelemetrySink queue full; dropping type=%s", evt.get("type"))
+        """Best-effort non-blocking enqueue; terminal events have priority."""
+        with self._lock:
+            if self._closed or self._stop.is_set():
+                return
+            try:
+                self._queue.put_nowait(dict(evt))
+                return
+            except queue.Full:
+                self.dropped_events += 1
+                if evt.get("type") in self._RUN_END_EVENTS | {"step_attempt_completed"}:
+                    # Preserve terminal lifecycle events when possible.  The
+                    # evicted event remains only derived telemetry; losing a
+                    # terminal event would retain local spans indefinitely.
+                    try:
+                        self._queue.get_nowait()
+                        self._queue.task_done()
+                        self._queue.put_nowait(dict(evt))
+                        return
+                    except (queue.Empty, queue.Full):
+                        pass
+        self._log.warning("OpenTelemetrySink queue full; dropping type=%s", evt.get("type"))
 
     def flush(self, timeout: float = 1.0) -> bool:
         """Wait bounded time for queued events; false means remaining work dropped/later."""
@@ -127,13 +141,15 @@ class OpenTelemetrySink:
 
     def close(self, timeout: float = 1.0) -> None:
         """Bounded shutdown. It never raises into the runtime caller."""
+        deadline = time.monotonic() + max(timeout, 0.0)
         with self._lock:
             if self._closed:
                 return
             self._closed = True
-            self.flush(timeout)
+        self.flush(max(0.0, deadline - time.monotonic()))
+        with self._lock:
             self._stop.set()
-        self._thread.join(timeout=max(timeout, 0.0))
+        self._thread.join(timeout=max(0.0, deadline - time.monotonic()))
         if not self._thread.is_alive():
             # A dropped terminal event can leave spans open in the local maps.
             # Close them on shutdown so a long-lived process does not retain
@@ -283,8 +299,31 @@ class OpenTelemetrySink:
                     step.end()
                     del self._step_spans[key]
             run_span.add_event(event_type, self._attributes(evt))
+            self._set_terminal_status(run_span, event_type)
             run_span.end()
             self._run_spans.pop(run_id, None)
             return
 
         run_span.add_event(event_type or "kogwistar.runtime.event", self._attributes(evt))
+
+    @staticmethod
+    def _set_terminal_status(span: _Span, event_type: str) -> None:
+        """Map runtime outcome to SDK status when the optional API supports it."""
+        setter = getattr(span, "set_status", None)
+        if not callable(setter):
+            return
+        try:
+            from opentelemetry.trace import Status, StatusCode
+
+            if event_type in {
+                "workflow_run_failed",
+                "workflow_run_cancelled",
+                "workflow_run_suspended",
+                "workflow_run_indeterminate",
+            }:
+                setter(Status(StatusCode.ERROR, "Kogwistar workflow run did not complete successfully"))
+            elif event_type == "workflow_run_completed":
+                setter(Status(StatusCode.OK))
+        except Exception:
+            # Status decoration is observational and must never affect runtime.
+            return

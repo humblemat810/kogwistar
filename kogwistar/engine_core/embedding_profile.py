@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import json
-from typing import Any, Mapping, Protocol
+from typing import Any, Mapping, Protocol, runtime_checkable
 from urllib.parse import urlsplit, urlunsplit
 
 
@@ -257,7 +257,41 @@ class NamedProjectionStore(Protocol):
         **values: Any,
     ) -> bool: ...
 
+    def compare_and_swap_named_projections(
+        self, updates: list[dict[str, Any]]
+    ) -> bool: ...
+
     def list_named_projections(self, namespace: str) -> list[dict[str, Any]]: ...
+
+
+@runtime_checkable
+class AsyncNamedProjectionStore(Protocol):
+    """Native async counterpart for durable named-projection adapters.
+
+    Implementations must await their backend operations directly.  This seam
+    deliberately covers metadata projections only; it is not an async engine
+    facade and does not bridge a synchronous engine behind an async API.
+    """
+
+    async def get_named_projection(
+        self, namespace: str, key: str
+    ) -> dict[str, Any] | None: ...
+
+    async def compare_and_swap_named_projection(
+        self,
+        namespace: str,
+        key: str,
+        payload: dict[str, Any],
+        **values: Any,
+    ) -> bool: ...
+
+    async def compare_and_swap_named_projections(
+        self, updates: list[dict[str, Any]]
+    ) -> bool: ...
+
+    async def list_named_projections(
+        self, namespace: str
+    ) -> list[dict[str, Any]]: ...
 
 
 def _profile_projection(profile: EmbeddingProfile, *, adopted: bool) -> dict[str, Any]:
@@ -470,6 +504,7 @@ __all__ = [
     "EmbeddingStorageInspector",
     "EmbeddingStorageState",
     "LegacyEmbeddingProfileError",
+    "AsyncNamedProjectionStore",
     "NamedProjectionStore",
     "PROFILE_PROJECTION_SCHEMA_VERSION",
     "PROFILE_REGISTRY_NAMESPACE",

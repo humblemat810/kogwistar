@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import time
+
 import pytest
 
 from kogwistar.agent import (
@@ -151,6 +154,28 @@ def test_catalog_semantic_mode_requires_ready_projection_and_revision_is_monoton
         catalog.upsert(_entry("skill:one", revision=2, fingerprint="other"))
 
 
+def test_catalog_optional_semantic_ranker_runs_after_acl_and_readiness_filter() -> None:
+    seen: list[str] = []
+
+    def rank(query: str, entries: tuple[CatalogEntry, ...]) -> dict[str, float]:
+        seen.extend(entry.logical_id for entry in entries)
+        assert query == "deploy"
+        return {entry.logical_id: float(index) for index, entry in enumerate(entries, 1)}
+
+    catalog = CatalogStore(
+        semantic_ranker=rank,
+        acl_checker=lambda entry, principal: entry.name != "private"
+        and principal == "alice",
+    )
+    catalog.upsert(_entry("skill:first", semantic_ready=True))
+    catalog.upsert(_entry("skill:private", semantic_ready=True))
+    catalog.upsert(_entry("skill:pending", semantic_ready=False))
+    results = catalog.search("deploy", mode="semantic", principal="alice", limit=10)
+    assert [result.entry.logical_id for result in results] == ["skill:first"]
+    assert seen == ["skill:first"]
+    assert results[0].match == "semantic"
+
+
 def test_catalog_supports_bm25_alias_and_graph_group_projection() -> None:
     catalog = CatalogStore(acl_enabled=False)
     catalog.upsert(
@@ -158,6 +183,7 @@ def test_catalog_supports_bm25_alias_and_graph_group_projection() -> None:
     )
     catalog.upsert_group(CatalogGroup(group_id="group:ops", name="Operations"))
     assert catalog.search("safely", mode="bm25")[0].match == "bm25"
+    assert catalog.search("safely", mode="bm25")[0].score > 0
     assert catalog.search("rollout", mode="lexical")[0].match == "exact"
     assert catalog.group_tree(root_id="group:ops")[0].group_id == "group:ops"
 
@@ -305,6 +331,13 @@ def test_profile_context_and_hook_contracts_are_stable_and_bounded() -> None:
     assert result[0].annotations == {"seen": "n1"}
     with pytest.raises(ValueError, match="unknown workflow"):
         profile.validate_bindings(known_workflows={"other"})
+    profile.validate_bindings(known_model_profiles={"default"})
+    with pytest.raises(ValueError, match="unknown model profile"):
+        profile.validate_bindings(known_model_profiles={"other"})
+    with pytest.raises(PermissionError, match="cannot disable host ACL"):
+        AgentProfile(
+            agent_id="untrusted", workflow_id="wf", acl_required=False
+        ).validate_bindings()
 
 
 def test_hook_failure_modes_timeout_and_disposal_are_deterministic() -> None:
@@ -338,6 +371,35 @@ def test_hook_failure_modes_timeout_and_disposal_are_deterministic() -> None:
     assert closed["value"] is True
 
 
+def test_sync_hook_timeout_bounds_run_without_blocking_agent_path() -> None:
+    def blocked(_payload: object) -> dict[str, object]:
+        time.sleep(0.2)
+        return {"late": True}
+
+    hooks = HookRegistry()
+    hooks.register(HookSpec(hook_id="blocked", callback=blocked, timeout_ms=10))
+    started = time.monotonic()
+    result = hooks.run({})
+    elapsed = time.monotonic() - started
+    assert elapsed < 0.15
+    assert result[0].status == "failed"
+    assert "timed out" in (result[0].error or "")
+
+
+def test_async_hook_timeout_also_moves_sync_callback_off_event_loop() -> None:
+    def blocked(_payload: object) -> dict[str, object]:
+        time.sleep(0.2)
+        return {}
+
+    hooks = HookRegistry()
+    hooks.register(HookSpec(hook_id="blocked", callback=blocked, timeout_ms=10))
+    started = time.monotonic()
+    result = asyncio.run(hooks.arun({}))
+    elapsed = time.monotonic() - started
+    assert elapsed < 0.15
+    assert result[0].status == "failed"
+
+
 def test_skill_projection_validates_scope_and_rejects_stale_revision() -> None:
     artifact = parse_skill_text(
         "- Check deployment",
@@ -352,6 +414,53 @@ def test_skill_projection_validates_scope_and_rejects_stale_revision() -> None:
     selected = select_skill_subgraph(artifact, node_ids=[artifact.nodes[0].node_id])
     assert len(selected.nodes) == 1
     assert selected.edges == []
+
+
+def test_scoped_in_memory_skill_and_catalog_projection_require_exact_scope() -> None:
+    artifact = parse_skill_text(
+        "- Check deployment",
+        provider_id="project",
+        provider_local_id="deploy",
+    ).model_copy(update={"tenant_id": "tenant-a", "project_id": "project-a"})
+    projections = SkillProjectionStore(
+        tenant_id="tenant-a",
+        project_id="project-a",
+        acl_enabled=False,
+    )
+    projections.upsert(artifact)
+    with pytest.raises(PermissionError, match="tenant scope"):
+        projections.upsert(artifact.model_copy(update={"tenant_id": "tenant-b"}))
+    assert projections.get(
+        "project", "deploy", tenant_id="tenant-a", project_id="project-a"
+    ) == artifact
+    assert projections.get(
+        "project", "deploy", tenant_id="tenant-b", project_id="project-a"
+    ) is None
+
+    catalog = CatalogStore(
+        tenant_id="tenant-a",
+        project_id="project-a",
+        acl_enabled=False,
+    )
+    entry = catalog_entries_from_artifact(artifact)[0]
+    catalog.upsert(entry)
+    with pytest.raises(PermissionError, match="tenant scope"):
+        catalog.upsert(entry.model_copy(update={"tenant_id": "tenant-b"}))
+    assert catalog.get(
+        entry.logical_id, tenant_id="tenant-a", project_id="project-a"
+    ) == entry
+    assert catalog.get(
+        entry.logical_id, tenant_id="tenant-b", project_id="project-a"
+    ) is None
+    with pytest.raises(PermissionError, match="group tenant scope"):
+        catalog.upsert_group(
+            CatalogGroup(
+                group_id="group:foreign",
+                name="Foreign",
+                tenant_id="tenant-b",
+                project_id="project-a",
+            )
+        )
 
 
 def test_plan_and_goal_design_lint_is_advisory() -> None:

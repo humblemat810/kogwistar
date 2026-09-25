@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 import threading
+from types import SimpleNamespace
 
 import pytest
 
@@ -27,12 +28,16 @@ class _Span:
         self.attributes = dict(attributes or {})
         self.events = []
         self.ended = False
+        self.status = None
 
     def add_event(self, name, attributes=None):
         self.events.append((name, dict(attributes or {})))
 
     def end(self):
         self.ended = True
+
+    def set_status(self, status):
+        self.status = status
 
 
 class _Tracer:
@@ -138,6 +143,59 @@ def test_otel_factory_disables_cleanly_without_optional_dependency(monkeypatch):
     assert try_create_opentelemetry_sink() is None
 
 
+def test_workflow_runtime_otel_is_explicit_opt_in(monkeypatch):
+    calls = []
+
+    class _RuntimeSink:
+        closed = False
+
+        def close(self, timeout):
+            assert timeout >= 0
+            self.closed = True
+
+    otel_sink = _RuntimeSink()
+
+    def _factory(**kwargs):
+        calls.append(kwargs)
+        return otel_sink
+
+    monkeypatch.setattr(
+        "kogwistar.runtime.telemetry_otel.try_create_opentelemetry_sink", _factory
+    )
+    workflow_engine = SimpleNamespace(persist_directory=None)
+    conversation_engine = SimpleNamespace(backend_kind="memory", backend=None)
+    common = {
+        "workflow_engine": workflow_engine,
+        "conversation_engine": conversation_engine,
+        "step_resolver": lambda _op: lambda _ctx: RunSuccess(),
+        "predicate_registry": {},
+        "trace": False,
+    }
+
+    default_runtime = WorkflowRuntime(**common)
+    assert default_runtime.sink is None
+    assert calls == []
+
+    opt_in_runtime = WorkflowRuntime(**common, otel_enabled=True)
+    assert opt_in_runtime.sink is otel_sink
+    assert len(calls) == 1
+    opt_in_runtime.close(0.1)
+    assert otel_sink.closed is True
+
+
+def test_workflow_runtime_does_not_rewire_supplied_emitter_for_otel():
+    emitter = EventEmitter()
+    with pytest.raises(ValueError, match="cannot be combined"):
+        WorkflowRuntime(
+            workflow_engine=SimpleNamespace(persist_directory=None),
+            conversation_engine=SimpleNamespace(backend_kind="memory", backend=None),
+            step_resolver=lambda _op: lambda _ctx: RunSuccess(),
+            predicate_registry={},
+            events=emitter,
+            otel_enabled=True,
+        )
+
+
 def test_otel_projects_workflow_and_child_step_spans():
     tracer = _Tracer()
     sink = OpenTelemetrySink(tracer, context_factory=lambda parent: ("child-of", parent))
@@ -195,6 +253,37 @@ def test_otel_queue_drops_and_export_failure_isolated():
     assert sink.flush(1.0)
     sink.close()
     assert not sink.is_alive
+
+
+def test_otel_maps_terminal_outcomes_to_span_status_when_supported():
+    for event_type, expected_name in (
+        ("workflow_run_completed", "OK"),
+        ("workflow_run_failed", "ERROR"),
+        ("workflow_run_cancelled", "ERROR"),
+        ("workflow_run_suspended", "ERROR"),
+        ("workflow_run_indeterminate", "ERROR"),
+    ):
+        tracer = _Tracer()
+        sink = OpenTelemetrySink(tracer)
+        sink.emit({"type": "workflow_run_started", "run_id": "r"})
+        sink.emit({"type": event_type, "run_id": "r"})
+        assert sink.flush(1.0)
+        sink.close()
+        assert str(tracer.spans[0].status.status_code.name) == expected_name
+
+
+def test_otel_terminal_event_displaces_queued_telemetry_to_close_span():
+    tracer = _BlockingTracer()
+    sink = OpenTelemetrySink(tracer, queue_max=1)
+    sink.emit({"type": "workflow_run_started", "run_id": "r1"})
+    assert tracer.started.wait(1.0)
+    sink.emit({"type": "workflow_run_started", "run_id": "r2"})
+    sink.emit({"type": "workflow_run_completed", "run_id": "r1"})
+    tracer.release.set()
+    assert sink.flush(1.0)
+    sink.close()
+    assert sink.dropped_events == 1
+    assert tracer.spans and tracer.spans[0].ended
 
 
 def test_otel_closes_run_and_open_steps_on_cancel_or_suspend():

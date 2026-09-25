@@ -16,6 +16,7 @@ class AgentHarness:
         workflow_runtime: Any,
         known_workflows: set[str] | frozenset[str] | None = None,
         known_providers: set[str] | frozenset[str] | None = None,
+        known_model_profiles: set[str] | frozenset[str] | None = None,
         known_hooks: set[str] | frozenset[str] | None = None,
         caller_capabilities: tuple[str, ...] = (),
     ) -> None:
@@ -24,6 +25,7 @@ class AgentHarness:
         self._binding_context = {
             "known_workflows": known_workflows,
             "known_providers": known_providers,
+            "known_model_profiles": known_model_profiles,
             "known_hooks": known_hooks,
             "caller_capabilities": caller_capabilities,
         }

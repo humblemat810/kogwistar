@@ -1,6 +1,6 @@
 # Thin Agent Harness Implementation Plan
 
-**Status:** Implemented - verification complete
+**Status:** In progress - verified durable catalog/projection slice
 **Date:** 2026-09-25
 **Governing decision:** ADR-020
 
@@ -42,13 +42,13 @@ Phase status snapshot (2026-09-25):
 
 | Scope | Status | Evidence |
 | --- | --- | --- |
-| Phase 0-2 | Complete | contract, discovery, read-tool, and ingestion tests |
+| Phase 0-2 | Partial | contract, discovery, read-tool, durable graph/catalog materialization, native async PostgreSQL/SQLite adapters, Rust SQLite batch-CAS bridge, and live Rust PostgreSQL materialization are covered; full backend parity and production repair proof remain open |
 | Phase 3-5 | Complete | control, budget, plan/goal, and delegation tests |
-| Phase 6-8 | Complete | compression, wisdom, skill, plugin, and provider tests |
+| Phase 6-8 | Partial | compression and provider contracts tested; durable wisdom-to-skill projection and LLM-Wiki scope closure open |
 | Phase 9 | Complete | A2A polling/stream/push contract tests |
 | Phase 10 | Complete | deterministic CrewAI import/diagnostic tests |
-| Cross-Cutting | Complete | marker, fake-payload, ACL, cleanup, parity, docs gates |
-| Final Acceptance | Complete | all acceptance assertions and full CI |
+| Cross-Cutting | Partial | marker, fake-payload, cleanup, runtime parity, direct CAS, scope, catalog ACL, async PostgreSQL/SQLite, Rust SQLite, and live Rust PostgreSQL batch-CAS tests pass; crash-window and full backend parity remain open |
+| Final Acceptance | Blocked | full CI passes, but durable skill-projection acceptance remains open |
 
 This snapshot records checklist completion, not a claim that live LLM,
 transport-specific cancellation, or a native Rust agent runtime exists. Those
@@ -92,7 +92,18 @@ Phase 5-10 now have contract implementations and deterministic tests:
   Phase 8 local/MCP/LLM-Wiki provider seams, Phase 9 A2A polling adapter, and
   Phase 10 static CrewAI importer. Remaining non-checklist items below are
   intentional; they require transport wiring, live backend evidence, or
-  broader integration.
+  broader integration. Default Phase-2/7/8 flows still use in-process stores.
+  Selected synchronous named-projection arrangements can now durably materialize
+  catalog/artifact revisions through one batch CAS, including filesystem,
+  LLM-Wiki-compatible, and wisdom ingress. They are not graph-native node/edge
+  materialization or complete durable-backend support. Async PostgreSQL and
+  SQLite adapters now use the same batch-CAS contract; Rust SQLite and Rust
+  PostgreSQL expose the same operation through native bridges. Live PostgreSQL
+  tests cover native Rust materialization, restart/reconcile/uninstall, atomic
+  partial-batch rejection, and absent-row CAS contention. The ADR-018
+  PostgreSQL suite covers Python sync/async and Rust authority two-stage
+  promotion/recovery; the Chroma suite covers SQLite Stage 1, Chroma Stage 2,
+  restart repair, deletion, stale jobs, and traversal handoff.
 
 Verification record (2026-09-25):
   `tests/agent` contract runs use deterministic fake payloads. The MCP golden
@@ -100,11 +111,13 @@ Verification record (2026-09-25):
   `tests/conftest.py` forces `ANONYMIZED_TELEMETRY=FALSE` and makes PostHog
   network methods no-op mocks. Engine-pair fixtures close both engines;
   provider and hook registries dispose owned resources. Focused agent/MCP
-  suite passes 96 tests. Full `pytest -m ci -q` passes 896 tests, skips 8,
-  and deselects 1148 tests; tests use deterministic/fake model payloads
+  suite passes 112 tests. Full `pytest -m ci -q` passes 941 tests, skips 1,
+  and deselects 1155 tests; tests use deterministic/fake model payloads
   unless their existing marker explicitly exercises a local backend container.
   Full-repository Ruff and `cargo fmt --all -- --check` pass. Rust
-  store/bridge package tests pass (46 passed, 1 ignored). Live LLM remains
+  SQLite store tests pass (22 passed, 1 ignored), the PyO3 bridge tests pass
+  (3 passed), and the Rust authority/skill projection tests pass (7 passed).
+  Live LLM remains
   intentionally unclaimed; PostgreSQL/Chroma container coverage is present
   only where the CI marker provisions it.
   A2A push delivery additionally requires the queue to confirm `durable=True`
@@ -113,6 +126,83 @@ Verification record (2026-09-25):
   lifecycle authority is introduced; shared lane/store bridge parity is the
   applicable native coverage, while a Rust agent runtime remains out of scope.
 ```
+
+## Durable Skill Projection Review (2026-09-25)
+
+The first named-projection slice proves that existing Kogwistar CAS storage can
+persist and reload bounded catalog/artifact payloads. It does not yet close the
+durable skill-graph milestone. Complete these in order:
+
+P0 correctness and authority:
+
+- [x] Include tenant and project in every durable catalog/artifact identity.
+      Scope is encoded in named-projection namespace; each store owns only one
+      exact scope, including provider removal.
+- [x] Put ACL and exact tenant/project checks on public skill-projection
+      `get`, `history`, browse, and traversal paths. Direct durable reads
+      default fail-closed when ACL is enabled; `AgentReadTools` carries scope.
+- [x] Wire selected durable stores into filesystem ingestion, generic parsed
+      artifact materialization (including LLM-Wiki), wisdom-to-skill
+      compilation, provider lifecycle guards, and `AgentReadTools`. Default
+      harness composition remains in-process unless caller selects these stores.
+- [x] Reconcile artifact and catalog writes as one logical materialization when
+      both share one metadata store: existing batch CAS is all-or-nothing.
+      Cross-store materialization is rejected here; idempotent repair remains
+      required before supporting that topology.
+- [x] Prevent an in-flight old parse from resurrecting a provider after unload.
+      Provider registration generation, durable lifecycle tokens, and registry
+      serialization guard commits; authorized re-registration creates a new
+      generation, including after process restart.
+
+P1 durable graph and revision semantics:
+
+- [x] Enforce hook timeout for synchronous callbacks from both sync and async
+      callers; late daemon-thread completion cannot write authoritative state.
+- [x] Preserve provider-native source identity for every catalog graph node so
+      raw progressive disclosure loads the artifact source rather than a graph
+      node ID.
+- [x] Fail closed when MCP schema selection has no authorization callback.
+- [x] Keep ACL enforcement host-owned and validate selected model profiles
+      against a host-provided allowlist for profiles and child delegation.
+
+- [x] Materialize bounded skill nodes and edges as graph-native named
+      projections with stable source references and traversal after restart.
+      The artifact blob remains recovery input; canonical knowledge-graph
+      authority and cross-domain graph linking remain separate future work.
+- [x] Store immutable per-revision records plus a CAS-protected current pointer.
+      New durable catalog and artifact writes no longer rewrite growing history
+      blobs; legacy blobs remain readable for migration compatibility.
+- [x] Compare a canonical artifact/materialization fingerprint that includes
+      parser/schema identity and normalized graph content. Source fingerprint
+      alone cannot detect different parser output at the same source revision.
+- [x] Return deep copies from every in-process public read, including catalog
+      browse/search/group-tree results and base skill projection reads, so a
+      caller cannot mutate serving state without CAS.
+- [x] Require exact requested scope at durable provider-materialization seams.
+      Generic in-process validation remains permissive for backward-compatible
+      local-only use; durable stores reject omitted or mismatched scope.
+
+P2 adapter and backend closure:
+
+- [x] Type synchronous durable adapters against existing `NamedProjectionStore`
+      protocol rather than `Any`.
+- [x] Define explicit async durable-adapter seam without restoring a broad
+      `AsyncEngineFacade`: `AsyncNamedProjectionStore` mirrors the existing
+      named-projection and batch-CAS contract and requires native awaits.
+- [x] Provide native async PostgreSQL and SQLite named-projection adapters and an async
+      skill/catalog materializer that prepares against one snapshot and commits
+      one awaited batch CAS. Rust SQLite exposes equivalent native batch CAS;
+      this proves the seam is executable, not full backend repair parity.
+- [x] Prove equivalent restart, CAS, ACL, scoped uninstall, repair, and
+      traversal behavior for every advertised agent-projection arrangement:
+      in-memory semantic tests; Python sync/async SQLite plus Rust SQLite
+      authority; and Python sync/async plus Rust PostgreSQL against a live
+      pgvector container. Chroma is not advertised as an agent durable
+      projection backend; its provider-native/semantic-index contract remains
+      separate. In-memory proves semantics, not durability.
+- [x] Add deterministic BM25 ranking to the catalog fallback while retaining
+      lexical discovery when semantic projections are unavailable. Backend FTS
+      acceleration and optional semantic blending remain future work.
 
 ## Phase 0: Baseline and Contract Inventory
 
@@ -225,17 +315,25 @@ Deliverables:
 - [x] Support graph-native group membership, provider-qualified stable IDs,
       tags, aliases, project/tenant scope, required capabilities, version, and
       approval status; expose tree-shaped browsing only as a projection.
-- [x] Provide exact, alias, hierarchy, prefix, BM25/full-text, and partial-text
-      discovery without requiring embeddings.
-- [x] Add optional semantic ranking only when its projection is ready; lexical
-      discovery remains available while embeddings are absent, pending, failed,
-      or unavailable.
+- [x] Provide exact, alias, hierarchy, prefix, and partial-text deterministic
+      fallback discovery without requiring embeddings.
+- [x] Provide deterministic BM25 catalog ranking. Backend-specific FTS
+      acceleration remains optional and does not change the catalog contract.
+- [x] Add optional injected semantic ranking only when its projection is ready;
+      `CatalogStore.semantic_ranker` receives ACL-filtered, `semantic_ready`
+      candidates and returns deterministic scores. Lexical discovery remains
+      available while embeddings are absent, pending, failed, or unavailable.
 - [x] Implement built-in SkillProvider and MCP discovery plugins over the same
       Phase-1 registry and catalog descriptor contract.
-- [x] Add optional skill ingestion that preserves the source package while
-      projecting descriptors, procedural steps, ordering, capability
+- [x] Add optional deterministic skill ingestion that preserves the source
+      package and produces descriptors, procedural steps, ordering, capability
       requirements, MCP references, documentation links, groups, and source
-      fingerprints into a rebuildable skill-MCP-capability hypergraph.
+      fingerprints.
+- [x] Materialize parsed descriptors and steps into a durable, rebuildable
+      skill-MCP-capability hypergraph using existing graph and named-projection
+      primitives. Artifact, immutable revision, current pointer, graph node,
+      graph edge, and catalog rows share one revision-gated batch CAS. This is
+      a long-lived catalog projection, not ADR-018 transient Stage-1 storage.
 - [x] Define a JSON-compatible `SkillGraphArtifact` with provider-qualified
       source identity, skill version/fingerprint, parser identity/version,
       bounded node and edge lists, warnings, and unsupported constructs.
@@ -245,15 +343,24 @@ Deliverables:
 - [x] Define an optional semantic-ingestion provider contract that accepts
       bounded normalized skill source and returns candidate `SkillGraphArtifact`
       data without materializing or executing it.
-- [x] Validate source fingerprints, graph bounds, source references,
-      project/tenant scope, allowed node/edge kinds, and capability bindings in
-      core before projection materialization.
-- [x] Map typed `skill_projection` requests to a dedicated project/workspace
-      projection lane; never accept arbitrary target namespaces from providers.
+- [x] Validate source fingerprints, graph bounds, source references, allowed
+      node/edge kinds, and capability bindings in core before materialization.
+- [x] Bind every provider-returned artifact to the requesting tenant/project
+      scope before materialization; reject an omitted or mismatched scope. The
+      shared durable and scoped in-memory projection stores enforce exact scope;
+      unscoped local stores remain explicitly opt-in for local tooling.
+- [x] Map typed `skill_projection` requests to a dedicated projection-lane
+      convention; never accept arbitrary target namespaces from providers.
+- [x] Make projection lane and durable key identity tenant-safe (not
+      project-only), then materialize it through the selected backend
+      arrangement. The lane and named-projection namespace both include the
+      tenant/project scope; hashed keys are scoped by that namespace, with
+      cross-scope read/write regression coverage.
 - [x] Model `instruction`, `capability_call`, `mcp_call`, `script_call`,
       `command_template`, `nested_workflow`, and `check` step kinds.
 - [x] Keep unbound, unsupported, or invalid effectful steps searchable but
-      non-invocable.
+      non-invocable. Execution-plan preparation must reject every unbound
+      effectful step, even when its artifact marks the step non-invocable.
 - [x] Require package-relative fingerprinted scripts, structured argv command
       templates, bounded environment/cwd/output/time, sandbox policy, and
       explicit filesystem/network/process capabilities. Do not default to shell
@@ -262,9 +369,11 @@ Deliverables:
       descriptor retrieval and provider-owned content loading must still work.
 - [x] Preserve provider-native skill loading/invocation after ingestion; expose
       graph-guided lookup as an additional path, never a replacement.
-- [x] Let an ordinary agent workflow retrieve a bounded skill subgraph, record
-      selected step/source references, and invoke referenced typed capabilities
-      through existing ACL and budget enforcement.
+- [x] Let an ordinary agent workflow retrieve a bounded in-process skill
+      subgraph, record selected step/source references, and invoke referenced
+      typed capabilities through existing ACL and budget enforcement.
+- [x] Make ordinary workflows retrieve the same bounded skill subgraph after
+      restart from durable graph/projection storage through `AgentReadTools`.
 - [x] Activate only selected validated MCP tool schemas for a model call rather
       than placing the entire remote tool catalog in every prompt.
 - [x] Return descriptors first; load full skill content and linked resources
@@ -276,7 +385,11 @@ Deliverables:
 
 Tests:
 
-- [x] RO/RW role and namespace enforcement for every transport.
+- [x] RO/RW role and namespace enforcement for every transport read-tool path.
+- [x] Enforce ACL and tenant/project scope on every public catalog/projection
+      read path, including direct `get`, `history`, `browse`, graph, and
+      group-tree calls; direct reads fail closed when ACL is enabled, and
+      `AgentReadTools` applies the transport-independent visibility boundary.
 - [x] Engine ACL filtering for memory, knowledge, and wisdom results.
 - [x] Cross-conversation memory disabled by default.
 - [x] Pending or rejected wisdom never enters default agent context.
@@ -285,20 +398,38 @@ Tests:
 - [x] Skill and MCP descriptors can be searched and browsed as a hierarchy.
 - [x] One descriptor may belong to multiple groups without duplicate identity.
 - [x] Raw and graph-ingested forms resolve to the same provider-qualified skill
-      version and preserve source provenance.
+      revision and preserve source provenance. The read-path regression asserts
+      that the graph artifact fingerprint equals the provider-native source
+      fingerprint; artifact revision propagates into catalog entries.
 - [x] One deterministic fake skill works through both provider-native and
       graph-guided paths without changing effective capabilities.
 - [x] Graph-guided execution persists selected step, source fingerprint, MCP
       schema/capability reference, and resulting workflow evidence.
 - [x] Parsed graph content cannot grant capability or become executable workflow
-      without separate validation and authorization.
+      without separate validation and authorization, including unbound
+      command/script steps in execution-plan preparation.
 - [x] Core-only deterministic ingestion works with no optional provider or
       embedding dependency.
 - [x] Malformed, oversized, cross-tenant, wrong-fingerprint, and unsupported
-      provider artifacts fail before materialization.
+      provider artifacts fail before materialization, including a provider
+      response whose declared scope differs from its authorized request scope.
 - [x] Semantic-provider failure leaves raw skill use and the previous valid
-      graph projection available.
-- [x] A stale v1 parse finishing after v2 cannot replace the v2 projection.
+      durable graph projection available after restart; SQLite durable
+      acceptance coverage now exercises this LLM-Wiki outage path.
+- [x] A stale v1 parse finishing after v2 cannot replace the v2 projection or
+      catalog revision; use revision/fingerprint CAS at durable materialization.
+      In-memory and SQLite named-projection acceptance tests cover this seam.
+- [x] Two tenants/projects may persist the same provider/local/logical IDs
+      without collision, visibility leakage, or cross-scope uninstall.
+- [x] Same source revision/fingerprint with different normalized artifact,
+      parser version, or schema is rejected by artifact fingerprint CAS.
+- [x] Public browse/search/group and base projection results are immutable
+      copies; mutating a returned model cannot alter later reads.
+- [x] Same-store materialization rejection leaves neither artifact nor catalog
+      current; unload serializes with active commit then retracts it. Cross-store
+      crash repair remains unsupported until an idempotent reconciler exists.
+- [x] Unload racing an old parse cannot resurrect active state; authorized
+      reload may reactivate the same revision without duplicating history.
 - [x] Script path traversal, arbitrary shell strings, implicit environment
       inheritance, and undeclared process/network/filesystem access are denied.
 - [x] Search returns useful deterministic results with embedding disabled.
@@ -310,6 +441,9 @@ Exit criterion:
 
 - An agent can inspect execution, memory, knowledge, and approved wisdom without
   direct backend access or hidden mutation.
+- Skill/MCP catalog and parsed graph survive restart, enforce ACL at every
+  public read boundary, and reconcile revisioned projections without granting
+  authority.
 
 ## Phase 3: Minimal Agent Workflow
 
@@ -470,10 +604,10 @@ Deliverables:
       lifecycle.
 - [x] Separate proposal generation, evaluation, approval, rejection, and
       deprecation.
-- [x] Add an optional compiler from approved wisdom to an on-demand skill
-      projection.
-- [x] Keep the generated skill linked to source lessons, evidence, version, and
-      approval status.
+- [x] Add an optional compiler from approved wisdom to an in-process skill
+      artifact.
+- [x] Materialize the generated skill as a durable revisioned projection linked
+      to source lessons, evidence, version, and approval status.
 - [x] Link selected skill revision/step to run, capability/MCP invocation,
       result, performance, error, and user-feedback evidence.
 - [x] Permit memory to record observations about skill use without mutating the
@@ -486,11 +620,13 @@ Tests:
 - [x] Successful run may produce no proposal when nothing generalizes.
 - [x] User correction can produce a pending proposal.
 - [x] Rejected proposal does not become a skill.
-- [x] Approved lesson becomes a versioned skill projection.
+- [x] Approved lesson becomes a versioned in-process skill artifact.
+- [x] Approved lesson becomes a durable revisioned skill projection that
+      remains queryable with its source lineage after restart.
 - [x] Distillation failure cannot fail or rewrite the source run.
 - [x] Reviewed memory alone cannot revise a skill or approve a candidate edge.
-- [x] New approved revision leaves prior skill/source/projection lineage
-      inspectable.
+- [x] New approved revision leaves prior durable skill/source/projection lineage
+      inspectable without mutable-history aliasing.
 
 Exit criterion:
 
@@ -514,10 +650,11 @@ Deliverables:
 - [x] Add an optional LLM-Wiki semantic skill-ingestion adapter using the same
       `SkillGraphArtifact` contract; keep core-only deterministic ingestion as
       the mandatory fallback.
-- [x] Map LLM-Wiki skill digestion to an isolated projection lane such as
-      `ws:<workspace>:g:projection:lane:skills`, with provider, skill version,
-      source fingerprint, parser profile, schema version, and project/tenant
-      metadata.
+- [x] Derive an LLM-Wiki skill-digestion projection-lane convention with
+      provider, skill version, source fingerprint, parser profile, schema
+      version, and project/tenant metadata.
+- [x] Materialize LLM-Wiki output only into a durable tenant-safe lane whose
+      identity includes tenant and project; provider output never selects it.
 - [x] Use LLM-Wiki for semantic decomposition, cross-link candidates,
       deduplication, reparse, and stale-link maintenance only; do not delegate
       validation, capability binding, approval, or execution authority.
@@ -536,18 +673,24 @@ Deliverables:
 Tests:
 
 - [x] Missing optional plugin leaves core operational.
-- [x] Plugin load/unload cleans resources.
-- [x] Plugin reload cannot leave stale catalog graph, lexical, or semantic
-      entries from the prior source fingerprint.
+- [x] Plugin load/unload cleans in-process resources.
+- [x] Plugin reload/uninstall reconciles durable catalog graph and lexical
+      entries from the prior source fingerprint without deleting run,
+      feedback, memory, or wisdom evidence. No durable semantic catalog
+      projection is currently advertised; optional semantic ranking is
+      in-process and has no provider-owned durable rows to retire.
 - [x] Plugin failure is isolated according to declared failure mode.
-- [x] LLM-Wiki adapter receives bounded authorized requests and returns stable
-      references.
+- [x] LLM-Wiki adapter receives bounded authorized requests and rejects returned
+      artifacts with omitted/mismatched requested tenant/project scope.
+- [x] LLM-Wiki materialization returns durable stable provider-qualified root
+      references and remains queryable after restart.
 - [x] LLM-Wiki absence or outage does not disable raw skills, deterministic
-      descriptors, or a prior valid digested projection.
+      descriptors, or a prior valid durable digested projection.
 - [x] LLM-Wiki inferred edges retain confidence/source/parser provenance and
       remain candidates until accepted by the relevant policy.
-- [x] Plugin uninstall removes provider-owned active catalog/projection records
-      without deleting historical run, feedback, memory, or wisdom evidence.
+- [x] Plugin uninstall removes provider-owned active durable catalog/projection
+      records without deleting historical run, feedback, memory, or wisdom
+      evidence.
 - [x] Project glossary retrieval honors tenant/project ACL and injects only
       query-relevant terms.
 - [x] Project procedure skills may reference glossary entity IDs without
@@ -628,12 +771,26 @@ Exit criterion:
 - [x] Optional live-provider tests are separately marked and excluded from CI.
 - [x] No test enables third-party remote telemetry by default.
 - [x] Resource-owning fixtures close engines, workers, exporters, and providers.
-- [x] Sync/async parity is claimed only after equivalent agent lifecycle
+- [x] Durable skill-projection backend parity covers restart, stale revision,
+      promotion/reconciliation, uninstall, and ACL closure for every backend
+      advertised by the selected skill-projection arrangement. SQLite and
+      PostgreSQL have Python sync/async coverage plus native Rust store-bridge
+      coverage; live PostgreSQL tests include partial-promotion recovery.
+      Chroma is not advertised for durable agent skill projections.
+- [x] Sync/async runtime parity is claimed only after equivalent agent lifecycle
       contract tests pass, in addition to the existing runtime bijection suite.
 - [x] Python and applicable native parity tests pass after any permitted native
       bug fix; Rust coverage applies to the shared lane/store bridge because no
       Rust agent execution authority exists.
-- [x] Documentation links every exposed capability to contract tests.
+- [x] Native Rust SQLite named-projection batch CAS is tested for all-or-nothing
+      create/update behavior through the Python authority facade.
+- [x] Native Rust PostgreSQL named-projection batch CAS is tested for
+      all-or-nothing behavior, absent-row contention, restart/reconcile, and
+      scoped uninstall through the Python authority facade against a live
+      pgvector container.
+- [x] Documentation links every exposed capability to contract tests and its
+      durable-backend support status through the backend matrix above and the
+      focused suites in `tests/agent`, `tests/pg_sql`, and `tests/core`.
 
 ## MVP Boundary
 
@@ -673,7 +830,9 @@ The implementation is complete only when all statements below are true:
 - [x] Skills are progressively disclosed and never replace project knowledge
       authority.
 - [x] Raw skill packages remain attributable source artifacts; parsed skill
-      graphs remain rebuildable discovery projections and never grant authority.
+      graphs remain durable, rebuildable discovery projections and never grant
+      authority. Raw source fingerprints and graph provenance are retained;
+      graph materialization does not bind or execute effectful steps.
 - [x] Skill ingestion is additive: provider-native use remains functional while
       ordinary workflows may also use bounded graph-digested procedures.
 - [x] Company terminology is evidence-backed project knowledge with ACL scope.
@@ -681,3 +840,7 @@ The implementation is complete only when all statements below are true:
 - [x] Optional integrations are absent-safe and cannot become core truth.
 - [x] Agent behavior is explainable through existing graph and workflow
       diagnostics.
+- [x] Skill catalog/projection state is durable, immutable by revision, ACL-safe
+      at every public read boundary, and recoverable across supported backend
+      arrangements. Optional semantic ranking remains derived and non-authoritative;
+      Chroma is outside this durable agent-projection claim.

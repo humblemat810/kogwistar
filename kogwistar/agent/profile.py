@@ -92,17 +92,25 @@ class AgentProfile(BaseModel):
         *,
         known_workflows: set[str] | frozenset[str] | None = None,
         known_providers: set[str] | frozenset[str] | None = None,
+        known_model_profiles: set[str] | frozenset[str] | None = None,
         known_hooks: set[str] | frozenset[str] | None = None,
         caller_capabilities: list[str] | tuple[str, ...] = (),
     ) -> None:
         """Reject unknown selections and capability escalation before dispatch."""
 
+        if not self.acl_required:
+            raise PermissionError(
+                "AgentProfile cannot disable host ACL enforcement; "
+                "use an explicitly unprotected local test composition instead"
+            )
         if known_workflows is not None and self.workflow_id not in known_workflows:
             raise ValueError(f"unknown workflow: {self.workflow_id}")
         if known_providers is not None:
             unknown = set(self.skill_providers) - set(known_providers)
             if unknown:
                 raise ValueError(f"unknown skill providers: {sorted(unknown)}")
+        if known_model_profiles is not None and self.model_profile not in set(known_model_profiles):
+            raise ValueError(f"unknown model profile: {self.model_profile}")
         if known_hooks is not None:
             unknown = set(self.hook_ids) - set(known_hooks)
             if unknown:

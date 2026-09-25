@@ -18,7 +18,7 @@ from kogwistar.server.capability_kernel import CapabilityKernel
 
 from .catalog import CatalogEntry, CatalogSearchResult, CatalogStore
 from .providers import ProviderRegistry
-from .skills import SkillGraphArtifact
+from .skills import SkillGraphArtifact, SkillProjectionStore
 
 
 class ReadScope(BaseModel):
@@ -136,6 +136,7 @@ class AgentReadTools:
         *,
         catalog: CatalogStore,
         providers: ProviderRegistry | None = None,
+        skill_projection_store: SkillProjectionStore | None = None,
         skill_artifacts: Mapping[str, SkillGraphArtifact] | None = None,
         mcp_descriptors: Mapping[str, Mapping[str, Any]] | None = None,
         capability_kernel: CapabilityKernel | None = None,
@@ -153,6 +154,7 @@ class AgentReadTools:
             raise ValueError("read bounds must be positive")
         self.catalog = catalog
         self.providers = providers
+        self.skill_projection_store = skill_projection_store
         self.skill_artifacts = dict(skill_artifacts or {})
         self.mcp_descriptors = dict(mcp_descriptors or {})
         self.capability_kernel = capability_kernel
@@ -167,6 +169,7 @@ class AgentReadTools:
         self.max_resource_bytes = max_resource_bytes
 
     def _visible(self, item: Mapping[str, Any], scope: ReadScope) -> bool:
+        explicitly_global = bool(item.get("is_global")) or item.get("visibility") == "global"
         for key, expected in (
             ("tenant_id", scope.tenant_id),
             ("project_id", scope.project_id),
@@ -174,7 +177,9 @@ class AgentReadTools:
             ("security_scope", scope.security_scope),
         ):
             actual = item.get(key)
-            if expected is not None and actual not in (None, expected):
+            if expected is not None and actual != expected and not (
+                actual is None and explicitly_global
+            ):
                 return False
         if self.visibility_checker is not None:
             return bool(self.visibility_checker(item, scope))
@@ -225,8 +230,14 @@ class AgentReadTools:
         return _page(items, cursor=cursor, limit=_effective_limit(limit, self.max_limit), max_limit=self.max_limit)
 
     def catalog_get(self, logical_id: str, *, scope: ReadScope) -> dict[str, Any] | None:
-        entry = self.catalog.get(logical_id)
-        if entry is None or not self._catalog_visible(entry, scope):
+        entry = self.catalog.get(
+            logical_id,
+            principal=scope.principal_id,
+            scope=scope.security_scope,
+            tenant_id=scope.tenant_id,
+            project_id=scope.project_id,
+        )
+        if entry is None:
             return None
         return entry.model_dump(mode="json")
 
@@ -264,8 +275,22 @@ class AgentReadTools:
         if representation == "descriptor":
             return descriptor
         if representation == "graph":
-            artifact = self.skill_artifacts.get(logical_id)
-            if artifact is None:
+            if self.skill_projection_store is not None:
+                artifact_local_id = descriptor.get("metadata", {}).get(
+                    "artifact_provider_local_id"
+                )
+                if not isinstance(artifact_local_id, str) or not artifact_local_id:
+                    return None
+                artifact = self.skill_projection_store.get(
+                    descriptor["provider_id"],
+                    artifact_local_id,
+                    principal=scope.principal_id,
+                    tenant_id=scope.tenant_id,
+                    project_id=scope.project_id,
+                )
+            else:
+                artifact = self.skill_artifacts.get(logical_id)
+            if artifact is None or not self._visible(artifact.model_dump(mode="python"), scope):
                 return None
             return {"descriptor": descriptor, "artifact": artifact.model_dump(mode="json")}
         if representation != "raw":
@@ -421,7 +446,9 @@ class AgentReadTools:
             _source_items(self.memory_source, "search", query=query, conversation_id=target),
             scope,
         )
-        items = [item for item in items if item.get("conversation_id", target) == target]
+        # Missing conversation identity is not proof of membership.  Sources
+        # must explicitly label records before they cross this boundary.
+        items = [item for item in items if item.get("conversation_id") == target]
         return _page(items, cursor=cursor, limit=_effective_limit(limit, self.max_limit), max_limit=self.max_limit)
 
     def knowledge_search(

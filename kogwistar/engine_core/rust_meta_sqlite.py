@@ -405,6 +405,12 @@ class RustEngineSQLite:
             )
         )
 
+    def compare_and_swap_named_projections(
+        self, updates: list[dict[str, Any]]
+    ) -> bool:
+        """Atomically CAS several named projections in one Rust transaction."""
+        return bool(self._call("compare_and_swap_named_projections", updates=updates))
+
     def list_named_projections(self, namespace: str) -> list[dict[str, Any]]:
         return list(self._call("list_named_projections", namespace=namespace))
 

@@ -510,6 +510,11 @@ class WorkflowRuntime(BaseRuntime):
         to the `conversation_engine` (or whichever engine is designated for traces).
 
     It is the backend execution engine used by high-level orchestrators like `ConversationOrchestrator`.
+
+    ``otel_enabled`` is an explicit, optional observer switch. It is disabled
+    by default and never inferred from environment variables. When enabled, the
+    optional OTel sink is composed with the normal sink without changing
+    workflow authority.
     """
 
     def __init__(
@@ -526,6 +531,7 @@ class WorkflowRuntime(BaseRuntime):
         trace: bool = True,
         events: EventEmitter | None = None,
         sink: EventSink | None = None,
+        otel_enabled: bool = False,
         cancel_requested: Callable[[str], bool] | None = None,
         lane_message_sender: Callable[..., Any] | None = None,
         lane_message_event_sink: Callable[[dict[str, Json]], Any] | None = None,
@@ -575,12 +581,20 @@ class WorkflowRuntime(BaseRuntime):
         else:
             self.transaction_mode = str(transaction_mode)
         self.state_lock: dict[RunID, Lock] = {}  # look up of run specific state lock
+        self._otel_sink: EventSink | None = None
 
         # --------------------------------------------------------------
         # Trace plumbing (quick-fix for nested runtimes)
         # --------------------------------------------------------------
         # If an EventEmitter is provided, reuse it (prevents duplicate writers).
+        # OTel is deliberately explicit and cannot silently replace a caller's
+        # emitter; callers that own an emitter must compose its sink themselves.
         if events is not None:
+            if otel_enabled:
+                raise ValueError(
+                    "otel_enabled cannot be combined with an existing events emitter; "
+                    "compose the OpenTelemetry sink before creating EventEmitter"
+                )
             self.emitter = events
             self.sink = getattr(events, "sink", None)
         else:
@@ -597,8 +611,45 @@ class WorkflowRuntime(BaseRuntime):
                     )
                     # Share a single sink per db_path in this process to reduce SQLite contention.
                     self.sink = _get_shared_sqlite_sink(db_path, drop_when_full=True)
+            if otel_enabled:
+                # Keep the optional dependency out of TraceContext and the
+                # module import path. Missing OTel disables only this observer.
+                from .telemetry import FanoutEventSink
+                from .telemetry_otel import try_create_opentelemetry_sink
+
+                otel_sink = try_create_opentelemetry_sink()
+                if otel_sink is not None:
+                    self._otel_sink = otel_sink
+                    self.sink = (
+                        FanoutEventSink([self.sink, otel_sink])
+                        if self.sink is not None
+                        else otel_sink
+                    )
+                else:
+                    logging.getLogger("workflow.trace").info(
+                        "OpenTelemetry disabled: optional dependency is unavailable"
+                    )
             self.emitter = EventEmitter(
                 sink=self.sink, logger=logging.getLogger("workflow.trace")
+            )
+
+    def close(self, timeout: float = 1.0) -> None:
+        """Boundedly stop an OTel observer created by this runtime.
+
+        Caller-owned sinks and shared SQLite sinks remain caller-owned. This
+        prevents closing a sink shared by sibling runtimes while still giving
+        explicit OTel opt-in a deterministic shutdown seam.
+        """
+
+        otel_sink = self._otel_sink
+        if otel_sink is None:
+            return
+        self._otel_sink = None
+        try:
+            otel_sink.close(max(float(timeout), 0.0))
+        except Exception:
+            logging.getLogger("workflow.trace").exception(
+                "OpenTelemetry sink close failed"
             )
 
     @contextmanager
@@ -1759,7 +1810,10 @@ class WorkflowRuntime(BaseRuntime):
             )
             # trace: workflow run started
             try:
-                tc_run = _lifecycle_trace_context(
+                # The run context itself is the execution span identity.  Do
+                # not create an un-emitted child span here: nested runs use
+                # this event's span as their durable parent.
+                tc_run = run_trace_context or _lifecycle_trace_context(
                     token_id=str(run_id), step_seq=0, node_id="start"
                 )
                 self.emitter.emit(

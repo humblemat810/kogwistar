@@ -4,9 +4,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from hashlib import sha256
+from threading import RLock
 from typing import Any, Callable, Literal, Mapping, Protocol, runtime_checkable
 
+from kogwistar.engine_core.embedding_profile import NamedProjectionStore
+
 from .catalog import CatalogEntry
+
+
+PROVIDER_LIFECYCLE_NAMESPACE = "agent_provider_lifecycle"
 
 
 class ProviderCollisionError(ValueError):
@@ -15,6 +21,10 @@ class ProviderCollisionError(ValueError):
 
 class ProviderOwnershipError(ValueError):
     """Raised when a disposer tries to remove another registration."""
+
+
+class ProviderInactiveError(RuntimeError):
+    """Raised when work from a retired provider lifecycle tries to commit."""
 
 
 @runtime_checkable
@@ -102,14 +112,110 @@ class ProviderRegistration:
     identity: ProviderIdentity
     provider: Any
     registration_fingerprint: str
+    generation: int = 1
     failure_mode: Literal["fail_closed", "isolate"] = "fail_closed"
+
+    @property
+    def lifecycle_token(self) -> str:
+        """Durable token identifying one provider registration incarnation."""
+
+        return f"{self.generation}:{self.registration_fingerprint}"
 
 
 class ProviderRegistry:
     """Ordered registry with explicit collision and disposal semantics."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, metadata: NamedProjectionStore | None = None) -> None:
         self._registrations: dict[str, ProviderRegistration] = {}
+        self._generations: dict[str, int] = {}
+        self._metadata = metadata
+        self._lock = RLock()
+
+    def _lifecycle_row(self, key: str) -> dict[str, Any] | None:
+        if self._metadata is None:
+            return None
+        return self._metadata.get_named_projection(PROVIDER_LIFECYCLE_NAMESPACE, key)
+
+    def _write_lifecycle(
+        self,
+        key: str,
+        *,
+        generation: int,
+        fingerprint: str,
+        status: str,
+        expected: dict[str, Any] | None,
+    ) -> None:
+        if self._metadata is None:
+            return
+        payload = {
+            "provider_key": key,
+            "generation": int(generation),
+            "registration_fingerprint": fingerprint,
+            "status": status,
+        }
+        expected_a = (
+            int(expected["last_authoritative_seq"])
+            if expected is not None
+            else None
+        )
+        expected_m = (
+            int(expected["last_materialized_seq"])
+            if expected is not None
+            else None
+        )
+        if not self._metadata.compare_and_swap_named_projection(
+            PROVIDER_LIFECYCLE_NAMESPACE,
+            key,
+            payload,
+            expected_last_authoritative_seq=expected_a,
+            expected_last_materialized_seq=expected_m,
+            last_authoritative_seq=(
+                int(expected["last_authoritative_seq"]) + 1
+                if expected is not None
+                else int(generation)
+            ),
+            last_materialized_seq=(
+                int(expected["last_materialized_seq"]) + 1
+                if expected is not None
+                else int(generation)
+            ),
+            projection_schema_version=1,
+            materialization_status=status,
+        ):
+            raise ProviderCollisionError(f"provider lifecycle changed concurrently: {key}")
+
+    def lifecycle_guard_update(self, registration: ProviderRegistration) -> dict[str, Any] | None:
+        """Return a same-store CAS guard for one active registration."""
+
+        with self._lock:
+            row = self._lifecycle_row(registration.identity.qualified_id)
+            if self._metadata is None:
+                return None
+            payload = (row or {}).get("payload") or {}
+            if (
+                row is None
+                or str(payload.get("status")) != "active"
+                or int(payload.get("generation", -1)) != registration.generation
+                or str(payload.get("registration_fingerprint"))
+                != registration.registration_fingerprint
+            ):
+                raise ProviderInactiveError(
+                    "durable provider lifecycle is no longer active: "
+                    f"{registration.identity.qualified_id}@{registration.generation}"
+                )
+            expected_a = int(row.get("last_authoritative_seq", 0))
+            expected_m = int(row.get("last_materialized_seq", 0))
+            return {
+                "namespace": PROVIDER_LIFECYCLE_NAMESPACE,
+                "key": registration.identity.qualified_id,
+                "payload": dict(payload),
+                "expected_last_authoritative_seq": expected_a,
+                "expected_last_materialized_seq": expected_m,
+                "last_authoritative_seq": expected_a,
+                "last_materialized_seq": expected_m,
+                "projection_schema_version": int(row.get("projection_schema_version", 1)),
+                "materialization_status": "active",
+            }
 
     @staticmethod
     def _fingerprint(provider: Any, explicit: str | None) -> str:
@@ -130,39 +236,98 @@ class ProviderRegistry:
         identity = ProviderIdentity(provider_id=provider_id, version=version)
         key = identity.qualified_id
         registration_fingerprint = self._fingerprint(provider, fingerprint)
-        existing = self._registrations.get(key)
-        if existing is not None:
-            raise ProviderCollisionError(
-                f"provider identity already registered: {key}"
+        with self._lock:
+            existing = self._registrations.get(key)
+            if existing is not None:
+                raise ProviderCollisionError(
+                    f"provider identity already registered: {key}"
+                )
+            durable_row = self._lifecycle_row(key)
+            durable_payload = (durable_row or {}).get("payload") or {}
+            generation = max(
+                self._generations.get(key, 0),
+                int(durable_payload.get("generation", 0) or 0),
+            ) + 1
+            registration = ProviderRegistration(
+                identity=identity,
+                provider=provider,
+                registration_fingerprint=registration_fingerprint,
+                generation=generation,
+                failure_mode=failure_mode,
             )
-        registration = ProviderRegistration(
-            identity=identity,
-            provider=provider,
-            registration_fingerprint=registration_fingerprint,
-            failure_mode=failure_mode,
-        )
-        self._registrations[key] = registration
-        return registration
+            self._write_lifecycle(
+                key,
+                generation=generation,
+                fingerprint=registration_fingerprint,
+                status="active",
+                expected=durable_row,
+            )
+            # Publish process-local state only after durable CAS succeeds.
+            self._registrations[key] = registration
+            self._generations[key] = generation
+            return registration
 
     def get(self, provider_id: str, version: str = "v1") -> ProviderRegistration:
         key = ProviderIdentity(provider_id, version).qualified_id
-        try:
-            return self._registrations[key]
-        except KeyError as exc:
-            raise KeyError(f"unknown provider identity: {key}") from exc
+        with self._lock:
+            try:
+                return self._registrations[key]
+            except KeyError as exc:
+                raise KeyError(f"unknown provider identity: {key}") from exc
 
     def list(self) -> tuple[ProviderRegistration, ...]:
-        return tuple(self._registrations.values())
+        with self._lock:
+            return tuple(self._registrations.values())
 
     def dispose(self, registration: ProviderRegistration) -> None:
         key = registration.identity.qualified_id
-        current = self._registrations.get(key)
-        if current is not registration:
-            raise ProviderOwnershipError(f"registration is not active owner: {key}")
-        self._registrations.pop(key)
+        with self._lock:
+            current = self._registrations.get(key)
+            if current is not registration:
+                raise ProviderOwnershipError(f"registration is not active owner: {key}")
+            self._write_lifecycle(
+                key,
+                generation=registration.generation,
+                fingerprint=registration.registration_fingerprint,
+                status="retired",
+                expected=self._lifecycle_row(key),
+            )
+            self._registrations.pop(key)
         close = getattr(registration.provider, "close", None)
         if callable(close):
             close()
+
+    def run_if_active(
+        self,
+        registration: ProviderRegistration,
+        operation: Callable[[], Any],
+    ) -> Any:
+        """Commit provider work only while exact registration remains active."""
+
+        key = registration.identity.qualified_id
+        with self._lock:
+            current = self._registrations.get(key)
+            if current is not registration or current.generation != registration.generation:
+                raise ProviderInactiveError(
+                    f"provider lifecycle is no longer active: {key}@{registration.generation}"
+                )
+            if self._metadata is not None:
+                durable = self._lifecycle_row(key)
+                payload = (durable or {}).get("payload") or {}
+                if (
+                    durable is None
+                    or str(payload.get("status")) != "active"
+                    or int(payload.get("generation", -1)) != registration.generation
+                    or str(payload.get("registration_fingerprint"))
+                    != registration.registration_fingerprint
+                ):
+                    raise ProviderInactiveError(
+                        f"durable provider lifecycle is no longer active: {key}@{registration.generation}"
+                    )
+            # Keep the lifecycle lock across the final projection commit.  The
+            # operation is already post-parse; this prevents unload from
+            # racing a durable CAS and is the generic commit guard.
+            return operation()
 
     def unload(
         self,
