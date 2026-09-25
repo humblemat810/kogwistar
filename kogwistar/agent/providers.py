@@ -122,6 +122,21 @@ class ProviderRegistration:
         return f"{self.generation}:{self.registration_fingerprint}"
 
 
+class ProviderCleanupToken(str):
+    """String-compatible unload identity for one provider incarnation."""
+
+    provider_version: str
+    generation: int
+    lifecycle_token: str
+
+    def __new__(cls, registration: ProviderRegistration) -> "ProviderCleanupToken":
+        value = str.__new__(cls, registration.identity.provider_id)
+        value.provider_version = registration.identity.version
+        value.generation = registration.generation
+        value.lifecycle_token = registration.lifecycle_token
+        return value
+
+
 class ProviderRegistry:
     """Ordered registry with explicit collision and disposal semantics."""
 
@@ -336,11 +351,17 @@ class ProviderRegistry:
         *,
         cleanup: Callable[[str], None] | None = None,
     ) -> None:
-        """Unload provider, then let owners retract current projections."""
-        registration = self.get(provider_id, version)
-        self.dispose(registration)
-        if cleanup is not None:
-            cleanup(registration.identity.provider_id)
+        """Retract projections before retiring ownership.
+
+        Cleanup runs under the lifecycle lock and before ``dispose``.  A
+        failed cleanup therefore leaves the registration active and retryable,
+        instead of retiring the owner while stale projections remain.
+        """
+        with self._lock:
+            registration = self.get(provider_id, version)
+            if cleanup is not None:
+                cleanup(ProviderCleanupToken(registration))
+            self.dispose(registration)
 
     def discovery_descriptors(
         self, *, isolate_failures: bool | None = None

@@ -26,43 +26,64 @@ class AgentBudgetPolicy:
         if self.max_cost is not None and float(self.max_cost) <= 0:
             raise ValueError("max_cost must be positive when supplied")
 
+    def limits(self) -> dict[str, int | float]:
+        """Return process-local authority limits for runtime enforcement."""
+
+        return {
+            key: value
+            for key, value in {
+                "step_budget": self.max_steps,
+                "call_budget": self.max_model_calls,
+                "token_budget": self.max_tokens,
+                "time_budget_ms": self.max_time_ms,
+                "cost_budget": self.max_cost,
+            }.items()
+            if value is not None
+        }
+
+    def seed(self, state: dict[str, Any]) -> dict[str, Any]:
+        """Seed checkpointable counters without installing process-local DI."""
+
+        budget_state = state.get("budget")
+        if not isinstance(budget_state, dict):
+            budget_state = state
+        for key, requested in self.limits().items():
+            current = budget_state.get(key)
+            budget_state[key] = (
+                min(float(current), float(requested))
+                if current
+                else (float(requested) if key == "cost_budget" else int(requested))
+            )
+            if key != "cost_budget":
+                budget_state[key] = int(budget_state[key])
+        for key, default in {
+            "step_used": 0,
+            "call_used": 0,
+            "token_used": 0,
+            "time_used_ms": 0,
+            "cost_used": 0.0,
+        }.items():
+            budget_state.setdefault(key, default)
+        return budget_state
+
     def install(self, state: dict[str, Any]) -> StateBackedBudgetLedger:
         """Install ceilings and a process-local ledger in existing DI state."""
 
         budget_state = state.get("budget")
         if not isinstance(budget_state, dict):
             budget_state = state
-        limits = {
-            "step_budget": self.max_steps,
-            "call_budget": self.max_model_calls,
-            "token_budget": self.max_tokens,
-            "time_budget_ms": self.max_time_ms,
-            "cost_budget": self.max_cost,
-        }
-        for key, requested in limits.items():
-            if requested is None:
-                continue
-            current = budget_state.get(key)
-            if current:
-                budget_state[key] = min(float(current), float(requested))
-                if key != "cost_budget":
-                    budget_state[key] = int(budget_state[key])
-            else:
-                budget_state[key] = (
-                    int(requested) if key != "cost_budget" else float(requested)
-                )
-        budget_state.setdefault("step_used", 0)
-        budget_state.setdefault("call_used", 0)
-        budget_state.setdefault("token_used", 0)
-        budget_state.setdefault("time_used_ms", 0)
-        budget_state.setdefault("cost_used", 0.0)
+        self.seed(state)
         deps = state.setdefault("_deps", {})
         if not isinstance(deps, dict):
             raise ValueError("workflow state _deps must be a dict")
         ledger = deps.get("budget_ledger")
         if not isinstance(ledger, StateBackedBudgetLedger) or ledger.state is not budget_state:
-            ledger = StateBackedBudgetLedger(budget_state)
+            ledger = StateBackedBudgetLedger(
+                budget_state, ceilings=self.limits()
+            )
             deps["budget_ledger"] = ledger
+        else:
+            ledger.set_ceilings(self.limits())
         refresh_budget_hints(state, ledger=ledger)
         return ledger
 

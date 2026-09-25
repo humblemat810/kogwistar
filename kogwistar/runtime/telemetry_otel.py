@@ -18,6 +18,10 @@ class _Span(Protocol):
 
     def end(self) -> None: ...
 
+    def set_status(self, status: Any) -> None: ...
+
+    def record_exception(self, exception: BaseException) -> None: ...
+
 
 class _Tracer(Protocol):
     def start_span(
@@ -116,18 +120,29 @@ class OpenTelemetrySink:
                 self._queue.put_nowait(dict(evt))
                 return
             except queue.Full:
-                self.dropped_events += 1
                 if evt.get("type") in self._RUN_END_EVENTS | {"step_attempt_completed"}:
-                    # Preserve terminal lifecycle events when possible.  The
-                    # evicted event remains only derived telemetry; losing a
-                    # terminal event would retain local spans indefinitely.
-                    try:
-                        self._queue.get_nowait()
-                        self._queue.task_done()
-                        self._queue.put_nowait(dict(evt))
-                        return
-                    except (queue.Empty, queue.Full):
-                        pass
+                    # Evict only non-terminal telemetry. Arbitrary eviction
+                    # can discard another run's terminal event and retain its
+                    # span state indefinitely.
+                    with self._queue.mutex:
+                        queued = list(self._queue.queue)
+                        index = next(
+                            (
+                                i
+                                for i, item in enumerate(queued)
+                                if item.get("type")
+                                not in self._RUN_END_EVENTS
+                                | {"step_attempt_completed"}
+                            ),
+                            None,
+                        )
+                        if index is not None:
+                            del self._queue.queue[index]
+                            self._queue.queue.append(dict(evt))
+                            self._queue.not_empty.notify()
+                            self.dropped_events += 1
+                            return
+                self.dropped_events += 1
         self._log.warning("OpenTelemetrySink queue full; dropping type=%s", evt.get("type"))
 
     def flush(self, timeout: float = 1.0) -> bool:
@@ -219,7 +234,6 @@ class OpenTelemetrySink:
                 attrs[f"kogwistar.{field}"] = int(value)
         payload = evt.get("payload_json")
         if payload:
-            attrs["kogwistar.payload_json"] = str(payload)
             try:
                 payload_object = json.loads(str(payload))
             except (TypeError, ValueError):
@@ -228,6 +242,18 @@ class OpenTelemetrySink:
                 workflow_id = payload_object.get("workflow_id")
                 if workflow_id is not None:
                     attrs["kogwistar.workflow_id"] = str(workflow_id)
+                status = payload_object.get("status")
+                if status is not None:
+                    attrs["kogwistar.status"] = str(status)
+                duration_ms = payload_object.get("duration_ms")
+                if duration_ms is not None:
+                    try:
+                        attrs["kogwistar.duration_ms"] = float(duration_ms)
+                    except (TypeError, ValueError):
+                        pass
+                error_type = payload_object.get("error_type")
+                if error_type is not None:
+                    attrs["kogwistar.error_type"] = str(error_type)[:128]
         return attrs
 
     def _start_run(self, evt: Mapping[str, Any]) -> _Span:
@@ -288,6 +314,7 @@ class OpenTelemetrySink:
             step = self._step_spans.pop(self._step_key(evt), None)
             if step is not None:
                 step.add_event(event_type, self._attributes(evt))
+                self._set_step_status(step, evt)
                 step.end()
             else:
                 run_span.add_event(event_type, self._attributes(evt))
@@ -299,12 +326,47 @@ class OpenTelemetrySink:
                     step.end()
                     del self._step_spans[key]
             run_span.add_event(event_type, self._attributes(evt))
+            if event_type == "workflow_run_failed":
+                recorder = getattr(run_span, "record_exception", None)
+                if callable(recorder):
+                    try:
+                        recorder(RuntimeError("kogwistar workflow run failed"))
+                    except Exception:
+                        pass
             self._set_terminal_status(run_span, event_type)
             run_span.end()
             self._run_spans.pop(run_id, None)
             return
 
         run_span.add_event(event_type or "kogwistar.runtime.event", self._attributes(evt))
+
+    @staticmethod
+    def _set_step_status(span: _Span, evt: Mapping[str, Any]) -> None:
+        payload = evt.get("payload_json")
+        status = ""
+        if payload:
+            try:
+                decoded = json.loads(str(payload))
+                if isinstance(decoded, Mapping):
+                    status = str(decoded.get("status") or "")
+            except (TypeError, ValueError):
+                pass
+        if status.lower() in {"", "ok", "success", "completed"}:
+            return
+        setter = getattr(span, "set_status", None)
+        if callable(setter):
+            try:
+                from opentelemetry.trace import Status, StatusCode
+
+                setter(Status(StatusCode.ERROR, "Kogwistar step attempt failed"))
+            except Exception:
+                pass
+        recorder = getattr(span, "record_exception", None)
+        if callable(recorder):
+            try:
+                recorder(RuntimeError("kogwistar step attempt failed"))
+            except Exception:
+                pass
 
     @staticmethod
     def _set_terminal_status(span: _Span, event_type: str) -> None:
@@ -315,12 +377,7 @@ class OpenTelemetrySink:
         try:
             from opentelemetry.trace import Status, StatusCode
 
-            if event_type in {
-                "workflow_run_failed",
-                "workflow_run_cancelled",
-                "workflow_run_suspended",
-                "workflow_run_indeterminate",
-            }:
+            if event_type in {"workflow_run_failed", "workflow_run_indeterminate"}:
                 setter(Status(StatusCode.ERROR, "Kogwistar workflow run did not complete successfully"))
             elif event_type == "workflow_run_completed":
                 setter(Status(StatusCode.OK))

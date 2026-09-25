@@ -195,6 +195,23 @@ def test_read_acl_requires_explicit_scope_unless_record_is_global() -> None:
     assert [item["entity_id"] for item in page.items] == ["global", "owned"]
 
 
+def test_weak_visibility_checker_cannot_widen_unscoped_records() -> None:
+    tools, _ = _tools()
+    scope = _scope()
+    assert not tools._visible(
+        {"id": "unscoped", "tenant_id": None, "project_id": None}, scope
+    )
+    assert tools._visible(
+        {
+            "id": "global",
+            "visibility": "global",
+            "tenant_id": None,
+            "project_id": None,
+        },
+        scope,
+    )
+
+
 def test_wisdom_default_only_serves_approved_and_capability_is_descriptive() -> None:
     tools, _ = _tools()
     page = tools.wisdom_search("lesson", scope=_scope())

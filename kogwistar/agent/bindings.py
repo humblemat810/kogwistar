@@ -5,6 +5,12 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any, Protocol
 
+from kogwistar.acl.derivation import (
+    ACLInput,
+    Declassifier,
+    derive_acl,
+    normalize_derivation_policy,
+)
 from kogwistar.runtime.budget import (
     BudgetEvent,
     BudgetExhaustedError,
@@ -59,12 +65,18 @@ class FunctionFakeTool:
 
 def _ledger(ctx: Any) -> StateBackedBudgetLedger:
     state = ctx._state
+    budget_state = state.get("budget")
+    if not isinstance(budget_state, dict):
+        budget_state = state
     deps = state.setdefault("_deps", {})
     if not isinstance(deps, dict):
         raise ValueError("workflow state _deps must be a dict")
     ledger = deps.get("budget_ledger")
-    if not isinstance(ledger, StateBackedBudgetLedger) or ledger.state is not state:
-        ledger = StateBackedBudgetLedger(state)
+    if (
+        not isinstance(ledger, StateBackedBudgetLedger)
+        or ledger.state is not budget_state
+    ):
+        ledger = StateBackedBudgetLedger(budget_state)
         deps["budget_ledger"] = ledger
     return ledger
 
@@ -77,6 +89,36 @@ def _failure(ctx: Any, message: str) -> RunFailure:
     )
 
 
+def _trusted_acl_inputs(ctx: Any, key: str) -> list[Any]:
+    """Read ACL descriptors from the runtime authority carrier only.
+
+    Mutable workflow state may carry provenance for display, but cannot widen
+    ACL. If no authority descriptor is present, any state-side descriptors are
+    represented as private inputs and therefore fail closed.
+    """
+    authority = getattr(ctx, "authority_context", None)
+    if isinstance(authority, Mapping):
+        supplied = authority.get("acl_inputs")
+        if supplied is not None:
+            if isinstance(supplied, Mapping) or isinstance(supplied, ACLInput):
+                return [supplied]
+            return list(supplied)
+    state_supplied = ctx.state_view.get(key)
+    if state_supplied is None:
+        return []
+    if isinstance(state_supplied, Mapping) or isinstance(state_supplied, ACLInput):
+        state_supplied = [state_supplied]
+    return [
+        ACLInput(
+            object_id=str(item.get("object_id") or item.get("id") or "untrusted-state-acl"),
+            mode="private",
+            source_kind="untrusted_state_acl",
+        )
+        for item in state_supplied
+        if isinstance(item, Mapping)
+    ]
+
+
 def register_model_step(
     resolver: MappingStepResolver,
     model: FakeModel,
@@ -86,8 +128,21 @@ def register_model_step(
     output_key: str = "agent_model_output",
     estimated_tokens: int | None = None,
     estimated_cost: float | None = None,
+    acl_policy: str = "STRICT",
+    declassifier: Declassifier | None = None,
+    acknowledge_llm_guarded: bool = False,
+    acl_inputs_key: str = "agent_acl_inputs",
+    prompt_acl_mode: str = "private",
+    prompt_object_id: str = "agent_prompt",
+    output_acl_key: str = "agent_model_output_acl",
+    output_provenance_key: str = "agent_model_output_provenance",
 ) -> None:
     """Register one model call; call/token ceilings are enforced before exposure."""
+    selected_acl_policy = normalize_derivation_policy(acl_policy)
+    if prompt_acl_mode not in {"private", "shared", "scope", "group", "public"}:
+        raise ValueError("prompt_acl_mode must be private, shared, scope, group, or public")
+    if selected_acl_policy == "LLM_GUARDED" and not acknowledge_llm_guarded:
+        raise PermissionError("LLM_GUARDED requires explicit acknowledgement")
 
     @resolver.register(op)
     def _model(ctx: Any) -> RunSuccess | RunFailure:
@@ -111,8 +166,31 @@ def register_model_step(
             refresh_budget_hints(ctx._state, ledger=ledger)
             return _failure(ctx, str(exc))
         prompt = str(ctx.state_view.get(prompt_key, ""))
+        acl_inputs = [
+            ACLInput(object_id=prompt_object_id, mode=prompt_acl_mode, source_kind="prompt"),
+            *_trusted_acl_inputs(ctx, acl_inputs_key),
+        ]
+        acl_result = derive_acl(
+            acl_inputs,
+            policy=selected_acl_policy,
+            declassifier=declassifier,
+            acknowledge_llm_guarded=acknowledge_llm_guarded,
+            object_id=output_key,
+            generation_id=str(ctx.run_id),
+        )
+        model_context: dict[str, Any] = {
+            "budget": dict(ctx.state_view.get("agent_budget_hints") or {})
+        }
+        if selected_acl_policy == "LLM_GUARDED" or isinstance(
+            getattr(ctx, "authority_context", None), Mapping
+        ) and "acl_inputs" in getattr(ctx, "authority_context", {}):
+            model_context["acl"] = {
+                "mode": acl_result.final_mode,
+                "source_ids": list(acl_result.source_ids),
+                "policy": acl_result.policy,
+            }
         try:
-            payload = model.complete(prompt, {"budget": dict(ctx.state_view.get("agent_budget_hints") or {})})
+            payload = model.complete(prompt, model_context)
         except Exception as exc:
             refresh_budget_hints(ctx._state, ledger=ledger)
             return _failure(ctx, f"fake model failed: {exc}")
@@ -143,7 +221,18 @@ def register_model_step(
                     refresh_budget_hints(ctx._state, ledger=ledger)
                     return _failure(ctx, "cost budget exhausted by model usage")
         refresh_budget_hints(ctx._state, ledger=ledger)
-        return RunSuccess(state_update=[("u", {output_key: payload})])
+        return RunSuccess(
+            state_update=[
+                (
+                    "u",
+                    {
+                        output_key: payload,
+                        output_acl_key: acl_result.to_metadata(),
+                        output_provenance_key: acl_result.to_dict(),
+                    },
+                )
+            ]
+        )
 
 
 def register_tool_step(
@@ -156,6 +245,13 @@ def register_tool_step(
     output_key: str = "agent_tool_output",
     max_attempts: int = 1,
     retry_exceptions: tuple[type[BaseException], ...] = (Exception,),
+    acl_policy: str = "STRICT",
+    declassifier: Declassifier | None = None,
+    acknowledge_llm_guarded: bool = False,
+    acl_inputs_key: str = "agent_acl_inputs",
+    output_acl_mode: str = "private",
+    output_acl_key: str = "agent_tool_output_acl",
+    output_provenance_key: str = "agent_tool_output_provenance",
 ) -> None:
     """Register bounded retry using caller-supplied capabilities only.
 
@@ -170,10 +266,23 @@ def register_tool_step(
         raise ValueError("max_attempts must be positive")
     if not retry_exceptions:
         raise ValueError("retry_exceptions must be non-empty")
+    selected_acl_policy = normalize_derivation_policy(acl_policy)
+    if output_acl_mode not in {"private", "shared", "scope", "group", "public"}:
+        raise ValueError("output_acl_mode must be private, shared, scope, group, or public")
+    if selected_acl_policy == "LLM_GUARDED" and not acknowledge_llm_guarded:
+        raise PermissionError("LLM_GUARDED requires explicit acknowledgement")
 
     @resolver.register(op)
     def _tool(ctx: Any) -> RunSuccess | RunFailure:
-        effective = ctx.state_view.get("effective_capabilities", ())
+        # Persisted workflow state is evidence, not authority.  A resolver
+        # invoked without the runtime carrier must fail closed, including in
+        # direct/native worker integrations.
+        trusted = getattr(ctx, "authority_context", None)
+        effective = (
+            trusted.get("effective_capabilities", ())
+            if isinstance(trusted, Mapping)
+            else ()
+        )
         if capability not in {str(item) for item in effective}:
             return _failure(ctx, f"capability denied: {capability}")
         arguments = ctx.state_view.get(arguments_key, {})
@@ -183,11 +292,31 @@ def register_tool_step(
         for attempt in range(1, int(max_attempts) + 1):
             try:
                 result = tool.invoke(arguments)
+                acl_result = derive_acl(
+                    [
+                        *_trusted_acl_inputs(ctx, acl_inputs_key),
+                        ACLInput(
+                            object_id=f"{op}:output",
+                            mode=output_acl_mode,  # type: ignore[arg-type]
+                            source_kind="tool_output",
+                        ),
+                    ],
+                    policy=selected_acl_policy,
+                    declassifier=declassifier,
+                    acknowledge_llm_guarded=acknowledge_llm_guarded,
+                    object_id=output_key,
+                    generation_id=str(ctx.run_id),
+                )
                 return RunSuccess(
                     state_update=[
                         (
                             "u",
-                            {output_key: result, "agent_tool_attempts": attempt},
+                            {
+                                output_key: result,
+                                "agent_tool_attempts": attempt,
+                                output_acl_key: acl_result.to_metadata(),
+                                output_provenance_key: acl_result.to_dict(),
+                            },
                         )
                     ]
                 )

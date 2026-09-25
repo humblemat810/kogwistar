@@ -52,7 +52,12 @@ pytestmark = [
 ]
 
 
-def _ctx(state: dict, *, op: str) -> StepContext:
+def _ctx(
+    state: dict,
+    *,
+    op: str,
+    authority_context: dict | None = None,
+) -> StepContext:
     return StepContext(
         run_id="run-agent-c",
         workflow_id="agent-test",
@@ -63,6 +68,7 @@ def _ctx(state: dict, *, op: str) -> StepContext:
         step_seq=1,
         cache_dir=None,
         state=state,
+        authority_context=authority_context or {},
     )
 
 
@@ -245,6 +251,41 @@ def test_budget_ledger_rehydrates_from_checkpointable_state() -> None:
     assert nested_ledger.step_budget == restored_ledger.step_budget == 4
 
 
+def test_trusted_budget_ceiling_cannot_be_raised_by_checkpoint_state() -> None:
+    state = {"token_budget": 2, "token_used": 0}
+    ledger = BaseRuntime.ensure_budget_ledger(
+        state, ceilings={"token_budget": 2}
+    )
+    assert ledger is not None
+    state["token_budget"] = 999
+    assert ledger.total == 2
+    ledger.debit(2)
+    with pytest.raises(Exception, match="budget exhausted"):
+        ledger.debit(1)
+
+
+def test_nested_budget_ledger_keeps_runtime_ceiling_for_agent_binding() -> None:
+    state = {
+        "budget": {"token_budget": 2, "call_budget": 1},
+        "agent_prompt": "fixed",
+    }
+    BaseRuntime.ensure_budget_ledger(
+        state, ceilings={"token_budget": 2, "call_budget": 1}
+    )
+    state["budget"]["token_budget"] = 999
+    resolver = MappingStepResolver()
+    register_model_step(
+        resolver,
+        SequenceFakeModel([{"answer": "late"}]),
+        estimated_tokens=3,
+    )
+    result = resolver.resolve("agent.model_call")(
+        _ctx(state, op="agent.model_call")
+    )
+    assert result.status == "failure"
+    assert "token budget" in " ".join(result.errors)
+
+
 def test_tool_binding_is_acl_fail_closed_and_does_not_self_grant() -> None:
     tool = FunctionFakeTool(lambda args: {"echo": args["value"]})
     resolver = MappingStepResolver()
@@ -259,9 +300,55 @@ def test_tool_binding_is_acl_fail_closed_and_does_not_self_grant() -> None:
     assert tool.calls == []
 
     state["effective_capabilities"] = ["tool.echo"]
-    allowed = resolver.resolve("agent.tool_call")(_ctx(state, op="agent.tool_call"))
+    allowed = resolver.resolve("agent.tool_call")(
+        _ctx(
+            state,
+            op="agent.tool_call",
+            authority_context={"effective_capabilities": ("tool.echo",)},
+        )
+    )
     assert allowed.status == "success"
     assert tool.calls == [{"value": "x"}]
+
+
+def test_tool_binding_prefers_trusted_authority_over_mutable_state() -> None:
+    tool = FunctionFakeTool(lambda args: {"echo": args["value"]})
+    resolver = MappingStepResolver()
+    register_tool_step(resolver, tool, required_capability="tool.echo")
+    state = {"agent_tool_arguments": {"value": "x"}, "effective_capabilities": ["tool.echo"]}
+    denied = resolver.resolve("agent.tool_call")(
+        StepContext(
+            run_id="run-agent-c",
+            workflow_id="agent-test",
+            workflow_node_id="node-agent.tool_call",
+            op="agent.tool_call",
+            token_id="token-agent-c",
+            attempt=1,
+            step_seq=1,
+            cache_dir=None,
+            state=state,
+            authority_context={"effective_capabilities": ()},
+        )
+    )
+    assert denied.status == "failure"
+    assert tool.calls == []
+
+    allowed = resolver.resolve("agent.tool_call")(
+        StepContext(
+            run_id="run-agent-c",
+            workflow_id="agent-test",
+            workflow_node_id="node-agent.tool_call",
+            op="agent.tool_call",
+            token_id="token-agent-c",
+            attempt=1,
+            step_seq=1,
+            cache_dir=None,
+            state={"agent_tool_arguments": {"value": "y"}},
+            authority_context={"effective_capabilities": ("tool.echo",)},
+        )
+    )
+    assert allowed.status == "success"
+    assert tool.calls == [{"value": "y"}]
 
 
 def test_tool_failure_retries_within_bounded_step_attempt() -> None:
@@ -282,13 +369,14 @@ def test_tool_failure_retries_within_bounded_step_attempt() -> None:
         max_attempts=2,
     )
     result = resolver.resolve("agent.tool_call")(
-        _ctx(
-            {
-                "agent_tool_arguments": {},
-                "effective_capabilities": ["tool.echo"],
-            },
-            op="agent.tool_call",
-        )
+            _ctx(
+                {
+                    "agent_tool_arguments": {},
+                    "effective_capabilities": ["tool.echo"],
+                },
+                op="agent.tool_call",
+                authority_context={"effective_capabilities": ("tool.echo",)},
+            )
     )
     assert isinstance(result, RunSuccess)
     assert result.state_update[0][1]["agent_tool_attempts"] == 2

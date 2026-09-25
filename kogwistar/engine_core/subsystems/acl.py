@@ -431,6 +431,14 @@ class ACLSubsystem(NamespaceProxy):
                 "shared_with_groups": list(record.shared_with_groups),
                 "source_ids": list(record.source_ids),
                 "derivation_type": record.derivation_type,
+                # Node properties use a scalar/list JSON contract. Keep the
+                # structured audit lossless without widening that public model.
+                "derivation_audit": json.dumps(
+                    dict(record.derivation_audit or {}),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    default=str,
+                ),
                 "target_item_id": target_item,
             },
             embedding=None,
@@ -492,6 +500,16 @@ class ACLSubsystem(NamespaceProxy):
         target_item_id = metadata.get("acl_target_item_id")
         if target_item_id == "":
             target_item_id = None
+        raw_derivation_audit = properties.get("derivation_audit")
+        if isinstance(raw_derivation_audit, str):
+            try:
+                derivation_audit = json.loads(raw_derivation_audit)
+            except (TypeError, ValueError):
+                derivation_audit = {}
+        elif isinstance(raw_derivation_audit, dict):
+            derivation_audit = dict(raw_derivation_audit)
+        else:
+            derivation_audit = {}
         return ACLRecord(
             target=ACLTarget(
                 truth_graph=str(metadata.get("acl_truth_graph") or ""),
@@ -508,6 +526,7 @@ class ACLSubsystem(NamespaceProxy):
             shared_with_groups=tuple(properties.get("shared_with_groups") or ()),
             source_ids=tuple(properties.get("source_ids") or ()),
             derivation_type=properties.get("derivation_type"),
+            derivation_audit=derivation_audit,
             tombstoned=bool(metadata.get("tombstoned")),
             supersedes_version=metadata.get("supersedes_version"),
         )
@@ -628,6 +647,7 @@ class ACLSubsystem(NamespaceProxy):
         shared_with_groups: Sequence[str] = (),
         source_ids: Sequence[str] = (),
         derivation_type: str | None = None,
+        derivation_audit: dict[str, Any] | None = None,
         supersedes_version: int | None = None,
         tombstoned: bool = False,
     ) -> ACLRecord:
@@ -654,6 +674,7 @@ class ACLSubsystem(NamespaceProxy):
                 shared_with_groups=tuple(shared_with_groups),
                 source_ids=tuple(source_ids),
                 derivation_type=derivation_type,
+                derivation_audit=dict(derivation_audit or {}),
                 supersedes_version=supersedes_version,
                 tombstoned=tombstoned,
             )
@@ -689,6 +710,7 @@ class ACLSubsystem(NamespaceProxy):
                             "shared_with_groups": list(shared_with_groups),
                             "source_ids": list(source_ids),
                             "derivation_type": derivation_type,
+                            "derivation_audit": dict(derivation_audit or {}),
                             "supersedes_version": supersedes_version,
                             "tombstoned": tombstoned,
                         }
@@ -853,6 +875,7 @@ class ACLSubsystem(NamespaceProxy):
                 shared_with_groups=record.shared_with_groups,
                 source_ids=record.source_ids,
                 derivation_type=record.derivation_type,
+                derivation_audit=record.derivation_audit,
                 supersedes_version=record.supersedes_version,
                 tombstoned=record.tombstoned,
             )

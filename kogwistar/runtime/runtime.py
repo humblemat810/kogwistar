@@ -230,6 +230,37 @@ RunID = uuid.UUID | str
 Json = Any
 State = Dict[str, Json]
 # Result = Json
+
+
+def derive_child_authority_context(
+    parent: Mapping[str, Any] | None,
+    child_state: Mapping[str, Any],
+) -> Mapping[str, Any] | None:
+    """Carry trusted execution authority into a nested run without expansion."""
+
+    if parent is None:
+        return None
+    context = dict(parent)
+    if "effective_capabilities" in context:
+        parent_caps = {str(item) for item in context.get("effective_capabilities", ())}
+        requested = {
+            str(item)
+            for item in child_state.get("effective_capabilities", parent_caps)
+        }
+        context["effective_capabilities"] = tuple(sorted(parent_caps & requested))
+    if "budget_limits" in context:
+        context["budget_limits"] = dict(context["budget_limits"] or {})
+    return MappingProxyType(context)
+
+
+def sink_observes_otel(sink: Any) -> bool:
+    """Detect an explicitly supplied OTel sink without importing OTel."""
+
+    if sink is None:
+        return False
+    if type(sink).__module__ == "kogwistar.runtime.telemetry_otel":
+        return True
+    return any(sink_observes_otel(item) for item in getattr(sink, "_sinks", ()))
 from typing import TypeAlias, Any
 
 
@@ -311,6 +342,9 @@ class StepContext:
     conversation_id: str | None = None
     turn_node_id: str | None = None
     trace_context: TraceContext | None = field(default=None, repr=False)
+    authority_context: Mapping[str, Any] = field(
+        default_factory=dict, repr=False
+    )
 
     # --- runtime capabilities ---
     message_queue: "queue.Queue[Dict[str, Json]]" = field(
@@ -733,6 +767,7 @@ class WorkflowRuntime(BaseRuntime):
         parent_run_id: str,
         cache_dir: str | PathLike | None = None,
         parent_trace_context: TraceContext | None = None,
+        parent_authority_context: Mapping[str, Any] | None = None,
     ) -> RunResult:
         if invocation.workflow_design is not None:
             if str(invocation.workflow_design.workflow_id) != str(
@@ -745,6 +780,9 @@ class WorkflowRuntime(BaseRuntime):
 
         child_state = self._child_workflow_initial_state(
             parent_state=parent_state, invocation=invocation
+        )
+        child_authority_context = derive_child_authority_context(
+            parent_authority_context, child_state
         )
         plan = self._workflow_invocation_plan(
             invocation=invocation,
@@ -791,6 +829,7 @@ class WorkflowRuntime(BaseRuntime):
                     turn_node_id=plan["turn_node_id"],
                     cache_dir=cache_dir,
                     _parent_trace_context=parent_trace_context,
+                    _parent_authority_context=child_authority_context,
                 )
             else:
                 child_result = self.run(
@@ -806,6 +845,7 @@ class WorkflowRuntime(BaseRuntime):
                         "result_state_key": plan["result_state_key"],
                     },
                     _trace_context=parent_trace_context,
+                    _authority_context=child_authority_context,
                 )
         self._persist_workflow_invocation_lineage(
             conversation_id=conversation_id,
@@ -1433,6 +1473,7 @@ class WorkflowRuntime(BaseRuntime):
         turn_node_id: str,
         cache_dir=None,
         _parent_trace_context: TraceContext | None = None,
+        _parent_authority_context: Mapping[str, Any] | None = None,
     ) -> RunResult:
         """Continue a run from its latest ordinary workflow checkpoint.
 
@@ -1493,6 +1534,7 @@ class WorkflowRuntime(BaseRuntime):
             cache_dir=cache_dir,
             _resume_step_seq=step_seq + 1,
             _trace_context=continuation_context,
+            _authority_context=_parent_authority_context,
         )
 
     def run(
@@ -1508,6 +1550,7 @@ class WorkflowRuntime(BaseRuntime):
         _resume_last_exec_node: WorkflowStepExecNode | WorkflowRunNode | None = None,
         _run_metadata: Mapping[str, Any] | None = None,
         _trace_context: TraceContext | None = None,
+        _authority_context: Mapping[str, Any] | None = None,
     ) -> RunResult:
         """
         Returns (final_state, run_id).
@@ -1519,9 +1562,20 @@ class WorkflowRuntime(BaseRuntime):
             conversation_id=conversation_id, workflow_run_id=f"{workflow_id}--{run_id}"
         ):
             self.workflow_id = str(workflow_id)
+            if _authority_context is not None and "effective_capabilities" in _authority_context:
+                initial_state["effective_capabilities"] = list(
+                    _authority_context.get("effective_capabilities", ())
+                )
             initial_state.setdefault("_wf_invocation_path", [str(workflow_id)])
             initial_state.setdefault("_wf_current_run_id", str(run_id or ""))
-            self.ensure_budget_ledger(initial_state)
+            self.ensure_budget_ledger(
+                initial_state,
+                ceilings=(
+                    _authority_context.get("budget_limits")
+                    if _authority_context is not None
+                    else None
+                ),
+            )
             # repair fields auto set by default schema
             state_schema = getattr(self.step_resolver, "_state_schema", None)
             if state_schema and isinstance(state_schema, dict):
@@ -1764,14 +1818,42 @@ class WorkflowRuntime(BaseRuntime):
             # restart/reconciliation can find trace identity even before the
             # first checkpoint exists.
             run_trace_context = (
-                _trace_context.child_run(
-                    run_id=str(run_id),
-                    token_id=str(run_id),
-                    step_seq=0,
-                    node_id=str(getattr(start, "id", "start")),
-                )
+                _trace_context
                 if _trace_context is not None
-                else None
+                and str(_trace_context.run_id) == str(run_id)
+                and (
+                    _trace_context.has_valid_w3c_ids
+                    or not (self._otel_sink is not None or sink_observes_otel(self.sink))
+                )
+                else (
+                    _trace_context.child_run(
+                        run_id=str(run_id),
+                        token_id=str(run_id),
+                        step_seq=0,
+                        node_id=str(getattr(start, "id", "start")),
+                    )
+                    if _trace_context is not None
+                    and (
+                        _trace_context.has_valid_w3c_ids
+                        or not (self._otel_sink is not None or sink_observes_otel(self.sink))
+                    )
+                    else (
+                        TraceContext.new_root(
+                            run_id=str(run_id),
+                            token_id=str(run_id),
+                            step_seq=0,
+                            node_id=str(getattr(start, "id", "start")),
+                            conversation_id=str(conversation_id)
+                            if conversation_id is not None
+                            else None,
+                            turn_node_id=str(turn_node_id)
+                            if turn_node_id is not None
+                            else None,
+                        )
+                        if self._otel_sink is not None or sink_observes_otel(self.sink)
+                        else None
+                    )
+                )
             )
 
             def _lifecycle_trace_context(
@@ -2044,6 +2126,11 @@ class WorkflowRuntime(BaseRuntime):
                                 lane_message_event_sink=self.lane_message_event_sink,
                                 events=self.emitter,
                                 cache_dir=cache_dir,
+                                authority_context=(
+                                    _authority_context
+                                    if _authority_context is not None
+                                    else {"effective_capabilities": ()}
+                                ),
                             )
                             # step attempt start
                             self.emitter.step_started(ctx.trace_ctx)
@@ -2089,6 +2176,7 @@ class WorkflowRuntime(BaseRuntime):
                                             parent_run_id=str(run_id),
                                             cache_dir=cache_dir,
                                             parent_trace_context=ctx.trace_ctx,
+                                            parent_authority_context=ctx.authority_context,
                                         )
                                         if child_result.status != "succeeded":
                                             status = "failure"

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import math
+from collections.abc import Mapping
 from typing import Any
 
 
@@ -217,10 +218,31 @@ class BudgetLedger:
 class StateBackedBudgetLedger:
     state: dict[str, Any]
     events: list[BudgetEvent] = field(default_factory=list)
+    # Trusted process-local ceilings; checkpoint state cannot raise them.
+    ceilings: dict[str, int | float] = field(default_factory=dict, repr=False)
+
+    def set_ceilings(self, ceilings: Mapping[str, int | float] | None) -> None:
+        if not ceilings:
+            return
+        for key, value in ceilings.items():
+            if value is None:
+                continue
+            value = float(value) if key == "cost_budget" else int(value)
+            current = self.ceilings.get(key)
+            self.ceilings[key] = value if current is None else min(current, value)
+
+    def _bounded_limit(self, key: str, default: int | float = 0) -> int | float:
+        raw = self.state.get(key, default)
+        raw_value = float(raw or 0) if key == "cost_budget" else int(raw or 0)
+        ceiling = self.ceilings.get(key)
+        if ceiling is None:
+            return raw_value
+        # Zero means unset in persisted state; trusted ceiling still applies.
+        return min(raw_value, ceiling) if raw_value else ceiling
 
     @property
     def total(self) -> int:
-        return int(self.state.get("token_budget", 0) or 0)
+        return int(self._bounded_limit("token_budget"))
 
     @property
     def used(self) -> int:
@@ -232,7 +254,7 @@ class StateBackedBudgetLedger:
 
     @property
     def time_budget_ms(self) -> int:
-        return int(self.state.get("time_budget_ms", 0) or 0)
+        return int(self._bounded_limit("time_budget_ms"))
 
     @property
     def time_used_ms(self) -> int:
@@ -240,7 +262,7 @@ class StateBackedBudgetLedger:
 
     @property
     def rate_limit(self) -> int:
-        return int(self.state.get("rate_limit", 0) or 0)
+        return int(self._bounded_limit("rate_limit"))
 
     @property
     def rate_used(self) -> int:
@@ -262,7 +284,7 @@ class StateBackedBudgetLedger:
 
     @property
     def step_budget(self) -> int:
-        return int(self.state.get("step_budget", 0) or 0)
+        return int(self._bounded_limit("step_budget"))
 
     @property
     def step_used(self) -> int:
@@ -270,7 +292,7 @@ class StateBackedBudgetLedger:
 
     @property
     def call_budget(self) -> int:
-        return int(self.state.get("call_budget", 0) or 0)
+        return int(self._bounded_limit("call_budget"))
 
     @property
     def call_used(self) -> int:
@@ -278,7 +300,7 @@ class StateBackedBudgetLedger:
 
     @property
     def cost_budget(self) -> float:
-        return float(self.state.get("cost_budget", 0.0) or 0.0)
+        return float(self._bounded_limit("cost_budget"))
 
     @property
     def cost_used(self) -> float:

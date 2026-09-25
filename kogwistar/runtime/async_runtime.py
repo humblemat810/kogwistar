@@ -20,6 +20,8 @@ from .runtime import (
     WorkflowRuntime as ThreadedWorkflowRuntime,
     _compute_may_reach_join_bitsets,
     _iter_bits,
+    derive_child_authority_context,
+    sink_observes_otel,
 )
 
 # Compatibility anchor for tests and internal helper wiring.
@@ -162,7 +164,12 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
         _resume_last_exec_node: Any | None = None,
         _run_metadata: Mapping[str, Any] | None = None,
         _trace_context: TraceContext | None = None,
+        _authority_context: Mapping[str, Any] | None = None,
     ) -> RunResult:
+        if _authority_context is not None and "effective_capabilities" in _authority_context:
+            initial_state["effective_capabilities"] = list(
+                _authority_context.get("effective_capabilities", ())
+            )
         from .rust_runtime_authority import (
             run_with_rust_authority_async,
             rust_runtime_authority_selected,
@@ -195,6 +202,7 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
             cache_dir=cache_dir,
             run_metadata=_run_metadata,
             trace_context=_trace_context,
+            authority_context=_authority_context,
         )
 
     def _resolve_async_step_fn(self, op: str) -> AsyncStepFn:
@@ -245,6 +253,7 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
         parent_run_id: str,
         cache_dir: str | None = None,
         parent_trace_context: TraceContext | None = None,
+        parent_authority_context: Mapping[str, Any] | None = None,
     ) -> RunResult:
         if getattr(invocation, "workflow_design", None) is not None:
             wf_design = getattr(invocation, "workflow_design")
@@ -259,6 +268,9 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
         child_state = self._child_workflow_initial_state(
             parent_state=parent_state,
             invocation=invocation,
+        )
+        child_authority_context = derive_child_authority_context(
+            parent_authority_context, child_state
         )
         plan = self._workflow_invocation_plan(
             invocation=invocation,
@@ -335,6 +347,7 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
                     turn_node_id=plan["turn_node_id"],
                     cache_dir=cache_dir,
                     _parent_trace_context=parent_trace_context,
+                    _parent_authority_context=child_authority_context,
                 )
             else:
                 child_result = await self.run(
@@ -350,6 +363,7 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
                         "result_state_key": plan["result_state_key"],
                     },
                     _trace_context=parent_trace_context,
+                    _authority_context=child_authority_context,
                 )
             if callable(persist_lineage):
                 persist_lineage(
@@ -372,6 +386,7 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
         turn_node_id: str,
         cache_dir: str | None = None,
         _parent_trace_context: TraceContext | None = None,
+        _parent_authority_context: Mapping[str, Any] | None = None,
     ) -> RunResult:
         """Resume an async run without blocking the event loop.
 
@@ -432,6 +447,7 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
             cache_dir=cache_dir,
             _resume_step_seq=step_seq + 1,
             _trace_context=continuation_context,
+            _authority_context=_parent_authority_context,
         )
 
     @staticmethod
@@ -469,13 +485,25 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
         cache_dir: str | None,
         run_metadata: Mapping[str, Any] | None = None,
         trace_context: TraceContext | None = None,
+        authority_context: Mapping[str, Any] | None = None,
     ) -> RunResult:
         state: WorkflowState = dict(initial_state)
         run_id = str(run_id or f"run|{uuid.uuid4()}")
+        if authority_context is not None and "effective_capabilities" in authority_context:
+            state["effective_capabilities"] = list(
+                authority_context.get("effective_capabilities", ())
+            )
         state.setdefault("_wf_invocation_path", [str(workflow_id)])
         state.setdefault("_wf_current_run_id", run_id)
         self.workflow_id = str(workflow_id)
-        self.ensure_budget_ledger(state)
+        self.ensure_budget_ledger(
+            state,
+            ceilings=(
+                authority_context.get("budget_limits")
+                if authority_context is not None
+                else None
+            ),
+        )
         validate_initial_state(state)
         mq: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=10000)
 
@@ -486,14 +514,47 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
             resolver=self._raw_step_resolver,
         )
         run_trace_context = (
-            trace_context.child_run(
-                run_id=str(run_id),
-                token_id=str(run_id),
-                step_seq=0,
-                node_id=str(getattr(start, "id", "start")),
-            )
+            trace_context
             if trace_context is not None
-            else None
+            and str(trace_context.run_id) == str(run_id)
+            and (
+                trace_context.has_valid_w3c_ids
+                or not (
+                    getattr(self._sync_runtime, "_otel_sink", None) is not None
+                    or sink_observes_otel(getattr(self._sync_runtime, "sink", None))
+                )
+            )
+            else (
+                trace_context.child_run(
+                    run_id=str(run_id),
+                    token_id=str(run_id),
+                    step_seq=0,
+                    node_id=str(getattr(start, "id", "start")),
+                )
+                if trace_context is not None
+                and (
+                    trace_context.has_valid_w3c_ids
+                    or not (
+                        getattr(self._sync_runtime, "_otel_sink", None) is not None
+                        or sink_observes_otel(getattr(self._sync_runtime, "sink", None))
+                    )
+                )
+                else (
+                    TraceContext.new_root(
+                        run_id=str(run_id),
+                        token_id=str(run_id),
+                        step_seq=0,
+                        node_id=str(getattr(start, "id", "start")),
+                        conversation_id=str(conversation_id),
+                        turn_node_id=str(turn_node_id),
+                    )
+                    if (
+                        getattr(self._sync_runtime, "_otel_sink", None) is not None
+                        or sink_observes_otel(getattr(self._sync_runtime, "sink", None))
+                    )
+                    else None
+                )
+            )
         )
         wf_run_root_node: Any | None = None
         persist_workflow_run = getattr(self._sync_runtime, "_persist_workflow_run", None)
@@ -719,6 +780,11 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
                 lane_message_event_sink=getattr(self._sync_runtime, "lane_message_event_sink", None),
                 events=trace_emitter,
                 cache_dir=cache_dir,
+                authority_context=(
+                    authority_context
+                    if authority_context is not None
+                    else {"effective_capabilities": ()}
+                ),
             )
             fn = self._resolve_async_step_fn(str(node.op))
             should_step_uow = getattr(self._sync_runtime, "_should_step_uow", None)
@@ -894,6 +960,7 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
                     parent_run_id=str(run_id),
                     cache_dir=cache_dir,
                     parent_trace_context=run_trace_context,
+                    parent_authority_context=authority_context,
                 )
                 child_status = str(getattr(child_result, "status", None))
                 if child_status != "succeeded":

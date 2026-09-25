@@ -211,6 +211,7 @@ def _invoke_step(*, resolver: Any, fn: Any, op: str, node_id: str, state: Any) -
                 step_seq=0,
                 cache_dir=None,
                 state=dict(state.get("__blob__", state) or {}),
+                authority_context={"effective_capabilities": ()},
             )
         )
     return fn(state)
