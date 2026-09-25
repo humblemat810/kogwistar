@@ -1,10 +1,20 @@
 # ADR-015 implementation status
 
-Updated: 2026-07-21
+Updated: 2026-09-25
 
 ADR-015 is not complete as a production migration. Local implementation and
 compatibility work is substantially complete, but authoritative ownership and
 production rollout remain intentionally fail-closed.
+
+## Post-merge verification
+
+PR #36 merged the native PostgreSQL lane-message claim fix. The claim update
+now declares its target alias before using `RETURNING x.*`; this prevents the
+PostgreSQL `42P01` missing-FROM-clause failure in the concurrent claim path.
+The merged candidate passed the CI matrix for CPython 3.12, 3.13, and 3.14,
+PyPy 3.11, Rust, native-wheel smoke, and lint. Local dependency-boundary and
+Rust contract checks also passed. This records verification evidence only; it
+does not promote any Rust capability to production authority.
 
 ## Scope-locked completion ledger
 
