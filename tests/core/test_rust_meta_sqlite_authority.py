@@ -4,6 +4,12 @@ from pathlib import Path
 
 import pytest
 
+from kogwistar.agent import (
+    DurableCatalogStore,
+    DurableSkillCatalogMaterializer,
+    DurableSkillProjectionStore,
+)
+from kogwistar.agent.skills import parse_skill_text
 from kogwistar.engine_core.rust_meta_sqlite import (
     RustEngineSQLite,
     RustSQLiteConnectionUnavailable,
@@ -98,6 +104,115 @@ def test_rust_authority_database_is_readable_after_python_rollback(
     assert python.get_named_projection("projection", "key")["payload"] == {
         "owner": "rust"
     }
+
+
+def test_rust_authority_named_projection_batch_cas_is_atomic(tmp_path: Path) -> None:
+    store = RustEngineSQLite(tmp_path, "batch-cas.sqlite")
+    store.ensure_initialized()
+    updates = [
+        {
+            "namespace": "skills",
+            "key": "provider",
+            "payload": {"owner": "rust"},
+            "expected_last_authoritative_seq": None,
+            "expected_last_materialized_seq": None,
+            "last_authoritative_seq": 1,
+            "last_materialized_seq": 1,
+            "projection_schema_version": 1,
+            "materialization_status": "ready",
+        },
+        {
+            "namespace": "catalog",
+            "key": "provider",
+            "payload": {"owner": "rust"},
+            "expected_last_authoritative_seq": 99,
+            "expected_last_materialized_seq": 99,
+            "last_authoritative_seq": 1,
+            "last_materialized_seq": 1,
+            "projection_schema_version": 1,
+            "materialization_status": "ready",
+        },
+    ]
+    assert not store.compare_and_swap_named_projections(updates)
+    assert store.get_named_projection("skills", "provider") is None
+
+    updates[1]["expected_last_authoritative_seq"] = None
+    updates[1]["expected_last_materialized_seq"] = None
+    assert store.compare_and_swap_named_projections(updates)
+    assert store.get_named_projection("skills", "provider")["payload"] == {
+        "owner": "rust"
+    }
+    assert store.get_named_projection("catalog", "provider")["payload"] == {
+        "owner": "rust"
+    }
+
+
+def test_rust_authority_skill_projection_reconciles_after_partial_commit(
+    tmp_path: Path,
+) -> None:
+    metadata = RustEngineSQLite(tmp_path, "skill-reconcile.sqlite")
+    metadata.ensure_initialized()
+    artifact = parse_skill_text(
+        "# Deploy\n\n1. validate\n",
+        provider_id="project",
+        provider_local_id="deploy",
+        skill_version="v1",
+    ).model_copy(
+        update={"projection_revision": 1, "tenant_id": "tenant-1", "project_id": "project-1"}
+    )
+    projections = DurableSkillProjectionStore(
+        metadata,
+        tenant_id="tenant-1",
+        project_id="project-1",
+        acl_enabled=False,
+    )
+    catalog = DurableCatalogStore(
+        metadata,
+        tenant_id="tenant-1",
+        project_id="project-1",
+        acl_enabled=False,
+    )
+    materializer = DurableSkillCatalogMaterializer(
+        projections=projections, catalog=catalog
+    )
+    _, prepared = projections.prepare_upsert_update(artifact)
+    assert metadata.compare_and_swap_named_projections([prepared[0]])
+
+    restarted_projections = DurableSkillProjectionStore(
+        metadata,
+        tenant_id="tenant-1",
+        project_id="project-1",
+        acl_enabled=False,
+    )
+    restarted_catalog = DurableCatalogStore(
+        metadata,
+        tenant_id="tenant-1",
+        project_id="project-1",
+        acl_enabled=False,
+    )
+    restarted = DurableSkillCatalogMaterializer(
+        projections=restarted_projections, catalog=restarted_catalog
+    )
+    assert restarted_projections.get(
+        "project", "deploy", tenant_id="tenant-1", project_id="project-1"
+    ) is None
+    assert restarted.reconcile() == 1
+    assert restarted_projections.graph(
+        "project", "deploy", tenant_id="tenant-1", project_id="project-1"
+    ) is not None
+    assert restarted_catalog.get(
+        "project:deploy", tenant_id="tenant-1", project_id="project-1"
+    ) is not None
+    restarted.remove_provider("project")
+    assert restarted_projections.get(
+        "project", "deploy", tenant_id="tenant-1", project_id="project-1"
+    ) is None
+    assert restarted_projections.graph(
+        "project", "deploy", tenant_id="tenant-1", project_id="project-1"
+    ) is None
+    assert restarted_catalog.get(
+        "project:deploy", tenant_id="tenant-1", project_id="project-1"
+    ) is None
 
 
 def test_rust_authority_event_envelope_is_lossless_and_idempotent(tmp_path: Path) -> None:

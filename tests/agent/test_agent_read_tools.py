@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+
 import pytest
 
 from kogwistar.agent import (
@@ -31,12 +33,13 @@ def _scope(**kwargs: object) -> ReadScope:
 
 
 def _tools() -> tuple[AgentReadTools, object]:
+    skill_body = "name: Deploy\n- inspect rollout\n"
     artifact = parse_skill_text(
-        "name: Deploy\n- inspect rollout\n",
+        skill_body,
         provider_id="project",
         provider_local_id="deploy",
         skill_version="v2",
-    )
+    ).model_copy(update={"tenant_id": "tenant-a", "project_id": "project-a"})
     catalog = CatalogStore(acl_enabled=False)
     for entry in catalog_entries_from_artifact(artifact):
         entry.tenant_id = "tenant-a"
@@ -45,7 +48,7 @@ def _tools() -> tuple[AgentReadTools, object]:
 
     class Provider:
         def get_skill(self, local_id: str) -> dict[str, str]:
-            return {"local_id": local_id, "body": "provider-native source"}
+            return {"local_id": local_id, "body": skill_body}
 
     providers = ProviderRegistry()
     providers.register(provider_id="project", provider=Provider())
@@ -85,9 +88,9 @@ def _tools() -> tuple[AgentReadTools, object]:
             }
         ],
         wisdom_source=lambda **kwargs: [
-            {"id": "w1", "status": "approved", "tenant_id": "tenant-a"},
-            {"id": "w2", "status": "pending", "tenant_id": "tenant-a"},
-            {"id": "w3", "tenant_id": "tenant-a"},
+            {"id": "w1", "status": "approved", "tenant_id": "tenant-a", "project_id": "project-a"},
+            {"id": "w2", "status": "pending", "tenant_id": "tenant-a", "project_id": "project-a"},
+            {"id": "w3", "tenant_id": "tenant-a", "project_id": "project-a"},
         ],
         glossary_source=ProjectGlossaryProvider(
             ProjectPluginManifest("project.glossary", "project-a", "tenant-a"),
@@ -148,7 +151,11 @@ def test_skill_descriptor_graph_and_raw_paths_are_additive() -> None:
     raw = tools.skill_get("project:deploy", scope=_scope(), representation="raw")
     assert descriptor and "nodes" not in descriptor
     assert graph and graph["artifact"]["provider_id"] == "project"
-    assert raw and raw["resource"]["body"] == "provider-native source"
+    assert raw and raw["resource"]["body"] == "name: Deploy\n- inspect rollout\n"
+    assert raw["resource"]["local_id"] == "deploy"
+    assert graph["artifact"]["source_fingerprint"] == hashlib.sha256(
+        raw["resource"]["body"].encode("utf-8")
+    ).hexdigest()
 
 
 def test_bootstrap_catalog_never_contains_full_skill_body() -> None:
@@ -165,6 +172,27 @@ def test_memory_defaults_to_current_conversation_and_requires_opt_in() -> None:
         tools.memory_search("deploy", scope=_scope(conversation_id="c1"), conversation_id="c2")
     allowed = _scope(conversation_id="c1", allow_cross_conversation=True)
     assert tools.memory_search("deploy", scope=allowed, conversation_id="c2").items
+
+
+def test_memory_search_rejects_records_without_explicit_conversation_identity() -> None:
+    tools, _ = _tools()
+    tools.memory_source = lambda **_kwargs: [
+        {"memory_id": "unscoped", "tenant_id": "tenant-a", "project_id": "project-a"}
+    ]
+    assert tools.memory_search("deploy", scope=_scope(conversation_id="c1")).items == ()
+
+
+def test_read_acl_requires_explicit_scope_unless_record_is_global() -> None:
+    tools, _ = _tools()
+    tools.knowledge_source = {
+        "search": [
+            {"entity_id": "unscoped"},
+            {"entity_id": "global", "visibility": "global"},
+            {"entity_id": "owned", "tenant_id": "tenant-a", "project_id": "project-a"},
+        ]
+    }
+    page = tools.knowledge_search("deploy", scope=_scope())
+    assert [item["entity_id"] for item in page.items] == ["global", "owned"]
 
 
 def test_wisdom_default_only_serves_approved_and_capability_is_descriptive() -> None:

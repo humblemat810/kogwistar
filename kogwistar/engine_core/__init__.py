@@ -54,8 +54,13 @@ from kogwistar.engine_core.embedding_profile import (
     EmbeddingStorageInspector,
     EmbeddingStorageState,
     LegacyEmbeddingProfileError,
+    AsyncNamedProjectionStore,
     NamedProjectionStore,
     endpoint_fingerprint,
+)
+from kogwistar.engine_core.async_named_projection import (
+    AsyncPostgresNamedProjectionStore,
+    AsyncSQLiteNamedProjectionStore,
 )
 from kogwistar.engine_core.multimodal import (
     EmbeddingReference,
@@ -131,6 +136,9 @@ __all__ = [
     "EmbeddingStorageInspector",
     "EmbeddingStorageState",
     "LegacyEmbeddingProfileError",
+    "AsyncNamedProjectionStore",
+    "AsyncPostgresNamedProjectionStore",
+    "AsyncSQLiteNamedProjectionStore",
     "NamedProjectionStore",
     "endpoint_fingerprint",
     "EmbeddingReference",

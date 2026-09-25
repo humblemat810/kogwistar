@@ -100,9 +100,12 @@ The first implementation slice is deliberately offline and provider-neutral:
 - Effectful or unbound parsed steps remain non-invocable. Shell wrappers,
   traversal paths, and implicit execution are rejected before any provider call.
 
-This slice does not yet claim REST/MCP read-only tool parity, hook lifecycle,
-semantic ingestion, LLM-Wiki integration, or graph projection persistence.
-Those remain plan items and do not alter the authority model.
+This historical Goal A slice did not claim REST/MCP read-only tool parity,
+hook lifecycle, semantic ingestion, LLM-Wiki integration, or graph projection
+persistence. Subsequent Goal C work now provides deterministic skill graph
+materialization through revision-gated named projections, while optional
+LLM-Wiki ingestion remains additive and authority-free. The implementation
+plan remains authoritative for the exact backend and transport coverage.
 
 The subsequent read slice now provides transport-neutral `ReadScope`, bounded
 cursor pages, descriptor-first catalog/skill/MCP/capability reads, raw-versus-
@@ -192,6 +195,15 @@ backstory, tool lists, and model output cannot grant authority.
 
 Profiles may select a normal, plan, or goal workflow. Runtime behavior remains
 fully determined by the selected workflow graph and existing runtime contracts.
+
+`acl_required` is a fail-closed declaration only. An agent profile cannot turn
+off host ACL enforcement; authenticated caller identity, delegation scope, and
+engine ACL remain authoritative. Local tests that intentionally omit ACL use a
+separate explicitly unprotected composition, never an agent profile override.
+
+Host composition may pass a model-profile allowlist to profile and delegation
+validation. A child `model_profile` is a selection inside that allowlist, not a
+provider or cost-policy grant.
 
 ## Plan and Goal Modes
 
@@ -347,9 +359,11 @@ run.after_complete
 ```
 
 Each hook declaration must specify deterministic ordering, timeout, failure
-mode, effects, required capabilities, and cleanup behavior. Security and
-authority checks remain non-pluggable and fail closed. Observational hooks may
-be best effort.
+mode, effects, required capabilities, and cleanup behavior. Synchronous hooks
+run in bounded daemon workers from either sync or async composition; Python
+cannot forcibly terminate a timed-out callback, so late completion cannot
+mutate authoritative state. Security and authority checks remain
+non-pluggable and fail closed. Observational hooks may be best effort.
 
 Hooks may transform bounded context, request compression, append mode and
 remaining-budget guidance, or submit a wisdom-distillation request. Hooks must
@@ -506,11 +520,24 @@ exact ID/name/alias
 ```
 
 An implementation may use SQLite FTS5 or another backend-specific lexical
-index, but the catalog search contract is backend-neutral. Catalog descriptors
-and their lexical index are not ADR-018 Stage 1. They are a rebuildable catalog
-read model and lexical search projection. An optional semantic projection may
-enrich ranking without replacing or hiding lexical discovery. This avoids
-conflicting with ADR-018's exclusive Stage-1/Stage-2 handoff contract.
+index, but the catalog search contract is backend-neutral. The core fallback
+uses deterministic BM25 scoring. Catalog descriptors and their lexical index
+are not ADR-018 Stage 1; they are a rebuildable catalog read model and lexical
+search projection. An optional semantic projection may enrich ranking without
+replacing or hiding lexical discovery. This avoids conflicting with ADR-018's
+exclusive Stage-1/Stage-2 handoff contract.
+
+### Durable Projection Support Boundary
+
+The durable skill/catalog projection contract is advertised for the in-memory
+semantic test store, Python sync/async SQLite, and Python sync/async
+PostgreSQL/pgvector arrangements, including applicable Rust SQLite and
+PostgreSQL store bridges. Their contract suites cover revision CAS, restart,
+ACL/scope, provider uninstall, and partial-promotion reconciliation. Chroma is
+not claimed as a durable agent skill-projection backend here; its
+provider-native and semantic-index behavior remains governed by its separate
+projection contract. No durable semantic catalog rows are currently exposed:
+optional semantic ranking is in-process and best-effort.
 
 ### Skill-MCP-capability graph
 
@@ -538,6 +565,21 @@ Both paths identify the same provider-qualified skill version and preserve its
 source fingerprint. The graph-native path permits finer progressive disclosure,
 dependency traversal, and step-level provenance; it is not required merely to
 use an installed skill.
+
+Catalog projection nodes preserve the provider artifact's native local ID in
+their descriptor metadata. Graph node IDs are projection identities, not source
+loader IDs; raw disclosure therefore resolves the artifact source and may then
+select a bounded resource within it.
+
+MCP schema selection is fail-closed: a selected schema requires an explicit
+authorization callback. Discovery and schema description do not grant invoke
+authority.
+
+Provider-backed durable materialization carries a provider lifecycle token. The
+token is persisted with the parsed artifact and checked before projection CAS;
+provider registration generation is persisted when a metadata store is supplied.
+After unload, reload, or process restart, stale queued artifacts cannot
+re-materialize under a new provider lifecycle.
 
 Useful projected nodes include:
 

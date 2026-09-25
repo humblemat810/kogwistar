@@ -66,6 +66,7 @@ def test_multi_projection_cas_concurrency_has_one_winner(local_store):
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = list(pool.map(attempt, (2, 3)))
     assert sorted(results) == [False, True]
+
     snapshot = _snapshot(local_store, namespace)
     assert snapshot["a"]["payload"]["value"] == snapshot["b"]["payload"]["value"]
 
@@ -88,3 +89,16 @@ def test_postgres_multi_projection_cas_is_atomic(sa_engine, pg_schema):
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = list(pool.map(attempt, (2, 3)))
     assert sorted(results) == [False, True]
+
+    create_namespace = f"cas-pg-create-{uuid.uuid4().hex}"
+
+    def create(value: int) -> bool:
+        return bool(
+            store.compare_and_swap_named_projections(
+                [_row(create_namespace, "new", value)]
+            )
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        create_results = list(pool.map(create, (1, 2)))
+    assert sorted(create_results) == [False, True]

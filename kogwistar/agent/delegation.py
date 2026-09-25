@@ -80,11 +80,14 @@ def build_delegated_invocation(
     spec: DelegationSpec,
     workflow_design: WorkflowDesignArtifact | None = None,
     result_state_key: str = "agent_subagent_result",
+    allowed_model_profiles: set[str] | frozenset[str] | None = None,
 ) -> WorkflowInvocationRequest:
     """Build deterministic invoke-and-await request with isolated child state."""
 
     if workflow_design is not None and workflow_design.workflow_id != workflow_id:
         raise ValueError("workflow_design.workflow_id must match workflow_id")
+    if allowed_model_profiles is not None and spec.model_profile not in set(allowed_model_profiles):
+        raise ValueError(f"unknown child model profile: {spec.model_profile}")
     invocation_key = f"{ctx.run_id}:{ctx.step_seq}:{workflow_id}:{spec.model_profile}"
     return WorkflowInvocationRequest(
         workflow_id=workflow_id,
@@ -121,6 +124,7 @@ def make_delegation_handler(
     spec: DelegationSpec,
     workflow_design: WorkflowDesignArtifact | None = None,
     result_state_key: str = "agent_subagent_result",
+    allowed_model_profiles: set[str] | frozenset[str] | None = None,
 ) -> Any:
     """Create ordinary resolver handler returning one nested invocation."""
 
@@ -134,6 +138,7 @@ def make_delegation_handler(
                     spec=spec,
                     workflow_design=workflow_design,
                     result_state_key=result_state_key,
+                    allowed_model_profiles=allowed_model_profiles,
                 )
             ],
         )

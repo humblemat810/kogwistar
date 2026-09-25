@@ -1836,6 +1836,15 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
         updated_at_ms = int(time.time() * 1000)
         payload_json = json.dumps(payload, sort_keys=True, separators=(",", ":"))
         with self.transaction() as conn:
+            lock_key = json.dumps(
+                [str(namespace), str(key)], separators=(",", ":")
+            )
+            conn.execute(
+                sa.text(
+                    "SELECT pg_advisory_xact_lock(hashtextextended(:lock_key, 0))"
+                ),
+                {"lock_key": lock_key},
+            )
             params = {
                 "namespace": str(namespace),
                 "key": str(key),
@@ -1898,6 +1907,19 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
         now = int(time.time() * 1000)
         with self.transaction() as conn:
             for item in rows:
+                # PostgreSQL cannot lock a row that does not exist.  Serialize
+                # the absent-row create path per logical key before checking
+                # CAS expectations, otherwise two creators can both win.
+                lock_key = json.dumps(
+                    [str(item["namespace"]), str(item["key"])],
+                    separators=(",", ":"),
+                )
+                conn.execute(
+                    sa.text(
+                        "SELECT pg_advisory_xact_lock(hashtextextended(:lock_key, 0))"
+                    ),
+                    {"lock_key": lock_key},
+                )
                 current = conn.execute(sa.text(f"SELECT last_authoritative_seq, last_materialized_seq FROM {schema}.named_projections WHERE namespace=:namespace AND key=:key FOR UPDATE"), {"namespace": str(item["namespace"]), "key": str(item["key"])}).first()
                 expected_a = item.get("expected_last_authoritative_seq")
                 expected_m = item.get("expected_last_materialized_seq")

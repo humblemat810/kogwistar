@@ -9,6 +9,7 @@ from typing import Any, Callable
 from kogwistar.wisdom.proposals import ProposalEvaluation, WisdomRevisionProposal
 
 from .skills import (
+    DurableSkillCatalogMaterializer,
     SkillGraphArtifact,
     SkillGraphEdge,
     SkillGraphNode,
@@ -57,6 +58,7 @@ def compile_approved_proposal_to_skill(
     evaluation: ProposalEvaluation,
     *,
     store: SkillProjectionStore,
+    materializer: DurableSkillCatalogMaterializer | None = None,
     provider_id: str = "kogwistar.wisdom",
     tenant_id: str | None = None,
     project_id: str | None = None,
@@ -117,6 +119,10 @@ def compile_approved_proposal_to_skill(
         },
     )
     validate_skill_artifact(artifact, tenant_id=tenant_id, project_id=project_id)
+    if materializer is not None:
+        if materializer.projections is not store:
+            raise ValueError("materializer must own the supplied skill projection store")
+        return materializer.materialize(artifact)
     return store.upsert(artifact)
 
 

@@ -9,9 +9,13 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from .catalog import CatalogStore
+from .providers import ProviderInactiveError, ProviderRegistration, ProviderRegistry
 from .skills import (
     SkillGraphArtifact,
     SkillGraphEdge,
+    DurableCatalogStore,
+    DurableSkillCatalogMaterializer,
+    DurableSkillProjectionStore,
     SkillProjectionStore,
     catalog_entries_from_artifact,
     parse_skill_text,
@@ -106,13 +110,15 @@ def select_mcp_schemas(
 ) -> dict[str, Mapping[str, Any]]:
     """Load only selected, authorized, bounded schemas for one model call."""
 
+    if authorize is None:
+        raise PermissionError("MCP schema selection requires an authorization callback")
     if len(provider_local_ids) > max_schemas:
         raise ValueError("selected MCP schema count exceeds bound")
     selected: dict[str, Mapping[str, Any]] = {}
     total_bytes = 0
     for local_id in provider_local_ids:
         key = str(local_id)
-        if authorize is not None and not authorize(key):
+        if not authorize(key):
             raise PermissionError(f"MCP schema is not authorized: {key}")
         schema = dict(provider.describe(key))
         encoded = len(json.dumps(schema, sort_keys=True, default=str).encode("utf-8"))
@@ -129,6 +135,9 @@ def ingest_filesystem_skill(
     *,
     projection: SkillProjectionStore,
     catalog: CatalogStore | None = None,
+    materializer: DurableSkillCatalogMaterializer | None = None,
+    provider_registry: ProviderRegistry | None = None,
+    provider_registration: ProviderRegistration | None = None,
     skill_version: str = "v1",
     tenant_id: str | None = None,
     project_id: str | None = None,
@@ -152,6 +161,11 @@ def ingest_filesystem_skill(
                 "source_kind": "filesystem_skill",
                 "provider_version": provider.provider_version,
                 "provider_local_id": provider_local_id,
+                **(
+                    {"provider_lifecycle_token": provider_registration.lifecycle_token}
+                    if provider_registration is not None
+                    else {}
+                ),
             },
         }
     )
@@ -161,11 +175,110 @@ def ingest_filesystem_skill(
         tenant_id=tenant_id,
         project_id=project_id,
     )
-    projected = projection.upsert(artifact)
-    if catalog is not None:
-        for entry in catalog_entries_from_artifact(projected):
-            catalog.upsert(entry)
-    return projected
+    return materialize_skill_artifact(
+        artifact,
+        projection=projection,
+        catalog=catalog,
+        materializer=materializer,
+        provider_registry=provider_registry,
+        provider_registration=provider_registration,
+        expected_provider=provider,
+    )
+
+
+def materialize_skill_artifact(
+    artifact: SkillGraphArtifact,
+    *,
+    projection: SkillProjectionStore,
+    catalog: CatalogStore | None = None,
+    materializer: DurableSkillCatalogMaterializer | None = None,
+    provider_registry: ProviderRegistry | None = None,
+    provider_registration: ProviderRegistration | None = None,
+    expected_provider: object | None = None,
+) -> SkillGraphArtifact:
+    """Commit any already-parsed skill through one guarded projection path."""
+
+    if (
+        catalog is not None
+        and isinstance(projection, DurableSkillProjectionStore)
+        and isinstance(catalog, DurableCatalogStore)
+        and materializer is None
+    ):
+        raise ValueError(
+            "durable skill and catalog stores require one shared materializer"
+        )
+
+    def commit() -> SkillGraphArtifact:
+        if materializer is not None:
+            if materializer.projections is not projection or materializer.catalog is not catalog:
+                raise ValueError("materializer must own supplied projection and catalog stores")
+            guard_updates: list[dict[str, Any]] = []
+            if provider_registry is not None and provider_registry._metadata is not None:
+                if provider_registry._metadata is not materializer.projections._metadata:
+                    raise ValueError(
+                        "provider lifecycle and skill projections must share metadata store"
+                    )
+                guard = provider_registry.lifecycle_guard_update(provider_registration)
+                if guard is not None:
+                    guard_updates.append(guard)
+            return materializer.materialize(artifact, guard_updates=guard_updates)
+        projected = projection.upsert(artifact)
+        if catalog is not None:
+            for entry in catalog_entries_from_artifact(projected):
+                catalog.upsert(entry)
+        return projected
+
+    if provider_registry is None and provider_registration is None:
+        return commit()
+    if provider_registry is None or provider_registration is None:
+        raise ValueError("provider_registry and provider_registration must be supplied together")
+    if expected_provider is not None and provider_registration.provider is not expected_provider:
+        raise ValueError("provider registration does not own supplied skill source")
+    if provider_registration.identity.provider_id != artifact.provider_id:
+        raise ValueError("provider registration does not match skill artifact provider")
+    token = artifact.provenance.get("provider_lifecycle_token")
+    if token is not None and str(token) != provider_registration.lifecycle_token:
+        raise ProviderInactiveError(
+            "skill artifact belongs to an earlier provider lifecycle: "
+            f"{provider_registration.identity.qualified_id}"
+        )
+    if token is None:
+        # Durable materialization cannot distinguish a newly-created artifact
+        # from stale queued work once the lifecycle boundary is crossed.
+        raise ProviderInactiveError(
+            "skill artifact is missing provider lifecycle token; re-ingest it"
+        )
+    return provider_registry.run_if_active(provider_registration, commit)
+
+
+def make_skill_projection_cleanup(
+    *,
+    projection: SkillProjectionStore,
+    catalog: CatalogStore | None = None,
+    materializer: DurableSkillCatalogMaterializer | None = None,
+) -> Callable[[str], None]:
+    """Return provider-unload cleanup for only derived skill/catalog views."""
+
+    if (
+        materializer is None
+        and catalog is not None
+        and isinstance(projection, DurableSkillProjectionStore)
+        and isinstance(catalog, DurableCatalogStore)
+    ):
+        materializer = DurableSkillCatalogMaterializer(
+            projections=projection,
+            catalog=catalog,
+        )
+
+    def cleanup(provider_id: str) -> None:
+        if materializer is not None:
+            materializer.remove_provider(provider_id)
+            return
+        projection.remove_provider(provider_id)
+        if catalog is not None:
+            catalog.remove_provider(provider_id)
+
+    return cleanup
 
 
 class LlmWikiIngestionAdapter:
@@ -194,7 +307,17 @@ class LlmWikiIngestionAdapter:
         if len(encoded) > self._max_source_bytes:
             raise ValueError("LLM-Wiki skill source exceeds byte bound")
         artifact = self._parse(request)
-        validate_skill_artifact(artifact)
+        requested_tenant = request.get("tenant_id")
+        requested_project = request.get("project_id")
+        validate_skill_artifact(
+            artifact,
+            tenant_id=requested_tenant,
+            project_id=requested_project,
+        )
+        if requested_tenant is not None and artifact.tenant_id != requested_tenant:
+            raise PermissionError("LLM-Wiki artifact tenant scope mismatch")
+        if requested_project is not None and artifact.project_id != requested_project:
+            raise PermissionError("LLM-Wiki artifact project scope mismatch")
         return artifact
 
     def close(self) -> None:

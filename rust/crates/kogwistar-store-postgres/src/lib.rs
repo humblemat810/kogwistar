@@ -32,7 +32,7 @@ use kogwistar_store::{
     validate_entity_rebuild_request, validate_entity_recovery_request,
 };
 use serde_json::{Map, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::pin::Pin;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -72,6 +72,20 @@ pub enum PostgresStoreError {
 }
 
 pub type PostgresStoreResult<T> = Result<T, PostgresStoreError>;
+
+/// One compare-and-swap item for an atomic named-projection batch.
+///
+/// All expected values are checked while their rows are locked before any
+/// replacement is applied. This keeps a multi-projection materialization from
+/// exposing a partial artifact/graph/catalog commit.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NamedProjectionCas {
+    pub namespace: String,
+    pub key: String,
+    pub expected_last_authoritative_seq: Option<i64>,
+    pub expected_last_materialized_seq: Option<i64>,
+    pub projection: NamedProjectionWrite,
+}
 
 /// Event row retaining exact `payload_json` bytes supplied by a caller.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -835,6 +849,17 @@ impl PostgresStore {
                 )
                 .await
             })
+        })
+        .await
+    }
+
+    /// Atomically compare-and-swaps a set of named projections.
+    pub async fn compare_and_swap_named_projections(
+        &self,
+        updates: Vec<NamedProjectionCas>,
+    ) -> PostgresStoreResult<bool> {
+        self.transaction(move |uow| {
+            Box::pin(async move { uow.compare_and_swap_named_projections(updates).await })
         })
         .await
     }
@@ -2137,6 +2162,14 @@ impl PostgresUnitOfWork<'_> {
         .await
     }
 
+    /// Atomically compare-and-swaps a set of named projections.
+    pub async fn compare_and_swap_named_projections(
+        &mut self,
+        updates: Vec<NamedProjectionCas>,
+    ) -> PostgresStoreResult<bool> {
+        compare_and_swap_named_projections(&self.transaction, &self.tables, updates).await
+    }
+
     pub async fn clear_named_projection(
         &mut self,
         namespace: &str,
@@ -3069,6 +3102,13 @@ async fn compare_and_swap_named_projection<C>(
 where
     C: GenericClient + Sync,
 {
+    client
+        .query_one(
+            "SELECT pg_advisory_xact_lock(hashtextextended($1::text, hashtextextended($2::text, 0)))",
+            &[&namespace, &key],
+        )
+        .await
+        .map_err(backend)?;
     let payload_json = projection_payload_json(&projection.payload)?;
     let updated_at_ms = unix_epoch_millis();
     let projection_schema_version =
@@ -3089,6 +3129,73 @@ where
         _ => 0,
     };
     Ok(changes == 1)
+}
+
+async fn compare_and_swap_named_projections<C>(
+    client: &C,
+    tables: &Tables,
+    mut updates: Vec<NamedProjectionCas>,
+) -> PostgresStoreResult<bool>
+where
+    C: GenericClient + Sync,
+{
+    updates
+        .sort_by(|left, right| (&left.namespace, &left.key).cmp(&(&right.namespace, &right.key)));
+    let mut keys = BTreeSet::new();
+    for update in &updates {
+        require_namespace(&update.namespace)?;
+        if !keys.insert((update.namespace.clone(), update.key.clone())) {
+            return Err(PostgresStoreError::Backend(
+                "duplicate named-projection CAS key".to_owned(),
+            ));
+        }
+        if update.expected_last_authoritative_seq.is_some()
+            != update.expected_last_materialized_seq.is_some()
+        {
+            return Ok(false);
+        }
+    }
+
+    // Lock keys in deterministic order. Advisory locks also serialize absent-row
+    // creates, for which a normal FOR UPDATE has no row to lock.
+    for update in &updates {
+        client
+            .query_one(
+                "SELECT pg_advisory_xact_lock(hashtextextended($1::text, hashtextextended($2::text, 0)))",
+                &[&update.namespace, &update.key],
+            )
+            .await
+            .map_err(backend)?;
+        let current =
+            named_projection_for_update(client, tables, &update.namespace, &update.key).await?;
+        let matches = match (
+            &current,
+            update.expected_last_authoritative_seq,
+            update.expected_last_materialized_seq,
+        ) {
+            (None, None, None) => true,
+            (Some(row), Some(expected_authoritative), Some(expected_materialized)) => {
+                row.last_authoritative_seq == expected_authoritative
+                    && row.last_materialized_seq == expected_materialized
+            }
+            _ => false,
+        };
+        if !matches {
+            return Ok(false);
+        }
+    }
+
+    for update in updates {
+        replace_named_projection(
+            client,
+            tables,
+            &update.namespace,
+            &update.key,
+            update.projection,
+        )
+        .await?;
+    }
+    Ok(true)
 }
 
 async fn clear_named_projection<C>(

@@ -81,3 +81,13 @@ def test_delegation_cannot_escalate_capability_or_output_context() -> None:
         max_bytes=1024,
     )
     assert artifact["result"]["artifact_ref"].startswith("file:")
+
+
+def test_delegation_rejects_model_profile_outside_host_allowlist() -> None:
+    with pytest.raises(ValueError, match="unknown child model profile"):
+        build_delegated_invocation(
+            _ctx(),
+            workflow_id="child.workflow",
+            spec=DelegationSpec(model_profile="unapproved"),
+            allowed_model_profiles={"vision-local"},
+        )

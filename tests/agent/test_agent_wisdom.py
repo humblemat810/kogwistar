@@ -86,7 +86,9 @@ def test_approved_lesson_becomes_versioned_skill_with_lineage() -> None:
     assert artifact.projection_revision == 1
     assert artifact.provenance["proposal_id"] == "proposal-1"
     assert artifact.provenance["evidence_run_ids"] == ["run-1"]
-    assert store.get("kogwistar.wisdom", "proposal-1") is artifact
+    projected = store.get("kogwistar.wisdom", "proposal-1")
+    assert projected == artifact
+    assert projected is not artifact
 
 
 def test_new_approved_revision_preserves_prior_projection_lineage() -> None:
@@ -100,7 +102,9 @@ def test_new_approved_revision_preserves_prior_projection_lineage() -> None:
     assert first is not None and second is not None
     assert first.skill_version != second.skill_version
     assert first.provenance["proposal_id"] == second.provenance["proposal_id"]
-    assert store.get("kogwistar.wisdom", "proposal-1") is second
+    projected = store.get("kogwistar.wisdom", "proposal-1")
+    assert projected == second
+    assert projected is not second
     assert store.history("kogwistar.wisdom", "proposal-1") == (first, second)
 
 

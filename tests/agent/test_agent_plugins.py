@@ -46,7 +46,7 @@ def test_filesystem_provider_descriptors_are_fingerprintable_and_safe(tmp_path) 
         provider.load("../secret.md")
     registry = ProviderRegistry()
     registry.register(provider_id=provider.provider_id, provider=provider)
-    catalog = CatalogStore()
+    catalog = CatalogStore(acl_enabled=False)
     catalog.ingest_descriptors(registry.discovery_descriptors())
     assert catalog.get("filesystem.skills:deploy.md") is not None
 
@@ -69,6 +69,8 @@ def test_mcp_schema_selection_is_explicit_authorized_and_bounded() -> None:
     assert list(selected) == ["search"]
     with pytest.raises(PermissionError):
         select_mcp_schemas(provider, ["secret"], authorize=lambda _item: False)
+    with pytest.raises(PermissionError, match="authorization callback"):
+        select_mcp_schemas(provider, ["search"])
 
 
 def test_filesystem_skill_ingestion_preserves_raw_provider_and_projection(tmp_path) -> None:
@@ -87,7 +89,9 @@ def test_filesystem_skill_ingestion_preserves_raw_provider_and_projection(tmp_pa
     )
     assert artifact.source_fingerprint
     assert provider.load("deploy.md").startswith("# Deploy")
-    assert projection.get(provider.provider_id, "deploy.md") is artifact
+    projected = projection.get(provider.provider_id, "deploy.md")
+    assert projected == artifact
+    assert projected is not artifact
     assert catalog.get("filesystem.skills:deploy.md") is not None
 
 
@@ -109,7 +113,7 @@ def test_llm_wiki_adapter_is_optional_and_uses_same_artifact_contract() -> None:
     provider = LlmWikiIngestionAdapter(
         lambda source: parse_skill_text(
             str(source["text"]), provider_id="wiki", provider_local_id="skill"
-        ),
+        ).model_copy(update={"tenant_id": source.get("tenant_id")}),
         authorize=lambda source: source.get("tenant_id") == "tenant-1",
     )
     artifact = provider.parse({"text": "# Skill\n\n1. inspect\n", "tenant_id": "tenant-1"})
@@ -123,6 +127,15 @@ def test_llm_wiki_adapter_is_optional_and_uses_same_artifact_contract() -> None:
             authorize=lambda _source: True,
             max_source_bytes=8,
         ).parse({"text": "too large"})
+
+    mismatched = LlmWikiIngestionAdapter(
+        lambda _source: parse_skill_text(
+            "# Skill", provider_id="wiki", provider_local_id="skill"
+        ).model_copy(update={"tenant_id": "tenant-2"}),
+        authorize=lambda _source: True,
+    )
+    with pytest.raises(PermissionError, match="tenant scope"):
+        mismatched.parse({"text": "# Skill", "tenant_id": "tenant-1"})
 
 
 def test_semantic_provider_edges_remain_candidate_with_provenance() -> None:
@@ -147,7 +160,9 @@ def test_semantic_provider_failure_keeps_previous_valid_projection() -> None:
     )
     with pytest.raises(RuntimeError, match="offline"):
         provider.parse({"text": "# v2"})
-    assert store.get("wiki", "skill") is valid
+    retained = store.get("wiki", "skill")
+    assert retained == valid
+    assert retained is not valid
 
 
 def test_provider_failure_mode_and_unload_cleanup_retract_current_projection_only() -> None:
@@ -233,7 +248,7 @@ def test_skill_projection_uses_fixed_workspace_lane_and_execution_is_bounded() -
         project_id="acme",
         tenant_id="tenant-1",
     )
-    assert request.lane_id == "ws:acme:g:projection:lane:skills"
+    assert request.lane_id == "ws:tenant-1:acme:g:projection:lane:skills"
     artifact = parse_skill_text(
         "# Deploy\n\nCapability: graph.read\n\nMCP: project.deploy\n\n1. inspect",
         provider_id="project",
@@ -257,12 +272,23 @@ def test_effectful_skill_requires_explicit_bounded_execution_policy_and_emits_ev
         provider_local_id="deploy",
     ).model_copy(update={"projection_revision": 3})
     command_id = next(node.node_id for node in artifact.nodes if node.kind == "command_template")
-    with pytest.raises(PermissionError, match="execution policy"):
+    with pytest.raises(PermissionError, match="not authorized"):
         prepare_skill_execution(
             artifact,
             node_ids=[command_id],
             effective_capabilities={"process.execute"},
         )
+    bound_node = next(node for node in artifact.nodes if node.node_id == command_id).model_copy(
+        update={"binding_status": "validated", "invocable": True}
+    )
+    artifact = artifact.model_copy(
+        update={
+            "nodes": [
+                bound_node if node.node_id == command_id else node
+                for node in artifact.nodes
+            ]
+        }
+    )
     policy = SkillExecutionPolicy(
         max_output_bytes=4096,
         max_time_ms=5000,
