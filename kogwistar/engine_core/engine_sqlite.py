@@ -1195,27 +1195,48 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
         claimed_by: str,
         limit: int = 50,
         lease_seconds: int = 60,
+        message_ids: list[str] | tuple[str, ...] | None = None,
+        run_id: str | None = None,
+        msg_type: str | None = None,
+        recipient_id: str | None = None,
     ) -> list[ProjectedLaneMessageRow]:
         if int(limit) <= 0:
             return []
         now = self._now_epoch()
         lease_until = now + int(lease_seconds)
         with self.transaction() as conn:
+            where = [
+                "namespace = ?",
+                "inbox_id = ?",
+                "((status = 'pending' AND available_at <= ?) OR "
+                "(status = 'claimed' AND lease_until IS NOT NULL AND lease_until < ?))",
+            ]
+            params: list[object] = [str(namespace), str(inbox_id), int(now), int(now)]
+            if message_ids is not None:
+                ids_filter = [str(item) for item in message_ids]
+                if not ids_filter:
+                    return []
+                where.append("message_id IN (" + ",".join("?" for _ in ids_filter) + ")")
+                params.extend(ids_filter)
+            if run_id is not None:
+                where.append("run_id = ?")
+                params.append(str(run_id))
+            if msg_type is not None:
+                where.append("msg_type = ?")
+                params.append(str(msg_type))
+            if recipient_id is not None:
+                where.append("recipient_id = ?")
+                params.append(str(recipient_id))
+            params.append(int(limit))
             rows = conn.execute(
-                """
+                f"""
                 SELECT message_id
                 FROM projected_lane_messages
-                WHERE namespace = ?
-                  AND inbox_id = ?
-                  AND (
-                    (status = 'pending' AND available_at <= ?)
-                    OR
-                    (status = 'claimed' AND lease_until IS NOT NULL AND lease_until < ?)
-                  )
+                WHERE {' AND '.join(where)}
                 ORDER BY seq ASC, created_at ASC
                 LIMIT ?
                 """,
-                (str(namespace), str(inbox_id), int(now), int(now), int(limit)),
+                tuple(params),
             ).fetchall()
             ids = [str(row[0]) for row in rows]
             if not ids:
@@ -1328,6 +1349,7 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
         namespace: str = "default",
         purpose: str | None = None,
         inbox_id: str | None = None,
+        run_id: str | None = None,
         conversation_id: str | None = None,
         status: str | None = None,
         msg_type: str | None = None,
@@ -1351,6 +1373,9 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
         if inbox_id is not None:
             where.append("inbox_id = ?")
             params.append(str(inbox_id))
+        if run_id is not None:
+            where.append("run_id = ?")
+            params.append(str(run_id))
         if conversation_id is not None:
             where.append("conversation_id = ?")
             params.append(str(conversation_id))

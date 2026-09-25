@@ -20,15 +20,16 @@ use kogwistar_store::{
     EntityEvent, EntityRebuildRequest, EntityRecoveryReport, EntityRecoveryRequest,
     EventPruneStore, EventReadStore, EventWriteStore, ExternalIdentity, GraphMutation,
     GraphMutationStore, GraphProjectionRead, GraphProjectionVectorQuery, GraphRecord, IndexJob,
-    IndexJobReadStore, IndexJobWriteStore, LaneMessageFilter, LaneMessageReadStore,
-    LaneMessageWriteStore, NamedProjection, NamedProjectionWrite, NewEntityEvent, NewIndexJob,
-    NewProjectedLaneMessage, ProjectedLaneMessage, ProjectionReadStore, ProjectionWriteStore,
-    RUNTIME_CURRENT_STATE_NAMESPACE, ReplayCursor, ResolveExternalIdentity, ServerRun,
-    ServerRunCreate, ServerRunEvent, ServerRunReadStore, ServerRunUpdate, ServerRunWriteStore,
-    StoreError, StoreResult, VectorMatch, WorkflowDesignDelta, WorkflowDesignDeltaWrite,
-    WorkflowDesignHistoryReadStore, WorkflowDesignHistoryWriteStore, WorkflowDesignSnapshot,
-    WorkflowDesignSnapshotWrite, runtime_checkpoint_namespace, runtime_projection_write,
-    runtime_status_namespace, validate_entity_rebuild_request, validate_entity_recovery_request,
+    IndexJobReadStore, IndexJobWriteStore, LaneMessageClaimFilter, LaneMessageFilter,
+    LaneMessageReadStore, LaneMessageWriteStore, NamedProjection, NamedProjectionWrite,
+    NewEntityEvent, NewIndexJob, NewProjectedLaneMessage, ProjectedLaneMessage,
+    ProjectionReadStore, ProjectionWriteStore, RUNTIME_CURRENT_STATE_NAMESPACE, ReplayCursor,
+    ResolveExternalIdentity, ServerRun, ServerRunCreate, ServerRunEvent, ServerRunReadStore,
+    ServerRunUpdate, ServerRunWriteStore, StoreError, StoreResult, VectorMatch,
+    WorkflowDesignDelta, WorkflowDesignDeltaWrite, WorkflowDesignHistoryReadStore,
+    WorkflowDesignHistoryWriteStore, WorkflowDesignSnapshot, WorkflowDesignSnapshotWrite,
+    runtime_checkpoint_namespace, runtime_projection_write, runtime_status_namespace,
+    validate_entity_rebuild_request, validate_entity_recovery_request,
 };
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
@@ -1463,6 +1464,15 @@ impl PostgresStore {
         })
         .await
     }
+    pub async fn claim_projected_lane_messages_filtered(
+        &self,
+        filter: LaneMessageClaimFilter,
+    ) -> PostgresStoreResult<Vec<ProjectedLaneMessage>> {
+        self.transaction(move |uow| {
+            Box::pin(async move { uow.claim_projected_lane_messages_filtered(filter).await })
+        })
+        .await
+    }
     pub async fn ack_projected_lane_message(
         &self,
         id: &str,
@@ -1734,6 +1744,12 @@ impl PostgresUnitOfWork<'_> {
             lease,
         )
         .await
+    }
+    pub async fn claim_projected_lane_messages_filtered(
+        &mut self,
+        filter: LaneMessageClaimFilter,
+    ) -> PostgresStoreResult<Vec<ProjectedLaneMessage>> {
+        claim_projected_lane_messages_filtered(&self.transaction, &self.tables, &filter).await
     }
     pub async fn claim_projected_lane_messages_for_run(
         &mut self,
@@ -2496,6 +2512,14 @@ impl LaneMessageWriteStore for PostgresStore {
         lease: i64,
     ) -> StoreResult<Vec<ProjectedLaneMessage>> {
         PostgresStore::claim_projected_lane_messages(self, namespace, inbox, owner, limit, lease)
+            .await
+            .map_err(trait_error)
+    }
+    async fn claim_projected_lane_messages_filtered(
+        &self,
+        filter: LaneMessageClaimFilter,
+    ) -> StoreResult<Vec<ProjectedLaneMessage>> {
+        PostgresStore::claim_projected_lane_messages_filtered(self, filter)
             .await
             .map_err(trait_error)
     }
@@ -5726,6 +5750,88 @@ where
     .await
     .map_err(backend)
 }
+async fn claim_projected_lane_messages_filtered<C>(
+    c: &C,
+    t: &Tables,
+    filter: &LaneMessageClaimFilter,
+) -> PostgresStoreResult<Vec<ProjectedLaneMessage>>
+where
+    C: GenericClient + Sync,
+{
+    if filter.limit == 0 {
+        return Ok(vec![]);
+    }
+    let read_filter = LaneMessageFilter {
+        namespace: Some(filter.namespace.clone()),
+        purpose: None,
+        inbox_id: Some(filter.inbox_id.clone()),
+        conversation_id: None,
+        status: None,
+        msg_type: filter.msg_type.clone(),
+        sender_id: None,
+        recipient_id: filter.recipient_id.clone(),
+        correlation_id: None,
+        reply_to_message_id: None,
+        created_at_gte: None,
+        created_at_lte: None,
+        available_at_gte: None,
+        available_at_lte: None,
+        limit: usize::MAX,
+        newest_first: false,
+    };
+    let allowed_ids = filter
+        .message_ids
+        .as_ref()
+        .map(|ids| ids.iter().collect::<std::collections::HashSet<_>>());
+    let mut candidates = list_projected_lane_messages(c, t, &read_filter).await?;
+    candidates.retain(|row| {
+        allowed_ids
+            .as_ref()
+            .is_none_or(|ids| ids.contains(&row.message_id))
+            && filter
+                .run_id
+                .as_ref()
+                .is_none_or(|value| row.run_id.as_deref() == Some(value))
+            && matches!(row.status.as_str(), "pending" | "claimed")
+    });
+    candidates.sort_by_key(|row| (row.seq, row.created_at, row.message_id.clone()));
+    candidates.truncate(filter.limit);
+    let lease = filter.lease_seconds.to_string();
+    let mut claimed = Vec::with_capacity(candidates.len());
+    for row in candidates {
+        let rows = c
+            .query(
+                &format!(
+                    "UPDATE {} AS x SET status='claimed',claimed_by=$1,lease_until=NOW()+($2::TEXT||' seconds')::interval \
+                     WHERE message_id=$3 AND namespace=$4 AND inbox_id=$5 \
+                     AND ($6::TEXT IS NULL OR run_id=$6) \
+                     AND ($7::TEXT IS NULL OR msg_type=$7) \
+                     AND ($8::TEXT IS NULL OR recipient_id=$8) \
+                     AND ((status='pending' AND available_at<=EXTRACT(EPOCH FROM NOW())::BIGINT) \
+                          OR (status='claimed' AND lease_until IS NOT NULL AND lease_until<NOW())) \
+                     RETURNING {}",
+                    t.projected_lane_messages, LANE_RETURNING
+                ),
+                &[
+                    &filter.claimed_by,
+                    &lease,
+                    &row.message_id,
+                    &filter.namespace,
+                    &filter.inbox_id,
+                    &filter.run_id,
+                    &filter.msg_type,
+                    &filter.recipient_id,
+                ],
+            )
+            .await
+            .map_err(backend)?;
+        if let Some(row) = rows.first() {
+            claimed.push(lane_from_row(row)?);
+        }
+    }
+    Ok(claimed)
+}
+
 async fn claim_projected_lane_messages<C>(
     c: &C,
     t: &Tables,
@@ -5738,13 +5844,22 @@ async fn claim_projected_lane_messages<C>(
 where
     C: GenericClient + Sync,
 {
-    if limit == 0 {
-        return Ok(vec![]);
-    }
-    let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-    let lease = lease.to_string();
-    let rows=c.query(&format!("WITH picked AS (SELECT message_id FROM {} WHERE namespace=$1 AND inbox_id=$2 AND ((status='pending' AND available_at<=EXTRACT(EPOCH FROM NOW())::BIGINT) OR (status='claimed' AND lease_until IS NOT NULL AND lease_until<NOW())) ORDER BY seq ASC,created_at ASC LIMIT $3 FOR UPDATE SKIP LOCKED) UPDATE {} x SET status='claimed',claimed_by=$4,lease_until=NOW()+($5::TEXT||' seconds')::interval FROM picked WHERE x.message_id=picked.message_id RETURNING {}",t.projected_lane_messages,t.projected_lane_messages,LANE_RETURNING),&[&namespace,&inbox,&limit,&owner,&lease]).await.map_err(backend)?;
-    rows.iter().map(lane_from_row).collect()
+    claim_projected_lane_messages_filtered(
+        c,
+        t,
+        &LaneMessageClaimFilter {
+            namespace: namespace.to_owned(),
+            inbox_id: inbox.to_owned(),
+            claimed_by: owner.to_owned(),
+            message_ids: None,
+            run_id: None,
+            msg_type: None,
+            recipient_id: None,
+            limit,
+            lease_seconds: lease,
+        },
+    )
+    .await
 }
 #[allow(clippy::too_many_arguments)]
 async fn claim_projected_lane_messages_for_run<C>(
@@ -5760,13 +5875,22 @@ async fn claim_projected_lane_messages_for_run<C>(
 where
     C: GenericClient + Sync,
 {
-    if limit == 0 {
-        return Ok(vec![]);
-    }
-    let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-    let lease = lease.to_string();
-    let rows=c.query(&format!("WITH picked AS (SELECT message_id FROM {} WHERE namespace=$1 AND inbox_id=$2 AND run_id=$3 AND ((status='pending' AND available_at<=EXTRACT(EPOCH FROM NOW())::BIGINT) OR (status='claimed' AND lease_until IS NOT NULL AND lease_until<NOW())) ORDER BY seq ASC,created_at ASC LIMIT $4 FOR UPDATE SKIP LOCKED) UPDATE {} x SET status='claimed',claimed_by=$5,lease_until=NOW()+($6::TEXT||' seconds')::interval FROM picked WHERE x.message_id=picked.message_id RETURNING {}",t.projected_lane_messages,t.projected_lane_messages,LANE_RETURNING),&[&namespace,&inbox,&run_id,&limit,&owner,&lease]).await.map_err(backend)?;
-    rows.iter().map(lane_from_row).collect()
+    claim_projected_lane_messages_filtered(
+        c,
+        t,
+        &LaneMessageClaimFilter {
+            namespace: namespace.to_owned(),
+            inbox_id: inbox.to_owned(),
+            claimed_by: owner.to_owned(),
+            message_ids: None,
+            run_id: Some(run_id.to_owned()),
+            msg_type: None,
+            recipient_id: None,
+            limit,
+            lease_seconds: lease,
+        },
+    )
+    .await
 }
 async fn ack_projected_lane_message<C>(
     c: &C,

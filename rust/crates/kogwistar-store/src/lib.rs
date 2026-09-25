@@ -683,6 +683,24 @@ impl LaneMessageFilter {
     }
 }
 
+/// Atomic claim constraints for active-run control and other lane consumers.
+///
+/// Filtering belongs inside the claim transaction.  A caller must not list a
+/// candidate and then claim it with a broader filter, or another consumer may
+/// win the race and an unrelated message may be claimed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LaneMessageClaimFilter {
+    pub namespace: String,
+    pub inbox_id: String,
+    pub claimed_by: String,
+    pub message_ids: Option<Vec<String>>,
+    pub run_id: Option<String>,
+    pub msg_type: Option<String>,
+    pub recipient_id: Option<String>,
+    pub limit: usize,
+    pub lease_seconds: i64,
+}
+
 pub trait LaneMessageReadStore: Send + Sync {
     fn projected_lane_message(
         &self,
@@ -726,6 +744,10 @@ pub trait LaneMessageWriteStore: LaneMessageReadStore {
         claimed_by: &str,
         limit: usize,
         lease_seconds: i64,
+    ) -> impl Future<Output = StoreResult<Vec<ProjectedLaneMessage>>> + Send;
+    fn claim_projected_lane_messages_filtered(
+        &self,
+        filter: LaneMessageClaimFilter,
     ) -> impl Future<Output = StoreResult<Vec<ProjectedLaneMessage>>> + Send;
     fn ack_projected_lane_message(
         &self,

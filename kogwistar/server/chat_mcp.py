@@ -140,6 +140,47 @@ def build_workflow_mcp(
             "events": events,
         }
 
+    def _require_run_read(run_id: str) -> dict[str, Any]:
+        run = get_service().get_run(run_id)
+        if require_workflow_access:
+            require_workflow_access(str(run.get("workflow_id") or ""), "ro")
+        return run
+
+    @tool_roles({role_ro, role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.run_steps")
+    def workflow_run_steps(run_id: str, limit: int = 200) -> dict[str, Any]:
+        if limit < 1 or limit > 1000:
+            raise ValueError("limit must be between 1 and 1000")
+        _require_run_read(run_id)
+        return {"run_id": run_id, "steps": get_service().list_steps(run_id)[:limit]}
+
+    @tool_roles({role_ro, role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.run_lineage")
+    def workflow_run_lineage(run_id: str, limit: int = 200) -> dict[str, Any]:
+        if limit < 1 or limit > 1000:
+            raise ValueError("limit must be between 1 and 1000")
+        _require_run_read(run_id)
+        payload = dict(get_service().workflow_run_lineage(run_id))
+        all_lineage = list(payload.get("lineage") or [])
+        lineage = all_lineage[:limit]
+        if require_workflow_access:
+            for item in lineage:
+                workflow_id = str(item.get("workflow_id") or "")
+                if workflow_id:
+                    require_workflow_access(workflow_id, "ro")
+        payload["lineage"] = lineage
+        payload["truncated"] = len(all_lineage) > limit
+        return payload
+
+    @tool_roles({role_ro, role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.run_evidence")
+    def workflow_run_evidence(run_id: str) -> dict[str, Any]:
+        _require_run_read(run_id)
+        return get_service().run_evidence(run_id)
+
     @tool_roles({role_ro, role_rw})
     @require_ns({ns_workflow})
     @mcp.tool(name="workflow.process_table")

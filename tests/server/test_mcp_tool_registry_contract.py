@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from pydantic import BaseModel
 
-pytestmark = [pytest.mark.ci]
+pytestmark = [pytest.mark.ci, pytest.mark.server, pytest.mark.unit]
 
 
 class _StructuredResult(BaseModel):

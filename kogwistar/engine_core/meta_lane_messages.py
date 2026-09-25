@@ -28,6 +28,7 @@ class LaneMessageMetaStoreMixin:
         namespace: str | None = None,
         purpose: str | None = None,
         inbox_id: str | None = None,
+        run_id: str | None = None,
         conversation_id: str | None = None,
         status: str | None = None,
         msg_type: str | None = None,
@@ -141,12 +142,25 @@ class LaneMessageMetaStoreMixin:
         claimed_by: str,
         limit: int = 50,
         lease_seconds: int = 60,
+        message_ids: list[str] | tuple[str, ...] | None = None,
+        run_id: str | None = None,
+        msg_type: str | None = None,
+        recipient_id: str | None = None,
     ) -> list[ProjectedLaneMessageRow]:
         if int(limit) <= 0:
             return []
         now = self._lane_message_now_epoch()
         eligible = []
+        allowed_ids = None if message_ids is None else {str(item) for item in message_ids}
         for row in self._lane_message_list_rows(namespace=str(namespace), inbox_id=str(inbox_id)):
+            if allowed_ids is not None and row.message_id not in allowed_ids:
+                continue
+            if run_id is not None and row.run_id != str(run_id):
+                continue
+            if msg_type is not None and row.msg_type != str(msg_type):
+                continue
+            if recipient_id is not None and row.recipient_id != str(recipient_id):
+                continue
             if row.status == "pending" and int(row.available_at) <= now:
                 eligible.append(row)
             elif row.status == "claimed" and row.lease_until is not None and int(row.lease_until) < now:
@@ -235,6 +249,7 @@ class LaneMessageMetaStoreMixin:
         namespace: str = "default",
         purpose: str | None = None,
         inbox_id: str | None = None,
+        run_id: str | None = None,
         conversation_id: str | None = None,
         status: str | None = None,
         msg_type: str | None = None,
@@ -253,6 +268,7 @@ class LaneMessageMetaStoreMixin:
             namespace=str(namespace),
             purpose=purpose,
             inbox_id=inbox_id,
+            run_id=run_id,
             conversation_id=conversation_id,
             status=status,
             msg_type=msg_type,

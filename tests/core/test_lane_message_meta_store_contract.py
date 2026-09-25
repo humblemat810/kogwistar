@@ -129,6 +129,71 @@ def test_lane_message_projection_rebuild_is_backend_parity(tmp_path):
         assert all(isinstance(row, ProjectedLaneMessageRow) for row in rows)
 
 
+@pytest.mark.parametrize(
+    "meta_factory",
+    [
+        lambda tmp_path: InMemoryMetaStore(),
+        lambda tmp_path: _sqlite_meta(tmp_path),
+    ],
+    ids=["in-memory", "sqlite"],
+)
+def test_lane_message_claim_filters_target_before_lease(meta_factory, tmp_path):
+    meta = meta_factory(tmp_path)
+    common = {
+        "namespace": "ns-a",
+        "inbox_id": "inbox:agent",
+        "conversation_id": "conv-1",
+        "sender_id": "user",
+        "status": "pending",
+        "created_at": 1,
+        "available_at": 1,
+        "step_id": None,
+    }
+    meta.project_lane_message(
+        message_id="good",
+        recipient_id="agent-1",
+        msg_type="agent.steer",
+        run_id="run-1",
+        correlation_id="corr-good",
+        payload_json='{"ok":true}',
+        **common,
+    )
+    meta.project_lane_message(
+        message_id="wrong-run",
+        recipient_id="agent-1",
+        msg_type="agent.steer",
+        run_id="run-2",
+        correlation_id="corr-wrong-run",
+        payload_json='{"ok":false}',
+        **common,
+    )
+    meta.project_lane_message(
+        message_id="wrong-kind",
+        recipient_id="agent-1",
+        msg_type="agent.queue",
+        run_id="run-1",
+        correlation_id="corr-wrong-kind",
+        payload_json='{"ok":false}',
+        **common,
+    )
+
+    claimed = meta.claim_projected_lane_messages(
+        namespace="ns-a",
+        inbox_id="inbox:agent",
+        claimed_by="worker-1",
+        limit=10,
+        lease_seconds=30,
+        message_ids=["good", "wrong-run", "wrong-kind"],
+        run_id="run-1",
+        msg_type="agent.steer",
+        recipient_id="agent-1",
+    )
+    assert [row.message_id for row in claimed] == ["good"]
+    assert meta.list_projected_lane_messages(
+        namespace="ns-a", inbox_id="inbox:agent", run_id="run-2"
+    )[0].status == "pending"
+
+
 def test_clear_projected_lane_messages_is_lane_specific_and_namespace_scoped(tmp_path):
     in_memory = InMemoryMetaStore()
     sqlite = _sqlite_meta(tmp_path)

@@ -780,7 +780,7 @@ dependencies = [
 
 [[package]]
 name = "kogwistar-api"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "axum",
  "base64",
@@ -803,7 +803,7 @@ dependencies = [
 
 [[package]]
 name = "kogwistar-contracts"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "hex",
  "proptest",
@@ -816,7 +816,7 @@ dependencies = [
 
 [[package]]
 name = "kogwistar-engine"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "hex",
  "kogwistar-contracts",
@@ -827,7 +827,7 @@ dependencies = [
 
 [[package]]
 name = "kogwistar-python"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "kogwistar-api",
  "kogwistar-contracts",
@@ -845,7 +845,7 @@ dependencies = [
 
 [[package]]
 name = "kogwistar-runtime"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "hex",
  "kogwistar-contracts",
@@ -857,7 +857,7 @@ dependencies = [
 
 [[package]]
 name = "kogwistar-store"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "kogwistar-contracts",
  "serde",
@@ -867,7 +867,7 @@ dependencies = [
 
 [[package]]
 name = "kogwistar-store-memory"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "kogwistar-contracts",
  "kogwistar-store",
@@ -876,7 +876,7 @@ dependencies = [
 
 [[package]]
 name = "kogwistar-store-postgres"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "deadpool-postgres",
  "kogwistar-contracts",
@@ -892,7 +892,7 @@ dependencies = [
 
 [[package]]
 name = "kogwistar-store-sqlite"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "kogwistar-contracts",
  "kogwistar-engine",

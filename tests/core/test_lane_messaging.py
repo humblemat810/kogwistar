@@ -434,6 +434,53 @@ def test_lane_message_cross_scope_read_denied_unless_explicit_shared():
         shutil.rmtree(test_db_dir, ignore_errors=True)
 
 
+def test_lane_message_claim_rechecks_acl_visibility_before_lease():
+    engine, test_db_dir = _make_engine()
+    namespace = "ws:demo:conv:bg"
+    service = LaneMessagingService(engine)
+    sender_token = claims_ctx.set({"ns": "conversation", "security_scope": "tenant-a"})
+    try:
+        with scoped_namespace(engine, namespace):
+            private_msg = service.send_message(
+                conversation_id="conv-agent-acl",
+                inbox_id="inbox:agent",
+                sender_id="user-a",
+                recipient_id="agent-1",
+                msg_type="agent.steer",
+                payload={"direction": "private"},
+                security_scope="tenant-a",
+            )
+            shared_msg = service.send_message(
+                conversation_id="conv-agent-acl",
+                inbox_id="inbox:agent",
+                sender_id="user-a",
+                recipient_id="agent-1",
+                msg_type="agent.steer",
+                payload={"direction": "shared"},
+                security_scope="tenant-a",
+                shared_scope=True,
+            )
+    finally:
+        claims_ctx.reset(sender_token)
+
+    reader_token = claims_ctx.set({"ns": "conversation", "security_scope": "tenant-b"})
+    try:
+        with scoped_namespace(engine, namespace):
+            claimed = service.claim_pending(
+                inbox_id="inbox:agent",
+                claimed_by="agent-worker",
+                limit=10,
+                lease_seconds=30,
+            )
+            assert [row.message_id for row in claimed] == [shared_msg.message_id]
+            rows = service.list_projected(inbox_id="inbox:agent")
+            assert private_msg.message_id not in {row.message_id for row in rows}
+            assert rows[0].status == "claimed"
+    finally:
+        claims_ctx.reset(reader_token)
+        shutil.rmtree(test_db_dir, ignore_errors=True)
+
+
 def test_lane_message_request_reply_round_trip_preserves_contract():
     engine, test_db_dir = _make_engine()
     namespace = "ws:demo:conv:bg"

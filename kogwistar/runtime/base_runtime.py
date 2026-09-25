@@ -15,6 +15,7 @@ from .._rust_bridge import (
     runtime_scheduler_tick,
 )
 from ..id_provider import stable_id
+from .budget import StateBackedBudgetLedger
 from .models import StateUpdate, WorkflowDesignArtifact, WorkflowInvocationRequest, WorkflowState
 from .routing import RouteComputation, compute_route_next
 
@@ -197,6 +198,38 @@ class BaseRuntime:
     validate_initial_state = staticmethod(validate_initial_state)
     apply_state_update_inplace = staticmethod(apply_state_update_inplace)
     checkpointable_state_copy = staticmethod(checkpointable_state_copy)
+
+    @staticmethod
+    def ensure_budget_ledger(state: WorkflowState) -> StateBackedBudgetLedger | None:
+        """Rehydrate generic budget DI after checkpoint serialization.
+
+        ``_deps`` is intentionally omitted from checkpoints.  Persisted budget
+        counters therefore need the same process-local ledger rebuilt before a
+        resumed step is dispatched.  This is a generic runtime seam, not an
+        agent-specific authority.
+        """
+
+        budget_state = state.get("budget")
+        if not isinstance(budget_state, dict):
+            budget_state = state
+        budget_keys = (
+            "token_budget",
+            "step_budget",
+            "call_budget",
+            "time_budget_ms",
+            "cost_budget",
+        )
+        if not any(key in budget_state for key in budget_keys):
+            return None
+        deps = state.setdefault("_deps", {})
+        if not isinstance(deps, dict):
+            raise ValueError("workflow state _deps must be a dict")
+        ledger = deps.get("budget_ledger")
+        if isinstance(ledger, StateBackedBudgetLedger) and ledger.state is budget_state:
+            return ledger
+        ledger = StateBackedBudgetLedger(budget_state)
+        deps["budget_ledger"] = ledger
+        return ledger
 
     @staticmethod
     def _edge_priority(edge: Any) -> int:

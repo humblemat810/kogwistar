@@ -1470,6 +1470,7 @@ class WorkflowRuntime(BaseRuntime):
             self.workflow_id = str(workflow_id)
             initial_state.setdefault("_wf_invocation_path", [str(workflow_id)])
             initial_state.setdefault("_wf_current_run_id", str(run_id or ""))
+            self.ensure_budget_ledger(initial_state)
             # repair fields auto set by default schema
             state_schema = getattr(self.step_resolver, "_state_schema", None)
             if state_schema and isinstance(state_schema, dict):

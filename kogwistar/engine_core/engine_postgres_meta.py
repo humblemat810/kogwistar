@@ -1186,8 +1186,44 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
         claimed_by: str,
         limit: int = 50,
         lease_seconds: int = 60,
+        message_ids: list[str] | tuple[str, ...] | None = None,
+        run_id: str | None = None,
+        msg_type: str | None = None,
+        recipient_id: str | None = None,
     ) -> list[ProjectedLaneMessageRow]:
         table = f"{self.schema}.projected_lane_messages"
+        filters = [
+            "namespace = :namespace",
+            "inbox_id = :inbox_id",
+            "((status = 'pending' AND available_at <= EXTRACT(EPOCH FROM NOW())::BIGINT)"
+            " OR (status = 'claimed' AND lease_until IS NOT NULL AND lease_until < NOW()))",
+        ]
+        params: dict[str, Any] = {
+            "namespace": str(namespace),
+            "inbox_id": str(inbox_id),
+            "claimed_by": str(claimed_by),
+            "lease_seconds": int(lease_seconds),
+            "limit": int(limit),
+        }
+        if message_ids is not None:
+            ids_filter = [str(item) for item in message_ids]
+            if not ids_filter:
+                return []
+            names = []
+            for index, message_id in enumerate(ids_filter):
+                name = f"message_id_{index}"
+                names.append(f":{name}")
+                params[name] = message_id
+            filters.append("message_id IN (" + ",".join(names) + ")")
+        if run_id is not None:
+            filters.append("run_id = :run_id")
+            params["run_id"] = str(run_id)
+        if msg_type is not None:
+            filters.append("msg_type = :msg_type")
+            params["msg_type"] = str(msg_type)
+        if recipient_id is not None:
+            filters.append("recipient_id = :recipient_id")
+            params["recipient_id"] = str(recipient_id)
         with self.transaction() as conn:
             rows = conn.execute(
                 sa.text(
@@ -1195,13 +1231,7 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                     WITH picked AS (
                         SELECT message_id
                         FROM {table}
-                        WHERE namespace = :namespace
-                          AND inbox_id = :inbox_id
-                          AND (
-                            (status = 'pending' AND available_at <= EXTRACT(EPOCH FROM NOW())::BIGINT)
-                            OR
-                            (status = 'claimed' AND lease_until IS NOT NULL AND lease_until < NOW())
-                          )
+                        WHERE {' AND '.join(filters)}
                         ORDER BY seq ASC, created_at ASC
                         LIMIT :limit
                         FOR UPDATE
@@ -1220,13 +1250,7 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                               t.inbox_tail_message_id, t.conversation_tail_message_id
                     """
                 ),
-                {
-                    "namespace": str(namespace),
-                    "inbox_id": str(inbox_id),
-                    "claimed_by": str(claimed_by),
-                    "lease_seconds": int(lease_seconds),
-                    "limit": int(limit),
-                },
+                params,
             ).mappings().all()
         return [
             ProjectedLaneMessageRow(
@@ -1321,6 +1345,7 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
         namespace: str = "default",
         purpose: str | None = None,
         inbox_id: str | None = None,
+        run_id: str | None = None,
         conversation_id: str | None = None,
         status: str | None = None,
         msg_type: str | None = None,
@@ -1345,6 +1370,9 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
         if inbox_id is not None:
             where.append("inbox_id = :inbox_id")
             params["inbox_id"] = str(inbox_id)
+        if run_id is not None:
+            where.append("run_id = :run_id")
+            params["run_id"] = str(run_id)
         if conversation_id is not None:
             where.append("conversation_id = :conversation_id")
             params["conversation_id"] = str(conversation_id)
