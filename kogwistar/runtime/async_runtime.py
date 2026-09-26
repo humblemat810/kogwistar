@@ -487,6 +487,13 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
         trace_context: TraceContext | None = None,
         authority_context: Mapping[str, Any] | None = None,
     ) -> RunResult:
+        # Keep nested runs aligned with the synchronous runtime without adding
+        # an internal capability field to the top-level result state.
+        nested_authority_context = (
+            authority_context
+            if authority_context is not None
+            else {"effective_capabilities": ()}
+        )
         state: WorkflowState = dict(initial_state)
         run_id = str(run_id or f"run|{uuid.uuid4()}")
         if authority_context is not None and "effective_capabilities" in authority_context:
@@ -780,11 +787,7 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
                 lane_message_event_sink=getattr(self._sync_runtime, "lane_message_event_sink", None),
                 events=trace_emitter,
                 cache_dir=cache_dir,
-                authority_context=(
-                    authority_context
-                    if authority_context is not None
-                    else {"effective_capabilities": ()}
-                ),
+                authority_context=nested_authority_context,
             )
             fn = self._resolve_async_step_fn(str(node.op))
             should_step_uow = getattr(self._sync_runtime, "_should_step_uow", None)
@@ -960,7 +963,7 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
                     parent_run_id=str(run_id),
                     cache_dir=cache_dir,
                     parent_trace_context=run_trace_context,
-                    parent_authority_context=authority_context,
+                    parent_authority_context=nested_authority_context,
                 )
                 child_status = str(getattr(child_result, "status", None))
                 if child_status != "succeeded":
