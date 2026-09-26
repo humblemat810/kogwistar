@@ -1,0 +1,8 @@
+.venv/
+.venv_temp/
+rust/target/
+.cache/
+.joblib/
+.kg_cache/
+.tmp_*/
+graphify-out/

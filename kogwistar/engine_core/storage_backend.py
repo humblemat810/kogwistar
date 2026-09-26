@@ -29,6 +29,15 @@ Update contract for implementers:
 This is observable API semantics, not a Chroma detail.  Third-party backends
 must pass `tests/core/test_lifecycle_read_contract.py`; otherwise lifecycle
 patches can silently introduce model cost, latency, and vector drift.
+
+Metadata contract note:
+- `StorageBackend` is the graph/vector storage contract.
+- `GraphKnowledgeEngine.metadata` is the backend-neutral metadata-store name.
+- `GraphKnowledgeEngine.meta_sqlite` is a legacy compatibility alias for the
+  same store; it does not require SQLite.
+- A `backend_factory(engine)` may bind a vendor metadata implementation to the
+  engine's existing metadata slot before returning its graph/vector backend.
+No second metadata hierarchy or persistence bundle is required.
 """
 
 from contextlib import asynccontextmanager, contextmanager
