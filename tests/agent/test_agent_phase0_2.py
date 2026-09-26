@@ -285,6 +285,24 @@ def test_agent_harness_delegates_to_existing_runtime() -> None:
     assert result["initial_state"] == {"x": 1}
 
 
+def test_harness_rejects_run_time_workflow_override_outside_allowlist() -> None:
+    class FakeRuntime:
+        def run(self, **kwargs: object) -> dict[str, object]:
+            return kwargs
+
+    harness = AgentHarness(
+        profile=AgentProfile(agent_id="a", workflow_id="wf"),
+        workflow_runtime=FakeRuntime(),
+        known_workflows={"wf"},
+    )
+    with pytest.raises(ValueError, match="unknown workflow"):
+        harness.run(
+            initial_state={},
+            conversation_id="c",
+            workflow_id="untrusted-workflow",
+        )
+
+
 def test_agent_harness_supplies_trusted_authority_and_overwrites_state_claims() -> None:
     class FakeRuntime:
         def run(self, **kwargs: object) -> dict[str, object]:
@@ -348,6 +366,25 @@ async def test_async_agent_harness_awaits_existing_async_runtime() -> None:
         workflow_runtime=FakeRuntime(),
     ).run(initial_state={}, conversation_id="c")
     assert result["workflow_id"] == "wf"
+
+
+@pytest.mark.asyncio
+async def test_async_harness_rejects_run_time_workflow_override_outside_allowlist() -> None:
+    class FakeRuntime:
+        async def run(self, **kwargs: object) -> dict[str, object]:
+            return kwargs
+
+    harness = AsyncAgentHarness(
+        profile=AgentProfile(agent_id="a", workflow_id="wf"),
+        workflow_runtime=FakeRuntime(),
+        known_workflows={"wf"},
+    )
+    with pytest.raises(ValueError, match="unknown workflow"):
+        await harness.run(
+            initial_state={},
+            conversation_id="c",
+            workflow_id="untrusted-workflow",
+        )
 
 
 @pytest.mark.asyncio
