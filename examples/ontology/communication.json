@@ -1,0 +1,102 @@
+{
+  "descriptors": [
+    {
+      "aliases": [],
+      "descriptor_id": "subject",
+      "extensions": {},
+      "kind": "ontology_property",
+      "max_count": 1,
+      "min_count": 1,
+      "name": "Subject",
+      "summary": "",
+      "value_kind": "string"
+    },
+    {
+      "aliases": [],
+      "descriptor_id": "body",
+      "extensions": {},
+      "kind": "ontology_property",
+      "max_count": 1,
+      "min_count": 1,
+      "name": "Body",
+      "summary": "",
+      "value_kind": "string"
+    },
+    {
+      "aliases": [],
+      "allow_additional_properties": false,
+      "descriptor_id": "Message",
+      "extensions": {},
+      "kind": "ontology_class",
+      "name": "Message",
+      "property_ids": [
+        "subject",
+        "body"
+      ],
+      "summary": ""
+    },
+    {
+      "aliases": [],
+      "allow_additional_properties": false,
+      "descriptor_id": "Person",
+      "extensions": {},
+      "kind": "ontology_class",
+      "name": "Person",
+      "property_ids": [],
+      "summary": ""
+    },
+    {
+      "aliases": [],
+      "descriptor_id": "exchange",
+      "extensions": {},
+      "kind": "ontology_relation",
+      "name": "Exchange",
+      "source_class_ids": [
+        "Message"
+      ],
+      "summary": "",
+      "target_class_ids": [
+        "Person"
+      ]
+    },
+    {
+      "aliases": [],
+      "descriptor_id": "message_exchange",
+      "extensions": {},
+      "kind": "ontology_edge_shape",
+      "name": "Message exchange",
+      "relation_id": "exchange",
+      "roles": [
+        {
+          "allowed_class_ids": [
+            "Message"
+          ],
+          "max_count": 1,
+          "min_count": 1,
+          "role_id": "message",
+          "target_kind": "node"
+        },
+        {
+          "allowed_class_ids": [
+            "Person"
+          ],
+          "max_count": null,
+          "min_count": 1,
+          "role_id": "recipient",
+          "target_kind": "node"
+        }
+      ],
+      "summary": ""
+    }
+  ],
+  "manifest": {
+    "content_sha256": "01d0959cecae3916c8f87bb6112feac06eee88d8bf03cdbd946ccf214dcad7a9",
+    "extensions": {},
+    "imports": [],
+    "ontology_id": "communication",
+    "schema_version": 1,
+    "summary": "",
+    "title": "Communication",
+    "version": "1.0.0"
+  }
+}

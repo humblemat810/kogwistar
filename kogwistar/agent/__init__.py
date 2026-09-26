@@ -93,6 +93,7 @@ from .providers import (
     normalize_descriptor,
 )
 from .read_tools import AgentReadTools, ReadPage, ReadScope
+from .ontology import OntologyCatalogProvider
 from .skills import (
     SkillGraphArtifact,
     SkillGraphEdge,
@@ -167,6 +168,7 @@ __all__ = [
     "PROVIDER_LIFECYCLE_NAMESPACE",
     "normalize_descriptor",
     "AgentReadTools",
+    "OntologyCatalogProvider",
     "FilesystemSkillProvider",
     "LlmWikiIngestionAdapter",
     "McpDiscoveryProvider",

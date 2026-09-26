@@ -1,0 +1,493 @@
+{
+  "$defs": {
+    "JsonValue": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "integer"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "boolean"
+        },
+        {
+          "items": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "type": "array"
+        },
+        {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "OntologyClassDescriptor": {
+      "additionalProperties": false,
+      "properties": {
+        "aliases": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Aliases",
+          "type": "array"
+        },
+        "allow_additional_properties": {
+          "default": false,
+          "title": "Allow Additional Properties",
+          "type": "boolean"
+        },
+        "descriptor_id": {
+          "title": "Descriptor Id",
+          "type": "string"
+        },
+        "extensions": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Extensions",
+          "type": "object"
+        },
+        "kind": {
+          "const": "ontology_class",
+          "default": "ontology_class",
+          "title": "Kind",
+          "type": "string"
+        },
+        "name": {
+          "maxLength": 240,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "property_ids": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Property Ids",
+          "type": "array"
+        },
+        "summary": {
+          "default": "",
+          "maxLength": 4000,
+          "title": "Summary",
+          "type": "string"
+        }
+      },
+      "required": [
+        "descriptor_id",
+        "name"
+      ],
+      "title": "OntologyClassDescriptor",
+      "type": "object"
+    },
+    "OntologyEdgeRole": {
+      "additionalProperties": false,
+      "description": "One named role in an existing Kogwistar multi-endpoint edge.",
+      "properties": {
+        "allowed_class_ids": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Allowed Class Ids",
+          "type": "array"
+        },
+        "max_count": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 1,
+          "title": "Max Count"
+        },
+        "min_count": {
+          "default": 1,
+          "minimum": 0,
+          "title": "Min Count",
+          "type": "integer"
+        },
+        "role_id": {
+          "title": "Role Id",
+          "type": "string"
+        },
+        "target_kind": {
+          "enum": [
+            "node",
+            "edge"
+          ],
+          "title": "Target Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "role_id",
+        "target_kind"
+      ],
+      "title": "OntologyEdgeRole",
+      "type": "object"
+    },
+    "OntologyEdgeShapeDescriptor": {
+      "additionalProperties": false,
+      "properties": {
+        "aliases": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Aliases",
+          "type": "array"
+        },
+        "descriptor_id": {
+          "title": "Descriptor Id",
+          "type": "string"
+        },
+        "extensions": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Extensions",
+          "type": "object"
+        },
+        "kind": {
+          "const": "ontology_edge_shape",
+          "default": "ontology_edge_shape",
+          "title": "Kind",
+          "type": "string"
+        },
+        "name": {
+          "maxLength": 240,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "relation_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Relation Id"
+        },
+        "roles": {
+          "items": {
+            "$ref": "#/$defs/OntologyEdgeRole"
+          },
+          "minItems": 1,
+          "title": "Roles",
+          "type": "array"
+        },
+        "summary": {
+          "default": "",
+          "maxLength": 4000,
+          "title": "Summary",
+          "type": "string"
+        }
+      },
+      "required": [
+        "descriptor_id",
+        "name",
+        "roles"
+      ],
+      "title": "OntologyEdgeShapeDescriptor",
+      "type": "object"
+    },
+    "OntologyImport": {
+      "additionalProperties": false,
+      "description": "An exact dependency pin declared by a package.",
+      "properties": {
+        "content_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Content Sha256",
+          "type": "string"
+        },
+        "ontology_id": {
+          "title": "Ontology Id",
+          "type": "string"
+        },
+        "version": {
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "ontology_id",
+        "version",
+        "content_sha256"
+      ],
+      "title": "OntologyImport",
+      "type": "object"
+    },
+    "OntologyPackageManifest": {
+      "additionalProperties": false,
+      "description": "Data-only package metadata and exact dependency pins.",
+      "properties": {
+        "content_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Content Sha256",
+          "type": "string"
+        },
+        "extensions": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Extensions",
+          "type": "object"
+        },
+        "imports": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/OntologyImport"
+          },
+          "title": "Imports",
+          "type": "array"
+        },
+        "ontology_id": {
+          "title": "Ontology Id",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "summary": {
+          "default": "",
+          "maxLength": 4000,
+          "title": "Summary",
+          "type": "string"
+        },
+        "title": {
+          "maxLength": 240,
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        },
+        "version": {
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "ontology_id",
+        "version",
+        "title",
+        "content_sha256"
+      ],
+      "title": "OntologyPackageManifest",
+      "type": "object"
+    },
+    "OntologyPropertyDescriptor": {
+      "additionalProperties": false,
+      "properties": {
+        "aliases": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Aliases",
+          "type": "array"
+        },
+        "descriptor_id": {
+          "title": "Descriptor Id",
+          "type": "string"
+        },
+        "extensions": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Extensions",
+          "type": "object"
+        },
+        "kind": {
+          "const": "ontology_property",
+          "default": "ontology_property",
+          "title": "Kind",
+          "type": "string"
+        },
+        "max_count": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 1,
+          "title": "Max Count"
+        },
+        "min_count": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Min Count",
+          "type": "integer"
+        },
+        "name": {
+          "maxLength": 240,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "summary": {
+          "default": "",
+          "maxLength": 4000,
+          "title": "Summary",
+          "type": "string"
+        },
+        "value_kind": {
+          "enum": [
+            "string",
+            "integer",
+            "number",
+            "boolean",
+            "timestamp",
+            "logical_ref",
+            "json"
+          ],
+          "title": "Value Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "descriptor_id",
+        "name",
+        "value_kind"
+      ],
+      "title": "OntologyPropertyDescriptor",
+      "type": "object"
+    },
+    "OntologyRelationDescriptor": {
+      "additionalProperties": false,
+      "properties": {
+        "aliases": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Aliases",
+          "type": "array"
+        },
+        "descriptor_id": {
+          "title": "Descriptor Id",
+          "type": "string"
+        },
+        "extensions": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Extensions",
+          "type": "object"
+        },
+        "kind": {
+          "const": "ontology_relation",
+          "default": "ontology_relation",
+          "title": "Kind",
+          "type": "string"
+        },
+        "name": {
+          "maxLength": 240,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "source_class_ids": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Source Class Ids",
+          "type": "array"
+        },
+        "summary": {
+          "default": "",
+          "maxLength": 4000,
+          "title": "Summary",
+          "type": "string"
+        },
+        "target_class_ids": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Target Class Ids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "descriptor_id",
+        "name",
+        "source_class_ids",
+        "target_class_ids"
+      ],
+      "title": "OntologyRelationDescriptor",
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Immutable package payload with a self-verifying content digest.",
+  "properties": {
+    "descriptors": {
+      "items": {
+        "discriminator": {
+          "mapping": {
+            "ontology_class": "#/$defs/OntologyClassDescriptor",
+            "ontology_edge_shape": "#/$defs/OntologyEdgeShapeDescriptor",
+            "ontology_property": "#/$defs/OntologyPropertyDescriptor",
+            "ontology_relation": "#/$defs/OntologyRelationDescriptor"
+          },
+          "propertyName": "kind"
+        },
+        "oneOf": [
+          {
+            "$ref": "#/$defs/OntologyClassDescriptor"
+          },
+          {
+            "$ref": "#/$defs/OntologyPropertyDescriptor"
+          },
+          {
+            "$ref": "#/$defs/OntologyRelationDescriptor"
+          },
+          {
+            "$ref": "#/$defs/OntologyEdgeShapeDescriptor"
+          }
+        ]
+      },
+      "minItems": 1,
+      "title": "Descriptors",
+      "type": "array"
+    },
+    "manifest": {
+      "$ref": "#/$defs/OntologyPackageManifest"
+    }
+  },
+  "required": [
+    "manifest",
+    "descriptors"
+  ],
+  "title": "OntologyPackage",
+  "type": "object"
+}
