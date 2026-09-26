@@ -7,8 +7,15 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+from pydantic import ValidationError
 
 from kogwistar.demo import run_provenance_quickstart
+from kogwistar.ontology import (
+    OntologyPackage,
+    OntologyCompositionError,
+    compose_ontology_packages,
+    ontology_package_json_schema,
+)
 from kogwistar.server_mcp_with_admin import main as serve_main
 
 
@@ -55,6 +62,102 @@ def _add_base_url(target: argparse.ArgumentParser) -> None:
         default=None,
         help="Kogwistar server base URL, default from KOGWISTAR_BASE_URL or http://127.0.0.1:8787",
     )
+
+
+def _ontology_diagnostics(error: Exception) -> list[dict[str, object]]:
+    if isinstance(error, ValidationError):
+        diagnostics: list[dict[str, object]] = []
+        for item in error.errors()[:20]:
+            diagnostics.append(
+                {
+                    "type": str(item.get("type", "validation_error")),
+                    "location": [str(value) for value in item.get("loc", ())],
+                    "message": str(item.get("msg", "validation failed")),
+                }
+            )
+        return diagnostics
+    return [{"type": type(error).__name__, "message": str(error)}]
+
+
+def _load_ontology_package(path: Path) -> tuple[OntologyPackage | None, list[dict[str, object]], int]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        return None, [{"type": type(error).__name__, "message": str(error)}], 2
+    try:
+        return OntologyPackage.model_validate(payload), [], 0
+    except ValidationError as error:
+        diagnostics = _ontology_diagnostics(error)
+        digest_failure = any("content_sha256 mismatch" in str(item.get("message", "")) for item in diagnostics)
+        return None, diagnostics, 3 if digest_failure else 2
+
+
+def _ontology_validate(args: argparse.Namespace) -> int:
+    paths = [Path(args.path), *(Path(value) for value in args.compose_with)]
+    packages: list[OntologyPackage] = []
+    primary_package: OntologyPackage | None = None
+    diagnostics: list[dict[str, object]] = []
+    exit_code = 0
+    for index, path in enumerate(paths):
+        package, errors, package_code = _load_ontology_package(path)
+        if errors:
+            diagnostics.extend({"path": str(path), **item} for item in errors)
+            exit_code = max(exit_code, package_code)
+        elif package is not None:
+            packages.append(package)
+            if index == 0:
+                primary_package = package
+    composition = None
+    if not diagnostics and packages:
+        try:
+            composition = compose_ontology_packages(
+                packages,
+                root_ontology_ids=(packages[0].identity.ontology_id,),
+            )
+        except OntologyCompositionError as error:
+            diagnostics.extend(_ontology_diagnostics(error))
+            exit_code = 3
+
+    result: dict[str, object] = {
+        "valid": not diagnostics,
+        "path": str(args.path),
+        "errors": diagnostics[:20],
+    }
+    if primary_package is not None:
+        result["package"] = {
+            "ontology_id": primary_package.identity.ontology_id,
+            "version": primary_package.identity.version,
+            "content_sha256": primary_package.identity.content_sha256,
+            "descriptor_count": len(primary_package.descriptors),
+        }
+    if composition is not None:
+        result["composition"] = {
+            "package_count": len(composition.package_identities),
+            "descriptor_count": len(composition.descriptors),
+            "composition_sha256": composition.composition_sha256,
+        }
+    if args.json:
+        print(json.dumps(result, indent=2, ensure_ascii=False, sort_keys=True))
+    elif diagnostics:
+        print(f"invalid ontology package: {args.path}")
+        for item in diagnostics[:20]:
+            location = item.get("location")
+            suffix = f" at {location}" if location else ""
+            print(f"- {item.get('message', 'validation failed')}{suffix}")
+    else:
+        package = result["package"]
+        print(
+            "valid ontology package: "
+            f"{package['ontology_id']}@{package['version']} "
+            f"({package['descriptor_count']} descriptors)"
+        )
+        if composition is not None:
+            print(
+                "valid composition: "
+                f"{len(composition.package_identities)} packages, "
+                f"{len(composition.descriptors)} descriptors"
+            )
+    return exit_code
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -166,12 +269,35 @@ def build_parser() -> argparse.ArgumentParser:
         ns.choices["workflow.service_events"].add_argument("--limit", type=int, default=500)
         ns.choices["workflow.dead_letters"].add_argument("--limit", type=int, default=100)
 
+        required_service_ids = {
+            "workflow.service_get",
+            "workflow.service_enable",
+            "workflow.service_disable",
+            "workflow.service_repair",
+        }
+        required_run_ids = {
+            "workflow.dead_letter_replay",
+            "workflow.run_resume_contract",
+            "workflow.run_replay",
+            "workflow.run_resume",
+        }
+        required_workflow_ids = {
+            "workflow.run_resume",
+            "workflow.design_history",
+            "workflow.design_undo",
+            "workflow.design_redo",
+            "workflow.design_node_upsert",
+            "workflow.design_edge_upsert",
+        }
         for name in ("workflow.service_get", "workflow.service_enable", "workflow.service_disable", "workflow.service_repair", "workflow.services_repair", "workflow.message_orphans_repair", "workflow.dead_letter_replay", "workflow.run_resume_contract", "workflow.run_replay", "workflow.run_resume", "workflow.design_history", "workflow.design_undo", "workflow.design_redo", "workflow.capability_approve", "workflow.capability_revoke", "workflow.design_node_upsert", "workflow.design_edge_upsert", "workflow.design_node_delete", "workflow.design_edge_delete"):
             p = ns.add_parser(name)
             _add_base_url(p)
-            p.add_argument("--service-id", default=None)
-            p.add_argument("--run-id", default=None)
-            p.add_argument("--workflow-id", default=None)
+            if name not in required_service_ids:
+                p.add_argument("--service-id", default=None)
+            if name not in required_run_ids:
+                p.add_argument("--run-id", default=None)
+            if name not in required_workflow_ids:
+                p.add_argument("--workflow-id", default=None)
         ns.choices["workflow.service_get"].add_argument("--service-id", required=True)
         ns.choices["workflow.service_enable"].add_argument("--service-id", required=True)
         ns.choices["workflow.service_disable"].add_argument("--service-id", required=True)
@@ -181,6 +307,8 @@ def build_parser() -> argparse.ArgumentParser:
         ns.choices["workflow.message_orphans_repair"].add_argument("--limit", type=int, default=100)
         ns.choices["workflow.dead_letter_replay"].add_argument("--run-id", required=True)
         ns.choices["workflow.run_resume_contract"].add_argument("--run-id", required=True)
+        ns.choices["workflow.run_replay"].add_argument("--run-id", required=True)
+        ns.choices["workflow.run_resume"].add_argument("--run-id", required=True)
         ns.choices["workflow.run_replay"].add_argument("--target-step-seq", type=int, required=True)
         ns.choices["workflow.run_resume"].add_argument("--suspended-node-id", required=True)
         ns.choices["workflow.run_resume"].add_argument("--suspended-token-id", required=True)
@@ -249,26 +377,6 @@ def build_parser() -> argparse.ArgumentParser:
         declare.add_argument("--heartbeat-ttl-ms", type=int, default=60000)
         declare.add_argument("--trigger-specs", default="[]")
 
-        resume = ns.add_parser("workflow.run_resume")
-        _add_base_url(resume)
-        resume.add_argument("--run-id", required=True)
-        resume.add_argument("--suspended-node-id", required=True)
-        resume.add_argument("--suspended-token-id", required=True)
-        resume.add_argument("--client-result", default="{}")
-        resume.add_argument("--workflow-id", required=True)
-        resume.add_argument("--conversation-id", required=True)
-        resume.add_argument("--turn-node-id", required=True)
-        resume.add_argument("--user-id", default=None)
-
-        replay = ns.add_parser("workflow.run_replay")
-        _add_base_url(replay)
-        replay.add_argument("--run-id", required=True)
-        replay.add_argument("--target-step-seq", type=int, required=True)
-
-        cap_snap = ns.add_parser("workflow.capabilities_snapshot")
-        _add_base_url(cap_snap)
-        cap_snap.add_argument("--subject", default=None)
-
         vis = ns.add_parser("workflow.visibility_snapshot")
         _add_base_url(vis)
         sched = ns.add_parser("workflow.scheduler_timeline")
@@ -299,12 +407,45 @@ def build_parser() -> argparse.ArgumentParser:
         "provenance", help="Run the provenance-first signature demo."
     )
     _add_demo_args(provenance)
+
+    ontology = sub.add_parser(
+        "ontology", help="Inspect and validate declarative ontology packages."
+    )
+    ontology_sub = ontology.add_subparsers(dest="ontology_command", required=True)
+    ontology_sub.add_parser(
+        "schema", help="Print the Draft 2020-12 ontology package JSON Schema."
+    )
+    validate = ontology_sub.add_parser(
+        "validate", help="Validate one ontology JSON bundle and its exact imports."
+    )
+    validate.add_argument("path", help="Path to the ontology package JSON file.")
+    validate.add_argument(
+        "--compose-with",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help="Additional exact dependency package JSON; repeat for multiple packages.",
+    )
+    validate.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit bounded machine-readable diagnostics.",
+    )
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+
+    if args.command == "ontology":
+        if args.ontology_command == "schema":
+            print(json.dumps(ontology_package_json_schema(), indent=2, ensure_ascii=False))
+            return 0
+        if args.ontology_command == "validate":
+            return _ontology_validate(args)
+        parser.error(f"Unknown ontology command: {args.ontology_command}")
+        return 2
 
     if args.command == "serve":
         serve_main()
