@@ -1412,7 +1412,7 @@ class PgVectorBackend:
     ) -> Dict[str, Any]:
         has_embedding = "embedding" in table.c
         cols = [table.c.id, table.c.document, table.c.metadata]
-        if has_embedding:
+        if has_embedding and "embeddings" in include:
             cols.append(table.c.embedding)
 
         q = sa.select(*cols)
@@ -1450,7 +1450,7 @@ class PgVectorBackend:
     ) -> Dict[str, Any]:
         has_embedding = "embedding" in table.c
         cols = [table.c.id, table.c.document, table.c.metadata]
-        if has_embedding:
+        if has_embedding and "embeddings" in include:
             cols.append(table.c.embedding)
 
         q = sa.select(*cols)
