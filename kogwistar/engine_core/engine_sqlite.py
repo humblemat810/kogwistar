@@ -628,9 +628,10 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
         """
         Allocate the next global sequence using an existing transaction.
         """
-        (value,) = conn.execute(
-            "UPDATE global_seq SET value = value + 1 RETURNING value"
-        ).fetchone()
+        with closing(
+            conn.execute("UPDATE global_seq SET value = value + 1 RETURNING value")
+        ) as cursor:
+            (value,) = cursor.fetchone()
         return int(value)
 
     def current_global_seq(self) -> int:
@@ -638,9 +639,10 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
         Return the current global sequence value (last issued).
         """
         with self.connect() as conn:
-            row = conn.execute(
-                "SELECT value FROM global_seq WHERE rowid = 1"
-            ).fetchone()
+            with closing(
+                conn.execute("SELECT value FROM global_seq WHERE rowid = 1")
+            ) as cursor:
+                row = cursor.fetchone()
             return int(row[0]) if row else 0
 
     # ------------------------------------------------------------------
@@ -664,16 +666,19 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
         """
         Allocate the next user sequence using an existing transaction.
         """
-        (value,) = conn.execute(
-            """
-            INSERT INTO user_seq(user_id, value)
-            VALUES (?, 1)
-            ON CONFLICT(user_id)
-            DO UPDATE SET value = user_seq.value + 1
-            RETURNING value
-            """,
-            (user_id,),
-        ).fetchone()
+        with closing(
+            conn.execute(
+                """
+                INSERT INTO user_seq(user_id, value)
+                VALUES (?, 1)
+                ON CONFLICT(user_id)
+                DO UPDATE SET value = user_seq.value + 1
+                RETURNING value
+                """,
+                (user_id,),
+            )
+        ) as cursor:
+            (value,) = cursor.fetchone()
         return int(value)
 
     def current_user_seq(self, user_id: str) -> int:
@@ -681,10 +686,13 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
         Return the current sequence value for user_id.
         """
         with self.connect() as conn:
-            row = conn.execute(
-                "SELECT value FROM user_seq WHERE user_id = ?",
-                (user_id,),
-            ).fetchone()
+            with closing(
+                conn.execute(
+                    "SELECT value FROM user_seq WHERE user_id = ?",
+                    (user_id,),
+                )
+            ) as cursor:
+                row = cursor.fetchone()
             return int(row[0]) if row else 0
 
     def current_scoped_seq(self, scope_id: str) -> int:
@@ -1546,10 +1554,13 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
         self, *, namespace: str = "default", coalesce_key: str
     ) -> Optional[str]:
         with self.connect() as conn:
-            row = conn.execute(
-                "SELECT applied_fingerprint FROM index_applied_state WHERE namespace = ? AND coalesce_key = ?",
-                (namespace, coalesce_key),
-            ).fetchone()
+            with closing(
+                conn.execute(
+                    "SELECT applied_fingerprint FROM index_applied_state WHERE namespace = ? AND coalesce_key = ?",
+                    (namespace, coalesce_key),
+                )
+            ) as cursor:
+                row = cursor.fetchone()
             return str(row[0]) if row and row[0] is not None else None
 
     def set_index_applied_fingerprint(
@@ -1562,17 +1573,20 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
     ) -> None:
         now = self._now_epoch()
         with self.transaction() as conn:
-            conn.execute(
-                """
-                INSERT INTO index_applied_state(namespace, coalesce_key, applied_fingerprint, applied_at, last_job_id)
-                VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(namespace, coalesce_key)
-                DO UPDATE SET applied_fingerprint = excluded.applied_fingerprint,
-                              applied_at = excluded.applied_at,
-                              last_job_id = excluded.last_job_id
-                """,
-                (namespace, coalesce_key, applied_fingerprint, now, last_job_id),
-            )
+            with closing(
+                conn.execute(
+                    """
+                    INSERT INTO index_applied_state(namespace, coalesce_key, applied_fingerprint, applied_at, last_job_id)
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(namespace, coalesce_key)
+                    DO UPDATE SET applied_fingerprint = excluded.applied_fingerprint,
+                                  applied_at = excluded.applied_at,
+                                  last_job_id = excluded.last_job_id
+                    """,
+                    (namespace, coalesce_key, applied_fingerprint, now, last_job_id),
+                )
+            ):
+                pass
 
     # ------------------------------------------------------------------
     # Phase 2b: event log foundation
