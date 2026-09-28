@@ -703,6 +703,8 @@ struct SqliteStoreRequest {
     path: String,
     #[serde(default)]
     transaction_id: Option<String>,
+    #[serde(default)]
+    reuse_session: bool,
     operation: SqliteStoreOperation,
 }
 
@@ -2553,23 +2555,13 @@ fn sqlite_store_json_impl(payload_json: &str) -> Result<String, (&'static str, S
         close_cached_sqlite_store(&request.path)?;
         return Ok("null".to_owned());
     }
-    let entry = cached_sqlite_store(&request.path)?;
-    let mut entry = entry
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    // Python EngineSQLite may commit through a separate connection between
-    // bridge calls. Refresh only when no Rust-owned external transaction is
-    // active; transaction participants must retain their original handle.
-    if entry.transaction_id.is_none() {
-        entry.store.refresh_idle_connection().map_err(|error| {
-            (
-                STORE_TRANSACTION_ABORTED,
-                format!("cannot refresh idle SQLite store: {error}"),
-            )
-        })?;
-    }
     let result: Result<Value, SqliteStoreError> = (|| match request.operation {
         SqliteStoreOperation::BeginTransaction => {
+            let entry = cached_sqlite_store(&request.path)
+                .map_err(|(_, message)| SqliteStoreError::TransactionAborted(message))?;
+            let mut entry = entry
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             let transaction_id = request.transaction_id.ok_or_else(|| {
                 SqliteStoreError::TransactionAborted(
                     "SQLite begin requires transaction_id".to_owned(),
@@ -2585,33 +2577,82 @@ fn sqlite_store_json_impl(payload_json: &str) -> Result<String, (&'static str, S
             Ok(Value::Null)
         }
         SqliteStoreOperation::CommitTransaction => {
+            let entry = cached_sqlite_store(&request.path)
+                .map_err(|(_, message)| SqliteStoreError::TransactionAborted(message))?;
+            let mut entry = entry
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             require_sqlite_transaction(&entry, request.transaction_id.as_deref())?;
             entry.store.commit_external_transaction()?;
             entry.transaction_id = None;
             Ok(Value::Null)
         }
         SqliteStoreOperation::RollbackTransaction => {
+            let entry = cached_sqlite_store(&request.path)
+                .map_err(|(_, message)| SqliteStoreError::TransactionAborted(message))?;
+            let mut entry = entry
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             require_sqlite_transaction(&entry, request.transaction_id.as_deref())?;
             entry.store.rollback_external_transaction()?;
             entry.transaction_id = None;
             Ok(Value::Null)
         }
         operation => {
-            match (&entry.transaction_id, request.transaction_id.as_deref()) {
-                (None, None) => {}
-                (Some(active), Some(requested)) if active == requested => {}
-                (Some(_), _) => {
-                    return Err(SqliteStoreError::TransactionAborted(
-                        "SQLite operation does not own the active transaction".to_owned(),
-                    ));
-                }
-                (None, Some(_)) => {
-                    return Err(SqliteStoreError::TransactionAborted(
-                        "SQLite transaction_id is stale".to_owned(),
-                    ));
+            if request.reuse_session {
+                let entry = cached_sqlite_store(&request.path)
+                    .map_err(|(_, message)| SqliteStoreError::TransactionAborted(message))?;
+                let entry = entry
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                match (&entry.transaction_id, request.transaction_id.as_deref()) {
+                    (None, None) | (Some(_), Some(_)) => {
+                        require_sqlite_session_owner(&entry, request.transaction_id.as_deref())?;
+                        return sqlite_store_operation_json(&entry.store, operation);
+                    }
+                    (Some(_), _) => {
+                        return Err(SqliteStoreError::TransactionAborted(
+                            "SQLite operation does not own the active transaction".to_owned(),
+                        ));
+                    }
+                    (None, Some(_)) => {
+                        return Err(SqliteStoreError::TransactionAborted(
+                            "SQLite transaction_id is stale".to_owned(),
+                        ));
+                    }
                 }
             }
-            sqlite_store_operation_json(&entry.store, operation)
+            if let Some(entry) = existing_cached_sqlite_store(&request.path) {
+                let entry = entry
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                match (&entry.transaction_id, request.transaction_id.as_deref()) {
+                    (Some(active), Some(requested)) if active == requested => {
+                        return sqlite_store_operation_json(&entry.store, operation);
+                    }
+                    (Some(_), _) => {
+                        return Err(SqliteStoreError::TransactionAborted(
+                            "SQLite operation does not own the active transaction".to_owned(),
+                        ));
+                    }
+                    (None, Some(_)) => {
+                        return Err(SqliteStoreError::TransactionAborted(
+                            "SQLite transaction_id is stale".to_owned(),
+                        ));
+                    }
+                    (None, None) => {}
+                }
+            } else if request.transaction_id.is_some() {
+                return Err(SqliteStoreError::TransactionAborted(
+                    "SQLite transaction_id is stale".to_owned(),
+                ));
+            }
+
+            // This bridge shares database files with Python EngineSQLite.
+            // Calls outside an explicit Rust transaction use no persistent
+            // native session, so every call sees Python's latest commit.
+            let fresh = SqliteStore::open(&request.path)?;
+            sqlite_store_operation_json(&fresh, operation)
         }
     })();
     result
@@ -2662,15 +2703,37 @@ fn require_sqlite_transaction(
     }
 }
 
-/// Cache initialized path handles. Each handle owns one serialized SQLite
-/// connection, avoiding repeated schema discovery and WAL open/teardown while
-/// preserving the store transaction contract.
+fn require_sqlite_session_owner(
+    entry: &CachedSqliteStore,
+    requested: Option<&str>,
+) -> Result<(), SqliteStoreError> {
+    match (&entry.transaction_id, requested) {
+        (None, None) => Ok(()),
+        (Some(active), Some(requested)) if active == requested => Ok(()),
+        _ => Err(SqliteStoreError::TransactionAborted(
+            "SQLite operation does not own the active transaction".to_owned(),
+        )),
+    }
+}
+
+/// Cache handles only for explicit Rust transaction sessions. Ordinary bridge
+/// calls deliberately use one fresh handle per call, so Python commits cannot
+/// be hidden behind a native session snapshot.
 struct CachedSqliteStore {
     store: SqliteStore,
     transaction_id: Option<String>,
 }
 
 type SharedCachedSqliteStore = std::sync::Arc<Mutex<CachedSqliteStore>>;
+
+fn existing_cached_sqlite_store(path: &str) -> Option<SharedCachedSqliteStore> {
+    let path = PathBuf::from(path);
+    sqlite_store_cache()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(&path)
+        .cloned()
+}
 
 fn cached_sqlite_store(path: &str) -> Result<SharedCachedSqliteStore, (&'static str, String)> {
     let path = PathBuf::from(path);

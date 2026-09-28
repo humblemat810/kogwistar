@@ -56,6 +56,7 @@ class RustEngineSQLite:
             path=self.db_path,
             operation={"kind": kind, **values},
             transaction_id=self._transaction_id.get(),
+            reuse_session=True,
         )
 
     def ensure_initialized(self) -> None:
