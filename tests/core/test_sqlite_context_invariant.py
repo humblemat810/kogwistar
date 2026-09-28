@@ -74,6 +74,7 @@ def test_same_implementation_can_concurrently_acquire_same_database(tmp_path: Pa
     first.release()
 
 
+@pytest.mark.requires_rust
 def test_same_implementation_async_contexts_share_database_normally(tmp_path: Path) -> None:
     async def scenario(implementation: str) -> list[int]:
         database = tmp_path / implementation
@@ -182,6 +183,7 @@ def test_database_deletion_is_rejected_while_identity_is_owned(tmp_path: Path) -
         owner.release()
 
 
+@pytest.mark.requires_rust
 def test_async_child_inherits_binding_and_independent_contexts_run_in_parallel(
     tmp_path: Path,
 ) -> None:
@@ -288,6 +290,7 @@ def test_cancellation_does_not_release_live_connection_ownership(
     asyncio.run(scenario())
 
 
+@pytest.mark.requires_rust
 def test_direct_native_entrypoint_cannot_bypass_context_guard(tmp_path: Path) -> None:
     from kogwistar import _rust
 
@@ -314,6 +317,7 @@ def test_rust_context_rejects_python_connection_before_open(tmp_path: Path) -> N
     assert not engine.db_path.exists()
 
 
+@pytest.mark.requires_rust
 def test_both_sqlite_libraries_may_be_loaded_for_disjoint_contexts(
     tmp_path: Path,
 ) -> None:
@@ -332,6 +336,7 @@ def test_both_sqlite_libraries_may_be_loaded_for_disjoint_contexts(
     assert json.loads(result) == {"initialized": True}
 
 
+@pytest.mark.requires_rust
 def test_direct_native_python_overlap_fails_before_database_mutation(
     tmp_path: Path,
 ) -> None:
@@ -359,6 +364,7 @@ def test_direct_native_python_overlap_fails_before_database_mutation(
         connection.close()
 
 
+@pytest.mark.requires_rust
 def test_native_transaction_id_cannot_cross_contexts(tmp_path: Path) -> None:
     from kogwistar import _rust
     from kogwistar._rust import RustStoreValueError
@@ -401,6 +407,7 @@ def test_native_transaction_id_cannot_cross_contexts(tmp_path: Path) -> None:
         native({"kind": "rollback_transaction"})
 
 
+@pytest.mark.requires_rust
 def test_rejected_nested_native_begin_does_not_release_live_session(
     tmp_path: Path,
 ) -> None:
