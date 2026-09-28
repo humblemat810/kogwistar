@@ -49,6 +49,11 @@ The backend remains a storage adapter. Authentication, ACL, delegation,
 resource budgets, and audit/provenance belong to the caller's governed engine
 or service boundary.
 
+The engine applies this boundary conditionally: with `acl_enabled=True`, its
+ACL policy, guarded read surface, and guarded write surface must satisfy the
+core ACL protocols; with `acl_enabled=False`, no backend ACL implementation is
+required. PostgreSQL therefore does not define a private ACL dialect.
+
 ## Sync/Async Parity
 
 Synchronous and asynchronous flat reads share the same selected-column,

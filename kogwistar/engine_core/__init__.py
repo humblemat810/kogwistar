@@ -1,6 +1,12 @@
 """Engine-core compatibility entrypoints with safe optional imports."""
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.acl_protocol import (
+    ACLPolicyProtocol,
+    ACLAwareReadProtocol,
+    ACLAwareWriteProtocol,
+    require_acl_protocols,
+)
 from kogwistar.engine_core.engine_sqlite import EngineSQLite, IndexJobRow
 from kogwistar.engine_core.event_envelope import EntityEventEnvelope
 from kogwistar.engine_core.indexing import IndexingSubsystem
@@ -86,6 +92,10 @@ from kogwistar.engine_core.types import (
 
 __all__ = [
     "GraphKnowledgeEngine",
+    "ACLPolicyProtocol",
+    "ACLAwareReadProtocol",
+    "ACLAwareWriteProtocol",
+    "require_acl_protocols",
     "EnginePostgresConfig",
     "build_postgres_backend",
     "build_async_postgres_backend",

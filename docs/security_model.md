@@ -297,6 +297,12 @@ the backend. The collection default remains bounded. The backend itself does
 not enforce this service-boundary policy, so each REST/MCP adapter remains
 responsible for doing so.
 
+At the core engine boundary, `acl_enabled=True` requires the engine-owned ACL
+policy plus guarded read/write protocol surfaces. `acl_enabled=False` does not
+require those ACL protocols and preserves the raw backend contract. This is a
+conditional engine contract, not a requirement for every storage backend to
+reimplement ACL policy.
+
 The backend also omits pgvector embeddings unless `"embeddings"` is explicitly
 requested. This limits unnecessary data transfer and memory use, but is not an
 authorization check: embedding access remains subject to the same graph and
