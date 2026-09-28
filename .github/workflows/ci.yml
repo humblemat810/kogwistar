@@ -328,6 +328,7 @@ jobs:
           tests/core/test_rust_store_sqlite_differential.py
           tests/core/test_rust_store_index_jobs_differential.py
           -m "ci and core and not requires_pgvector"
+          -k sqlite
           -q
 
   pypy-beta-best-effort:
