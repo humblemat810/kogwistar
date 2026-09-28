@@ -1173,9 +1173,11 @@ fn configured_connection(path: &Path) -> SqliteStoreResult<Connection> {
         OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE,
     )?;
     conn.busy_timeout(std::time::Duration::from_millis(BUSY_TIMEOUT_MS))?;
-    conn.execute_batch(
-        "PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;",
-    )?;
+    conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA synchronous = NORMAL;")?;
+    let journal_mode: String = conn.query_row("PRAGMA journal_mode", [], |row| row.get(0))?;
+    if !journal_mode.eq_ignore_ascii_case("wal") {
+        conn.execute_batch("PRAGMA journal_mode = WAL;")?;
+    }
     Ok(conn)
 }
 

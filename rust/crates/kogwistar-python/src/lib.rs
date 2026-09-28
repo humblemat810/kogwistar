@@ -2579,24 +2579,38 @@ fn sqlite_store_json_impl(payload_json: &str) -> Result<String, (&'static str, S
         SqliteStoreOperation::CommitTransaction => {
             let entry = cached_sqlite_store(&request.path)
                 .map_err(|(_, message)| SqliteStoreError::TransactionAborted(message))?;
-            let mut entry = entry
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            require_sqlite_transaction(&entry, request.transaction_id.as_deref())?;
-            entry.store.commit_external_transaction()?;
-            entry.transaction_id = None;
-            Ok(Value::Null)
+            let result = (|| {
+                let mut entry = entry
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                require_sqlite_transaction(&entry, request.transaction_id.as_deref())?;
+                entry.store.commit_external_transaction()?;
+                entry.transaction_id = None;
+                Ok::<Value, SqliteStoreError>(Value::Null)
+            })();
+            if result.is_ok() && !request.reuse_session {
+                close_cached_sqlite_store(&request.path)
+                    .map_err(|(_, message)| SqliteStoreError::TransactionAborted(message))?;
+            }
+            result
         }
         SqliteStoreOperation::RollbackTransaction => {
             let entry = cached_sqlite_store(&request.path)
                 .map_err(|(_, message)| SqliteStoreError::TransactionAborted(message))?;
-            let mut entry = entry
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            require_sqlite_transaction(&entry, request.transaction_id.as_deref())?;
-            entry.store.rollback_external_transaction()?;
-            entry.transaction_id = None;
-            Ok(Value::Null)
+            let result = (|| {
+                let mut entry = entry
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                require_sqlite_transaction(&entry, request.transaction_id.as_deref())?;
+                entry.store.rollback_external_transaction()?;
+                entry.transaction_id = None;
+                Ok::<Value, SqliteStoreError>(Value::Null)
+            })();
+            if result.is_ok() && !request.reuse_session {
+                close_cached_sqlite_store(&request.path)
+                    .map_err(|(_, message)| SqliteStoreError::TransactionAborted(message))?;
+            }
+            result
         }
         operation => {
             if request.reuse_session {
