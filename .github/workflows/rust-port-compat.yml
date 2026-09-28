@@ -40,7 +40,9 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: humblemat810/kogwistar
-          ref: 206b43f9a17e19c6cb66f1b534dfcebe3b849192
+          # Keep the pinned application mirror aligned with the core contract
+          # required by kogwistar-llm-wiki (including kogwistar.ontology).
+          ref: 3a9dfb8951175a35f7be9299208ac31d849c288f
           path: kogwistar-llm-wiki/kogwistar
 
       - name: Checkout pinned parser
