@@ -114,8 +114,6 @@ pattern:
 - resolver-selected action identity is not atomically checkpointed with the
   pre-child invocation record. A caller needing retry-safe selection must
   persist its action/key in ordinary parent state before Act;
-- parent cannot generically resume a nonterminal child from its checkpoint
-  rather than decide whether to invoke it again after crash/retry;
 - caller cannot require immediate durable intent/checkpoint barrier before
   starting child when `checkpoint_every_n_steps` exceeds one;
 - dynamic invocation materializes `WorkflowDesignArtifact` before generic
@@ -126,13 +124,22 @@ implemented as reusable nested-invocation facilities before this pattern can
 claim crash-safe, duplicate-avoiding child invocation. They do not create Goal
 classes, tables, edges, or transaction protocols.
 
+For an existing nonterminal child with a persisted checkpoint, both
+synchronous and asynchronous nested-invocation implementations resume that
+child using its deterministic child `run_id`. The focused
+`test_nested_invocation_resumes_existing_child_checkpoint` currently proves
+the synchronous path; an equivalent async regression test remains needed. This
+is generic runtime behavior, not Goal-specific recovery. It does not by itself
+close the separate intent checkpoint-barrier or external-side-effect
+idempotency gaps listed above.
+
 Likely generic facility:
 
 ```text
 parent step intent + stable invocation identity
   -> child WorkflowRun identity
   -> persist planned child run and lineage before child start
-  -> inspect terminal/checkpoint child before invoke/resume
+  -> reuse terminal child or resume its checkpoint before a fresh invocation
 ```
 
 Its naming, persistence shape, checkpoint boundary, and dynamic-artifact
@@ -159,9 +166,12 @@ graph. Goal Mode is reusable cyclic form, not agent framework.
 
 ## Cross-ADR Interaction
 
-ADR-017 gives root and child workflow runs one W3C trace once generic trace
-propagation exists. Each retains its own `run_id` and execution span. OTel
-failure cannot alter workflow state.
+ADR-017's synchronous and asynchronous Python runtimes propagate one
+Kogwistar W3C correlation trace through the root and nested child runs. Each
+retains its own `run_id` and execution-span identity. Same-process OTel spans
+can mirror parentage; after process restart, the current adapter starts a new
+native OTel trace and emits no link to the prior span. Rust/remote propagation
+requires separate parity evidence. OTel failure cannot alter workflow state.
 
 ADR-018 governs derived semantic readiness only. An Act that creates a node is
 correct after canonical Stage 1 persistence; goal completion need not wait for

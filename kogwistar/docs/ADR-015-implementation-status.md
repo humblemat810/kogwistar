@@ -1,6 +1,21 @@
 # ADR-015 implementation status
 
-Updated: 2026-09-25
+Updated: 2026-09-28
+
+## Current Source and Release Boundary
+
+PR #42's SQLite Python/Rust interoperability fixes are merged in `main` at
+`50cd6c4`; release-version commit `6066d11` sets package version `0.6.1`.
+Tag `v0.6.1` points to that release commit. The tagged release workflow passed
+wheel/sdist build and artifact audit, but its PyPI publish job is waiting for
+the protected `pypi` environment approval. Therefore, the tag exists but PyPI
+publication is not yet verified.
+
+The detailed phase evidence and source digests below are historical snapshots
+from their named candidate commits. They do not prove the current `0.6.1`
+source or promote any Rust authority flag. Re-run the relevant current-source
+gates before making those claims. Release workflow state is tracked in
+[`ADR-015-library-release.md`](ADR-015-library-release.md).
 
 ADR-015 is not complete as a production migration. Local implementation and
 compatibility work is substantially complete, but authoritative ownership and
@@ -261,18 +276,25 @@ not authorize a broad authority-flag promotion or replace production canaries.
 - Cross-repository deterministic acceptance covers source, fake parser, app
   graph promotion, Rust event append/reducer, incremental Obsidian update and
   tombstone, and byte-equivalent full rebuild.
-- SQLite persisted-file compatibility across Python/Rust owners is a clean
-  process-restart operation only; live mixed ownership is not a claim. The
-  rollback rehearsal deletes Rust current-state projection, recovers from
-  events, retries without duplication, and resumes contiguous sequencing.
+- The deployment-level persisted-file UAT changes Python/Rust authority across
+  clean process restarts. Separately, context-invariant tests cover sequential
+  same-process handoff after all connections, cached sessions, and transactions
+  close. Neither permits overlapping cross-implementation ownership; neither
+  proves multi-process SQLite authority or HA. The rollback rehearsal deletes
+  Rust current-state projection, recovers from events, retries without
+  duplication, and resumes contiguous sequencing.
 - Real LLM/OCR provider tests are manual and excluded from ADR CI. Long tests
   with equivalent short semantic coverage are marked slow.
 - Clean native wheel import and the four compatibility layers have passed.
 - `KOGWISTAR_IMPL_META_STORE=rust` routes the public SQLite meta facade to one
   persistent Rust writer; `python` retains the existing Python owner. Native
   transaction tokens keep nested operations atomic and raw Python writer access
-  through the Rust facade fails closed. Owner changes require process restart.
-  A clean Linux wheel core feature run passed 723 tests with 8 skips.
+  through the Rust facade fails closed. A running facade's authority selection
+  is fixed; changing deployment configuration requires recreating the facade
+  (normally on process restart). Lower-level supported execution contexts may
+  hand the same file off sequentially only after every incompatible handle is
+  released; overlapping Python/Rust ownership fails closed. A clean Linux
+  wheel core feature run passed 723 tests with 8 skips.
 - `scripts/rust_port_container_compat.py` reproduces clean Linux compatibility
   with a patch-pinned Python image, wheel digest, separate core/consumer venvs,
   full dependency fingerprints, resumable reports, and guaranteed native-bridge
@@ -448,12 +470,14 @@ ownership is intentionally excluded. This unlocks only the bounded
 ### Library-release boundary
 
 This repository is a library distribution, not a customer production deployment.
-For ADR-015, the current release claim is therefore **single-VM /
-bounded-workload library ready**: a versioned native wheel, public API and package
-metadata, clean install/import UAT, restart/rollback/persisted-store evidence,
-and the four-layer consumer harness all pass for one identified candidate. It does
-not claim customer traffic, HA, hyperscale, or a durable-capability default switch.
-The fixed acceptance scope and evidence index live in
+The historical 0.2.5 candidate met the **single-VM / bounded-workload library
+ready** claim described in `ADR-015-library-release.md`. For 0.6.1, the tagged
+release workflow proves version consistency, wheel/sdist builds and wheel smoke
+tests, but PyPI publication is pending and this evidence does not prove every
+ADR-015 acceptance criterion against the same 0.6.1 artifact. Do not call 0.6.1
+library-release-ready until that acceptance evidence is collected. Neither
+candidate claims customer traffic, HA, hyperscale, or a durable-capability
+default switch. The fixed acceptance scope and evidence index live in
 `ADR-015-library-release.md`.
 
 `rust_cutover_ready: false` below is a safe-default setting, not an unchecked

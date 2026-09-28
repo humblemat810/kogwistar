@@ -69,7 +69,7 @@ configuration name. Backend selection (SQLite versus PostgreSQL) comes first.
 | Runtime writer | Backend | Required selection | Live ownership boundary | ADR-015 state |
 | --- | --- | --- | --- | --- |
 | Python | SQLite | SQLite backend; `KOGWISTAR_IMPL_META_STORE=python` | Python SQLite only | Existing baseline |
-| Rust | SQLite | SQLite backend; `KOGWISTAR_IMPL_META_STORE=rust` | `RustEngineSQLite`; raw Python writer through facade fails closed | Bounded `sqlite-meta` ready; transfer is restart-only |
+| Rust | SQLite | SQLite backend; `KOGWISTAR_IMPL_META_STORE=rust` | `RustEngineSQLite`; raw Python writer through facade fails closed | Bounded `sqlite-meta` ready; deployment-owner transfer remains restart-tested |
 | Python | PostgreSQL | PostgreSQL backend; Python authority selection | Existing Python PostgreSQL session | Existing baseline; no Rust promotion |
 | Rust | PostgreSQL | PostgreSQL backend; `KOGWISTAR_IMPL_POSTGRES_AUTHORITY=rust`, meta and graph selectors both `rust` | Coordinated native synchronous PostgreSQL session | Gates exist; PostgreSQL Rust readiness flags remain false |
 
@@ -77,18 +77,25 @@ configuration name. Backend selection (SQLite versus PostgreSQL) comes first.
 does not promote a PostgreSQL durable capability.
 
 For SQLite, `python|rust` selects `EngineSQLite` or `RustEngineSQLite`. Rust
-selection closes raw Python writer access through that facade. Do not alternate
-Python `sqlite3` and bundled native SQLite over a live database handle,
-especially on Windows where a stable common SQLite ABI cannot be assumed.
+selection closes raw Python writer access through that facade. Both libraries
+may be loaded, but each execution context is immutably bound to one
+implementation. Different implementations may use one database sequentially
+only after every connection, cached session, and transaction has been closed;
+overlapping ownership is rejected. Same-implementation contexts retain normal
+SQLite concurrency. The context/ownership guard covers supported Kogwistar
+entrypoints, not arbitrary third-party SQLite connections.
 
 For PostgreSQL Rust authority, `KOGWISTAR_IMPL_POSTGRES_AUTHORITY=rust` plus
 both meta/graph selectors set to `rust` is required. Its current gates prove
 bounded implementation paths; they do not flip any PostgreSQL readiness flag.
 
-SQLite cross-owner compatibility is a restart operation only: stop the old
-process, then start the new owner. `sqlite_restart_compatibility_uat.py` proves this as
-three separate child processes. It is not evidence for simultaneous
-multi-process SQLite ownership, HA, or live handoff.
+`sqlite_restart_compatibility_uat.py` proves persisted-file compatibility
+across clean owner changes in three separate child processes. This deployment
+UAT is intentionally narrower than the in-process execution-context contract,
+which is separately exercised by
+`tests/core/test_sqlite_context_invariant.py` and the Python/Rust differential
+tests. Neither test group proves simultaneous multi-process SQLite authority,
+HA, or arbitrary external-client ownership.
 
 
 ## Development cadence

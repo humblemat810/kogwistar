@@ -58,8 +58,8 @@ TraceContext -> EventEmitter -> SQLite sink
 Rules:
 
 - `run_id`, `goal_id`, `token_id`, and `node_id` are domain attributes, not OTel trace IDs.
-- Nested workflows keep one trace and receive distinct run/span identity.
-- Resume continues the trace with a new continuation span; transient span objects are not persisted.
+- Nested workflows keep one Kogwistar trace and receive distinct run/span identity; same-process OTel spans mirror that parent-child relation.
+- Checkpoint resume retains Kogwistar trace/run-span correlation, but once the prior execution span ends the adapter starts a new SDK-owned OTel trace; it emits no OTel span link to the prior span.
 - OTel export is bounded, asynchronous, best-effort, and never blocks canonical execution indefinitely.
 - exporter failure, queue drop, or shutdown timeout must not fail `EventEmitter.emit()`.
 

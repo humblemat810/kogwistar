@@ -29,7 +29,9 @@ Open-source substrate and harness for graph-backed AI systems.
 
 Kogwistar's tested runtime support is:
 
-- CPython 3.12 and newer for the normal package and native Rust wheel path.
+- CPython 3.12, 3.13, and 3.14 in the current CI matrix. Package metadata has
+  a lower bound of `>=3.12`; that declaration alone does not claim testing on
+  future CPython releases.
 - PyPy 3.11 for the supported Python-authority compatibility profile. This
   profile runs the provider-free CI suite with `KOGWISTAR_IMPL_MODE=python`.
 - PyPy 3.12 remains an experimental, best-effort native-extension profile.
@@ -261,7 +263,8 @@ If you want the closer agent-loop comparison, the older [framework_then_agent_de
    - `git clone git@github.com:humblemat810/kogwistar.git`
    - Or HTTPS: `git clone https://github.com/humblemat810/kogwistar.git`
    - `cd kogwistar`
-2. Create and activate a Python 3.13 environment.
+2. Create and activate a CPython 3.12, 3.13, or 3.14 environment. Python 3.13
+   is the default example used by the full test workflow.
 3. Install dependencies for local work.
 4. Pick a development mode:
    - Server-style MCP app:
