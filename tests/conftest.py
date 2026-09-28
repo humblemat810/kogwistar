@@ -85,6 +85,17 @@ try:
 except Exception:  # pragma: no cover - posthog is optional
     _posthog = None
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def _sqlite_execution_binding_per_test():
+    from kogwistar.engine_core.sqlite_context import reset_sqlite_context
+
+    reset_sqlite_context()
+    try:
+        yield
+    finally:
+        reset_sqlite_context()
 from typing import Optional, Iterator, TYPE_CHECKING
 
 if TYPE_CHECKING:

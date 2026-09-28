@@ -7,6 +7,10 @@ import pytest
 
 from kogwistar._rust_bridge import RustParityError, store_sqlite
 from kogwistar.engine_core.engine_sqlite import EngineSQLite
+from kogwistar.engine_core.sqlite_context import (
+    independent_sqlite_execution_context,
+    sqlite_execution_context,
+)
 
 
 pytestmark = [pytest.mark.ci, pytest.mark.core]
@@ -213,21 +217,22 @@ def test_completed_rust_transaction_cannot_hide_later_python_commit(tmp_path: Pa
     db.ensure_initialized()
     transaction_id = "native-session"
 
-    assert _rust(path, {"kind": "begin_transaction"}, transaction_id=transaction_id) is None
-    assert _rust(
-        path,
-        {
-            "kind": "raw_append",
-            "namespace": "handoff",
-            "event_id": "rust-first",
-            "entity_kind": "node",
-            "entity_id": "n1",
-            "op": "UPSERT",
-            "payload_json": '{"writer":"rust"}',
-        },
-        transaction_id=transaction_id,
-    )["seq"] == 1
-    assert _rust(path, {"kind": "commit_transaction"}, transaction_id=transaction_id) is None
+    with sqlite_execution_context("rust"):
+        assert _rust(path, {"kind": "begin_transaction"}, transaction_id=transaction_id) is None
+        assert _rust(
+            path,
+            {
+                "kind": "raw_append",
+                "namespace": "handoff",
+                "event_id": "rust-first",
+                "entity_kind": "node",
+                "entity_id": "n1",
+                "op": "UPSERT",
+                "payload_json": '{"writer":"rust"}',
+            },
+            transaction_id=transaction_id,
+        )["seq"] == 1
+        assert _rust(path, {"kind": "commit_transaction"}, transaction_id=transaction_id) is None
 
     assert db.append_entity_event(
         namespace="handoff",
@@ -272,10 +277,11 @@ def test_python_sqlite_nested_transaction_does_not_capture_another_database(tmp_
             payload_json='{"writer":"python"}',
         ) == 1
         assert list(outer.iter_entity_events(namespace="target", from_seq=1)) == []
-        assert _rust(
-            target.db_path,
-            {"kind": "latest_retained_event_seq", "namespace": "target"},
-        ) == 1
+        with independent_sqlite_execution_context("rust"):
+            assert _rust(
+                target.db_path,
+                {"kind": "latest_retained_event_seq", "namespace": "target"},
+            ) == 1
 
     strict = _rust(
         target.db_path,

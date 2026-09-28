@@ -14,6 +14,7 @@ from .models import RunFailure, StepRunResult, WorkflowState
 from .executor import TerminalStatus, WorkflowExecutor
 from .base_runtime import BaseRuntime, apply_state_update_inplace, validate_initial_state
 from .telemetry import TraceContext
+from kogwistar.engine_core.sqlite_context import sqlite_execution_bound
 from .runtime import (
     RunResult,
     StepContext,
@@ -151,6 +152,7 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
     def sync_runtime(self) -> ThreadedWorkflowRuntime:
         return self._sync_runtime
 
+    @sqlite_execution_bound("workflow_engine", "conversation_engine")
     async def run(
         self,
         *,

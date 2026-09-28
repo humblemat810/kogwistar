@@ -59,7 +59,7 @@ def test_rust_authority_marks_calls_as_sole_writer_sessions(
             "path": tmp_path / "engine.db",
             "operation": {"kind": "open_init"},
             "transaction_id": None,
-            "reuse_session": True,
+            "reuse_session": False,
         }
     ]
 

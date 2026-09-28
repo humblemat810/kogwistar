@@ -30,6 +30,7 @@ use kogwistar_store::{
 use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::CStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -64,6 +65,8 @@ pub enum SqliteStoreError {
     NegativeSequenceValue { value: i64 },
     #[error("transaction aborted: {0}")]
     TransactionAborted(String),
+    #[error("SQLite cached session belongs to another execution context")]
+    ContextMismatch,
     #[error("invalid recorded runtime transition: {0}")]
     RecordedRuntime(#[from] RecordedRuntimeError),
     #[error("recorded runtime transition conflict: {0}")]
@@ -131,6 +134,27 @@ pub struct AppendedRawEvent {
 pub struct SqliteStore {
     path: Arc<PathBuf>,
     connection: Arc<Mutex<Connection>>,
+}
+
+impl Drop for SqliteStore {
+    fn drop(&mut self) {
+        if std::env::var_os("KOGWISTAR_SQLITE_DIAGNOSTICS").as_deref()
+            != Some(std::ffi::OsStr::new("1"))
+            || Arc::strong_count(&self.connection) != 1
+        {
+            return;
+        }
+        let connection = self
+            .connection
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        eprintln!(
+            "[sqlite-rust-close] conn={:p} path={} {}",
+            unsafe { connection.handle() },
+            self.path.display(),
+            sqlite_sidecars(self.path.as_ref())
+        );
+    }
 }
 
 /// Independent Python-compatible `AUTH_DB_URL=sqlite:///...` store. Opening
@@ -371,6 +395,7 @@ impl SqliteStore {
             ));
         }
         conn.execute_batch("BEGIN IMMEDIATE")?;
+        sqlite_lifecycle_diagnostic("begin", self.path.as_ref());
         Ok(())
     }
 
@@ -385,6 +410,7 @@ impl SqliteStore {
             ));
         }
         conn.execute_batch("COMMIT")?;
+        sqlite_lifecycle_diagnostic("commit", self.path.as_ref());
         Ok(())
     }
 
@@ -399,6 +425,7 @@ impl SqliteStore {
             ));
         }
         conn.execute_batch("ROLLBACK")?;
+        sqlite_lifecycle_diagnostic("rollback", self.path.as_ref());
         Ok(())
     }
 
@@ -1174,11 +1201,70 @@ fn configured_connection(path: &Path) -> SqliteStoreResult<Connection> {
     )?;
     conn.busy_timeout(std::time::Duration::from_millis(BUSY_TIMEOUT_MS))?;
     conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA synchronous = NORMAL;")?;
-    let journal_mode: String = conn.query_row("PRAGMA journal_mode", [], |row| row.get(0))?;
+    let mut journal_mode: String = conn.query_row("PRAGMA journal_mode", [], |row| row.get(0))?;
     if !journal_mode.eq_ignore_ascii_case("wal") {
         conn.execute_batch("PRAGMA journal_mode = WAL;")?;
+        journal_mode = conn.query_row("PRAGMA journal_mode", [], |row| row.get(0))?;
+    }
+    if std::env::var_os("KOGWISTAR_SQLITE_DIAGNOSTICS").as_deref()
+        == Some(std::ffi::OsStr::new("1"))
+    {
+        let version = unsafe {
+            CStr::from_ptr(rusqlite::ffi::sqlite3_libversion())
+                .to_string_lossy()
+                .into_owned()
+        };
+        let source_id = unsafe {
+            CStr::from_ptr(rusqlite::ffi::sqlite3_sourceid())
+                .to_string_lossy()
+                .into_owned()
+        };
+        eprintln!(
+            "[sqlite-rust-open] conn={:p} path={} version={} source_id={} journal_mode={} {}",
+            unsafe { conn.handle() },
+            path.display(),
+            version,
+            source_id,
+            journal_mode,
+            sqlite_sidecars(path)
+        );
     }
     Ok(conn)
+}
+
+fn sqlite_lifecycle_diagnostic(event: &str, path: &Path) {
+    if std::env::var_os("KOGWISTAR_SQLITE_DIAGNOSTICS").as_deref()
+        != Some(std::ffi::OsStr::new("1"))
+    {
+        return;
+    }
+    eprintln!(
+        "[sqlite-rust-{event}] path={} {}",
+        path.display(),
+        sqlite_sidecars(path)
+    );
+}
+
+fn sqlite_sidecars(path: &Path) -> String {
+    [
+        path.to_path_buf(),
+        PathBuf::from(format!("{}-wal", path.display())),
+        PathBuf::from(format!("{}-shm", path.display())),
+    ]
+    .iter()
+    .map(|candidate| match fs::metadata(candidate) {
+        Ok(metadata) => format!(
+            "{}=size:{}",
+            candidate.file_name().unwrap_or_default().to_string_lossy(),
+            metadata.len()
+        ),
+        Err(_) => format!(
+            "{}=absent",
+            candidate.file_name().unwrap_or_default().to_string_lossy()
+        ),
+    })
+    .collect::<Vec<_>>()
+    .join(" ")
 }
 
 /// Operations sharing one `BEGIN IMMEDIATE` transaction.

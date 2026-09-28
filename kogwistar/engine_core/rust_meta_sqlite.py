@@ -44,6 +44,8 @@ class _RustTransactionToken:
 class RustEngineSQLite:
     """Python-compatible meta facade with Rust as sole SQLite writer."""
 
+    sqlite_implementation = "rust"
+
     def __init__(self, persistent_directory: Path, filename: str = "engine.db") -> None:
         self.persistent_directory = Path(persistent_directory)
         self.db_path = self.persistent_directory / filename
@@ -56,7 +58,7 @@ class RustEngineSQLite:
             path=self.db_path,
             operation={"kind": kind, **values},
             transaction_id=self._transaction_id.get(),
-            reuse_session=True,
+            reuse_session=self._transaction_id.get() is not None,
         )
 
     def ensure_initialized(self) -> None:
@@ -75,24 +77,30 @@ class RustEngineSQLite:
 
     @contextmanager
     def transaction(self, *, immediate: bool = True) -> Iterator[_RustTransactionToken]:
+        from .sqlite_context import sqlite_execution_context
+
         del immediate
-        current = self._transaction_id.get()
-        if current is not None:
-            yield _RustTransactionToken(current)
-            return
-        transaction_id = uuid.uuid4().hex
-        token = self._transaction_id.set(transaction_id)
-        try:
-            self._call("begin_transaction")
+        with sqlite_execution_context("rust"):
+            current = self._transaction_id.get()
+            if current is not None:
+                yield _RustTransactionToken(current)
+                return
+            transaction_id = uuid.uuid4().hex
+            token = self._transaction_id.set(transaction_id)
             try:
-                yield _RustTransactionToken(transaction_id)
-            except BaseException:
-                self._call("rollback_transaction")
-                raise
-            else:
-                self._call("commit_transaction")
-        finally:
-            self._transaction_id.reset(token)
+                self._call("begin_transaction")
+                try:
+                    yield _RustTransactionToken(transaction_id)
+                except BaseException:
+                    self._call("rollback_transaction")
+                    raise
+                else:
+                    self._call("commit_transaction")
+            finally:
+                try:
+                    self._call("close")
+                finally:
+                    self._transaction_id.reset(token)
 
     def next_global_seq(self) -> int:
         return int(self._call("next_global_seq"))

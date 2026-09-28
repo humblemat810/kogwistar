@@ -38,6 +38,7 @@ create_exception!(kogwistar._rust, RustStoreValueError, PyValueError);
 
 const STORE_INVALID_JSON: &str = "KOGWISTAR_STORE_INVALID_JSON";
 const STORE_INVALID_PAYLOAD: &str = "KOGWISTAR_STORE_INVALID_PAYLOAD";
+const STORE_SQLITE_ENGINE_MISMATCH: &str = "KOGWISTAR_SQLITE_ENGINE_MISMATCH";
 const STORE_OPERATION_INVALID: &str = "KOGWISTAR_STORE_OPERATION_INVALID";
 const STORE_OPERATION_FAILED: &str = "KOGWISTAR_STORE_OPERATION_FAILED";
 const STORE_TRANSACTION_ABORTED: &str = "KOGWISTAR_STORE_TRANSACTION_ABORTED";
@@ -701,6 +702,8 @@ fn store_memory_read_json_impl(payload_json: &str) -> Result<String, (&'static s
 #[serde(deny_unknown_fields)]
 struct SqliteStoreRequest {
     path: String,
+    #[serde(default)]
+    context_id: Option<String>,
     #[serde(default)]
     transaction_id: Option<String>,
     #[serde(default)]
@@ -2551,14 +2554,18 @@ fn sqlite_store_json_impl(payload_json: &str) -> Result<String, (&'static str, S
             format!("invalid SQLite store payload: {error}"),
         )
     })?;
+    let context_id = request
+        .context_id
+        .clone()
+        .unwrap_or_else(|| "rust-internal".to_owned());
     if matches!(&request.operation, SqliteStoreOperation::Close) {
-        close_cached_sqlite_store(&request.path)?;
+        close_cached_sqlite_store(&request.path, &context_id)?;
         return Ok("null".to_owned());
     }
     let result: Result<Value, SqliteStoreError> = (|| match request.operation {
         SqliteStoreOperation::BeginTransaction => {
-            let entry = cached_sqlite_store(&request.path)
-                .map_err(|(_, message)| SqliteStoreError::TransactionAborted(message))?;
+            let entry = cached_sqlite_store(&request.path, &context_id)
+                .map_err(sqlite_cached_store_error)?;
             let mut entry = entry
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -2577,8 +2584,8 @@ fn sqlite_store_json_impl(payload_json: &str) -> Result<String, (&'static str, S
             Ok(Value::Null)
         }
         SqliteStoreOperation::CommitTransaction => {
-            let entry = cached_sqlite_store(&request.path)
-                .map_err(|(_, message)| SqliteStoreError::TransactionAborted(message))?;
+            let entry = cached_sqlite_store(&request.path, &context_id)
+                .map_err(sqlite_cached_store_error)?;
             let result = (|| {
                 let mut entry = entry
                     .lock()
@@ -2589,14 +2596,14 @@ fn sqlite_store_json_impl(payload_json: &str) -> Result<String, (&'static str, S
                 Ok::<Value, SqliteStoreError>(Value::Null)
             })();
             if result.is_ok() && !request.reuse_session {
-                close_cached_sqlite_store(&request.path)
+                close_cached_sqlite_store(&request.path, &context_id)
                     .map_err(|(_, message)| SqliteStoreError::TransactionAborted(message))?;
             }
             result
         }
         SqliteStoreOperation::RollbackTransaction => {
-            let entry = cached_sqlite_store(&request.path)
-                .map_err(|(_, message)| SqliteStoreError::TransactionAborted(message))?;
+            let entry = cached_sqlite_store(&request.path, &context_id)
+                .map_err(sqlite_cached_store_error)?;
             let result = (|| {
                 let mut entry = entry
                     .lock()
@@ -2607,15 +2614,15 @@ fn sqlite_store_json_impl(payload_json: &str) -> Result<String, (&'static str, S
                 Ok::<Value, SqliteStoreError>(Value::Null)
             })();
             if result.is_ok() && !request.reuse_session {
-                close_cached_sqlite_store(&request.path)
+                close_cached_sqlite_store(&request.path, &context_id)
                     .map_err(|(_, message)| SqliteStoreError::TransactionAborted(message))?;
             }
             result
         }
         operation => {
             if request.reuse_session {
-                let entry = cached_sqlite_store(&request.path)
-                    .map_err(|(_, message)| SqliteStoreError::TransactionAborted(message))?;
+                let entry = cached_sqlite_store(&request.path, &context_id)
+                    .map_err(sqlite_cached_store_error)?;
                 let entry = entry
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -2636,10 +2643,13 @@ fn sqlite_store_json_impl(payload_json: &str) -> Result<String, (&'static str, S
                     }
                 }
             }
-            if let Some(entry) = existing_cached_sqlite_store(&request.path) {
+            if let Some(entry) = existing_cached_sqlite_store(&request.path, &context_id) {
                 let entry = entry
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
+                if entry.context_id != context_id {
+                    return Err(SqliteStoreError::ContextMismatch);
+                }
                 match (&entry.transaction_id, request.transaction_id.as_deref()) {
                     (Some(active), Some(requested)) if active == requested => {
                         return sqlite_store_operation_json(&entry.store, operation);
@@ -2657,6 +2667,9 @@ fn sqlite_store_json_impl(payload_json: &str) -> Result<String, (&'static str, S
                     (None, None) => {}
                 }
             } else if request.transaction_id.is_some() {
+                if any_cached_sqlite_store(&request.path).is_some() {
+                    return Err(SqliteStoreError::ContextMismatch);
+                }
                 return Err(SqliteStoreError::TransactionAborted(
                     "SQLite transaction_id is stale".to_owned(),
                 ));
@@ -2698,6 +2711,7 @@ fn sqlite_store_json_impl(payload_json: &str) -> Result<String, (&'static str, S
                 {
                     STORE_OPERATION_INVALID
                 }
+                SqliteStoreError::ContextMismatch => STORE_SQLITE_ENGINE_MISMATCH,
                 SqliteStoreError::TransactionAborted(_) => STORE_TRANSACTION_ABORTED,
                 _ => STORE_PERSISTENCE_FAILED,
             };
@@ -2736,21 +2750,44 @@ fn require_sqlite_session_owner(
 struct CachedSqliteStore {
     store: SqliteStore,
     transaction_id: Option<String>,
+    context_id: String,
+}
+
+fn sqlite_cached_store_error((code, message): (&'static str, String)) -> SqliteStoreError {
+    if code == STORE_SQLITE_ENGINE_MISMATCH {
+        SqliteStoreError::ContextMismatch
+    } else {
+        SqliteStoreError::TransactionAborted(message)
+    }
 }
 
 type SharedCachedSqliteStore = std::sync::Arc<Mutex<CachedSqliteStore>>;
 
-fn existing_cached_sqlite_store(path: &str) -> Option<SharedCachedSqliteStore> {
+fn existing_cached_sqlite_store(path: &str, context_id: &str) -> Option<SharedCachedSqliteStore> {
+    let key = (PathBuf::from(path), context_id.to_owned());
+    sqlite_store_cache()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(&key)
+        .cloned()
+}
+
+fn any_cached_sqlite_store(path: &str) -> Option<SharedCachedSqliteStore> {
     let path = PathBuf::from(path);
     sqlite_store_cache()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .get(&path)
-        .cloned()
+        .iter()
+        .find(|((cached_path, _), _)| *cached_path == path)
+        .map(|(_, store)| store.clone())
 }
 
-fn cached_sqlite_store(path: &str) -> Result<SharedCachedSqliteStore, (&'static str, String)> {
+fn cached_sqlite_store(
+    path: &str,
+    context_id: &str,
+) -> Result<SharedCachedSqliteStore, (&'static str, String)> {
     let path = PathBuf::from(path);
+    let key = (path.clone(), context_id.to_owned());
     let stores = sqlite_store_cache();
     let mut stores = stores
         .lock()
@@ -2759,8 +2796,18 @@ fn cached_sqlite_store(path: &str) -> Result<SharedCachedSqliteStore, (&'static 
     // A caller may remove a temporary database between calls. Evict the old
     // handle and initialize the recreated file.
     if path.exists()
-        && let Some(store) = stores.get(&path)
+        && let Some(store) = stores.get(&key)
     {
+        let entry = store
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if entry.context_id != context_id {
+            return Err((
+                STORE_SQLITE_ENGINE_MISMATCH,
+                "SQLite cached session belongs to another execution context".to_owned(),
+            ));
+        }
+        drop(entry);
         return Ok(store.clone());
     }
 
@@ -2769,23 +2816,25 @@ fn cached_sqlite_store(path: &str) -> Result<SharedCachedSqliteStore, (&'static 
     let entry = std::sync::Arc::new(Mutex::new(CachedSqliteStore {
         store,
         transaction_id: None,
+        context_id: context_id.to_owned(),
     }));
-    stores.insert(path, entry.clone());
+    stores.insert(key, entry.clone());
     Ok(entry)
 }
 
-fn sqlite_store_cache() -> &'static Mutex<BTreeMap<PathBuf, SharedCachedSqliteStore>> {
-    static STORES: OnceLock<Mutex<BTreeMap<PathBuf, SharedCachedSqliteStore>>> = OnceLock::new();
+fn sqlite_store_cache() -> &'static Mutex<BTreeMap<(PathBuf, String), SharedCachedSqliteStore>> {
+    static STORES: OnceLock<Mutex<BTreeMap<(PathBuf, String), SharedCachedSqliteStore>>> =
+        OnceLock::new();
     STORES.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
-fn close_cached_sqlite_store(path: &str) -> Result<(), (&'static str, String)> {
-    let path = PathBuf::from(path);
+fn close_cached_sqlite_store(path: &str, context_id: &str) -> Result<(), (&'static str, String)> {
+    let key = (PathBuf::from(path), context_id.to_owned());
     let stores = sqlite_store_cache();
     let entry = stores
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .get(&path)
+        .get(&key)
         .cloned();
     if let Some(entry) = entry {
         let entry = entry
@@ -2801,7 +2850,7 @@ fn close_cached_sqlite_store(path: &str) -> Result<(), (&'static str, String)> {
     stores
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .remove(&path);
+        .remove(&key);
     Ok(())
 }
 
@@ -5930,7 +5979,57 @@ fn store_memory_read_json(py: Python<'_>, payload_json: &str) -> PyResult<String
 
 #[pyfunction]
 fn store_sqlite_json(py: Python<'_>, payload_json: &str) -> PyResult<String> {
-    sqlite_store_json_impl(payload_json).map_err(|(code, message)| store_error(py, code, message))
+    let mut request: Value = serde_json::from_str(payload_json)
+        .map_err(|error| store_error(py, STORE_INVALID_JSON, format!("invalid JSON: {error}")))?;
+    let database = request
+        .get("path")
+        .and_then(Value::as_str)
+        .ok_or_else(|| store_error(py, STORE_INVALID_PAYLOAD, "missing SQLite path"))?
+        .to_owned();
+    let operation = request
+        .get("operation")
+        .and_then(|value| value.get("kind"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let reuse_session = request
+        .get("reuse_session")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let guard = py
+        .import("kogwistar.engine_core.sqlite_context")?
+        .call_method1(
+            "native_sqlite_enter",
+            (&database, &operation, reuse_session),
+        )?;
+    let context_id: String = guard.get_item(0)?.extract()?;
+    let _connection_lease = guard.get_item(1)?;
+    if let Some(object) = request.as_object_mut() {
+        object.insert("context_id".to_owned(), Value::String(context_id.clone()));
+    }
+    let payload_json = serde_json::to_string(&request)
+        .map_err(|error| store_error(py, STORE_INVALID_JSON, error.to_string()))?;
+    if std::env::var_os("KOGWISTAR_SQLITE_DIAGNOSTICS").as_deref()
+        == Some(std::ffi::OsStr::new("1"))
+    {
+        eprintln!(
+            "[sqlite-native-call] implementation=rust context={} operation={} reuse_session={} database={}",
+            context_id, operation, reuse_session, database
+        );
+    }
+    let result = sqlite_store_json_impl(&payload_json);
+    py.import("kogwistar.engine_core.sqlite_context")?
+        .call_method1(
+            "native_sqlite_exit",
+            (
+                database,
+                context_id,
+                operation,
+                reuse_session,
+                result.is_ok(),
+            ),
+        )?;
+    result.map_err(|(code, message)| store_error(py, code, message))
 }
 
 #[pyfunction]
