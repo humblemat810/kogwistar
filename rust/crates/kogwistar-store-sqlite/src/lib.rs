@@ -402,6 +402,27 @@ impl SqliteStore {
         Ok(())
     }
 
+    /// Refresh the cached handle before an operation owned by the Python
+    /// facade. Python may commit through another SQLite connection between
+    /// native calls; an idle cached handle must not retain an old WAL view.
+    ///
+    /// The caller must prove no external Rust transaction is active. If an
+    /// untracked transaction is found, roll it back before replacing the
+    /// handle: keeping an unowned transaction would make later reads and
+    /// writes observe an undefined snapshot.
+    pub fn refresh_idle_connection(&self) -> SqliteStoreResult<()> {
+        let mut conn = self
+            .connection
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !conn.is_autocommit() {
+            conn.execute_batch("ROLLBACK")?;
+        }
+        let fresh = configured_connection(self.path.as_ref())?;
+        *conn = fresh;
+        Ok(())
+    }
+
     /// Alias for `immediate_transaction`; all store UoWs are immediate.
     pub fn transaction<T, F>(&self, operation: F) -> SqliteStoreResult<T>
     where

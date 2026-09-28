@@ -2557,6 +2557,17 @@ fn sqlite_store_json_impl(payload_json: &str) -> Result<String, (&'static str, S
     let mut entry = entry
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    // Python EngineSQLite may commit through a separate connection between
+    // bridge calls. Refresh only when no Rust-owned external transaction is
+    // active; transaction participants must retain their original handle.
+    if entry.transaction_id.is_none() {
+        entry.store.refresh_idle_connection().map_err(|error| {
+            (
+                STORE_TRANSACTION_ABORTED,
+                format!("cannot refresh idle SQLite store: {error}"),
+            )
+        })?;
+    }
     let result: Result<Value, SqliteStoreError> = (|| match request.operation {
         SqliteStoreOperation::BeginTransaction => {
             let transaction_id = request.transaction_id.ok_or_else(|| {

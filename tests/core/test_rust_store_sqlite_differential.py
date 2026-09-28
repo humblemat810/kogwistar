@@ -153,6 +153,9 @@ def test_rust_sqlite_then_python_initializes_reads_writes_aliases_and_cursors(tm
         op="UPSERT",
         payload_json='{"from":"python"}',
     ) == 2
+    # Regression: Python commits through a separate sqlite3 connection. Every
+    # subsequent native call must observe that commit, not a cached WAL view.
+    assert _rust(path, {"kind": "latest_retained_event_seq", "namespace": "alpha"}) == 2
 
     strict = _rust(
         path,
@@ -165,6 +168,37 @@ def test_rust_sqlite_then_python_initializes_reads_writes_aliases_and_cursors(tm
             {"kind": "strict_cursor_advance", "namespace": "alpha", "consumer": "strict", "last_seq": 1},
         )
     assert regresses.value.code == "KOGWISTAR_STORE_CURSOR_REGRESSES"
+
+
+def test_rust_python_sqlite_handoff_repeated_commits_are_strictly_visible(
+    tmp_path: Path,
+) -> None:
+    """Repeated Python/Rust handoffs never regress the native durable view."""
+    path = tmp_path / "engine.db"
+    db = EngineSQLite(tmp_path)
+    db.ensure_initialized()
+
+    for seq in range(1, 6):
+        assert db.append_entity_event(
+            namespace="handoff",
+            event_id=f"python-{seq}",
+            entity_kind="node",
+            entity_id=f"n{seq}",
+            op="UPSERT",
+            payload_json=f'{{"seq":{seq}}}',
+        ) == seq
+        assert _rust(
+            path, {"kind": "latest_retained_event_seq", "namespace": "handoff"}
+        ) == seq
+        assert _rust(
+            path,
+            {
+                "kind": "strict_cursor_advance",
+                "namespace": "handoff",
+                "consumer": "strict",
+                "last_seq": seq,
+            },
+        )["last_seq"] == seq
 
 
 def test_python_sqlite_nested_transaction_does_not_capture_another_database(tmp_path: Path) -> None:
