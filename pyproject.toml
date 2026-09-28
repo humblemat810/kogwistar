@@ -47,7 +47,7 @@ Issues = "https://github.com/humblemat810/kogwistar/issues"
 
 [project.optional-dependencies]
 chroma = ["chromadb>=1.0.15"]
-pgvector = ["sqlalchemy>=2.0", "pgvector>=0.3.6", "psycopg[binary]>=3.1"]
+pgvector = ["sqlalchemy[asyncio]>=2.0", "pgvector>=0.3.6", "psycopg[binary]>=3.1"]
 server = ["uvicorn[standard]>=0.30", "mcp>=2.2.0,<3"]
 openai = ["langchain-core>=0.3.0", "langchain-openai>=0.3.0"]
 gemini = ["langchain-core>=0.3.0", "langchain-google-genai>=2.0.0"]
@@ -80,7 +80,7 @@ full = [
   "chromadb>=1.0.15",
   "fastapi>=0.111",
   "uvicorn[standard]>=0.30",
-  "sqlalchemy>=2.0",
+  "sqlalchemy[asyncio]>=2.0",
   "pgvector>=0.3.6",
   "psycopg[binary]>=3.1",
   "mcp>=2.2.0,<3",
