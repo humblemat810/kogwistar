@@ -14,6 +14,7 @@ pytestmark = [pytest.mark.ci, pytest.mark.core]
 ROOT = Path(__file__).resolve().parents[2]
 MANIFEST_PATH = ROOT / "contracts" / "rust-port-v1.json"
 CI_WORKFLOW_PATH = ROOT / ".github" / "workflows" / "ci.yml"
+RUST_PORT_WORKFLOW_PATH = ROOT / ".github" / "workflows" / "rust-port-compat.yml"
 CONSUMER_IMPORT_INVENTORY_PATH = (
     ROOT / "contracts" / "inventory" / "consumer-imports-v1.json"
 )
@@ -142,6 +143,15 @@ def test_four_layer_ci_uses_persisted_three_container_fast_profiles() -> None:
     assert '--profile "$PROFILE"' in workflow
     assert workflow.count("--shards 3") == 2
     assert "--pytest-workers" not in workflow
+
+
+def test_four_layer_ci_core_pin_matches_reference_application_contract() -> None:
+    manifest = _manifest()
+    workflow = RUST_PORT_WORKFLOW_PATH.read_text(encoding="utf-8")
+    core_pin = manifest["reference_application"]["pinned_commits"]["core_pin"]
+
+    assert f"ref: {core_pin}" in workflow
+    assert core_pin == "3a9dfb8951175a35f7be9299208ac31d849c288f"
 
 
 def test_server_cutover_ledger_count_matches_rust_frozen_route_inventory() -> None:

@@ -58,6 +58,86 @@ def test_get_flat_omits_limit_for_unlimited_reads() -> None:
     assert statement._limit_clause is None
 
 
+def test_get_flat_omits_embedding_column_when_not_requested() -> None:
+    table = sa.Table(
+        "items",
+        sa.MetaData(),
+        sa.Column("id", sa.String),
+        sa.Column("document", sa.Text),
+        sa.Column("metadata", sa.JSON),
+        sa.Column("embedding", sa.JSON),
+    )
+    backend = object.__new__(PgVectorBackend)
+    backend.numeric_keys = set()
+    statement = None
+
+    class Result:
+        def fetchall(self):
+            return [SimpleNamespace(id="one", document="text", metadata={})]
+
+    class Connection:
+        def execute(self, query):
+            nonlocal statement
+            statement = query
+            return Result()
+
+    @contextmanager
+    def connection():
+        yield Connection()
+
+    backend._conn = connection
+    backend._get_flat(
+        table,
+        ids=None,
+        where=None,
+        include=["documents", "metadatas"],
+        limit=1,
+    )
+
+    assert statement is not None
+    assert "embedding" not in {column.name for column in statement.selected_columns}
+
+
+def test_get_flat_includes_embedding_column_when_requested() -> None:
+    table = sa.Table(
+        "items",
+        sa.MetaData(),
+        sa.Column("id", sa.String),
+        sa.Column("document", sa.Text),
+        sa.Column("metadata", sa.JSON),
+        sa.Column("embedding", sa.JSON),
+    )
+    backend = object.__new__(PgVectorBackend)
+    backend.numeric_keys = set()
+    statement = None
+
+    class Result:
+        def fetchall(self):
+            return [SimpleNamespace(id="one", document="text", metadata={}, embedding=[1.0])]
+
+    class Connection:
+        def execute(self, query):
+            nonlocal statement
+            statement = query
+            return Result()
+
+    @contextmanager
+    def connection():
+        yield Connection()
+
+    backend._conn = connection
+    backend._get_flat(
+        table,
+        ids=None,
+        where=None,
+        include=["documents", "embeddings"],
+        limit=1,
+    )
+
+    assert statement is not None
+    assert "embedding" in {column.name for column in statement.selected_columns}
+
+
 @pytest.mark.asyncio
 async def test_get_flat_async_omits_limit_for_unlimited_reads() -> None:
     table = _table()

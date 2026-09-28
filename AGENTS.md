@@ -86,3 +86,12 @@ even if user ask in english, use wenyan-ultra to answer, the user can understand
 - Run Cargo and Python parity tests after native changes.
 - Use read-only subagents for parallel investigation when useful.
 - Never allow multiple agents to edit overlapping files concurrently.
+
+## SQLite execution invariant
+
+Kogwistar permits both Python SQLite and Rust SQLite to be loaded. Every
+execution context must select exactly one SQLite implementation, and that
+selection is immutable throughout the context's lifetime. Different
+implementations must not maintain overlapping connections to the same database
+within one process. All supported SQLite entrypoints must enforce these
+constraints.

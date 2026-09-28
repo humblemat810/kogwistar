@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+import kogwistar.engine_core.rust_meta_sqlite as rust_meta_sqlite
 from kogwistar.agent import (
     DurableCatalogStore,
     DurableSkillCatalogMaterializer,
@@ -39,6 +40,28 @@ def test_public_selector_keeps_python_rollback_and_routes_rust_owner(
     assert type(build_sqlite_meta_store(tmp_path)).__name__ == "EngineSQLite"
     monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
     assert isinstance(build_sqlite_meta_store(tmp_path), RustEngineSQLite)
+
+
+def test_rust_authority_marks_calls_as_sole_writer_sessions(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    def _store_sqlite(**kwargs: object) -> dict[str, bool]:
+        calls.append(kwargs)
+        return {"initialized": True}
+
+    monkeypatch.setattr(rust_meta_sqlite, "store_sqlite", _store_sqlite)
+    RustEngineSQLite(tmp_path).ensure_initialized()
+
+    assert calls == [
+        {
+            "path": tmp_path / "engine.db",
+            "operation": {"kind": "open_init"},
+            "transaction_id": None,
+            "reuse_session": False,
+        }
+    ]
 
 
 def test_rust_authority_uow_is_atomic_and_raw_python_writer_is_closed(

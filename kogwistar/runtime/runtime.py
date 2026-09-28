@@ -16,6 +16,7 @@ from kogwistar.id_provider import stable_id
 from kogwistar.utils.log import bind_log_context
 from kogwistar.runtime.models import StateUpdate
 from kogwistar.engine_core.models import MentionVerification
+from kogwistar.engine_core.sqlite_context import sqlite_execution_bound
 from kogwistar.runtime.models import (
     RunFailure,
     WorkflowCancelledNode,
@@ -1537,6 +1538,7 @@ class WorkflowRuntime(BaseRuntime):
             _authority_context=_parent_authority_context,
         )
 
+    @sqlite_execution_bound("workflow_engine", "conversation_engine")
     def run(
         self,
         *,

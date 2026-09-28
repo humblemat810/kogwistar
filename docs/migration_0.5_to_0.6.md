@@ -27,6 +27,20 @@ nested runs. Mutable workflow state and model output cannot grant authority.
 Callers must provide the authenticated context at the application boundary and
 must keep tenant, project, capability, and budget restrictions bounded.
 
+### SQLite implementation binding
+
+Python `sqlite3` and Rust `rusqlite` may both be loaded in one process. Each
+execution context selects one implementation (`python` or `rust`) immutably;
+nested work and inherited async tasks keep that selection. An explicitly
+independent context may select separately. Supported adapters reject a
+selection mismatch before opening a connection. A process-local ownership
+registry additionally rejects overlapping Python/Rust connections to the same
+database file, including path aliases. Same-implementation concurrency remains
+subject to SQLite's ordinary locking and transaction rules. Close every
+connection/session deterministically before sequential cross-implementation
+handoff. The guard cannot police third-party code that opens SQLite files
+outside Kogwistar's supported entrypoints.
+
 ### Lane-claim filters
 
 Durable queue claims can be restricted by lane and other job dimensions before a

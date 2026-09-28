@@ -13,6 +13,7 @@ from typing import Any, Iterator, List, Optional
 from ..messaging.models import ProjectedLaneMessageRow
 from .event_envelope import EntityEventEnvelope
 from .meta_lane_messages import LaneMessageMetaStoreMixin
+from .sqlite_context import acquire_sqlite_database
 
 _active_sqlite_conn: contextvars.ContextVar[sqlite3.Connection | None] = (
     contextvars.ContextVar("gke_sqlite_active_conn", default=None)
@@ -135,6 +136,30 @@ class ProjectedLaneMessageSqlRow:
         )
 
 
+class _LeasedSQLiteConnection(sqlite3.Connection):
+    _database_lease: Any = None
+
+    def close(self) -> None:
+        try:
+            super().close()
+        finally:
+            lease, self._database_lease = self._database_lease, None
+            if lease is not None:
+                lease.release()
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        try:
+            return super().__exit__(exc_type, exc_value, traceback)
+        finally:
+            self.close()
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
+
+
 @dataclass(frozen=True)
 class ProjectionTableSpec:
     """Registered projection table. Table names never come from caller input."""
@@ -154,6 +179,8 @@ _PROJECTION_TABLES = {
 
 
 class EngineSQLite(LaneMessageMetaStoreMixin):
+    sqlite_implementation = "python"
+
     """
     Lightweight SQLite helper for engine persistence.
 
@@ -529,23 +556,31 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
         """
         Create a SQLite connection with sane defaults.
         """
-        conn = sqlite3.connect(
-            self.db_path,
-            timeout=30.0,
-            isolation_level=None,
-        )
-        for statement in (
-            "PRAGMA foreign_keys = ON",
-            "PRAGMA busy_timeout=30000",
-            "PRAGMA journal_mode=WAL",
-            "PRAGMA synchronous=NORMAL",
-        ):
-            # PyPy can retain an ignored sqlite cursor past the connection
-            # setup call. Finalize each PRAGMA before another connection uses
-            # the database, especially while WAL mode is being established.
-            with closing(conn.execute(statement)):
-                pass
-        return conn
+        lease = acquire_sqlite_database(self.db_path, "python")
+        try:
+            conn = sqlite3.connect(
+                self.db_path,
+                timeout=30.0,
+                isolation_level=None,
+                factory=_LeasedSQLiteConnection,
+            )
+            conn._database_lease = lease
+            lease.refresh_file_identity(self.db_path)
+            for statement in (
+                "PRAGMA foreign_keys = ON",
+                "PRAGMA busy_timeout=30000",
+                "PRAGMA journal_mode=WAL",
+                "PRAGMA synchronous=NORMAL",
+            ):
+                with closing(conn.execute(statement)):
+                    pass
+            return conn
+        except BaseException:
+            if "conn" in locals():
+                conn.close()
+            else:
+                lease.release()
+            raise
 
     @contextmanager
     def transaction(self, *, immediate: bool = True) -> Iterator[sqlite3.Connection]:
@@ -558,25 +593,25 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
             with db.transaction() as conn:
                 ...
         """
-        existing = get_active_sqlite_conn()
-        if existing is not None and _active_sqlite_path.get() == self.db_path.resolve():
-            # Nested transaction scope: join outer UoW/transaction.
-            # Do NOT BEGIN/COMMIT/ROLLBACK here.  Different databases must
-            # never borrow this process-context connection.
-            yield existing
-            return
+        from .sqlite_context import sqlite_execution_context
 
-        conn = self.connect()
-        try:
-            conn.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
-            with _set_active_sqlite_conn(conn, self.db_path):
-                yield conn
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
+        with sqlite_execution_context("python"):
+            existing = get_active_sqlite_conn()
+            if existing is not None and _active_sqlite_path.get() == self.db_path.resolve():
+                yield existing
+                return
+
+            conn = self.connect()
+            try:
+                conn.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
+                with _set_active_sqlite_conn(conn, self.db_path):
+                    yield conn
+                conn.commit()
+            except BaseException:
+                conn.rollback()
+                raise
+            finally:
+                conn.close()
 
     # ------------------------------------------------------------------
     # Global sequence

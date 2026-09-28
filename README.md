@@ -176,6 +176,8 @@ If you want the closer agent-loop comparison, the older [framework_then_agent_de
 
 - Detailed comparison with adjacent products/frameworks: [docs/llm-generated-comparison.md](docs/llm-generated-comparison.md)
 - Author notes, build context, and design history: [docs/author-notes.md](docs/author-notes.md)
+- Agent security architecture and trust boundaries: [docs/security_model.md](docs/security_model.md)
+- PostgreSQL projection read and unlimited-read security contract: [docs/postgres_projection_read_contract.md](docs/postgres_projection_read_contract.md)
 - Runtime rationale: [kogwistar/docs/ARD-custom-runtime-rationale.md](kogwistar/docs/ARD-custom-runtime-rationale.md)
 - Local conversation walkthrough: [docs/tutorials/conversation-pipeline-basics.md](docs/tutorials/conversation-pipeline-basics.md)
 - Async runtime tutorial ladder: [docs/tutorials/runtime-ladder-overview.md](docs/tutorials/runtime-ladder-overview.md)

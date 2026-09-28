@@ -27,6 +27,7 @@ from .storage_backend import (
     get_two_stage_projection_adapter,
     get_two_stage_projection_capability,
 )
+from .acl_protocol import require_acl_protocols
 from .embedding_profile import (
     EmbeddingProfile,
     EmbeddingProfileRegistry,
@@ -1791,6 +1792,7 @@ class GraphKnowledgeEngine:
         if self.acl_enabled:
             self.read = ACLAwareReadSubsystem(self, self.raw_read)
             self.write = ACLAwareWriteSubsystem(self, self.raw_write)
+            require_acl_protocols(policy=self.acl, read=self.read, write=self.write)
         self.persist = PersistSubsystem(self)
         self.rollback = RollbackSubsystem(self)
         self.adjudicate = AdjudicateSubsystem(self)

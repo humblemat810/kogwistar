@@ -23,11 +23,16 @@ def store_sqlite(
     path: str | os.PathLike[str],
     operation: dict[str, Any],
     transaction_id: str | None = None,
+    reuse_session: bool = False,
 ) -> Any:
     """Execute stable Phase-3 SQLite JSON ABI against actual database path.
 
     This is an explicit test/integration bridge. It does not select an authority
     mode and cannot route `EngineSQLite` or `KOGWISTAR_IMPL_META_STORE`.
+
+    `reuse_session` is reserved for a Rust sole-writer facade. Mixed Python /
+    Rust callers keep its default so every call observes the latest external
+    SQLite commit.
     """
     engine_sqlite = sys.modules.get("kogwistar.engine_core.engine_sqlite")
     active_connection = (
@@ -59,6 +64,7 @@ def store_sqlite(
                     {
                         "path": os.fspath(path),
                         "transaction_id": transaction_id,
+                        "reuse_session": bool(reuse_session),
                         "operation": operation,
                     },
                     ensure_ascii=False,

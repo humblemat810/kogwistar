@@ -7,6 +7,10 @@ import pytest
 
 from kogwistar._rust_bridge import RustParityError, store_sqlite
 from kogwistar.engine_core.engine_sqlite import EngineSQLite
+from kogwistar.engine_core.sqlite_context import (
+    independent_sqlite_execution_context,
+    sqlite_execution_context,
+)
 
 
 pytestmark = [pytest.mark.ci, pytest.mark.core]
@@ -17,8 +21,13 @@ def _native_extension() -> Any:
     return pytest.importorskip("kogwistar._rust")
 
 
-def _rust(path: Path, operation: dict[str, Any]) -> Any:
-    return store_sqlite(path=path, operation=operation)
+def _rust(
+    path: Path,
+    operation: dict[str, Any],
+    *,
+    transaction_id: str | None = None,
+) -> Any:
+    return store_sqlite(path=path, operation=operation, transaction_id=transaction_id)
 
 
 def test_python_sqlite_then_rust_reads_and_writes_actual_database(tmp_path: Path) -> None:
@@ -153,6 +162,9 @@ def test_rust_sqlite_then_python_initializes_reads_writes_aliases_and_cursors(tm
         op="UPSERT",
         payload_json='{"from":"python"}',
     ) == 2
+    # Regression: Python commits through a separate sqlite3 connection. Every
+    # subsequent native call must observe that commit, not a cached WAL view.
+    assert _rust(path, {"kind": "latest_retained_event_seq", "namespace": "alpha"}) == 2
 
     strict = _rust(
         path,
@@ -165,6 +177,81 @@ def test_rust_sqlite_then_python_initializes_reads_writes_aliases_and_cursors(tm
             {"kind": "strict_cursor_advance", "namespace": "alpha", "consumer": "strict", "last_seq": 1},
         )
     assert regresses.value.code == "KOGWISTAR_STORE_CURSOR_REGRESSES"
+
+
+def test_rust_python_sqlite_handoff_repeated_commits_are_strictly_visible(
+    tmp_path: Path,
+) -> None:
+    """Repeated Python/Rust handoffs never regress the native durable view."""
+    path = tmp_path / "engine.db"
+    db = EngineSQLite(tmp_path)
+    db.ensure_initialized()
+
+    for seq in range(1, 6):
+        assert db.append_entity_event(
+            namespace="handoff",
+            event_id=f"python-{seq}",
+            entity_kind="node",
+            entity_id=f"n{seq}",
+            op="UPSERT",
+            payload_json=f'{{"seq":{seq}}}',
+        ) == seq
+        assert _rust(
+            path, {"kind": "latest_retained_event_seq", "namespace": "handoff"}
+        ) == seq
+        assert _rust(
+            path,
+            {
+                "kind": "strict_cursor_advance",
+                "namespace": "handoff",
+                "consumer": "strict",
+                "last_seq": seq,
+            },
+        )["last_seq"] == seq
+
+
+def test_completed_rust_transaction_cannot_hide_later_python_commit(tmp_path: Path) -> None:
+    """Only a live Rust transaction may retain a native SQLite handle."""
+    path = tmp_path / "engine.db"
+    db = EngineSQLite(tmp_path)
+    db.ensure_initialized()
+    transaction_id = "native-session"
+
+    with sqlite_execution_context("rust"):
+        assert _rust(path, {"kind": "begin_transaction"}, transaction_id=transaction_id) is None
+        assert _rust(
+            path,
+            {
+                "kind": "raw_append",
+                "namespace": "handoff",
+                "event_id": "rust-first",
+                "entity_kind": "node",
+                "entity_id": "n1",
+                "op": "UPSERT",
+                "payload_json": '{"writer":"rust"}',
+            },
+            transaction_id=transaction_id,
+        )["seq"] == 1
+        assert _rust(path, {"kind": "commit_transaction"}, transaction_id=transaction_id) is None
+
+    assert db.append_entity_event(
+        namespace="handoff",
+        event_id="python-second",
+        entity_kind="node",
+        entity_id="n2",
+        op="UPSERT",
+        payload_json='{"writer":"python"}',
+    ) == 2
+    assert _rust(path, {"kind": "latest_retained_event_seq", "namespace": "handoff"}) == 2
+    assert _rust(
+        path,
+        {
+            "kind": "strict_cursor_advance",
+            "namespace": "handoff",
+            "consumer": "strict",
+            "last_seq": 2,
+        },
+    )["last_seq"] == 2
 
 
 def test_python_sqlite_nested_transaction_does_not_capture_another_database(tmp_path: Path) -> None:
@@ -190,10 +277,11 @@ def test_python_sqlite_nested_transaction_does_not_capture_another_database(tmp_
             payload_json='{"writer":"python"}',
         ) == 1
         assert list(outer.iter_entity_events(namespace="target", from_seq=1)) == []
-        assert _rust(
-            target.db_path,
-            {"kind": "latest_retained_event_seq", "namespace": "target"},
-        ) == 1
+        with independent_sqlite_execution_context("rust"):
+            assert _rust(
+                target.db_path,
+                {"kind": "latest_retained_event_seq", "namespace": "target"},
+            ) == 1
 
     strict = _rust(
         target.db_path,
