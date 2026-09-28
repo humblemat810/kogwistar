@@ -1,0 +1,26 @@
+article_id,topic,representation,chars,bytes_utf8,cl100k_base_tokens,o200k_base_tokens,base_cl100k,base_o200k,base_chars,base_bytes,cl100k_saved,o200k_saved,cl100k_saved_pct,o200k_saved_pct
+A1,SSE middleware buffering,english,466,466,89,88,89,88,466,466,0,0,0.0,0.0
+A1,SSE middleware buffering,wenyan,97,273,115,90,89,88,466,466,-26,-2,-29.2,-2.3
+A1,SSE middleware buffering,graph,440,440,166,168,89,88,466,466,-77,-80,-86.5,-90.9
+A1,SSE middleware buffering,hypergraph,448,448,180,182,89,88,466,466,-91,-94,-102.2,-106.8
+A1,SSE middleware buffering,wenyan_hypergraph,232,432,231,198,89,88,466,466,-142,-110,-159.6,-125.0
+A2,Deployment outage after secret rotation,english,403,403,76,76,76,76,403,403,0,0,0.0,0.0
+A2,Deployment outage after secret rotation,wenyan,85,251,101,74,76,76,403,403,-25,2,-32.9,2.6
+A2,Deployment outage after secret rotation,graph,454,454,163,165,76,76,403,403,-87,-89,-114.5,-117.1
+A2,Deployment outage after secret rotation,hypergraph,448,448,167,168,76,76,403,403,-91,-92,-119.7,-121.1
+A2,Deployment outage after secret rotation,wenyan_hypergraph,214,412,220,183,76,76,403,403,-144,-107,-189.5,-140.8
+A3,Feature launch and cache invalidation,english,438,438,82,82,82,82,438,438,0,0,0.0,0.0
+A3,Feature launch and cache invalidation,wenyan,93,279,107,82,82,82,438,438,-25,0,-30.5,0.0
+A3,Feature launch and cache invalidation,graph,471,471,187,187,82,82,438,438,-105,-105,-128.0,-128.0
+A3,Feature launch and cache invalidation,hypergraph,472,472,187,188,82,82,438,438,-105,-106,-128.0,-129.3
+A3,Feature launch and cache invalidation,wenyan_hypergraph,232,442,234,201,82,82,438,438,-152,-119,-185.4,-145.1
+A4,Approval bottleneck in governance flow,english,525,525,89,89,89,89,525,525,0,0,0.0,0.0
+A4,Approval bottleneck in governance flow,wenyan,104,312,125,90,89,89,525,525,-36,-1,-40.4,-1.1
+A4,Approval bottleneck in governance flow,graph,585,585,207,213,89,89,525,525,-118,-124,-132.6,-139.3
+A4,Approval bottleneck in governance flow,hypergraph,575,575,209,215,89,89,525,525,-120,-126,-134.8,-141.6
+A4,Approval bottleneck in governance flow,wenyan_hypergraph,256,498,260,214,89,89,525,525,-171,-125,-192.1,-140.4
+A5,Notebook memory pressure,english,533,533,94,94,94,94,533,533,0,0,0.0,0.0
+A5,Notebook memory pressure,wenyan,113,339,139,106,94,94,533,533,-45,-12,-47.9,-12.8
+A5,Notebook memory pressure,graph,620,620,230,229,94,94,533,533,-136,-135,-144.7,-143.6
+A5,Notebook memory pressure,hypergraph,536,536,196,195,94,94,533,533,-102,-101,-108.5,-107.4
+A5,Notebook memory pressure,wenyan_hypergraph,245,491,262,220,94,94,533,533,-168,-126,-178.7,-134.0

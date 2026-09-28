@@ -529,11 +529,34 @@ class GraphKnowledgeEngine:
     - Persisting nodes and edges with full provenance.
     - Managing extensions like chat/workflow node variants.
     - Providing low-level to high-level APIs for extraction, storage, and adjudication.
-    - Orchestrating cross-backend consistency (SQL metadata + Vector storage).
+    - Orchestrating cross-backend consistency (metadata store + vector storage).
 
     Methods are generally arranged from low-level generic helpers to task-specific calls.
     High-level orchestration for extracting, storing, and adjudicating knowledge graph data.
     """
+
+    @property
+    def metadata(self):
+        """Return the engine's metadata store under its backend-neutral name.
+
+        ``meta_sqlite`` is retained as a compatibility alias because existing
+        adapters and callers use it, even when the store is PostgreSQL, in-memory,
+        or a Rust-backed implementation.
+        """
+        return self._metadata
+
+    @metadata.setter
+    def metadata(self, value) -> None:
+        self._metadata = value
+
+    @property
+    def meta_sqlite(self):
+        """Deprecated compatibility alias for :attr:`metadata`."""
+        return self.metadata
+
+    @meta_sqlite.setter
+    def meta_sqlite(self, value) -> None:
+        self.metadata = value
 
     # --------------------
     # Puhlic Interface
@@ -894,7 +917,7 @@ class GraphKnowledgeEngine:
         """
         if getattr(self, "_disable_event_log", False):
             return
-        append = getattr(self.meta_sqlite, "append_entity_event", None)
+        append = getattr(self.metadata, "append_entity_event", None)
         if append is None:
             if required:
                 raise RuntimeError("canonical event store does not support append_entity_event")
@@ -1334,7 +1357,7 @@ class GraphKnowledgeEngine:
             self, VerifierConfig(use_embeddings=False)
         )
         self.merge_policy = merge_policy or PreferExistingCanonical(self)
-        self.meta_sqlite: EngineSQLite | EnginePostgresMetaStore
+        self._metadata: EngineSQLite | EnginePostgresMetaStore
 
         self.alias_books = AliasBookStore()
         self.pre_add_node_hooks: list[Callable[[Node], None]] = []
@@ -1362,11 +1385,11 @@ class GraphKnowledgeEngine:
             if backend is not None:
                 raise ValueError("Backend factory and backend can only either be specified")
             self.backend = backend_factory(self)
-            if not hasattr(self, "meta_sqlite"):
-                self.meta_sqlite = build_sqlite_meta_store(
+            if not hasattr(self, "_metadata"):
+                self.metadata = build_sqlite_meta_store(
                     pathlib.Path(persist_directory or "./chroma_db"), "meta.sqlite"
                 )
-            self.meta_sqlite.ensure_initialized()
+            self.metadata.ensure_initialized()
             if self.persistence_mode == "two_stage" and (
                 getattr(self.backend, "_is_async_engine", False)
                 or getattr(self.backend, "is_async_backend", False)
@@ -1405,15 +1428,15 @@ class GraphKnowledgeEngine:
                     anonymized_telemetry=False,
                 )
             )
-            self.meta_sqlite = build_sqlite_meta_store(
+            self.metadata = build_sqlite_meta_store(
                 pathlib.Path(persist_directory or "./chroma_db"), "meta.sqlite"
             )
-            self.meta_sqlite.ensure_initialized()
+            self.metadata.ensure_initialized()
             if self.embedding_profile is not None:
                 inspector = ChromaStorageInspector(
                     self.chroma_client, persist_directory or "./chroma_db"
                 )
-                registry = EmbeddingProfileRegistry(self.meta_sqlite)
+                registry = EmbeddingProfileRegistry(self.metadata)
                 if self.embedding_profile_mode == "inspect":
                     self.embedding_profile_report = registry.inspect(
                         inspector, configured=self.embedding_profile
@@ -1576,7 +1599,7 @@ class GraphKnowledgeEngine:
                     engine=backend2.engine, schema=backend2.schema
                 )
             meta_postgre.ensure_initialized()
-            self.meta_sqlite = meta_postgre
+            self.metadata = meta_postgre
             if self.persistence_mode == "two_stage":
                 if postgres_authority_mode == "rust":
                     from .two_stage_rust_postgres import (
@@ -1644,7 +1667,7 @@ class GraphKnowledgeEngine:
                     f"{type(self.backend).__name__} does not implement the embedding "
                     "storage compatibility protocol"
                 )
-            registry = EmbeddingProfileRegistry(self.meta_sqlite)
+            registry = EmbeddingProfileRegistry(self.metadata)
             if self.embedding_profile_mode == "inspect":
                 self.embedding_profile_report = registry.inspect(
                     inspector, configured=self.embedding_profile
@@ -1680,7 +1703,7 @@ class GraphKnowledgeEngine:
             and postgres_authority_mode == "rust"
         ):
             # The native adapter writes through this same Rust-owned UoW.
-            self._backend_uow = self.meta_sqlite
+            self._backend_uow = self.metadata
         self.two_stage_projection_capability = get_two_stage_projection_capability(
             self.backend
         )
@@ -1783,9 +1806,9 @@ class GraphKnowledgeEngine:
         if persist_directory:
             idx_db_path = str(pathlib.Path(persist_directory) / "index.db")
         elif (
-            hasattr(self, "meta_sqlite")
-            and hasattr(self.meta_sqlite, "conn_str")
-            and self.meta_sqlite.conn_str != ":memory:"
+            hasattr(self, "_metadata")
+            and hasattr(self.metadata, "conn_str")
+            and self.metadata.conn_str != ":memory:"
         ):
             # PG setup might not have persist_directory in kwargs but might store sqlite locally
             pass  # fall back to memory or consider handling PG specifically if index.db isn't used there
@@ -1808,7 +1831,7 @@ class GraphKnowledgeEngine:
             getattr(self, "_oplog", None),
             getattr(self, "search_index", None),
             getattr(self, "backend", None),
-            getattr(self, "meta_sqlite", None),
+            getattr(self, "_metadata", None),
             getattr(self, "chroma_client", None),
         )
         for resource in closeables:
@@ -1956,7 +1979,8 @@ class GraphKnowledgeEngine:
         """Nest-safe Unit of Work for meta-store writes.
 
         This context manager ensures atomic transactions across the primary SQL meta-store
-        (`meta_sqlite`) and the storage backend (e.g., PgVector).
+        (`metadata`; legacy alias `meta_sqlite`) and the storage backend
+        (e.g., PgVector).
 
         ### Transaction Semantics:
         - **Atomicity**: Either all changes in the block are committed, or none are.
@@ -1978,7 +2002,7 @@ class GraphKnowledgeEngine:
 
         self._uow_ctx_depth.set(1)
         try:
-            with self.meta_sqlite.transaction() as conn:
+            with self.metadata.transaction() as conn:
                 token = self._uow_ctx_conn.set(conn)
                 try:
                     with self._backend_uow.transaction():

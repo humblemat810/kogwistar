@@ -302,6 +302,14 @@ contract.
 
 The storage adapter seam is real and should be preserved.
 
+The engine's metadata companion store is part of that existing seam. Its
+backend-neutral name is `GraphKnowledgeEngine.metadata`. The historical
+`meta_sqlite` attribute remains a compatibility alias only; it does not imply
+that the concrete store is SQLite. A vendor adapter may bind its metadata
+implementation through the existing `backend_factory(engine)` seam and return
+its graph/vector `StorageBackend`. Core must not add a second metadata-store
+hierarchy or a bundled persistence abstraction merely to support a vendor.
+
 However, the repository should not pretend that full backend neutrality
 is already complete while strategies, visualization, and graph query
 code still rely on Chroma-shaped collection attributes.

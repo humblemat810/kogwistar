@@ -54,6 +54,12 @@ This snapshot records checklist completion, not a claim that live LLM,
 transport-specific cancellation, or a native Rust agent runtime exists. Those
 remain explicit non-goals or separately marked integration work.
 
+Checklist notation is deliberately narrower than release acceptance: `[x]`
+means that the named contract or deterministic test slice exists. It does not
+close live-backend crash recovery, production repair, or an unadvertised
+backend. The snapshot and the Final Acceptance section are authoritative when
+they report those broader gates as partial or blocked.
+
 Current evidence:
 
 ```text
@@ -840,7 +846,9 @@ The implementation is complete only when all statements below are true:
 - [x] Optional integrations are absent-safe and cannot become core truth.
 - [x] Agent behavior is explainable through existing graph and workflow
       diagnostics.
-- [x] Skill catalog/projection state is durable, immutable by revision, ACL-safe
+- [ ] Skill catalog/projection state is durable, immutable by revision, ACL-safe
       at every public read boundary, and recoverable across supported backend
       arrangements. Optional semantic ranking remains derived and non-authoritative;
-      Chroma is outside this durable agent-projection claim.
+      Chroma is outside this durable agent-projection claim. Deterministic
+      slices exist, but final production repair/recovery acceptance remains
+      open.

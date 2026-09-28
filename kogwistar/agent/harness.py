@@ -29,8 +29,11 @@ class AgentHarness:
     ) -> None:
         self.profile = profile
         self.workflow_runtime = workflow_runtime
+        self._known_workflows = (
+            frozenset(known_workflows) if known_workflows is not None else None
+        )
         self._binding_context = {
-            "known_workflows": known_workflows,
+            "known_workflows": self._known_workflows,
             "known_providers": known_providers,
             "known_model_profiles": known_model_profiles,
             "known_hooks": known_hooks,
@@ -66,6 +69,17 @@ class AgentHarness:
 
         self.profile.validate_bindings(**self._binding_context)
 
+    def _select_workflow(self, workflow_id: str | None) -> str:
+        selected_workflow = workflow_id or self.profile.workflow_id
+        if not selected_workflow:
+            raise ValueError("workflow_id is required by the agent profile or run call")
+        if (
+            self._known_workflows is not None
+            and selected_workflow not in self._known_workflows
+        ):
+            raise ValueError(f"unknown workflow: {selected_workflow}")
+        return selected_workflow
+
     def run(
         self,
         *,
@@ -74,9 +88,7 @@ class AgentHarness:
         workflow_id: str | None = None,
         **kwargs: Any,
     ) -> Any:
-        selected_workflow = workflow_id or self.profile.workflow_id
-        if not selected_workflow:
-            raise ValueError("workflow_id is required by the agent profile or run call")
+        selected_workflow = self._select_workflow(workflow_id)
         return self.workflow_runtime.run(
             workflow_id=selected_workflow,
             conversation_id=conversation_id,
@@ -101,9 +113,7 @@ class AsyncAgentHarness(AgentHarness):
         workflow_id: str | None = None,
         **kwargs: Any,
     ) -> Any:
-        selected_workflow = workflow_id or self.profile.workflow_id
-        if not selected_workflow:
-            raise ValueError("workflow_id is required by the agent profile or run call")
+        selected_workflow = self._select_workflow(workflow_id)
         result = self.workflow_runtime.run(
             workflow_id=selected_workflow,
             conversation_id=conversation_id,
