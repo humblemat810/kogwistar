@@ -62,6 +62,9 @@ jobs:
 
       - name: Install CPython dependencies
         if: matrix.is_pypy == false
+        env:
+          PIP_DEFAULT_TIMEOUT: "60"
+          PIP_RETRIES: "10"
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e ".[test,server,full]"
@@ -309,6 +312,8 @@ jobs:
       - name: Install test dependencies and native extension
         env:
           ANONYMIZED_TELEMETRY: "FALSE"
+          PIP_DEFAULT_TIMEOUT: "60"
+          PIP_RETRIES: "10"
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e ".[test,server]" "sqlalchemy[asyncio]>=2.0"
@@ -870,6 +875,9 @@ jobs:
           cache: pip
 
       - name: Install dependencies
+        env:
+          PIP_DEFAULT_TIMEOUT: "60"
+          PIP_RETRIES: "10"
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e ".[test,server,full]"
