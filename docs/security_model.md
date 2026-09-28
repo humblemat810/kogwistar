@@ -286,6 +286,22 @@ kernel configuration.
 14. Untrusted output cannot directly create new authority or recursive
     delegation.
 
+### Unbounded Projection Reads
+
+PostgreSQL projection reads support an explicit `limit=None` for trusted repair
+and rebuild workflows. This removes SQL `LIMIT`; it does not remove ACL,
+tenant, namespace, resource-budget, or audit requirements. Public REST/MCP
+surfaces must not pass an untrusted unlimited-read request through directly.
+They must impose a finite limit or bounded cursor/page contract before invoking
+the backend. The collection default remains bounded. The backend itself does
+not enforce this service-boundary policy, so each REST/MCP adapter remains
+responsible for doing so.
+
+The backend also omits pgvector embeddings unless `"embeddings"` is explicitly
+requested. This limits unnecessary data transfer and memory use, but is not an
+authorization check: embedding access remains subject to the same graph and
+scope policy as document and metadata access.
+
 ## Threat Scenarios And Controls
 
 | Threat | Required containment |
