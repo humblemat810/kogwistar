@@ -38,17 +38,17 @@ implementation and acceptance checklist. Do not duplicate or infer phase
 completion from a Goal label. Each completed item must retain its own evidence;
 unchecked items remain open even when another item in the same Goal is done.
 
-Phase status snapshot (2026-09-25):
+Phase status snapshot (2026-09-28):
 
 | Scope | Status | Evidence |
 | --- | --- | --- |
-| Phase 0-2 | Partial | contract, discovery, read-tool, durable graph/catalog materialization, native async PostgreSQL/SQLite adapters, Rust SQLite batch-CAS bridge, and live Rust PostgreSQL materialization are covered; full backend parity and production repair proof remain open |
+| Phase 0-2 | Partial | implementation and deterministic coverage exist; durable PostgreSQL runtime proof remains open because the live parity suite is outside current CI and could not start locally without Docker access |
 | Phase 3-5 | Complete | control, budget, plan/goal, and delegation tests |
-| Phase 6-8 | Partial | compression and provider contracts tested; durable wisdom-to-skill projection and LLM-Wiki scope closure open |
+| Phase 6-8 | Implemented; acceptance pending | compression, wisdom-to-skill materialization, plugin/LLM-Wiki scope contracts, and deterministic tests are checked in; only the shared live PostgreSQL projection gate remains unverified |
 | Phase 9 | Complete | A2A polling/stream/push contract tests |
 | Phase 10 | Complete | deterministic CrewAI import/diagnostic tests |
 | Cross-Cutting | Partial | marker, fake-payload, cleanup, runtime parity, direct CAS, scope, catalog ACL, async PostgreSQL/SQLite, Rust SQLite, and live Rust PostgreSQL batch-CAS tests pass; crash-window and full backend parity remain open |
-| Final Acceptance | Blocked | full CI passes, but durable skill-projection acceptance remains open |
+| Final Acceptance | Blocked | durable skill-projection behavior has tests, but no required live PostgreSQL CI run currently proves the advertised PostgreSQL arrangements |
 
 This snapshot records checklist completion, not a claim that live LLM,
 transport-specific cancellation, or a native Rust agent runtime exists. Those
@@ -134,6 +134,23 @@ Verification record (2026-09-25):
 ```
 
 ## Durable Skill Projection Review (2026-09-25)
+
+### Verification Boundary (2026-09-28)
+
+The contract tests are present, but live PostgreSQL acceptance is not currently
+a required CI gate. `tests/pg_sql/test_agent_durable_projection_parity.py` is
+marked `integration`, `slow`, and `requires_pgvector`; the ordinary CI filters
+out `requires_pgvector`, while `ci_full` filters out `slow`. There is no
+separate PostgreSQL workflow in `.github/workflows/` today.
+
+In the current local verification, the deterministic durable-projection and
+Rust SQLite suites passed (37 tests). The three PostgreSQL parity tests were
+skipped because Testcontainers could not access Docker (`CreateFile: Access is
+denied`). Therefore checked-in tests prove intended coverage, not a live
+PostgreSQL result for this checkout. Keep the final durable-projection
+acceptance unchecked until the PostgreSQL parity suite has a successful,
+recorded run on a Docker-enabled runner; do not treat a skipped fixture as
+backend verification.
 
 The first named-projection slice proves that existing Kogwistar CAS storage can
 persist and reload bounded catalog/artifact payloads. It does not yet close the
@@ -850,5 +867,8 @@ The implementation is complete only when all statements below are true:
       at every public read boundary, and recoverable across supported backend
       arrangements. Optional semantic ranking remains derived and non-authoritative;
       Chroma is outside this durable agent-projection claim. Deterministic
-      slices exist, but final production repair/recovery acceptance remains
-      open.
+      slices and live PostgreSQL test cases exist, but the cases are not a
+      required CI gate and were skipped in the 2026-09-28 local run because
+      Docker access was denied. Close this item only after the parity suite runs
+      successfully against live PostgreSQL on a Docker-enabled runner and the
+      result is recorded; a skip is not acceptance evidence.

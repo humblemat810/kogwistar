@@ -66,13 +66,16 @@ required to implement it.
 
 ## Upgrade Checklist
 
-1. Update the core pin to the released 0.6 commit or `v0.6.0` tag.
+1. For source checkouts, pin the reviewed core commit or `v0.6.1` tag. For
+   package installs, use `kogwistar==0.6.1` only after PyPI publication is
+   confirmed; a Git tag alone does not make that package version installable.
 2. Run the complete CPython 3.12, 3.13, and 3.14 suites.
 3. Run the PyPy 3.11 suite, Rust checks, PostgreSQL checks, and SQLite checks.
 4. For applications using telemetry, enable it explicitly and close runtimes in
    application shutdown paths.
 5. For workers, configure lane filters and verify unrelated jobs remain queued.
-6. Update downstream pins only after the core release gate is green.
+6. Update downstream pins only after the matching source or package release is
+   available, then run that consumer's compatibility tests.
 
 No migration of existing graph data is required. Existing named projections,
 workflow records, provenance records, and queue entries remain readable.

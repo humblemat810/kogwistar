@@ -106,27 +106,30 @@ rewiring a shared emitter.
 
 ### Trace propagation
 
-The runtime must carry one validated `TraceContext` through `run`, scheduler,
-`StepContext`, nested invocation, checkpoint metadata, ordinary resume,
-suspended-client resume, and the Rust runtime-authority/remote-resume boundary.
-The constructors/validator are implemented, but this remains a required
-runtime integration seam: current runtime still creates fresh TraceContext
-values at many emission sites and does not yet propagate one root context.
+The synchronous and asynchronous Python workflow runtimes propagate one
+validated `TraceContext` through workflow execution, `StepContext`, nested
+invoke-and-await calls, run/checkpoint metadata, and ordinary checkpoint
+resume. Lifecycle events derive child contexts from the run context rather
+than creating unrelated trace identities. The Rust runtime-authority path and
+remote resume boundary are not thereby guaranteed to propagate this context;
+each boundary requires explicit parity evidence before being claimed.
 
 ```text
 top-level workflow -> new trace_id + root span_id
 nested workflow    -> same trace_id + child span_id + parent span_id
 Goal action run    -> Goal trace_id + new workflow-run span_id
-resume             -> same trace_id + new continuation span_id,
-                      parent_span_id = prior execution span when known
+resume             -> same trace_id + persisted run_execution_span_id;
+                      subsequent lifecycle events derive child span IDs
 ```
 
-Minimum persisted trace state for resume is `trace_id` plus the prior
-`run_execution_span_id`. `resume_from_latest_checkpoint()` can then create a
-new continuation span whose parent is that prior execution span. Persisting a
-transient current step span is unnecessary; `parent_span_id` is otherwise
-derivable from the run execution record. Checkpoint metadata must contain this
-minimum because it is the standalone input to ordinary resume.
+Minimum persisted Kogwistar correlation state for resume is `trace_id` plus the
+prior `run_execution_span_id`; `parent_span_id` is persisted when available.
+`resume_from_latest_checkpoint()` reconstructs the run-level correlation context
+with that trace ID and execution span ID; newly emitted lifecycle events derive
+their own child contexts from it. No transient span object is persisted. This
+preserves Kogwistar correlation, but does not by itself restore an OpenTelemetry
+SDK span context or prior parent relationship after the previous execution span
+has ended.
 
 Future HTTP/MCP transports may propagate a W3C `traceparent`; they do not alter
 Goal/run domain semantics.
@@ -148,11 +151,13 @@ Goal/run domain semantics.
 ## Span Lifecycle
 
 Top-level workflow run is an OTel root execution span. A step attempt is a
-child span of its workflow execution span. Phase 1 preserves Kogwistar trace
-continuity as attributes; because the SDK owns native ID generation, separate
-nested or Goal-invoked run spans are not promised to share one native OTel
-trace. A later SDK integration may establish that mapping without changing
-Kogwistar authority.
+child span of its workflow execution span. For nested runs in the same live
+process, the adapter resolves a known in-process parent span and creates a
+native child span. Kogwistar W3C fields remain attributes; the SDK generates
+native IDs. After the prior execution span ends (including suspension) or the
+process restarts, the adapter cannot recover the prior SDK span object or force
+its IDs into a new SDK span, so resumed execution starts a new native OTel trace
+unless an external OTel context is explicitly propagated.
 Predicate, routing, join, token, and checkpoint data are span events or
 attributes unless a later ADR proves a separate span useful.
 
@@ -166,12 +171,18 @@ attributes unless a later ADR proves a separate span useful.
 | `workflow_run_failed` | record exception/status; end root span with error |
 | `workflow_run_cancelled` | end root span with cancelled status/attribute |
 | `workflow_run_suspended` | end current execution span with suspended attribute |
-| resumed execution | begin a new continuation span; link to prior run execution when known |
+| resumed execution after prior span ended/restart | begin a new SDK-owned trace/span; retain persisted Kogwistar trace/span identifiers as attributes; no OTel span link is currently emitted |
+
+Test scope: `test_otel_resume_uses_same_trace_and_new_continuation_span` feeds
+synthetic continuation events directly to the sink. Runtime checkpoint-resume
+tests verify persisted Kogwistar IDs, but do not prove end-to-end OTel continuity
+or span linking after resume.
 
 A suspended span must not rely on an in-memory span object surviving restart.
-Persisted W3C trace identity lets resume create a new continuation span in the
-same trace. `run_id` remains a domain attribute and does not become trace
-identity.
+Persisted Kogwistar W3C correlation identity lets resume continue the same
+Kogwistar trace, but the current adapter does not restore native OTel identity
+or emit a link to the prior native span after suspension/restart. `run_id`
+remains a domain attribute and does not become trace identity.
 
 ## Persistence, Failure, and Recovery
 
@@ -203,19 +214,19 @@ SQLite sink.
 
 `WorkflowRuntime` already emits the first-phase lifecycle events through
 `EventEmitter`. `TraceContext` remains a cheap correlation carrier. The adapter
-consumes emitted dictionaries after runtime has formed them. Runtime will extend
-workflow-run/checkpoint metadata with minimal trace continuation fields, but
-this does not alter resolver execution, checkpoint authority, or replay state
-semantics.
+consumes emitted dictionaries after runtime has formed them. Run/checkpoint
+metadata carries the minimum Kogwistar trace continuation fields; this does not
+alter resolver execution, checkpoint authority, or replay state semantics.
 
 ## Cross-ADR Interaction
 
 ADR-018 may emit ordinary runtime/index-worker telemetry in a later phase, but
 its Stage 1 node commit and Stage 2 readiness are never gated on OTel. ADR-019
-uses one Kogwistar W3C correlation trace across Goal control and its workflow
-runs when propagation is supplied, but Phase 1 OTel native spans need not
-share that trace. Goal control-plane records remain authoritative when OTel is
-unavailable, delayed, or dropped.
+uses one Kogwistar W3C correlation trace across Goal control and nested runs
+when propagation is supplied. Same-process nested OTel spans can reflect that
+parent-child structure; resumed runs after the prior span ends do not currently
+continue the same native OTel trace. Goal control-plane records remain
+authoritative when OTel is unavailable, delayed, or dropped.
 
 ## Consequences
 
