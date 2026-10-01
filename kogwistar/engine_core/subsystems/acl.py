@@ -1278,6 +1278,13 @@ class ACLAwareReadSubsystem(NamespaceProxy):
             if self._node_visible(node)
         ]
 
+    def search_nodes_as_of_scored(self, *args, **kwargs):
+        return [
+            hit
+            for hit in self._raw.search_nodes_as_of_scored(*args, **kwargs)
+            if self._node_visible(hit.node)
+        ]
+
 
 class ACLAwareWriteSubsystem(NamespaceProxy):
     def __init__(self, engine, raw_write) -> None:

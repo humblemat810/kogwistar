@@ -670,6 +670,10 @@ def where_jsonb(
 class PgVectorBackend:
     """pgvector backend implementing a Chroma-shaped interface for engine usage."""
 
+    @property
+    def vector_distance_kind(self) -> str:
+        return "negative_inner_product" if self.distance == "ip" else "distance"
+
     atomic_mutation_capability = AtomicMutationCapability(
         mode="atomic",
         reason="PostgreSQL backend joins the engine SQL transaction",

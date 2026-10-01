@@ -264,6 +264,12 @@ class AsyncNoopUnitOfWork(AsyncUnitOfWork):
 
 
 class StorageBackend(Protocol):
+    # Vector distances are lower-is-better.  Inner-product backends may use a
+    # negative inner product or one-minus-inner-product representation.
+    # ReadSubsystem converts these raw values into VectorSearchHit records;
+    # backends do not implement application-level threshold policy.
+    vector_distance_kind: str
+
     # Generic dispatch (optional to use directly)
     def call(self, collection_key: str, method: str, **kwargs) -> Any: ...
 

@@ -159,6 +159,7 @@ class ChromaBackend:
         mode="eventual",
         reason="Chroma writes are durable but do not provide multi-operation rollback",
     )
+    vector_distance_kind = "distance"
 
     def __init__(
         self,

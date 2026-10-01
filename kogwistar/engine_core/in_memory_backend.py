@@ -477,6 +477,7 @@ class _InMemoryCollection:
 
 class InMemoryBackend:
     supports_historical_tombstone_query = True
+    vector_distance_kind = "distance"
 
     def __init__(self, engine: Any):
         self._engine = engine

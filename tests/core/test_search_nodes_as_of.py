@@ -5,8 +5,66 @@ import pytest
 pytestmark = [pytest.mark.core, pytest.mark.ci_full]
 
 from kogwistar.engine_core.models import Node
+from kogwistar.engine_core.vector_search import similarity_from_distance
 from tests._kg_factories import kg_document, kg_grounding
 from tests.conftest import _make_engine_pair
+
+
+def test_vector_similarity_normalization_is_metric_explicit():
+    assert similarity_from_distance(0.0, metric="cosine") == 1.0
+    assert similarity_from_distance(0.25, metric="cosine") == 0.75
+    assert similarity_from_distance(3.0, metric="l2") == 0.25
+    assert similarity_from_distance(-0.8, metric="ip", distance_kind="negative_inner_product") == 0.8
+    assert similarity_from_distance(0.2, metric="ip", distance_kind="distance") == 0.8
+
+
+@pytest.mark.ci
+def test_search_nodes_as_of_scored_exposes_normalized_similarity_and_threshold(
+    tmp_path,
+):
+    eng, _ = _make_engine_pair(
+        backend_kind="fake",
+        tmp_path=tmp_path,
+        sa_engine=None,
+        pg_schema=None,
+        dim=3,
+    )
+    try:
+        doc = kg_document(
+            doc_id="doc::scored-search",
+            content="A scored vector search fixture.",
+            source="test_search_nodes_as_of_scored_exposes_normalized_similarity_and_threshold",
+        )
+        eng.write.add_document(doc)
+        node = _mk_claim_node(
+            node_id="N_SCORED",
+            label="Scored vector fixture",
+            summary="A scored vector search fixture.",
+            doc_id=doc.id,
+            effective_from="2020-01-01T00:00:00+00:00",
+        )
+        eng.write.add_node(node)
+
+        hits = eng.search_nodes_as_of_scored(
+            query="scored vector fixture",
+            as_of_ts="2021-01-01T00:00:00+00:00",
+            n_results=5,
+            similarity_threshold=0.99,
+        )
+        assert [hit.node.id for hit in hits] == ["N_SCORED"]
+        assert hits[0].metric == "cosine"
+        assert hits[0].distance_kind == "distance"
+        assert hits[0].raw_distance == 0.0
+        assert hits[0].similarity == 1.0
+
+        assert eng.search_nodes_as_of_scored(
+            query="scored vector fixture",
+            as_of_ts="2021-01-01T00:00:00+00:00",
+            n_results=5,
+            similarity_threshold=1.01,
+        ) == []
+    finally:
+        eng.close()
 
 
 def _mk_claim_node(

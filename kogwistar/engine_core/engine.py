@@ -32,6 +32,7 @@ from .embedding_profile import (
     EmbeddingProfile,
     EmbeddingProfileRegistry,
 )
+from .vector_search import VectorSearchHit
 from ..workers.index_job_worker import IndexJobWorker
 from ..utils.log import bind_log_context
 from .indexing import IndexingSubsystem
@@ -775,6 +776,9 @@ class GraphKnowledgeEngine:
             max_redirect_hops=max_redirect_hops,
             **kwargs,
         )
+
+    def search_nodes_as_of_scored(self, **kwargs) -> list[VectorSearchHit]:
+        return self.read.search_nodes_as_of_scored(**kwargs)
 
     def query_edges(
         self,
