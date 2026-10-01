@@ -27,6 +27,9 @@ from .engine_core.models import (
 )
 from .engine_core.storage_backend import StorageBackend
 
+if TYPE_CHECKING:
+    from .engine_core.vector_search import VectorSearchHit
+
 # -------------------------
 # Collection / Vector store
 # -------------------------
@@ -158,6 +161,10 @@ class EmbeddingFunctionLike(Protocol):
 
 
 class ReadLike(Protocol):
+    def search_nodes_as_of_scored(
+        self, *args: Any, **kwargs: Any
+    ) -> list["VectorSearchHit"]: ...
+
     def get_document(self, doc_id: str) -> EngineDoc: ...
 
     def node_exists(

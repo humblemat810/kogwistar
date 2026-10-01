@@ -64,6 +64,7 @@ from kogwistar.engine_core.embedding_profile import (
     NamedProjectionStore,
     endpoint_fingerprint,
 )
+from kogwistar.engine_core.vector_search import VectorSearchHit, similarity_from_distance
 from kogwistar.engine_core.async_named_projection import (
     AsyncPostgresNamedProjectionStore,
     AsyncSQLiteNamedProjectionStore,
@@ -92,6 +93,8 @@ from kogwistar.engine_core.types import (
 
 __all__ = [
     "GraphKnowledgeEngine",
+    "VectorSearchHit",
+    "similarity_from_distance",
     "ACLPolicyProtocol",
     "ACLAwareReadProtocol",
     "ACLAwareWriteProtocol",

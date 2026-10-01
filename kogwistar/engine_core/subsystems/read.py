@@ -30,6 +30,7 @@ from ...entity_registry import (
 from ..async_compat import run_awaitable_blocking
 from ..models import Document, Edge, Node
 from ..utils.refs import ref_doc_id
+from ..vector_search import VectorSearchHit, similarity_from_distance
 from .base import NamespaceProxy
 from ...typing_interfaces import ReadLike
 
@@ -648,8 +649,53 @@ class ReadSubsystem(NamespaceProxy, ReadLike):
         max_redirect_hops: int = 16,
         **kwargs,
     ) -> list[Node]:
+        return [
+            node
+            for hit in self.search_nodes_as_of_scored(
+                query=query,
+                query_embeddings=query_embeddings,
+                as_of_ts=as_of_ts,
+                where=where,
+                n_results=n_results,
+                follow_redirects=follow_redirects,
+                node_type=node_type,
+                include=include,
+                max_redirect_hops=max_redirect_hops,
+                **kwargs,
+            )
+            for node in (hit.node,)
+        ]
+
+    def search_nodes_as_of_scored(
+        self,
+        *,
+        query: str | None = None,
+        query_embeddings: list[list[float]] | None = None,
+        as_of_ts: datetime | str,
+        where: dict[str, Any] | None = None,
+        n_results: int = 20,
+        follow_redirects: bool = True,
+        node_type: Type[Node] = Node,
+        include: list[str] | None = None,
+        max_redirect_hops: int = 16,
+        similarity_threshold: float | None = None,
+        **kwargs,
+    ) -> list[VectorSearchHit]:
+        """Return as-of nodes together with backend order scores.
+
+        Results retain raw backend distance and expose one higher-is-better
+        similarity value.  This is a read-only projection, never graph truth.
+        """
+        if similarity_threshold is not None:
+            threshold = float(similarity_threshold)
+            if threshold != threshold:
+                raise ValueError("similarity_threshold must not be NaN")
+        else:
+            threshold = None
         if include is None:
-            include = ["documents", "embeddings", "metadatas"]
+            include = ["documents", "embeddings", "metadatas", "distances"]
+        elif "distances" not in include:
+            include = [*include, "distances"]
         if query is not None and query_embeddings is not None:
             raise ValueError("Specify only one of query or query_embeddings.")
         if query_embeddings is None:
@@ -702,9 +748,26 @@ class ReadSubsystem(NamespaceProxy, ReadLike):
             )
         batches = self.nodes_from_query_result(got, node_type=node_type)
         candidates = [node for batch in batches for node in batch] if batches else []
+        raw_ids = [item for batch in (got.get("ids") or []) for item in batch]
+        raw_distances = [item for batch in (got.get("distances") or []) for item in batch]
+        metric = str(
+            getattr(getattr(self._e, "embedding_profile", None), "similarity_metric", None)
+            or "cosine"
+        ).lower()
+        distance_kind = str(
+            getattr(self._e.backend, "vector_distance_kind", "distance")
+        )
+        scores_by_id = {
+            str(node_id): (
+                float(raw_distances[index])
+                if index < len(raw_distances) and raw_distances[index] is not None
+                else None
+            )
+            for index, node_id in enumerate(raw_ids)
+        }
         cache = {str(node.safe_get_id()): node for node in candidates}
 
-        out: list[Node] = []
+        out: list[VectorSearchHit] = []
         seen: set[str] = set()
         for node in candidates:
             resolved = self._resolve_node_as_of(
@@ -721,7 +784,28 @@ class ReadSubsystem(NamespaceProxy, ReadLike):
             if node_id in seen:
                 continue
             seen.add(node_id)
-            out.append(resolved)
+            raw_distance = scores_by_id.get(str(node.safe_get_id()))
+            similarity = similarity_from_distance(
+                raw_distance,
+                metric=metric,
+                distance_kind=distance_kind,
+            )
+            if threshold is not None:
+                if similarity is None:
+                    raise ValueError(
+                        "similarity_threshold requires backend distance results"
+                    )
+                if similarity < threshold:
+                    continue
+            out.append(
+                VectorSearchHit(
+                    node=resolved,
+                    raw_distance=raw_distance,
+                    similarity=similarity,
+                    metric=metric,
+                    distance_kind=distance_kind,
+                )
+            )
         return out
 
     def query_edges(
