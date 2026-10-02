@@ -325,8 +325,8 @@ If you want the closer agent-loop comparison, the older [framework_then_agent_de
 
 - Use the package name, not the repo name, when installing with extras from a repository.
 - Examples:
-  - `pip install "kogwistar[chroma] @ git+ssh://git@github.com/humblemat810/kogwistar.git@v0.6.1"`
-  - `pip install "kogwistar[pgvector,openai] @ git+ssh://git@github.com/humblemat810/kogwistar.git@v0.6.1"`
+  - `pip install "kogwistar[chroma] @ git+ssh://git@github.com/humblemat810/kogwistar.git@v0.6.2"`
+  - `pip install "kogwistar[pgvector,openai] @ git+ssh://git@github.com/humblemat810/kogwistar.git@v0.6.2"`
 - For HTTPS-based installs, use the same direct-reference form with a token-authenticated `git+https://...` URL.
 
 ## Runtime Configuration
