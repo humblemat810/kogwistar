@@ -1272,6 +1272,17 @@ class PgVectorBackend:
             ))
 
     def _ensure_schema_sync(self, conn: sa.Connection) -> None:
+        # Extension creation is database-wide.  IF NOT EXISTS does not by
+        # itself serialize concurrent catalog updates, so two fresh workers
+        # can still race and one can observe a duplicate pg_extension row.
+        # A transaction-scoped advisory lock covers sync and async callers
+        # without holding a process-local lock that other replicas cannot see.
+        conn.execute(
+            sa.text(
+                "SELECT pg_advisory_xact_lock(" \
+                "hashtext('kogwistar.pgvector.extension'))"
+            )
+        )
         conn.execute(sa.text("CREATE EXTENSION IF NOT EXISTS vector"))
         if self.schema and self.schema != "public":
             conn.execute(sa.text(f'CREATE SCHEMA IF NOT EXISTS "{self.schema}"'))
