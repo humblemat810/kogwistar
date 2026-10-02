@@ -441,7 +441,12 @@ class LaneMessagingService:
         error: dict[str, Any] | None = None,
         completed: bool | None = None,
     ) -> None:
-        namespace = str(getattr(self.engine, "namespace", "default") or "default")
+        claims = claims_ctx.get() or {}
+        namespace = str(
+            claims.get("storage_ns")
+            or getattr(self.engine, "namespace", "default")
+            or "default"
+        )
         now_iso = _now_iso()
         unit_of_work = getattr(self.engine, "unit_of_work", None) or getattr(
             self.engine, "uow", None
@@ -525,7 +530,12 @@ class LaneMessagingService:
         claim = getattr(self.engine.meta_sqlite, "claim_projected_lane_messages", None)
         if not callable(claim):
             return []
-        namespace = str(getattr(self.engine, "namespace", "default") or "default")
+        claims = claims_ctx.get() or {}
+        namespace = str(
+            claims.get("storage_ns")
+            or getattr(self.engine, "namespace", "default")
+            or "default"
+        )
         visible_rows = self.list_projected(
             inbox_id=inbox_id,
             run_id=run_id,
