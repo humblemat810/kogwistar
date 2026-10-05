@@ -10,7 +10,7 @@ from __future__ import annotations
 import warnings
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, Callable, Iterable, Literal, Mapping
+from typing import Any, Iterable, Literal, Mapping, Protocol, cast
 
 from .graph import ACLMode, ACLRecord
 
@@ -224,7 +224,10 @@ def join_acl_inputs(
     )
 
 
-Declassifier = Callable[[Mapping[str, Any]], Mapping[str, Any]]
+class Declassifier(Protocol):
+    """Propose a bounded ACL change from non-content derivation metadata."""
+
+    def __call__(self, audit: Mapping[str, Any], /) -> Mapping[str, Any]: ...
 
 
 def derive_acl(
@@ -317,7 +320,8 @@ def derive_acl(
     model = str(proposal.get("classifier_model")) if proposal.get("classifier_model") else None
     version = str(proposal.get("classifier_version")) if proposal.get("classifier_version") else None
     reason = str(proposal.get("reason")) if proposal.get("reason") else None
-    if not approved or _rank(proposed) > _rank(original.mode):
+    proposed_mode = cast(ACLMode, proposed)
+    if not approved or _rank(proposed_mode) > _rank(original.mode):
         return ACLDerivationResult(
             original_acl=original,
             final_mode=original.mode,
@@ -326,7 +330,7 @@ def derive_acl(
             declassification_result="rejected" if approved else "uncertain",
             object_id=object_id,
             generation_id=generation_id,
-            proposed_mode=proposed,  # type: ignore[arg-type]
+            proposed_mode=proposed_mode,
             reason=reason or "guard did not prove safe declassification",
             confidence=confidence_value,
             evidence=evidence_values,

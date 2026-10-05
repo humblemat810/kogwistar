@@ -3,10 +3,14 @@ from __future__ import annotations
 
 import json
 import uuid
-from contextvars import ContextVar
-from typing import Callable
+from contextvars import ContextVar, Token
+from typing import Protocol
 
-UuidFn = Callable[[], uuid.UUID]
+
+class UuidFn(Protocol):
+    """Generate one UUID for the current request or test scope."""
+
+    def __call__(self) -> uuid.UUID: ...
 
 _uuid_fn_var: ContextVar[UuidFn] = ContextVar("_uuid_fn_var", default=uuid.uuid4)
 
@@ -25,11 +29,11 @@ def stable_id(kind: str, *parts: str) -> uuid.UUID:
     )
 
 
-def any_arg_new_event_id(*arg, **kwag):
+def any_arg_new_event_id(*args: object, **kwargs: object) -> uuid.UUID:
     return new_event_id()
 
 
-def new_event_id() -> str:
+def new_event_id() -> uuid.UUID:
     return uuid.uuid4()
 
 
@@ -38,10 +42,10 @@ def new_id_str() -> uuid.UUID:
     return _uuid_fn_var.get()()
 
 
-def set_uuid_fn(fn: UuidFn):
+def set_uuid_fn(fn: UuidFn) -> Token[UuidFn]:
     # returns a token so you can restore previous context safely
     return _uuid_fn_var.set(fn)
 
 
-def reset_uuid_fn(token) -> None:
+def reset_uuid_fn(token: Token[UuidFn]) -> None:
     _uuid_fn_var.reset(token)

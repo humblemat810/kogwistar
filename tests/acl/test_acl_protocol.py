@@ -43,6 +43,9 @@ class Read:
     def search_nodes_as_of(self, *args, **kwargs):
         return []
 
+    def search_nodes_as_of_scored(self, *args, **kwargs):
+        return []
+
 
 class Write:
     def add_node(self, *args, **kwargs):

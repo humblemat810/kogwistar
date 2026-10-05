@@ -20,6 +20,16 @@ from .budget import StateBackedBudgetLedger
 from .models import StateUpdate, WorkflowDesignArtifact, WorkflowInvocationRequest, WorkflowState
 from .routing import RouteComputation, compute_route_next
 
+
+class RuntimeContractError(RuntimeError):
+    """Raised when a workflow runtime contract is violated."""
+
+    code: str
+
+    def __init__(self, message: str, *, code: str) -> None:
+        super().__init__(message)
+        self.code = code
+
 RESERVED_ROOT_KEYS = {
     "_deps",
     "_rt_join",
@@ -116,9 +126,10 @@ def apply_state_update_inplace(
     Single reducer for sync runtime, async runtime, and replay.
     """
     if update and state_update:
-        error = Exception("Either update or state_update can be used")
-        error.code = "KOGWISTAR_CONTRACT_STATE_UPDATE_CONFLICT"
-        raise error
+        raise RuntimeContractError(
+            "Either update or state_update can be used",
+            code="KOGWISTAR_CONTRACT_STATE_UPDATE_CONFLICT",
+        )
 
     mode = runtime_implementation_mode()
     # Inspect live inputs before copying them.  Runtime state can contain

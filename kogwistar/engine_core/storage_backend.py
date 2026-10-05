@@ -43,7 +43,9 @@ No second metadata hierarchy or persistence bundle is required.
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 import inspect
-from typing import Any, AsyncIterator, Dict, Iterator, Literal, Protocol
+from typing import Any, AsyncContextManager, AsyncIterator, Dict, Iterator, Literal, Protocol, cast
+
+from .models import Edge, Node
 
 JSONDict = Dict[str, Any]
 
@@ -109,9 +111,9 @@ class TwoStageProjectionAdapter(Protocol):
     descriptor passes; it never silently falls back to synchronous embedding.
     """
 
-    def add_node(self, node: Any, *, doc_id: str | None = None) -> None: ...
+    def add_node(self, node: Node, *, doc_id: str | None = None) -> None: ...
 
-    def add_edge(self, edge: Any, *, doc_id: str | None = None) -> None: ...
+    def add_edge(self, edge: Edge, *, doc_id: str | None = None) -> None: ...
 
     def apply_embedding_job(
         self,
@@ -131,9 +133,9 @@ class AsyncTwoStageProjectionAdapter(Protocol):
     calls inside an ``async`` method.
     """
 
-    async def add_node(self, node: Any, *, doc_id: str | None = None) -> None: ...
+    async def add_node(self, node: Node, *, doc_id: str | None = None) -> None: ...
 
-    async def add_edge(self, edge: Any, *, doc_id: str | None = None) -> None: ...
+    async def add_edge(self, edge: Edge, *, doc_id: str | None = None) -> None: ...
 
     async def apply_embedding_job(
         self,
@@ -170,7 +172,7 @@ def get_async_two_stage_projection_adapter(
         and inspect.iscoroutinefunction(getattr(adapter, name))
         for name in required
     ):
-        return adapter
+        return cast(AsyncTwoStageProjectionAdapter, adapter)
     return None
 
 
@@ -230,7 +232,7 @@ def get_two_stage_projection_adapter(backend: Any) -> TwoStageProjectionAdapter 
         callable(getattr(adapter, name, None))
         for name in required
     ):
-        return adapter
+        return cast(TwoStageProjectionAdapter, adapter)
     return None
 
 
@@ -240,8 +242,7 @@ class UnitOfWork(Protocol):
 
 
 class AsyncUnitOfWork(Protocol):
-    @asynccontextmanager
-    async def transaction(self) -> AsyncIterator[None]: ...
+    def transaction(self) -> AsyncContextManager[None]: ...
 
 
 @dataclass
@@ -268,7 +269,8 @@ class StorageBackend(Protocol):
     # negative inner product or one-minus-inner-product representation.
     # ReadSubsystem converts these raw values into VectorSearchHit records;
     # backends do not implement application-level threshold policy.
-    vector_distance_kind: str
+    @property
+    def vector_distance_kind(self) -> str: ...
 
     # Generic dispatch (optional to use directly)
     def call(self, collection_key: str, method: str, **kwargs) -> Any: ...

@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import base64
 import json
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Mapping, Protocol, Sequence
+from typing import Any, Protocol
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
@@ -125,6 +126,8 @@ def _source_items(source: Any, method: str, **kwargs: Any) -> list[Mapping[str, 
         return []
     if isinstance(value, Mapping):
         value = value.get("items", value.get("results", [value]))
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        return []
     return [item for item in value if isinstance(item, Mapping)]
 
 

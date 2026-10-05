@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
-from typing import Any, Sequence, cast
+from typing import TYPE_CHECKING, Any, Sequence, cast
 
 from ...cdc.change_event import EntityRefModel
 from ..async_compat import run_awaitable_blocking
@@ -17,6 +17,9 @@ from ..utils.refs import (
 )
 from .base import NamespaceProxy
 from ...typing_interfaces import WriteLike
+
+if TYPE_CHECKING:
+    from ..engine import GraphKnowledgeEngine
 
 
 def _refs_fingerprint(refs) -> str:
@@ -40,18 +43,18 @@ def _refs_fingerprint(refs) -> str:
     return hashlib.blake2b(blob, digest_size=16).hexdigest()
 
 
-class WriteSubsystem(NamespaceProxy, WriteLike):
-    def __init__(self, engine) -> None:
+class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"], WriteLike):
+    def __init__(self, engine: "GraphKnowledgeEngine") -> None:
         super().__init__(engine)
 
     # Canonical write API
-    def add_node(self, *args, **kwargs):
-        return self._add_node_impl(*args, **kwargs)
+    def add_node(self, node: Node, doc_id: str | None = None) -> None:
+        self._add_node_impl(node, doc_id=doc_id)
 
-    def add_edge(self, *args, **kwargs):
-        return self._add_edge_impl(*args, **kwargs)
+    def add_edge(self, edge: Edge, doc_id: str | None = None) -> None:
+        self._add_edge_impl(edge, doc_id=doc_id)
 
-    async def add_node_async(self, node: Node, doc_id: str | None = None):
+    async def add_node_async(self, node: Node, doc_id: str | None = None) -> None:
         """Admit a node through the configured async persistence mode."""
         import asyncio
 
@@ -73,7 +76,7 @@ class WriteSubsystem(NamespaceProxy, WriteLike):
 
         return await self._add_node_async_single_stage(node, doc_id=doc_id)
 
-    async def add_edge_async(self, edge: Edge, doc_id: str | None = None):
+    async def add_edge_async(self, edge: Edge, doc_id: str | None = None) -> None:
         """Admit an edge through the configured async persistence mode."""
         adapter = getattr(self._e, "async_two_stage_projection_adapter", None)
         if getattr(self._e, "persistence_mode", "single_stage") == "two_stage":
@@ -835,7 +838,7 @@ class WriteSubsystem(NamespaceProxy, WriteLike):
             )
         return base_metadata
 
-    def _add_node_impl(self, node: Node, doc_id: str | None = None):
+    def _add_node_impl(self, node: Node, doc_id: str | None = None) -> None:
         """Commit canonical node event, then converge projections around it.
 
         For non-native backends, event append is required before the backend write.
@@ -931,7 +934,7 @@ class WriteSubsystem(NamespaceProxy, WriteLike):
             else node.model_dump(exclude=["embedding"]),
         )
 
-    def _add_edge_impl(self, edge: Edge, doc_id: str | None = None):
+    def _add_edge_impl(self, edge: Edge, doc_id: str | None = None) -> None:
         """Persist an edge only after all referenced endpoints already exist.
 
         Edge ingest is structurally strict: missing node or edge endpoints are
@@ -1149,7 +1152,7 @@ class WriteSubsystem(NamespaceProxy, WriteLike):
                 )
             )
 
-    def add_document(self, document: Document):
+    def add_document(self, document: Document) -> None:
         if document.embeddings is None:
             document.embeddings = self._e.embed.iterative_defensive_emb(
                 str(document.content)
@@ -1202,7 +1205,7 @@ class WriteSubsystem(NamespaceProxy, WriteLike):
             else document.model_dump(exclude=["embeddings"]),
         )
 
-    def add_domain(self, domain: Domain):
+    def add_domain(self, domain: Domain) -> None:
         document = domain.model_dump_json()
         metadata = self._e.chroma_sanitize_metadata(
             {"name": domain.name, "description": domain.description}

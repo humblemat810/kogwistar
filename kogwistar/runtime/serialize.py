@@ -69,7 +69,7 @@ def to_jsonable(obj: Any, *, _path: str = "$") -> Json:
             return _ref_obj(obj)
 
     # dataclasses
-    if dataclasses.is_dataclass(obj):
+    if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
         try:
             return to_jsonable(dataclasses.asdict(obj), _path=_path)
         except Exception:

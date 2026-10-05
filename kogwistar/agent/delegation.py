@@ -6,9 +6,21 @@ import hashlib
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable, Protocol
 
 from kogwistar.runtime.models import RunSuccess, WorkflowDesignArtifact, WorkflowInvocationRequest
+
+
+class DelegationContextLike(Protocol):
+    """Context fields needed to construct a bounded child invocation."""
+
+    run_id: str
+    step_seq: int
+    conversation_id: str | None
+    turn_node_id: str | None
+
+    @property
+    def state_view(self) -> Mapping[str, Any]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,7 +86,7 @@ def delegated_initial_state(
 
 
 def build_delegated_invocation(
-    ctx: Any,
+    ctx: DelegationContextLike,
     *,
     workflow_id: str,
     spec: DelegationSpec,
@@ -100,7 +112,7 @@ def build_delegated_invocation(
     )
 
 
-def bounded_child_result(value: Any, *, max_bytes: int) -> dict[str, Any]:
+def bounded_child_result(value: object, *, max_bytes: int) -> dict[str, Any]:
     """Return structured bounded evidence; never expose complete child context."""
 
     if int(max_bytes) < 1:
@@ -125,10 +137,10 @@ def make_delegation_handler(
     workflow_design: WorkflowDesignArtifact | None = None,
     result_state_key: str = "agent_subagent_result",
     allowed_model_profiles: set[str] | frozenset[str] | None = None,
-) -> Any:
+) -> Callable[[DelegationContextLike], RunSuccess]:
     """Create ordinary resolver handler returning one nested invocation."""
 
-    def _handler(ctx: Any) -> RunSuccess:
+    def _handler(ctx: DelegationContextLike) -> RunSuccess:
         return RunSuccess(
             state_update=[],
             workflow_invocations=[

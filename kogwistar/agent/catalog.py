@@ -9,7 +9,7 @@ import math
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any, Protocol
 from urllib.parse import quote
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -18,11 +18,28 @@ from kogwistar.engine_core.embedding_profile import NamedProjectionStore
 
 _TOKEN_RE = re.compile(r"[\w.-]+", re.UNICODE)
 _LOG = logging.getLogger(__name__)
-CatalogAcl = Callable[["CatalogEntry", str], bool]
-CatalogGroupAcl = Callable[["CatalogGroup", str], bool]
-CatalogSemanticRanker = Callable[
-    [str, tuple["CatalogEntry", ...]], Mapping[str, float]
-]
+
+class CatalogAcl(Protocol):
+    """Authorize one catalog entry for a principal."""
+
+    def __call__(self, entry: "CatalogEntry", principal: str, /) -> bool: ...
+
+
+class CatalogGroupAcl(Protocol):
+    """Authorize one catalog group for a principal."""
+
+    def __call__(self, group: "CatalogGroup", principal: str, /) -> bool: ...
+
+
+class CatalogSemanticRanker(Protocol):
+    """Rank already-authorized catalog entries for one query."""
+
+    def __call__(
+        self,
+        query: str,
+        entries: tuple["CatalogEntry", ...],
+        /,
+    ) -> Mapping[str, float]: ...
 CATALOG_PROJECTION_NAMESPACE = "agent_catalog"
 
 
@@ -561,6 +578,15 @@ class DurableCatalogStore(CatalogStore):
             raise TypeError("metadata must implement named projection operations")
         self._refresh()
 
+    @property
+    def _durable_metadata(self) -> NamedProjectionStore:
+        """Return the required metadata adapter with its narrowed type."""
+
+        metadata = self._metadata
+        if metadata is None:
+            raise RuntimeError("durable catalog metadata is not configured")
+        return metadata
+
     def _matches_store_scope(
         self,
         *,
@@ -592,7 +618,7 @@ class DurableCatalogStore(CatalogStore):
         revisions: dict[str, list[CatalogEntry]] = {}
         pointers: dict[str, int] = {}
         legacy_current: dict[str, CatalogEntry] = {}
-        rows = self._metadata.list_named_projections(self._projection_namespace)
+        rows = self._durable_metadata.list_named_projections(self._projection_namespace)
         for row in rows:
             payload = row.get("payload") or {}
             entry_data = payload.get("entry")
@@ -637,7 +663,7 @@ class DurableCatalogStore(CatalogStore):
 
     def _cas(self, key: str, payload: dict[str, Any], row: dict[str, Any] | None, revision: int) -> None:
         expected_a, expected_m = self._cas_values(row)
-        if not self._metadata.compare_and_swap_named_projection(
+        if not self._durable_metadata.compare_and_swap_named_projection(
             self._projection_namespace,
             key,
             payload,
@@ -680,7 +706,9 @@ class DurableCatalogStore(CatalogStore):
         self._refresh()
         current = self._entries.get(entry.logical_id)
         pointer_key = self._pointer_key(entry.logical_id)
-        pointer_row = self._metadata.get_named_projection(self._projection_namespace, pointer_key)
+        pointer_row = self._durable_metadata.get_named_projection(
+            self._projection_namespace, pointer_key
+        )
         history = self._history.get(entry.logical_id, [])
         latest = history[-1] if history else current
         if latest is not None:
@@ -692,7 +720,7 @@ class DurableCatalogStore(CatalogStore):
                 if current is not None:
                     return latest.model_copy(deep=True), []
         revision_key = self._revision_key(entry.logical_id, entry.revision)
-        revision_row = self._metadata.get_named_projection(
+        revision_row = self._durable_metadata.get_named_projection(
             self._projection_namespace, revision_key
         )
         updates: list[dict[str, Any]] = []
@@ -732,7 +760,7 @@ class DurableCatalogStore(CatalogStore):
 
         if not updates:
             return
-        batch = getattr(self._metadata, "compare_and_swap_named_projections", None)
+        batch = getattr(self._durable_metadata, "compare_and_swap_named_projections", None)
         if not callable(batch):
             raise TypeError("metadata must support atomic named projection batch CAS")
         if not batch(updates):
@@ -743,7 +771,7 @@ class DurableCatalogStore(CatalogStore):
         self._assert_write_scope(tenant_id=group.tenant_id, project_id=group.project_id)
         self._refresh()
         key = f"group:{group.group_id}"
-        row = self._metadata.get_named_projection(self._projection_namespace, key)
+        row = self._durable_metadata.get_named_projection(self._projection_namespace, key)
         self._cas(key, {"group": group.model_dump(mode="json")}, row, 1)
         self._groups[group.group_id] = group.model_copy(deep=True)
         return group.model_copy(deep=True)
@@ -773,7 +801,9 @@ class DurableCatalogStore(CatalogStore):
         )
         for logical_id in removed:
             pointer_key = self._pointer_key(logical_id)
-            row = self._metadata.get_named_projection(self._projection_namespace, pointer_key)
+            row = self._durable_metadata.get_named_projection(
+                self._projection_namespace, pointer_key
+            )
             if row is not None:
                 payload = dict(row.get("payload") or {})
                 payload.update(
@@ -784,7 +814,7 @@ class DurableCatalogStore(CatalogStore):
                     }
                 )
                 expected_a, expected_m = self._cas_values(row)
-                if not self._metadata.compare_and_swap_named_projection(
+                if not self._durable_metadata.compare_and_swap_named_projection(
                     self._projection_namespace,
                     pointer_key,
                     payload,
@@ -797,7 +827,9 @@ class DurableCatalogStore(CatalogStore):
                 ):
                     raise ValueError(f"catalog projection changed concurrently: {logical_id}")
             else:
-                legacy = self._metadata.get_named_projection(self._projection_namespace, logical_id)
+                legacy = self._durable_metadata.get_named_projection(
+                    self._projection_namespace, logical_id
+                )
                 if legacy is not None:
                     payload = dict(legacy.get("payload") or {})
                     payload["entry"] = None

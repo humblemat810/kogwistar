@@ -297,7 +297,10 @@ def load_workflow_design(
     nodes: Dict[str, WorkflowNode] = {}
     start_nodes: List[WorkflowNode] = []
     for n in nodes_raw:
-        nodes[n.id] = n
+        node_id = n.id
+        if node_id is None:
+            raise ValueError("workflow nodes must have non-null IDs")
+        nodes[node_id] = n
         if n.metadata.get("wf_start"):
             start_nodes.append(n)
 

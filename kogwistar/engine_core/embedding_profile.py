@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import json
-from typing import Any, Mapping, Protocol, runtime_checkable
+from typing import Any, Callable, Mapping, Protocol, cast, runtime_checkable
 from urllib.parse import urlsplit, urlunsplit
 
 
@@ -254,7 +254,13 @@ class NamedProjectionStore(Protocol):
         namespace: str,
         key: str,
         payload: dict[str, Any],
-        **values: Any,
+        *,
+        expected_last_authoritative_seq: int | None,
+        expected_last_materialized_seq: int | None,
+        last_authoritative_seq: int,
+        last_materialized_seq: int,
+        projection_schema_version: int,
+        materialization_status: str,
     ) -> bool: ...
 
     def compare_and_swap_named_projections(
@@ -282,7 +288,13 @@ class AsyncNamedProjectionStore(Protocol):
         namespace: str,
         key: str,
         payload: dict[str, Any],
-        **values: Any,
+        *,
+        expected_last_authoritative_seq: int | None,
+        expected_last_materialized_seq: int | None,
+        last_authoritative_seq: int,
+        last_materialized_seq: int,
+        projection_schema_version: int,
+        materialization_status: str,
     ) -> bool: ...
 
     async def compare_and_swap_named_projections(
@@ -366,9 +378,14 @@ class EmbeddingProfileRegistry:
         # records must never be guessed through.
         aliases = tuple(getattr(inspector, "embedding_storage_scope_aliases", lambda: ())())
         list_projections = getattr(self._metadata, "list_named_projections", None)
-        legacy_rows = (
-            list_projections(PROFILE_REGISTRY_NAMESPACE)
+        list_projections_fn = (
+            cast(Callable[[str], list[dict[str, Any]]], list_projections)
             if callable(list_projections)
+            else None
+        )
+        legacy_rows = (
+            list_projections_fn(PROFILE_REGISTRY_NAMESPACE)
+            if list_projections_fn is not None
             else [
                 row
                 for alias in aliases

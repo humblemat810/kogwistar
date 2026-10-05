@@ -13,7 +13,7 @@ import json
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any, cast, Callable, Protocol, runtime_checkable
+from typing import Any, cast, Callable, Iterator, Protocol, runtime_checkable
 
 from kogwistar.conversation.models import MetaFromLastSummary
 from kogwistar.conversation.models import ConversationNode
@@ -51,6 +51,29 @@ class WorkflowProjectionRebuildingError(RuntimeError):
     """Raised when a workflow design projection is being rebuilt."""
 
 
+class RunSchedulerLike(Protocol):
+    """Minimal scheduler surface required by the chat service."""
+
+    def submit(
+        self,
+        *,
+        run_id: str,
+        priority_class: str,
+        start_fn: Callable[[], None],
+        retry_count: int = 0,
+        max_retries: int = 3,
+        external_hook: Callable[[dict[str, Any]], dict[str, Any] | None] | None = None,
+    ) -> dict[str, Any]: ...
+
+    def snapshot(self) -> dict[str, Any]: ...
+
+    def dead_letter(self) -> list[dict[str, Any]]: ...
+
+    def resume(self, run_id: str) -> dict[str, Any]: ...
+
+    def timeline(self, *, run_id: str | None = None, limit: int = 200) -> list[dict[str, Any]]: ...
+
+
 @dataclass
 class AnswerRunRequest:
     run_id: str
@@ -59,9 +82,9 @@ class AnswerRunRequest:
     user_text: str
     user_turn_node_id: str
     workflow_id: str
-    knowledge_engine: Any
-    conversation_engine: Any
-    workflow_engine: Any
+    knowledge_engine: GraphKnowledgeEngine
+    conversation_engine: GraphKnowledgeEngine
+    workflow_engine: GraphKnowledgeEngine
     prev_turn_meta_summary: MetaFromLastSummary
     registry: RunRegistry
     publish: Callable[[str, dict[str, Any] | None], dict[str, Any]]
@@ -77,9 +100,9 @@ class RuntimeRunRequest:
     turn_node_id: str
     user_id: str | None
     initial_state: dict[str, Any]
-    knowledge_engine: Any
-    conversation_engine: Any
-    workflow_engine: Any
+    knowledge_engine: GraphKnowledgeEngine
+    conversation_engine: GraphKnowledgeEngine
+    workflow_engine: GraphKnowledgeEngine
     registry: RunRegistry
     publish: Callable[[str, dict[str, Any] | None], dict[str, Any]]
     is_cancel_requested: Callable[[], bool]
@@ -102,9 +125,9 @@ class RuntimeResumeRequest:
     conversation_id: str
     turn_node_id: str
     user_id: str | None
-    knowledge_engine: Any
-    conversation_engine: Any
-    workflow_engine: Any
+    knowledge_engine: GraphKnowledgeEngine
+    conversation_engine: GraphKnowledgeEngine
+    workflow_engine: GraphKnowledgeEngine
     registry: RunRegistry
     publish: Callable[[str, dict[str, Any] | None], dict[str, Any]]
     is_cancel_requested: Callable[[], bool]
@@ -144,14 +167,14 @@ class ChatRunServiceOwner(Protocol):
     runtime_runner: Callable[[RuntimeRunRequest], dict[str, Any]]
     resume_runner: Callable[[RuntimeResumeRequest], dict[str, Any]]
     default_runtime_kind: str
-    scheduler: Any
+    scheduler: RunSchedulerLike
     _workflow_history_lock: threading.Lock
 
-    def _knowledge_engine(self) -> Any: ...
+    def _knowledge_engine(self) -> GraphKnowledgeEngine: ...
 
-    def _conversation_engine(self) -> Any: ...
+    def _conversation_engine(self) -> GraphKnowledgeEngine: ...
 
-    def _workflow_engine(self) -> Any: ...
+    def _workflow_engine(self) -> GraphKnowledgeEngine: ...
 
     def _conversation_nodes(self, conversation_id: str) -> list[ConversationNode]: ...
 
@@ -170,7 +193,9 @@ class ChatRunServiceOwner(Protocol):
     ) -> dict[str, Any]: ...
 
     @contextlib.contextmanager
-    def _workflow_namespace_scope(self, workflow_id: str): ...
+    def _workflow_namespace_scope(
+        self, workflow_id: str
+    ) -> Iterator[GraphKnowledgeEngine]: ...
 
 
 class _BaseComponent:
@@ -275,6 +300,8 @@ class _BaseComponent:
         return workflow_namespace(workflow_id)
 
     @contextlib.contextmanager
-    def _workflow_namespace_scope(self, workflow_id: str):
+    def _workflow_namespace_scope(
+        self, workflow_id: str
+    ) -> Iterator[GraphKnowledgeEngine]:
         with self._owner._workflow_namespace_scope(workflow_id) as eng:
             yield cast(GraphKnowledgeEngine, eng)

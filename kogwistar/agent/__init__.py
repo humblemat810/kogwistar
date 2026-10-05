@@ -27,13 +27,14 @@ from .compression import (
 )
 from .context import ContextPolicy, ContextSnapshot
 from .delegation import (
+    DelegationContextLike,
     DelegationSpec,
     bounded_child_result,
     build_delegated_invocation,
     delegated_initial_state,
     make_delegation_handler,
 )
-from .harness import AgentHarness, AsyncAgentHarness
+from .harness import AgentHarness, AsyncAgentHarness, WorkflowRuntimeLike
 from .bindings import (
     FunctionFakeTool,
     SequenceFakeModel,
@@ -145,6 +146,8 @@ __all__ = [
     "ContextPolicy",
     "ContextSnapshot",
     "DelegationSpec",
+    "DelegationContextLike",
+    "WorkflowRuntimeLike",
     "DiscoveryProvider",
     "ModelProvider",
     "ToolProvider",

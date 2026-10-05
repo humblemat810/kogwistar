@@ -30,7 +30,7 @@ The orchestrator should populate `_deps` in the workflow initial_state.
 """
 
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Mapping, Optional, Union
+from typing import Any, Callable, Dict, Mapping, Optional, Protocol, Union
 
 # Best-effort self-inspection for state schema inference
 import ast
@@ -38,13 +38,16 @@ import inspect
 
 Json = Any
 if TYPE_CHECKING:
-    from .models import StepRunResult
-    from .runtime import StepContext
-    from .sandbox import Sandbox
+    from kogwistar.runtime.runtime import StepContext
+    from kogwistar.runtime.sandbox import Sandbox
 
-    RawStepFn = Callable[[StepContext], Union[Json, StepRunResult]]
 
-from kogwistar.runtime.models import RunSuccess, RunFailure, RunSuspended
+class RawStepFn(Protocol):
+    """Callable contract for one compatibility-runtime workflow step."""
+
+    def __call__(self, context: "StepContext", /) -> Union[Json, StepRunResult]: ...
+
+from kogwistar.runtime.models import RunFailure, RunSuccess, RunSuspended, StepRunResult
 from kogwistar.runtime.sandbox import SandboxRequest
 
 # Import your real RunResult types from kogwistar.runtime/models
@@ -53,7 +56,9 @@ from kogwistar.runtime.sandbox import SandboxRequest
 
 
 class BaseResolver:
-    ops: set
+    @property
+    def ops(self) -> set[str]:
+        raise NotImplementedError
 
 
 _LEGACY_UPDATE_WARNING_EMITTED = False
@@ -65,7 +70,7 @@ class MappingStepResolver(BaseResolver):
     default: Optional[RawStepFn] = None
 
     @property
-    def ops(self):
+    def ops(self) -> set[str]:
         return set(self.handlers)
 
     def __init__(
@@ -157,11 +162,11 @@ class MappingStepResolver(BaseResolver):
         return _wrapped
 
     def _maybe_execute_sandboxed(self, *, op: str, ctx: "StepContext") -> Any:
+        handler = self.handlers.get(op) or self.default
+        if handler is None:
+            raise KeyError(f"No step handler registered for op={op!r}")
+        out = handler(ctx)
         if op not in self.sandboxed_ops:
-            handler = self.handlers.get(op)
-            if handler is None:
-                raise Exception("handler is None")
-            out = handler(ctx)
             return out
 
         # req = self._coerce_sandbox_request(out)

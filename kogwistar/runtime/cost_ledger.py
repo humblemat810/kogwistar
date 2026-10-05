@@ -35,7 +35,8 @@ class CostLedger:
         total_amount = 0
         by_kind: dict[str, int] = {}
         for evt in self.events:
-            amt = int(evt.get("amount", 0) or 0)
+            raw_amount = evt.get("amount", 0)
+            amt = int(raw_amount) if isinstance(raw_amount, (int, float, str)) else 0
             total_amount += amt
             kind = str(evt.get("kind") or "unknown")
             by_kind[kind] = by_kind.get(kind, 0) + 1

@@ -1,6 +1,6 @@
 """Engine-core compatibility entrypoints with safe optional imports."""
 
-from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.engine import GraphKnowledgeEngine, StorageBackendFactory
 from kogwistar.engine_core.acl_protocol import (
     ACLPolicyProtocol,
     ACLAwareReadProtocol,
@@ -93,6 +93,7 @@ from kogwistar.engine_core.types import (
 
 __all__ = [
     "GraphKnowledgeEngine",
+    "StorageBackendFactory",
     "VectorSearchHit",
     "similarity_from_distance",
     "ACLPolicyProtocol",

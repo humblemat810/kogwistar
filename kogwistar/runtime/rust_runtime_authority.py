@@ -187,7 +187,8 @@ class RustRuntimeAuthority:
         )
         self._live_dependencies: Mapping[str, Any] = {}
 
-    def _dependencies(self, _work: Mapping[str, Any]) -> Mapping[str, Any]:
+    def _dependencies(self, work: Mapping[str, Any]) -> Mapping[str, Any]:
+        del work
         return self._live_dependencies
 
     def close(self) -> None:
@@ -617,7 +618,8 @@ class AsyncRustRuntimeAuthority:
         )
         self._live_dependencies: Mapping[str, Any] = {}
 
-    def _dependencies(self, _work: Mapping[str, Any]) -> Mapping[str, Any]:
+    def _dependencies(self, work: Mapping[str, Any]) -> Mapping[str, Any]:
+        del work
         return self._live_dependencies
 
     async def aclose(self) -> None:

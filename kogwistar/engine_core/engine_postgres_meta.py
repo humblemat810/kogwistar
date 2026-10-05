@@ -1582,7 +1582,12 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
         namespace: str = "default",
         from_seq: int = 1,
         to_seq: int | None = None,
+        batch_size: int = 500,
     ):
+        # PostgreSQL streams the selected range from one transaction.  Keep
+        # the common projection-store signature even though this backend does
+        # not need client-side paging for the current iterator.
+        del batch_size
         schema = self.schema
         with self.transaction() as conn:
             if to_seq is None:

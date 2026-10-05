@@ -6,7 +6,7 @@ import json
 import uuid
 import queue
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple, cast
+from typing import Any, Callable, Dict, List, Mapping, Optional, Protocol, Tuple, cast
 from concurrent.futures import ThreadPoolExecutor
 import pathlib
 import logging
@@ -48,6 +48,18 @@ from .base_runtime import (
     apply_state_update_inplace,
     validate_initial_state,
 )
+
+
+class LaneMessageSenderLike(Protocol):
+    """Structural contract for durable cross-lane message submission."""
+
+    def __call__(self, **kwargs: Json) -> object: ...
+
+
+class LaneMessageEventSinkLike(Protocol):
+    """Structural contract for best-effort lifecycle event mirroring."""
+
+    def __call__(self, event: dict[str, Json]) -> object: ...
 
 
 # ------------------------------------------------------------------
@@ -271,8 +283,14 @@ from .models import StepRunResult
 
 StepFn: TypeAlias = Callable[["StepContext"], StepRunResult]
 
+
+class StepResolver(Protocol):
+    """Resolve a persisted workflow operation to a typed step handler."""
+
+    def __call__(self, op: str) -> StepFn: ...
+
 from dataclasses import field
-from typing import Dict, Mapping
+from typing import Dict
 from types import MappingProxyType
 import threading
 
@@ -351,8 +369,8 @@ class StepContext:
     message_queue: "queue.Queue[Dict[str, Json]]" = field(
         repr=False, default_factory=queue.Queue
     )
-    lane_message_sender: Callable[..., Any] | None = field(repr=False, default=None)
-    lane_message_event_sink: Callable[[dict[str, Json]], Any] | None = field(
+    lane_message_sender: LaneMessageSenderLike | None = field(repr=False, default=None)
+    lane_message_event_sink: LaneMessageEventSinkLike | None = field(
         repr=False, default=None
     )
     events: EventEmitter | None = field(repr=False, default=None)
@@ -383,7 +401,7 @@ class StepContext:
     def publish(self, msg: Dict[str, Json]) -> None:
         self.message_queue.put(msg)
 
-    def send_lane_message(self, **kwargs: Json) -> Any:
+    def send_lane_message(self, **kwargs: Json) -> object:
         sender = self.lane_message_sender
         if not callable(sender):
             raise RuntimeError(
@@ -557,7 +575,7 @@ class WorkflowRuntime(BaseRuntime):
         *,
         workflow_engine: Any,
         conversation_engine: Any,
-        step_resolver: Callable[[str], StepFn],
+        step_resolver: StepResolver,
         predicate_registry: Dict[str, Predicate],
         checkpoint_every_n_steps: int = 1,
         max_workers: int = 4,
@@ -568,8 +586,8 @@ class WorkflowRuntime(BaseRuntime):
         sink: EventSink | None = None,
         otel_enabled: bool = False,
         cancel_requested: Callable[[str], bool] | None = None,
-        lane_message_sender: Callable[..., Any] | None = None,
-        lane_message_event_sink: Callable[[dict[str, Json]], Any] | None = None,
+        lane_message_sender: LaneMessageSenderLike | None = None,
+        lane_message_event_sink: LaneMessageEventSinkLike | None = None,
         fast_trace_persistence: bool | None = None,
         max_nested_workflow_depth: int = 8,
     ) -> None:
@@ -577,9 +595,7 @@ class WorkflowRuntime(BaseRuntime):
 
         self.workflow_engine: GraphKnowledgeEngine = workflow_engine
         self.conversation_engine: GraphKnowledgeEngine = conversation_engine
-        self.step_resolver: Callable[[str], Callable[..., StepRunResult]] = (
-            step_resolver
-        )
+        self.step_resolver: StepResolver = step_resolver
         self.predicate_registry = predicate_registry
         self.checkpoint_every_n_steps = max(1, int(checkpoint_every_n_steps))
         self.max_workers = max_workers
@@ -2146,7 +2162,7 @@ class WorkflowRuntime(BaseRuntime):
                                     state_update=[],
                                 )
                             else:
-                                fn: Callable[..., StepRunResult] = self.step_resolver(
+                                fn: StepFn = self.step_resolver(
                                     op
                                 )
 

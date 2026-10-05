@@ -1,14 +1,28 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 if TYPE_CHECKING:
     from kogwistar.engine_core.engine import GraphKnowledgeEngine
 
 
-ScopedSeqPredicate = Callable[["GraphKnowledgeEngine", Any], bool]
-ScopedSeqScopeIdGetter = Callable[["GraphKnowledgeEngine", Any], str | None]
+class ScopedSeqPredicate(Protocol):
+    """Decide whether a graph subject receives a scoped sequence."""
+
+    def __call__(self, engine: "GraphKnowledgeEngine", subject: Any, /) -> bool: ...
+
+
+class ScopedSeqScopeIdGetter(Protocol):
+    """Resolve the sequence scope for a graph subject."""
+
+    def __call__(self, engine: "GraphKnowledgeEngine", subject: Any, /) -> str | None: ...
+
+
+class ScopedSeqAllocator(Protocol):
+    """Allocate the next sequence value for a resolved scope."""
+
+    def __call__(self, scope_id: str, /) -> int: ...
 
 
 @dataclass(frozen=True)
@@ -31,7 +45,8 @@ def _next_scoped_seq(engine: "GraphKnowledgeEngine", scope_id: str) -> int:
         raise AttributeError(
             "engine.meta_sqlite must provide next_scoped_seq(scope_id) or next_user_seq(user_id)"
         )
-    return int(alloc(str(scope_id)))
+    allocator = cast(ScopedSeqAllocator, alloc)
+    return allocator(str(scope_id))
 
 
 def _maybe_assign_subject_scoped_seq(

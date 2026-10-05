@@ -16,6 +16,7 @@ from typing import Any, Callable, List, Optional, cast
 from kogwistar.llm_tasks import LLMTaskSet, SummarizeContextTaskRequest
 
 from .models import ConversationEdge, MetaFromLastSummary
+from .callbacks import RetrievalFilteringCallback
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.id_provider import stable_id
 from .conversation_state_contracts import (
@@ -160,7 +161,6 @@ def _iterative_emb_compat(engine: Any, text: str):
     raise AttributeError("conversation engine has no defensive embedding API")
 
 
-from .models import RetrievalResult
 
 
 def get_id_for_conversation_turn(
@@ -319,7 +319,7 @@ class ConversationOrchestrator:
         mem_id: str,
         role: Role,
         content: str,
-        filtering_callback: Callable[..., tuple[RetrievalResult, str]],
+        filtering_callback: RetrievalFilteringCallback,
         workflow_id: str,
         max_retrieval_level: int = 2,
         summary_char_threshold: int = 12000,
@@ -504,7 +504,7 @@ class ConversationOrchestrator:
         mem_id: str,
         role: Role,
         content: str,
-        filtering_callback: Callable[..., tuple[RetrievalResult, str]],
+        filtering_callback: RetrievalFilteringCallback,
         workflow_id: str,
         max_retrieval_level: int = 2,
         summary_char_threshold: int = 12000,
@@ -903,7 +903,7 @@ class ConversationOrchestrator:
         mem_id: str,
         role: Role,
         content: str,
-        filtering_callback: Callable[..., tuple[RetrievalResult, str]],
+        filtering_callback: RetrievalFilteringCallback,
         max_retrieval_level: int = 2,
         summary_char_threshold: int = 12000,
         summary_token_threshold: int | None = None,
@@ -1174,7 +1174,7 @@ class ConversationOrchestrator:
         new_index,  # user visible new turn index
         embedding,
         content: str,
-        filtering_callback: Callable[..., tuple[RetrievalResult, str]],
+        filtering_callback: RetrievalFilteringCallback,
         max_retrieval_level: int,
         st: OrchestratorState,
         mem_id: str,

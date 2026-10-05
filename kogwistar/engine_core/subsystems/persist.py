@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import json
 import uuid
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from graphlib import TopologicalSorter
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from ..models import (
     Document,
@@ -21,9 +22,12 @@ from ..async_compat import run_awaitable_blocking
 from ..utils.aliasing import _is_alias, _is_new_edge, _is_new_node, _is_uuid
 from .base import NamespaceProxy
 
+if TYPE_CHECKING:
+    from ..engine import GraphKnowledgeEngine
 
-class PersistSubsystem(NamespaceProxy):
-    def __init__(self, engine) -> None:
+
+class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
+    def __init__(self, engine: "GraphKnowledgeEngine") -> None:
         super().__init__(engine)
 
     @staticmethod
@@ -330,7 +334,10 @@ class PersistSubsystem(NamespaceProxy):
                 )
         if row is None:
             return False
-        payload = row.get("payload") if isinstance(row.get("payload"), dict) else row
+        if not isinstance(row, Mapping):
+            return False
+        payload_value = row.get("payload")
+        payload = payload_value if isinstance(payload_value, Mapping) else row
         row_id = payload.get("id") or row.get("entity_id") or entity_id
         if str(row_id) != str(entity_id):
             return False
@@ -343,7 +350,7 @@ class PersistSubsystem(NamespaceProxy):
         fingerprint_getter = getattr(getattr(self._e, "indexing", None), "canonical_revision_payload", None)
         if expected and callable(fingerprint_getter):
             current_payload = json.loads(
-                fingerprint_getter(entity_kind=entity_kind, entity_id=entity_id)
+                str(fingerprint_getter(entity_kind=entity_kind, entity_id=entity_id))
             )
             if expected != str(current_payload.get("source_fingerprint") or ""):
                 return False
@@ -408,21 +415,43 @@ class PersistSubsystem(NamespaceProxy):
             result = getter(ids=list(ids))
             if inspect.isawaitable(result):
                 result = await result
+            if not isinstance(result, Mapping):
+                return set()
             got = set(result.get("ids") or [])
             stage1_getter = getattr(backend, "stage1_projection_get_async", None)
             if callable(stage1_getter):
+                get_stage1 = cast(
+                    Callable[..., Awaitable[Mapping[str, object] | None]],
+                    stage1_getter,
+                )
                 for entity_id in ids - got:
-                    row = await stage1_getter(
+                    row = await get_stage1(
                         namespace=str(getattr(self._e, "namespace", "default")),
                         entity_kind=kind, entity_id=entity_id,
                     )
                     if row is not None:
                         got.add(entity_id)
-            elif callable(getattr(adapter, "stage1_query", None)):
-                rows = await adapter.stage1_query(entity_kind=kind, ids=list(ids))
+            else:
+                stage1_query = (
+                    getattr(adapter, "stage1_query", None)
+                    if adapter is not None
+                    else None
+                )
+                if not callable(stage1_query):
+                    return got
+                query_stage1 = cast(
+                    Callable[..., Awaitable[Iterable[Mapping[str, object]]]],
+                    stage1_query,
+                )
+                rows = await query_stage1(entity_kind=kind, ids=list(ids))
+                if not isinstance(rows, Iterable):
+                    rows = []
                 for row in rows:
-                    payload = row.get("payload") if isinstance(row, dict) else None
-                    row_id = (payload or row).get("id") or row.get("entity_id")
+                    if not isinstance(row, Mapping):
+                        continue
+                    payload_value = row.get("payload")
+                    payload = payload_value if isinstance(payload_value, Mapping) else row
+                    row_id = payload.get("id") or row.get("entity_id")
                     if row_id is not None:
                         got.add(str(row_id))
             return got
@@ -497,8 +526,8 @@ class PersistSubsystem(NamespaceProxy):
         *,
         parsed: PureGraph,
         session_id: str,
-        mode=None,
-    ):
+        mode: str | None = None,
+    ) -> dict[str, object]:
         self.preflight_validate(parsed, alias_key=session_id)
         node_ids, edge_ids = [], []
         self._alloc_real_ids(parsed)
@@ -570,8 +599,8 @@ class PersistSubsystem(NamespaceProxy):
         document: Document,
         parsed: LLMGraphExtraction,
         mode: str = "append",
-        assign_real_id_in_place=True,
-    ) -> dict:
+        assign_real_id_in_place: bool = True,
+    ) -> dict[str, object]:
         doc_id = document.id
         if not assign_real_id_in_place:
             parsed = parsed.model_copy(deep=True)
@@ -667,10 +696,10 @@ class PersistSubsystem(NamespaceProxy):
     def persist_document_graph_extraction(
         self,
         *,
-        doc_id,
+        doc_id: str,
         parsed: GraphExtractionWithIDs | LLMGraphExtraction,
         mode: str = "append",
-    ) -> dict:
+    ) -> dict[str, object]:
         self.preflight_validate(parsed, doc_id)
 
         node_ids, edge_ids = [], []

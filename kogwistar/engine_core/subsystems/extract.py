@@ -4,7 +4,7 @@ from copy import deepcopy
 import importlib
 import json
 import math
-from typing import Any, List, Literal, Type, cast
+from typing import TYPE_CHECKING, Any, List, Literal, Type, cast
 
 from ..async_compat import run_awaitable_blocking
 from ...id_provider import stable_id
@@ -35,9 +35,12 @@ from ..utils.aliasing import AliasBook, base62_to_uuid, uuid_to_base62
 from .base import NamespaceProxy
 from ...typing_interfaces import ExtractLike
 
+if TYPE_CHECKING:
+    from ..engine import GraphKnowledgeEngine
 
-class ExtractSubsystem(NamespaceProxy, ExtractLike):
-    def __init__(self, engine) -> None:
+
+class ExtractSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ExtractLike):
+    def __init__(self, engine: "GraphKnowledgeEngine") -> None:
         super().__init__(engine)
 
     def _engine_const(self, name: str, default: Any) -> Any:

@@ -6,7 +6,7 @@ import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Protocol
 
 from .catalog import CatalogStore
 from .providers import ProviderInactiveError, ProviderRegistration, ProviderRegistry
@@ -21,6 +21,48 @@ from .skills import (
     parse_skill_text,
     validate_skill_artifact,
 )
+
+
+class McpInvoker(Protocol):
+    """Invoke one discovered MCP operation at an explicitly named boundary."""
+
+    def __call__(self, provider_local_id: str, **kwargs: Any) -> object: ...
+
+
+class DescriptorLoader(Protocol):
+    """Load bounded provider descriptors without granting execution authority."""
+
+    def __call__(self) -> list[Mapping[str, Any]]: ...
+
+
+class McpSchemaDescriber(Protocol):
+    """Describe one already-discovered MCP operation."""
+
+    def __call__(self, provider_local_id: str, /) -> Mapping[str, Any]: ...
+
+
+class McpSchemaAuthorizer(Protocol):
+    """Authorize one discovered MCP schema before it enters a model prompt."""
+
+    def __call__(self, provider_local_id: str, /) -> bool: ...
+
+
+class SkillAuthorizer(Protocol):
+    """Authorize one external skill or project record."""
+
+    def __call__(self, payload: Mapping[str, Any], /) -> bool: ...
+
+
+class SkillParser(Protocol):
+    """Convert an authorized external payload into a validated skill artifact."""
+
+    def __call__(self, source: Mapping[str, Any], /) -> SkillGraphArtifact: ...
+
+
+class KnowledgeWriter(Protocol):
+    """Persist one scoped knowledge record and return its stable reference."""
+
+    def __call__(self, record: Mapping[str, Any], /) -> str: ...
 
 
 class FilesystemSkillProvider:
@@ -72,11 +114,11 @@ class McpDiscoveryProvider:
 
     def __init__(
         self,
-        descriptors: Callable[[], list[Mapping[str, Any]]],
+        descriptors: DescriptorLoader,
         *,
         provider_id: str = "mcp.discovery",
-        describe: Callable[[str], Mapping[str, Any]] | None = None,
-        invoke: Callable[..., Any] | None = None,
+        describe: McpSchemaDescriber | None = None,
+        invoke: McpInvoker | None = None,
     ) -> None:
         self.provider_id = provider_id
         self._descriptors = descriptors
@@ -91,7 +133,7 @@ class McpDiscoveryProvider:
             raise LookupError("MCP schema loading is unavailable")
         return dict(self._describe(provider_local_id))
 
-    def invoke(self, provider_local_id: str, **kwargs: Any) -> Any:
+    def invoke(self, provider_local_id: str, **kwargs: Any) -> object:
         if self._invoke is None:
             raise PermissionError("MCP invocation is not configured")
         return self._invoke(provider_local_id, **kwargs)
@@ -104,7 +146,7 @@ def select_mcp_schemas(
     provider: McpDiscoveryProvider,
     provider_local_ids: list[str] | tuple[str, ...],
     *,
-    authorize: Callable[[str], bool] | None = None,
+    authorize: McpSchemaAuthorizer | None = None,
     max_schemas: int = 16,
     max_bytes: int = 64 * 1024,
 ) -> dict[str, Mapping[str, Any]]:
@@ -214,11 +256,14 @@ def materialize_skill_artifact(
                 raise ValueError("materializer must own supplied projection and catalog stores")
             guard_updates: list[dict[str, Any]] = []
             if provider_registry is not None and provider_registry._metadata is not None:
+                registration = provider_registration
+                if registration is None:
+                    raise ValueError("provider registration is required with a provider registry")
                 if provider_registry._metadata is not materializer.projections._metadata:
                     raise ValueError(
                         "provider lifecycle and skill projections must share metadata store"
                     )
-                guard = provider_registry.lifecycle_guard_update(provider_registration)
+                guard = provider_registry.lifecycle_guard_update(registration)
                 if guard is not None:
                     guard_updates.append(guard)
             return materializer.materialize(artifact, guard_updates=guard_updates)
@@ -305,9 +350,9 @@ class LlmWikiIngestionAdapter:
 
     def __init__(
         self,
-        parse: Callable[[Mapping[str, Any]], SkillGraphArtifact],
+        parse: SkillParser,
         *,
-        authorize: Callable[[Mapping[str, Any]], bool] | None = None,
+        authorize: SkillAuthorizer | None = None,
         max_source_bytes: int = 64 * 1024,
     ) -> None:
         self._parse = parse
@@ -372,8 +417,14 @@ def deduplicate_inferred_edges(artifact: SkillGraphArtifact) -> SkillGraphArtifa
     for edge in artifact.edges:
         key = (edge.kind, ",".join(sorted(edge.source_ids)), ",".join(sorted(edge.target_ids)))
         current = selected.get(key)
-        confidence = float(edge.metadata.get("confidence", 0.0) or 0.0)
-        current_confidence = float(current.metadata.get("confidence", 0.0) or 0.0) if current else -1.0
+        raw_confidence = edge.metadata.get("confidence", 0.0)
+        confidence = float(raw_confidence) if isinstance(raw_confidence, (int, float)) else 0.0
+        raw_current_confidence = current.metadata.get("confidence", 0.0) if current else -1.0
+        current_confidence = (
+            float(raw_current_confidence)
+            if isinstance(raw_current_confidence, (int, float))
+            else -1.0
+        )
         if current is None or confidence > current_confidence:
             selected[key] = edge
     return artifact.model_copy(update={"edges": list(selected.values())})
@@ -418,7 +469,7 @@ class ProjectGlossaryProvider:
         self,
         query: str,
         *,
-        authorize: Callable[[Mapping[str, Any]], bool] | None = None,
+        authorize: SkillAuthorizer | None = None,
         tenant_id: str | None = None,
         project_id: str | None = None,
         limit: int = 20,
@@ -452,7 +503,7 @@ class ProjectGlossaryProvider:
 def ingest_project_glossary_to_knowledge(
     provider: ProjectGlossaryProvider,
     *,
-    write: Callable[[Mapping[str, Any]], str],
+    write: KnowledgeWriter,
 ) -> tuple[str, ...]:
     """Emit scoped knowledge records; canonical knowledge writer owns storage."""
 

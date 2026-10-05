@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from typing import Any, Protocol
+from typing import Any, cast
 
 from kogwistar.acl.derivation import (
     ACLInput,
@@ -11,6 +11,7 @@ from kogwistar.acl.derivation import (
     derive_acl,
     normalize_derivation_policy,
 )
+from kogwistar.acl.graph import ACLMode
 from kogwistar.runtime.budget import (
     BudgetEvent,
     BudgetExhaustedError,
@@ -25,15 +26,14 @@ from kogwistar.runtime.models import (
 from kogwistar.runtime.resolvers import MappingStepResolver
 
 from .limits import refresh_budget_hints
+from .providers import ModelProvider, ToolProvider
 from .read_tools import AgentReadTools, ReadScope
 
 
-class FakeModel(Protocol):
-    def complete(self, prompt: str, context: Mapping[str, Any]) -> Any: ...
-
-
-class FakeTool(Protocol):
-    def invoke(self, arguments: Mapping[str, Any]) -> Any: ...
+# Compatibility names retained for callers of the deterministic test bindings.
+# The provider protocols are the single source of truth for these contracts.
+FakeModel = ModelProvider[Any]
+FakeTool = ToolProvider[Any]
 
 
 class SequenceFakeModel:
@@ -132,7 +132,7 @@ def register_model_step(
     declassifier: Declassifier | None = None,
     acknowledge_llm_guarded: bool = False,
     acl_inputs_key: str = "agent_acl_inputs",
-    prompt_acl_mode: str = "private",
+    prompt_acl_mode: ACLMode = "private",
     prompt_object_id: str = "agent_prompt",
     output_acl_key: str = "agent_model_output_acl",
     output_provenance_key: str = "agent_model_output_provenance",
@@ -167,7 +167,7 @@ def register_model_step(
             return _failure(ctx, str(exc))
         prompt = str(ctx.state_view.get(prompt_key, ""))
         acl_inputs = [
-            ACLInput(object_id=prompt_object_id, mode=prompt_acl_mode, source_kind="prompt"),
+            ACLInput(object_id=prompt_object_id, mode=cast(ACLMode, prompt_acl_mode), source_kind="prompt"),
             *_trusted_acl_inputs(ctx, acl_inputs_key),
         ]
         acl_result = derive_acl(

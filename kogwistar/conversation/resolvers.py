@@ -1,18 +1,3 @@
-from __future__ import annotations
-
-from .models import (
-    ConversationEdge,
-    ConversationNode,
-    KnowledgeRetrievalResult,
-    MemoryRetrievalResult,
-)
-
-from .models import MetaFromLastSummary
-from ..runtime.models import StateUpdate
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from kogwistar.runtime.models import StateUpdate
 """Workflow step resolvers.
 
 This module provides a registry-based step resolver that can be used by
@@ -36,6 +21,21 @@ Handlers are expected to retrieve dependencies from `ctx.state["_deps"]`, e.g.:
 The orchestrator should populate `_deps` in the workflow initial_state.
 """
 
+from __future__ import annotations
+
+from .models import (
+    ConversationEdge,
+    ConversationNode,
+    KnowledgeRetrievalResult,
+    MemoryRetrievalResult,
+    MetaFromLastSummary,
+)
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from kogwistar.runtime.models import StateUpdate
+
 import os
 import time
 
@@ -52,23 +52,23 @@ if TYPE_CHECKING:
 
     RawStepFn = Callable[[StepContext], Union[Json, StepRunResult]]
 
-from kogwistar.runtime.models import RunSuccess
+from kogwistar.runtime.models import RunSuccess  # noqa: E402
 
 # Import your real RunResult types from kogwistar.runtime/models
 
 
-from kogwistar.engine_core.models import Span
+from kogwistar.engine_core.models import Span  # noqa: E402
 
 
 # Agentic answering helper types
-from .agentic_answering import (
+from .agentic_answering import (  # noqa: E402
     AgenticAnsweringAgent,
     snapshot_hash,
     AnswerWithCitations,
     AnswerEvaluation,
 )
 
-from kogwistar.runtime.resolvers import MappingStepResolver
+from kogwistar.runtime.resolvers import MappingStepResolver  # noqa: E402
 
 default_resolver = MappingStepResolver()
 conversation_default_resolver = default_resolver
@@ -137,8 +137,10 @@ def _noop(ctx: StepContext) -> StepRunResult:
 # ------------------------------------------------------------------
 
 
-def _get_prev_turn_meta_summary_from_state_or_deps(ctx: "StepContext") -> Any:
-    """Return a MetaFromLastSummary-like object.
+def _get_prev_turn_meta_summary_from_state_or_deps(
+    ctx: "StepContext",
+) -> MetaFromLastSummary:
+    """Return the shared core previous-summary model.
 
     - Prefer deps['prev_turn_meta_summary'] (mutable, legacy object).
     - Else, synthesize a lightweight object from state['prev_turn_meta_summary'] dict.
@@ -149,24 +151,16 @@ def _get_prev_turn_meta_summary_from_state_or_deps(ctx: "StepContext") -> Any:
         return mts
     d = ctx.state_view.get("prev_turn_meta_summary") or {}
 
-    # tiny duck-typed object
-    class _MTS:
-        __slots__ = (
-            "prev_node_char_distance_from_last_summary",
-            "prev_node_distance_from_last_summary",
-            "tail_turn_index",
-        )
-
-        def __init__(self, dd: dict[str, Any]):
-            self.prev_node_char_distance_from_last_summary = int(
-                dd.get("prev_node_char_distance_from_last_summary", 0)
-            )
-            self.prev_node_distance_from_last_summary = int(
-                dd.get("prev_node_distance_from_last_summary", 0)
-            )
-            self.tail_turn_index = int(dd.get("tail_turn_index", 0))
-
-    return _MTS(dict(d))
+    values = dict(d) if isinstance(d, dict) else {}
+    return MetaFromLastSummary(
+        prev_node_char_distance_from_last_summary=int(
+            values.get("prev_node_char_distance_from_last_summary", 0)
+        ),
+        prev_node_distance_from_last_summary=int(
+            values.get("prev_node_distance_from_last_summary", 0)
+        ),
+        tail_turn_index=int(values.get("tail_turn_index", 0)),
+    )
 
 
 @default_resolver.register("add_user_turn")
@@ -477,7 +471,6 @@ def _context_snapshot(ctx: StepContext) -> StepRunResult:
       - For full determinism, callers should provide stable run_id/step numbers.
     """
     deps = _deps(ctx)
-    ce = deps["conversation_engine"]
     svc = _chat_service(deps)
     llm_tasks = deps.get("llm_tasks")
     sv = ctx.state_view
@@ -531,7 +524,6 @@ def _memory_retrieve(ctx: StepContext) -> StepRunResult:
       - state['memory']     : jsonable mirror
     """
     deps = _deps(ctx)
-    nid_created = []
     with ctx.state_write as state:
         state.setdefault("op_log", []).append("memory_retrieve")
 

@@ -8,7 +8,7 @@ import queue
 import time
 import uuid
 from contextlib import nullcontext
-from typing import Any, Awaitable, Callable, ContextManager, Mapping, TypeAlias, cast
+from typing import Any, Awaitable, Callable, ContextManager, Mapping, Protocol, TypeAlias, cast
 
 from .models import RunFailure, StepRunResult, WorkflowState
 from .executor import TerminalStatus, WorkflowExecutor
@@ -16,6 +16,8 @@ from .base_runtime import BaseRuntime, apply_state_update_inplace, validate_init
 from .telemetry import TraceContext
 from kogwistar.engine_core.sqlite_context import sqlite_execution_bound
 from .runtime import (
+    LaneMessageEventSinkLike,
+    LaneMessageSenderLike,
     RunResult,
     StepContext,
     WorkflowRuntime as ThreadedWorkflowRuntime,
@@ -32,6 +34,15 @@ from .design import validate_workflow_design
 
 SyncStepFn: TypeAlias = Callable[[StepContext], StepRunResult]
 AsyncStepFn: TypeAlias = Callable[[StepContext], Awaitable[StepRunResult]]
+AsyncCompatibleStepFn: TypeAlias = Callable[
+    [StepContext], StepRunResult | Awaitable[StepRunResult]
+]
+
+
+class AsyncStepResolver(Protocol):
+    """Resolve workflow operations to sync or awaitable step handlers."""
+
+    def __call__(self, op: str) -> AsyncCompatibleStepFn: ...
 
 
 _CANCEL_REQUESTED_CTX: contextvars.ContextVar[Callable[[str], bool] | None] = (
@@ -88,7 +99,7 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
         *,
         workflow_engine: Any,
         conversation_engine: Any,
-        step_resolver: Callable[[str], Callable[[StepContext], Any]],
+        step_resolver: AsyncStepResolver,
         predicate_registry: dict[str, Any],
         checkpoint_every_n_steps: int = 1,
         max_workers: int = 4,
@@ -97,8 +108,8 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
         events: Any | None = None,
         sink: Any | None = None,
         cancel_requested: Callable[[str], bool] | None = None,
-        lane_message_sender: Callable[..., Any] | None = None,
-        lane_message_event_sink: Callable[[dict[str, Any]], Any] | None = None,
+        lane_message_sender: LaneMessageSenderLike | None = None,
+        lane_message_event_sink: LaneMessageEventSinkLike | None = None,
         fast_trace_persistence: bool | None = None,
         experimental_native_scheduler: bool = True,
         max_nested_workflow_depth: int = 8,

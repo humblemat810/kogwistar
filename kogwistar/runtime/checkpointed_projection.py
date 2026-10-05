@@ -92,7 +92,7 @@ def _now_ms() -> int:
 
 
 def _default_snapshot_id(*, workspace_id: str, projection_id: str, source_to_seq: int) -> str:
-    return str(stable_id("projection_snapshot", workspace_id, projection_id, source_to_seq))
+    return str(stable_id("projection_snapshot", workspace_id, projection_id, str(source_to_seq)))
 
 
 def refresh_checkpointed_named_projection(

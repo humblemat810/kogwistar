@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from hashlib import sha256
 from threading import RLock
-from typing import Any, Callable, Literal, Mapping, Protocol, runtime_checkable
+from typing import Any, Callable, Literal, Mapping, Protocol, TypeVar, cast, runtime_checkable
 
 from kogwistar.engine_core.embedding_profile import NamedProjectionStore
 
@@ -13,6 +13,11 @@ from .catalog import CatalogEntry
 
 
 PROVIDER_LIFECYCLE_NAMESPACE = "agent_provider_lifecycle"
+
+
+TModelResult = TypeVar("TModelResult", covariant=True)
+TToolResult = TypeVar("TToolResult", covariant=True)
+TOperationResult = TypeVar("TOperationResult")
 
 
 class ProviderCollisionError(ValueError):
@@ -38,17 +43,17 @@ class DiscoveryProvider(Protocol):
 
 
 @runtime_checkable
-class ModelProvider(Protocol):
+class ModelProvider(Protocol[TModelResult]):
     provider_id: str
 
-    def complete(self, prompt: str, context: Mapping[str, Any]) -> Any: ...
+    def complete(self, prompt: str, context: Mapping[str, Any]) -> TModelResult: ...
 
 
 @runtime_checkable
-class ToolProvider(Protocol):
+class ToolProvider(Protocol[TToolResult]):
     provider_id: str
 
-    def invoke(self, arguments: Mapping[str, Any]) -> Any: ...
+    def invoke(self, arguments: Mapping[str, Any]) -> TToolResult: ...
 
 
 @runtime_checkable
@@ -110,7 +115,7 @@ class ProviderIdentity:
 @dataclass(frozen=True, slots=True)
 class ProviderRegistration:
     identity: ProviderIdentity
-    provider: Any
+    provider: object
     registration_fingerprint: str
     generation: int = 1
     failure_mode: Literal["fail_closed", "isolate"] = "fail_closed"
@@ -233,7 +238,7 @@ class ProviderRegistry:
             }
 
     @staticmethod
-    def _fingerprint(provider: Any, explicit: str | None) -> str:
+    def _fingerprint(provider: object, explicit: str | None) -> str:
         if explicit:
             return str(explicit)
         name = f"{type(provider).__module__}.{type(provider).__qualname__}"
@@ -243,7 +248,7 @@ class ProviderRegistry:
         self,
         *,
         provider_id: str,
-        provider: Any,
+        provider: object,
         version: str = "v1",
         fingerprint: str | None = None,
         failure_mode: Literal["fail_closed", "isolate"] = "fail_closed",
@@ -315,14 +320,18 @@ class ProviderRegistry:
     def run_if_active(
         self,
         registration: ProviderRegistration,
-        operation: Callable[[], Any],
-    ) -> Any:
+        operation: Callable[[], TOperationResult],
+    ) -> TOperationResult:
         """Commit provider work only while exact registration remains active."""
 
         key = registration.identity.qualified_id
         with self._lock:
             current = self._registrations.get(key)
-            if current is not registration or current.generation != registration.generation:
+            if (
+                current is None
+                or current is not registration
+                or current.generation != registration.generation
+            ):
                 raise ProviderInactiveError(
                     f"provider lifecycle is no longer active: {key}@{registration.generation}"
                 )
@@ -375,7 +384,9 @@ class ProviderRegistry:
             if not callable(loader):
                 continue
             try:
-                descriptors = loader()
+                descriptors = cast(
+                    Callable[[], list[Mapping[str, Any]]], loader
+                )()
             except Exception:
                 isolated = (
                     registration.failure_mode == "isolate"

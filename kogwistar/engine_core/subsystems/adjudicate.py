@@ -1,16 +1,19 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ..async_compat import run_awaitable_blocking
 from ..models import AdjudicationTarget, Edge, Node
 from .base import NamespaceProxy
 from ...typing_interfaces import AdjudicateLike
 
+if TYPE_CHECKING:
+    from ..engine import GraphKnowledgeEngine
 
-class AdjudicateSubsystem(NamespaceProxy, AdjudicateLike):
-    def __init__(self, engine) -> None:
+
+class AdjudicateSubsystem(NamespaceProxy["GraphKnowledgeEngine"], AdjudicateLike):
+    def __init__(self, engine: "GraphKnowledgeEngine") -> None:
         super().__init__(engine)
 
     def target_from_node(self, n: Node) -> AdjudicationTarget:
@@ -136,7 +139,7 @@ class AdjudicateSubsystem(NamespaceProxy, AdjudicateLike):
         self,
         src_ids: list[str] | None,
         tgt_ids: list[str] | None,
-    ) -> tuple[list[Any], list[Any], list[Any], list[Any]]:
+    ) -> tuple[list[str], list[str], list[str], list[str]]:
         s_nodes, s_edges, t_nodes, t_edges = [], [], [], []
         for rid in src_ids or []:
             (s_nodes if self.classify_endpoint_id(rid) == "node" else s_edges).append(

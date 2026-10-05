@@ -4,7 +4,7 @@ import json
 import pathlib
 import sqlite3
 from contextlib import closing
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ...cdc.change_event import EntityRefModel
 from ..subsystems.base import NamespaceProxy
@@ -16,9 +16,12 @@ from .models import (
 )
 from .storage_sqlite import ensure_index_tables
 
+if TYPE_CHECKING:
+    from ..engine import GraphKnowledgeEngine
 
-class SearchIndexService(NamespaceProxy):
-    def __init__(self, engine: Any, index_db_path: str) -> None:
+
+class SearchIndexService(NamespaceProxy["GraphKnowledgeEngine"]):
+    def __init__(self, engine: "GraphKnowledgeEngine", index_db_path: str) -> None:
         super().__init__(engine)
         self.index_db_path = index_db_path
         self.ensure_initialized()

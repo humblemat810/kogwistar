@@ -76,12 +76,14 @@ if TYPE_CHECKING:
         write_execution_wisdom_artifacts,
     )
     from kogwistar.runtime.runtime import (
+        LaneMessageEventSinkLike,
+        LaneMessageSenderLike,
         RouteDecision,
         RunResult,
         StepContext,
         WorkflowRuntime,
     )
-    from kogwistar.runtime.sinks import JsonlEventSink
+    from kogwistar.runtime.sinks import EventSinkLike, JsonlEventSink
 
 __all__ = [
     "BasePredicate",
@@ -115,10 +117,13 @@ __all__ = [
     "ExecutionWisdomTemplateResult",
     "write_execution_wisdom_artifacts",
     "RouteDecision",
+    "LaneMessageSenderLike",
+    "LaneMessageEventSinkLike",
     "RunResult",
     "StepContext",
     "WorkflowRuntime",
     "JsonlEventSink",
+    "EventSinkLike",
     "summarize_budget_events",
     "TokenPricing",
     "estimate_token_cost_usd",
@@ -169,10 +174,13 @@ _EXPORTS = {
     "ExecutionWisdomTemplateResult": "kogwistar.wisdom.models",
     "write_execution_wisdom_artifacts": "kogwistar.wisdom.template",
     "RouteDecision": "kogwistar.runtime.runtime",
+    "LaneMessageSenderLike": "kogwistar.runtime.runtime",
+    "LaneMessageEventSinkLike": "kogwistar.runtime.runtime",
     "RunResult": "kogwistar.runtime.runtime",
     "StepContext": "kogwistar.runtime.runtime",
     "WorkflowRuntime": "kogwistar.runtime.runtime",
     "JsonlEventSink": "kogwistar.runtime.sinks",
+    "EventSinkLike": "kogwistar.runtime.sinks",
     "summarize_budget_events": "kogwistar.runtime.budget_adapters",
     "TokenPricing": "kogwistar.runtime.pricing",
     "estimate_token_cost_usd": "kogwistar.runtime.pricing",

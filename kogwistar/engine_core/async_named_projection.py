@@ -127,13 +127,24 @@ class AsyncPostgresNamedProjectionStore:
         namespace: str,
         key: str,
         payload: dict[str, Any],
-        **values: Any,
+        *,
+        expected_last_authoritative_seq: int | None,
+        expected_last_materialized_seq: int | None,
+        last_authoritative_seq: int,
+        last_materialized_seq: int,
+        projection_schema_version: int,
+        materialization_status: str,
     ) -> bool:
         update = {
             "namespace": str(namespace),
             "key": str(key),
             "payload": payload,
-            **values,
+            "expected_last_authoritative_seq": expected_last_authoritative_seq,
+            "expected_last_materialized_seq": expected_last_materialized_seq,
+            "last_authoritative_seq": last_authoritative_seq,
+            "last_materialized_seq": last_materialized_seq,
+            "projection_schema_version": projection_schema_version,
+            "materialization_status": materialization_status,
         }
         return await self.compare_and_swap_named_projections([update])
 
@@ -264,14 +275,25 @@ class AsyncSQLiteNamedProjectionStore:
         namespace: str,
         key: str,
         payload: dict[str, Any],
-        **values: Any,
+        *,
+        expected_last_authoritative_seq: int | None,
+        expected_last_materialized_seq: int | None,
+        last_authoritative_seq: int,
+        last_materialized_seq: int,
+        projection_schema_version: int,
+        materialization_status: str,
     ) -> bool:
         return await asyncio.to_thread(
             self.metadata.compare_and_swap_named_projection,
             namespace,
             key,
             payload,
-            **values,
+            expected_last_authoritative_seq=expected_last_authoritative_seq,
+            expected_last_materialized_seq=expected_last_materialized_seq,
+            last_authoritative_seq=last_authoritative_seq,
+            last_materialized_seq=last_materialized_seq,
+            projection_schema_version=projection_schema_version,
+            materialization_status=materialization_status,
         )
 
     async def compare_and_swap_named_projections(

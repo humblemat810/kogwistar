@@ -13,8 +13,9 @@ from __future__ import annotations
 import inspect
 import json
 import time
+from collections.abc import Awaitable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Callable, Optional, TypeVar, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Optional, Protocol, TypeVar, Tuple
 from fastapi import HTTPException
 
 
@@ -38,6 +39,18 @@ if TYPE_CHECKING:
 T = TypeVar("T", bound=BaseToolResult)
 
 
+class ToolCallIdFactory(Protocol):
+    """Build deterministic IDs for tool-call and tool-result events."""
+
+    def __call__(self, *parts: str) -> str: ...
+
+
+class SubworkflowRunner(Protocol):
+    """Invoke a child workflow with its tool-shaped keyword payload."""
+
+    def __call__(self, **kwargs: Any) -> object | Awaitable[object]: ...
+
+
 def _safe_json(obj: Any) -> str:
     try:
         return json.dumps(obj, ensure_ascii=False, default=str)
@@ -53,10 +66,13 @@ class ToolEventIds:
 
 class ToolRunner:
     def __init__(
-        self, *, tool_call_id_factory, conversation_engine: GraphKnowledgeEngine
+        self,
+        *,
+        tool_call_id_factory: ToolCallIdFactory,
+        conversation_engine: GraphKnowledgeEngine,
     ) -> None:
         self.engine = conversation_engine
-        self.tool_call_id_factory: Callable[..., str] = tool_call_id_factory
+        self.tool_call_id_factory: ToolCallIdFactory = tool_call_id_factory
         self.last_receipt: ToolReceipt | None = None
 
     def join_tool_node_to_turn(
@@ -434,7 +450,6 @@ class ToolRunner:
                 compact = ""
         if not compact:
             compact = _safe_json(getattr(result, "__dict__", result))[:800]
-        res_node_content = compact
         res_node, res_id = self._record_tool_result(
             conversation_id=conversation_id,
             user_id=user_id,
@@ -474,13 +489,13 @@ class ToolRunner:
         tool_name: str,
         args: list,
         kwargs: dict[str, Any],
-        subworkflow_runner: Callable[..., Any],
+        subworkflow_runner: SubworkflowRunner,
         prev_turn_meta_summary: MetaFromLastSummary,
         render_result: Optional[Callable[[Any], str]] = None,
         orchestrator: ConversationOrchestrator | None = None,
         tool_kind: str = "workflow/subworkflow",
         execution_mode: str = "child-process",
-    ) -> Tuple[Any, str]:
+    ) -> Tuple[object, str]:
         """Run nested workflow as tool-shaped child process."""
         call_node, _, _ = self._record_tool_call(
             conversation_id=conversation_id,

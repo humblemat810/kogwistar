@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Literal, Protocol
+from typing import Literal, Protocol
 
 from .models import WorkflowState
 from .runtime import RunResult
@@ -35,7 +35,7 @@ class WorkflowExecutor(Protocol):
         run_id: str | None = None,
         cache_dir: str | None = None,
         _resume_step_seq: int | None = None,
-        _resume_last_exec_node: Any | None = None,
+        _resume_last_exec_node: object | None = None,
     ) -> RunResult: ...
 
     def run_sync(
@@ -48,5 +48,5 @@ class WorkflowExecutor(Protocol):
         run_id: str | None = None,
         cache_dir: str | None = None,
         _resume_step_seq: int | None = None,
-        _resume_last_exec_node: Any | None = None,
+        _resume_last_exec_node: object | None = None,
     ) -> RunResult: ...

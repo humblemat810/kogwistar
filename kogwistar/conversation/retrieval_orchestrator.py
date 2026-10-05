@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, List, Optional, Tuple
+from typing import List, Optional
 
 from kogwistar.llm_tasks import LLMTaskSet
 
+from .callbacks import RetrievalFilteringCallback
 from .models import KnowledgeRetrievalResult
 
 from .memory_retriever import MemoryRetriever, MemoryRetrievalResult, MemoryPinResult
@@ -47,8 +48,8 @@ class RetrievalOrchestrator:
         conversation_engine,
         ref_knowledge_engine,
         llm_tasks: LLMTaskSet,
-        memory_filtering_callback: Callable[..., Tuple[List[str], str]],
-        knowledge_filtering_callback: Callable[..., Tuple[List[str], str]],
+        memory_filtering_callback: RetrievalFilteringCallback,
+        knowledge_filtering_callback: RetrievalFilteringCallback,
         max_retrieval_level: int = 2,
     ) -> None:
         self.conversation_engine = conversation_engine
