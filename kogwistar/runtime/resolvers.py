@@ -36,7 +36,9 @@ from typing import Any, Callable, Dict, Mapping, Optional, Protocol, Union
 import ast
 import inspect
 
-Json = Any
+from kogwistar.runtime.serialize import JsonValue
+
+Json = JsonValue
 if TYPE_CHECKING:
     from kogwistar.runtime.runtime import StepContext
     from kogwistar.runtime.sandbox import Sandbox
@@ -161,7 +163,9 @@ class MappingStepResolver(BaseResolver):
 
         return _wrapped
 
-    def _maybe_execute_sandboxed(self, *, op: str, ctx: "StepContext", out: Any) -> Any:
+    def _maybe_execute_sandboxed(
+        self, *, op: str, ctx: "StepContext", out: JsonValue | StepRunResult
+    ) -> JsonValue | StepRunResult:
         if op not in self.sandboxed_ops:
             return out
 
