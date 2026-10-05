@@ -31,7 +31,13 @@ from ..types import (
     OffsetRepairScorer,
     ResolvedExtractionSchemaMode,
 )
-from ..utils.aliasing import AliasBook, base62_to_uuid, uuid_to_base62
+from ..utils.aliasing import (
+    AliasBook,
+    AliasKind,
+    AliasKindMismatchError,
+    base62_to_uuid,
+    uuid_to_base62,
+)
 from .base import NamespaceProxy
 from ...typing_interfaces import ExtractLike
 
@@ -361,31 +367,45 @@ class ExtractSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ExtractLike):
     ) -> LLMGraphExtraction:
         if self._id_strategy() == "base62":
 
-            def r(s: str):
+            def r(s: str, *, kind: AliasKind):
                 if not s:
                     raise ValueError("s cannot be None or Falsy")
                 if s.startswith("N~"):
+                    if kind != "node":
+                        raise AliasKindMismatchError(
+                            f"{s!r} is a node alias, expected an edge alias"
+                        )
                     return base62_to_uuid(s[2:])
                 if s.startswith("E~"):
+                    if kind != "edge":
+                        raise AliasKindMismatchError(
+                            f"{s!r} is an edge alias, expected a node alias"
+                        )
                     return base62_to_uuid(s[2:])
                 return s
 
         else:
             book = self._e._alias_book(doc_id)
 
-            def r(s: str):
+            def r(s: str, *, kind: AliasKind):
                 if not s:
                     raise ValueError("s cannot be None or Falsy")
-                return book.alias_to_real.get(s, s)
+                if kind == "node":
+                    return book.resolve_node(s)
+                return book.resolve_edge(s)
 
         for n in parsed.nodes:
             if n.id:
-                n.id = r(n.id)
+                n.id = r(n.id, kind="node")
         for e in parsed.edges:
             if e.id:
-                e.id = r(e.id)
-            e.source_ids = [r(x) for x in e.source_ids]
-            e.target_ids = [r(x) for x in e.target_ids]
+                e.id = r(e.id, kind="edge")
+            e.source_ids = [r(x, kind="node") for x in e.source_ids]
+            e.target_ids = [r(x, kind="node") for x in e.target_ids]
+            if e.source_edge_ids is not None:
+                e.source_edge_ids = [r(x, kind="edge") for x in e.source_edge_ids]
+            if e.target_edge_ids is not None:
+                e.target_edge_ids = [r(x, kind="edge") for x in e.target_edge_ids]
         return parsed
 
     def aliasify_for_prompt(
@@ -429,10 +449,10 @@ class ExtractSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ExtractLike):
         new_nodes, new_edges = book.legend_delta(node_ids, edge_ids)
 
         def a_node(x):
-            return book.real_to_alias[x]
+            return book.alias_for_node(x)
 
         def a_edge(x):
-            return book.real_to_alias[x]
+            return book.alias_for_edge(x)
 
         aliased_nodes = [
             {
@@ -455,7 +475,7 @@ class ExtractSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ExtractLike):
 
         if new_nodes:
             lines = [
-                f"- {book.real_to_alias[rid]}: {next(n for n in ctx_nodes if n['id'] == rid)['label']}"
+                f"- {book.alias_for_node(rid)}: {next(n for n in ctx_nodes if n['id'] == rid)['label']}"
                 for rid, _ in new_nodes
             ]
             nodes_str = "New node aliases:\n" + "\n".join(lines)
@@ -466,7 +486,7 @@ class ExtractSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ExtractLike):
             lines = []
             for rid, _ in new_edges:
                 e = next(e for e in ctx_edges if e["id"] == rid)
-                lines.append(f"- {book.real_to_alias[rid]}: {e['relation']}")
+                lines.append(f"- {book.alias_for_edge(rid)}: {e['relation']}")
             edges_str = "New edge aliases:\n" + "\n".join(lines)
         else:
             edges_str = "New edge aliases: (none)"

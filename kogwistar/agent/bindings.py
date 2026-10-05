@@ -183,14 +183,11 @@ def register_model_step(
         model_context: dict[str, JsonValue] = {
             "budget": cast(JsonValue, dict(ctx.state_view.get("agent_budget_hints") or {}))
         }
-        if selected_acl_policy == "LLM_GUARDED" or isinstance(
-            getattr(ctx, "authority_context", None), Mapping
-        ) and "acl_inputs" in getattr(ctx, "authority_context", {}):
-            model_context["acl"] = cast(JsonValue, {
-                "mode": acl_result.final_mode,
-                "source_ids": list(acl_result.source_ids),
-                "policy": acl_result.policy,
-            })
+        # ACL derivation is an authorization and audit concern, not prompt
+        # content.  Do not expose modes, policies, source IDs, scopes, or
+        # derivation inputs to the model.  The authoritative result remains
+        # available in the durable state update below for backend enforcement
+        # and audit inspection.
         try:
             payload = model.complete(prompt, model_context)
         except Exception as exc:

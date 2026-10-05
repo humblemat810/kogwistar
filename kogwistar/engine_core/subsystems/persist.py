@@ -184,19 +184,19 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             book = self._e._alias_book(doc_id)
         else:
             book = alias_book
-        alias_to_real = book.alias_to_real
-
         def _looks_like_batch_local_node(token: str | None) -> bool:
             return bool(token) and (
                 _is_new_node(token) or str(token).startswith("ne:")
             )
 
-        def de_alias(x: str) -> str:
+        def de_alias(x: str, *, kind: str) -> str:
             if not x:
                 return x
             if _is_uuid(x):
                 return x
-            return alias_to_real.get(x, x)
+            if kind == "node":
+                return book.resolve_node(x)
+            return book.resolve_edge(x)
 
         nn2uuid: dict[str, str] = {}
         batch_node_ids: dict[str, str] = {}
@@ -215,7 +215,7 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                     nn2uuid[token] = rid
                 n.id = rid
             else:
-                n.id = de_alias(token)
+                n.id = de_alias(token, kind="node")
             batch_node_ids[token] = n.id
             batch_node_ids[n.id] = n.id
 
@@ -232,7 +232,7 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                     ne2uuid[tok] = rid
                 e.id = rid
             else:
-                e.id = de_alias(tok)
+                e.id = de_alias(tok, kind="edge")
 
         def _res(xs: list[str] | None, kind: str) -> list[str] | None:
             if not xs:
@@ -248,7 +248,7 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                     elif x in batch_node_ids:
                         out.append(batch_node_ids[x])
                     elif _is_alias(x) or _is_uuid(x):
-                        out.append(de_alias(x))
+                        out.append(de_alias(x, kind="node"))
                     else:
                         key = (x or "").strip().lower()
                         rid = next(
@@ -269,7 +269,7 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                             raise ValueError(f"Unknown temp edge id: {x}")
                         out.append(rid)
                     elif _is_alias(x) or _is_uuid(x):
-                        out.append(de_alias(x))
+                        out.append(de_alias(x, kind="edge"))
                     else:
                         raise ValueError(f"Unresolvable edge endpoint token: {x}")
             return out

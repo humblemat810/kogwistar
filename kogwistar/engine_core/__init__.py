@@ -65,6 +65,13 @@ from kogwistar.engine_core.embedding_profile import (
     endpoint_fingerprint,
 )
 from kogwistar.engine_core.vector_search import VectorSearchHit, similarity_from_distance
+from kogwistar.engine_core.utils import (
+    AliasBook,
+    AliasBookStore,
+    AliasKind,
+    AliasKindMismatchError,
+    UnknownAliasError,
+)
 from kogwistar.engine_core.async_named_projection import (
     AsyncPostgresNamedProjectionStore,
     AsyncSQLiteNamedProjectionStore,
@@ -96,6 +103,11 @@ __all__ = [
     "StorageBackendFactory",
     "VectorSearchHit",
     "similarity_from_distance",
+    "AliasBook",
+    "AliasBookStore",
+    "AliasKind",
+    "AliasKindMismatchError",
+    "UnknownAliasError",
     "ACLPolicyProtocol",
     "ACLAwareReadProtocol",
     "ACLAwareWriteProtocol",

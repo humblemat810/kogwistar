@@ -19,9 +19,25 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import re
+from threading import RLock
+from typing import Literal
 
 ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 _UUID_RE = re.compile(r"^[0-9a-fA-F\-]{36}$")
+_NODE_ALIAS_RE = re.compile(r"^N[1-9][0-9]*$")
+_EDGE_ALIAS_RE = re.compile(r"^E[1-9][0-9]*$")
+_NODE_BASE62_RE = re.compile(r"^N~[0-9A-Za-z]+$")
+_EDGE_BASE62_RE = re.compile(r"^E~[0-9A-Za-z]+$")
+
+AliasKind = Literal["node", "edge"]
+
+
+class UnknownAliasError(ValueError):
+    """Raised when a model returns an alias absent from the request legend."""
+
+
+class AliasKindMismatchError(ValueError):
+    """Raised when a node reference is used where an edge is required, or vice versa."""
 
 
 def uuid_to_base62(u: str) -> str:
@@ -48,8 +64,20 @@ def _is_uuid(x: str | None) -> bool:
 
 
 def _is_alias(x: str | None) -> bool:
-    # Accept session aliases N\d+, E\d+ and base62 N~..., E~...
-    return bool(x) and (x.startswith("N") or x.startswith("E"))
+    return bool(x) and bool(
+        _NODE_ALIAS_RE.fullmatch(x)
+        or _EDGE_ALIAS_RE.fullmatch(x)
+        or _NODE_BASE62_RE.fullmatch(x)
+        or _EDGE_BASE62_RE.fullmatch(x)
+    )
+
+
+def _alias_kind(x: str) -> AliasKind | None:
+    if _NODE_ALIAS_RE.fullmatch(x) or _NODE_BASE62_RE.fullmatch(x):
+        return "node"
+    if _EDGE_ALIAS_RE.fullmatch(x) or _EDGE_BASE62_RE.fullmatch(x):
+        return "edge"
+    return None
 
 
 def _is_new_node(x: str | None) -> bool:
@@ -66,28 +94,72 @@ class AliasBook:
 
     next_n: int = 1
     next_e: int = 1
-    real_to_alias: dict = field(default_factory=dict)  # real_id -> alias "N#"/"E#"
-    alias_to_real: dict = field(default_factory=dict)  # alias -> real_id
+    # These two mappings remain as compatibility views for existing callers.
+    # Typed methods below are authoritative and handle a node/edge ID collision.
+    real_to_alias: dict[str, str] = field(default_factory=dict)
+    alias_to_real: dict[str, str] = field(default_factory=dict)
+    _node_real_to_alias: dict[str, str] = field(default_factory=dict, repr=False)
+    _edge_real_to_alias: dict[str, str] = field(default_factory=dict, repr=False)
+    _node_alias_to_real: dict[str, str] = field(default_factory=dict, repr=False)
+    _edge_alias_to_real: dict[str, str] = field(default_factory=dict, repr=False)
+    _lock: RLock = field(default_factory=RLock, init=False, repr=False, compare=False)
 
     def alias_for_node(self, real_id: str) -> str:
-        a = self.real_to_alias.get(real_id)
-        if a:
+        with self._lock:
+            a = self._node_real_to_alias.get(real_id)
+            if a:
+                return a
+            a = f"N{self.next_n}"
+            self.next_n += 1
+            self._node_real_to_alias[real_id] = a
+            self._node_alias_to_real[a] = real_id
+            self.real_to_alias.setdefault(real_id, a)
+            self.alias_to_real[a] = real_id
             return a
-        a = f"N{self.next_n}"
-        self.next_n += 1
-        self.real_to_alias[real_id] = a
-        self.alias_to_real[a] = real_id
-        return a
 
     def alias_for_edge(self, real_id: str) -> str:
-        a = self.real_to_alias.get(real_id)
-        if a:
+        with self._lock:
+            a = self._edge_real_to_alias.get(real_id)
+            if a:
+                return a
+            a = f"E{self.next_e}"
+            self.next_e += 1
+            self._edge_real_to_alias[real_id] = a
+            self._edge_alias_to_real[a] = real_id
+            self.real_to_alias.setdefault(real_id, a)
+            self.alias_to_real[a] = real_id
             return a
-        a = f"E{self.next_e}"
-        self.next_e += 1
-        self.real_to_alias[real_id] = a
-        self.alias_to_real[a] = real_id
-        return a
+
+    def resolve(self, alias_or_id: str, *, kind: AliasKind) -> str:
+        """Resolve one typed reference, rejecting unknown or wrong-kind aliases."""
+        if not alias_or_id:
+            raise ValueError("alias_or_id must not be empty")
+        alias_kind = _alias_kind(alias_or_id)
+        if alias_kind is None:
+            return alias_or_id
+        if alias_kind != kind:
+            raise AliasKindMismatchError(
+                f"{alias_or_id!r} is an {alias_kind} alias, expected a {kind} alias"
+            )
+        with self._lock:
+            mapping = self._node_alias_to_real if kind == "node" else self._edge_alias_to_real
+            try:
+                return mapping[alias_or_id]
+            except KeyError as exc:
+                raise UnknownAliasError(f"unknown {kind} alias: {alias_or_id}") from exc
+
+    def resolve_node(self, alias_or_id: str) -> str:
+        return self.resolve(alias_or_id, kind="node")
+
+    def resolve_edge(self, alias_or_id: str) -> str:
+        return self.resolve(alias_or_id, kind="edge")
+
+    @classmethod
+    def deterministic(cls, node_ids: list[str], edge_ids: list[str]) -> "AliasBook":
+        """Create a restart-stable book for one immutable prompt projection."""
+        book = cls()
+        book.assign_for_sets(sorted(set(node_ids)), sorted(set(edge_ids)))
+        return book
 
     def assign_for_sets(self, node_ids: list[str], edge_ids: list[str]) -> None:
         for rid in node_ids:
@@ -101,13 +173,13 @@ class AliasBook:
         """Return only (real_id, alias) pairs that are NEW since last turn."""
         new_nodes: list[tuple[str, str]] = []
         new_edges: list[tuple[str, str]] = []
-        for rid in node_ids:
-            if rid not in self.real_to_alias:
-                new_nodes.append((rid, self.alias_for_node(rid)))
-        for rid in edge_ids:
-            if rid not in self.real_to_alias:
-                new_edges.append((rid, self.alias_for_edge(rid)))
-        return new_nodes, new_edges
+        with self._lock:
+            new_nodes = [rid for rid in node_ids if rid not in self._node_real_to_alias]
+            new_edges = [rid for rid in edge_ids if rid not in self._edge_real_to_alias]
+        return (
+            [(rid, self.alias_for_node(rid)) for rid in new_nodes],
+            [(rid, self.alias_for_edge(rid)) for rid in new_edges],
+        )
 
 
 @dataclass
@@ -115,11 +187,13 @@ class AliasBookStore:
     """Small keyed store for per-session/per-document alias books."""
 
     books: dict[str, AliasBook] = field(default_factory=dict)
+    _lock: RLock = field(default_factory=RLock, init=False, repr=False, compare=False)
 
     def get(self, key: str) -> AliasBook:
-        if key not in self.books:
-            self.books[key] = AliasBook()
-        return self.books[key]
+        with self._lock:
+            if key not in self.books:
+                self.books[key] = AliasBook()
+            return self.books[key]
 
 
 def build_aliases(node_ids, edge_ids):
@@ -158,9 +232,13 @@ def aliasify_graph(nodes, edges, alias_for_real):
 
 
 def de_alias_ids(llm_result, real_for_alias):
-    """Translate LLM aliases back to real UUIDs in-place."""
+    """Translate LLM aliases back to real IDs, rejecting unknown aliases."""
 
     def r(a):
+        if not a:
+            raise ValueError("ID references must not be empty")
+        if _is_alias(a) and a not in real_for_alias:
+            raise UnknownAliasError(f"unknown alias: {a}")
         return real_for_alias.get(a, a)
 
     for n in llm_result.nodes:
@@ -171,4 +249,8 @@ def de_alias_ids(llm_result, real_for_alias):
             e.id = r(e.id)
         e.source_ids = [r(x) for x in e.source_ids]
         e.target_ids = [r(x) for x in e.target_ids]
+        if e.source_edge_ids is not None:
+            e.source_edge_ids = [r(x) for x in e.source_edge_ids]
+        if e.target_edge_ids is not None:
+            e.target_edge_ids = [r(x) for x in e.target_edge_ids]
     return llm_result
