@@ -15,6 +15,12 @@ if TYPE_CHECKING:
 _SCHEMA_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
+def _int_or_default(value: object, default: int) -> int:
+    if isinstance(value, (str, int, float)):
+        return int(value)
+    return default
+
+
 class AsyncPostgresNamedProjectionStore:
     """Native async implementation of ``AsyncNamedProjectionStore``.
 
@@ -189,6 +195,8 @@ class AsyncPostgresNamedProjectionStore:
                 if expected_a is None and expected_m is None:
                     if current is not None:
                         return False
+                elif expected_a is None or expected_m is None:
+                    return False
                 elif (
                     current is None
                     or int(current[0]) != int(expected_a)
@@ -223,9 +231,9 @@ class AsyncPostgresNamedProjectionStore:
                         "payload_json": json.dumps(
                             item["payload"], sort_keys=True, separators=(",", ":")
                         ),
-                        "authoritative": int(item.get("last_authoritative_seq", 0)),
-                        "materialized": int(item.get("last_materialized_seq", 0)),
-                        "schema_version": int(item.get("projection_schema_version", 1)),
+                        "authoritative": _int_or_default(item.get("last_authoritative_seq"), 0),
+                        "materialized": _int_or_default(item.get("last_materialized_seq"), 0),
+                        "schema_version": _int_or_default(item.get("projection_schema_version"), 1),
                         "status": str(item.get("materialization_status", "ready")),
                         "updated_at_ms": now,
                     },
