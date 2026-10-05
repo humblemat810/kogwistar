@@ -2,13 +2,31 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Optional, List, Any, TYPE_CHECKING
+from collections.abc import Callable, Mapping, Sequence
+from typing import Any, Protocol, TYPE_CHECKING, TypeAlias, cast
 
 from ..models import Grounding, MentionVerification, Span
 from .metadata import json_or_none, strip_none
 
 if TYPE_CHECKING:
     from ..models import Edge, Node, PureChromaEdge, PureChromaNode
+
+
+JsonObject: TypeAlias = dict[str, Any]
+RefPayload: TypeAlias = JsonObject
+
+
+class _LifecycleBackend(Protocol):
+    """Metadata-only update surface exposed by Chroma-compatible backends."""
+
+    def node_get(self, **kwargs: object) -> Mapping[str, object]: ...
+    def edge_get(self, **kwargs: object) -> Mapping[str, object]: ...
+    def node_update(self, **kwargs: object) -> None: ...
+    def edge_update(self, **kwargs: object) -> None: ...
+
+
+SafeJsonDict: TypeAlias = Callable[[object], JsonObject]
+MergeMetadata: TypeAlias = Callable[[JsonObject, Mapping[str, object]], JsonObject]
 
 _DOC_URL = "document/{doc_id}"
 
@@ -22,7 +40,7 @@ def safe_excerpt(s: str | None, max_len: int = 200) -> str | None:
     return s
 
 
-def ref_doc_id(ref) -> str | None:
+def ref_doc_id(ref: object) -> str | None:
     did = getattr(ref, "doc_id", None)
     if did:
         return did
@@ -31,7 +49,7 @@ def ref_doc_id(ref) -> str | None:
     return m.group(1) if m else None
 
 
-def ref_insertion_method(ref) -> str:
+def ref_insertion_method(ref: object) -> str:
     m = getattr(ref, "insertion_method", None)
     if m:
         return str(m)
@@ -62,7 +80,7 @@ def ensure_ref_span(ref: Span, doc_id: str) -> Span:
     return r
 
 
-def normalize_mentions(mentions: Optional[List[Span]], doc_id: str) -> List[Span]:
+def normalize_mentions(mentions: list[Span] | None, doc_id: str) -> list[Span]:
     if not mentions or len(mentions) == 0:
         raise Exception("missing mentions")
     return [ensure_ref_span(ref, doc_id) for ref in mentions]
@@ -152,7 +170,7 @@ def select_best_grounding(entity: "Node | Edge") -> Grounding:
     return Grounding(spans=[span])
 
 
-def node_doc_and_meta(n: "Node | PureChromaNode") -> tuple[str, dict]:
+def node_doc_and_meta(n: "Node | PureChromaNode") -> tuple[str, JsonObject]:
     doc = n.model_dump_json(field_mode="backend", exclude=["embedding", "metadata"])
     meta = n.metadata
     meta.update(
@@ -177,7 +195,7 @@ def node_doc_and_meta(n: "Node | PureChromaNode") -> tuple[str, dict]:
     return doc, meta
 
 
-def edge_doc_and_meta(e: "Edge | PureChromaEdge") -> tuple[str, dict]:
+def edge_doc_and_meta(e: "Edge | PureChromaEdge") -> tuple[str, JsonObject]:
     doc = e.model_dump_json(field_mode="backend")
     meta = strip_none(
         {
@@ -201,15 +219,19 @@ def edge_doc_and_meta(e: "Edge | PureChromaEdge") -> tuple[str, dict]:
     return doc, meta
 
 
-def merge_refs(old_refs_json: str | None, new_refs):
-    old = []
+def merge_refs(
+    old_refs_json: str | None, new_refs: Sequence[object] | None
+) -> tuple[list[RefPayload], str]:
+    old: list[RefPayload] = []
     if old_refs_json:
         try:
-            old = json.loads(old_refs_json)
+            decoded = json.loads(old_refs_json)
+            if isinstance(decoded, list):
+                old = [cast(RefPayload, item) for item in decoded if isinstance(item, dict)]
         except Exception:
             old = []
 
-    def key(r):
+    def key(r: Mapping[str, object]) -> tuple[object, ...]:
         return (
             r.get("document_page_url"),
             r.get("start_page"),
@@ -220,20 +242,25 @@ def merge_refs(old_refs_json: str | None, new_refs):
 
     seen = {key(r): r for r in old}
     for r in new_refs or []:
-        r2 = r.model_dump(field_mode="backend") if hasattr(r, "model_dump") else r
+        if hasattr(r, "model_dump"):
+            r2 = cast(RefPayload, r.model_dump(field_mode="backend"))
+        elif isinstance(r, dict):
+            r2 = cast(RefPayload, r)
+        else:
+            continue
         seen[key(r2)] = r2
-    merged = list(seen.values())
+    merged: list[RefPayload] = list(seen.values())
     return merged, json.dumps(merged)
 
 
 def backend_update_record_lifecycle(
     *,
-    backend: Any,
+    backend: _LifecycleBackend,
     kind: str,
     record_id: str,
-    lifecycle_patch: dict,
-    safe_json_dict_fn,
-    merge_meta_fn,
+    lifecycle_patch: Mapping[str, object],
+    safe_json_dict_fn: SafeJsonDict,
+    merge_meta_fn: MergeMetadata,
 ) -> bool:
     """Patch lifecycle metadata without causing a Chroma re-embedding.
 
@@ -243,16 +270,21 @@ def backend_update_record_lifecycle(
     unrelated HNSW read.  Content writers must choose their vector policy
     explicitly instead.
     """
+    if kind not in {"node", "edge"}:
+        raise ValueError(f"unsupported lifecycle record kind: {kind}")
     get_fn = getattr(backend, f"{kind}_get", None)
     upd_fn = getattr(backend, f"{kind}_update", None)
     if get_fn is None or upd_fn is None:
         raise AttributeError(f"backend missing {kind}_get/{kind}_update")
     got = get_fn(ids=[record_id], include=["metadatas"])
-    ids = got.get("ids") or []
+    ids_value = got.get("ids")
+    ids = ids_value if isinstance(ids_value, list) else []
     if not ids:
         return False
 
-    meta = (got.get("metadatas") or [None])[0]
+    metadatas_value = got.get("metadatas")
+    metadatas = metadatas_value if isinstance(metadatas_value, list) else []
+    meta = metadatas[0] if metadatas else None
     new_meta = merge_meta_fn(meta if isinstance(meta, dict) else {}, lifecycle_patch)
     upd_fn(
         ids=[record_id],
