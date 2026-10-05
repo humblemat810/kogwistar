@@ -3,9 +3,10 @@ from __future__ import annotations
 import json
 import re
 from typing import Any, Dict, List, Optional, Tuple, Type, TypeVar, Union
+from pydantic import BaseModel
 
 PageLike = Union[str, Dict[str, Any]]
-T = TypeVar("T")
+T = TypeVar("T", bound=BaseModel)
 
 
 def split_pages_from_text(raw: str) -> List[Dict[str, Any]]:
