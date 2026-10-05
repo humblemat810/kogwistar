@@ -5,10 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from hashlib import sha256
 from threading import RLock
-from typing import Any, Callable, Literal, Mapping, Protocol, TypeVar, cast, runtime_checkable
+from typing import Callable, Literal, Mapping, Protocol, TypeVar, cast, runtime_checkable
 
 from kogwistar.engine_core.embedding_profile import NamedProjectionStore
 from kogwistar.json_types import JsonValue
+from kogwistar.runtime import ProjectionPayload
 
 from .catalog import CatalogEntry
 
@@ -70,14 +71,14 @@ class SkillProvider(Protocol):
 class MemoryProvider(Protocol):
     provider_id: str
 
-    def search(self, query: str, **kwargs: Any) -> list[Mapping[str, Any]]: ...
+    def search(self, query: str, **kwargs: JsonValue) -> list[Mapping[str, JsonValue]]: ...
 
 
 @runtime_checkable
 class CompressorProvider(Protocol):
     provider_id: str
 
-    def compress(self, request: Mapping[str, Any]) -> Mapping[str, Any]: ...
+    def compress(self, request: Mapping[str, JsonValue]) -> Mapping[str, JsonValue]: ...
 
 
 def normalize_descriptor(
@@ -152,7 +153,7 @@ class ProviderRegistry:
         self._metadata = metadata
         self._lock = RLock()
 
-    def _lifecycle_row(self, key: str) -> dict[str, Any] | None:
+    def _lifecycle_row(self, key: str) -> ProjectionPayload | None:
         if self._metadata is None:
             return None
         return self._metadata.get_named_projection(PROVIDER_LIFECYCLE_NAMESPACE, key)
@@ -164,7 +165,7 @@ class ProviderRegistry:
         generation: int,
         fingerprint: str,
         status: str,
-        expected: dict[str, Any] | None,
+        expected: ProjectionPayload | None,
     ) -> None:
         if self._metadata is None:
             return
@@ -205,7 +206,7 @@ class ProviderRegistry:
         ):
             raise ProviderCollisionError(f"provider lifecycle changed concurrently: {key}")
 
-    def lifecycle_guard_update(self, registration: ProviderRegistration) -> dict[str, Any] | None:
+    def lifecycle_guard_update(self, registration: ProviderRegistration) -> ProjectionPayload | None:
         """Return a same-store CAS guard for one active registration."""
 
         with self._lock:
@@ -386,7 +387,7 @@ class ProviderRegistry:
                 continue
             try:
                 descriptors = cast(
-                    Callable[[], list[Mapping[str, Any]]], loader
+                    Callable[[], list[Mapping[str, object]]], loader
                 )()
             except Exception:
                 isolated = (
