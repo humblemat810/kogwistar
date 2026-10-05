@@ -1,4 +1,4 @@
-from typing import ClassVar, Literal, Optional
+from typing import ClassVar, Literal, Optional, TypeAlias
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from ..engine_core.models import Edge, Node
@@ -208,13 +208,13 @@ class WorkflowInvocationRequest(BaseModel):
 # closed TypedDict here would make the public runtime contract falsely reject
 # valid state at type-check time.  Persisted conversation state keeps its
 # narrower structural TypedDict in ``conversation_state_contracts``.
-type WorkflowState = dict[str, object]
+WorkflowState: TypeAlias = dict[str, object]
 
 
-type StateOverwriteUpdate = tuple[Literal["u"], dict[str, object]]
-type StateAppendUpdate = tuple[Literal["a"], dict[str, object]]
-type StateExtendUpdate = tuple[Literal["e"], dict[str, object]]
-type StateUpdate = (
+StateOverwriteUpdate: TypeAlias = tuple[Literal["u"], dict[str, object]]
+StateAppendUpdate: TypeAlias = tuple[Literal["a"], dict[str, object]]
+StateExtendUpdate: TypeAlias = tuple[Literal["e"], dict[str, object]]
+StateUpdate: TypeAlias = (
     StateOverwriteUpdate | StateAppendUpdate | StateExtendUpdate
 )
 
@@ -290,7 +290,7 @@ class RunSuccess(BaseModel):
         return list(self.next_step_names)
 
 
-type StepRunResult = RunSuccess | RunFailure | RunSuspended
+StepRunResult: TypeAlias = RunSuccess | RunFailure | RunSuspended
 
 
 class WorkflowRunMetadata(BaseModel):

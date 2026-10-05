@@ -4,7 +4,7 @@ import copy
 import logging
 import warnings
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, TypeAlias
 
 from .._rust_bridge import (
     RustParityError,
@@ -19,6 +19,11 @@ from ..id_provider import stable_id
 from .budget import StateBackedBudgetLedger
 from .models import StateUpdate, WorkflowDesignArtifact, WorkflowInvocationRequest, WorkflowState
 from .routing import RouteComputation, compute_route_next
+
+
+RuntimePayload: TypeAlias = dict[str, object]
+StateSchema: TypeAlias = dict[str, str]
+RuntimeStateUpdate: TypeAlias = list[tuple[str, dict[str, object]]] | list[StateUpdate]
 
 
 class RuntimeContractError(RuntimeError):
@@ -44,10 +49,10 @@ NON_CHECKPOINT_STATE_KEYS = {
 
 def _native_state_update_payload(
     state: WorkflowState,
-    state_update: list[tuple[str, dict[str, Any]]] | list[StateUpdate],
-    update: dict | None,
-    state_schema: dict[str, Any] | None,
-) -> dict[str, Any]:
+    state_update: RuntimeStateUpdate,
+    update: RuntimePayload | None,
+    state_schema: StateSchema | None,
+) -> RuntimePayload:
     """JSON transport form; state-update pairs are tuples in public Python API."""
     return {
         "state": copy.deepcopy(state),
@@ -59,9 +64,9 @@ def _native_state_update_payload(
 
 def _native_state_update_safe(
     state: WorkflowState,
-    state_update: list[tuple[str, dict[str, Any]]] | list[StateUpdate],
-    update: dict | None,
-    state_schema: dict[str, Any] | None,
+    state_update: RuntimeStateUpdate,
+    update: RuntimePayload | None,
+    state_schema: StateSchema | None,
 ) -> bool:
     """Keep Python for inputs whose observable legacy failure is not a contract fold."""
     for item in state_update:
@@ -116,11 +121,11 @@ def validate_initial_state(initial_state: WorkflowState):
 
 def apply_state_update_inplace(
     mute_state: WorkflowState,
-    state_update: list[tuple[str, dict[str, Any]]] | list[StateUpdate],
-    update: dict | None = None,
+    state_update: RuntimeStateUpdate,
+    update: RuntimePayload | None = None,
     *,
-    state_schema: dict[str, Any] | None = None,
-):
+    state_schema: StateSchema | None = None,
+) -> None:
     """Apply a workflow-runtime state delta in place.
 
     Single reducer for sync runtime, async runtime, and replay.
@@ -145,7 +150,7 @@ def apply_state_update_inplace(
     json_compatible = json_contract_compatible(native_transport) and _native_state_update_safe(
         mute_state, state_update, update, state_schema
     )
-    native_state: dict[str, Any] | None = None
+    native_state: RuntimePayload | None = None
     if mode != "python" and json_compatible:
         native_payload = _native_state_update_payload(
             mute_state, state_update, update, state_schema
