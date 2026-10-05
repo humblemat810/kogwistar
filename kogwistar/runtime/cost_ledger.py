@@ -1,7 +1,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Protocol
+
+
+class CostEventLike(Protocol):
+    """Minimal usage-event shape accepted by the cost ledger."""
+
+    kind: str
+    amount: int | float
+    source: str
+    unit: str
+    scope: str
 
 
 @dataclass
@@ -19,7 +29,7 @@ class CostLedger:
         self.events.append(evt)
         return evt
 
-    def ingest(self, event: Any) -> dict[str, object]:
+    def ingest(self, event: CostEventLike) -> dict[str, object]:
         evt = {
             "workspace_id": self.workspace_id,
             "kind": str(getattr(event, "kind", "unknown")),
