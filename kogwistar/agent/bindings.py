@@ -24,6 +24,7 @@ from kogwistar.runtime.models import (
     WorkflowInvocationRequest,
 )
 from kogwistar.runtime.resolvers import MappingStepResolver
+from kogwistar.runtime.runtime import StepContext
 
 from .limits import refresh_budget_hints
 from .providers import ModelProvider, ToolProvider
@@ -63,7 +64,7 @@ class FunctionFakeTool:
         return self.function(payload)
 
 
-def _ledger(ctx: Any) -> StateBackedBudgetLedger:
+def _ledger(ctx: StepContext) -> StateBackedBudgetLedger:
     state = ctx._state
     budget_state = state.get("budget")
     if not isinstance(budget_state, dict):
@@ -81,7 +82,7 @@ def _ledger(ctx: Any) -> StateBackedBudgetLedger:
     return ledger
 
 
-def _failure(ctx: Any, message: str) -> RunFailure:
+def _failure(ctx: StepContext, message: str) -> RunFailure:
     return RunFailure(
         conversation_node_id=None,
         state_update=[],
@@ -89,7 +90,7 @@ def _failure(ctx: Any, message: str) -> RunFailure:
     )
 
 
-def _trusted_acl_inputs(ctx: Any, key: str) -> list[Any]:
+def _trusted_acl_inputs(ctx: StepContext, key: str) -> list[Any]:
     """Read ACL descriptors from the runtime authority carrier only.
 
     Mutable workflow state may carry provenance for display, but cannot widen
@@ -145,7 +146,7 @@ def register_model_step(
         raise PermissionError("LLM_GUARDED requires explicit acknowledgement")
 
     @resolver.register(op)
-    def _model(ctx: Any) -> RunSuccess | RunFailure:
+    def _model(ctx: StepContext) -> RunSuccess | RunFailure:
         ledger = _ledger(ctx)
         if ledger.should_suspend_for_budget():
             refresh_budget_hints(ctx._state, ledger=ledger)
@@ -273,7 +274,7 @@ def register_tool_step(
         raise PermissionError("LLM_GUARDED requires explicit acknowledgement")
 
     @resolver.register(op)
-    def _tool(ctx: Any) -> RunSuccess | RunFailure:
+    def _tool(ctx: StepContext) -> RunSuccess | RunFailure:
         # Persisted workflow state is evidence, not authority.  A resolver
         # invoked without the runtime carrier must fail closed, including in
         # direct/native worker integrations.
@@ -341,18 +342,18 @@ def register_catalog_search_step(
     """Use Goal B descriptor-first catalog search from an ordinary step."""
 
     @resolver.register(op)
-    def _search(ctx: Any) -> RunSuccess:
+    def _search(ctx: StepContext) -> RunSuccess:
         query = str(ctx.state_view.get(query_key, ""))
         page = reads.catalog_search(query, scope=scope, limit=20)
         return RunSuccess(state_update=[("u", {output_key: page.to_dict()})])
 
 
 def make_nested_invocation_handler(
-    invocation_factory: Callable[[Any], WorkflowInvocationRequest],
-) -> Callable[[Any], RunSuccess]:
+    invocation_factory: Callable[[StepContext], WorkflowInvocationRequest],
+) -> Callable[[StepContext], RunSuccess]:
     """Create an ordinary resolver handler returning one nested invocation."""
 
-    def _invoke(ctx: Any) -> RunSuccess:
+    def _invoke(ctx: StepContext) -> RunSuccess:
         request = validate_invocation_request(invocation_factory(ctx))
         return RunSuccess(state_update=[], workflow_invocations=[request])
 
@@ -373,8 +374,8 @@ def validate_invocation_request(
     return request
 
 
-def static_invocation(workflow_id: str, *, result_state_key: str = "agent_action_result") -> Callable[[Any], WorkflowInvocationRequest]:
-    def _factory(ctx: Any) -> WorkflowInvocationRequest:
+def static_invocation(workflow_id: str, *, result_state_key: str = "agent_action_result") -> Callable[[StepContext], WorkflowInvocationRequest]:
+    def _factory(ctx: StepContext) -> WorkflowInvocationRequest:
         return validate_invocation_request(WorkflowInvocationRequest(
             workflow_id=workflow_id,
             result_state_key=result_state_key,
@@ -386,8 +387,8 @@ def static_invocation(workflow_id: str, *, result_state_key: str = "agent_action
 
 def dynamic_invocation(
     design: WorkflowDesignArtifact, *, result_state_key: str = "agent_action_result"
-) -> Callable[[Any], WorkflowInvocationRequest]:
-    def _factory(ctx: Any) -> WorkflowInvocationRequest:
+) -> Callable[[StepContext], WorkflowInvocationRequest]:
+    def _factory(ctx: StepContext) -> WorkflowInvocationRequest:
         return validate_invocation_request(WorkflowInvocationRequest(
             workflow_id=design.workflow_id,
             workflow_design=design,
