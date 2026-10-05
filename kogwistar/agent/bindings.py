@@ -25,6 +25,7 @@ from kogwistar.runtime.models import (
 )
 from kogwistar.runtime.resolvers import MappingStepResolver
 from kogwistar.runtime.runtime import StepContext
+from kogwistar.json_types import JsonValue
 
 from .limits import refresh_budget_hints
 from .providers import ModelProvider, ToolProvider
@@ -33,19 +34,19 @@ from .read_tools import AgentReadTools, ReadScope
 
 # Compatibility names retained for callers of the deterministic test bindings.
 # The provider protocols are the single source of truth for these contracts.
-FakeModel = ModelProvider[Any]
-FakeTool = ToolProvider[Any]
+FakeModel = ModelProvider[JsonValue]
+FakeTool = ToolProvider[JsonValue]
 
 
 class SequenceFakeModel:
     """Deterministic model fixture; no network or provider dependency."""
 
-    def __init__(self, payloads: Sequence[Any]) -> None:
+    def __init__(self, payloads: Sequence[JsonValue]) -> None:
         self._payloads = list(payloads)
         self.prompts: list[str] = []
-        self.contexts: list[dict[str, Any]] = []
+        self.contexts: list[dict[str, JsonValue]] = []
 
-    def complete(self, prompt: str, context: Mapping[str, Any]) -> Any:
+    def complete(self, prompt: str, context: Mapping[str, JsonValue]) -> JsonValue:
         self.prompts.append(str(prompt))
         self.contexts.append(dict(context))
         if not self._payloads:
@@ -54,11 +55,11 @@ class SequenceFakeModel:
 
 
 class FunctionFakeTool:
-    def __init__(self, function: Callable[[Mapping[str, Any]], Any]) -> None:
+    def __init__(self, function: Callable[[Mapping[str, JsonValue]], JsonValue]) -> None:
         self.function = function
-        self.calls: list[dict[str, Any]] = []
+        self.calls: list[dict[str, JsonValue]] = []
 
-    def invoke(self, arguments: Mapping[str, Any]) -> Any:
+    def invoke(self, arguments: Mapping[str, JsonValue]) -> JsonValue:
         payload = dict(arguments)
         self.calls.append(payload)
         return self.function(payload)
@@ -179,17 +180,17 @@ def register_model_step(
             object_id=output_key,
             generation_id=str(ctx.run_id),
         )
-        model_context: dict[str, Any] = {
-            "budget": dict(ctx.state_view.get("agent_budget_hints") or {})
+        model_context: dict[str, JsonValue] = {
+            "budget": cast(JsonValue, dict(ctx.state_view.get("agent_budget_hints") or {}))
         }
         if selected_acl_policy == "LLM_GUARDED" or isinstance(
             getattr(ctx, "authority_context", None), Mapping
         ) and "acl_inputs" in getattr(ctx, "authority_context", {}):
-            model_context["acl"] = {
+            model_context["acl"] = cast(JsonValue, {
                 "mode": acl_result.final_mode,
                 "source_ids": list(acl_result.source_ids),
                 "policy": acl_result.policy,
-            }
+            })
         try:
             payload = model.complete(prompt, model_context)
         except Exception as exc:
@@ -292,7 +293,7 @@ def register_tool_step(
         last_error: BaseException | None = None
         for attempt in range(1, int(max_attempts) + 1):
             try:
-                result = tool.invoke(arguments)
+                result = tool.invoke(cast(Mapping[str, JsonValue], arguments))
                 acl_result = derive_acl(
                     [
                         *_trusted_acl_inputs(ctx, acl_inputs_key),

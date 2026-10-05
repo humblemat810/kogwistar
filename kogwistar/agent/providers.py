@@ -8,6 +8,7 @@ from threading import RLock
 from typing import Any, Callable, Literal, Mapping, Protocol, TypeVar, cast, runtime_checkable
 
 from kogwistar.engine_core.embedding_profile import NamedProjectionStore
+from kogwistar.json_types import JsonValue
 
 from .catalog import CatalogEntry
 
@@ -46,14 +47,14 @@ class DiscoveryProvider(Protocol):
 class ModelProvider(Protocol[TModelResult]):
     provider_id: str
 
-    def complete(self, prompt: str, context: Mapping[str, Any]) -> TModelResult: ...
+    def complete(self, prompt: str, context: Mapping[str, JsonValue]) -> TModelResult: ...
 
 
 @runtime_checkable
 class ToolProvider(Protocol[TToolResult]):
     provider_id: str
 
-    def invoke(self, arguments: Mapping[str, Any]) -> TToolResult: ...
+    def invoke(self, arguments: Mapping[str, JsonValue]) -> TToolResult: ...
 
 
 @runtime_checkable
