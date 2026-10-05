@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Callable, Mapping, Sequence
-from typing import Any, Protocol, TYPE_CHECKING, TypeAlias, cast
+from typing import Protocol, TYPE_CHECKING, TypeAlias, cast
 
 from ..models import Grounding, MentionVerification, Span
 from .metadata import json_or_none, strip_none
@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from ..models import Edge, Node, PureChromaEdge, PureChromaNode
 
 
-JsonObject: TypeAlias = dict[str, Any]
+JsonObject: TypeAlias = dict[str, object]
 RefPayload: TypeAlias = JsonObject
 
 
