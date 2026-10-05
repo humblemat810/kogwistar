@@ -21,16 +21,17 @@ try:
 except ImportError:  # pragma: no cover - py<3.10 compatibility
     from typing_extensions import TypeAlias
 
-from .engine_core.models import (
-    AdjudicationTarget as GraphAdjudicationTarget,
-    AdjudicationVerdict,
-    Document as EngineDoc,
-    Edge as GraphEdge,
-    Node as GraphNode,
-)
-from .engine_core.storage_backend import StorageBackend
+from .json_types import JsonValue
 
 if TYPE_CHECKING:
+    from .engine_core.models import (
+        AdjudicationTarget as GraphAdjudicationTarget,
+        AdjudicationVerdict,
+        Document as EngineDoc,
+        Edge as GraphEdge,
+        Node as GraphNode,
+    )
+    from .engine_core.storage_backend import StorageBackend
     from .engine_core.vector_search import VectorSearchHit
 
 # -------------------------
@@ -48,13 +49,13 @@ Image: TypeAlias = object
 URI: TypeAlias = str
 ID: TypeAlias = str
 Include: TypeAlias = list[str]
-QueryResult: TypeAlias = Dict[str, Any]
-Where: TypeAlias = Dict[str, Any]
-WhereDocument: TypeAlias = Dict[str, Any]
+QueryResult: TypeAlias = Dict[str, JsonValue]
+Where: TypeAlias = Dict[str, JsonValue]
+WhereDocument: TypeAlias = Dict[str, JsonValue]
 IDs: TypeAlias = List[str]
 _TCollectionValue = TypeVar("_TCollectionValue")
 OneOrMany: TypeAlias = _TCollectionValue | Sequence[_TCollectionValue]
-GetResult: TypeAlias = Dict[str, Any]
+GetResult: TypeAlias = Dict[str, JsonValue]
 Metadata: TypeAlias = Dict[str, ChromaScalar]
 
 

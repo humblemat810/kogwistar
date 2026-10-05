@@ -3,15 +3,15 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
-from typing import Any, Mapping, TypeAlias
+from typing import Any, Mapping
+
+from ..json_types import JsonValue
 
 try:
     from pydantic import BaseModel  # type: ignore
 except Exception:  # pragma: no cover
     BaseModel = None  # type: ignore
 
-JsonScalar: TypeAlias = None | bool | int | float | str
-JsonValue: TypeAlias = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
 _NON_SERIALIZABLE_MAPPING_KEYS = {"_deps", "dream_deps"}
 
 
