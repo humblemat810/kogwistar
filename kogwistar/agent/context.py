@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+
+ContextItem = dict[str, object]
 
 
 class ContextPolicy(BaseModel):
@@ -38,7 +41,7 @@ class ContextSnapshot(BaseModel):
 
     policy_version: str = "v1"
     conversation_id: str | None = None
-    items: list[dict[str, Any]] = Field(default_factory=list)
+    items: list[ContextItem] = Field(default_factory=list)
     source_refs: list[str] = Field(default_factory=list)
     truncated: bool = False
     compression: str = "medium"

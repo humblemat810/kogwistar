@@ -6,9 +6,12 @@ import hashlib
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Callable, Protocol
+from typing import Callable, Protocol
 
 from kogwistar.runtime.models import RunSuccess, WorkflowDesignArtifact, WorkflowInvocationRequest
+
+
+AgentState = dict[str, object]
 
 
 class DelegationContextLike(Protocol):
@@ -20,7 +23,7 @@ class DelegationContextLike(Protocol):
     turn_node_id: str | None
 
     @property
-    def state_view(self) -> Mapping[str, Any]: ...
+    def state_view(self) -> Mapping[str, object]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,7 +53,7 @@ class DelegationSpec:
 
 
 def _effective_capabilities(
-    requested: tuple[str, ...], parent: Mapping[str, Any]
+    requested: tuple[str, ...], parent: Mapping[str, object]
 ) -> tuple[str, ...]:
     parent_caps = {str(item) for item in parent.get("effective_capabilities", ())}
     requested_caps = {str(item) for item in requested}
@@ -63,11 +66,11 @@ def _effective_capabilities(
 
 
 def delegated_initial_state(
-    parent_state: Mapping[str, Any], spec: DelegationSpec
-) -> dict[str, Any]:
+    parent_state: Mapping[str, object], spec: DelegationSpec
+) -> AgentState:
     """Copy only explicitly selected ordinary state into child context."""
 
-    child: dict[str, Any] = {
+    child: AgentState = {
         "agent_model_profile": spec.model_profile,
         "effective_capabilities": list(_effective_capabilities(spec.requested_capabilities, parent_state)),
     }
@@ -112,12 +115,12 @@ def build_delegated_invocation(
     )
 
 
-def bounded_child_result(value: object, *, max_bytes: int) -> dict[str, Any]:
+def bounded_child_result(value: object, *, max_bytes: int) -> dict[str, object]:
     """Return structured bounded evidence; never expose complete child context."""
 
     if int(max_bytes) < 1:
         raise ValueError("max_bytes must be positive")
-    payload: Any = value if isinstance(value, Mapping) else {"value": value}
+    payload: object = value if isinstance(value, Mapping) else {"value": value}
     encoded = json.dumps(payload, ensure_ascii=False, default=str, sort_keys=True).encode("utf-8")
     digest = hashlib.sha256(encoded).hexdigest()
     if len(encoded) <= max_bytes:

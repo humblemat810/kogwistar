@@ -4,18 +4,21 @@ from __future__ import annotations
 
 import inspect
 from types import MappingProxyType
-from typing import Any, Protocol
+from typing import Protocol
 
 from .limits import AgentBudgetPolicy
 from .profile import AgentProfile
 
 
+AgentState = dict[str, object]
+
+
 class WorkflowRuntimeLike(Protocol):
     """Minimum runtime surface required by an agent harness."""
 
-    def run(self, **kwargs: Any) -> object: ...
+    def run(self, **kwargs: object) -> object: ...
 
-    def resume_from_latest_checkpoint(self, **kwargs: Any) -> object: ...
+    def resume_from_latest_checkpoint(self, **kwargs: object) -> object: ...
 
 
 class AgentHarness:
@@ -96,7 +99,7 @@ class AgentHarness:
         )
         self.validate_bindings()
 
-    def _prepared_state(self, initial_state: dict[str, Any]) -> dict[str, Any]:
+    def _prepared_state(self, initial_state: AgentState) -> AgentState:
         state = dict(initial_state)
         if self._effective_capabilities:
             state["effective_capabilities"] = list(self._effective_capabilities)
@@ -123,10 +126,10 @@ class AgentHarness:
     def run(
         self,
         *,
-        initial_state: dict[str, Any],
+        initial_state: AgentState,
         conversation_id: str,
         workflow_id: str | None = None,
-        **kwargs: Any,
+        **kwargs: object,
     ) -> object:
         selected_workflow = self._select_workflow(workflow_id)
         return self.workflow_runtime.run(
@@ -137,7 +140,7 @@ class AgentHarness:
             **kwargs,
         )
 
-    def resume_from_latest_checkpoint(self, **kwargs: Any) -> object:
+    def resume_from_latest_checkpoint(self, **kwargs: object) -> object:
         """Resume with current trusted ACL/budget authority."""
 
         kwargs["_parent_authority_context"] = self._authority_context
@@ -148,10 +151,10 @@ class AsyncAgentHarness(AgentHarness):
     async def run(
         self,
         *,
-        initial_state: dict[str, Any],
+        initial_state: AgentState,
         conversation_id: str,
         workflow_id: str | None = None,
-        **kwargs: Any,
+        **kwargs: object,
     ) -> object:
         selected_workflow = self._select_workflow(workflow_id)
         result = self.workflow_runtime.run(
@@ -163,7 +166,7 @@ class AsyncAgentHarness(AgentHarness):
         )
         return await result if inspect.isawaitable(result) else result
 
-    async def resume_from_latest_checkpoint(self, **kwargs: Any) -> object:
+    async def resume_from_latest_checkpoint(self, **kwargs: object) -> object:
         kwargs["_parent_authority_context"] = self._authority_context
         result = self.workflow_runtime.resume_from_latest_checkpoint(**kwargs)
         return await result if inspect.isawaitable(result) else result
