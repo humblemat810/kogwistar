@@ -49,15 +49,15 @@ class BudgetEvent:
     unit: str
     scope: str = "run"
     ts_ms: int | None = None
-    meta: dict[str, Any] = field(default_factory=dict)
+    meta: dict[str, object] = field(default_factory=dict)
     event_id: str | None = None
     attribution: BudgetAttribution | None = None
 
 
-def budget_event_to_dict(event: BudgetEvent) -> dict[str, Any]:
+def budget_event_to_dict(event: BudgetEvent) -> dict[str, object]:
     """Serialize a budget event without exposing dataclass implementation details."""
 
-    payload: dict[str, Any] = {
+    payload: dict[str, object] = {
         "event_id": event.event_id,
         "run_id": event.run_id,
         "source": event.source,
@@ -73,7 +73,7 @@ def budget_event_to_dict(event: BudgetEvent) -> dict[str, Any]:
     return payload
 
 
-def budget_event_from_dict(payload: dict[str, Any]) -> BudgetEvent:
+def budget_event_from_dict(payload: Mapping[str, object]) -> BudgetEvent:
     """Deserialize the stable event envelope used by raw usage projections."""
 
     raw_attribution = payload.get("attribution")
