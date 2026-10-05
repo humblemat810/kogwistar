@@ -11,8 +11,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import json
-from typing import Any, Callable, Mapping, Protocol, cast, runtime_checkable
+from typing import Callable, Mapping, Protocol, cast, runtime_checkable
 from urllib.parse import urlsplit, urlunsplit
+
+from kogwistar.runtime.checkpointed_projection import ProjectionPayload
 
 
 PROFILE_REGISTRY_NAMESPACE = "__kogwistar_embedding_profiles_v1__"
@@ -96,7 +98,7 @@ class EmbeddingProfile:
         if self.max_image_patches is not None and int(self.max_image_patches) <= 0:
             raise ValueError("embedding profile max_image_patches must be positive")
 
-    def as_dict(self) -> dict[str, Any]:
+    def as_dict(self) -> dict[str, object]:
         result = {
             "provider": str(self.provider).strip().lower(),
             "model": str(self.model).strip(),
@@ -124,7 +126,7 @@ class EmbeddingProfile:
         ).hexdigest()
 
     @classmethod
-    def from_mapping(cls, value: Mapping[str, Any]) -> "EmbeddingProfile":
+    def from_mapping(cls, value: Mapping[str, object]) -> "EmbeddingProfile":
         if not isinstance(value, Mapping):
             raise TypeError("embedding profile payload must be a mapping")
         return cls(
@@ -247,13 +249,13 @@ class EmbeddingStorageInspector(Protocol):
 class NamedProjectionStore(Protocol):
     """Minimal durable metadata surface required by the profile registry."""
 
-    def get_named_projection(self, namespace: str, key: str) -> dict[str, Any] | None: ...
+    def get_named_projection(self, namespace: str, key: str) -> ProjectionPayload | None: ...
 
     def compare_and_swap_named_projection(
         self,
         namespace: str,
         key: str,
-        payload: dict[str, Any],
+        payload: ProjectionPayload,
         *,
         expected_last_authoritative_seq: int | None,
         expected_last_materialized_seq: int | None,
@@ -264,10 +266,10 @@ class NamedProjectionStore(Protocol):
     ) -> bool: ...
 
     def compare_and_swap_named_projections(
-        self, updates: list[dict[str, Any]]
+        self, updates: list[ProjectionPayload]
     ) -> bool: ...
 
-    def list_named_projections(self, namespace: str) -> list[dict[str, Any]]: ...
+    def list_named_projections(self, namespace: str) -> list[ProjectionPayload]: ...
 
 
 @runtime_checkable
@@ -281,13 +283,13 @@ class AsyncNamedProjectionStore(Protocol):
 
     async def get_named_projection(
         self, namespace: str, key: str
-    ) -> dict[str, Any] | None: ...
+    ) -> ProjectionPayload | None: ...
 
     async def compare_and_swap_named_projection(
         self,
         namespace: str,
         key: str,
-        payload: dict[str, Any],
+        payload: ProjectionPayload,
         *,
         expected_last_authoritative_seq: int | None,
         expected_last_materialized_seq: int | None,
@@ -298,15 +300,15 @@ class AsyncNamedProjectionStore(Protocol):
     ) -> bool: ...
 
     async def compare_and_swap_named_projections(
-        self, updates: list[dict[str, Any]]
+        self, updates: list[ProjectionPayload]
     ) -> bool: ...
 
     async def list_named_projections(
         self, namespace: str
-    ) -> list[dict[str, Any]]: ...
+    ) -> list[ProjectionPayload]: ...
 
 
-def _profile_projection(profile: EmbeddingProfile, *, adopted: bool) -> dict[str, Any]:
+def _profile_projection(profile: EmbeddingProfile, *, adopted: bool) -> ProjectionPayload:
     return {
         "profile_schema_version": PROFILE_PROJECTION_SCHEMA_VERSION,
         "embedding_profile": profile.as_dict(),
@@ -329,11 +331,11 @@ class EmbeddingProfileRegistry:
         inspector: EmbeddingStorageInspector,
         *,
         configured: EmbeddingProfile | None = None,
-    ) -> dict[str, Any]:
+    ) -> dict[str, object]:
         scope = self._key(inspector)
         state = inspector.inspect_embedding_storage()
         projection = self._metadata.get_named_projection(PROFILE_REGISTRY_NAMESPACE, scope)
-        result: dict[str, Any] = {
+        result: dict[str, object] = {
             "storage_scope": scope,
             "storage_state": {
                 "backend_kind": state.backend_kind,
@@ -379,7 +381,7 @@ class EmbeddingProfileRegistry:
         aliases = tuple(getattr(inspector, "embedding_storage_scope_aliases", lambda: ())())
         list_projections = getattr(self._metadata, "list_named_projections", None)
         list_projections_fn = (
-            cast(Callable[[str], list[dict[str, Any]]], list_projections)
+            cast(Callable[[str], list[ProjectionPayload]], list_projections)
             if callable(list_projections)
             else None
         )
@@ -457,7 +459,7 @@ class EmbeddingProfileRegistry:
         return self._validate_current(scope, winner, configured)
 
     @staticmethod
-    def _registered_profile(scope: str, projection: Mapping[str, Any]) -> EmbeddingProfile:
+    def _registered_profile(scope: str, projection: Mapping[str, object]) -> EmbeddingProfile:
         payload = projection.get("payload") or {}
         EmbeddingProfileRegistry._validate_schema(scope, projection, payload)
         try:
@@ -470,7 +472,7 @@ class EmbeddingProfileRegistry:
     @staticmethod
     def _validate_current(
         scope: str,
-        projection: Mapping[str, Any],
+        projection: Mapping[str, object],
         configured: EmbeddingProfile,
     ) -> EmbeddingProfile:
         payload = projection.get("payload") or {}
@@ -492,8 +494,8 @@ class EmbeddingProfileRegistry:
     @staticmethod
     def _validate_schema(
         scope: str,
-        projection: Mapping[str, Any],
-        payload: Mapping[str, Any],
+        projection: Mapping[str, object],
+        payload: Mapping[str, object],
     ) -> None:
         try:
             projection_version = int(projection.get("projection_schema_version", -1))
