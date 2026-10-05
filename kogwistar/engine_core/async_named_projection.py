@@ -6,13 +6,40 @@ import json
 import re
 import time
 import asyncio
-from typing import TYPE_CHECKING, Any
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, Protocol, TypeAlias
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncEngine
 
 
 _SCHEMA_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+ProjectionPayload: TypeAlias = dict[str, object]
+ProjectionUpdate: TypeAlias = dict[str, object]
+
+
+class AsyncNamedProjectionMetadata(Protocol):
+    """Synchronous metadata operations required by the SQLite adapter."""
+
+    def get_named_projection(self, namespace: str, key: str) -> ProjectionPayload | None: ...
+
+    def list_named_projections(self, namespace: str) -> list[ProjectionPayload]: ...
+
+    def compare_and_swap_named_projection(
+        self,
+        namespace: str,
+        key: str,
+        payload: ProjectionPayload,
+        *,
+        expected_last_authoritative_seq: int | None,
+        expected_last_materialized_seq: int | None,
+        last_authoritative_seq: int,
+        last_materialized_seq: int,
+        projection_schema_version: int,
+        materialization_status: str,
+    ) -> bool: ...
+
+    def compare_and_swap_named_projections(self, updates: list[ProjectionUpdate]) -> bool: ...
 
 
 def _int_or_default(value: object, default: int) -> int:
@@ -66,14 +93,14 @@ class AsyncPostgresNamedProjectionStore:
             )
 
     @staticmethod
-    def _decode_payload(raw: Any) -> dict[str, Any]:
+    def _decode_payload(raw: object) -> ProjectionPayload:
         value = json.loads(raw) if isinstance(raw, str) else raw
         if not isinstance(value, dict):
             raise ValueError("named projection payload must decode to an object")
         return value
 
     @classmethod
-    def _row(cls, row: Any) -> dict[str, Any]:
+    def _row(cls, row: Sequence[object]) -> ProjectionPayload:
         return {
             "namespace": str(row[0]),
             "key": str(row[1]),
@@ -87,7 +114,7 @@ class AsyncPostgresNamedProjectionStore:
 
     async def get_named_projection(
         self, namespace: str, key: str
-    ) -> dict[str, Any] | None:
+    ) -> ProjectionPayload | None:
         import sqlalchemy as sa
 
         async with self.engine.connect() as conn:
@@ -107,7 +134,7 @@ class AsyncPostgresNamedProjectionStore:
             row = result.first()
         return None if row is None else self._row(row)
 
-    async def list_named_projections(self, namespace: str) -> list[dict[str, Any]]:
+    async def list_named_projections(self, namespace: str) -> list[ProjectionPayload]:
         import sqlalchemy as sa
 
         async with self.engine.connect() as conn:
@@ -132,7 +159,7 @@ class AsyncPostgresNamedProjectionStore:
         self,
         namespace: str,
         key: str,
-        payload: dict[str, Any],
+        payload: ProjectionPayload,
         *,
         expected_last_authoritative_seq: int | None,
         expected_last_materialized_seq: int | None,
@@ -155,7 +182,7 @@ class AsyncPostgresNamedProjectionStore:
         return await self.compare_and_swap_named_projections([update])
 
     async def compare_and_swap_named_projections(
-        self, updates: list[dict[str, Any]]
+        self, updates: list[ProjectionUpdate]
     ) -> bool:
         if not updates:
             return True
@@ -250,7 +277,7 @@ class AsyncSQLiteNamedProjectionStore:
     async SQLite driver.
     """
 
-    def __init__(self, metadata: Any) -> None:
+    def __init__(self, metadata: AsyncNamedProjectionMetadata) -> None:
         required = (
             "get_named_projection",
             "compare_and_swap_named_projection",
@@ -268,12 +295,12 @@ class AsyncSQLiteNamedProjectionStore:
 
     async def get_named_projection(
         self, namespace: str, key: str
-    ) -> dict[str, Any] | None:
+    ) -> ProjectionPayload | None:
         return await asyncio.to_thread(
             self.metadata.get_named_projection, namespace, key
         )
 
-    async def list_named_projections(self, namespace: str) -> list[dict[str, Any]]:
+    async def list_named_projections(self, namespace: str) -> list[ProjectionPayload]:
         return await asyncio.to_thread(
             self.metadata.list_named_projections, namespace
         )
@@ -282,7 +309,7 @@ class AsyncSQLiteNamedProjectionStore:
         self,
         namespace: str,
         key: str,
-        payload: dict[str, Any],
+        payload: ProjectionPayload,
         *,
         expected_last_authoritative_seq: int | None,
         expected_last_materialized_seq: int | None,
@@ -305,7 +332,7 @@ class AsyncSQLiteNamedProjectionStore:
         )
 
     async def compare_and_swap_named_projections(
-        self, updates: list[dict[str, Any]]
+        self, updates: list[ProjectionUpdate]
     ) -> bool:
         return await asyncio.to_thread(
             self.metadata.compare_and_swap_named_projections, updates
@@ -313,6 +340,9 @@ class AsyncSQLiteNamedProjectionStore:
 
 
 __all__ = [
+    "AsyncNamedProjectionMetadata",
     "AsyncPostgresNamedProjectionStore",
     "AsyncSQLiteNamedProjectionStore",
+    "ProjectionPayload",
+    "ProjectionUpdate",
 ]
