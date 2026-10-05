@@ -227,8 +227,11 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
         if inspect.iscoroutinefunction(fn):
             return cast(AsyncStepFn, fn)
 
-        async def _wrapped(ctx: StepContext):
-            return fn(ctx)
+        async def _wrapped(ctx: StepContext) -> StepRunResult:
+            result = fn(ctx)
+            if inspect.isawaitable(result):
+                return await result
+            return result
 
         return _wrapped
 
@@ -299,6 +302,7 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
             return parent_cancelled or child_cancelled
 
         token = _CANCEL_REQUESTED_CTX.set(_child_cancel_requested)
+        child_checkpoint: object | None = None
         try:
             load_terminal_result = getattr(
                 self._sync_runtime, "_terminal_run_result", None
@@ -351,7 +355,7 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
                         required=True,
                     )
             if terminal_result is not None:
-                child_result = terminal_result
+                child_result = cast(RunResult, terminal_result)
             elif child_checkpoint is not None:
                 child_result = await self.resume_from_latest_checkpoint(
                     run_id=plan["child_run_id"],
