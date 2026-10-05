@@ -34,14 +34,15 @@ Conventions:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Tuple
+from typing import TYPE_CHECKING, Callable, Dict, List, Tuple
 
 from .models import StepRunResult, WorkflowEdge, WorkflowState, get_route_next_names
+from .serialize import JsonValue
 
 if TYPE_CHECKING:
     from ..engine_core.engine import GraphKnowledgeEngine
 
-Json = Any
+Json = JsonValue
 State = Dict[str, Json]
 Result = Json
 

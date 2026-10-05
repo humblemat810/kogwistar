@@ -47,7 +47,7 @@ from kogwistar.runtime.budget import BudgetAttribution, StateBackedBudgetLedger
 from kogwistar.runtime.budget_adapters import adapt_budget_events
 
 from .design import validate_workflow_design, Predicate
-from .serialize import try_serialize_with_ref
+from .serialize import JsonValue, try_serialize_with_ref
 from .projections import (
     WORKFLOW_RUNTIME_PROJECTION_SCHEMA_VERSION,
     workflow_checkpoint_latest_projection_namespace,
@@ -254,7 +254,7 @@ def _iter_bits(mask: int):
 
 
 RunID = uuid.UUID | str
-Json = Any
+Json = JsonValue
 State = Dict[str, Json]
 # Result = Json
 
