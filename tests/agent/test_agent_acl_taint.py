@@ -63,6 +63,34 @@ def test_mutable_state_cannot_downgrade_acl() -> None:
     assert state["agent_model_output_acl"]["acl_mode"] == "private"
 
 
+def test_model_context_does_not_expose_acl_internals() -> None:
+    resolver = MappingStepResolver()
+    model = SequenceFakeModel([{"answer": "safe"}])
+    register_model_step(
+        resolver,
+        model,
+        prompt_acl_mode="public",
+        acl_policy="STRICT",
+    )
+    state = {"agent_prompt": "public question"}
+    result = resolver.resolve("agent.model_call")(
+        _ctx(
+            state,
+            authority_context={
+                "acl_inputs": [ACLInput("secret-source", "private", owner_id="u1")]
+            },
+        )
+    )
+
+    assert result.status == "success"
+    assert model.contexts
+    assert "acl" not in model.contexts[0]
+    assert all(
+        secret not in repr(model.contexts[0])
+        for secret in ("secret-source", "private", "STRICT")
+    )
+
+
 def test_tool_output_is_private_by_default_and_can_be_host_declared_public() -> None:
     resolver = MappingStepResolver()
     register_tool_step(

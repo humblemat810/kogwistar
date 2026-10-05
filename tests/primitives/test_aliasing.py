@@ -1,3 +1,5 @@
+from concurrent.futures import ThreadPoolExecutor
+
 import pytest
 import uuid
 
@@ -7,6 +9,7 @@ from kogwistar.engine_core.engine import (
     uuid_to_base62,
 )
 from kogwistar.engine_core.models import LLMGraphExtraction, Edge, Node
+from kogwistar.engine_core.utils import AliasKindMismatchError, UnknownAliasError
 from tests._kg_factories import kg_document, kg_grounding, kg_llm_grounding_payload
 
 
@@ -45,6 +48,52 @@ def test_alias_book_is_stable_and_delta_minimal():
     assert a1_edge0 == a2_edge0
     assert a1_node0.startswith("N")
     assert a1_edge0.startswith("E")
+
+
+def test_alias_book_separates_colliding_node_and_edge_ids():
+    book = AliasBook()
+
+    node_alias = book.alias_for_node("shared-id")
+    edge_alias = book.alias_for_edge("shared-id")
+
+    assert node_alias != edge_alias
+    assert book.resolve_node(node_alias) == "shared-id"
+    assert book.resolve_edge(edge_alias) == "shared-id"
+    with pytest.raises(AliasKindMismatchError):
+        book.resolve_node(edge_alias)
+    with pytest.raises(AliasKindMismatchError):
+        book.resolve_edge(node_alias)
+
+
+def test_alias_book_rejects_unknown_aliases_but_preserves_canonical_ids():
+    book = AliasBook()
+
+    assert book.resolve_node("canonical-node") == "canonical-node"
+    with pytest.raises(UnknownAliasError):
+        book.resolve_node("N999")
+    with pytest.raises(UnknownAliasError):
+        book.resolve_edge("E999")
+
+
+def test_alias_book_deterministic_projection_is_restart_stable():
+    first = AliasBook.deterministic(["node-b", "node-a"], ["edge-b", "edge-a"])
+    second = AliasBook.deterministic(["node-a", "node-b"], ["edge-a", "edge-b"])
+
+    assert first.alias_for_node("node-a") == second.alias_for_node("node-a") == "N1"
+    assert first.alias_for_node("node-b") == second.alias_for_node("node-b") == "N2"
+    assert first.alias_for_edge("edge-a") == second.alias_for_edge("edge-a") == "E1"
+    assert first.alias_for_edge("edge-b") == second.alias_for_edge("edge-b") == "E2"
+
+
+def test_alias_book_concurrent_assignment_keeps_one_alias_per_entity():
+    book = AliasBook()
+    ids = [f"node-{index}" for index in range(20)]
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        aliases = list(executor.map(book.alias_for_node, ids * 4))
+
+    assert len(set(aliases)) == len(ids)
+    assert {book.resolve_node(alias) for alias in aliases} == set(ids)
 
 
 @pytest.mark.parametrize(

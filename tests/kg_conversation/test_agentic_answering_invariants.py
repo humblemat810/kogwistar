@@ -330,3 +330,40 @@ def test_evidence_pack_digest_includes_edges_if_supported() -> None:
         evidence_pack_hash="h",
     )
     assert d.edge_ids == ["E1"]
+
+
+def test_agentic_prompt_aliases_restore_canonical_citations() -> None:
+    from kogwistar.conversation.agentic_answering import (
+        AnswerWithCitations,
+        _project_evidence_pack_for_prompt,
+        _restore_citation_node_ids,
+    )
+
+    pack = {
+        "nodes": [{"node_id": "canonical-node", "mentions": []}],
+        "edges": [{"id": "canonical-edge", "source_ids": ["canonical-node"]}],
+    }
+    book, projected = _project_evidence_pack_for_prompt(pack)
+
+    assert projected["nodes"][0]["node_id"] == "N1"
+    assert projected["edges"][0]["id"] == "E1"
+    assert projected["edges"][0]["source_ids"] == ["N1"]
+    assert pack["nodes"][0]["node_id"] == "canonical-node"
+
+    restored = _restore_citation_node_ids(
+        {
+            "text": "answer",
+            "reasoning": "grounded",
+            "claims": [
+                {
+                    "claim": "fact",
+                    "citations": [
+                        {"source_node_id": "N1", "mention_index": 0, "span_index": 0}
+                    ],
+                }
+            ],
+        },
+        model=AnswerWithCitations,
+        book=book,
+    )
+    assert restored["claims"][0]["citations"][0]["source_node_id"] == "canonical-node"

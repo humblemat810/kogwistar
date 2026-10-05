@@ -21,6 +21,7 @@ Design notes:
 from __future__ import annotations
 
 from dataclasses import dataclass
+import copy
 import hashlib
 import json
 import os
@@ -28,7 +29,7 @@ import re
 import time
 import base64
 
-from typing import Any, Callable, Optional, Sequence, Type, TypeVar
+from typing import Any, Callable, Mapping, Optional, Sequence, Type, TypeVar
 
 from pydantic import BaseModel, Field
 from kogwistar.llm_tasks import (
@@ -59,6 +60,7 @@ from ..engine_core.models import (
 from ..runtime.models import StepRunResult
 from ..utils.cache_paths import joblib_cache_path
 from ..utils.embedding_vectors import normalize_embedding_vector
+from ..engine_core.utils import AliasBook
 from kogwistar.logical_refs import (
     LogicalRef,
     build_reference_edge_payload,
@@ -66,6 +68,63 @@ from kogwistar.logical_refs import (
 )
 
 BaseM = TypeVar("BaseM", bound=BaseModel)
+
+
+def _project_evidence_pack_for_prompt(
+    evidence_pack: dict[str, Any],
+) -> tuple[AliasBook, dict[str, Any]]:
+    """Return a request-local prompt copy with graph IDs replaced by aliases.
+
+    Source documents, revisions, excerpts, and span indices are deliberately
+    left untouched.  They are evidence coordinates, not graph references, and
+    must remain available for host-side citation validation.
+    """
+    pack = copy.deepcopy(evidence_pack)
+    node_ids = [
+        str(item.get("node_id"))
+        for item in pack.get("nodes", []) or []
+        if isinstance(item, dict) and item.get("node_id")
+    ]
+    edge_ids = [
+        str(item.get("id"))
+        for item in pack.get("edges", []) or []
+        if isinstance(item, dict) and item.get("id")
+    ]
+    book = AliasBook.deterministic(node_ids, edge_ids)
+    for item in pack.get("nodes", []) or []:
+        if isinstance(item, dict) and item.get("node_id"):
+            item["node_id"] = book.alias_for_node(str(item["node_id"]))
+    for item in pack.get("edges", []) or []:
+        if not isinstance(item, dict):
+            continue
+        if item.get("id"):
+            item["id"] = book.alias_for_edge(str(item["id"]))
+        for key in ("source_ids", "target_ids", "source_node_id", "target_node_id"):
+            values = item.get(key)
+            if isinstance(values, list):
+                item[key] = [book.alias_for_node(str(value)) for value in values]
+            elif values:
+                item[key] = book.alias_for_node(str(values))
+        for key in ("source_edge_ids", "target_edge_ids"):
+            values = item.get(key)
+            if isinstance(values, list):
+                item[key] = [book.alias_for_edge(str(value)) for value in values]
+            elif values:
+                item[key] = book.alias_for_edge(str(values))
+    return book, pack
+
+
+def _restore_citation_node_ids(
+    payload: Mapping[str, Any], *, model: Type[BaseM], book: AliasBook
+) -> dict[str, Any]:
+    """Expand provider citation aliases before any host-side validation/storage."""
+    restored = model.model_validate(payload).model_dump(mode="python")
+    for claim in restored.get("claims", []) or []:
+        for citation in claim.get("citations", []) or []:
+            citation["source_node_id"] = book.resolve_node(
+                str(citation["source_node_id"])
+            )
+    return model.model_validate(restored).model_dump(mode="python")
 
 
 def _stable_json(obj: Any) -> str:
@@ -941,8 +1000,36 @@ class AgenticAnsweringAgent:
         self, *, system_prompt: str, question: str, candidates: Sequence[dict[str, Any]]
     ) -> dict:
         _ = system_prompt
-        sel = self._select_used_evidence_bm25(question=question, candidates=candidates)
-        return sel.model_dump()
+        projected = copy.deepcopy(list(candidates))
+        node_ids = [
+            str(item.get("node_id") or item.get("id"))
+            for item in projected
+            if isinstance(item, dict) and (item.get("node_id") or item.get("id"))
+        ]
+        edge_ids = [
+            str(item["edge_id"])
+            for item in projected
+            if isinstance(item, dict) and item.get("edge_id")
+        ]
+        book = AliasBook.deterministic(node_ids, edge_ids)
+        for item in projected:
+            if not isinstance(item, dict):
+                continue
+            if item.get("node_id"):
+                item["node_id"] = book.alias_for_node(str(item["node_id"]))
+            if item.get("id") and not item.get("node_id"):
+                item["id"] = book.alias_for_node(str(item["id"]))
+            if item.get("edge_id"):
+                item["edge_id"] = book.alias_for_edge(str(item["edge_id"]))
+        sel = self._select_used_evidence_bm25(question=question, candidates=projected)
+        restored = sel.model_dump()
+        restored["used_node_ids"] = [
+            book.resolve_node(str(item)) for item in restored["used_node_ids"]
+        ]
+        restored["used_edge_ids"] = [
+            book.resolve_edge(str(item)) for item in restored["used_edge_ids"]
+        ]
+        return restored
 
     def _select_used_evidence_bm25(
         self, *, question: str, candidates: Sequence[dict[str, Any]]
@@ -1168,9 +1255,10 @@ class AgenticAnsweringAgent:
         out_model: Type[BaseM] = AnswerWithCitations,
     ):
         """Ask the LLM to answer AND cite exact mention/span indices from the provided evidence pack."""
+        alias_book, prompt_pack = _project_evidence_pack_for_prompt(evidence_pack)
         # Build a compact, indexable embedding for the LLM
         lines: list[str] = []
-        for n in evidence_pack.get("nodes", []):
+        for n in prompt_pack.get("nodes", []):
             nid = n["node_id"]
             lines.append(f"NODE {nid} | {n.get('label', '')}")
             for mi, m in enumerate(n.get("mentions") or []):
@@ -1180,7 +1268,7 @@ class AgenticAnsweringAgent:
                         ex = ex[:240]
                     lines.append(f"  M{mi} S{si}: {ex}")
         # Add compact edge hints (structure preserved by projected endpoints; no citations required for edges)
-        for e in evidence_pack.get("edges", []) or []:
+        for e in prompt_pack.get("edges", []) or []:
             eid = e.get("id")
             rel = e.get("relation") or "related"
             summ = (e.get("summary") or "").replace("\n", r" \ ").strip()
@@ -1213,7 +1301,9 @@ class AgenticAnsweringAgent:
                 )
                 continue
             parsed: BaseM = out_model.model_validate(res.answer_payload)
-            return parsed.model_dump()
+            return _restore_citation_node_ids(
+                parsed.model_dump(mode="python"), model=out_model, book=alias_book
+            )
         raise Exception(f"retry too many errors parsing: {last_err}")
 
     @staticmethod
@@ -1266,9 +1356,11 @@ class AgenticAnsweringAgent:
         if not bad:
             return answer_validated.model_dump()
 
-        # Build evidence text again (same format as generation).
+        # Build evidence text again (same format as generation), using aliases
+        # only for the repair model. Validation above remains canonical.
+        alias_book, prompt_pack = _project_evidence_pack_for_prompt(evidence_pack)
         lines: list[str] = []
-        for n in evidence_pack.get("nodes", []) or []:
+        for n in prompt_pack.get("nodes", []) or []:
             nid = str(n.get("node_id") or "")
             if not nid:
                 continue
@@ -1280,7 +1372,7 @@ class AgenticAnsweringAgent:
                         ex = ex[:240]
                     lines.append(f"  M{mi} S{si}: {ex}")
 
-        for e in evidence_pack.get("edges", []) or []:
+        for e in prompt_pack.get("edges", []) or []:
             eid = str(e.get("id") or "")
             if not eid:
                 continue
@@ -1312,7 +1404,11 @@ class AgenticAnsweringAgent:
                 continue
             repaired = AnswerWithCitations.model_validate(parsed)
             # If still bad, return repaired anyway (best effort) to avoid looping.
-            return repaired.model_dump()
+            return _restore_citation_node_ids(
+                repaired.model_dump(mode="python"),
+                model=answer_in_model,
+                book=alias_book,
+            )
 
         # If repair cannot parse, fall back to the original (but mark citations empty).
         stripped = answer_validated.model_copy(deep=True)
