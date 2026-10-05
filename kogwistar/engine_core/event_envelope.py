@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from typing import Any, Mapping
+from collections.abc import Mapping
 
 
 @dataclass(frozen=True, slots=True)
@@ -19,11 +19,11 @@ class EntityEventEnvelope:
     payload_json: str
     created_at: int
 
-    def as_dict(self) -> dict[str, Any]:
+    def as_dict(self) -> dict[str, object]:
         return asdict(self)
 
     @classmethod
-    def from_mapping(cls, value: Mapping[str, Any]) -> "EntityEventEnvelope":
+    def from_mapping(cls, value: Mapping[str, object]) -> "EntityEventEnvelope":
         return cls(
             namespace=str(value["namespace"]),
             seq=int(value["seq"]),
