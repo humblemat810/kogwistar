@@ -2,13 +2,26 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Protocol
 
 
-def edge_endpoint_rows(edge: Any) -> list[dict[str, Any]]:
+class EdgeEndpointLike(Protocol):
+    """Structural edge surface required by endpoint projection adapters."""
+
+    source_ids: list[str] | None
+    target_ids: list[str] | None
+    source_edge_ids: list[str] | None
+    target_edge_ids: list[str] | None
+    doc_id: str | None
+    relation: str | None
+
+    def safe_get_id(self) -> str: ...
+
+
+def edge_endpoint_rows(edge: EdgeEndpointLike) -> list[dict[str, object]]:
     """Return deterministic, non-semantic endpoint rows for an edge."""
     edge_id = str(edge.safe_get_id())
-    rows: list[dict[str, Any]] = []
+    rows: list[dict[str, object]] = []
     for role, endpoint_ids, endpoint_type in (
         ("src", edge.source_ids or [], "node"),
         ("tgt", edge.target_ids or [], "node"),
@@ -31,4 +44,4 @@ def edge_endpoint_rows(edge: Any) -> list[dict[str, Any]]:
     ]
 
 
-__all__ = ["edge_endpoint_rows"]
+__all__ = ["EdgeEndpointLike", "edge_endpoint_rows"]
