@@ -227,7 +227,7 @@ _PROVIDERS: dict[str, type[EmbeddingFunctionLike]] = {
 def get_embedding_function(
     provider: str | None = None,
     model: str | None = None,
-    **kwargs,
+    **kwargs: object,
 ) -> EmbeddingFunctionLike:
     """
     Create an EmbeddingFunction based on env vars or explicit args.
@@ -266,7 +266,7 @@ def get_embedding_function(
             f"Available: {', '.join(_PROVIDERS)}"
         )
 
-    init_kwargs: dict[str, Any] = {**kwargs}
+    init_kwargs: dict[str, object] = {**kwargs}
     if model:
         init_kwargs["model_name"] = model
 
