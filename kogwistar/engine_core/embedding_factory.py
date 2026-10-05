@@ -17,25 +17,22 @@ import logging
 import os
 import importlib
 import math
-from typing import Any, Sequence, cast
+from typing import Any, Protocol, Sequence, cast
 
 from ..utils.embedding_vectors import normalize_embedding_vector
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# ChromaDB type imports (graceful fallback when chromadb absent)
-# ---------------------------------------------------------------------------
-try:
-    from chromadb.api.types import EmbeddingFunction, Embeddings  # type: ignore
-except Exception:
+Embeddings = list[list[float]]
 
-    class EmbeddingFunction:  # type: ignore[no-redef]
-        @staticmethod
-        def name() -> str:
-            return "default"
 
-    Embeddings = list[list[float]]  # type: ignore[assignment]
+class EmbeddingFunctionLike(Protocol):
+    """Provider-neutral Chroma-compatible embedding function surface."""
+
+    @staticmethod
+    def name() -> str: ...
+
+    def __call__(self, documents_or_texts: Sequence[str]) -> Embeddings: ...
 
 # ---------------------------------------------------------------------------
 # Shared normalisation helper
@@ -75,7 +72,7 @@ def _looks_like_test_env() -> bool:
     return False
 
 
-class _ConstantTestEmbeddingFunction(EmbeddingFunction):
+class _ConstantTestEmbeddingFunction(EmbeddingFunctionLike):
     @staticmethod
     def name() -> str:
         return "constant_test"
@@ -97,7 +94,7 @@ class _ConstantTestEmbeddingFunction(EmbeddingFunction):
 # ---------------------------------------------------------------------------
 
 
-class OllamaEmbeddingFunction(EmbeddingFunction):
+class OllamaEmbeddingFunction(EmbeddingFunctionLike):
     """Ollama-backed embeddings (default). Reads OLLAMA_HOST for endpoint."""
 
     @staticmethod
@@ -108,7 +105,7 @@ class OllamaEmbeddingFunction(EmbeddingFunction):
         self.model_name = model_name
 
     def __call__(self, documents_or_texts: Sequence[str]) -> Embeddings:
-        import ollama  # deferred so absence doesn't crash other providers
+        import ollama  # pyright: ignore[reportMissingImports]
 
         raw: list[list[float]] = []
         for p in documents_or_texts:
@@ -118,7 +115,7 @@ class OllamaEmbeddingFunction(EmbeddingFunction):
         return _l2_normalize(raw)
 
 
-class OpenAIEmbeddingFunction(EmbeddingFunction):
+class OpenAIEmbeddingFunction(EmbeddingFunctionLike):
     """OpenAI API embeddings."""
 
     @staticmethod
@@ -146,7 +143,7 @@ class OpenAIEmbeddingFunction(EmbeddingFunction):
         return _l2_normalize(raw)
 
 
-class AzureEmbeddingFunction(EmbeddingFunction):
+class AzureEmbeddingFunction(EmbeddingFunctionLike):
     """Azure OpenAI embeddings."""
 
     @staticmethod
@@ -175,7 +172,7 @@ class AzureEmbeddingFunction(EmbeddingFunction):
         client = openai.AzureOpenAI(
             api_key=self.api_key,
             api_version=self.api_version,
-            azure_endpoint=self.endpoint,
+            azure_endpoint=cast(str, self.endpoint),
         )
         resp = client.embeddings.create(
             input=list(documents_or_texts), model=self.model_name
@@ -184,7 +181,7 @@ class AzureEmbeddingFunction(EmbeddingFunction):
         return _l2_normalize(raw)
 
 
-class GoogleEmbeddingFunction(EmbeddingFunction):
+class GoogleEmbeddingFunction(EmbeddingFunctionLike):
     """Google Generative AI embeddings."""
 
     @staticmethod
@@ -202,7 +199,7 @@ class GoogleEmbeddingFunction(EmbeddingFunction):
             )
 
     def __call__(self, documents_or_texts: Sequence[str]) -> Embeddings:
-        import google.generativeai as genai
+        import google.generativeai as genai  # pyright: ignore[reportMissingImports]
 
         genai.configure(api_key=self.api_key)
         raw: list[list[float]] = []
@@ -219,7 +216,7 @@ class GoogleEmbeddingFunction(EmbeddingFunction):
 # Factory
 # ---------------------------------------------------------------------------
 
-_PROVIDERS = {
+_PROVIDERS: dict[str, type[EmbeddingFunctionLike]] = {
     "ollama": OllamaEmbeddingFunction,
     "openai": OpenAIEmbeddingFunction,
     "azure": AzureEmbeddingFunction,
@@ -231,7 +228,7 @@ def get_embedding_function(
     provider: str | None = None,
     model: str | None = None,
     **kwargs,
-) -> EmbeddingFunction:
+) -> EmbeddingFunctionLike:
     """
     Create an EmbeddingFunction based on env vars or explicit args.
 
@@ -255,7 +252,7 @@ def get_embedding_function(
             raise ValueError(
                 "KOGWISTAR_TEST_EMBEDDING_FUNCTION_IMPORT target is not callable"
             )
-        return target()
+        return cast(EmbeddingFunctionLike, target())
     if _looks_like_test_env():
         dim = int(os.getenv("KOGWISTAR_TEST_EMBEDDING_DIM") or "8")
         return _ConstantTestEmbeddingFunction(dim=dim)
