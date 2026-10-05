@@ -28,6 +28,8 @@ from kogwistar.engine_core.sqlite_context import sqlite_execution_bound
 from .runtime import (
     LaneMessageEventSinkLike,
     LaneMessageSenderLike,
+    EventEmitter,
+    EventSink,
     RunResult,
     StepContext,
     WorkflowRuntime as ThreadedWorkflowRuntime,
@@ -58,12 +60,18 @@ class AsyncStepResolver(Protocol):
     def __call__(self, op: str) -> AsyncCompatibleStepFn: ...
 
 
+class SyncCompatibleStepResolver(Protocol):
+    """Resolver surface accepted by the sync adapter."""
+
+    def __call__(self, op: str) -> AsyncCompatibleStepFn: ...
+
+
 _CANCEL_REQUESTED_CTX: contextvars.ContextVar[Callable[[str], bool] | None] = (
     contextvars.ContextVar("kogwistar_async_cancel_requested", default=None)
 )
 
 
-def _as_sync_step_fn(fn: Callable[[StepContext], Any]) -> SyncStepFn:
+def _as_sync_step_fn(fn: AsyncCompatibleStepFn) -> SyncStepFn:
     """Adapt step handler to sync callable expected by WorkflowRuntime.
 
     If handler returns an awaitable, execute it on a short-lived event loop in
@@ -90,7 +98,7 @@ class _SyncResolverAdapter:
     resolver and only adapts the call result shape (awaitable -> concrete).
     """
 
-    def __init__(self, resolver: Any):
+    def __init__(self, resolver: SyncCompatibleStepResolver):
         self._resolver = resolver
         self.nested_ops = getattr(resolver, "nested_ops", set())
         self._state_schema = getattr(resolver, "_state_schema", {})
@@ -118,8 +126,8 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
         max_workers: int = 4,
         transaction_mode: str | None = None,
         trace: bool = True,
-        events: Any | None = None,
-        sink: Any | None = None,
+        events: EventEmitter | None = None,
+        sink: EventSink | None = None,
         cancel_requested: Callable[[str], bool] | None = None,
         lane_message_sender: LaneMessageSenderLike | None = None,
         lane_message_event_sink: LaneMessageEventSinkLike | None = None,
