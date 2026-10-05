@@ -148,7 +148,7 @@ class AsyncTwoStageProjectionAdapter(Protocol):
 
 
 def get_async_two_stage_projection_adapter(
-    backend: Any,
+    backend: object,
 ) -> AsyncTwoStageProjectionAdapter | None:
     """Return only an executable async arrangement; never bridge sync calls."""
 
@@ -176,7 +176,7 @@ def get_async_two_stage_projection_adapter(
     return None
 
 
-def get_two_stage_projection_capability(backend: Any) -> TwoStageProjectionCapability:
+def get_two_stage_projection_capability(backend: object) -> TwoStageProjectionCapability:
     """Read an optional backend declaration without widening StorageBackend."""
 
     declared = getattr(backend, "two_stage_projection_capability", None)
@@ -187,7 +187,7 @@ def get_two_stage_projection_capability(backend: Any) -> TwoStageProjectionCapab
     return TwoStageProjectionCapability()
 
 
-def get_atomic_mutation_capability(backend: Any) -> AtomicMutationCapability:
+def get_atomic_mutation_capability(backend: object) -> AtomicMutationCapability:
     """Read the optional generic mutation capability from a backend."""
 
     # The synchronous engine.uow() surface is deliberately a no-op for async
@@ -206,7 +206,7 @@ def get_atomic_mutation_capability(backend: Any) -> AtomicMutationCapability:
     return AtomicMutationCapability()
 
 
-def get_two_stage_projection_adapter(backend: Any) -> TwoStageProjectionAdapter | None:
+def get_two_stage_projection_adapter(backend: object) -> TwoStageProjectionAdapter | None:
     """Read an optional executable arrangement without widening StorageBackend."""
     adapter = getattr(backend, "two_stage_projection_adapter", None)
     if callable(adapter) and not hasattr(adapter, "add_node"):
