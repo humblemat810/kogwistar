@@ -1,4 +1,4 @@
-from typing import Any, ClassVar, Literal, Optional, TypeAlias
+from typing import ClassVar, Literal, Optional, TypeAlias
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from ..engine_core.models import Edge, Node
@@ -179,7 +179,7 @@ class WorkflowInvocationRequest(BaseModel):
     """Request to execute another workflow from a step result."""
 
     workflow_id: str
-    initial_state: dict[str, Any] = Field(default_factory=dict)
+    initial_state: dict[str, object] = Field(default_factory=dict)
     result_state_key: str | None = None
     run_id: str | None = None
     invocation_key: str | None = None
@@ -208,18 +208,18 @@ class WorkflowInvocationRequest(BaseModel):
 # closed TypedDict here would make the public runtime contract falsely reject
 # valid state at type-check time.  Persisted conversation state keeps its
 # narrower structural TypedDict in ``conversation_state_contracts``.
-WorkflowState: TypeAlias = dict[str, Any]
+WorkflowState: TypeAlias = dict[str, object]
 
 
-StateOverwriteUpdate: TypeAlias = tuple[Literal["u"], dict[str, Any]]
-StateAppendUpdate: TypeAlias = tuple[Literal["a"], dict[str, Any]]
-StateExtendUpdate: TypeAlias = tuple[Literal["e"], dict[str, Any]]
+StateOverwriteUpdate: TypeAlias = tuple[Literal["u"], dict[str, object]]
+StateAppendUpdate: TypeAlias = tuple[Literal["a"], dict[str, object]]
+StateExtendUpdate: TypeAlias = tuple[Literal["e"], dict[str, object]]
 StateUpdate: TypeAlias = (
     StateOverwriteUpdate | StateAppendUpdate | StateExtendUpdate
 )
 
 
-def get_route_next_names(result: Any) -> list[str]:
+def get_route_next_names(result: object) -> list[str]:
     try:
         route_names = getattr(result, "_route_next")
     except Exception:
@@ -232,7 +232,7 @@ def get_route_next_names(result: Any) -> list[str]:
 class RunFailure(BaseModel):
     conversation_node_id: Optional[str] = None
     state_update: list[StateUpdate]  # can still update, append an error message
-    update: dict[str, Any] | None = None
+    update: dict[str, object] | None = None
     errors: list[str]
     next_step_names: list[str] = Field(default_factory=list, alias="_route_next")
     status: Literal["failure"] = "failure"
@@ -247,7 +247,7 @@ class RunFailure(BaseModel):
 class RunSuspended(BaseModel):
     conversation_node_id: Optional[str] = None
     state_update: list[StateUpdate] = Field(default_factory=list)
-    update: dict[str, Any] | None = None
+    update: dict[str, object] | None = None
     next_step_names: list[str] = Field(default_factory=list, alias="_route_next")
     status: Literal["suspended"] = "suspended"
     wait_reason: str | None = None
@@ -260,7 +260,7 @@ class RunSuspended(BaseModel):
     #   "errors": ["..."],
     #   "repair_payload": {...},
     # }
-    resume_payload: dict[str, Any] = Field(default_factory=dict)
+    resume_payload: dict[str, object] = Field(default_factory=dict)
 
     model_config = ConfigDict(populate_by_name=True, extra="allow")
 
@@ -278,7 +278,7 @@ class RunSuccess(BaseModel):
     # Optional native update dict (schema-driven). This does NOT replace state_update.
     # When present, WorkflowRuntime.run() applies it using state_schema and then
     # falls back unknown keys into DSL ('u') overwrite semantics.
-    update: dict[str, Any] | None = None
+    update: dict[str, object] | None = None
     next_step_names: list[str] = Field(default_factory=list, alias="_route_next")
     workflow_invocations: list[WorkflowInvocationRequest] = Field(default_factory=list)
     status: Literal["success"] = "success"

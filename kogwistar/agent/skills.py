@@ -9,7 +9,7 @@ import shlex
 import copy
 import asyncio
 from collections.abc import Mapping
-from typing import Any, Callable, Literal, Protocol, runtime_checkable
+from typing import Any, Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -28,7 +28,11 @@ SkillStepKind = Literal[
     "nested_workflow",
     "check",
 ]
-SkillProjectionAcl = Callable[["SkillGraphArtifact", str], bool]
+
+class SkillProjectionAcl(Protocol):
+    """Authorize one skill projection artifact for a principal."""
+
+    def __call__(self, artifact: "SkillGraphArtifact", principal: str, /) -> bool: ...
 
 _SAFE_COMMAND_CHARS = re.compile(r"[;&|<>`$]|\n")
 _SHELL_WRAPPERS = {"sh", "bash", "zsh", "fish", "cmd", "cmd.exe", "powershell", "pwsh"}
@@ -982,7 +986,10 @@ class DurableSkillCatalogMaterializer:
                 )
         for logical_id in catalog_keys:
             pointer_key = self.catalog._pointer_key(logical_id)
-            pointer = self.catalog._metadata.get_named_projection(
+            metadata = self.catalog._metadata
+            if metadata is None:
+                raise RuntimeError("catalog metadata is not configured")
+            pointer = metadata.get_named_projection(
                 self.catalog._projection_namespace, pointer_key
             )
             if pointer is not None:
@@ -1091,8 +1098,8 @@ class _AsyncProjectionSnapshot:
                     return False
             elif (
                 current is None
-                or int(current.get("last_authoritative_seq", 0)) != int(expected_a)
-                or int(current.get("last_materialized_seq", 0)) != int(expected_m)
+                or int(current.get("last_authoritative_seq", 0)) != int(expected_a or 0)
+                or int(current.get("last_materialized_seq", 0)) != int(expected_m or 0)
             ):
                 return False
         for item in updates:

@@ -5,14 +5,17 @@ from __future__ import annotations
 import copy
 import inspect
 import threading
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Mapping
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Literal, Protocol
 
 
 HookFailureMode = Literal["fail_open", "fail_closed"]
 HookEffect = Literal["observe", "annotate"]
-HookCallback = Callable[[Mapping[str, Any]], Any]
+class HookCallback(Protocol):
+    """Observe or annotate one bounded hook payload."""
+
+    def __call__(self, payload: Mapping[str, Any], /) -> object: ...
 
 
 @dataclass(frozen=True, slots=True)

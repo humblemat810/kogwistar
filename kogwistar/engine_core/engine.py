@@ -101,7 +101,7 @@ try:
     from typing import Self, TypeAlias
 except ImportError:  # pragma: no cover - py<3.11 compatibility
     from typing_extensions import TypeAlias
-from ..typing_interfaces import EmbeddingFunctionLike
+from ..typing_interfaces import EmbeddingFunctionLike, ReadLike, WriteLike
 from ..graph_query import GraphQuery
 from kogwistar.extraction import BaseDocValidator
 from .models import (
@@ -142,6 +142,7 @@ from typing import (
     Iterable,
     Sequence,
     Literal,
+    Protocol,
     Type,
     Union,
 )
@@ -163,6 +164,12 @@ except Exception:
 
 PageLike = Union[str, Dict[str, Any]]
 NodeOrEdge: TypeAlias = Node | Edge
+
+
+class StorageBackendFactory(Protocol):
+    """Build the backend bound to one graph engine instance."""
+
+    def __call__(self, engine: "GraphKnowledgeEngine", /) -> StorageBackend: ...
 
 if TYPE_CHECKING:
     from .engine_sqlite import EngineSQLite
@@ -248,9 +255,6 @@ def _merge_meta(base_meta: dict | None, patch: dict) -> dict:
     base_meta = base_meta or {}
     # flat merge
     return {**base_meta, **patch}
-
-
-F = TypeVar("F", bound=Callable[..., Any])
 
 
 def _strip_none(d: dict) -> dict:
@@ -488,7 +492,7 @@ _SUBSYSTEMS_WITH_E = (
 
 
 @contextmanager
-def scoped_namespace(engine: Any, namespace: str):
+def scoped_namespace(engine: GraphKnowledgeEngine, namespace: str):
     """Temporarily scope a graph engine to a namespace without mutating it."""
     proxy = _NamespacedEngineProxy(engine, namespace)
     rebindings: list[tuple[Any, str, Any]] = []
@@ -777,7 +781,7 @@ class GraphKnowledgeEngine:
             **kwargs,
         )
 
-    def search_nodes_as_of_scored(self, **kwargs) -> list[VectorSearchHit]:
+    def search_nodes_as_of_scored(self, **kwargs: Any) -> list[VectorSearchHit[Node]]:
         return self.read.search_nodes_as_of_scored(**kwargs)
 
     def query_edges(
@@ -1264,7 +1268,7 @@ class GraphKnowledgeEngine:
         kg_graph_type: EngineType = "knowledge",
         debug_dir: pathlib.Path | None = None,
         backend: str | StorageBackend | None = None,
-        backend_factory: Callable[[Self], StorageBackend] | None = None,
+        backend_factory: StorageBackendFactory | None = None,
         namespace: str = "default",
         extraction_schema_mode: ExtractionSchemaMode = "auto",
         offset_repair_scorer: OffsetRepairScorer | None = None,
@@ -1373,7 +1377,9 @@ class GraphKnowledgeEngine:
         ] = []
         ef = embedding_function or get_embedding_function()
         self.embedding_length_limit = 512
-        self._ef: EmbeddingFunctionLike = ef  # embedding_function or ef #embedding_functions.DefaultEmbeddingFunction()
+        # Third-party embedding functions are runtime-compatible, but their
+        # stubs often expose a narrower concrete protocol than our adapter.
+        self._ef: EmbeddingFunctionLike = cast(EmbeddingFunctionLike, ef)
         self.acl_graph = getattr(self, "acl_graph", ACLGraph())
 
         # Keep a 1-string convenience to reuse in cosine checks
@@ -1778,8 +1784,12 @@ class GraphKnowledgeEngine:
 
             from functools import partial
 
+            name_fn = getattr(self._ef, "name", None)
+            model_name = str(
+                name_fn() if callable(name_fn) else type(self._ef).__name__
+            )
             cached_embed = partial(
-                cached(self.embedding_cache, cached_embed), model_name=self._ef.name()
+                cached(self.embedding_cache, cached_embed), model_name=model_name
             )
             # MethodType
             # a.foo = MethodType(foo, a)
@@ -1788,14 +1798,16 @@ class GraphKnowledgeEngine:
         # Namespaced subsystem APIs (new source-of-truth surface).
         self.raw_read = ReadSubsystem(self)
         self.raw_write = WriteSubsystem(self)
-        self.read = self.raw_read
-        self.write = self.raw_write
+        # Keep the facade contract stable while allowing ACL-aware adapters to
+        # wrap the concrete subsystem implementations below.
+        self.read: ReadLike = cast(ReadLike, self.raw_read)
+        self.write: WriteLike = cast(WriteLike, self.raw_write)
 
         self.extract = ExtractSubsystem(self)
         self.acl = ACLSubsystem(self)
         if self.acl_enabled:
-            self.read = ACLAwareReadSubsystem(self, self.raw_read)
-            self.write = ACLAwareWriteSubsystem(self, self.raw_write)
+            self.read = cast(ReadLike, ACLAwareReadSubsystem(self, self.raw_read))
+            self.write = cast(WriteLike, ACLAwareWriteSubsystem(self, self.raw_write))
             require_acl_protocols(policy=self.acl, read=self.read, write=self.write)
         self.persist = PersistSubsystem(self)
         self.rollback = RollbackSubsystem(self)
@@ -1901,7 +1913,7 @@ class GraphKnowledgeEngine:
         if self._oplog:
             self._oplog.append(ev)
 
-    def iterative_defensive_emb(self, emb_text0):
+    def iterative_defensive_emb(self, emb_text0: str) -> list[float]:
         return self.embed.iterative_defensive_emb(emb_text0)
 
     # ... existing methods ...
@@ -2028,7 +2040,7 @@ class GraphKnowledgeEngine:
         return self.collection_lock[collection_name]
 
     @engine_context
-    def add_node(self, node: Node, doc_id: Optional[str] = None):
+    def add_node(self, node: Node, doc_id: Optional[str] = None) -> None:
         return self.write.add_node(node, doc_id=doc_id)
 
     def _fanout_endpoints_rows(self, edge: Edge, doc_id: str | None):
@@ -2038,22 +2050,22 @@ class GraphKnowledgeEngine:
         return self.write.enrich_edge_meta(edge)
 
     @engine_context
-    def add_edge(self, edge: Edge, doc_id: Optional[str] = None):
+    def add_edge(self, edge: Edge, doc_id: Optional[str] = None) -> None:
         return self.write.add_edge(edge, doc_id=doc_id)
 
-    async def async_add_node(self, node: Node, doc_id: Optional[str] = None):
+    async def async_add_node(self, node: Node, doc_id: Optional[str] = None) -> None:
         """Use the async projection arrangement without sync IO fallback."""
         return await self.write.add_node_async(node, doc_id=doc_id)
 
-    async def async_add_edge(self, edge: Edge, doc_id: Optional[str] = None):
+    async def async_add_edge(self, edge: Edge, doc_id: Optional[str] = None) -> None:
         """Use the async projection arrangement without sync IO fallback."""
         return await self.write.add_edge_async(edge, doc_id=doc_id)
 
     @engine_context
-    def add_document(self, document: Document):
+    def add_document(self, document: Document) -> None:
         return self.write.add_document(document)
 
-    def add_domain(self, domain: Domain):
+    def add_domain(self, domain: Domain) -> None:
         return self.write.add_domain(domain)
 
     def _index_node_docs(self, node: Node) -> list[str]:
@@ -2134,7 +2146,9 @@ class GraphKnowledgeEngine:
     ) -> tuple[bool, Edge | None]:
         return self.adjudicate.rebalance_same_as_edge(e, removed_node_id)
 
-    def persist_graph(self, *, parsed: PureGraph, session_id: str, mode=None):
+    def persist_graph(
+        self, *, parsed: PureGraph, session_id: str, mode: str | None = None
+    ) -> dict[str, object]:
         return self.persist.persist_graph(
             parsed=parsed,
             session_id=session_id,
@@ -2147,8 +2161,8 @@ class GraphKnowledgeEngine:
         document: Document,
         parsed: LLMGraphExtraction,
         mode: str = "append",  # "replace" | "append" | "skip-if-exists"
-        assign_real_id_in_place=True,
-    ) -> dict:
+        assign_real_id_in_place: bool = True,
+    ) -> dict[str, object]:
         return self.persist.persist_graph_extraction(
             document=document,
             parsed=parsed,
@@ -2206,10 +2220,10 @@ class GraphKnowledgeEngine:
     def persist_document_graph_extraction(
         self,
         *,
-        doc_id,
+        doc_id: str,
         parsed: GraphExtractionWithIDs | LLMGraphExtraction,
         mode: str = "append",  # "replace" | "append" | "skip-if-exists"
-    ) -> dict:
+    ) -> dict[str, object]:
         return self.persist.persist_document_graph_extraction(
             doc_id=doc_id,
             parsed=parsed,

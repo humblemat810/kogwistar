@@ -4,7 +4,7 @@ import copy
 import logging
 import warnings
 from collections.abc import Mapping
-from typing import Any
+from typing import TYPE_CHECKING, Any, TypeAlias
 
 from .._rust_bridge import (
     RustParityError,
@@ -20,6 +20,25 @@ from .budget import StateBackedBudgetLedger
 from .models import StateUpdate, WorkflowDesignArtifact, WorkflowInvocationRequest, WorkflowState
 from .routing import RouteComputation, compute_route_next
 
+if TYPE_CHECKING:
+    from ..engine_core.engine import GraphKnowledgeEngine
+    from .runtime import StepResolver
+
+
+RuntimePayload: TypeAlias = dict[str, object]
+StateSchema: TypeAlias = dict[str, str]
+RuntimeStateUpdate: TypeAlias = list[tuple[str, dict[str, object]]] | list[StateUpdate]
+
+
+class RuntimeContractError(RuntimeError):
+    """Raised when a workflow runtime contract is violated."""
+
+    code: str
+
+    def __init__(self, message: str, *, code: str) -> None:
+        super().__init__(message)
+        self.code = code
+
 RESERVED_ROOT_KEYS = {
     "_deps",
     "_rt_join",
@@ -34,10 +53,10 @@ NON_CHECKPOINT_STATE_KEYS = {
 
 def _native_state_update_payload(
     state: WorkflowState,
-    state_update: list[tuple[str, dict[str, Any]]] | list[StateUpdate],
-    update: dict | None,
-    state_schema: dict[str, Any] | None,
-) -> dict[str, Any]:
+    state_update: RuntimeStateUpdate,
+    update: RuntimePayload | None,
+    state_schema: StateSchema | None,
+) -> RuntimePayload:
     """JSON transport form; state-update pairs are tuples in public Python API."""
     return {
         "state": copy.deepcopy(state),
@@ -49,9 +68,9 @@ def _native_state_update_payload(
 
 def _native_state_update_safe(
     state: WorkflowState,
-    state_update: list[tuple[str, dict[str, Any]]] | list[StateUpdate],
-    update: dict | None,
-    state_schema: dict[str, Any] | None,
+    state_update: RuntimeStateUpdate,
+    update: RuntimePayload | None,
+    state_schema: StateSchema | None,
 ) -> bool:
     """Keep Python for inputs whose observable legacy failure is not a contract fold."""
     for item in state_update:
@@ -106,19 +125,20 @@ def validate_initial_state(initial_state: WorkflowState):
 
 def apply_state_update_inplace(
     mute_state: WorkflowState,
-    state_update: list[tuple[str, dict[str, Any]]] | list[StateUpdate],
-    update: dict | None = None,
+    state_update: RuntimeStateUpdate,
+    update: RuntimePayload | None = None,
     *,
-    state_schema: dict[str, Any] | None = None,
-):
+    state_schema: StateSchema | None = None,
+) -> None:
     """Apply a workflow-runtime state delta in place.
 
     Single reducer for sync runtime, async runtime, and replay.
     """
     if update and state_update:
-        error = Exception("Either update or state_update can be used")
-        error.code = "KOGWISTAR_CONTRACT_STATE_UPDATE_CONFLICT"
-        raise error
+        raise RuntimeContractError(
+            "Either update or state_update can be used",
+            code="KOGWISTAR_CONTRACT_STATE_UPDATE_CONFLICT",
+        )
 
     mode = runtime_implementation_mode()
     # Inspect live inputs before copying them.  Runtime state can contain
@@ -134,7 +154,7 @@ def apply_state_update_inplace(
     json_compatible = json_contract_compatible(native_transport) and _native_state_update_safe(
         mute_state, state_update, update, state_schema
     )
-    native_state: dict[str, Any] | None = None
+    native_state: RuntimePayload | None = None
     if mode != "python" and json_compatible:
         native_payload = _native_state_update_payload(
             mute_state, state_update, update, state_schema
@@ -192,8 +212,8 @@ class BaseRuntime:
     async runtimes can inherit it without semantic drift.
     """
 
-    workflow_engine: Any
-    step_resolver: Any
+    workflow_engine: GraphKnowledgeEngine
+    step_resolver: StepResolver
     predicate_registry: dict[str, Any]
 
     validate_initial_state = staticmethod(validate_initial_state)

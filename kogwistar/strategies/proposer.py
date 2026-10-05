@@ -283,7 +283,6 @@ class VectorProposer(MergeCandidateProposer):
 
         # embeddings for queries (assume already present on objects)
         q_embs = [q.embedding for q in queries]
-        qids = [q.id for q in queries]
         # ---- global metadata filter for the retrieval corpus --------------------------
         extra = None
         if allowed_docs:
@@ -353,7 +352,6 @@ class VectorProposer(MergeCandidateProposer):
         # ---- materialize matches per query -------------------------------------------
         for qi, qent in enumerate(queries):
             q_doc = getattr(qent, "doc_id", None)
-            qid = qids[qi]
             # node matches
             docs = node_docs_per_q[qi] if qi < len(node_docs_per_q) else []
             ids_ = node_ids_per_q[qi] if qi < len(node_ids_per_q) else []
@@ -630,7 +628,7 @@ class VectorProposer(MergeCandidateProposer):
             anchor_only=True,
             limit_per_bucket=limit_per_bucket,
         )
-        return [(l, r) for (l, r) in out]
+        return [(left, right) for (left, right) in out]
 
     def for_new_node(
         self,

@@ -5,14 +5,21 @@ from __future__ import annotations
 from dataclasses import dataclass
 from hashlib import sha256
 from threading import RLock
-from typing import Any, Callable, Literal, Mapping, Protocol, runtime_checkable
+from typing import Callable, Literal, Mapping, Protocol, TypeVar, cast, runtime_checkable
 
 from kogwistar.engine_core.embedding_profile import NamedProjectionStore
+from kogwistar.json_types import JsonValue
+from kogwistar.runtime import ProjectionPayload
 
 from .catalog import CatalogEntry
 
 
 PROVIDER_LIFECYCLE_NAMESPACE = "agent_provider_lifecycle"
+
+
+TModelResult = TypeVar("TModelResult", covariant=True)
+TToolResult = TypeVar("TToolResult", covariant=True)
+TOperationResult = TypeVar("TOperationResult")
 
 
 class ProviderCollisionError(ValueError):
@@ -34,28 +41,28 @@ class DiscoveryProvider(Protocol):
     provider_id: str
     provider_version: str
 
-    def descriptors(self) -> list[Mapping[str, Any]]: ...
+    def descriptors(self) -> list[Mapping[str, object]]: ...
 
 
 @runtime_checkable
-class ModelProvider(Protocol):
+class ModelProvider(Protocol[TModelResult]):
     provider_id: str
 
-    def complete(self, prompt: str, context: Mapping[str, Any]) -> Any: ...
+    def complete(self, prompt: str, context: Mapping[str, JsonValue]) -> TModelResult: ...
 
 
 @runtime_checkable
-class ToolProvider(Protocol):
+class ToolProvider(Protocol[TToolResult]):
     provider_id: str
 
-    def invoke(self, arguments: Mapping[str, Any]) -> Any: ...
+    def invoke(self, arguments: Mapping[str, JsonValue]) -> TToolResult: ...
 
 
 @runtime_checkable
 class SkillProvider(Protocol):
     provider_id: str
 
-    def descriptors(self) -> list[Mapping[str, Any]]: ...
+    def descriptors(self) -> list[Mapping[str, object]]: ...
 
     def load(self, provider_local_id: str) -> str: ...
 
@@ -64,18 +71,18 @@ class SkillProvider(Protocol):
 class MemoryProvider(Protocol):
     provider_id: str
 
-    def search(self, query: str, **kwargs: Any) -> list[Mapping[str, Any]]: ...
+    def search(self, query: str, **kwargs: JsonValue) -> list[Mapping[str, JsonValue]]: ...
 
 
 @runtime_checkable
 class CompressorProvider(Protocol):
     provider_id: str
 
-    def compress(self, request: Mapping[str, Any]) -> Mapping[str, Any]: ...
+    def compress(self, request: Mapping[str, JsonValue]) -> Mapping[str, JsonValue]: ...
 
 
 def normalize_descriptor(
-    descriptor: Mapping[str, Any], *, provider_id: str, provider_version: str = "v1"
+    descriptor: Mapping[str, object], *, provider_id: str, provider_version: str = "v1"
 ) -> CatalogEntry:
     """Normalize provider data without granting invocation authority."""
 
@@ -110,7 +117,7 @@ class ProviderIdentity:
 @dataclass(frozen=True, slots=True)
 class ProviderRegistration:
     identity: ProviderIdentity
-    provider: Any
+    provider: object
     registration_fingerprint: str
     generation: int = 1
     failure_mode: Literal["fail_closed", "isolate"] = "fail_closed"
@@ -146,7 +153,7 @@ class ProviderRegistry:
         self._metadata = metadata
         self._lock = RLock()
 
-    def _lifecycle_row(self, key: str) -> dict[str, Any] | None:
+    def _lifecycle_row(self, key: str) -> ProjectionPayload | None:
         if self._metadata is None:
             return None
         return self._metadata.get_named_projection(PROVIDER_LIFECYCLE_NAMESPACE, key)
@@ -158,7 +165,7 @@ class ProviderRegistry:
         generation: int,
         fingerprint: str,
         status: str,
-        expected: dict[str, Any] | None,
+        expected: ProjectionPayload | None,
     ) -> None:
         if self._metadata is None:
             return
@@ -199,7 +206,7 @@ class ProviderRegistry:
         ):
             raise ProviderCollisionError(f"provider lifecycle changed concurrently: {key}")
 
-    def lifecycle_guard_update(self, registration: ProviderRegistration) -> dict[str, Any] | None:
+    def lifecycle_guard_update(self, registration: ProviderRegistration) -> ProjectionPayload | None:
         """Return a same-store CAS guard for one active registration."""
 
         with self._lock:
@@ -233,7 +240,7 @@ class ProviderRegistry:
             }
 
     @staticmethod
-    def _fingerprint(provider: Any, explicit: str | None) -> str:
+    def _fingerprint(provider: object, explicit: str | None) -> str:
         if explicit:
             return str(explicit)
         name = f"{type(provider).__module__}.{type(provider).__qualname__}"
@@ -243,7 +250,7 @@ class ProviderRegistry:
         self,
         *,
         provider_id: str,
-        provider: Any,
+        provider: object,
         version: str = "v1",
         fingerprint: str | None = None,
         failure_mode: Literal["fail_closed", "isolate"] = "fail_closed",
@@ -315,14 +322,18 @@ class ProviderRegistry:
     def run_if_active(
         self,
         registration: ProviderRegistration,
-        operation: Callable[[], Any],
-    ) -> Any:
+        operation: Callable[[], TOperationResult],
+    ) -> TOperationResult:
         """Commit provider work only while exact registration remains active."""
 
         key = registration.identity.qualified_id
         with self._lock:
             current = self._registrations.get(key)
-            if current is not registration or current.generation != registration.generation:
+            if (
+                current is None
+                or current is not registration
+                or current.generation != registration.generation
+            ):
                 raise ProviderInactiveError(
                     f"provider lifecycle is no longer active: {key}@{registration.generation}"
                 )
@@ -375,7 +386,9 @@ class ProviderRegistry:
             if not callable(loader):
                 continue
             try:
-                descriptors = loader()
+                descriptors = cast(
+                    Callable[[], list[Mapping[str, object]]], loader
+                )()
             except Exception:
                 isolated = (
                     registration.failure_mode == "isolate"

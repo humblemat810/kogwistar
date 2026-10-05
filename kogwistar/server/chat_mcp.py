@@ -1,19 +1,37 @@
 from __future__ import annotations
 
-from typing import Any, Callable
+from typing import Any, Callable, ParamSpec, Protocol, TypeVar
 
 from kogwistar.server.mcp_registry import McpRegistry
+
+
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
+
+
+class ToolDecorator(Protocol):
+    """Decorator that preserves the wrapped MCP tool's callable signature."""
+
+    def __call__(
+        self, function: Callable[_P, _R], /
+    ) -> Callable[_P, _R]: ...
+
+
+class RoleDecoratorFactory(Protocol):
+    """Create a decorator that applies role or namespace metadata."""
+
+    def __call__(self, values: Any, /) -> ToolDecorator: ...
 
 
 def build_conversation_mcp(
     *,
     get_service: Callable[[], Any],
-    tool_roles: Callable[[Any], Callable[[Callable[..., Any]], Callable[..., Any]]],
-    require_ns: Callable[[Any], Callable[[Callable[..., Any]], Callable[..., Any]]],
+    tool_roles: RoleDecoratorFactory,
+    require_ns: RoleDecoratorFactory,
     role_ro: Any,
     role_rw: Any,
     ns_conversation: Any,
-):
+) -> McpRegistry:
     mcp = McpRegistry("Conversation MCP")
 
     @tool_roles({role_rw})
@@ -73,15 +91,15 @@ def build_conversation_mcp(
 def build_workflow_mcp(
     *,
     get_service: Callable[[], Any],
-    tool_roles: Callable[[Any], Callable[[Callable[..., Any]], Callable[..., Any]]],
-    require_ns: Callable[[Any], Callable[[Callable[..., Any]], Callable[..., Any]]],
+    tool_roles: RoleDecoratorFactory,
+    require_ns: RoleDecoratorFactory,
     role_ro: Any,
     role_rw: Any,
     ns_workflow: Any,
     get_subject: Callable[[], str | None] | None = None,
     get_user_id: Callable[[], str | None] | None = None,
     require_workflow_access: Callable[[str, str], None] | None = None,
-):
+) -> McpRegistry:
     mcp = McpRegistry("Workflow Diagnostics MCP")
 
     def _actor_sub() -> str | None:

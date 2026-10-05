@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import uuid
-from typing import Callable, List, Optional, cast
+from typing import List, Optional, cast
 
 from kogwistar.llm_tasks import LLMTaskSet
 
 from .models import ConversationEdge
 from .models import RetrievalResult
 from .models import ConversationNode, MetaFromLastSummary, Node, Edge, FilteringResult
+from .callbacks import MemorySummarizeCallback, RetrievalFilteringCallback
 from ..engine_core.engine import GraphKnowledgeEngine
 from ..engine_core.models import Grounding, Span
 
@@ -99,12 +100,8 @@ class MemoryRetriever:
         *,
         conversation_engine,
         llm_tasks: LLMTaskSet,
-        filtering_callback: Callable[
-            ..., tuple[FilteringResult | RetrievalResult, str]
-        ],
-        summarize_callback: Optional[
-            Callable[..., str]
-        ] = None,  # can be a callback with context closured
+        filtering_callback: RetrievalFilteringCallback,
+        summarize_callback: Optional[MemorySummarizeCallback] = None,
         prefer_types: Optional[List[str]] = None,
     ) -> None:
         self.conversation_engine: GraphKnowledgeEngine = conversation_engine

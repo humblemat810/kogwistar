@@ -1,8 +1,9 @@
 from __future__ import annotations
 import json
-from typing import Any, Sequence
+from typing import TYPE_CHECKING, Any, Literal, Sequence, cast
 
 from ...acl.graph import (
+    ACLGrain,
     ACLDecision,
     ACLNodeReadDecision,
     ACLRecord,
@@ -12,17 +13,39 @@ from ...acl.graph import (
 from ...acl.models import ACLEdge, ACLNode
 from ...cdc.change_event import EntityRefModel
 from ...engine_core.models import Edge, Grounding, Node, Span
+from ...engine_core.vector_search import VectorSearchHit
 from ...id_provider import stable_id
 from .base import NamespaceProxy
+from ...typing_interfaces import ReadLike, WriteLike
+
+if TYPE_CHECKING:
+    from ..engine import GraphKnowledgeEngine
 
 
-class ACLSubsystem(NamespaceProxy):
-    def __init__(self, engine) -> None:
+def _as_acl_grain(value: str | None) -> ACLGrain | None:
+    if value is None:
+        return None
+    if value not in {"document", "grounding", "span", "node", "edge", "artifact"}:
+        raise ValueError(f"unsupported ACL grain: {value}")
+    return cast(ACLGrain, value)
+
+
+class ACLSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
+    def __init__(self, engine: "GraphKnowledgeEngine") -> None:
         super().__init__(engine)
         # ACLGraph is a cacheable projection. Loaders point it back to canonical truth.
         self._e.acl_graph.bind_loaders(
-            record_loader=self._load_acl_records_from_truth,
-            target_loader=self._load_acl_entity_ids_from_truth,
+            record_loader=lambda truth_graph, grain, entity_id, target_item_id: self._load_acl_records_from_truth(
+                truth_graph=truth_graph,
+                grain=grain,
+                entity_id=entity_id,
+                target_item_id=target_item_id,
+            ),
+            target_loader=lambda truth_graph, grain, target_item_id: self._load_acl_entity_ids_from_truth(
+                truth_graph=truth_graph,
+                grain=grain,
+                target_item_id=target_item_id,
+            ),
         )
 
     def current_principal_context(self) -> tuple[str, tuple[str, ...], str | None]:
@@ -369,6 +392,9 @@ class ACLSubsystem(NamespaceProxy):
             excerpt="a",
             context_before="",
             context_after="",
+            chunk_id=None,
+            source_cluster_id=None,
+            verification=None,
         )
 
     def _acl_record_node_id(
@@ -573,7 +599,7 @@ class ACLSubsystem(NamespaceProxy):
     ) -> ACLRecord | None:
         records = self._e.acl_graph._load_records(
             truth_graph=truth_graph,
-            grain=grain,
+            grain=_as_acl_grain(grain),
             entity_id=entity_id,
             target_item_id=target_item_id,
         )
@@ -627,7 +653,7 @@ class ACLSubsystem(NamespaceProxy):
     ) -> tuple[str, ...]:
         return self._e.acl_graph.entity_ids_for_target_item(
             truth_graph=truth_graph,
-            grain=grain,
+            grain=cast(ACLGrain, _as_acl_grain(grain)),
             target_item_id=target_item_id,
         )
 
@@ -800,7 +826,7 @@ class ACLSubsystem(NamespaceProxy):
         *,
         truth_graph: str,
         entity_id: str,
-        item_grain: str = "span",
+        item_grain: ACLGrain = "span",
         grounding_item_ids: Sequence[str] = (),
         target_item_ids: Sequence[str] = (),
         max_items: int = 32,
@@ -820,14 +846,14 @@ class ACLSubsystem(NamespaceProxy):
             item_id = str(item_id)
             warmed_items.append(item_id)
             acl_graph.latest_record(
-                grain="grounding" if item_id in grounding_item_ids else item_grain,
+                grain=("grounding" if item_id in grounding_item_ids else item_grain),
                 truth_graph=truth_graph,
                 entity_id=entity_id,
                 target_item_id=item_id,
             )
             neighbor_ids = acl_graph.entity_ids_for_target_item(
                 truth_graph=truth_graph,
-                grain="grounding" if item_id in grounding_item_ids else item_grain,
+                grain=("grounding" if item_id in grounding_item_ids else item_grain),
                 target_item_id=item_id,
             )
             for neighbor_id in neighbor_ids:
@@ -1079,7 +1105,7 @@ class ACLSubsystem(NamespaceProxy):
         security_scope: str | None = None,
         node_type=None,
         include: None | list[str] = None,
-        resolve_mode: str = "active_only",
+        resolve_mode: Literal["active_only", "redirect", "include_tombstones"] = "active_only",
     ) -> Node:
         nodes = self._e.raw_read.get_nodes(
             ids=[node_id],
@@ -1112,7 +1138,7 @@ class ACLSubsystem(NamespaceProxy):
         security_scope: str | None = None,
         edge_type=None,
         include: None | list[str] = None,
-        resolve_mode: str = "active_only",
+        resolve_mode: Literal["active_only", "redirect", "include_tombstones"] = "active_only",
     ) -> Any:
         edges = self._e.raw_read.get_edges(
             ids=[edge_id],
@@ -1135,8 +1161,8 @@ class ACLSubsystem(NamespaceProxy):
         return edges[0]
 
 
-class ACLAwareReadSubsystem(NamespaceProxy):
-    def __init__(self, engine, raw_read) -> None:
+class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
+    def __init__(self, engine: "GraphKnowledgeEngine", raw_read: ReadLike) -> None:
         super().__init__(engine)
         self._raw = raw_read
 
@@ -1257,28 +1283,52 @@ class ACLAwareReadSubsystem(NamespaceProxy):
                     return False
         return True
 
-    def get_nodes(self, *args, **kwargs):
+    def get_nodes(self, *args: Any, **kwargs: Any) -> list[Node]:
         return [node for node in self._raw.get_nodes(*args, **kwargs) if self._node_visible(node)]
 
-    def get_edges(self, *args, **kwargs):
+    def get_edges(self, *args: Any, **kwargs: Any) -> list[Edge]:
         return [edge for edge in self._raw.get_edges(*args, **kwargs) if self._edge_visible(edge)]
 
-    def query_nodes(self, *args, **kwargs):
+    def get_document(self, doc_id: str) -> Any:
+        return self._raw.get_document(doc_id)
+
+    def node_exists(self, *args: Any, **kwargs: Any) -> bool:
+        return bool(self._raw.node_exists(*args, **kwargs))
+
+    def edge_exists(self, *args: Any, **kwargs: Any) -> bool:
+        return bool(self._raw.edge_exists(*args, **kwargs))
+
+    def get_node_metadatas(self, *args: Any, **kwargs: Any) -> list[dict[str, Any]]:
+        return self._raw.get_node_metadatas(*args, **kwargs)
+
+    def get_edge_metadatas(self, *args: Any, **kwargs: Any) -> list[dict[str, Any]]:
+        return self._raw.get_edge_metadatas(*args, **kwargs)
+
+    def node_ids_by_doc(self, doc_id: str, insertion_method: str | None = None) -> list[str]:
+        return self._raw.node_ids_by_doc(doc_id, insertion_method=insertion_method)
+
+    def edge_ids_by_doc(self, doc_id: str, insertion_method: str | None = None) -> list[str]:
+        return self._raw.edge_ids_by_doc(doc_id, insertion_method=insertion_method)
+
+    def extract_reference_contexts(self, *args: Any, **kwargs: Any) -> list[dict[str, Any]]:
+        return self._raw.extract_reference_contexts(*args, **kwargs)
+
+    def query_nodes(self, *args: Any, **kwargs: Any) -> list[list[Node]]:
         batches = self._raw.query_nodes(*args, **kwargs)
         return [[node for node in batch if self._node_visible(node)] for batch in batches]
 
-    def query_edges(self, *args, **kwargs):
+    def query_edges(self, *args: Any, **kwargs: Any) -> list[list[Edge]]:
         batches = self._raw.query_edges(*args, **kwargs)
         return [[edge for edge in batch if self._edge_visible(edge)] for batch in batches]
 
-    def search_nodes_as_of(self, *args, **kwargs):
+    def search_nodes_as_of(self, *args: Any, **kwargs: Any) -> list[Node]:
         return [
             node
             for node in self._raw.search_nodes_as_of(*args, **kwargs)
             if self._node_visible(node)
         ]
 
-    def search_nodes_as_of_scored(self, *args, **kwargs):
+    def search_nodes_as_of_scored(self, *args: Any, **kwargs: Any) -> list[VectorSearchHit[Node]]:
         return [
             hit
             for hit in self._raw.search_nodes_as_of_scored(*args, **kwargs)
@@ -1286,15 +1336,15 @@ class ACLAwareReadSubsystem(NamespaceProxy):
         ]
 
 
-class ACLAwareWriteSubsystem(NamespaceProxy):
-    def __init__(self, engine, raw_write) -> None:
+class ACLAwareWriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"], WriteLike):
+    def __init__(self, engine: "GraphKnowledgeEngine", raw_write: WriteLike) -> None:
         super().__init__(engine)
         self._raw = raw_write
 
     def __getattr__(self, name: str):
         return getattr(self._raw, name)
 
-    def add_node(self, node: Node, *args, **kwargs):
+    def add_node(self, node: Node, *args: Any, **kwargs: Any) -> None:
         if not self._e.acl.writes_can_share_backend_transaction():
             with self._e.uow():
                 self._e.acl.append_canonical_write_events_for_item(node, grain="node")
@@ -1311,7 +1361,7 @@ class ACLAwareWriteSubsystem(NamespaceProxy):
             self._e.acl.record_default_acl_for_item(node, grain="node")
             return result
 
-    def add_edge(self, edge: Edge, *args, **kwargs):
+    def add_edge(self, edge: Edge, *args: Any, **kwargs: Any) -> None:
         if not self._e.acl.writes_can_share_backend_transaction():
             with self._e.uow():
                 self._e.acl.append_canonical_write_events_for_item(edge, grain="edge")
@@ -1327,3 +1377,24 @@ class ACLAwareWriteSubsystem(NamespaceProxy):
             result = self._raw.add_edge(edge, *args, **kwargs)
             self._e.acl.record_default_acl_for_item(edge, grain="edge")
             return result
+
+    def node_doc_and_meta(self, node: Node) -> tuple[str, dict[str, Any]]:
+        return self._raw.node_doc_and_meta(node)
+
+    def edge_doc_and_meta(self, edge: Edge) -> tuple[str, dict[str, Any]]:
+        return self._raw.edge_doc_and_meta(edge)
+
+    def strip_none(self, data: dict[str, Any]) -> dict[str, Any]:
+        return self._raw.strip_none(data)
+
+    def json_or_none(self, value: Any) -> str | None:
+        return self._raw.json_or_none(value)
+
+    def index_node_docs(self, node: Node) -> list[str]:
+        return self._raw.index_node_docs(node)
+
+    def index_node_refs(self, node: Node) -> list[str]:
+        return self._raw.index_node_refs(node)
+
+    def index_edge_refs(self, edge: Edge) -> list[str]:
+        return self._raw.index_edge_refs(edge)

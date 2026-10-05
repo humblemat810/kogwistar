@@ -2,20 +2,21 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass
-from typing import Any, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 from .budget import BudgetAttribution, BudgetEvent
 
 
 @runtime_checkable
 class BudgetAdapter(Protocol):
-    name: str
+    @property
+    def name(self) -> str: ...
 
-    def can_adapt(self, source: Any) -> bool: ...
+    def can_adapt(self, source: object) -> bool: ...
 
     def adapt(
         self,
-        source: Any,
+        source: object,
         *,
         run_id: str,
         scope: str = "run",
@@ -27,12 +28,12 @@ class BudgetAdapter(Protocol):
 class GenericUsageAdapter:
     name: str = "generic-usage"
 
-    def can_adapt(self, source: Any) -> bool:
+    def can_adapt(self, source: object) -> bool:
         return isinstance(source, dict) and "usage" in source
 
     def adapt(
         self,
-        source: Any,
+        source: object,
         *,
         run_id: str,
         scope: str = "run",
@@ -73,7 +74,7 @@ DEFAULT_BUDGET_ADAPTERS: list[BudgetAdapter] = [GenericUsageAdapter()]
 
 
 def adapt_budget_events(
-    source: Any,
+    source: object,
     *,
     run_id: str,
     scope: str = "run",
@@ -90,7 +91,7 @@ def adapt_budget_events(
     return []
 
 
-def summarize_budget_events(events: list[BudgetEvent]) -> dict[str, Any]:
+def summarize_budget_events(events: list[BudgetEvent]) -> dict[str, object]:
     input_tokens = 0
     cached_input_tokens = 0
     output_tokens = 0

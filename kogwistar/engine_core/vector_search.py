@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from math import isfinite
-from typing import Any
+from typing import Generic, TypeVar
+
+
+TNode = TypeVar("TNode")
 
 
 def similarity_from_distance(
@@ -39,10 +42,10 @@ def similarity_from_distance(
 
 
 @dataclass(frozen=True, slots=True)
-class VectorSearchHit:
+class VectorSearchHit(Generic[TNode]):
     """A graph node with backend score semantics made explicit."""
 
-    node: Any
+    node: TNode
     raw_distance: float | None
     similarity: float | None
     metric: str

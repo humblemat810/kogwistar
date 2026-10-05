@@ -221,6 +221,8 @@ def persist_summary_projection(
         },
         domain_id=None,
         canonical_entity_id=None,
+        embedding=None,
+        level_from_root=1,
     )
     edge = ConversationEdge(
         id=edge_id,

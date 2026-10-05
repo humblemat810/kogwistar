@@ -3,42 +3,47 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import datetime, timezone
-from typing import Any
+from collections.abc import Iterable, Mapping
+from typing import Any, TypeAlias, TypeVar
+
+
+Metadata: TypeAlias = dict[str, Any]
+MetadataPatch: TypeAlias = Mapping[str, object]
+_T = TypeVar("_T")
 
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def safe_json_dict(doc: Any) -> dict:
+def safe_json_dict(doc: object) -> Metadata:
     if isinstance(doc, dict):
-        return doc
+        return dict(doc)
     if not isinstance(doc, str):
         return {}
     try:
         x = json.loads(doc)
-        return x if isinstance(x, dict) else {}
+        return dict(x) if isinstance(x, dict) else {}
     except Exception:
         return {}
 
 
-def merge_meta(base_meta: dict | None, patch: dict) -> dict:
-    base_meta = base_meta or {}
-    return {**base_meta, **patch}
+def merge_meta(base_meta: Mapping[str, object] | None, patch: MetadataPatch) -> Metadata:
+    return {**(base_meta or {}), **patch}
 
 
-def is_tombstoned(meta: dict | None) -> bool:
+def is_tombstoned(meta: Mapping[str, object] | None) -> bool:
     meta = meta or {}
     return str(meta.get("lifecycle_status") or "active") == "tombstoned"
 
 
-def str_or_none(to_str):
+def str_or_none(to_str: object | None) -> str | None:
     if to_str is None:
         return to_str
     return str(to_str)
 
 
-def refs_fingerprint(refs) -> str:
+def refs_fingerprint(refs: Iterable[object] | None) -> str:
     payload = [
         {
             "doc_id": getattr(r, "doc_id", None),
@@ -59,9 +64,9 @@ def refs_fingerprint(refs) -> str:
     return hashlib.blake2b(blob, digest_size=16).hexdigest()
 
 
-def strip_none(d: dict) -> dict:
+def strip_none(d: Mapping[str, _T]) -> dict[str, _T]:
     return {k: v for k, v in d.items() if v is not None}
 
 
-def json_or_none(v):
+def json_or_none(v: object) -> str | None:
     return None if v is None else json.dumps(v)

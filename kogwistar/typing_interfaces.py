@@ -5,9 +5,12 @@ from typing import (
     Any,
     Dict,
     List,
+    Mapping,
     Optional,
     Protocol,
     Sequence,
+    TypeAlias,
+    TypeVar,
     Union,
     runtime_checkable,
     TYPE_CHECKING,
@@ -18,50 +21,42 @@ try:
 except ImportError:  # pragma: no cover - py<3.10 compatibility
     from typing_extensions import TypeAlias
 
-from .engine_core.models import (
-    AdjudicationTarget as GraphAdjudicationTarget,
-    AdjudicationVerdict,
-    Document as EngineDoc,
-    Edge as GraphEdge,
-    Node as GraphNode,
-)
-from .engine_core.storage_backend import StorageBackend
+from .json_types import JsonValue
 
 if TYPE_CHECKING:
+    from .engine_core.models import (
+        AdjudicationTarget as GraphAdjudicationTarget,
+        AdjudicationVerdict,
+        Document as EngineDoc,
+        Edge as GraphEdge,
+        Node as GraphNode,
+    )
+    from .engine_core.storage_backend import StorageBackend
     from .engine_core.vector_search import VectorSearchHit
 
 # -------------------------
 # Collection / Vector store
 # -------------------------
 
-try:
-    from chromadb.api.types import (
-        Embedding,
-        PyEmbedding,
-        Document as ChromaDocument,
-        Image,
-        URI,
-        ID,
-        Include,
-        QueryResult,
-    )
-    from chromadb.base_types import Where, WhereDocument
-    from chromadb.api.types import IDs, OneOrMany, GetResult, Metadata
-except Exception:  # pragma: no cover - optional dependency
-    Embedding = Any  # type: ignore
-    PyEmbedding = Any  # type: ignore
-    ChromaDocument = str  # type: ignore
-    Image = Any  # type: ignore
-    URI = str  # type: ignore
-    ID = str  # type: ignore
-    Include = list[str]  # type: ignore
-    QueryResult = Dict[str, Any]  # type: ignore
-    Where = Dict[str, Any]  # type: ignore
-    WhereDocument = Dict[str, Any]  # type: ignore
-    IDs = List[str]  # type: ignore
-    OneOrMany = Any  # type: ignore
-    GetResult = Dict[str, Any]  # type: ignore
-    Metadata = Dict[str, Any]  # type: ignore
+# Keep the public collection contract dependency-free.  Chroma is optional at
+# runtime, and these aliases describe the stable data shapes used at this
+# boundary without forcing the optional package into every type-checking env.
+ChromaScalar: TypeAlias = str | int | float | bool | None
+Embedding: TypeAlias = Sequence[float]
+PyEmbedding: TypeAlias = Sequence[float]
+ChromaDocument: TypeAlias = str
+Image: TypeAlias = object
+URI: TypeAlias = str
+ID: TypeAlias = str
+Include: TypeAlias = list[str]
+QueryResult: TypeAlias = Dict[str, JsonValue]
+Where: TypeAlias = Dict[str, JsonValue]
+WhereDocument: TypeAlias = Dict[str, JsonValue]
+IDs: TypeAlias = List[str]
+_TCollectionValue = TypeVar("_TCollectionValue")
+OneOrMany: TypeAlias = _TCollectionValue | Sequence[_TCollectionValue]
+GetResult: TypeAlias = Dict[str, JsonValue]
+Metadata: TypeAlias = Dict[str, ChromaScalar]
 
 
 class CollectionLike(Protocol):
@@ -116,6 +111,27 @@ class CollectionLike(Protocol):
     ) -> QueryResult: ...
 
 
+class NamedCollectionLike(Protocol):
+    """Minimal name-bearing collection surface used by native projections."""
+
+    name: str
+
+
+class ProjectionBackendLike(Protocol):
+    """Optional backend attributes used by native projection fast paths.
+
+    These handles are intentionally not members of ``StorageBackend`` because
+    lightweight and third-party backends are not required to expose them.
+    Callers must narrow to this protocol only at the fast-path boundary.
+    """
+
+    nodes: NamedCollectionLike
+    edges: NamedCollectionLike
+    documents: NamedCollectionLike
+    embedding_dim: int
+    distance: str
+
+
 if TYPE_CHECKING:
     from .llm_tasks import LLMTaskSet
 
@@ -126,16 +142,35 @@ if TYPE_CHECKING:
 
 @runtime_checkable
 class NodeLike(Protocol):
-    id: str
-    label: str
-    type: str
-    summary: str
-    domain_id: Optional[str]
-    canonical_entity_id: Optional[str]
-    properties: Optional[Dict[str, Any]]
-    mentions: Optional[List[Any]]
-    embedding: Optional[List[float]]
-    doc_id: Optional[str]
+    @property
+    def id(self) -> str | None: ...
+
+    @property
+    def label(self) -> str: ...
+
+    @property
+    def type(self) -> str: ...
+
+    @property
+    def summary(self) -> str: ...
+
+    @property
+    def domain_id(self) -> Optional[str]: ...
+
+    @property
+    def canonical_entity_id(self) -> Optional[str]: ...
+
+    @property
+    def properties(self) -> Optional[Mapping[str, object]]: ...
+
+    @property
+    def mentions(self) -> Optional[Sequence[object]]: ...
+
+    @property
+    def embedding(self) -> Optional[Sequence[float]]: ...
+
+    @property
+    def doc_id(self) -> Optional[str]: ...
 
     def model_dump(self) -> Dict[str, Any]: ...
     def model_dump_json(self) -> str: ...
@@ -143,11 +178,20 @@ class NodeLike(Protocol):
 
 @runtime_checkable
 class EdgeLike(NodeLike, Protocol):
-    relation: str
-    source_ids: Optional[List[str]]
-    target_ids: Optional[List[str]]
-    source_edge_ids: Optional[List[str]]
-    target_edge_ids: Optional[List[str]]
+    @property
+    def relation(self) -> str: ...
+
+    @property
+    def source_ids(self) -> Optional[Sequence[str]]: ...
+
+    @property
+    def target_ids(self) -> Optional[Sequence[str]]: ...
+
+    @property
+    def source_edge_ids(self) -> Optional[Sequence[str]]: ...
+
+    @property
+    def target_edge_ids(self) -> Optional[Sequence[str]]: ...
 
 
 AdjudicationTarget: TypeAlias = Union[NodeLike, EdgeLike]
@@ -157,13 +201,19 @@ AdjudicationTarget: TypeAlias = Union[NodeLike, EdgeLike]
 # -------------------------
 
 class EmbeddingFunctionLike(Protocol):
-    def __call__(self, documents_or_texts: list[str]) -> list[list[float]] : ...
+    def __call__(self, documents_or_texts: list[str]) -> list[list[float]]: ...
 
 
 class ReadLike(Protocol):
+    def get_nodes(self, *args: Any, **kwargs: Any) -> Sequence[GraphNode]: ...
+    def get_edges(self, *args: Any, **kwargs: Any) -> Sequence[GraphEdge]: ...
+    def query_nodes(self, *args: Any, **kwargs: Any) -> Sequence[Sequence[GraphNode]]: ...
+    def query_edges(self, *args: Any, **kwargs: Any) -> Sequence[Sequence[GraphEdge]]: ...
+    def search_nodes_as_of(self, *args: Any, **kwargs: Any) -> Sequence[GraphNode]: ...
+
     def search_nodes_as_of_scored(
         self, *args: Any, **kwargs: Any
-    ) -> list["VectorSearchHit"]: ...
+    ) -> list["VectorSearchHit[GraphNode]"]: ...
 
     def get_document(self, doc_id: str) -> EngineDoc: ...
 
@@ -215,9 +265,20 @@ class ReadLike(Protocol):
     ) -> list[dict[str, Any]]: ...
 
 
+class LifecycleLike(Protocol):
+    """Stable lifecycle mutation surface shared by engine implementations."""
+
+    def tombstone_node(self, node_id: str, **kwargs: object) -> bool: ...
+    def redirect_node(self, from_id: str, to_id: str, **kwargs: object) -> bool: ...
+    def tombstone_edge(self, edge_id: str, **kwargs: object) -> bool: ...
+    def redirect_edge(self, from_id: str, to_id: str, **kwargs: object) -> bool: ...
+
+
 class WriteLike(Protocol):
-    def add_node(self, node: GraphNode, doc_id: str | None = None) -> Any: ...
-    def add_edge(self, edge: GraphEdge, doc_id: str | None = None) -> Any: ...
+    def add_document(self, document: EngineDoc) -> None: ...
+
+    def add_node(self, node: GraphNode, doc_id: str | None = None) -> None: ...
+    def add_edge(self, edge: GraphEdge, doc_id: str | None = None) -> None: ...
 
     def node_doc_and_meta(self, node: GraphNode) -> tuple[str, dict[str, Any]]: ...
     def edge_doc_and_meta(self, edge: GraphEdge) -> tuple[str, dict[str, Any]]: ...
@@ -235,7 +296,7 @@ class ExtractLike(Protocol):
 
 
 class EmbedLike(Protocol):
-    def iterative_defensive_emb(self, emb_text0: str) -> Any: ...
+    def iterative_defensive_emb(self, emb_text0: str) -> list[float]: ...
 
 
 @runtime_checkable
@@ -258,26 +319,42 @@ class AdjudicateLike(Protocol):
         self,
         src_ids: list[str] | None,
         tgt_ids: list[str] | None,
-    ) -> tuple[list[Any], list[Any], list[Any], list[Any]]: ...
+    ) -> tuple[list[str], list[str], list[str], list[str]]: ...
 
 
 class EngineLike(Protocol):
     """Public read-oriented engine contract used by lightweight helpers."""
 
-    backend: StorageBackend
-    read: ReadLike
+    @property
+    def backend(self) -> StorageBackend: ...
+
+    @property
+    def read(self) -> ReadLike: ...
 
 
 class StrategyEngineLike(EngineLike, Protocol):
     """Public engine contract used by strategy modules."""
 
-    read: ReadLike
-    write: WriteLike
-    extract: ExtractLike
-    embed: EmbedLike
-    adjudicate: AdjudicateLike
+    @property
+    def read(self) -> ReadLike: ...
 
-    llm_tasks: "LLMTaskSet"
+    @property
+    def write(self) -> WriteLike: ...
+
+    @property
+    def extract(self) -> ExtractLike: ...
+
+    @property
+    def embed(self) -> EmbedLike: ...
+
+    @property
+    def adjudicate(self) -> AdjudicateLike: ...
+
+    @property
+    def lifecycle(self) -> LifecycleLike: ...
+
+    @property
+    def llm_tasks(self) -> "LLMTaskSet": ...
     allow_cross_kind_adjudication: bool
     cross_kind_strategy: str
 

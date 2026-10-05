@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import ast
 import json
+from collections.abc import Iterable
 from datetime import datetime, timezone
 from typing import (
     Any,
     Dict,
     List,
     Literal,
+    Mapping,
     Optional,
     Sequence,
     Type,
@@ -15,6 +17,7 @@ from typing import (
     Union,
     cast,
 )
+from typing import TYPE_CHECKING
 
 from ...utils.embedding_vectors import (
     normalize_embedding_rows,
@@ -32,13 +35,17 @@ from ..models import Document, Edge, Node
 from ..utils.refs import ref_doc_id
 from ..vector_search import VectorSearchHit, similarity_from_distance
 from .base import NamespaceProxy
-from ...typing_interfaces import ReadLike
+from ...typing_interfaces import ProjectionBackendLike, ReadLike
+
+if TYPE_CHECKING:
+    from ..engine import GraphKnowledgeEngine
 
 TNode = TypeVar("TNode", bound=Node)
+TEdge = TypeVar("TEdge", bound=Edge)
 
 
-class ReadSubsystem(NamespaceProxy, ReadLike):
-    def __init__(self, engine) -> None:
+class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
+    def __init__(self, engine: "GraphKnowledgeEngine") -> None:
         super().__init__(engine)
 
     @staticmethod
@@ -81,11 +88,11 @@ class ReadSubsystem(NamespaceProxy, ReadLike):
         ):
             return None
         table = (
-            self._e.backend.nodes.name
+            cast(ProjectionBackendLike, self._e.backend).nodes.name
             if entity_kind == "node"
-            else self._e.backend.edges.name
+            else cast(ProjectionBackendLike, self._e.backend).edges.name
             if entity_kind == "edge"
-            else self._e.backend.documents.name
+            else cast(ProjectionBackendLike, self._e.backend).documents.name
         )
         effective_include = include or ["documents", "metadatas"]
         records = meta.graph_projection_records(
@@ -133,9 +140,9 @@ class ReadSubsystem(NamespaceProxy, ReadLike):
         ):
             return None
         table = (
-            self._e.backend.nodes.name
+            cast(ProjectionBackendLike, self._e.backend).nodes.name
             if entity_kind == "node"
-            else self._e.backend.edges.name
+            else cast(ProjectionBackendLike, self._e.backend).edges.name
         )
         matches = meta.graph_projection_vector_query(
             namespace=getattr(self._e, "namespace", "default"),
@@ -143,9 +150,9 @@ class ReadSubsystem(NamespaceProxy, ReadLike):
             graph_space=None,
             table=table,
             embedding=list(query_embeddings[0]),
-            embedding_dim=int(self._e.backend.embedding_dim),
+            embedding_dim=int(cast(ProjectionBackendLike, self._e.backend).embedding_dim),
             metadata=metadata,
-            metric=str(self._e.backend.distance),
+            metric=str(cast(ProjectionBackendLike, self._e.backend).distance),
             limit=int(n_results),
         )
         records = [dict(match.get("record") or {}) for match in matches]
@@ -196,6 +203,9 @@ class ReadSubsystem(NamespaceProxy, ReadLike):
             metadata=dict(where or {}),
             limit=limit,
         )
+        if not isinstance(rows, Iterable):
+            return None
+        rows = [cast(Mapping[str, Any], row) for row in rows if isinstance(row, Mapping)]
         if not rows:
             return None
         payloads = [dict(row.get("payload") or {}) for row in rows]
@@ -498,9 +508,9 @@ class ReadSubsystem(NamespaceProxy, ReadLike):
         query=None,
         query_embeddings=None,
         include=["documents", "embeddings", "metadatas"],
-        node_type: Type[Node] = Node,
+        node_type: Type[TNode] | None = None,
         **kwargs,
-    ):
+    ) -> list[list[TNode]]:
         if query_embeddings is not None:
             if query is not None:
                 raise Exception(
@@ -527,13 +537,21 @@ class ReadSubsystem(NamespaceProxy, ReadLike):
             include=include,
             )
         )
-        got = native or run_awaitable_blocking(self._e.backend.node_query(
-            query_embeddings=query_embeddings,
-            *args,
-            include=include,
-            **kwargs,
-        ))
-        return self.nodes_from_query_result(got, node_type=node_type)
+        got = cast(
+            Mapping[str, Any],
+            native
+            or run_awaitable_blocking(
+                self._e.backend.node_query(
+                    query_embeddings=query_embeddings,
+                    *args,
+                    include=include,
+                    **kwargs,
+                )
+            ),
+        )
+        return self.nodes_from_query_result(
+            got, node_type=cast(Type[TNode], node_type or Node)
+        )
 
     def _coerce_ts_utc(self, raw: Any) -> datetime | None:
         if raw is None:
@@ -639,7 +657,7 @@ class ReadSubsystem(NamespaceProxy, ReadLike):
         self,
         *,
         query: str | None = None,
-        query_embeddings: list[list[float]] | None = None,
+        query_embeddings: Sequence[float] | Sequence[Sequence[float]] | None = None,
         as_of_ts: datetime | str,
         where: dict[str, Any] | None = None,
         n_results: int = 20,
@@ -670,7 +688,7 @@ class ReadSubsystem(NamespaceProxy, ReadLike):
         self,
         *,
         query: str | None = None,
-        query_embeddings: list[list[float]] | None = None,
+        query_embeddings: Sequence[float] | Sequence[Sequence[float]] | None = None,
         as_of_ts: datetime | str,
         where: dict[str, Any] | None = None,
         n_results: int = 20,
@@ -680,7 +698,7 @@ class ReadSubsystem(NamespaceProxy, ReadLike):
         max_redirect_hops: int = 16,
         similarity_threshold: float | None = None,
         **kwargs,
-    ) -> list[VectorSearchHit]:
+    ) -> list[VectorSearchHit[Node]]:
         """Return as-of nodes together with backend order scores.
 
         Results retain raw backend distance and expose one higher-is-better
@@ -767,7 +785,7 @@ class ReadSubsystem(NamespaceProxy, ReadLike):
         }
         cache = {str(node.safe_get_id()): node for node in candidates}
 
-        out: list[VectorSearchHit] = []
+        out: list[VectorSearchHit[Node]] = []
         seen: set[str] = set()
         for node in candidates:
             resolved = self._resolve_node_as_of(
@@ -814,9 +832,9 @@ class ReadSubsystem(NamespaceProxy, ReadLike):
         query=None,
         query_embeddings=None,
         include=["documents", "embeddings", "metadatas"],
-        edge_type: Type[Edge] = Edge,
+        edge_type: Type[TEdge] | None = None,
         **kwargs,
-    ):
+    ) -> list[list[TEdge]]:
         if query_embeddings is None:
             if query is not None:
                 query_embeddings = self._e._iterative_defensive_emb(query)
@@ -838,17 +856,25 @@ class ReadSubsystem(NamespaceProxy, ReadLike):
             include=include,
             )
         )
-        got = native or run_awaitable_blocking(self._e.backend.edge_query(
-            query_embeddings=query_embeddings,
-            *args,
-            include=include,
-            **kwargs,
-        ))
-        return self.edges_from_query_result(got, edge_type=edge_type)
+        got = cast(
+            Mapping[str, Any],
+            native
+            or run_awaitable_blocking(
+                self._e.backend.edge_query(
+                    query_embeddings=query_embeddings,
+                    *args,
+                    include=include,
+                    **kwargs,
+                )
+            ),
+        )
+        return self.edges_from_query_result(
+            got, edge_type=cast(Type[TEdge], edge_type or Edge)
+        )
 
     def nodes_from_single_or_id_query_result(
         self,
-        got,
+        got: Mapping[str, Any],
         node_type: Type[TNode] = Node,
     ) -> list[TNode]:
         docs: list[str] = cast(list[str], got.get("documents"))
@@ -880,12 +906,12 @@ class ReadSubsystem(NamespaceProxy, ReadLike):
                 metadata=metadata,
                 fallback=node_type,
             )
-            res.append(selected_type.model_validate(json_d))
+            res.append(cast(TNode, selected_type.model_validate(json_d)))
         return res
 
     def edges_from_single_or_id_query_result(
-        self, got, edge_type: Type[Edge] = Edge, include=None
-    ):
+        self, got: Mapping[str, Any], edge_type: Type[TEdge] = Edge, include=None
+    ) -> list[TEdge]:
         if include is None:
             include = ["documents", "metadatas", "embeddings"]
         docs: list[str] = cast(list[str], got.get("documents"))
@@ -913,68 +939,52 @@ class ReadSubsystem(NamespaceProxy, ReadLike):
                 }
             )
             selected_type = pick_edge_type(metadata=metadata, fallback=edge_type)
-            res.append(selected_type.model_validate(json_d))
+            res.append(cast(TEdge, selected_type.model_validate(json_d)))
         return res
 
-    def nodes_from_query_result(self, gots, node_type: Type[Node] = Node):
-        res = []
-        for i_q in range(len(gots["ids"])):
-            n_doc = len(gots["ids"][i_q])
-            if n_doc == 0:
+    def nodes_from_query_result(
+        self, gots: Mapping[str, Any], node_type: Type[TNode] = Node
+    ) -> list[list[TNode]]:
+        res: list[list[TNode]] = []
+        id_rows = cast(list[list[str]], gots.get("ids") or [])
+        document_rows = cast(list[list[str]], gots.get("documents") or [[] for _ in id_rows])
+        embedding_rows = cast(list[list[list[float] | None]], gots.get("embeddings") or [[] for _ in id_rows])
+        metadata_rows = cast(list[list[dict[str, Any]]], gots.get("metadatas") or [[] for _ in id_rows])
+        for index, ids in enumerate(id_rows):
+            if not ids:
                 continue
-            for _ids, docs, embs, metadatas in zip(
-                gots.get("ids"),
-                gots.get("documents")
-                if gots.get("documents") is not None
-                else [[]] * n_doc,
-                gots.get("embeddings")
-                if gots.get("embeddings") is not None
-                else [[]] * n_doc,
-                gots.get("metadatas")
-                if gots.get("metadatas") is not None
-                else [[]] * n_doc,
-            ):
-                docs = cast(list[str], docs)
-                got = {"documents": docs, "embeddings": embs, "metadatas": metadatas}
-                res.append(
-                    self.nodes_from_single_or_id_query_result(got, node_type=node_type)
-                )
+            got = {
+                "documents": document_rows[index] if index < len(document_rows) else [],
+                "embeddings": embedding_rows[index] if index < len(embedding_rows) else [],
+                "metadatas": metadata_rows[index] if index < len(metadata_rows) else [],
+            }
+            res.append(self.nodes_from_single_or_id_query_result(got, node_type=node_type))
         return res
 
-    def edges_from_query_result(self, gots, edge_type: Type[Edge] = Edge):
-        res = []
-        for i_q in range(len(gots["ids"])):
-            n_doc = len(gots["ids"][i_q])
-            if n_doc == 0:
+    def edges_from_query_result(
+        self, gots: Mapping[str, Any], edge_type: Type[TEdge] = Edge
+    ) -> list[list[TEdge]]:
+        res: list[list[TEdge]] = []
+        id_rows = cast(list[list[str]], gots.get("ids") or [])
+        document_rows = cast(list[list[str]], gots.get("documents") or [[] for _ in id_rows])
+        embedding_rows = cast(list[list[list[float] | None]], gots.get("embeddings") or [[] for _ in id_rows])
+        metadata_rows = cast(list[list[dict[str, Any]]], gots.get("metadatas") or [[] for _ in id_rows])
+        for index, ids in enumerate(id_rows):
+            if not ids:
                 continue
-            for ids, docs, embs, metadatas in zip(
-                gots.get("ids"),
-                gots.get("documents")
-                if gots.get("documents") is not None
-                else [[]] * n_doc,
-                gots.get("embeddings")
-                if gots.get("embeddings") is not None
-                else [[]] * n_doc,
-                gots.get("metadatas")
-                if gots.get("metadatas") is not None
-                else [[]] * n_doc,
-            ):
-                docs = cast(list[str], docs)
-                got = {
-                    "ids": ids,
-                    "documents": docs,
-                    "embeddings": embs,
-                    "metadatas": metadatas,
-                }
-                res.append(
-                    self.edges_from_single_or_id_query_result(got, edge_type=edge_type)
-                )
+            got = {
+                "ids": ids,
+                "documents": document_rows[index] if index < len(document_rows) else [],
+                "embeddings": embedding_rows[index] if index < len(embedding_rows) else [],
+                "metadatas": metadata_rows[index] if index < len(metadata_rows) else [],
+            }
+            res.append(self.edges_from_single_or_id_query_result(got, edge_type=edge_type))
         return res
 
     def where_update_from_resolve_mode(
         self,
         resolve_mode: Literal["active_only", "redirect", "include_tombstones"],
-    ):
+    ) -> dict[str, str]:
         if resolve_mode == "active_only":
             return {"lifecycle_status": "active"}
         return {}
@@ -1144,7 +1154,13 @@ class ReadSubsystem(NamespaceProxy, ReadLike):
         adapter = getattr(self._e, "two_stage_projection_adapter", None)
         query = getattr(adapter, "stage1_query", None)
         if callable(query):
-            for row in query(entity_kind="node", limit=10000) or []:
+            rows = query(entity_kind="node", limit=10000) or []
+            if not isinstance(rows, Iterable):
+                rows = []
+            for raw_row in rows:
+                if not isinstance(raw_row, Mapping):
+                    continue
+                row = cast(Mapping[str, Any], raw_row)
                 payload = dict(row.get("payload") or {})
                 if (payload.get("metadata") or {}).get("doc_id") == doc_id:
                     result.add(str(payload.get("id") or row.get("key")))
@@ -1169,7 +1185,13 @@ class ReadSubsystem(NamespaceProxy, ReadLike):
         adapter = getattr(self._e, "two_stage_projection_adapter", None)
         query = getattr(adapter, "stage1_query", None)
         if callable(query):
-            for row in query(entity_kind="edge", limit=10000) or []:
+            rows = query(entity_kind="edge", limit=10000) or []
+            if not isinstance(rows, Iterable):
+                rows = []
+            for raw_row in rows:
+                if not isinstance(raw_row, Mapping):
+                    continue
+                row = cast(Mapping[str, Any], raw_row)
                 payload = dict(row.get("payload") or {})
                 if (payload.get("metadata") or {}).get("doc_id") == doc_id:
                     result.add(str(payload.get("id") or row.get("key")))
@@ -1276,7 +1298,7 @@ class ReadSubsystem(NamespaceProxy, ReadLike):
     ) -> list[str]:
         return self.edge_ids_by_doc(doc_id, insertion_method=insertion_method)
 
-    def load_node_map(self, *args, **kwargs):
+    def load_node_map(self, *args: Any, **kwargs: Any) -> dict[str, Node]:
         ids = kwargs.pop("ids", None)
         if ids is None and args:
             ids = args[0]
@@ -1292,7 +1314,7 @@ class ReadSubsystem(NamespaceProxy, ReadLike):
         )
         return {n.safe_get_id(): n for n in nodes}
 
-    def load_edge_map(self, *args, **kwargs):
+    def load_edge_map(self, *args: Any, **kwargs: Any) -> dict[str, Edge]:
         ids = kwargs.pop("ids", None)
         if ids is None and args:
             ids = args[0]

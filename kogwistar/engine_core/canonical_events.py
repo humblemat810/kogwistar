@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Any, Iterable
+from collections.abc import Iterable
 
 
 @dataclass(frozen=True)
@@ -16,7 +16,7 @@ class CanonicalEntityRevision:
     entity_id: str
     revision: int
     state: str
-    payload: dict[str, Any]
+    payload: dict[str, object]
 
     @property
     def is_deleted(self) -> bool:

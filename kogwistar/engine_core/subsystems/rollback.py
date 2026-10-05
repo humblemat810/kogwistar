@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from ..async_compat import run_awaitable_blocking
 from ..models import Edge, Node
@@ -9,9 +9,12 @@ from ..utils.metadata import json_or_none, strip_none
 from ..utils.refs import extract_doc_ids_from_refs
 from .base import NamespaceProxy
 
+if TYPE_CHECKING:
+    from ..engine import GraphKnowledgeEngine
 
-class RollbackSubsystem(NamespaceProxy):
-    def __init__(self, engine) -> None:
+
+class RollbackSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
+    def __init__(self, engine: "GraphKnowledgeEngine") -> None:
         super().__init__(engine)
 
     def _filter_mentions_for_document(self, mentions, document_id: str):

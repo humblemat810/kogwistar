@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Callable, Literal, Sequence, TypeVar, TYPE_CHECKING
+from typing import Callable, Literal, Sequence, TypeVar, TYPE_CHECKING, cast
 import uuid
 from .subsystems.base import NamespaceProxy
+from ..typing_interfaces import ProjectionBackendLike
 
 if TYPE_CHECKING:
     # Avoid runtime import cycles; we only need this for typing.
@@ -11,7 +12,7 @@ if TYPE_CHECKING:
 T = TypeVar("T")  # Node/Edge-like
 
 
-class LifecycleSubsystem(NamespaceProxy):
+class LifecycleSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
     """Lifecycle policy for Nodes/Edges.
 
     Owns:
@@ -103,7 +104,7 @@ class LifecycleSubsystem(NamespaceProxy):
     # Write-side
     # -----------------------
 
-    def tombstone_node(self, node_id: str, **kw) -> bool:
+    def tombstone_node(self, node_id: str, **kw: object) -> bool:
         patch = {
             "lifecycle_status": "tombstoned",
             "redirect_to_id": None,
@@ -145,7 +146,7 @@ class LifecycleSubsystem(NamespaceProxy):
 
         return ok
 
-    def redirect_node(self, from_id: str, to_id: str, **kw) -> bool:
+    def redirect_node(self, from_id: str, to_id: str, **kw: object) -> bool:
         """Supersede ``from_id`` with ``to_id`` while preserving lookup continuity.
 
         The source node becomes tombstoned, but its ``redirect_to_id`` points at the
@@ -194,7 +195,7 @@ class LifecycleSubsystem(NamespaceProxy):
             self._maybe_index_delete(entity_kind="node", entity_id=from_id)
         return ok
 
-    def tombstone_edge(self, edge_id: str, **kw) -> bool:
+    def tombstone_edge(self, edge_id: str, **kw: object) -> bool:
         patch = {
             "lifecycle_status": "tombstoned",
             "redirect_to_id": None,
@@ -236,7 +237,7 @@ class LifecycleSubsystem(NamespaceProxy):
 
         return ok
 
-    def redirect_edge(self, from_id: str, to_id: str, **kw) -> bool:
+    def redirect_edge(self, from_id: str, to_id: str, **kw: object) -> bool:
         """Supersede ``from_id`` with ``to_id`` while preserving lookup continuity."""
         if from_id == to_id:
             return False
@@ -307,7 +308,7 @@ class LifecycleSubsystem(NamespaceProxy):
         *,
         entity_kind: str,
         entity_id: str,
-        lifecycle_patch: dict,
+        lifecycle_patch: dict[str, object],
         op: str,
         **kw,
     ) -> bool | None:
@@ -316,16 +317,16 @@ class LifecycleSubsystem(NamespaceProxy):
         meta = getattr(self._e, "meta_sqlite", None)
         if not isinstance(meta, RustEnginePostgresMetaStore):
             return None
-        payload = {"entity_id": entity_id}
+        payload: dict[str, object] = {"entity_id": entity_id}
         if kw.get("reason") is not None:
             payload["reason"] = kw["reason"]
         if kw.get("deleted_by") is not None:
             payload["deleted_by"] = kw["deleted_by"]
         payload["lifecycle_patch"] = dict(lifecycle_patch)
         table = (
-            self._e.backend.nodes.name
+            cast(ProjectionBackendLike, self._e.backend).nodes.name
             if entity_kind == "node"
-            else self._e.backend.edges.name
+            else cast(ProjectionBackendLike, self._e.backend).edges.name
         )
         with meta.transaction():
             if getattr(self._e, "_disable_event_log", False):
@@ -370,16 +371,16 @@ class LifecycleSubsystem(NamespaceProxy):
         *,
         entity_kind: str,
         entity_id: str,
-        lifecycle_patch: dict,
+        lifecycle_patch: dict[str, object],
     ) -> bool:
         from .rust_postgres_session import RustEnginePostgresMetaStore
 
         meta = getattr(self._e, "meta_sqlite", None)
         if isinstance(meta, RustEnginePostgresMetaStore):
             table = (
-                self._e.backend.nodes.name
+                cast(ProjectionBackendLike, self._e.backend).nodes.name
                 if entity_kind == "node"
-                else self._e.backend.edges.name
+                else cast(ProjectionBackendLike, self._e.backend).edges.name
             )
             with meta.transaction():
                 updated = meta.patch_graph_projection_metadata(
@@ -412,7 +413,7 @@ class LifecycleSubsystem(NamespaceProxy):
         self, *, entity_kind: str, entity_id: str, op: str, **kw
     ) -> None:
         """Require lifecycle mutation event before non-native projection changes."""
-        payload = {"entity_id": entity_id}
+        payload: dict[str, object] = {"entity_id": entity_id}
         if kw.get("reason") is not None:
             payload["reason"] = kw.get("reason")
         if kw.get("deleted_by") is not None:

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Optional, Tuple
 
 from ..async_compat import run_awaitable_blocking
 from ...llm_tasks import ExtractGraphTaskRequest
@@ -15,9 +15,12 @@ from ..types import ExtractionSchemaMode, OffsetMismatchPolicy, OffsetRepairScor
 from ..utils.pages import coerce_pages
 from .base import NamespaceProxy
 
+if TYPE_CHECKING:
+    from ..engine import GraphKnowledgeEngine
 
-class IngestSubsystem(NamespaceProxy):
-    def __init__(self, engine) -> None:
+
+class IngestSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
+    def __init__(self, engine: "GraphKnowledgeEngine") -> None:
         super().__init__(engine)
 
     def ingest_document_with_llm(

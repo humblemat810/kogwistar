@@ -4,18 +4,29 @@ import json
 import threading
 import time
 from pathlib import Path
-from typing import Any
+from typing import Protocol
+
+
+class EventSinkLike(Protocol):
+    """Minimal downstream event sink contract."""
+
+    def emit(self, event: dict[str, object]) -> None: ...
 
 
 class JsonlEventSink:
     """Append event dictionaries to a JSONL file and optionally mirror downstream."""
 
-    def __init__(self, *, jsonl_path: Path, downstream_sink: Any | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        jsonl_path: Path,
+        downstream_sink: EventSinkLike | None = None,
+    ) -> None:
         self.jsonl_path = jsonl_path
         self.downstream_sink = downstream_sink
         self._lock = threading.Lock()
 
-    def emit(self, event: dict[str, Any]) -> None:
+    def emit(self, event: dict[str, object]) -> None:
         if self.downstream_sink is not None:
             self.downstream_sink.emit(event)
         line = json.dumps(

@@ -17,6 +17,15 @@ class RustExtensionUnavailableError(RuntimeError):
 class RustParityError(RuntimeError):
     """Raised when Python and Rust contract implementations disagree."""
 
+    def __init__(self, message: str, *, code: str | None = None) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+def _exception_code(exc: BaseException) -> str | None:
+    code = getattr(exc, "code", None)
+    return code if isinstance(code, str) else None
+
 
 def store_sqlite(
     *,
@@ -52,9 +61,9 @@ def store_sqlite(
     ):
         error = RustParityError(
             "Rust SQLite bridge cannot open a second connection inside an active "
-            "Python SQLite transaction"
+            "Python SQLite transaction",
+            code="KOGWISTAR_STORE_ACTIVE_PYTHON_TRANSACTION",
         )
-        error.code = "KOGWISTAR_STORE_ACTIVE_PYTHON_TRANSACTION"
         raise error
     try:
         extension = _load_extension()
@@ -75,10 +84,10 @@ def store_sqlite(
     except RustParityError:
         raise
     except Exception as exc:
-        error = RustParityError(f"Rust SQLite store operation failed: {exc}")
-        code = getattr(exc, "code", None)
-        if code is not None:
-            setattr(error, "code", code)
+        error = RustParityError(
+            f"Rust SQLite store operation failed: {exc}",
+            code=_exception_code(exc),
+        )
         raise error from exc
 
 
@@ -128,10 +137,10 @@ def store_postgres(
             )
         )
     except Exception as exc:
-        error = RustParityError("Rust PostgreSQL store operation failed")
-        code = getattr(exc, "code", None)
-        if code is not None:
-            setattr(error, "code", code)
+        error = RustParityError(
+            "Rust PostgreSQL store operation failed",
+            code=_exception_code(exc),
+        )
         raise error from exc
 
 

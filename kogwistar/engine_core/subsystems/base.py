@@ -1,13 +1,14 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import Generic, TypeVar
 
-if TYPE_CHECKING:
-    from ..engine import GraphKnowledgeEngine
+T_Engine = TypeVar("T_Engine")
 
 
-class NamespaceProxy:
+class NamespaceProxy(Generic[T_Engine]):
     """Base class for namespaced subsystem APIs bound to one engine instance."""
 
-    def __init__(self, engine: GraphKnowledgeEngine) -> None:
+    _e: T_Engine
+
+    def __init__(self, engine: T_Engine) -> None:
         self._e = engine

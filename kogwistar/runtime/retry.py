@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable, Generic, TypeVar
+from typing import Callable, Generic, TypeVar
 
 TRequest = TypeVar("TRequest")
 TResponse = TypeVar("TResponse")
@@ -17,24 +17,24 @@ class RetryAttemptRecord(Generic[TRequest]):
 
 
 @dataclass(frozen=True, slots=True)
-class RetryResult(Generic[TResponse]):
+class RetryResult(Generic[TRequest, TResponse]):
     """Successful retry outcome together with prior failed attempts."""
 
     value: TResponse
-    attempts: tuple[RetryAttemptRecord[Any], ...] = ()
+    attempts: tuple[RetryAttemptRecord[TRequest], ...] = ()
 
     @property
     def retry_count(self) -> int:
         return len(self.attempts)
 
 
-class RetryExhaustedError(RuntimeError):
+class RetryExhaustedError(RuntimeError, Generic[TRequest]):
     """Raised when a retry loop exhausts its configured attempts."""
 
     def __init__(
         self,
         *,
-        attempts: tuple[RetryAttemptRecord[Any], ...],
+        attempts: tuple[RetryAttemptRecord[TRequest], ...],
         last_error: str,
         retry_budget: int,
     ) -> None:
@@ -52,7 +52,7 @@ def retry_with_context(
     validate: Callable[[TResponse], str | None],
     on_retry: Callable[[RetryAttemptRecord[TRequest]], None] | None = None,
     error_formatter: Callable[[BaseException], str] = repr,
-) -> RetryResult[TResponse]:
+) -> RetryResult[TRequest, TResponse]:
     """Retry a structured call while carrying the previous error into the next request.
 
     The helper stays provider and adapter agnostic: the caller owns request

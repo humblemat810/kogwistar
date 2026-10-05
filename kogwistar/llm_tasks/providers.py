@@ -11,15 +11,20 @@ import urllib.error
 import urllib.request
 from typing import Any, Protocol, TypeVar, runtime_checkable
 
-TStructuredModel = TypeVar("TStructuredModel")
+class StructuredModelLike(Protocol):
+    @classmethod
+    def model_validate(cls, payload: Any) -> Any: ...
+
+
+TStructuredModel = TypeVar("TStructuredModel", bound=StructuredModelLike)
 
 
 @runtime_checkable
 class SupportsStructuredOutput(Protocol):
     def with_structured_output(
         self,
-        schema: type[TStructuredModel],
-        include_raw: bool = True,
+        schema: Any,
+        *args: Any,
         **kwargs: Any,
     ) -> Any: ...
 
@@ -162,6 +167,7 @@ class _ProviderChainResponse:
 
 __all__ = [
     "ProviderChainChatModel",
+    "StructuredModelLike",
     "StructuredBridgeChatModel",
     "SupportsStructuredOutput",
     "bridge_messages",

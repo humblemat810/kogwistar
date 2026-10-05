@@ -5,16 +5,17 @@ import hashlib
 import json
 from typing import Any, Mapping
 
+from ..json_types import JsonValue
+
 try:
     from pydantic import BaseModel  # type: ignore
 except Exception:  # pragma: no cover
     BaseModel = None  # type: ignore
 
-Json = Any
 _NON_SERIALIZABLE_MAPPING_KEYS = {"_deps", "dream_deps"}
 
 
-def stable_json_dumps(obj: Json) -> str:
+def stable_json_dumps(obj: JsonValue) -> str:
     """Deterministic JSON encoding for replay/persistence."""
     python_value = json.dumps(
         obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False
@@ -30,7 +31,7 @@ def _ref_obj(obj: Any) -> dict:
     return {"_ref_type": "repr_sha256", "sha256": h, "repr": repr(obj)[:2000]}
 
 
-def to_jsonable(obj: Any, *, _path: str = "$") -> Json:
+def to_jsonable(obj: object, *, _path: str = "$") -> JsonValue:
     """Convert arbitrary objects into a JSON-compatible Python structure.
 
     Goals:
@@ -69,7 +70,7 @@ def to_jsonable(obj: Any, *, _path: str = "$") -> Json:
             return _ref_obj(obj)
 
     # dataclasses
-    if dataclasses.is_dataclass(obj):
+    if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
         try:
             return to_jsonable(dataclasses.asdict(obj), _path=_path)
         except Exception:
@@ -85,7 +86,7 @@ def to_jsonable(obj: Any, *, _path: str = "$") -> Json:
     return _ref_obj(obj)
 
 
-def try_serialize_with_ref(obj: Json) -> str:
+def try_serialize_with_ref(obj: object) -> str:
     """Serialize to a JSON string.
 
     - First converts to a JSON-compatible structure via to_jsonable.

@@ -15,6 +15,7 @@ from typing import Any, Literal
 from kogwistar.messaging.service import LaneMessagingService
 from kogwistar.runtime.models import RunFailure, RunSuccess
 from kogwistar.runtime.resolvers import MappingStepResolver
+from kogwistar.runtime.runtime import StepContext
 
 
 ControlPolicy = Literal["steer", "queue", "cancel_and_replace"]
@@ -109,7 +110,7 @@ def register_control_point(
     """
 
     @resolver.register(op)
-    def _control(ctx: Any) -> RunSuccess | RunFailure:
+    def _control(ctx: StepContext) -> RunSuccess | RunFailure:
         state = ctx._state
         claimed_by = str(state.get(spec.claimed_by_key) or ctx.run_id).strip()
         if not claimed_by:
@@ -228,7 +229,7 @@ def register_control_ack_step(
     """Acknowledge claims after their control-point state was checkpointed."""
 
     @resolver.register(op)
-    def _ack(ctx: Any) -> RunSuccess | RunFailure:
+    def _ack(ctx: StepContext) -> RunSuccess | RunFailure:
         claims = _claims(ctx._state, pending_claims_key)
         try:
             _ack_claims(messaging, claims)

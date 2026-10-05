@@ -6,9 +6,24 @@ import hashlib
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Callable, Protocol
 
 from kogwistar.runtime.models import RunSuccess, WorkflowDesignArtifact, WorkflowInvocationRequest
+
+
+AgentState = dict[str, object]
+
+
+class DelegationContextLike(Protocol):
+    """Context fields needed to construct a bounded child invocation."""
+
+    run_id: str
+    step_seq: int
+    conversation_id: str | None
+    turn_node_id: str | None
+
+    @property
+    def state_view(self) -> Mapping[str, object]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,7 +53,7 @@ class DelegationSpec:
 
 
 def _effective_capabilities(
-    requested: tuple[str, ...], parent: Mapping[str, Any]
+    requested: tuple[str, ...], parent: Mapping[str, object]
 ) -> tuple[str, ...]:
     parent_caps = {str(item) for item in parent.get("effective_capabilities", ())}
     requested_caps = {str(item) for item in requested}
@@ -51,11 +66,11 @@ def _effective_capabilities(
 
 
 def delegated_initial_state(
-    parent_state: Mapping[str, Any], spec: DelegationSpec
-) -> dict[str, Any]:
+    parent_state: Mapping[str, object], spec: DelegationSpec
+) -> AgentState:
     """Copy only explicitly selected ordinary state into child context."""
 
-    child: dict[str, Any] = {
+    child: AgentState = {
         "agent_model_profile": spec.model_profile,
         "effective_capabilities": list(_effective_capabilities(spec.requested_capabilities, parent_state)),
     }
@@ -74,7 +89,7 @@ def delegated_initial_state(
 
 
 def build_delegated_invocation(
-    ctx: Any,
+    ctx: DelegationContextLike,
     *,
     workflow_id: str,
     spec: DelegationSpec,
@@ -100,12 +115,12 @@ def build_delegated_invocation(
     )
 
 
-def bounded_child_result(value: Any, *, max_bytes: int) -> dict[str, Any]:
+def bounded_child_result(value: object, *, max_bytes: int) -> dict[str, object]:
     """Return structured bounded evidence; never expose complete child context."""
 
     if int(max_bytes) < 1:
         raise ValueError("max_bytes must be positive")
-    payload: Any = value if isinstance(value, Mapping) else {"value": value}
+    payload: object = value if isinstance(value, Mapping) else {"value": value}
     encoded = json.dumps(payload, ensure_ascii=False, default=str, sort_keys=True).encode("utf-8")
     digest = hashlib.sha256(encoded).hexdigest()
     if len(encoded) <= max_bytes:
@@ -125,10 +140,10 @@ def make_delegation_handler(
     workflow_design: WorkflowDesignArtifact | None = None,
     result_state_key: str = "agent_subagent_result",
     allowed_model_profiles: set[str] | frozenset[str] | None = None,
-) -> Any:
+) -> Callable[[DelegationContextLike], RunSuccess]:
     """Create ordinary resolver handler returning one nested invocation."""
 
-    def _handler(ctx: Any) -> RunSuccess:
+    def _handler(ctx: DelegationContextLike) -> RunSuccess:
         return RunSuccess(
             state_update=[],
             workflow_invocations=[

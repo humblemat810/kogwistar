@@ -15,11 +15,11 @@ import json
 import os
 import queue
 import sqlite3
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 import httpx
 
@@ -27,6 +27,28 @@ from kogwistar.id_provider import stable_id
 
 if TYPE_CHECKING:
     from kogwistar.runtime.runtime import StepContext
+
+
+class RustStepCallback(Protocol):
+    """Callback resolved for one durable runtime operation."""
+
+    def __call__(self, context: "StepContext") -> Any: ...
+
+
+class RustStepResolver(Protocol):
+    def __call__(self, op: str) -> RustStepCallback: ...
+
+
+class RustDependencyProvider(Protocol):
+    def __call__(self, work: Mapping[str, Any]) -> Mapping[str, Any]: ...
+
+
+class RustPredicate(Protocol):
+    def __call__(self, edge: object, state: Mapping[str, Any], result: Any) -> bool: ...
+
+
+class RustWorkerExecutor(Protocol):
+    def __call__(self, work: dict[str, Any]) -> Mapping[str, Any]: ...
 
 
 class RustWorkerError(RuntimeError):
@@ -81,11 +103,10 @@ class RustStepResolverAdapter:
 
     def __init__(
         self,
-        step_resolver: Callable[[str], Callable[[StepContext], Any]],
+        step_resolver: RustStepResolver,
         *,
-        predicate_registry: Mapping[str, Callable[..., Any]] | None = None,
-        dependency_provider: Callable[[Mapping[str, Any]], Mapping[str, Any]]
-        | None = None,
+        predicate_registry: Mapping[str, RustPredicate] | None = None,
+        dependency_provider: RustDependencyProvider | None = None,
         cache_dir: str | os.PathLike[str] | None = None,
     ) -> None:
         if not callable(step_resolver):
@@ -616,7 +637,7 @@ class RustRuntimeWorker:
         base_url: str,
         worker_id: str,
         journal_path: str | os.PathLike[str],
-        execute: Callable[[dict[str, Any]], Mapping[str, Any]],
+        execute: RustWorkerExecutor,
         headers: Mapping[str, str] | None = None,
         timeout: float = 30.0,
         client: httpx.Client | None = None,
@@ -638,10 +659,9 @@ class RustRuntimeWorker:
         base_url: str,
         worker_id: str,
         journal_path: str | os.PathLike[str],
-        step_resolver: Callable[[str], Callable[[Any], Any]],
-        predicate_registry: Mapping[str, Callable[..., Any]] | None = None,
-        dependency_provider: Callable[[Mapping[str, Any]], Mapping[str, Any]]
-        | None = None,
+        step_resolver: RustStepResolver,
+        predicate_registry: Mapping[str, RustPredicate] | None = None,
+        dependency_provider: RustDependencyProvider | None = None,
         cache_dir: str | os.PathLike[str] | None = None,
         headers: Mapping[str, str] | None = None,
         timeout: float = 30.0,
@@ -855,7 +875,7 @@ class AsyncRustRuntimeWorker:
         base_url: str,
         worker_id: str,
         journal_path: str | os.PathLike[str],
-        execute: Callable[[dict[str, Any]], Any],
+        execute: RustWorkerExecutor,
         headers: Mapping[str, str] | None = None,
         timeout: float = 30.0,
         client: httpx.AsyncClient | None = None,
@@ -877,10 +897,9 @@ class AsyncRustRuntimeWorker:
         base_url: str,
         worker_id: str,
         journal_path: str | os.PathLike[str],
-        step_resolver: Callable[[str], Callable[[Any], Any]],
-        predicate_registry: Mapping[str, Callable[..., Any]] | None = None,
-        dependency_provider: Callable[[Mapping[str, Any]], Mapping[str, Any]]
-        | None = None,
+        step_resolver: RustStepResolver,
+        predicate_registry: Mapping[str, RustPredicate] | None = None,
+        dependency_provider: RustDependencyProvider | None = None,
         cache_dir: str | os.PathLike[str] | None = None,
         headers: Mapping[str, str] | None = None,
         timeout: float = 30.0,

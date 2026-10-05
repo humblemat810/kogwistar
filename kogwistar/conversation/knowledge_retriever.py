@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import uuid
-from typing import Callable, List, Optional, cast
+from typing import List, Optional, cast
 
 from kogwistar.llm_tasks import LLMTaskSet
 
 from .models import RetrievalResult
+from .callbacks import RetrievalFilteringCallback
 
 from .models import ConversationEdge
 from kogwistar.conversation.agentic_answering import snapshot_hash
@@ -39,9 +40,7 @@ class KnowledgeRetriever:
         conversation_engine,
         ref_knowledge_engine,
         llm_tasks: LLMTaskSet,
-        filtering_callback: Callable[
-            ..., tuple[FilteringResult | RetrievalResult, str]
-        ],
+        filtering_callback: RetrievalFilteringCallback,
         max_retrieval_level: int = 2,
         shallow_n_results: int = 20,
         deep_per_seed_results: int = 10,
@@ -98,9 +97,9 @@ class KnowledgeRetriever:
         layers = self.ref_knowledge_engine.query.k_hop(seed_ids, k=max_retrieval_level)
         nodes = []
         edges = []
-        for l in layers:
-            nodes.extend(list(l["nodes"]))
-            edges.extend(list(l["edges"]))
+        for layer in layers:
+            nodes.extend(list(layer["nodes"]))
+            edges.extend(list(layer["edges"]))
         return RetrievalResult(
             nodes=self.ref_knowledge_engine.nodes_from_single_or_id_query_result(
                 self.ref_knowledge_engine.nodes_by_ids(nodes)

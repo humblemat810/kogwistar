@@ -1,38 +1,16 @@
 # knowledge_graph_engine/changes/change_bus.py
 from __future__ import annotations
-from dataclasses import dataclass
-from typing import Optional
+from typing import Any
 import threading
 import queue
 from kogwistar.utils import log as logmod
 from kogwistar.utils.log import bind_log_context
 from typing import Protocol
+from .change_event import ChangeEvent
 
 
 class ChangeSink(Protocol):
     def publish(self, event: ChangeEvent) -> None: ...
-
-
-@dataclass(frozen=True, slots=True)
-class ChangeEvent:
-    seq: int
-    op: str
-    ts_unix_ms: int
-    entity: Optional[dict] = None
-    payload: object = None
-    run_id: Optional[str] = None
-    step_id: Optional[str] = None
-
-    def to_jsonable(self) -> dict:
-        return {
-            "seq": self.seq,
-            "op": self.op,
-            "ts_unix_ms": self.ts_unix_ms,
-            "entity": self.entity,
-            "payload": self.payload,
-            "run_id": self.run_id,
-            "step_id": self.step_id,
-        }
 
 
 class ChangeBus:
@@ -44,7 +22,7 @@ class ChangeBus:
       - never blocks engine on slow subscribers
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._sinks: list[ChangeSink] = []
         self._seq_lock = threading.Lock()
         self._seq = 0
@@ -93,12 +71,13 @@ class FastAPIChangeSink:
         self, endpoint: str, *, max_queue: int = 5000, name: str = "fastapi sink"
     ):
         self.endpoint = endpoint.rstrip("/")
-        self.q: queue.Queue[dict] = queue.Queue(maxsize=max_queue)
+        # The queue also carries the private stop sentinel used by ``close``.
+        self.q: queue.Queue[object] = queue.Queue(maxsize=max_queue)
         self._closed = threading.Event()
         self._t = threading.Thread(target=self._run, daemon=True, name=name)
         self._t.start()
 
-    def publish(self, event) -> None:
+    def publish(self, event: ChangeEvent) -> None:
         if self._closed.is_set():
             return
         try:
@@ -116,13 +95,16 @@ class FastAPIChangeSink:
         except queue.Full:
             pass
 
-    def _run(self):
+    def _run(self) -> None:
         url = f"{self.endpoint}/ingest"
         with requests.Session() as session:
             while True:
-                ev = self.q.get()
-                if ev is self._STOP:
+                item = self.q.get()
+                if item is self._STOP:
                     return
+                if not isinstance(item, dict):
+                    continue
+                ev: dict[str, Any] = item
                 ctx = ev.pop("_log_ctx", None) or {}
                 try:
                     with bind_log_context(

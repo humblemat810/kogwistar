@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Generic, Protocol, TypeVar
+from typing import Generic, Protocol, TypeVar
 
 from kogwistar.id_provider import stable_id
 
@@ -11,6 +11,7 @@ from kogwistar.id_provider import stable_id
 TState = TypeVar("TState")
 TEvent = TypeVar("TEvent")
 TSnapshot = TypeVar("TSnapshot")
+ProjectionPayload = dict[str, object]
 _PROCESSED_EVENT_ID_TAIL_LIMIT = 1024
 
 
@@ -30,13 +31,13 @@ class CheckpointedProjectionStore(Protocol):
         batch_size: int = 500,
     ) -> Iterable[tuple[int, str, str, str, str]]: ...
 
-    def get_named_projection(self, namespace: str, key: str) -> dict[str, Any] | None: ...
+    def get_named_projection(self, namespace: str, key: str) -> ProjectionPayload | None: ...
 
     def replace_named_projection(
         self,
         namespace: str,
         key: str,
-        payload: dict[str, Any],
+        payload: ProjectionPayload,
         *,
         last_authoritative_seq: int,
         last_materialized_seq: int,
@@ -48,7 +49,7 @@ class CheckpointedProjectionStore(Protocol):
         self,
         namespace: str,
         key: str,
-        payload: dict[str, Any],
+        payload: ProjectionPayload,
         *,
         expected_last_authoritative_seq: int | None,
         expected_last_materialized_seq: int | None,
@@ -58,7 +59,7 @@ class CheckpointedProjectionStore(Protocol):
         materialization_status: str,
     ) -> bool: ...
 
-    def compare_and_swap_named_projections(self, updates: list[dict[str, Any]]) -> bool: ...
+    def compare_and_swap_named_projections(self, updates: list[ProjectionPayload]) -> bool: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,7 +85,7 @@ class ProjectionCheckpoint:
 class ProjectionLoadResult(Generic[TState]):
     state: TState
     checkpoint: ProjectionCheckpoint
-    payload: dict[str, Any]
+    payload: ProjectionPayload
 
 
 def _now_ms() -> int:
@@ -92,7 +93,7 @@ def _now_ms() -> int:
 
 
 def _default_snapshot_id(*, workspace_id: str, projection_id: str, source_to_seq: int) -> str:
-    return str(stable_id("projection_snapshot", workspace_id, projection_id, source_to_seq))
+    return str(stable_id("projection_snapshot", workspace_id, projection_id, str(source_to_seq)))
 
 
 def refresh_checkpointed_named_projection(
@@ -104,13 +105,13 @@ def refresh_checkpointed_named_projection(
     workspace_id: str,
     source_namespace: str,
     projection_schema_version: int,
-    decode_current: Callable[[Mapping[str, Any]], ProjectionLoadResult[TState]],
+    decode_current: Callable[[Mapping[str, object]], ProjectionLoadResult[TState]],
     create_state: Callable[[], TState],
     decode_event: Callable[[str], TEvent],
     event_key: Callable[[TEvent], str],
     apply_event: Callable[[TState, TEvent, int], None],
-    build_payload: Callable[[TState, ProjectionCheckpoint, Sequence[str]], dict[str, Any]],
-    build_snapshot: Callable[[Mapping[str, Any]], TSnapshot],
+    build_payload: Callable[[TState, ProjectionCheckpoint, Sequence[str]], ProjectionPayload],
+    build_snapshot: Callable[[Mapping[str, object]], TSnapshot],
     include_event: Callable[[str, str, str, str], bool] | None = None,
     rebuild_from_scratch: bool = False,
 ) -> TSnapshot:
