@@ -8,7 +8,17 @@ import queue
 import time
 import uuid
 from contextlib import nullcontext
-from typing import Any, Awaitable, Callable, ContextManager, Mapping, Protocol, TypeAlias, cast
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Awaitable,
+    Callable,
+    ContextManager,
+    Mapping,
+    Protocol,
+    TypeAlias,
+    cast,
+)
 
 from .models import RunFailure, StepRunResult, WorkflowState
 from .executor import TerminalStatus, WorkflowExecutor
@@ -31,6 +41,9 @@ from .runtime import (
 WorkflowRuntime = ThreadedWorkflowRuntime
 
 from .design import validate_workflow_design
+
+if TYPE_CHECKING:
+    from ..engine_core.engine import GraphKnowledgeEngine
 
 SyncStepFn: TypeAlias = Callable[[StepContext], StepRunResult]
 AsyncStepFn: TypeAlias = Callable[[StepContext], Awaitable[StepRunResult]]
@@ -97,8 +110,8 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
     def __init__(
         self,
         *,
-        workflow_engine: Any,
-        conversation_engine: Any,
+        workflow_engine: GraphKnowledgeEngine,
+        conversation_engine: GraphKnowledgeEngine,
         step_resolver: AsyncStepResolver,
         predicate_registry: dict[str, Any],
         checkpoint_every_n_steps: int = 1,

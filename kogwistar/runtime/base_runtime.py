@@ -4,7 +4,7 @@ import copy
 import logging
 import warnings
 from collections.abc import Mapping
-from typing import Any, TypeAlias
+from typing import TYPE_CHECKING, Any, TypeAlias
 
 from .._rust_bridge import (
     RustParityError,
@@ -19,6 +19,10 @@ from ..id_provider import stable_id
 from .budget import StateBackedBudgetLedger
 from .models import StateUpdate, WorkflowDesignArtifact, WorkflowInvocationRequest, WorkflowState
 from .routing import RouteComputation, compute_route_next
+
+if TYPE_CHECKING:
+    from ..engine_core.engine import GraphKnowledgeEngine
+    from .runtime import StepResolver
 
 
 RuntimePayload: TypeAlias = dict[str, object]
@@ -208,8 +212,8 @@ class BaseRuntime:
     async runtimes can inherit it without semantic drift.
     """
 
-    workflow_engine: Any
-    step_resolver: Any
+    workflow_engine: GraphKnowledgeEngine
+    step_resolver: StepResolver
     predicate_registry: dict[str, Any]
 
     validate_initial_state = staticmethod(validate_initial_state)

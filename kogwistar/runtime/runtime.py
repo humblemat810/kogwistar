@@ -6,7 +6,18 @@ import json
 import uuid
 import queue
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Mapping, Optional, Protocol, Tuple, cast
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Dict,
+    List,
+    Mapping,
+    Optional,
+    Protocol,
+    Tuple,
+    cast,
+)
 from concurrent.futures import ThreadPoolExecutor
 import pathlib
 import logging
@@ -48,6 +59,9 @@ from .base_runtime import (
     apply_state_update_inplace,
     validate_initial_state,
 )
+
+if TYPE_CHECKING:
+    from ..engine_core.engine import GraphKnowledgeEngine
 
 
 class LaneMessageSenderLike(Protocol):
@@ -573,8 +587,8 @@ class WorkflowRuntime(BaseRuntime):
     def __init__(
         self,
         *,
-        workflow_engine: Any,
-        conversation_engine: Any,
+        workflow_engine: GraphKnowledgeEngine,
+        conversation_engine: GraphKnowledgeEngine,
         step_resolver: StepResolver,
         predicate_registry: Dict[str, Predicate],
         checkpoint_every_n_steps: int = 1,
@@ -591,8 +605,6 @@ class WorkflowRuntime(BaseRuntime):
         fast_trace_persistence: bool | None = None,
         max_nested_workflow_depth: int = 8,
     ) -> None:
-        from kogwistar.engine_core.engine import GraphKnowledgeEngine
-
         self.workflow_engine: GraphKnowledgeEngine = workflow_engine
         self.conversation_engine: GraphKnowledgeEngine = conversation_engine
         self.step_resolver: StepResolver = step_resolver
