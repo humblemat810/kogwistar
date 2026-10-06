@@ -295,18 +295,24 @@ def _node_doc_and_meta(n: Union["Node", "PureChromaNode"]) -> tuple[str, dict]:
 def _edge_doc_and_meta(e: Union["Edge", "PureChromaEdge"]) -> tuple[str, dict]:
     """Return (documents_string, metadata_dict) for Chroma."""
     doc = e.model_dump_json(field_mode="backend")
-    meta = _strip_none(
-        {
-            "doc_id": getattr(e, "doc_id", None),
-            "relation": e.relation,
-            "source_ids": _json_or_none(e.source_ids),
-            "target_ids": _json_or_none(e.target_ids),
-            "type": e.type,
-            "summary": e.summary,
-            "domain_id": e.domain_id,
-            "canonical_entity_id": getattr(e, "canonical_entity_id", None),
-            "properties": _json_or_none(getattr(e, "properties", None)),
-        }
+    # Preserve edge metadata in the backend row.  Reads reconstruct metadata
+    # from this row, so dropping graph-space, workspace, ACL, or provenance
+    # fields here makes backend filtering and authorization lossy.
+    meta = dict(getattr(e, "metadata", None) or {})
+    meta.update(
+        _strip_none(
+            {
+                "doc_id": getattr(e, "doc_id", None),
+                "relation": e.relation,
+                "source_ids": _json_or_none(e.source_ids),
+                "target_ids": _json_or_none(e.target_ids),
+                "type": e.type,
+                "summary": e.summary,
+                "domain_id": e.domain_id,
+                "canonical_entity_id": getattr(e, "canonical_entity_id", None),
+                "properties": _json_or_none(getattr(e, "properties", None)),
+            }
+        )
     )
     # if hasattr(e,"mentions"):
     #     meta['mentions'] = _json_or_none([r.model_dump(field_mode = 'backend') for r in (e.mentions or [])])

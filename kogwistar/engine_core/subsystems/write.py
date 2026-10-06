@@ -771,47 +771,31 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"], WriteLike):
             getattr(edge, "target_edge_ids", []) or []
         )
         total_endpoint_count = node_endpoint_count + edge_endpoint_count
-        base_metadata: dict[str, Any] = strip_none(
-            {
-                "doc_id": edge.doc_id,
-                "relation": edge.relation,
-                "source_ids": json_or_none(edge.source_ids),
-                "target_ids": json_or_none(edge.target_ids),
-                "source_edge_ids": json_or_none(getattr(edge, "source_edge_ids", None)),
-                "target_edge_ids": json_or_none(getattr(edge, "target_edge_ids", None)),
-                "type": edge.type,
-                "summary": edge.summary,
-                "domain_id": edge.domain_id,
-                "canonical_entity_id": edge.canonical_entity_id,
-                "properties": json_or_none(edge.properties),
-                "references": json_or_none(
-                    [
-                        r.model_dump(field_mode="backend")
-                        for r in (getattr(edge, "mentions", None) or [])
-                    ]
-                ),
-                "node_endpoint_count": node_endpoint_count,
-                "edge_endpoint_count": edge_endpoint_count,
-                "total_endpoint_count": total_endpoint_count,
-            }
-        )
-        md = getattr(edge, "metadata", {}) or {}
+        md = dict(getattr(edge, "metadata", None) or {})
+        base_metadata: dict[str, Any] = dict(md)
         base_metadata.update(
             strip_none(
                 {
-                    "workspace_id": md.get("workspace_id"),
-                    "namespace": md.get("namespace"),
-                    "char_distance_from_last_summary": md.get(
-                        "char_distance_from_last_summary"
+                    "doc_id": edge.doc_id,
+                    "relation": edge.relation,
+                    "source_ids": json_or_none(edge.source_ids),
+                    "target_ids": json_or_none(edge.target_ids),
+                    "source_edge_ids": json_or_none(getattr(edge, "source_edge_ids", None)),
+                    "target_edge_ids": json_or_none(getattr(edge, "target_edge_ids", None)),
+                    "type": edge.type,
+                    "summary": edge.summary,
+                    "domain_id": edge.domain_id,
+                    "canonical_entity_id": edge.canonical_entity_id,
+                    "properties": json_or_none(edge.properties),
+                    "references": json_or_none(
+                        [
+                            r.model_dump(field_mode="backend")
+                            for r in (getattr(edge, "mentions", None) or [])
+                        ]
                     ),
-                    "turn_distance_from_last_summary": md.get(
-                        "turn_distance_from_last_summary"
-                    ),
-                    **(
-                        {"causal_type": md.get("causal_type")}
-                        if md.get("causal_type")
-                        else {}
-                    ),
+                    "node_endpoint_count": node_endpoint_count,
+                    "edge_endpoint_count": edge_endpoint_count,
+                    "total_endpoint_count": total_endpoint_count,
                 }
             )
         )
