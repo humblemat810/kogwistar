@@ -197,18 +197,24 @@ def node_doc_and_meta(n: "Node | PureChromaNode") -> tuple[str, JsonObject]:
 
 def edge_doc_and_meta(e: "Edge | PureChromaEdge") -> tuple[str, JsonObject]:
     doc = e.model_dump_json(field_mode="backend")
-    meta = strip_none(
-        {
-            "doc_id": getattr(e, "doc_id", None),
-            "relation": e.relation,
-            "source_ids": json_or_none(e.source_ids),
-            "target_ids": json_or_none(e.target_ids),
-            "type": e.type,
-            "summary": e.summary,
-            "domain_id": e.domain_id,
-            "canonical_entity_id": getattr(e, "canonical_entity_id", None),
-            "properties": json_or_none(getattr(e, "properties", None)),
-        }
+    # Keep edge metadata in the backend row as well as in the canonical JSON
+    # document.  Backend-side filtering must retain graph-space, workspace,
+    # ACL, and provenance fields when reconstructing an edge from metadata.
+    meta = dict(getattr(e, "metadata", None) or {})
+    meta.update(
+        strip_none(
+            {
+                "doc_id": getattr(e, "doc_id", None),
+                "relation": e.relation,
+                "source_ids": json_or_none(e.source_ids),
+                "target_ids": json_or_none(e.target_ids),
+                "type": e.type,
+                "summary": e.summary,
+                "domain_id": e.domain_id,
+                "canonical_entity_id": getattr(e, "canonical_entity_id", None),
+                "properties": json_or_none(getattr(e, "properties", None)),
+            }
+        )
     )
     mentions = getattr(e, "mentions", None)
     if mentions is not None:
