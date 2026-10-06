@@ -327,14 +327,27 @@ def test_backend_contract_collection_crud_and_where(
     assert q["metadatas"][0][0]["entity_type"] == "alpha"
 
     e1 = _mk_edge(edge_id="e1", src="n1", tgt="n2", doc_id=doc_id)
+    scoped_edge_metadata = {
+        **e1.metadata,
+        "workspace_id": "workspace-1",
+        "graph_space": "curated_kg",
+        "security_scope": "tenant-1",
+        "provenance_id": "provenance-1",
+        "relation": e1.relation,
+        "doc_id": doc_id,
+    }
     kg_engine.backend.edge_add(
         ids=[e1.id],
         documents=[e1.summary],
-        metadatas=[e1.metadata | {"relation": e1.relation, "doc_id": doc_id}],
+        metadatas=[scoped_edge_metadata],
         embeddings=[e1.embedding],
     )
     got_edge = kg_engine.backend.edge_get(where={"relation": "related_to"})
     assert got_edge["ids"] == ["e1"]
+    assert got_edge["metadatas"][0]["workspace_id"] == "workspace-1"
+    assert got_edge["metadatas"][0]["graph_space"] == "curated_kg"
+    assert got_edge["metadatas"][0]["security_scope"] == "tenant-1"
+    assert got_edge["metadatas"][0]["provenance_id"] == "provenance-1"
 
     q_edge = kg_engine.backend.edge_query(
         query_embeddings=[[0.0, 0.0, 1.0]],
