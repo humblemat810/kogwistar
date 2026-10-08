@@ -1,11 +1,19 @@
 from __future__ import annotations
+
 import time
 import uuid
+from collections.abc import Sequence
 from datetime import datetime, timedelta, timezone
-from typing import Optional, Dict, Any
+
 from jose import jwt
 from sqlalchemy.orm import Session
+
+from kogwistar.json_types import JsonValue
+
 from .repository import AuthRepository
+
+
+AuthScope = str | Sequence[str]
 
 
 class AuthService:
@@ -14,8 +22,8 @@ class AuthService:
         session: Session,
         jwt_secret: str,
         jwt_alg: str = "HS256",
-        jwt_iss: Optional[str] = None,
-        jwt_aud: Optional[str] = None,
+        jwt_iss: str | None = None,
+        jwt_aud: str | None = None,
     ):
         self.repo = AuthRepository(session)
         resolved_secret = jwt_secret
@@ -31,7 +39,7 @@ class AuthService:
         issuer: str,
         subject: str,
         email: str,
-        display_name: Optional[str] = None,
+        display_name: str | None = None,
         default_role: str = "ro",
         default_ns: str = "docs",
     ) -> str:
@@ -62,9 +70,9 @@ class AuthService:
     def mint_token(
         self,
         user_id: str,
-        role: Optional[str] = None,
-        ns: Any = None,
-        capabilities: Any = None,
+        role: str | None = None,
+        ns: AuthScope | None = None,
+        capabilities: AuthScope | None = None,
     ) -> str:
         user = self.repo.get_user(user_id)
         if not user:
@@ -72,16 +80,21 @@ class AuthService:
 
         # Explicit token parameters should override persisted defaults.
         final_role = role if role is not None else (user.global_role or "ro")
-        final_ns = ns if ns is not None else (user.global_ns or "docs")
+        final_ns: AuthScope = ns if ns is not None else (user.global_ns or "docs")
 
         # Handle string list in global_ns (e.g. "docs,workflow")
         if isinstance(final_ns, str) and "," in final_ns:
             final_ns = [x.strip() for x in final_ns.split(",")]
-        final_caps = capabilities
+        elif not isinstance(final_ns, str):
+            final_ns = list(final_ns)
+
+        final_caps: AuthScope | None = capabilities
         if isinstance(final_caps, str) and "," in final_caps:
             final_caps = [x.strip() for x in final_caps.split(",")]
+        elif final_caps is not None and not isinstance(final_caps, str):
+            final_caps = list(final_caps)
 
-        payload = {
+        payload: dict[str, JsonValue | None] = {
             "sub": user.email,
             "user_id": user.user_id,
             "role": final_role,
@@ -105,7 +118,7 @@ class AuthService:
         role_order = {"ro": 0, "rw": 1}
         return role_order.get(acl.role, 0) >= role_order.get(required_role, 0)
 
-    def get_user(self, user_id: str) -> Optional[Dict[str, Any]]:
+    def get_user(self, user_id: str) -> dict[str, JsonValue] | None:
         user = self.repo.get_user(user_id)
         if not user:
             return None
