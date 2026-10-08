@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, ParamSpec, Protocol, TypeVar
 
+from kogwistar.json_types import JsonValue
 from kogwistar.server.mcp_registry import McpRegistry
 
 
@@ -20,17 +21,28 @@ class ToolDecorator(Protocol):
 class RoleDecoratorFactory(Protocol):
     """Create a decorator that applies role or namespace metadata."""
 
-    def __call__(self, values: Any, /) -> ToolDecorator: ...
+    def __call__(self, values: object, /) -> ToolDecorator: ...
+
+
+class ChatToolService(Protocol):
+    """Dynamic JSON method surface consumed by the MCP tool definitions.
+
+    The concrete chat facade has many independently maintained methods. The
+    MCP layer only needs a callable method lookup whose results are JSON-safe;
+    this protocol avoids giving the whole facade an unchecked ``Any`` type.
+    """
+
+    def __getattr__(self, name: str) -> Callable[..., dict[str, JsonValue]]: ...
 
 
 def build_conversation_mcp(
     *,
-    get_service: Callable[[], Any],
+    get_service: Callable[[], ChatToolService],
     tool_roles: RoleDecoratorFactory,
     require_ns: RoleDecoratorFactory,
-    role_ro: Any,
-    role_rw: Any,
-    ns_conversation: Any,
+    role_ro: object,
+    role_rw: object,
+    ns_conversation: object,
 ) -> McpRegistry:
     mcp = McpRegistry("Conversation MCP")
 
@@ -90,12 +102,12 @@ def build_conversation_mcp(
 
 def build_workflow_mcp(
     *,
-    get_service: Callable[[], Any],
+    get_service: Callable[[], ChatToolService],
     tool_roles: RoleDecoratorFactory,
     require_ns: RoleDecoratorFactory,
-    role_ro: Any,
-    role_rw: Any,
-    ns_workflow: Any,
+    role_ro: object,
+    role_rw: object,
+    ns_workflow: object,
     get_subject: Callable[[], str | None] | None = None,
     get_user_id: Callable[[], str | None] | None = None,
     require_workflow_access: Callable[[str, str], None] | None = None,
