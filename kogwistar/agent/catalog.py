@@ -15,6 +15,7 @@ from urllib.parse import quote
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from kogwistar.engine_core.embedding_profile import NamedProjectionStore
+from kogwistar.json_types import JsonObject
 from kogwistar.runtime.checkpointed_projection import ProjectionPayload
 
 _TOKEN_RE = re.compile(r"[\w.-]+", re.UNICODE)
@@ -91,7 +92,7 @@ class CatalogEntry(BaseModel):
     tenant_id: str | None = None
     project_id: str | None = None
     semantic_ready: bool = False
-    metadata: dict[str, object] = Field(default_factory=dict)
+    metadata: JsonObject = Field(default_factory=dict)
 
     @field_validator("logical_id", "provider_id", "provider_local_id", "kind", "name")
     @classmethod
