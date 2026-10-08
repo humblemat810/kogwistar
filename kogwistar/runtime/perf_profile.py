@@ -20,6 +20,9 @@ from kogwistar.runtime.models import WorkflowEdge, WorkflowNode
 from kogwistar.runtime.models import RunSuccess
 from kogwistar.runtime.resolvers import MappingStepResolver
 from kogwistar.runtime.runtime import WorkflowRuntime
+from kogwistar.json_types import JsonValue
+
+JsonObject = dict[str, JsonValue]
 
 
 class _ProfileEmbeddingFunction:
@@ -354,7 +357,7 @@ def _profile_one_scenario(
     use_validation_cache: bool,
     sa_engine: Any | None = None,
     pg_schema: str | None = None,
-) -> dict[str, Any]:
+) -> JsonObject:
     workflow_engine = _build_profile_engine(
         root / "wf",
         graph_type="workflow",
@@ -582,7 +585,7 @@ def _profile_simple_resolver_workflow_scenario(
     use_validation_cache: bool,
     sa_engine: Any | None = None,
     pg_schema: str | None = None,
-) -> dict[str, Any]:
+) -> JsonObject:
     workflow_engine = _build_profile_engine(
         root / "wf",
         graph_type="workflow",
@@ -832,7 +835,7 @@ def _profile_job_loop_scenario(
     use_validation_cache: bool,
     sa_engine: Any | None = None,
     pg_schema: str | None = None,
-) -> dict[str, Any]:
+) -> JsonObject:
     conversation_engine = _build_profile_engine(
         root / "conv",
         graph_type="conversation",
@@ -974,7 +977,7 @@ def _profile_job_worker_parallel_scenario(
     use_validation_cache: bool,
     sa_engine: Any | None = None,
     pg_schema: str | None = None,
-) -> dict[str, Any]:
+) -> JsonObject:
     from ..workers.index_job_worker import IndexJobWorker
 
     conversation_engine = _build_profile_engine(
@@ -1159,7 +1162,7 @@ def profile_in_memory_index_job_worker_parallel(
     use_validation_cache: bool = True,
     sa_engine: Any | None = None,
     pg_schema: str | None = None,
-) -> dict[str, Any]:
+) -> JsonObject:
     root = (
         Path(output_root)
         if output_root is not None
@@ -1196,7 +1199,7 @@ def profile_in_memory_index_job_breakdown(
     use_validation_cache: bool = True,
     sa_engine: Any | None = None,
     pg_schema: str | None = None,
-) -> dict[str, Any]:
+) -> JsonObject:
     root = (
         Path(output_root)
         if output_root is not None
@@ -1255,7 +1258,7 @@ def profile_simple_resolver_workflow_mode(
     use_validation_cache: bool = True,
     sa_engine: Any | None = None,
     pg_schema: str | None = None,
-) -> dict[str, Any]:
+) -> JsonObject:
     root = (
         Path(output_root)
         if output_root is not None
@@ -1295,7 +1298,7 @@ def profile_simple_resolver_workflow(
     include_monitoring: bool = False,
     sa_engine: Any | None = None,
     pg_schema: str | None = None,
-) -> dict[str, Any]:
+) -> JsonObject:
     root = (
         Path(output_root)
         if output_root is not None
@@ -1348,7 +1351,7 @@ def profile_in_memory_checkpoint_write_mode(
     use_validation_cache: bool = True,
     sa_engine: Any | None = None,
     pg_schema: str | None = None,
-) -> dict[str, Any]:
+) -> JsonObject:
     root = (
         Path(output_root)
         if output_root is not None
@@ -1388,7 +1391,7 @@ def profile_in_memory_checkpoint_write(
     use_validation_cache: bool = True,
     sa_engine: Any | None = None,
     pg_schema: str | None = None,
-) -> dict[str, Any]:
+    ) -> JsonObject:
     root = (
         Path(output_root)
         if output_root is not None
@@ -1428,7 +1431,7 @@ def profile_in_memory_checkpoint_write(
     }
 
 
-def format_profile_report(report: dict[str, Any]) -> str:
+def format_profile_report(report: JsonObject) -> str:
     lines = [
         f"Python: {report.get('python')}",
         f"Output root: {report.get('output_root')}",
