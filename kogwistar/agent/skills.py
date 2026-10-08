@@ -73,7 +73,7 @@ class SkillGraphNode(BaseModel):
     required_capabilities: list[str] = Field(default_factory=list)
     binding_status: Literal["unbound", "validated"] = "unbound"
     invocable: bool = False
-    metadata: dict[str, object] = Field(default_factory=dict)
+    metadata: JsonObject = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _safe_invocation(self) -> "SkillGraphNode":
@@ -93,7 +93,7 @@ class SkillGraphEdge(BaseModel):
     target_ids: list[str]
     source_ref: str | None = None
     status: Literal["active", "candidate", "rejected"] = "active"
-    metadata: dict[str, object] = Field(default_factory=dict)
+    metadata: JsonObject = Field(default_factory=dict)
 
 
 class SkillGraphArtifact(BaseModel):
@@ -113,7 +113,7 @@ class SkillGraphArtifact(BaseModel):
     edges: list[SkillGraphEdge] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     unsupported: list[str] = Field(default_factory=list)
-    provenance: dict[str, object] = Field(default_factory=dict)
+    provenance: JsonObject = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _bounded_graph(self) -> "SkillGraphArtifact":
@@ -222,7 +222,7 @@ class SkillExecutionEvidence(BaseModel):
     result_ref: str | None = None
     outcome: Literal["success", "failure", "cancelled"]
 
-    def state_patch(self) -> dict[str, object]:
+    def state_patch(self) -> JsonObject:
         """Return JSON-compatible state for ordinary checkpoint/evidence writes."""
         return {"skill_execution_evidence": self.model_dump(mode="json")}
 
