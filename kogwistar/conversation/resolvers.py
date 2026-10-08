@@ -41,10 +41,11 @@ import time
 
 from ..utils.embedding_vectors import normalize_embedding_vector
 from typing import TYPE_CHECKING, Any, Callable, Dict, Union
+from kogwistar.json_types import JsonValue
 
 # Best-effort self-inspection for state schema inference
 
-Json = Any
+Json = JsonValue
 if TYPE_CHECKING:
     from .tool_runner import ToolRunner
     from kogwistar.runtime.runtime import StepContext
