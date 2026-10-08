@@ -11,7 +11,7 @@ from __future__ import annotations
 
 
 from dataclasses import dataclass, field, replace
-from typing import Any, Callable, List, Optional, cast
+from typing import Any, Callable, List, Optional, Protocol, cast
 
 from kogwistar.llm_tasks import LLMTaskSet, SummarizeContextTaskRequest
 
@@ -36,6 +36,12 @@ from .tool_runner import ToolRunner
 from .memory_retriever import MemoryRetriever, MemoryPinResult, MemoryRetrievalResult
 from .knowledge_retriever import KnowledgeRetriever
 from .policy import get_chat_tail, last_summary_of_node
+
+
+class TokenEstimator(Protocol):
+    """Estimate token count for one text sample."""
+
+    def __call__(self, text: str, /) -> int: ...
 
 
 @dataclass
@@ -114,7 +120,7 @@ def _stamp_meta(
 
 
 def _estimate_tokens_from_chars(
-    char_count: int, token_estimator: Callable[[str], int] | None = None
+    char_count: int, token_estimator: TokenEstimator | None = None
 ) -> int:
     """Estimate token count from character count.
 
@@ -327,7 +333,7 @@ class ConversationOrchestrator:
         summary_char_threshold: int = 12000,
         summary_token_threshold: int | None = None,
         summary_turn_threshold=5,
-        token_estimator: Callable[[str], int] | None = None,
+        token_estimator: TokenEstimator | None = None,
         in_conv: bool = True,
         prev_turn_meta_summary: MetaFromLastSummary | None = None,
         add_turn_only=None,
@@ -512,7 +518,7 @@ class ConversationOrchestrator:
         summary_char_threshold: int = 12000,
         summary_token_threshold: int | None = None,
         summary_turn_threshold=5,
-        token_estimator: Callable[[str], int] | None = None,
+        token_estimator: TokenEstimator | None = None,
         in_conv: bool = True,
         prev_turn_meta_summary: MetaFromLastSummary | None = None,
         add_turn_only=None,
@@ -910,7 +916,7 @@ class ConversationOrchestrator:
         summary_char_threshold: int = 12000,
         summary_token_threshold: int | None = None,
         summary_turn_threshold=5,
-        token_estimator: Callable[[str], int] | None = None,
+        token_estimator: TokenEstimator | None = None,
         in_conv: bool = True,
         prev_turn_meta_summary: MetaFromLastSummary | None = None,
         add_turn_only=None,
@@ -1186,7 +1192,7 @@ class ConversationOrchestrator:
         prev_turn_meta_summary: MetaFromLastSummary,
         summary_turn_threshold: int = 5,
         summary_token_threshold: int | None = None,
-        token_estimator: Callable[[str], int] | None = None,
+        token_estimator: TokenEstimator | None = None,
         cache_dir = None,
     ):
         """Run retrieval, pinning, answer generation, and optional summarization for one turn.
