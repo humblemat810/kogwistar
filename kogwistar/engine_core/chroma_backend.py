@@ -1,7 +1,8 @@
 import hashlib
 import uuid
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Protocol
 
 from .async_compat import run_awaitable_blocking
 from .embedding_profile import EmbeddingStorageState
@@ -17,6 +18,30 @@ _VECTOR_COLLECTION_NAMES = (
     "domains",
     "node_docs",
 )
+
+
+class ChromaCollection(Protocol):
+    """Minimal collection surface used by the backend adapter."""
+
+    def get(self, **kwargs: object) -> object: ...
+
+    def query(self, **kwargs: object) -> object: ...
+
+    def add(self, **kwargs: object) -> object: ...
+
+    def upsert(self, **kwargs: object) -> object: ...
+
+    def update(self, **kwargs: object) -> object: ...
+
+    def delete(self, **kwargs: object) -> object: ...
+
+
+class ChromaClient(Protocol):
+    """Minimal client surface needed to inspect persistent collections."""
+
+    def list_collections(self) -> Sequence[object]: ...
+
+    def get_collection(self, *, name: str) -> ChromaCollection: ...
 
 
 def _chroma_scope(persist_directory: str | None) -> str:
@@ -51,7 +76,7 @@ def _legacy_chroma_scope(persist_directory: str | None) -> str:
 class ChromaStorageInspector:
     """Inspect existing collections without passing an embedder to Chroma."""
 
-    def __init__(self, client: Any, persist_directory: str | None) -> None:
+    def __init__(self, client: ChromaClient, persist_directory: str | None) -> None:
         self._client = client
         self._persist_directory = (
             str(Path(persist_directory).expanduser().resolve())
@@ -91,12 +116,12 @@ class ChromaStorageInspector:
         )
 
 
-def _chroma_safe_kwargs(kwargs: Dict[str, Any]) -> Dict[str, Any]:
+def _chroma_safe_kwargs(kwargs: dict[str, object]) -> dict[str, object]:
     """Encode empty metadata lists rejected by Chroma without changing nodes."""
     metadatas = kwargs.get("metadatas")
     if not isinstance(metadatas, (list, tuple)):
         return kwargs
-    sanitized: list[Any] = []
+    sanitized: list[object] = []
     changed = False
     for metadata in metadatas:
         if not isinstance(metadata, dict):
@@ -164,18 +189,18 @@ class ChromaBackend:
     def __init__(
         self,
         *,
-        node_index_collection: Any,
-        node_collection: Any,
-        edge_collection: Any,
-        edge_endpoints_collection: Any,
-        document_collection: Any,
-        domain_collection: Any,
-        node_docs_collection: Any,
-        node_refs_collection: Any,
-        edge_refs_collection: Any,
+        node_index_collection: ChromaCollection,
+        node_collection: ChromaCollection,
+        edge_collection: ChromaCollection,
+        edge_endpoints_collection: ChromaCollection,
+        document_collection: ChromaCollection,
+        domain_collection: ChromaCollection,
+        node_docs_collection: ChromaCollection,
+        node_refs_collection: ChromaCollection,
+        edge_refs_collection: ChromaCollection,
         persist_directory: str | None = None,
     ):
-        self._collections: Dict[str, Any] = {
+        self._collections: dict[str, ChromaCollection] = {
             "node_index": node_index_collection,
             "node": node_collection,
             "edge": edge_collection,
@@ -223,13 +248,13 @@ class ChromaBackend:
             details=tuple(counts),
         )
 
-    def _c(self, key: str) -> Any:
+    def _c(self, key: str) -> ChromaCollection:
         try:
             return self._collections[key]
         except KeyError as e:
             raise KeyError(f"Unknown collection_key={key!r}") from e
 
-    def call(self, collection_key: str, method: str, **kwargs) -> Any:
+    def call(self, collection_key: str, method: str, **kwargs: object) -> object:
         coll = self._c(collection_key)
         fn = getattr(coll, method)
         return _awaitable_result(run_awaitable_blocking(fn(**_chroma_safe_kwargs(kwargs))))
@@ -414,7 +439,7 @@ class AsyncChromaBackend(ChromaBackend):
 
     is_async_backend = True
 
-    async def async_call(self, collection_key: str, method: str, **kwargs) -> Any:
+    async def async_call(self, collection_key: str, method: str, **kwargs: object) -> object:
         coll = self._c(collection_key)
         result = getattr(coll, method)(**_chroma_safe_kwargs(kwargs))
         if hasattr(result, "__await__"):
