@@ -21,7 +21,7 @@ from typing import (
 )
 
 from .models import RunFailure, StepRunResult, WorkflowState
-from .contract import Predicate
+from .contract import CancellationChecker, Predicate
 from .executor import TerminalStatus, WorkflowExecutor
 from .base_runtime import BaseRuntime, apply_state_update_inplace, validate_initial_state
 from .telemetry import TraceContext
@@ -67,7 +67,7 @@ class SyncCompatibleStepResolver(Protocol):
     def __call__(self, op: str) -> AsyncCompatibleStepFn: ...
 
 
-_CANCEL_REQUESTED_CTX: contextvars.ContextVar[Callable[[str], bool] | None] = (
+_CANCEL_REQUESTED_CTX: contextvars.ContextVar[CancellationChecker | None] = (
     contextvars.ContextVar("kogwistar_async_cancel_requested", default=None)
 )
 
@@ -129,7 +129,7 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
         trace: bool = True,
         events: EventEmitter | None = None,
         sink: EventSink | None = None,
-        cancel_requested: Callable[[str], bool] | None = None,
+        cancel_requested: CancellationChecker | None = None,
         lane_message_sender: LaneMessageSenderLike | None = None,
         lane_message_event_sink: LaneMessageEventSinkLike | None = None,
         fast_trace_persistence: bool | None = None,

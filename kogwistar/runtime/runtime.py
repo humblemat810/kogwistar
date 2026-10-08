@@ -46,7 +46,7 @@ from kogwistar.runtime.models import (
 from kogwistar.runtime.budget import BudgetAttribution, StateBackedBudgetLedger
 from kogwistar.runtime.budget_adapters import adapt_budget_events
 
-from .contract import Predicate
+from .contract import CancellationChecker, Predicate
 from .design import validate_workflow_design
 from .serialize import JsonValue, try_serialize_with_ref
 from .projections import (
@@ -600,7 +600,7 @@ class WorkflowRuntime(BaseRuntime):
         events: EventEmitter | None = None,
         sink: EventSink | None = None,
         otel_enabled: bool = False,
-        cancel_requested: Callable[[str], bool] | None = None,
+        cancel_requested: CancellationChecker | None = None,
         lane_message_sender: LaneMessageSenderLike | None = None,
         lane_message_event_sink: LaneMessageEventSinkLike | None = None,
         fast_trace_persistence: bool | None = None,

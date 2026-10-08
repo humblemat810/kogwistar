@@ -37,6 +37,7 @@ from kogwistar.llm_tasks import (
     LLMTaskSet,
     RepairCitationsTaskRequest,
 )
+from kogwistar.runtime.contract import CancellationChecker
 from typing import TYPE_CHECKING
 
 from kogwistar.llm_tasks.contracts import AnswerWithCitationsTaskResult
@@ -794,7 +795,7 @@ class AgenticAnsweringAgent:
         # quick-fix for nested runs: reuse outer trace emitter when available
         events: Any | None = None,
         trace: bool = True,
-        cancel_requested: Callable[[str], bool] | None = None,
+        cancel_requested: CancellationChecker | None = None,
         cache_dir = None
     ) -> dict[str, Any]:
         """Run agentic answering using the workflow runtime.

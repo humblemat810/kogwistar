@@ -106,6 +106,12 @@ class Predicate(Protocol):
     ) -> bool: ...
 
 
+class CancellationChecker(Protocol):
+    """Report whether a run has received a cancellation request."""
+
+    def __call__(self, run_id: str, /) -> bool: ...
+
+
 class BasePredicate:
     def __call__(
         self, e: WorkflowEdgeInfo, state: WorkflowState, result: StepRunResult
