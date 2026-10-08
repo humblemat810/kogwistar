@@ -46,7 +46,8 @@ from kogwistar.runtime.models import (
 from kogwistar.runtime.budget import BudgetAttribution, StateBackedBudgetLedger
 from kogwistar.runtime.budget_adapters import adapt_budget_events
 
-from .design import validate_workflow_design, Predicate
+from .contract import Predicate
+from .design import validate_workflow_design
 from .serialize import JsonValue, try_serialize_with_ref
 from .projections import (
     WORKFLOW_RUNTIME_PROJECTION_SCHEMA_VERSION,

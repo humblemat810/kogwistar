@@ -17,6 +17,7 @@ from .._rust_bridge import (
 )
 from ..id_provider import stable_id
 from .budget import StateBackedBudgetLedger
+from .contract import Predicate
 from .models import StateUpdate, WorkflowDesignArtifact, WorkflowInvocationRequest, WorkflowState
 from .routing import RouteComputation, compute_route_next
 
@@ -214,7 +215,7 @@ class BaseRuntime:
 
     workflow_engine: GraphKnowledgeEngine
     step_resolver: StepResolver
-    predicate_registry: dict[str, Any]
+    predicate_registry: dict[str, Predicate]
 
     validate_initial_state = staticmethod(validate_initial_state)
     apply_state_update_inplace = staticmethod(apply_state_update_inplace)
@@ -273,7 +274,7 @@ class BaseRuntime:
         state: WorkflowState,
         last_result: Any,
         fanout: bool,
-        predicate_registry: dict[str, Any],
+        predicate_registry: dict[str, Predicate],
         nodes: dict[str, Any] | None = None,
         sort_edges: bool = False,
     ) -> RouteComputation:

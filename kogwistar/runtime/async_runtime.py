@@ -21,6 +21,7 @@ from typing import (
 )
 
 from .models import RunFailure, StepRunResult, WorkflowState
+from .contract import Predicate
 from .executor import TerminalStatus, WorkflowExecutor
 from .base_runtime import BaseRuntime, apply_state_update_inplace, validate_initial_state
 from .telemetry import TraceContext
@@ -121,7 +122,7 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
         workflow_engine: GraphKnowledgeEngine,
         conversation_engine: GraphKnowledgeEngine,
         step_resolver: AsyncStepResolver,
-        predicate_registry: dict[str, Any],
+        predicate_registry: dict[str, Predicate],
         checkpoint_every_n_steps: int = 1,
         max_workers: int = 4,
         transaction_mode: str | None = None,
@@ -494,7 +495,7 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
         edges: list[Any],
         state: WorkflowState,
         result: StepRunResult,
-        predicate_registry: dict[str, Any],
+        predicate_registry: dict[str, Predicate],
         *,
         nodes: dict[str, Any] | None = None,
     ) -> list[Any]:

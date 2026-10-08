@@ -16,12 +16,9 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 from kogwistar.runtime.models import WorkflowEdge
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
-from .contract import BasePredicate
+from .contract import Predicate
 
 PredicateName = Optional[str]
-Predicate = BasePredicate
-
-
 def _terminal_reachable_python(
     *,
     start_node_id: str,
