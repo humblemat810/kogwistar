@@ -36,6 +36,7 @@ from ..utils.refs import ref_doc_id
 from ..vector_search import VectorSearchHit, similarity_from_distance
 from .base import NamespaceProxy
 from ...typing_interfaces import ProjectionBackendLike, ReadLike
+from ...json_types import JsonValue
 
 if TYPE_CHECKING:
     from ..engine import GraphKnowledgeEngine
@@ -49,7 +50,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
         super().__init__(engine)
 
     @staticmethod
-    def _native_equality_filter(where: Any) -> dict[str, Any] | None:
+    def _native_equality_filter(where: object) -> dict[str, JsonValue] | None:
         if where is None:
             return {}
         if not isinstance(where, dict):
@@ -61,17 +62,17 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
             for key, value in where.items()
         ):
             return None
-        return dict(where)
+        return cast(dict[str, JsonValue], dict(where))
 
     def _rust_postgres_projection_get(
         self,
         *,
         entity_kind: str,
         ids: Sequence[str] | None,
-        where: Any,
+        where: object,
         limit: int | None,
         include: list[str],
-    ) -> dict[str, Any] | None:
+    ) -> dict[str, JsonValue] | None:
         from ..rust_postgres_session import RustEnginePostgresMetaStore
 
         meta = getattr(self._e, "meta_sqlite", None)
@@ -104,7 +105,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
             metadata=metadata,
             limit=int(limit),
         )
-        result: dict[str, Any] = {
+        result: dict[str, JsonValue] = {
             "ids": [str(record.get("id") or "") for record in records]
         }
         if "documents" in effective_include:
@@ -125,10 +126,10 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
         *,
         entity_kind: str,
         query_embeddings: Sequence[Sequence[float]],
-        where: Any,
+        where: object,
         n_results: int,
         include: list[str],
-    ) -> dict[str, Any] | None:
+    ) -> dict[str, JsonValue] | None:
         from ..rust_postgres_session import RustEnginePostgresMetaStore
 
         meta = getattr(self._e, "meta_sqlite", None)
@@ -157,7 +158,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
         )
         records = [dict(match.get("record") or {}) for match in matches]
         effective_include = include or ["documents", "metadatas", "distances"]
-        result: dict[str, Any] = {
+        result: dict[str, JsonValue] = {
             "ids": [[str(record.get("id") or "") for record in records]]
         }
         if "documents" in effective_include:
@@ -184,10 +185,10 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
         *,
         entity_kind: str,
         ids: Sequence[str] | None,
-        where: Any,
+        where: object,
         limit: int | None,
         include: list[str],
-    ) -> dict[str, Any] | None:
+    ) -> dict[str, JsonValue] | None:
         """Read pending Chroma entities from the transient SQLite projection."""
         if getattr(self._e, "persistence_mode", "single_stage") != "two_stage":
             return None
@@ -205,11 +206,11 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
         )
         if not isinstance(rows, Iterable):
             return None
-        rows = [cast(Mapping[str, Any], row) for row in rows if isinstance(row, Mapping)]
+        rows = [cast(Mapping[str, object], row) for row in rows if isinstance(row, Mapping)]
         if not rows:
             return None
         payloads = [dict(row.get("payload") or {}) for row in rows]
-        result: dict[str, Any] = {
+        result: dict[str, JsonValue] = {
             "ids": [str(payload.get("id") or row.get("key") or "") for payload, row in zip(payloads, rows)]
         }
         if "documents" in include:
