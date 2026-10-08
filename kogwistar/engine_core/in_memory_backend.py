@@ -545,177 +545,177 @@ class InMemoryBackend:
         except AttributeError as exc:
             raise KeyError(f"Unknown collection_key={key!r}") from exc
 
-    def call(self, collection_key: str, method: str, **kwargs) -> Any:
+    def call(self, collection_key: str, method: str, **kwargs: object) -> object:
         coll = self._c(collection_key)
         fn = getattr(coll, method)
         return fn(**kwargs)
 
-    def node_index_get(self, **kwargs) -> Any:
+    def node_index_get(self, **kwargs: object) -> object:
         return self.call("node_index", "get", **kwargs)
 
-    def node_index_query(self, **kwargs) -> Any:
+    def node_index_query(self, **kwargs: object) -> object:
         return self.call("node_index", "query", **kwargs)
 
-    def node_index_add(self, **kwargs) -> Any:
+    def node_index_add(self, **kwargs: object) -> object:
         return self.call("node_index", "add", **kwargs)
 
-    def node_index_upsert(self, **kwargs) -> Any:
+    def node_index_upsert(self, **kwargs: object) -> object:
         return self.call("node_index", "upsert", **kwargs)
 
-    def node_index_update(self, **kwargs) -> Any:
+    def node_index_update(self, **kwargs: object) -> object:
         return self.call("node_index", "update", **kwargs)
 
-    def node_index_delete(self, **kwargs) -> Any:
+    def node_index_delete(self, **kwargs: object) -> object:
         return self.call("node_index", "delete", **kwargs)
 
-    def node_get(self, **kwargs) -> Any:
+    def node_get(self, **kwargs: object) -> object:
         return self.call("node", "get", **kwargs)
 
-    def node_query(self, **kwargs) -> Any:
+    def node_query(self, **kwargs: object) -> object:
         return self.call("node", "query", **kwargs)
 
-    def node_add(self, **kwargs) -> Any:
+    def node_add(self, **kwargs: object) -> object:
         return self.call("node", "add", **kwargs)
 
-    def node_upsert(self, **kwargs) -> Any:
+    def node_upsert(self, **kwargs: object) -> object:
         return self.call("node", "upsert", **kwargs)
 
-    def node_update(self, **kwargs) -> Any:
+    def node_update(self, **kwargs: object) -> object:
         return self.call("node", "update", **kwargs)
 
-    def node_clear_embeddings(self, **kwargs) -> Any:
-        return self.node.clear_embeddings(**kwargs)
+    def node_clear_embeddings(self, **kwargs: object) -> object:
+        return self.call("node", "clear_embeddings", **kwargs)
 
-    def node_delete(self, **kwargs) -> Any:
+    def node_delete(self, **kwargs: object) -> object:
         return self.call("node", "delete", **kwargs)
 
-    def edge_get(self, **kwargs) -> Any:
+    def edge_get(self, **kwargs: object) -> object:
         return self.call("edge", "get", **kwargs)
 
-    def edge_query(self, **kwargs) -> Any:
+    def edge_query(self, **kwargs: object) -> object:
         return self.call("edge", "query", **kwargs)
 
-    def edge_add(self, **kwargs) -> Any:
+    def edge_add(self, **kwargs: object) -> object:
         return self.call("edge", "add", **kwargs)
 
-    def edge_upsert(self, **kwargs) -> Any:
+    def edge_upsert(self, **kwargs: object) -> object:
         return self.call("edge", "upsert", **kwargs)
 
-    def edge_update(self, **kwargs) -> Any:
+    def edge_update(self, **kwargs: object) -> object:
         return self.call("edge", "update", **kwargs)
 
-    def edge_clear_embeddings(self, **kwargs) -> Any:
-        return self.edge.clear_embeddings(**kwargs)
+    def edge_clear_embeddings(self, **kwargs: object) -> object:
+        return self.call("edge", "clear_embeddings", **kwargs)
 
-    def edge_delete(self, **kwargs) -> Any:
+    def edge_delete(self, **kwargs: object) -> object:
         return self.call("edge", "delete", **kwargs)
 
-    def edge_endpoints_get(self, **kwargs) -> Any:
+    def edge_endpoints_get(self, **kwargs: object) -> object:
         return self.call("edge_endpoints", "get", **kwargs)
 
-    def edge_endpoints_query(self, **kwargs) -> Any:
+    def edge_endpoints_query(self, **kwargs: object) -> object:
         return self.call("edge_endpoints", "query", **kwargs)
 
-    def edge_endpoints_add(self, **kwargs) -> Any:
+    def edge_endpoints_add(self, **kwargs: object) -> object:
         return self.call("edge_endpoints", "add", **kwargs)
 
-    def edge_endpoints_upsert(self, **kwargs) -> Any:
+    def edge_endpoints_upsert(self, **kwargs: object) -> object:
         return self.call("edge_endpoints", "upsert", **kwargs)
 
-    def edge_endpoints_update(self, **kwargs) -> Any:
+    def edge_endpoints_update(self, **kwargs: object) -> object:
         return self.call("edge_endpoints", "update", **kwargs)
 
-    def edge_endpoints_delete(self, **kwargs) -> Any:
+    def edge_endpoints_delete(self, **kwargs: object) -> object:
         return self.call("edge_endpoints", "delete", **kwargs)
 
-    def document_get(self, **kwargs) -> Any:
+    def document_get(self, **kwargs: object) -> object:
         return self.call("document", "get", **kwargs)
 
-    def document_query(self, **kwargs) -> Any:
+    def document_query(self, **kwargs: object) -> object:
         return self.call("document", "query", **kwargs)
 
-    def document_add(self, **kwargs) -> Any:
+    def document_add(self, **kwargs: object) -> object:
         return self.call("document", "add", **kwargs)
 
-    def document_upsert(self, **kwargs) -> Any:
+    def document_upsert(self, **kwargs: object) -> object:
         return self.call("document", "upsert", **kwargs)
 
-    def document_update(self, **kwargs) -> Any:
+    def document_update(self, **kwargs: object) -> object:
         return self.call("document", "update", **kwargs)
 
-    def document_delete(self, **kwargs) -> Any:
+    def document_delete(self, **kwargs: object) -> object:
         return self.call("document", "delete", **kwargs)
 
-    def domain_get(self, **kwargs) -> Any:
+    def domain_get(self, **kwargs: object) -> object:
         return self.call("domain", "get", **kwargs)
 
-    def domain_query(self, **kwargs) -> Any:
+    def domain_query(self, **kwargs: object) -> object:
         return self.call("domain", "query", **kwargs)
 
-    def domain_add(self, **kwargs) -> Any:
+    def domain_add(self, **kwargs: object) -> object:
         return self.call("domain", "add", **kwargs)
 
-    def domain_upsert(self, **kwargs) -> Any:
+    def domain_upsert(self, **kwargs: object) -> object:
         return self.call("domain", "upsert", **kwargs)
 
-    def domain_update(self, **kwargs) -> Any:
+    def domain_update(self, **kwargs: object) -> object:
         return self.call("domain", "update", **kwargs)
 
-    def domain_delete(self, **kwargs) -> Any:
+    def domain_delete(self, **kwargs: object) -> object:
         return self.call("domain", "delete", **kwargs)
 
-    def node_docs_get(self, **kwargs) -> Any:
+    def node_docs_get(self, **kwargs: object) -> object:
         return self.call("node_docs", "get", **kwargs)
 
-    def node_docs_query(self, **kwargs) -> Any:
+    def node_docs_query(self, **kwargs: object) -> object:
         return self.call("node_docs", "query", **kwargs)
 
-    def node_docs_add(self, **kwargs) -> Any:
+    def node_docs_add(self, **kwargs: object) -> object:
         return self.call("node_docs", "add", **kwargs)
 
-    def node_docs_upsert(self, **kwargs) -> Any:
+    def node_docs_upsert(self, **kwargs: object) -> object:
         return self.call("node_docs", "upsert", **kwargs)
 
-    def node_docs_update(self, **kwargs) -> Any:
+    def node_docs_update(self, **kwargs: object) -> object:
         return self.call("node_docs", "update", **kwargs)
 
-    def node_docs_delete(self, **kwargs) -> Any:
+    def node_docs_delete(self, **kwargs: object) -> object:
         return self.call("node_docs", "delete", **kwargs)
 
-    def node_refs_get(self, **kwargs) -> Any:
+    def node_refs_get(self, **kwargs: object) -> object:
         return self.call("node_refs", "get", **kwargs)
 
-    def node_refs_query(self, **kwargs) -> Any:
+    def node_refs_query(self, **kwargs: object) -> object:
         return self.call("node_refs", "query", **kwargs)
 
-    def node_refs_add(self, **kwargs) -> Any:
+    def node_refs_add(self, **kwargs: object) -> object:
         return self.call("node_refs", "add", **kwargs)
 
-    def node_refs_upsert(self, **kwargs) -> Any:
+    def node_refs_upsert(self, **kwargs: object) -> object:
         return self.call("node_refs", "upsert", **kwargs)
 
-    def node_refs_update(self, **kwargs) -> Any:
+    def node_refs_update(self, **kwargs: object) -> object:
         return self.call("node_refs", "update", **kwargs)
 
-    def node_refs_delete(self, **kwargs) -> Any:
+    def node_refs_delete(self, **kwargs: object) -> object:
         return self.call("node_refs", "delete", **kwargs)
 
-    def edge_refs_get(self, **kwargs) -> Any:
+    def edge_refs_get(self, **kwargs: object) -> object:
         return self.call("edge_refs", "get", **kwargs)
 
-    def edge_refs_query(self, **kwargs) -> Any:
+    def edge_refs_query(self, **kwargs: object) -> object:
         return self.call("edge_refs", "query", **kwargs)
 
-    def edge_refs_add(self, **kwargs) -> Any:
+    def edge_refs_add(self, **kwargs: object) -> object:
         return self.call("edge_refs", "add", **kwargs)
 
-    def edge_refs_upsert(self, **kwargs) -> Any:
+    def edge_refs_upsert(self, **kwargs: object) -> object:
         return self.call("edge_refs", "upsert", **kwargs)
 
-    def edge_refs_update(self, **kwargs) -> Any:
+    def edge_refs_update(self, **kwargs: object) -> object:
         return self.call("edge_refs", "update", **kwargs)
 
-    def edge_refs_delete(self, **kwargs) -> Any:
+    def edge_refs_delete(self, **kwargs: object) -> object:
         return self.call("edge_refs", "delete", **kwargs)
 
     def embed(self, texts: Sequence[str]) -> list[list[float]]:
