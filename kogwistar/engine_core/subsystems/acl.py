@@ -15,6 +15,7 @@ from ...cdc.change_event import EntityRefModel
 from ...engine_core.models import Edge, Grounding, Node, Span
 from ...engine_core.vector_search import VectorSearchHit
 from ...id_provider import stable_id
+from ...json_types import JsonValue
 from .base import NamespaceProxy
 from ...typing_interfaces import ReadLike, WriteLike
 
@@ -673,7 +674,7 @@ class ACLSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         shared_with_groups: Sequence[str] = (),
         source_ids: Sequence[str] = (),
         derivation_type: str | None = None,
-        derivation_audit: dict[str, Any] | None = None,
+        derivation_audit: dict[str, JsonValue] | None = None,
         supersedes_version: int | None = None,
         tombstoned: bool = False,
     ) -> ACLRecord:

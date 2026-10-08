@@ -3,7 +3,9 @@ from __future__ import annotations
 from collections import OrderedDict
 from dataclasses import dataclass
 from threading import RLock
-from typing import Any, Callable, Iterable, Literal, Mapping
+from typing import Callable, Iterable, Literal, Mapping
+
+from ..json_types import JsonValue
 
 
 ACLMode = Literal["private", "shared", "scope", "group", "public"]
@@ -30,7 +32,7 @@ class ACLRecord:
     shared_with_groups: tuple[str, ...] = ()
     source_ids: tuple[str, ...] = ()
     derivation_type: str | None = None
-    derivation_audit: Mapping[str, Any] | None = None
+    derivation_audit: Mapping[str, JsonValue] | None = None
     tombstoned: bool = False
     supersedes_version: int | None = None
 
@@ -202,7 +204,7 @@ class ACLGraph:
         shared_with_groups: Iterable[str] = (),
         source_ids: Iterable[str] = (),
         derivation_type: str | None = None,
-        derivation_audit: Mapping[str, Any] | None = None,
+        derivation_audit: Mapping[str, JsonValue] | None = None,
         supersedes_version: int | None = None,
         tombstoned: bool = False,
     ) -> ACLRecord:
