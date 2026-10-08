@@ -12,7 +12,7 @@ from ...acl.graph import (
 )
 from ...acl.models import ACLEdge, ACLNode
 from ...cdc.change_event import EntityRefModel
-from ...engine_core.models import Edge, Grounding, Node, Span
+from ...engine_core.models import Document, Edge, Grounding, Node, Span
 from ...engine_core.vector_search import VectorSearchHit
 from ...id_provider import stable_id
 from ...json_types import JsonValue
@@ -1336,6 +1336,21 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
             if self._node_visible(hit.node)
         ]
 
+    def nodes_from_single_or_id_query_result(self, *args: Any, **kwargs: Any) -> list[Node]:
+        return self._raw.nodes_from_single_or_id_query_result(*args, **kwargs)
+
+    def edges_from_single_or_id_query_result(self, *args: Any, **kwargs: Any) -> list[Edge]:
+        return self._raw.edges_from_single_or_id_query_result(*args, **kwargs)
+
+    def nodes_from_query_result(self, *args: Any, **kwargs: Any) -> list[list[Node]]:
+        return self._raw.nodes_from_query_result(*args, **kwargs)
+
+    def edges_from_query_result(self, *args: Any, **kwargs: Any) -> list[list[Edge]]:
+        return self._raw.edges_from_query_result(*args, **kwargs)
+
+    def where_update_from_resolve_mode(self, *args: Any, **kwargs: Any) -> dict[str, str]:
+        return self._raw.where_update_from_resolve_mode(*args, **kwargs)
+
 
 class ACLAwareWriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"], WriteLike):
     def __init__(self, engine: "GraphKnowledgeEngine", raw_write: WriteLike) -> None:
@@ -1344,6 +1359,9 @@ class ACLAwareWriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"], WriteLike):
 
     def __getattr__(self, name: str):
         return getattr(self._raw, name)
+
+    def add_document(self, document: Document) -> None:
+        self._raw.add_document(document)
 
     def add_node(self, node: Node, *args: Any, **kwargs: Any) -> None:
         if not self._e.acl.writes_can_share_backend_transaction():
@@ -1399,3 +1417,9 @@ class ACLAwareWriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"], WriteLike):
 
     def index_edge_refs(self, edge: Edge) -> list[str]:
         return self._raw.index_edge_refs(edge)
+
+    def delete_edge_ref_rows(self, edge_id: str) -> None:
+        self._raw.delete_edge_ref_rows(edge_id)
+
+    def delete_node_ref_rows(self, node_id: str) -> None:
+        self._raw.delete_node_ref_rows(node_id)

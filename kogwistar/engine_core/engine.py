@@ -842,7 +842,10 @@ class GraphKnowledgeEngine:
         got: Mapping[str, JsonValue],
         node_type: Type[TNode] = Node,
     ) -> list[TNode]:
-        return self.read.nodes_from_single_or_id_query_result(got, node_type=node_type)
+        return cast(
+            list[TNode],
+            self.read.nodes_from_single_or_id_query_result(got, node_type=node_type),
+        )
 
     def edges_from_single_or_id_query_result(
         self,
@@ -850,10 +853,13 @@ class GraphKnowledgeEngine:
         edge_type: Type[TEdge] = Edge,
         include: Sequence[str] | None = None,
     ) -> list[TEdge]:
-        return self.read.edges_from_single_or_id_query_result(
-            got,
-            edge_type=edge_type,
-            include=include,
+        return cast(
+            list[TEdge],
+            self.read.edges_from_single_or_id_query_result(
+                got,
+                edge_type=edge_type,
+                include=include,
+            ),
         )
 
     def nodes_from_query_result(
@@ -861,14 +867,20 @@ class GraphKnowledgeEngine:
         gots: Mapping[str, JsonValue],
         node_type: Type[TNode] = Node,
     ) -> list[list[TNode]]:
-        return self.read.nodes_from_query_result(gots, node_type=node_type)
+        return cast(
+            list[list[TNode]],
+            self.read.nodes_from_query_result(gots, node_type=node_type),
+        )
 
     def edges_from_query_result(
         self,
         gots: Mapping[str, JsonValue],
         edge_type: Type[TEdge] = Edge,
     ) -> list[list[TEdge]]:
-        return self.read.edges_from_query_result(gots, edge_type=edge_type)
+        return cast(
+            list[list[TEdge]],
+            self.read.edges_from_query_result(gots, edge_type=edge_type),
+        )
 
     def _where_update_from_resolve_mode(
         self, resolve_mode: Literal["active_only", "redirect", "include_tombstones"]

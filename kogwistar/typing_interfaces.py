@@ -4,6 +4,7 @@ from __future__ import annotations
 from contextlib import AbstractContextManager
 from typing import (
     Mapping,
+    Literal,
     Protocol,
     Sequence,
     TypeAlias,
@@ -315,6 +316,40 @@ class ReadLike(Protocol):
         prefer_label_fallback: bool = True,
     ) -> list[dict[str, JsonValue]]: ...
 
+    def nodes_from_single_or_id_query_result(
+        self,
+        got: Mapping[str, JsonValue],
+        *,
+        node_type: type[GraphNode] = ...,
+    ) -> list[GraphNode]: ...
+
+    def edges_from_single_or_id_query_result(
+        self,
+        got: Mapping[str, JsonValue],
+        *,
+        edge_type: type[GraphEdge] = ...,
+        include: Sequence[str] | None = None,
+    ) -> list[GraphEdge]: ...
+
+    def nodes_from_query_result(
+        self,
+        got: Mapping[str, JsonValue],
+        *,
+        node_type: type[GraphNode] = ...,
+    ) -> list[list[GraphNode]]: ...
+
+    def edges_from_query_result(
+        self,
+        got: Mapping[str, JsonValue],
+        *,
+        edge_type: type[GraphEdge] = ...,
+    ) -> list[list[GraphEdge]]: ...
+
+    def where_update_from_resolve_mode(
+        self,
+        resolve_mode: Literal["active_only", "redirect", "include_tombstones"],
+    ) -> dict[str, str]: ...
+
 
 class LifecycleLike(Protocol):
     """Stable lifecycle mutation surface shared by engine implementations."""
@@ -340,6 +375,9 @@ class WriteLike(Protocol):
     def index_node_docs(self, node: GraphNode) -> list[str]: ...
     def index_node_refs(self, node: GraphNode) -> list[str]: ...
     def index_edge_refs(self, edge: GraphEdge) -> list[str]: ...
+
+    def delete_edge_ref_rows(self, edge_id: str) -> None: ...
+    def delete_node_ref_rows(self, node_id: str) -> None: ...
 
 
 class ExtractLike(Protocol):
