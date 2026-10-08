@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from typing import Any, cast
+from typing import cast
 
 from kogwistar.acl.derivation import (
     ACLInput,
+    ACLRecord,
     Declassifier,
     derive_acl,
     normalize_derivation_policy,
@@ -91,7 +92,10 @@ def _failure(ctx: StepContext, message: str) -> RunFailure:
     )
 
 
-def _trusted_acl_inputs(ctx: StepContext, key: str) -> list[Any]:
+ACLInputValue = ACLInput | ACLRecord | Mapping[str, object]
+
+
+def _trusted_acl_inputs(ctx: StepContext, key: str) -> list[ACLInputValue]:
     """Read ACL descriptors from the runtime authority carrier only.
 
     Mutable workflow state may carry provenance for display, but cannot widen
@@ -102,9 +106,17 @@ def _trusted_acl_inputs(ctx: StepContext, key: str) -> list[Any]:
     if isinstance(authority, Mapping):
         supplied = authority.get("acl_inputs")
         if supplied is not None:
-            if isinstance(supplied, Mapping) or isinstance(supplied, ACLInput):
+            if isinstance(supplied, (Mapping, ACLInput, ACLRecord)):
                 return [supplied]
-            return list(supplied)
+            if isinstance(supplied, Sequence) and not isinstance(
+                supplied, (str, bytes, bytearray)
+            ):
+                return [
+                    item
+                    for item in supplied
+                    if isinstance(item, (Mapping, ACLInput, ACLRecord))
+                ]
+            return []
     state_supplied = ctx.state_view.get(key)
     if state_supplied is None:
         return []
