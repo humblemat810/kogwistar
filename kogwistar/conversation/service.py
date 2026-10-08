@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
-from typing import TYPE_CHECKING, Any, Callable, Optional, Type
+from typing import TYPE_CHECKING, Any, Optional, Type
 
 from pydantic import BaseModel
 
@@ -18,6 +18,7 @@ from kogwistar.conversation.conversation_context import (
     PromptContext,
     apply_ordering,
 )
+from kogwistar.conversation.callbacks import RetrievalFilteringCallback
 from kogwistar.conversation.conversation_orchestrator import (
     ConversationOrchestrator,
 )
@@ -27,9 +28,7 @@ from kogwistar.conversation.models import (
     ConversationAIResponse,
     ConversationEdge,
     ConversationNode,
-    FilteringResult,
     MetaFromLastSummary,
-    RetrievalResult,
 )
 from kogwistar.conversation.policy import (
     get_chat_tail,
@@ -526,9 +525,7 @@ class ConversationService:
         role: str,
         content: str,
         ref_knowledge_engine: "GraphKnowledgeEngine",
-        filtering_callback: Callable[
-            ..., tuple[FilteringResult | RetrievalResult, str]
-        ],
+        filtering_callback: RetrievalFilteringCallback,
         max_retrieval_level: int = 2,
         summary_char_threshold=12000,
         prev_turn_meta_summary: MetaFromLastSummary = MetaFromLastSummary(0, 0),
