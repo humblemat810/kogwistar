@@ -17,7 +17,7 @@ import logging
 import os
 import importlib
 import math
-from typing import Any, Protocol, Sequence, cast
+from typing import Protocol, Sequence, cast
 
 from ..utils.embedding_vectors import normalize_embedding_vector
 
@@ -33,6 +33,12 @@ class EmbeddingFunctionLike(Protocol):
     def name() -> str: ...
 
     def __call__(self, documents_or_texts: Sequence[str]) -> Embeddings: ...
+
+
+class OllamaEmbeddingResponseLike(Protocol):
+    """Stable response field consumed from the optional Ollama SDK."""
+
+    embedding: Sequence[float]
 
 # ---------------------------------------------------------------------------
 # Shared normalisation helper
@@ -109,9 +115,11 @@ class OllamaEmbeddingFunction(EmbeddingFunctionLike):
 
         raw: list[list[float]] = []
         for p in documents_or_texts:
-            out = ollama.embeddings(model=self.model_name, prompt=p)
-            vec_any = cast(Any, out).embedding
-            raw.append(normalize_embedding_vector(vec_any, allow_none=False) or [])
+            out = cast(
+                OllamaEmbeddingResponseLike,
+                ollama.embeddings(model=self.model_name, prompt=p),
+            )
+            raw.append(normalize_embedding_vector(out.embedding, allow_none=False) or [])
         return _l2_normalize(raw)
 
 
