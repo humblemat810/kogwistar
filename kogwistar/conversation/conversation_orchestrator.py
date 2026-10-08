@@ -45,7 +45,7 @@ class OrchestratorState:
     mem_id: str
     user_text: str
     role: str
-    ref_knowledge_engine: Any
+    ref_knowledge_engine: GraphKnowledgeEngine
 
     # created turn
     current_turn_node_id: str | None = None
@@ -137,14 +137,16 @@ def _estimate_tokens_from_chars(
     return max(1, int(round(sample_tokens * (char_count / sample_n))))
 
 
-def _get_conversation_tail_compat(conversation_engine: Any, conversation_id: str):
+def _get_conversation_tail_compat(
+    conversation_engine: GraphKnowledgeEngine, conversation_id: str
+):
     try:
         return get_chat_tail(conversation_engine, conversation_id=conversation_id)
     except Exception:
         return None
 
 
-def _iterative_emb_compat(engine: Any, text: str):
+def _iterative_emb_compat(engine: GraphKnowledgeEngine, text: str):
     embed_ns = getattr(engine, "embed", None)
     if embed_ns is not None and hasattr(embed_ns, "iterative_defensive_emb"):
         return normalize_embedding_vector(
