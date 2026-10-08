@@ -24,6 +24,9 @@ from typing import TYPE_CHECKING, Any, Protocol
 import httpx
 
 from kogwistar.id_provider import stable_id
+from kogwistar.json_types import JsonValue
+
+JsonObject = dict[str, JsonValue]
 
 if TYPE_CHECKING:
     from kogwistar.runtime.runtime import StepContext
@@ -40,15 +43,15 @@ class RustStepResolver(Protocol):
 
 
 class RustDependencyProvider(Protocol):
-    def __call__(self, work: Mapping[str, Any]) -> Mapping[str, Any]: ...
+    def __call__(self, work: Mapping[str, JsonValue]) -> Mapping[str, JsonValue]: ...
 
 
 class RustPredicate(Protocol):
-    def __call__(self, edge: object, state: Mapping[str, Any], result: Any) -> bool: ...
+    def __call__(self, edge: object, state: Mapping[str, JsonValue], result: Any) -> bool: ...
 
 
 class RustWorkerExecutor(Protocol):
-    def __call__(self, work: dict[str, Any]) -> Mapping[str, Any]: ...
+    def __call__(self, work: JsonObject) -> Mapping[str, JsonValue]: ...
 
 
 class RustWorkerError(RuntimeError):
@@ -72,21 +75,21 @@ class _FrozenWorkerRoute:
     join_mask: int
     label: str
     aliases: tuple[str, ...]
-    metadata: Mapping[str, Any]
+    metadata: Mapping[str, JsonValue]
 
     @property
     def id(self) -> str:
         return self.edge_id
 
 
-def _json_copy(value: Any, *, field: str) -> Any:
+def _json_copy(value: object, *, field: str) -> JsonValue:
     try:
         return json.loads(_canonical(value))
     except (TypeError, ValueError) as error:
         raise RustWorkerError(f"{field} must be JSON-only: {error}") from error
 
 
-def _durable_state(value: Mapping[str, Any], *, field: str) -> dict[str, Any]:
+def _durable_state(value: Mapping[str, JsonValue], *, field: str) -> JsonObject:
     durable = {
         key: item
         for key, item in value.items()
@@ -116,7 +119,7 @@ class RustStepResolverAdapter:
         self.dependency_provider = dependency_provider
         self.cache_dir = os.fspath(cache_dir) if cache_dir is not None else None
 
-    def _routes(self, payload: Mapping[str, Any], node_id: str) -> list[_FrozenWorkerRoute]:
+    def _routes(self, payload: Mapping[str, JsonValue], node_id: str) -> list[_FrozenWorkerRoute]:
         raw_routes = payload.get("runtime_routes", [])
         if not isinstance(raw_routes, list):
             raise RustWorkerError("claimed work runtime_routes must be an array")
@@ -185,7 +188,7 @@ class RustStepResolverAdapter:
                     f"Rust worker protocol does not yet represent {capability} op {op!r}"
                 )
 
-    def __call__(self, work: dict[str, Any]) -> dict[str, Any]:
+    def __call__(self, work: JsonObject) -> JsonObject:
         # Keep these imports local: this module deliberately avoids importing
         # the public runtime while its protocol helpers are imported.
         from kogwistar.runtime.models import RunFailure
@@ -238,8 +241,8 @@ class RustStepResolverAdapter:
             raise RustWorkerError(f"step_resolver({op!r}) returned a non-callable")
         if inspect.iscoroutinefunction(resolver):
             raise RustWorkerError("async resolver callbacks are not in worker contract v1")
-        message_queue: queue.Queue[dict[str, Any]] = queue.Queue()
-        lane_message_attempts: list[dict[str, Any]] = []
+        message_queue: queue.Queue[JsonObject] = queue.Queue()
+        lane_message_attempts: list[JsonObject] = []
 
         def record_lane_message(**kwargs: Any) -> dict[str, str]:
             lane_message_attempts.append(dict(kwargs))
@@ -289,13 +292,13 @@ class RustStepResolverAdapter:
         self,
         *,
         result: Any,
-        state: dict[str, Any],
+        state: JsonObject,
         before: Any,
         routes: list[_FrozenWorkerRoute],
         node_id: str,
-        message_queue: queue.Queue[dict[str, Any]],
-        lane_message_attempts: list[dict[str, Any]],
-    ) -> dict[str, Any]:
+        message_queue: queue.Queue[JsonObject],
+        lane_message_attempts: list[JsonObject],
+    ) -> JsonObject:
         """Apply v1 result restrictions shared by sync-v1 and async-v2 workers."""
         from kogwistar.runtime.base_runtime import apply_state_update_inplace
         from kogwistar.runtime.models import (
@@ -329,7 +332,7 @@ class RustStepResolverAdapter:
                 "direct resolver state deletion is not in the runtime state-update contract: "
                 f"{sorted(deleted)!r}"
             )
-        state_update: list[Any] = []
+        state_update: list[JsonValue] = []
         if changed:
             state_update.append(["u", changed])
         state_schema = _json_copy(
@@ -361,7 +364,7 @@ class RustStepResolverAdapter:
         if result_update and result_state_update:
             raise RustWorkerError("result may use either update or state_update, not both")
         if result_update:
-            normalized: dict[str, dict[str, Any]] = {"u": {}, "e": {}}
+            normalized: dict[str, JsonObject] = {"u": {}, "e": {}}
             for key, value in result_update.items():
                 mode = "e" if str(state_schema.get(key) or "u") == "a" else "u"
                 if mode not in normalized:
@@ -406,7 +409,7 @@ class RustStepResolverAdapter:
             "suspended": "suspended",
             "failure": "failed",
         }[result.status]
-        effect: dict[str, Any] = {
+        effect: JsonObject = {
             "status": status,
             "state_update": state_update,
             "state_schema": state_schema,
@@ -439,7 +442,7 @@ class AsyncRustStepResolverAdapter(RustStepResolverAdapter):
     exact restricted worker-effect contract shared with sync-v1.
     """
 
-    async def execute(self, work: dict[str, Any]) -> dict[str, Any]:
+    async def execute(self, work: JsonObject) -> JsonObject:
         from kogwistar.runtime.models import RunFailure
         from kogwistar.runtime.runtime import StepContext
 
@@ -485,8 +488,8 @@ class AsyncRustStepResolverAdapter(RustStepResolverAdapter):
             raise RustWorkerError(f"cannot resolve frozen op {op!r}: {error}") from error
         if not callable(resolver):
             raise RustWorkerError(f"step_resolver({op!r}) returned a non-callable")
-        message_queue: queue.Queue[dict[str, Any]] = queue.Queue()
-        lane_message_attempts: list[dict[str, Any]] = []
+        message_queue: queue.Queue[JsonObject] = queue.Queue()
+        lane_message_attempts: list[JsonObject] = []
 
         def record_lane_message(**kwargs: Any) -> dict[str, str]:
             lane_message_attempts.append(dict(kwargs))
@@ -537,7 +540,7 @@ def _canonical(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
-def _work_digest(work: Mapping[str, Any]) -> str:
+def _work_digest(work: Mapping[str, JsonValue]) -> str:
     immutable = {
         key: work.get(key)
         for key in (
@@ -577,7 +580,7 @@ class WorkerResultJournal:
             pass
         return connection
 
-    def begin(self, *, message_id: str, work_digest: str) -> dict[str, Any] | None:
+    def begin(self, *, message_id: str, work_digest: str) -> JsonObject | None:
         with closing(self._connect()) as connection:
             with connection:
                 row = connection.execute(
@@ -613,7 +616,7 @@ class WorkerResultJournal:
                     )
                 return result
 
-    def complete(self, *, message_id: str, result: Mapping[str, Any]) -> None:
+    def complete(self, *, message_id: str, result: Mapping[str, JsonValue]) -> None:
         result_json = _canonical(dict(result))
         with closing(self._connect()) as connection:
             with connection:
@@ -692,7 +695,7 @@ class RustRuntimeWorker:
     def __exit__(self, *_exc: object) -> None:
         self.close()
 
-    def _post(self, path: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+    def _post(self, path: str, payload: Mapping[str, JsonValue]) -> JsonObject:
         try:
             response = self.client.post(path, json=dict(payload))
             response.raise_for_status()
@@ -709,12 +712,12 @@ class RustRuntimeWorker:
         limit: int = 1,
         lease_seconds: int = 60,
         run_id: str | None = None,
-    ) -> list[dict[str, Any]]:
+    ) -> list[JsonObject]:
         if limit <= 0 or lease_seconds <= 0:
             raise ValueError("limit and lease_seconds must be positive")
         if run_id is not None and not run_id.strip():
             raise ValueError("run_id must not be empty")
-        payload: dict[str, Any] = {
+        payload: JsonObject = {
             "claimed_by": self.worker_id,
             "limit": limit,
             "lease_seconds": lease_seconds,
@@ -732,8 +735,8 @@ class RustRuntimeWorker:
 
     @staticmethod
     def _result_envelope(
-        work: Mapping[str, Any], effect: Mapping[str, Any]
-    ) -> dict[str, Any]:
+        work: Mapping[str, JsonValue], effect: Mapping[str, JsonValue]
+    ) -> JsonObject:
         payload = work.get("payload")
         if not isinstance(payload, dict):
             raise RustWorkerError("claimed work payload must be an object")
@@ -816,7 +819,7 @@ class RustRuntimeWorker:
             "effect": restricted,
         }
 
-    def process(self, work: dict[str, Any]) -> dict[str, Any]:
+    def process(self, work: JsonObject) -> JsonObject:
         message_id = str(work.get("message_id") or "")
         if not message_id:
             raise RustWorkerError("claimed work missing message_id")
@@ -924,7 +927,7 @@ class AsyncRustRuntimeWorker:
         if self._owns_client:
             await self.client.aclose()
 
-    async def _post(self, path: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+    async def _post(self, path: str, payload: Mapping[str, JsonValue]) -> JsonObject:
         try:
             response = await self.client.post(path, json=dict(payload))
             response.raise_for_status()
@@ -941,12 +944,12 @@ class AsyncRustRuntimeWorker:
         limit: int = 1,
         lease_seconds: int = 60,
         run_id: str | None = None,
-    ) -> list[dict[str, Any]]:
+    ) -> list[JsonObject]:
         if limit <= 0 or lease_seconds <= 0:
             raise ValueError("limit and lease_seconds must be positive")
         if run_id is not None and not run_id.strip():
             raise ValueError("run_id must not be empty")
-        payload: dict[str, Any] = {
+        payload: JsonObject = {
             "claimed_by": self.worker_id,
             "limit": limit,
             "lease_seconds": lease_seconds,
@@ -959,7 +962,7 @@ class AsyncRustRuntimeWorker:
             raise RustWorkerError("runtime claim response has invalid work list")
         return work
 
-    async def process(self, work: dict[str, Any]) -> dict[str, Any]:
+    async def process(self, work: JsonObject) -> JsonObject:
         message_id = str(work.get("message_id") or "")
         if not message_id:
             raise RustWorkerError("claimed work missing message_id")
