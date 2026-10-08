@@ -12,7 +12,7 @@ import threading
 import time
 import uuid
 from collections.abc import Mapping
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Dict, Iterator, List, Optional, cast
 
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
@@ -21,6 +21,7 @@ from .postgres_backend import get_active_conn, _set_active_conn
 from ..messaging.models import ProjectedLaneMessageRow
 from .meta_lane_messages import LaneMessageMetaStoreMixin
 from .event_envelope import EntityEventEnvelope
+from ..typing_interfaces import SqlAlchemyConnectionLike
 
 
 _SCHEMA_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -446,7 +447,7 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
             f"CREATE INDEX IF NOT EXISTS idx_server_run_events_run_seq ON {schema}.server_run_events(run_id, seq)",
         ]
 
-    def _run_bootstrap(self, conn: Any) -> None:
+    def _run_bootstrap(self, conn: SqlAlchemyConnectionLike) -> None:
         conn.execute(
             sa.text("SELECT pg_advisory_xact_lock(:lock_key)"),
             {"lock_key": POSTGRES_BOOTSTRAP_ADVISORY_LOCK_KEY},
@@ -459,7 +460,7 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
             _run_coro_blocking(self._ensure_initialized_async())
             return
         with self.transaction() as conn:
-            self._run_bootstrap(conn)
+            self._run_bootstrap(cast(SqlAlchemyConnectionLike, conn))
 
     async def _ensure_initialized_async(self) -> None:
         async with self.engine.begin() as conn:
