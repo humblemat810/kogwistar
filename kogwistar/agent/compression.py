@@ -10,12 +10,20 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
-from typing import Any, Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from typing import Protocol
 
 from kogwistar.conversation.models import ConversationEdge, ConversationNode
 from kogwistar.engine_core.models import Grounding, MentionVerification, Span
 from kogwistar.id_provider import stable_id
+from kogwistar.typing_interfaces import WriteLike
 from .workflows import build_normal_workflow
+
+
+class CompressionEngineLike(Protocol):
+    """Minimal graph write surface required by summary projection."""
+
+    write: WriteLike
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,7 +53,7 @@ POLICIES: dict[str, CompressionPolicy] = {
 @dataclass(frozen=True, slots=True)
 class CompressionRequest:
     conversation_id: str
-    source_items: tuple[dict[str, Any], ...]
+    source_items: tuple[dict[str, object], ...]
     policy: CompressionPolicy
     cross_conversation: bool = False
     requested_by_run_id: str | None = None
@@ -54,7 +62,7 @@ class CompressionRequest:
 @dataclass(frozen=True, slots=True)
 class CompressionDecision:
     requested: bool
-    selected_items: tuple[dict[str, Any], ...]
+    selected_items: tuple[dict[str, object], ...]
     source_refs: tuple[str, ...]
     estimated_chars: int
     reason: str
@@ -62,7 +70,7 @@ class CompressionDecision:
 
 
 def should_request_compression(
-    items: Sequence[Mapping[str, Any]],
+    items: Sequence[Mapping[str, object]],
     *,
     policy: CompressionPolicy,
     max_source_chars: int | None = None,
@@ -99,10 +107,10 @@ def build_compression_workflow(*, workflow_id: str = "agent.context-compression.
 
 
 def select_for_compression(
-    items: Sequence[Mapping[str, Any]],
+    items: Sequence[Mapping[str, object]],
     *,
     policy: CompressionPolicy,
-    authorize: Callable[[Mapping[str, Any]], bool] | None = None,
+    authorize: Callable[[Mapping[str, object]], bool] | None = None,
 ) -> CompressionDecision:
     """Select newest authorized items without mutating source history."""
 
@@ -116,7 +124,7 @@ def select_for_compression(
             branch_items = [
                 item for item in branch_items if item.get("branch_id") == newest_branch
             ]
-    selected: list[dict[str, Any]] = []
+    selected: list[dict[str, object]] = []
     chars = 0
     for raw in reversed(branch_items):
         item = dict(raw)
@@ -145,11 +153,11 @@ def select_for_compression(
 def build_compression_request(
     *,
     conversation_id: str,
-    items: Sequence[Mapping[str, Any]],
+    items: Sequence[Mapping[str, object]],
     policy: CompressionPolicy | str = "medium",
     allow_cross_conversation: bool = False,
     requested_by_run_id: str | None = None,
-    authorize: Callable[[Mapping[str, Any]], bool] | None = None,
+    authorize: Callable[[Mapping[str, object]], bool] | None = None,
 ) -> tuple[CompressionRequest, CompressionDecision]:
     selected_policy = policy_for(policy) if isinstance(policy, str) else policy
     if not allow_cross_conversation:
@@ -183,7 +191,7 @@ def _summary_span(conversation_id: str, summary_id: str, excerpt: str) -> Span:
 
 
 def persist_summary_projection(
-    engine: Any,
+    engine: CompressionEngineLike,
     *,
     conversation_id: str,
     source_refs: Sequence[str],
@@ -255,6 +263,7 @@ def persist_summary_projection(
 
 __all__ = [
     "CompressionDecision",
+    "CompressionEngineLike",
     "CompressionPolicy",
     "CompressionRequest",
     "CompressionResult",
