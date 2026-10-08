@@ -6,7 +6,9 @@ import ipaddress
 import json
 from dataclasses import dataclass
 from urllib.parse import urlsplit
-from typing import Any, Callable, Iterable, Mapping, Protocol
+from typing import Callable, Iterable, Mapping, Protocol
+
+from ...json_types import JsonValue
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,7 +23,7 @@ class A2AAgentCard:
 class A2AMessage:
     message_id: str
     role: str
-    parts: tuple[Mapping[str, Any], ...] = ()
+    parts: tuple[Mapping[str, JsonValue], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,7 +32,7 @@ class A2ATask:
     context_id: str
     run_id: str
     status: str
-    result: Mapping[str, Any] | None = None
+    result: Mapping[str, JsonValue] | None = None
     input_required: bool = False
     evidence_refs: tuple[str, ...] = ()
 
@@ -71,16 +73,16 @@ class A2AAdapter:
     def __init__(
         self,
         *,
-        submit: Callable[..., Mapping[str, Any]],
-        inspect: Callable[[str], Mapping[str, Any]],
-        cancel: Callable[[str], Mapping[str, Any]],
-        resume: Callable[[str, A2AMessage], Mapping[str, Any]] | None = None,
-        events: Callable[[str, int], Iterable[Mapping[str, Any]]] | None = None,
+        submit: Callable[..., Mapping[str, JsonValue]],
+        inspect: Callable[[str], Mapping[str, JsonValue]],
+        cancel: Callable[[str], Mapping[str, JsonValue]],
+        resume: Callable[[str, A2AMessage], Mapping[str, JsonValue]] | None = None,
+        events: Callable[[str, int], Iterable[Mapping[str, JsonValue]]] | None = None,
         authorize: Callable[[str, str], bool] | None = None,
         card: A2AAgentCard | None = None,
-        enqueue_delivery: Callable[[Mapping[str, Any]], Mapping[str, Any]] | None = None,
+        enqueue_delivery: Callable[[Mapping[str, JsonValue]], Mapping[str, JsonValue]] | None = None,
         sign_callback: Callable[[str, bytes], Mapping[str, str]] | None = None,
-        audit_delivery: Callable[[Mapping[str, Any]], None] | None = None,
+        audit_delivery: Callable[[Mapping[str, JsonValue]], None] | None = None,
         allowed_callback_hosts: Iterable[str] = (),
         max_push_body_bytes: int = 256 * 1024,
         task_mapping_store: A2ATaskMappingStore | None = None,
@@ -112,7 +114,7 @@ class A2AAdapter:
 
         return self._card
 
-    def submit_task(self, *, task_id: str, context_id: str, message: A2AMessage, **kwargs: Any) -> A2ATask:
+    def submit_task(self, *, task_id: str, context_id: str, message: A2AMessage, **kwargs: object) -> A2ATask:
         if self._authorize is not None and not self._authorize(context_id, message.role):
             raise PermissionError("A2A task is not authorized")
         existing = self._by_task.get(task_id)
@@ -146,7 +148,7 @@ class A2AAdapter:
         payload = dict(self._resume(bound[1], message))
         return self._task(task_id, context_id, {**payload, "run_id": bound[1]})
 
-    def stream_events(self, *, task_id: str, context_id: str, after: int = 0) -> tuple[Mapping[str, Any], ...]:
+    def stream_events(self, *, task_id: str, context_id: str, after: int = 0) -> tuple[Mapping[str, JsonValue], ...]:
         if self._events is None:
             raise NotImplementedError("A2A event streaming is not configured")
         bound = self._bound(task_id, context_id)
@@ -206,7 +208,7 @@ class A2AAdapter:
         task_id: str,
         context_id: str,
         event_seq: int,
-        payload: Mapping[str, Any],
+        payload: Mapping[str, JsonValue],
     ) -> A2APushDelivery:
         """Enqueue one signed, bounded, idempotent task update."""
 
@@ -307,7 +309,7 @@ class A2AAdapter:
         return bound
 
     @staticmethod
-    def _task(task_id: str, context_id: str, payload: Mapping[str, Any]) -> A2ATask:
+    def _task(task_id: str, context_id: str, payload: Mapping[str, JsonValue]) -> A2ATask:
         return A2ATask(
             task_id=task_id,
             context_id=context_id,
