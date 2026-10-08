@@ -6,7 +6,7 @@ import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Mapping, Protocol
+from typing import Callable, Mapping, Protocol
 
 from .catalog import CatalogStore
 from .providers import ProviderInactiveError, ProviderRegistration, ProviderRegistry
@@ -26,7 +26,7 @@ from .skills import (
 class McpInvoker(Protocol):
     """Invoke one discovered MCP operation at an explicitly named boundary."""
 
-    def __call__(self, provider_local_id: str, **kwargs: Any) -> object: ...
+    def __call__(self, provider_local_id: str, **kwargs: object) -> object: ...
 
 
 class DescriptorLoader(Protocol):
@@ -50,19 +50,19 @@ class McpSchemaAuthorizer(Protocol):
 class SkillAuthorizer(Protocol):
     """Authorize one external skill or project record."""
 
-    def __call__(self, payload: Mapping[str, Any], /) -> bool: ...
+    def __call__(self, payload: Mapping[str, object], /) -> bool: ...
 
 
 class SkillParser(Protocol):
     """Convert an authorized external payload into a validated skill artifact."""
 
-    def __call__(self, source: Mapping[str, Any], /) -> SkillGraphArtifact: ...
+    def __call__(self, source: Mapping[str, object], /) -> SkillGraphArtifact: ...
 
 
 class KnowledgeWriter(Protocol):
     """Persist one scoped knowledge record and return its stable reference."""
 
-    def __call__(self, record: Mapping[str, Any], /) -> str: ...
+    def __call__(self, record: Mapping[str, object], /) -> str: ...
 
 
 class FilesystemSkillProvider:
@@ -133,7 +133,7 @@ class McpDiscoveryProvider:
             raise LookupError("MCP schema loading is unavailable")
         return dict(self._describe(provider_local_id))
 
-    def invoke(self, provider_local_id: str, **kwargs: Any) -> object:
+    def invoke(self, provider_local_id: str, **kwargs: object) -> object:
         if self._invoke is None:
             raise PermissionError("MCP invocation is not configured")
         return self._invoke(provider_local_id, **kwargs)
@@ -254,7 +254,7 @@ def materialize_skill_artifact(
         if materializer is not None:
             if materializer.projections is not projection or materializer.catalog is not catalog:
                 raise ValueError("materializer must own supplied projection and catalog stores")
-            guard_updates: list[dict[str, Any]] = []
+            guard_updates: list[dict[str, object]] = []
             if provider_registry is not None and provider_registry._metadata is not None:
                 registration = provider_registration
                 if registration is None:
@@ -359,7 +359,7 @@ class LlmWikiIngestionAdapter:
         self._authorize = authorize
         self._max_source_bytes = max(1, int(max_source_bytes))
 
-    def parse(self, source: Mapping[str, Any]) -> SkillGraphArtifact:
+    def parse(self, source: Mapping[str, object]) -> SkillGraphArtifact:
         request = dict(source)
         if self._authorize is None or not self._authorize(request):
             raise PermissionError("LLM-Wiki skill ingestion requires authorization")
@@ -448,14 +448,14 @@ class ProjectGlossaryProvider:
 
     provider_version = "v1"
 
-    def __init__(self, manifest: ProjectPluginManifest, terms: list[Mapping[str, Any]]) -> None:
+    def __init__(self, manifest: ProjectPluginManifest, terms: list[Mapping[str, object]]) -> None:
         self.provider_id = manifest.provider_id
         self.project_id = manifest.project_id
         self.tenant_id = manifest.tenant_id
         self._terms = tuple(dict(term) for term in terms)
 
-    def descriptors(self) -> list[Mapping[str, Any]]:
-        result: list[Mapping[str, Any]] = []
+    def descriptors(self) -> list[Mapping[str, object]]:
+        result: list[Mapping[str, object]] = []
         for term in self._terms:
             item = dict(term)
             item.setdefault("provider_id", self.provider_id)
@@ -473,13 +473,13 @@ class ProjectGlossaryProvider:
         tenant_id: str | None = None,
         project_id: str | None = None,
         limit: int = 20,
-    ) -> list[Mapping[str, Any]]:
+    ) -> list[Mapping[str, object]]:
         if authorize is None:
             raise PermissionError("project glossary search requires ACL callback")
         needle = str(query).strip().casefold()
         if not needle or limit < 1:
             return []
-        results: list[Mapping[str, Any]] = []
+        results: list[Mapping[str, object]] = []
         for term in self.descriptors():
             if tenant_id is not None and term.get("tenant_id") not in (None, tenant_id):
                 continue
