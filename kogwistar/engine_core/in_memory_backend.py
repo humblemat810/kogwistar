@@ -42,6 +42,9 @@ from kogwistar.engine_core.storage_backend import (
     TwoStageProjectionCapability,
 )
 from kogwistar.engine_core.embedding_profile import EmbeddingStorageState
+from kogwistar.json_types import JsonValue
+
+JsonObject = dict[str, JsonValue]
 
 
 def _is_operator_dict(value: object) -> bool:
@@ -856,7 +859,7 @@ class AsyncInMemoryTwoStageProjectionAdapter(_InMemoryTwoStageProjectionAdapter)
 
     async def apply_embedding_jobs_batch(self, jobs: list[Any]) -> dict[str, BaseException | None]:
         """Embed compatible in-memory jobs in one provider call."""
-        prepared: list[tuple[str, str, str, str, dict[str, Any]]] = []
+        prepared: list[tuple[str, str, str, str, JsonObject]] = []
         outcomes: dict[str, BaseException | None] = {}
         for job in jobs:
             def value(name: str) -> object:
@@ -934,7 +937,7 @@ class _FakeMetaStore:
     def __init__(self) -> None:
         self._user_seq: dict[str, int] = {}
         self._global_seq = 0
-        self._named_projections: dict[tuple[str, str], dict[str, Any]] = {}
+        self._named_projections: dict[tuple[str, str], JsonObject] = {}
 
     def ensure_initialized(self) -> None:
         return None
@@ -970,7 +973,7 @@ class _FakeMetaStore:
     def current_global_seq(self) -> int:
         return self._global_seq
 
-    def get_named_projection(self, namespace: str, key: str) -> dict[str, Any] | None:
+    def get_named_projection(self, namespace: str, key: str) -> JsonObject | None:
         row = self._named_projections.get((str(namespace), str(key)))
         return copy.deepcopy(row) if row is not None else None
 
@@ -978,7 +981,7 @@ class _FakeMetaStore:
         self,
         namespace: str,
         key: str,
-        payload: dict[str, Any],
+        payload: JsonObject,
         *,
         last_authoritative_seq: int,
         last_materialized_seq: int,
@@ -1000,7 +1003,7 @@ class _FakeMetaStore:
         self,
         namespace: str,
         key: str,
-        payload: dict[str, Any],
+        payload: JsonObject,
         *,
         expected_last_authoritative_seq: int | None,
         expected_last_materialized_seq: int | None,
@@ -1031,7 +1034,7 @@ class _FakeMetaStore:
         )
         return True
 
-    def list_named_projections(self, namespace: str) -> list[dict[str, Any]]:
+    def list_named_projections(self, namespace: str) -> list[JsonObject]:
         rows = [
             copy.deepcopy(row)
             for (row_namespace, _key), row in self._named_projections.items()
