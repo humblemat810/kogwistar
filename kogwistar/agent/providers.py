@@ -41,7 +41,7 @@ class DiscoveryProvider(Protocol):
     provider_id: str
     provider_version: str
 
-    def descriptors(self) -> list[Mapping[str, object]]: ...
+    def descriptors(self) -> list[Mapping[str, JsonValue]]: ...
 
 
 @runtime_checkable
@@ -62,7 +62,7 @@ class ToolProvider(Protocol[TToolResult]):
 class SkillProvider(Protocol):
     provider_id: str
 
-    def descriptors(self) -> list[Mapping[str, object]]: ...
+    def descriptors(self) -> list[Mapping[str, JsonValue]]: ...
 
     def load(self, provider_local_id: str) -> str: ...
 
@@ -82,7 +82,7 @@ class CompressorProvider(Protocol):
 
 
 def normalize_descriptor(
-    descriptor: Mapping[str, object], *, provider_id: str, provider_version: str = "v1"
+    descriptor: Mapping[str, JsonValue], *, provider_id: str, provider_version: str = "v1"
 ) -> CatalogEntry:
     """Normalize provider data without granting invocation authority."""
 
