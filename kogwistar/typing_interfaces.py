@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
+from contextlib import AbstractContextManager
 from typing import (
     Mapping,
     Protocol,
@@ -125,6 +126,16 @@ class ProjectionBackendLike(Protocol):
     documents: NamedCollectionLike
     embedding_dim: int
     distance: str
+
+
+class SqlAlchemyEngineLike(Protocol):
+    """Minimal lifecycle surface shared by optional SQLAlchemy adapters."""
+
+    def begin(self) -> AbstractContextManager[object]: ...
+
+    def connect(self) -> AbstractContextManager[object]: ...
+
+    def dispose(self) -> None: ...
 
 
 if TYPE_CHECKING:
