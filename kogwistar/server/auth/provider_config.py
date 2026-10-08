@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any
-
 from pydantic import BaseModel, Field
+
+from ...json_types import JsonValue
 
 
 class OIDCProviderConfig(BaseModel):
@@ -29,7 +29,7 @@ class OIDCProviderConfig(BaseModel):
     )
 
 
-def oidc_provider_config_skeleton() -> dict[str, Any]:
+def oidc_provider_config_skeleton() -> dict[str, JsonValue]:
     return {
         "default_provider": "google",
         "providers": {

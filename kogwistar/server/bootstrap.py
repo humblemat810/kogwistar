@@ -4,13 +4,14 @@ import os
 import importlib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Literal
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.async_compat import (
     run_awaitable_blocking,
 )
 from kogwistar.engine_core.chroma_backend import ChromaBackend
+from kogwistar.typing_interfaces import SqlAlchemyEngineLike
 
 if TYPE_CHECKING:
     pass
@@ -199,7 +200,7 @@ def load_server_storage_settings(
     )
 
 
-def build_sqlalchemy_engine(settings: ServerStorageSettings) -> Any:
+def build_sqlalchemy_engine(settings: ServerStorageSettings) -> SqlAlchemyEngineLike:
     if settings.backend != "pg" or not settings.pg_url:
         raise RuntimeError(
             "SQLAlchemy engine is only available for pg storage settings."
@@ -213,7 +214,7 @@ def build_graph_engine(
     *,
     settings: ServerStorageSettings,
     graph_type: GraphType,
-    sa_engine: Any | None = None,
+    sa_engine: SqlAlchemyEngineLike | None = None,
 ) -> GraphKnowledgeEngine:
     persist_directory = settings.persist_directory_for(graph_type)
     embedding_factory = _import_callable_from_env(
