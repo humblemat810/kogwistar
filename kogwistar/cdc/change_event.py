@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal, Mapping, Optional, TypedDict, cast
+from collections.abc import Mapping
+from typing import Literal, TypedDict, cast
 from pydantic import BaseModel
 
 from ..json_types import JsonValue
@@ -51,12 +52,12 @@ class ChangeEvent:
     op: Op
     ts_unix_ms: int
 
-    entity: Optional[EntityRef] = None
+    entity: EntityRef | None = None
     payload: JsonValue | None = None
 
     # Optional provenance / debug fields
-    run_id: Optional[str] = None
-    step_id: Optional[str] = None
+    run_id: str | None = None
+    step_id: str | None = None
 
     # ---- Serialization ------------------------------------------------
 
