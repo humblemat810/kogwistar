@@ -9,6 +9,7 @@ from typing import Any, Callable
 from pydantic import BaseModel, Field
 
 from kogwistar.engine_core.models import Grounding, Node, Span
+from kogwistar.json_types import JsonValue
 
 
 SERVICE_PROJECTION_NAMESPACE = "service_registry"
@@ -21,12 +22,13 @@ SERVICE_TRIGGER_TYPES = {
     "restart",
 }
 
+JsonObject = dict[str, JsonValue]
 
-def _json_text(value: Any) -> str:
+def _json_text(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True)
 
 
-def _json_value(value: Any) -> Any:
+def _json_value(value: object) -> JsonValue:
     if isinstance(value, (str, int, float, bool)) or value is None:
         return value
     return _json_text(value)
@@ -39,7 +41,7 @@ def _now_ms() -> int:
 class ServiceTriggerSpec(BaseModel):
     type: str = Field(min_length=1)
     enabled: bool = True
-    selector: dict[str, Any] = Field(default_factory=dict)
+    selector: JsonObject = Field(default_factory=dict)
     debounce_ms: int = 0
     cooldown_ms: int = 0
 
@@ -49,10 +51,10 @@ class WorkflowServiceDefinition(BaseModel):
     service_kind: str = "service"
     target_kind: str = "workflow"
     target_ref: str = Field(min_length=1)
-    target_config: dict[str, Any] = Field(default_factory=dict)
+    target_config: JsonObject = Field(default_factory=dict)
     enabled: bool = True
     autostart: bool = False
-    restart_policy: dict[str, Any] = Field(default_factory=dict)
+    restart_policy: JsonObject = Field(default_factory=dict)
     heartbeat_ttl_ms: int = 60_000
     trigger_specs: list[ServiceTriggerSpec] = Field(default_factory=list)
     security_scope: str = "workflow"
@@ -96,8 +98,8 @@ class ServiceProjectionRow(BaseModel):
     last_trigger_type: str | None = None
     last_triggered_at_ms: int | None = None
     heartbeat_ttl_ms: int = 60_000
-    restart_policy: dict[str, Any] = Field(default_factory=dict)
-    trigger_specs: list[dict[str, Any]] = Field(default_factory=list)
+    restart_policy: JsonObject = Field(default_factory=dict)
+    trigger_specs: list[JsonObject] = Field(default_factory=list)
     last_message_seen_ms: int = 0
     last_graph_event_seq: int = 0
     next_due_at_ms: int | None = None
@@ -142,13 +144,13 @@ class ServiceSupervisor:
         service_kind: str,
         target_kind: str,
         target_ref: str,
-        target_config: dict[str, Any] | None = None,
+        target_config: JsonObject | None = None,
         enabled: bool = True,
         autostart: bool = False,
-        restart_policy: dict[str, Any] | None = None,
+        restart_policy: JsonObject | None = None,
         heartbeat_ttl_ms: int = 60_000,
-        trigger_specs: list[dict[str, Any]] | list[ServiceTriggerSpec] | None = None,
-    ) -> dict[str, Any]:
+        trigger_specs: list[JsonObject] | list[ServiceTriggerSpec] | None = None,
+    ) -> JsonObject:
         now = _now_ms()
         scope = self.scope_snapshot()
         definition = WorkflowServiceDefinition(
@@ -181,7 +183,7 @@ class ServiceSupervisor:
         self.tick()
         return self.get_service(service_id)
 
-    def get_service(self, service_id: str) -> dict[str, Any]:
+    def get_service(self, service_id: str) -> JsonObject:
         projection = self._projection(service_id)
         if projection is None:
             self._rebuild_projection(service_id)
@@ -190,7 +192,7 @@ class ServiceSupervisor:
             raise KeyError(f"Unknown service_id: {service_id}")
         return projection["payload"]
 
-    def list_services(self, *, limit: int = 200) -> list[dict[str, Any]]:
+    def list_services(self, *, limit: int = 200) -> list[JsonObject]:
         self._ensure_all_projections()
         meta = self._workflow_engine().meta_sqlite
         rows = list(meta.list_named_projections(SERVICE_PROJECTION_NAMESPACE))
@@ -198,10 +200,10 @@ class ServiceSupervisor:
         items.sort(key=lambda item: str(item.get("service_id") or ""))
         return items
 
-    def enable_service(self, service_id: str) -> dict[str, Any]:
+    def enable_service(self, service_id: str) -> JsonObject:
         return self._set_enabled(service_id, True)
 
-    def disable_service(self, service_id: str) -> dict[str, Any]:
+    def disable_service(self, service_id: str) -> JsonObject:
         return self._set_enabled(service_id, False)
 
     def record_service_heartbeat(
@@ -209,8 +211,8 @@ class ServiceSupervisor:
         service_id: str,
         *,
         instance_id: str,
-        payload: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
+        payload: JsonObject | None = None,
+    ) -> JsonObject:
         projection_payload = self._projection_payload(service_id)
         if projection_payload is None:
             self._rebuild_projection(service_id)
@@ -255,8 +257,8 @@ class ServiceSupervisor:
         service_id: str,
         *,
         trigger_type: str,
-        payload: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
+        payload: JsonObject | None = None,
+    ) -> JsonObject:
         return self._trigger_service(
             service_id=service_id,
             trigger_type=trigger_type,
@@ -264,7 +266,7 @@ class ServiceSupervisor:
             force=True,
         )
 
-    def health_snapshot(self, service_id: str) -> dict[str, Any]:
+    def health_snapshot(self, service_id: str) -> JsonObject:
         row = ServiceProjectionRow.model_validate(self.get_service(service_id))
         return ServiceHealthSnapshot(
             service_id=row.service_id,
@@ -281,7 +283,7 @@ class ServiceSupervisor:
 
     def list_service_events(
         self, service_id: str, *, limit: int = 500
-    ) -> list[dict[str, Any]]:
+    ) -> list[JsonObject]:
         nodes = self._workflow_engine().read.get_nodes(
             where={
                 "$and": [
@@ -291,7 +293,7 @@ class ServiceSupervisor:
             },
             limit=max(1, int(limit)),
         )
-        out: list[dict[str, Any]] = []
+        out: list[JsonObject] = []
         for node in nodes:
             md = dict(getattr(node, "metadata", {}) or {})
             properties = dict(getattr(node, "properties", {}) or {})
@@ -324,7 +326,7 @@ class ServiceSupervisor:
             self._evaluate_graph_trigger(service_id, payload, now_ms=now)
             self._rebuild_projection(service_id)
 
-    def _set_enabled(self, service_id: str, enabled: bool) -> dict[str, Any]:
+    def _set_enabled(self, service_id: str, enabled: bool) -> JsonObject:
         latest = self._latest_definition(service_id)
         if latest is None:
             raise KeyError(f"Unknown service_id: {service_id}")
@@ -348,9 +350,9 @@ class ServiceSupervisor:
         service_id: str,
         *,
         trigger_type: str,
-        payload: dict[str, Any],
+        payload: JsonObject,
         force: bool = False,
-    ) -> dict[str, Any]:
+    ) -> JsonObject:
         definition = self._latest_definition(service_id)
         if definition is None:
             raise KeyError(f"Unknown service_id: {service_id}")
@@ -429,7 +431,7 @@ class ServiceSupervisor:
         return self.get_service(service_id)
 
     def _evaluate_child_state(
-        self, service_id: str, payload: dict[str, Any], *, now_ms: int
+        self, service_id: str, payload: JsonObject, *, now_ms: int
     ) -> None:
         current_child_run_id = str(payload.get("current_child_run_id") or "")
         if not current_child_run_id:
@@ -500,7 +502,7 @@ class ServiceSupervisor:
         self._store_projection_payload(service_id, payload)
 
     def _evaluate_health(
-        self, service_id: str, payload: dict[str, Any], *, now_ms: int
+        self, service_id: str, payload: JsonObject, *, now_ms: int
     ) -> None:
         enabled = bool(payload.get("enabled"))
         last_heartbeat_ms = payload.get("last_heartbeat_ms")
@@ -535,7 +537,7 @@ class ServiceSupervisor:
         payload["health_status"] = health_status
 
     def _evaluate_schedule_trigger(
-        self, service_id: str, payload: dict[str, Any], *, now_ms: int
+        self, service_id: str, payload: JsonObject, *, now_ms: int
     ) -> None:
         if not bool(payload.get("enabled")):
             return
@@ -569,7 +571,7 @@ class ServiceSupervisor:
             return
 
     def _evaluate_message_trigger(
-        self, service_id: str, payload: dict[str, Any], *, now_ms: int
+        self, service_id: str, payload: JsonObject, *, now_ms: int
     ) -> None:
         if not bool(payload.get("enabled")):
             return
@@ -620,7 +622,7 @@ class ServiceSupervisor:
             return
 
     def _evaluate_graph_trigger(
-        self, service_id: str, payload: dict[str, Any], *, now_ms: int
+        self, service_id: str, payload: JsonObject, *, now_ms: int
     ) -> None:
         if not bool(payload.get("enabled")):
             return
@@ -703,7 +705,7 @@ class ServiceSupervisor:
         self._workflow_engine().write.add_node(node)
 
     def _append_event(
-        self, *, service_id: str, event_type: str, payload: dict[str, Any]
+        self, *, service_id: str, event_type: str, payload: JsonObject
     ) -> None:
         now = _now_ms()
         node = Node(
@@ -792,7 +794,7 @@ class ServiceSupervisor:
 
     def _matching_trigger_spec(
         self, *, definition: WorkflowServiceDefinition, trigger_type: str
-    ) -> dict[str, Any] | None:
+    ) -> JsonObject | None:
         for spec in definition.trigger_specs:
             payload = spec.model_dump(mode="python")
             if str(payload.get("type") or "").strip().lower() == str(trigger_type).strip().lower():
@@ -885,7 +887,7 @@ class ServiceSupervisor:
         self._evaluate_health(service_id, payload, now_ms=_now_ms())
         self._store_projection_payload(service_id, payload)
 
-    def _store_projection_payload(self, service_id: str, payload: dict[str, Any]) -> None:
+    def _store_projection_payload(self, service_id: str, payload: JsonObject) -> None:
         payload["updated_at_ms"] = int(payload.get("updated_at_ms") or _now_ms())
         getter = getattr(self._workflow_engine().meta_sqlite, "get_latest_entity_event_seq", None)
         latest_seq = 0
@@ -901,12 +903,12 @@ class ServiceSupervisor:
             materialization_status="ready",
         )
 
-    def _projection(self, service_id: str) -> dict[str, Any] | None:
+    def _projection(self, service_id: str) -> JsonObject | None:
         return self._workflow_engine().meta_sqlite.get_named_projection(
             SERVICE_PROJECTION_NAMESPACE, str(service_id)
         )
 
-    def _projection_payload(self, service_id: str) -> dict[str, Any] | None:
+    def _projection_payload(self, service_id: str) -> JsonObject | None:
         projection = self._projection(service_id)
         if projection is None:
             return None
