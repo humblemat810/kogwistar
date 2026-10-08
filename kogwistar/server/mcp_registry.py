@@ -21,7 +21,7 @@ from starlette.applications import Starlette
 from starlette.routing import Mount
 
 
-def _inline_refs(value: Any, definitions: dict[str, Any]) -> Any:
+def _inline_refs(value: object, definitions: dict[str, object]) -> object:
     if isinstance(value, dict):
         reference = value.get("$ref")
         if isinstance(reference, str) and reference.startswith("#/$defs/"):
@@ -37,7 +37,7 @@ def _inline_refs(value: Any, definitions: dict[str, Any]) -> Any:
     return value
 
 
-def _input_model(name: str, function: Callable[..., Any]) -> type[BaseModel]:
+def _input_model(name: str, function: Callable[..., object]) -> type[BaseModel]:
     hints = get_type_hints(function)
     fields: dict[str, tuple[Any, Any]] = {}
     for parameter in inspect.signature(function).parameters.values():
@@ -60,12 +60,12 @@ def _input_model(name: str, function: Callable[..., Any]) -> type[BaseModel]:
     )
 
 
-def _schema_for_model(model: type[BaseModel]) -> dict[str, Any]:
+def _schema_for_model(model: type[BaseModel]) -> dict[str, object]:
     raw = model.model_json_schema()
     return _inline_refs(raw, raw.get("$defs", {}))
 
 
-def _output_schema(function: Callable[..., Any]) -> dict[str, Any] | None:
+def _output_schema(function: Callable[..., object]) -> dict[str, object] | None:
     annotation = get_type_hints(function).get("return")
     if annotation is None or annotation is type(None):
         return None
@@ -78,7 +78,7 @@ def _output_schema(function: Callable[..., Any]) -> dict[str, Any] | None:
 @dataclass(frozen=True, slots=True)
 class _ToolRecord:
     name: str
-    function: Callable[..., Any]
+    function: Callable[..., object]
     input_model: type[BaseModel]
     tool: types.Tool
 
@@ -87,11 +87,11 @@ class _CompatTool(types.Tool):
     """Expose historical snake-case schema access on newer MCP SDK models."""
 
     @property
-    def input_schema(self) -> dict[str, Any]:
+    def input_schema(self) -> dict[str, object]:
         return self.inputSchema
 
     @property
-    def output_schema(self) -> dict[str, Any] | None:
+    def output_schema(self) -> dict[str, object] | None:
         return self.outputSchema
 
 
@@ -99,8 +99,8 @@ def _make_tool(
     *,
     name: str,
     description: str | None,
-    input_schema: dict[str, Any],
-    output_schema: dict[str, Any] | None,
+    input_schema: dict[str, object],
+    output_schema: dict[str, object] | None,
 ) -> types.Tool:
     try:
         return types.Tool(
@@ -135,12 +135,12 @@ class McpRegistry:
             self.server = Server(name)
 
             @self.server.list_tools()
-            async def _list_tools(_request: Any) -> types.ListToolsResult:
+            async def _list_tools(_request: object) -> types.ListToolsResult:
                 return await self._handle_list_tools(None, _request)
 
             @self.server.call_tool()
             async def _call_tool(
-                tool_name: str, arguments: dict[str, Any]
+                tool_name: str, arguments: dict[str, object]
             ) -> types.CallToolResult:
                 params = types.CallToolRequestParams(name=tool_name, arguments=arguments)
                 return await self._handle_call_tool(None, params)
@@ -152,18 +152,18 @@ class McpRegistry:
 
     def tool(
         self,
-        function: Callable[..., Any] | None = None,
+        function: Callable[..., object] | None = None,
         *,
         name: str | None = None,
         description: str | None = None,
         structured_output: bool | None = None,
-    ) -> Callable[..., Any]:
+    ) -> Callable[..., object]:
         # Keep the historical decorator contract used by server_mcp.py. The
         # The official SDK receives the explicit schemas from the registry and
         # structured content is emitted by _execute().
         del structured_output
 
-        def register(fn: Callable[..., Any]) -> Callable[..., Any]:
+        def register(fn: Callable[..., object]) -> Callable[..., object]:
             tool_name = name or getattr(fn, "name", None) or fn.__name__
             input_model = _input_model(tool_name, fn)
             record = _ToolRecord(
@@ -198,11 +198,13 @@ class McpRegistry:
                 return record
         return None
 
-    async def _handle_list_tools(self, _context: Any, _params: Any) -> types.ListToolsResult:
+    async def _handle_list_tools(
+        self, _context: object, _params: object
+    ) -> types.ListToolsResult:
         return types.ListToolsResult(tools=await self._visible_tools())
 
     async def _handle_call_tool(
-        self, _context: Any, params: types.CallToolRequestParams
+        self, _context: object, params: types.CallToolRequestParams
     ) -> types.CallToolResult:
         try:
             return await self._execute(
@@ -256,7 +258,7 @@ class McpRegistry:
     async def _execute(
         self,
         name: str,
-        arguments: dict[str, Any],
+        arguments: dict[str, object],
         *,
         enforce_visibility: bool = False,
     ) -> types.CallToolResult:
@@ -297,7 +299,7 @@ class McpRegistry:
         )
 
     async def call_tool(
-        self, name: str, arguments: dict[str, Any] | None = None
+        self, name: str, arguments: dict[str, object] | None = None
     ) -> types.CallToolResult:
         return await self._execute(name, arguments or {})
 
@@ -309,7 +311,7 @@ class McpRegistry:
         manager_holder: dict[str, StreamableHTTPSessionManager] = {}
 
         @asynccontextmanager
-        async def lifespan(app: Any):
+        async def lifespan(_app: object):
             manager = StreamableHTTPSessionManager(self.server)
             manager_holder["manager"] = manager
             async with manager.run():
@@ -318,7 +320,9 @@ class McpRegistry:
                 finally:
                     manager_holder.pop("manager", None)
 
-        async def scoped_handler(scope: Any, receive: Any, send: Any) -> None:
+        async def scoped_handler(
+            scope: dict[str, object], receive: object, send: object
+        ) -> None:
             if scope.get("type") == "http":
                 request_path = str(scope.get("path") or "")
                 if request_path not in {endpoint, endpoint + "/"}:
