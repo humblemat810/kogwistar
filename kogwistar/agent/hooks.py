@@ -9,13 +9,18 @@ from collections.abc import Awaitable, Mapping
 from dataclasses import dataclass
 from typing import Literal, Protocol, cast
 
+from kogwistar.json_types import JsonValue
+
 
 HookFailureMode = Literal["fail_open", "fail_closed"]
 HookEffect = Literal["observe", "annotate"]
+JsonObject = dict[str, JsonValue]
+
+
 class HookCallback(Protocol):
     """Observe or annotate one bounded hook payload."""
 
-    def __call__(self, payload: Mapping[str, object], /) -> object: ...
+    def __call__(self, payload: Mapping[str, JsonValue], /) -> object: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,7 +48,7 @@ class HookSpec:
 class HookResult:
     hook_id: str
     status: Literal["applied", "failed", "skipped"]
-    annotations: dict[str, object]
+    annotations: JsonObject
     error: str | None = None
 
 
@@ -77,7 +82,7 @@ class HookRegistry:
     def _allowed(spec: HookSpec, capabilities: set[str]) -> bool:
         return set(spec.required_capabilities) <= capabilities
 
-    def _run_sync(self, spec: HookSpec, payload: Mapping[str, object]) -> object:
+    def _run_sync(self, spec: HookSpec, payload: Mapping[str, JsonValue]) -> object:
         """Run sync hooks with a bounded caller wait.
 
         Python cannot safely kill an arbitrary callback.  A timed-out callback
@@ -120,7 +125,7 @@ class HookRegistry:
 
     async def arun(
         self,
-        payload: Mapping[str, object],
+        payload: Mapping[str, JsonValue],
         *,
         effective_capabilities: tuple[str, ...] = (),
     ) -> tuple[HookResult, ...]:
@@ -158,7 +163,7 @@ class HookRegistry:
 
     def run(
         self,
-        payload: Mapping[str, object],
+        payload: Mapping[str, JsonValue],
         *,
         effective_capabilities: tuple[str, ...] = (),
     ) -> tuple[HookResult, ...]:
@@ -201,7 +206,7 @@ def _is_async_callable(callback: HookCallback) -> bool:
 
 async def _run_sync_async(
     spec: HookSpec,
-    payload: Mapping[str, object],
+    payload: Mapping[str, JsonValue],
     *,
     callback_slots: threading.BoundedSemaphore,
 ) -> object:
