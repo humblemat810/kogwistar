@@ -6,10 +6,13 @@ import signal
 import sys
 import time
 from dataclasses import dataclass
-from typing import Callable, Optional, TYPE_CHECKING
+from typing import Callable, Optional, TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
     from ..engine_core.engine import GraphKnowledgeEngine
+
+
+BatchApply = Callable[[list[object]], dict[str, BaseException | None]]
 
 
 @dataclass
@@ -112,15 +115,18 @@ class IndexJobWorker:
                 else:
                     ordinary_jobs.append(job)
 
-            work_units: list[tuple[list[object], object | None]] = []
+            batch_fn: BatchApply | None = (
+                cast(BatchApply, batch_apply) if callable(batch_apply) else None
+            )
+            work_units: list[tuple[list[object], BatchApply | None]] = []
             for group in embedding_groups.values():
                 for start in range(0, len(group), max(1, self.batch_size)):
-                    work_units.append((group[start : start + max(1, self.batch_size)], batch_apply))
+                    work_units.append((group[start : start + max(1, self.batch_size)], batch_fn))
             work_units.extend(([job], None) for job in ordinary_jobs)
 
             for unit, batch_fn in work_units:
-                batch_results = None
-                if batch_fn is not None and len(unit) > 1 and callable(batch_fn):
+                batch_results: dict[str, BaseException | None] | None = None
+                if batch_fn is not None and len(unit) > 1:
                     try:
                         batch_results = batch_fn(unit)
                     except Exception as exc:
