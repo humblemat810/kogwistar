@@ -173,6 +173,8 @@ def coerce_acl_input(value: ACLInput | ACLRecord | Mapping[str, object]) -> ACLI
     raw_sources = value.get("source_ids") or value.get("provenance") or ()
     if isinstance(raw_sources, str):
         raw_sources = (raw_sources,)
+    elif not isinstance(raw_sources, (list, tuple, set, frozenset)):
+        raw_sources = ()
     return ACLInput(
         object_id=object_id,
         mode=mode,  # type: ignore[arg-type]
@@ -310,13 +312,19 @@ def derive_acl(
         )
     confidence = proposal.get("confidence")
     try:
-        confidence_value = float(confidence) if confidence is not None else None
+        confidence_value = (
+            float(confidence)
+            if isinstance(confidence, (int, float, str)) and not isinstance(confidence, bool)
+            else None
+        )
     except (TypeError, ValueError):
         confidence_value = None
     approved = proposal.get("approved") is True
     evidence = proposal.get("evidence") or ()
     if isinstance(evidence, str):
         evidence = (evidence,)
+    elif not isinstance(evidence, (list, tuple, set, frozenset)):
+        evidence = ()
     evidence_values = tuple(str(item) for item in evidence)
     model = str(proposal.get("classifier_model")) if proposal.get("classifier_model") else None
     version = str(proposal.get("classifier_version")) if proposal.get("classifier_version") else None
