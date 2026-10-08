@@ -10,9 +10,11 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from kogwistar.messaging.service import LaneMessagingService
+from kogwistar.messaging.models import ProjectedLaneMessageRow
+from kogwistar.json_types import JsonValue
 from kogwistar.runtime.models import RunFailure, RunSuccess
 from kogwistar.runtime.resolvers import MappingStepResolver
 from kogwistar.runtime.runtime import StepContext
@@ -64,8 +66,8 @@ def _failure(message: str) -> RunFailure:
     return RunFailure(conversation_node_id=None, state_update=[], errors=[message])
 
 
-def _payload(row: Any) -> dict[str, Any]:
-    raw = getattr(row, "payload_json", None)
+def _payload(row: ProjectedLaneMessageRow) -> dict[str, JsonValue]:
+    raw = row.payload_json
     if isinstance(raw, Mapping):
         return dict(raw)
     if not isinstance(raw, str) or not raw:
@@ -74,7 +76,7 @@ def _payload(row: Any) -> dict[str, Any]:
         value = json.loads(raw)
     except Exception:
         return {}
-    return dict(value) if isinstance(value, Mapping) else {}
+    return cast(dict[str, JsonValue], dict(value)) if isinstance(value, Mapping) else {}
 
 
 def _claims(state: Mapping[str, Any], key: str) -> list[dict[str, Any]]:
