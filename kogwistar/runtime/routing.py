@@ -1,62 +1,62 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any
 
-from .contract import BasePredicate, WorkflowEdgeInfo
+from .contract import BasePredicate, Predicate, WorkflowEdgeInfo
 from .models import get_route_next_names
 
 
 @dataclass(frozen=True)
 class RouteComputation:
     next_node_ids: list[str]
-    selected_edges: list[Any]
+    selected_edges: list[object]
     evaluated: list[tuple[str, bool]]
     selected: list[tuple[str, str, str]]
 
 
 def compute_route_next(
     *,
-    edges: list[Any],
-    state: dict[str, Any],
-    last_result: Any,
+    edges: list[object],
+    state: Mapping[str, object],
+    last_result: object,
     fanout: bool,
-    predicate_registry: dict[str, Any],
-    nodes: dict[str, Any] | None = None,
+    predicate_registry: Mapping[str, Predicate],
+    nodes: Mapping[str, object] | None = None,
     _native_disabled: bool = False,
 ) -> RouteComputation:
-    matched: list[tuple[Any, str]] = []
+    matched: list[tuple[object, str]] = []
     evaluated: list[tuple[str, bool]] = []
     selected: list[tuple[str, str, str]] = []
 
-    def _edge_id(edge: Any) -> str:
+    def _edge_id(edge: object) -> str:
         return str(
             getattr(edge, "id", None)
             or getattr(edge, "edge_id", None)
             or f"{getattr(edge, 'predicate', None)}->{(getattr(edge, 'target_ids', None) or [''])[0]}"
         )
 
-    def _first_target(edge: Any) -> str | None:
+    def _first_target(edge: object) -> str | None:
         tids = getattr(edge, "target_ids", None) or []
         if not tids:
             return None
         return str(tids[0])
 
-    def _edge_multiplicity(edge: Any) -> str:
+    def _edge_multiplicity(edge: object) -> str:
         value = getattr(edge, "multiplicity", None)
         if value is not None:
             return str(value)
         md = getattr(edge, "metadata", {}) or {}
         return str(md.get("wf_multiplicity", "one"))
 
-    def _edge_is_default(edge: Any) -> bool:
+    def _edge_is_default(edge: object) -> bool:
         value = getattr(edge, "is_default", None)
         if value is not None:
             return bool(value)
         md = getattr(edge, "metadata", {}) or {}
         return bool(md.get("wf_is_default", False))
 
-    def _stop_on_first(edge: Any) -> bool:
+    def _stop_on_first(edge: object) -> bool:
         return (not fanout) and (_edge_multiplicity(edge) != "many")
 
     def _target_aliases(target_id: str) -> set[str]:
@@ -72,7 +72,7 @@ def compute_route_next(
                     aliases.add(str(op))
         return aliases
 
-    def _edge_aliases(edge: Any, target_id: str) -> set[str]:
+    def _edge_aliases(edge: object, target_id: str) -> set[str]:
         aliases = _target_aliases(target_id)
         aliases.update(str(value) for value in (getattr(edge, "aliases", None) or []))
         label = getattr(edge, "label", None)
@@ -83,7 +83,7 @@ def compute_route_next(
             aliases.add(str(name))
         return aliases
 
-    def _edge_info(edge: Any) -> WorkflowEdgeInfo:
+    def _edge_info(edge: object) -> WorkflowEdgeInfo:
         try:
             return WorkflowEdgeInfo.from_workflow_edge(edge)
         except Exception:
@@ -150,7 +150,7 @@ def compute_route_next(
                 except Exception:
                     base_results[index] = False
 
-        route_payload: list[dict[str, Any]] = []
+        route_payload: list[dict[str, object]] = []
         for index, edge in enumerate(edges):
             targets = [str(value) for value in (getattr(edge, "target_ids", None) or [])]
             first_target = targets[0] if targets else ""
@@ -196,7 +196,9 @@ def compute_route_next(
         if runtime_mode == "rust":
             return native_computation
 
-        def _recorded_predicate(info: WorkflowEdgeInfo, _state: Any, _result: Any) -> bool:
+        def _recorded_predicate(
+            info: WorkflowEdgeInfo, _state: Mapping[str, object], _result: object
+        ) -> bool:
             for index, edge in enumerate(edges):
                 if _edge_id(edge) == info.edge_id:
                     return predicate_results.get(index, False)
@@ -231,7 +233,7 @@ def compute_route_next(
     explicit_next = get_route_next_names(last_result)
     if explicit_next:
         explicit_matches: list[str] = []
-        explicit_edges: list[Any] = []
+        explicit_edges: list[object] = []
         for alias in explicit_next:
             matched_edge = None
             matched_target = None
@@ -281,7 +283,7 @@ def compute_route_next(
 
     matched.sort(key=lambda item: _edge_info(item[0]).priority, reverse=True)
 
-    candidate_edges: list[Any] = []
+    candidate_edges: list[object] = []
     candidate_ids: list[str] = []
     for edge, next_node_id in matched:
         if _stop_on_first(edge):
