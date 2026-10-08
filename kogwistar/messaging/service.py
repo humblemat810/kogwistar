@@ -64,7 +64,7 @@ def _infer_message_purpose(msg_type: str, purpose: str | None) -> str:
     return "user_visible"
 
 
-def _decode_json_dict(value: Any) -> dict[str, Any]:
+def _decode_json_dict(value: object) -> dict[str, object]:
     if isinstance(value, dict):
         return dict(value)
     if not isinstance(value, str) or not value:
@@ -76,7 +76,7 @@ def _decode_json_dict(value: Any) -> dict[str, Any]:
     return dict(decoded) if isinstance(decoded, dict) else {}
 
 
-def _compact_json(value: Any) -> str | None:
+def _compact_json(value: object) -> str | None:
     if value is None:
         return None
     if isinstance(value, str):
@@ -113,12 +113,12 @@ def _coerce_lane_epoch(value: datetime | int | float | str | None) -> int | None
 
 
 def _lane_record_from_payload(
-    payload: dict[str, Any],
+    payload: dict[str, object],
     *,
     namespace: str,
     entity_id: str | None,
     order: int,
-) -> dict[str, Any] | None:
+) -> dict[str, object] | None:
     metadata = payload.get("metadata")
     if not isinstance(metadata, dict):
         return None
@@ -174,7 +174,7 @@ class LaneMessagingService:
         sender_id: str,
         recipient_id: str,
         msg_type: str,
-        payload: dict[str, Any],
+        payload: dict[str, object],
         run_id: str | None = None,
         step_id: str | None = None,
         correlation_id: str | None = None,
@@ -438,7 +438,7 @@ class LaneMessagingService:
         *,
         message_id: str,
         status: str,
-        error: dict[str, Any] | None = None,
+        error: dict[str, object] | None = None,
         completed: bool | None = None,
     ) -> None:
         claims = claims_ctx.get() or {}
@@ -486,7 +486,7 @@ class LaneMessagingService:
             embedding = None
             if embeddings is not None and len(embeddings) >= 1:
                 embedding = embeddings[0]
-            update_kwargs: dict[str, Any] = {
+            update_kwargs: dict[str, object] = {
                 "ids": [message_id],
                 "documents": [doc],
                 "metadatas": [meta],
@@ -552,7 +552,7 @@ class LaneMessagingService:
             visible_ids = [message_id for message_id in visible_ids if message_id in requested_ids]
         if not visible_ids:
             return []
-        claim_kwargs: dict[str, Any] = {
+        claim_kwargs: dict[str, object] = {
             "namespace": namespace,
             "inbox_id": inbox_id,
             "claimed_by": claimed_by,
@@ -578,7 +578,7 @@ class LaneMessagingService:
         *,
         message_id: str,
         claimed_by: str,
-        error: dict[str, Any] | None = None,
+        error: dict[str, object] | None = None,
         delay_seconds: int = 0,
     ) -> None:
         requeue = getattr(self.engine.meta_sqlite, "requeue_projected_lane_message", None)
@@ -599,7 +599,7 @@ class LaneMessagingService:
         *,
         message_id: str,
         claimed_by: str,
-        error: dict[str, Any] | None = None,
+        error: dict[str, object] | None = None,
     ) -> None:
         dead_letter = getattr(self.engine.meta_sqlite, "dead_letter_projected_lane_message", None)
         if callable(dead_letter):
@@ -814,11 +814,11 @@ class LaneMessagingService:
         except TypeError:
             return list_fn(namespace=str(namespace))
 
-    def _lane_projection_records_from_events(self, namespace: str) -> list[dict[str, Any]]:
+    def _lane_projection_records_from_events(self, namespace: str) -> list[dict[str, object]]:
         iter_events = getattr(self.engine.meta_sqlite, "iter_entity_events", None)
         if not callable(iter_events):
             return []
-        records_by_id: dict[str, dict[str, Any]] = {}
+        records_by_id: dict[str, dict[str, object]] = {}
         try:
             events = iter_events(namespace=str(namespace), from_seq=1)
             for event in events:
@@ -842,7 +842,7 @@ class LaneMessagingService:
                 records_by_id[str(record["message_id"])] = record
         except Exception:
             return []
-        refreshed: list[dict[str, Any]] = []
+        refreshed: list[dict[str, object]] = []
         for record in records_by_id.values():
             current = self._lane_projection_record_from_node(
                 message_id=str(record["message_id"]),
@@ -852,10 +852,10 @@ class LaneMessagingService:
             refreshed.append(current or record)
         return sorted(refreshed, key=lambda item: (int(item["order"]), str(item["message_id"])))
 
-    def _lane_projection_records_from_graph(self, namespace: str) -> list[dict[str, Any]]:
+    def _lane_projection_records_from_graph(self, namespace: str) -> list[dict[str, object]]:
         with scoped_namespace(self.engine, namespace):
             nodes = self.engine.read.get_nodes(where={"artifact_kind": "lane_message"}, limit=100_000)
-        records: list[dict[str, Any]] = []
+        records: list[dict[str, object]] = []
         for index, node in enumerate(nodes, start=1):
             payload = node.model_dump(field_mode="backend", exclude={"embedding"})
             metadata = dict(getattr(node, "metadata", {}) or {})
@@ -886,7 +886,7 @@ class LaneMessagingService:
         message_id: str,
         namespace: str,
         order: int,
-    ) -> dict[str, Any] | None:
+    ) -> dict[str, object] | None:
         nodes = self.engine.read.get_nodes(ids=[str(message_id)])
         if not nodes:
             return None
@@ -957,7 +957,7 @@ class LaneMessagingService:
     def _validate_idempotent_message(
         self,
         *,
-        metadata: dict[str, Any],
+        metadata: dict[str, object],
         conversation_id: str,
         inbox_id: str,
         sender_id: str,
