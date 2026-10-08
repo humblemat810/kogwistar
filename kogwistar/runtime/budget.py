@@ -5,6 +5,8 @@ import math
 from collections.abc import Mapping
 from typing import Any
 
+from kogwistar.json_types import JsonValue
+
 
 class BudgetExhaustedError(RuntimeError):
     pass
@@ -49,15 +51,15 @@ class BudgetEvent:
     unit: str
     scope: str = "run"
     ts_ms: int | None = None
-    meta: dict[str, object] = field(default_factory=dict)
+    meta: dict[str, JsonValue] = field(default_factory=dict)
     event_id: str | None = None
     attribution: BudgetAttribution | None = None
 
 
-def budget_event_to_dict(event: BudgetEvent) -> dict[str, object]:
+def budget_event_to_dict(event: BudgetEvent) -> dict[str, JsonValue]:
     """Serialize a budget event without exposing dataclass implementation details."""
 
-    payload: dict[str, object] = {
+    payload: dict[str, JsonValue] = {
         "event_id": event.event_id,
         "run_id": event.run_id,
         "source": event.source,
@@ -73,7 +75,7 @@ def budget_event_to_dict(event: BudgetEvent) -> dict[str, object]:
     return payload
 
 
-def budget_event_from_dict(payload: Mapping[str, object]) -> BudgetEvent:
+def budget_event_from_dict(payload: Mapping[str, JsonValue]) -> BudgetEvent:
     """Deserialize the stable event envelope used by raw usage projections."""
 
     raw_attribution = payload.get("attribution")
@@ -94,7 +96,11 @@ def budget_event_from_dict(payload: Mapping[str, object]) -> BudgetEvent:
         unit=str(payload.get("unit") or ""),
         scope=str(payload.get("scope") or "run"),
         ts_ms=int(payload["ts_ms"]) if payload.get("ts_ms") is not None else None,
-        meta=dict(payload.get("meta") or {}),
+        meta=(
+            dict(payload["meta"])
+            if isinstance(payload.get("meta"), Mapping)
+            else {}
+        ),
         attribution=attribution,
     )
 
