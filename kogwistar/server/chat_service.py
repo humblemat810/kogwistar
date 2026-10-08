@@ -16,6 +16,7 @@ from typing import Any, Callable
 
 from kogwistar.conversation.models import ConversationNode
 from kogwistar.conversation.service import ConversationService
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.json_types import JsonValue
 
 from .chat_service_conversation_queries import _ConversationQueryService
@@ -70,9 +71,9 @@ class ChatRunService:
     def __init__(
         self,
         *,
-        get_knowledge_engine: Callable[[], Any],
-        get_conversation_engine: Callable[[], Any],
-        get_workflow_engine: Callable[[], Any],
+        get_knowledge_engine: Callable[[], GraphKnowledgeEngine],
+        get_conversation_engine: Callable[[], GraphKnowledgeEngine],
+        get_workflow_engine: Callable[[], GraphKnowledgeEngine],
         run_registry: RunRegistry,
         answer_runner: Callable[[AnswerRunRequest], JsonObject] | None = None,
         runtime_runner: Callable[[RuntimeRunRequest], JsonObject] | None = None,
@@ -110,13 +111,13 @@ class ChatRunService:
         )
         self.service_supervisor.bootstrap()
 
-    def _knowledge_engine(self) -> Any:
+    def _knowledge_engine(self) -> GraphKnowledgeEngine:
         return self._get_knowledge_engine()
 
-    def _conversation_engine(self) -> Any:
+    def _conversation_engine(self) -> GraphKnowledgeEngine:
         return self._get_conversation_engine()
 
-    def _workflow_engine(self) -> Any:
+    def _workflow_engine(self) -> GraphKnowledgeEngine:
         return self._get_workflow_engine()
 
     def _conversation_service(self) -> ConversationService:
