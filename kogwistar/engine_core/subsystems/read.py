@@ -5,9 +5,6 @@ import json
 from collections.abc import Iterable
 from datetime import datetime, timezone
 from typing import (
-    Any,
-    Dict,
-    List,
     Literal,
     Mapping,
     Optional,
@@ -228,7 +225,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
         where=None,
         limit: int | None = 200,
         include: list[str] | None = None,
-    ) -> dict[str, Any]:
+    ) -> dict[str, JsonValue]:
         if include is None:
             include = ["documents", "embeddings", "metadatas"]
         native = self._rust_postgres_projection_get(
@@ -259,7 +256,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
         where=None,
         limit: int | None = 400,
         include: list[str] | None = None,
-    ) -> dict[str, Any]:
+    ) -> dict[str, JsonValue]:
         if include is None:
             include = ["documents", "embeddings", "metadatas"]
         native = self._rust_postgres_projection_get(
@@ -316,7 +313,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
         ids: Sequence[str] | None = None,
         where=None,
         limit: int | None = 200,
-    ) -> list[dict[str, Any]]:
+    ) -> list[dict[str, JsonValue]]:
         got = self._node_get_raw(
             ids=ids,
             where=where,
@@ -331,7 +328,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
         ids: Sequence[str] | None = None,
         where=None,
         limit: int | None = 400,
-    ) -> list[dict[str, Any]]:
+    ) -> list[dict[str, JsonValue]]:
         got = self._edge_get_raw(
             ids=ids,
             where=where,
@@ -347,7 +344,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
         where=None,
         include: list[str] | None = None,
         limit: int | None = 10000,
-    ) -> dict[str, Any]:
+    ) -> dict[str, JsonValue]:
         """Read structural endpoint rows through the engine read boundary."""
         return run_awaitable_blocking(
             self._e.backend.edge_endpoints_get(
@@ -539,7 +536,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
             )
         )
         got = cast(
-            Mapping[str, Any],
+            Mapping[str, JsonValue],
             native
             or run_awaitable_blocking(
                 self._e.backend.node_query(
@@ -554,7 +551,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
             got, node_type=cast(Type[TNode], node_type or Node)
         )
 
-    def _coerce_ts_utc(self, raw: Any) -> datetime | None:
+    def _coerce_ts_utc(self, raw: object) -> datetime | None:
         if raw is None:
             return None
         if isinstance(raw, datetime):
@@ -660,7 +657,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
         query: str | None = None,
         query_embeddings: Sequence[float] | Sequence[Sequence[float]] | None = None,
         as_of_ts: datetime | str,
-        where: dict[str, Any] | None = None,
+        where: dict[str, JsonValue] | None = None,
         n_results: int = 20,
         follow_redirects: bool = True,
         node_type: Type[Node] = Node,
@@ -691,7 +688,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
         query: str | None = None,
         query_embeddings: Sequence[float] | Sequence[Sequence[float]] | None = None,
         as_of_ts: datetime | str,
-        where: dict[str, Any] | None = None,
+        where: dict[str, JsonValue] | None = None,
         n_results: int = 20,
         follow_redirects: bool = True,
         node_type: Type[Node] = Node,
@@ -858,7 +855,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
             )
         )
         got = cast(
-            Mapping[str, Any],
+            Mapping[str, JsonValue],
             native
             or run_awaitable_blocking(
                 self._e.backend.edge_query(
@@ -875,7 +872,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
 
     def nodes_from_single_or_id_query_result(
         self,
-        got: Mapping[str, Any],
+        got: Mapping[str, JsonValue],
         node_type: Type[TNode] = Node,
     ) -> list[TNode]:
         docs: list[str] = cast(list[str], got.get("documents"))
@@ -889,7 +886,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
             embs = [None] * len(docs)
         embs = cast(list[list[float] | None], embs)
 
-        metadatas = cast(list[dict[str, Any]], got.get("metadatas"))
+        metadatas = cast(list[dict[str, JsonValue]], got.get("metadatas"))
         if metadatas is None:
             raise Exception("Missing Metadatas")
 
@@ -911,7 +908,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
         return res
 
     def edges_from_single_or_id_query_result(
-        self, got: Mapping[str, Any], edge_type: Type[TEdge] = Edge, include=None
+        self, got: Mapping[str, JsonValue], edge_type: Type[TEdge] = Edge, include=None
     ) -> list[TEdge]:
         if include is None:
             include = ["documents", "metadatas", "embeddings"]
@@ -926,7 +923,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
             embs = [None] * len(docs or [])
         embs = cast(list[list[float] | None], embs)
 
-        metadatas = cast(list[dict[str, Any]], got.get("metadatas"))
+        metadatas = cast(list[dict[str, JsonValue]], got.get("metadatas"))
         if metadatas is None:
             raise Exception("Missing Metadatas")
 
@@ -944,13 +941,13 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
         return res
 
     def nodes_from_query_result(
-        self, gots: Mapping[str, Any], node_type: Type[TNode] = Node
+        self, gots: Mapping[str, JsonValue], node_type: Type[TNode] = Node
     ) -> list[list[TNode]]:
         res: list[list[TNode]] = []
         id_rows = cast(list[list[str]], gots.get("ids") or [])
         document_rows = cast(list[list[str]], gots.get("documents") or [[] for _ in id_rows])
         embedding_rows = cast(list[list[list[float] | None]], gots.get("embeddings") or [[] for _ in id_rows])
-        metadata_rows = cast(list[list[dict[str, Any]]], gots.get("metadatas") or [[] for _ in id_rows])
+        metadata_rows = cast(list[list[dict[str, JsonValue]]], gots.get("metadatas") or [[] for _ in id_rows])
         for index, ids in enumerate(id_rows):
             if not ids:
                 continue
@@ -963,13 +960,13 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
         return res
 
     def edges_from_query_result(
-        self, gots: Mapping[str, Any], edge_type: Type[TEdge] = Edge
+        self, gots: Mapping[str, JsonValue], edge_type: Type[TEdge] = Edge
     ) -> list[list[TEdge]]:
         res: list[list[TEdge]] = []
         id_rows = cast(list[list[str]], gots.get("ids") or [])
         document_rows = cast(list[list[str]], gots.get("documents") or [[] for _ in id_rows])
         embedding_rows = cast(list[list[list[float] | None]], gots.get("embeddings") or [[] for _ in id_rows])
-        metadata_rows = cast(list[list[dict[str, Any]]], gots.get("metadatas") or [[] for _ in id_rows])
+        metadata_rows = cast(list[list[dict[str, JsonValue]]], gots.get("metadatas") or [[] for _ in id_rows])
         for index, ids in enumerate(id_rows):
             if not ids:
                 continue
@@ -1008,7 +1005,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
         window_chars: int = 120,
         max_contexts: Optional[int] = None,
         prefer_label_fallback: bool = True,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, object]]:
         from ..models import GraphEntityRefBase
 
         if isinstance(node_or_id, GraphEntityRefBase):
@@ -1026,7 +1023,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
                 obj = Edge.model_validate_json(edoc_list[0])
 
         label = getattr(obj, "label", None)
-        out: List[Dict[str, Any]] = []
+        out: list[dict[str, object]] = []
         doc_cache = {}
 
         def _coerce_to_referencable_text(text_or_ast_str):
@@ -1161,7 +1158,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
             for raw_row in rows:
                 if not isinstance(raw_row, Mapping):
                     continue
-                row = cast(Mapping[str, Any], raw_row)
+                row = cast(Mapping[str, JsonValue], raw_row)
                 payload = dict(row.get("payload") or {})
                 if (payload.get("metadata") or {}).get("doc_id") == doc_id:
                     result.add(str(payload.get("id") or row.get("key")))
@@ -1192,13 +1189,15 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
             for raw_row in rows:
                 if not isinstance(raw_row, Mapping):
                     continue
-                row = cast(Mapping[str, Any], raw_row)
+                row = cast(Mapping[str, JsonValue], raw_row)
                 payload = dict(row.get("payload") or {})
                 if (payload.get("metadata") or {}).get("doc_id") == doc_id:
                     result.add(str(payload.get("id") or row.get("key")))
         return sorted(result)
 
-    def edges_by_doc(self, doc_id: str, where: dict | None = None) -> list[str]:
+    def edges_by_doc(
+        self, doc_id: str, where: dict[str, JsonValue] | None = None
+    ) -> list[str]:
         where = (
             {"doc_id": doc_id}
             if not where
@@ -1254,7 +1253,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
             key = "edge_id"
             model_cls = Edge
 
-        where: dict[str, Any] = {"insertion_method": insertion_method}
+        where: dict[str, JsonValue] = {"insertion_method": insertion_method}
         if doc_id:
             where["doc_id"] = doc_id
         if ids:
@@ -1299,7 +1298,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
     ) -> list[str]:
         return self.edge_ids_by_doc(doc_id, insertion_method=insertion_method)
 
-    def load_node_map(self, *args: Any, **kwargs: Any) -> dict[str, Node]:
+    def load_node_map(self, *args: object, **kwargs: object) -> dict[str, Node]:
         ids = kwargs.pop("ids", None)
         if ids is None and args:
             ids = args[0]
@@ -1315,7 +1314,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
         )
         return {n.safe_get_id(): n for n in nodes}
 
-    def load_edge_map(self, *args: Any, **kwargs: Any) -> dict[str, Edge]:
+    def load_edge_map(self, *args: object, **kwargs: object) -> dict[str, Edge]:
         ids = kwargs.pop("ids", None)
         if ids is None and args:
             ids = args[0]
