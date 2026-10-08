@@ -29,7 +29,7 @@ import re
 import time
 import base64
 
-from typing import Any, Callable, Mapping, Optional, Sequence, Type, TypeVar
+from typing import Any, Callable, Mapping, Optional, ParamSpec, Sequence, Type, TypeVar, cast
 
 from pydantic import BaseModel, Field
 from kogwistar.llm_tasks import (
@@ -49,6 +49,7 @@ from .models import (
 from .policy import get_chat_tail
 
 if TYPE_CHECKING:
+    from ..engine_core.engine import GraphKnowledgeEngine
     from ..runtime import WorkflowEdgeInfo
 
 from .conversation_state_contracts import ConversationWorkflowState
@@ -59,6 +60,7 @@ from ..engine_core.models import (
 )
 from ..runtime.models import StepRunResult
 from ..utils.cache_paths import joblib_cache_path
+from ..utils.cache_backend import Memory
 from ..utils.embedding_vectors import normalize_embedding_vector
 from ..engine_core.utils import AliasBook
 from kogwistar.logical_refs import (
@@ -127,11 +129,11 @@ def _restore_citation_node_ids(
     return model.model_validate(restored).model_dump(mode="python")
 
 
-def _stable_json(obj: Any) -> str:
+def _stable_json(obj: object) -> str:
     return json.dumps(obj, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
-def snapshot_hash(payload: Any) -> str:
+def snapshot_hash(payload: object) -> str:
     """Compute a stable hash for a snapshot payload.
     
     This is used to detect if the knowledge graph state has changed between
@@ -142,12 +144,12 @@ def snapshot_hash(payload: Any) -> str:
     return h.hexdigest()
 
 
-def context_messages_hash(messages: Sequence[Any]) -> str:
+def context_messages_hash(messages: Sequence[object]) -> str:
     """Stable hash of a list of LLM messages.
 
     Works for both dict-based messages and ContextMessage objects.
     """
-    norm: list[dict[str, Any]] = []
+    norm: list[dict[str, object]] = []
     for m in messages or []:
         role = getattr(m, "role", None) or (
             m.get("role") if isinstance(m, dict) else None
@@ -160,13 +162,13 @@ def context_messages_hash(messages: Sequence[Any]) -> str:
 
 
 def _engine_query_nodes(
-    engine: Any,
+    engine: "GraphKnowledgeEngine",
     *,
     query_embeddings: list[list[float]],
     n_results: int,
-    where: dict[str, Any] | None,
+    where: dict[str, object] | None,
     include: list[str],
-):
+) -> object:
     reader = getattr(engine, "read", None)
     if reader is not None and callable(getattr(reader, "query_nodes", None)):
         batches = reader.query_nodes(
@@ -185,14 +187,18 @@ def _engine_query_nodes(
     )
 
 
-def _engine_get_nodes(engine: Any, *, ids: list[str], include: list[str]):
+def _engine_get_nodes(
+    engine: "GraphKnowledgeEngine", *, ids: list[str], include: list[str]
+) -> object:
     reader = getattr(engine, "read", None)
     if reader is not None and callable(getattr(reader, "get_nodes", None)):
         return reader.get_nodes(ids=ids, include=include, node_type=ConversationNode)
     return engine.backend.node_get(ids=ids, include=include)
 
 
-def _engine_get_edges(engine: Any, *, ids: list[str], include: list[str]):
+def _engine_get_edges(
+    engine: "GraphKnowledgeEngine", *, ids: list[str], include: list[str]
+) -> object:
     reader = getattr(engine, "read", None)
     if reader is not None and callable(getattr(reader, "get_edges", None)):
         result = reader.get_edges(ids=ids, include=include, edge_type=ConversationEdge)
@@ -204,7 +210,7 @@ def _engine_get_edges(engine: Any, *, ids: list[str], include: list[str]):
     return engine.backend.edge_get(ids=ids, include=include)
 
 
-def _has_result_items(result: Any) -> bool:
+def _has_result_items(result: object) -> bool:
     if isinstance(result, dict):
         return bool(result.get("ids"))
     return bool(result)
@@ -302,9 +308,6 @@ class AnswerWithCitations(BaseModel):
     )
 
 
-from typing import TypeVar, ParamSpec, cast
-from ..utils.cache_backend import Memory
-
 P = ParamSpec("P")
 R = TypeVar("R")
 
@@ -347,9 +350,6 @@ class AgentConfig:
     # Budget knobs for materialization (kept simple; your resolvers can interpret these)
     max_chars_per_item: int = 900
     max_total_chars: int = 12000
-
-
-from ..engine_core.engine import GraphKnowledgeEngine
 
 
 class AgenticAnsweringAgent:
@@ -1276,7 +1276,6 @@ class AgenticAnsweringAgent:
                 summ = summ[:240]
             lines.append(f"EDGE {eid} | {rel}: {summ}")
         evidence_text = "\n".join(lines)
-        last_err: Exception | None = None
         for _ in range(int(getattr(agent, "max_retry", 3) or 3)):
             res:AnswerWithCitationsTaskResult = agent.llm_tasks.answer_with_citations(
                 # AnswerWithCitations
@@ -1384,7 +1383,6 @@ class AgenticAnsweringAgent:
 
         evidence_text = "\n".join(lines)
 
-        last_err: Exception | None = None
         for _ in range(int(getattr(agent, "max_retry", 3) or 3)):
             res = agent.llm_tasks.repair_citations(
                 RepairCitationsTaskRequest(
@@ -1396,11 +1394,9 @@ class AgenticAnsweringAgent:
                 )
             )
             if res.parsing_error:
-                last_err = Exception(str(res.parsing_error))
                 continue
             parsed = res.answer_payload
             if parsed is None:
-                last_err = Exception("Missing parsed output from structured_output")
                 continue
             repaired = AnswerWithCitations.model_validate(parsed)
             # If still bad, return repaired anyway (best effort) to avoid looping.
