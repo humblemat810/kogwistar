@@ -11,6 +11,7 @@ import sys
 import threading
 import time
 import uuid
+from collections.abc import Mapping
 from typing import Any, Dict, Iterator, List, Optional
 
 import sqlalchemy as sa
@@ -59,25 +60,29 @@ def _run_coro_blocking(coro):
 
 
 class _BufferedMappings:
-    def __init__(self, rows: list[Any]):
+    def __init__(self, rows: list[object]):
         self._rows = rows
 
-    def all(self) -> list[dict[str, Any]]:
-        return [dict(getattr(row, "_mapping", row)) for row in self._rows]
+    def all(self) -> list[dict[str, object]]:
+        mappings: list[dict[str, object]] = []
+        for row in self._rows:
+            value = getattr(row, "_mapping", row)
+            mappings.append(dict(value) if isinstance(value, Mapping) else {})
+        return mappings
 
 
 class _BufferedResult:
-    def __init__(self, rows: list[Any], rowcount: int | None = None):
+    def __init__(self, rows: list[object], rowcount: int | None = None):
         self._rows = rows
         self.rowcount = rowcount if rowcount is not None else len(rows)
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator[object]:
         return iter(self._rows)
 
-    def fetchone(self):
+    def fetchone(self) -> object | None:
         return self._rows[0] if self._rows else None
 
-    def fetchall(self):
+    def fetchall(self) -> list[object]:
         return list(self._rows)
 
     def mappings(self) -> _BufferedMappings:
