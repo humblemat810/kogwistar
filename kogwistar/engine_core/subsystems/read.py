@@ -33,13 +33,27 @@ from ..utils.refs import ref_doc_id
 from ..vector_search import VectorSearchHit, similarity_from_distance
 from .base import NamespaceProxy
 from ...typing_interfaces import ProjectionBackendLike, ReadLike
-from ...json_types import JsonValue
+from ...json_types import JsonObject, JsonValue
 
 if TYPE_CHECKING:
     from ..engine import GraphKnowledgeEngine
 
 TNode = TypeVar("TNode", bound=Node)
 TEdge = TypeVar("TEdge", bound=Edge)
+
+
+def _json_object(value: object) -> JsonObject:
+    """Narrow backend payloads at the graph read boundary."""
+
+    if not isinstance(value, Mapping):
+        raise TypeError("graph backend returned a non-object payload")
+    return cast(JsonObject, {str(key): item for key, item in value.items()})
+
+
+def _json_objects(value: object) -> list[JsonObject]:
+    if not isinstance(value, list):
+        return []
+    return [_json_object(item) for item in value if isinstance(item, Mapping)]
 
 
 class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
@@ -102,15 +116,13 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
             metadata=metadata,
             limit=int(limit),
         )
-        result: dict[str, JsonValue] = {
+        result: JsonObject = {
             "ids": [str(record.get("id") or "") for record in records]
         }
         if "documents" in effective_include:
             result["documents"] = [record.get("document") for record in records]
         if "metadatas" in effective_include:
-            result["metadatas"] = [
-                dict(record.get("metadata") or {}) for record in records
-            ]
+            result["metadatas"] = [_json_object(record.get("metadata") or {}) for record in records]
         if "embeddings" in effective_include:
             result["embeddings"] = [
                 normalize_embedding_vector(record.get("embedding"))
@@ -153,17 +165,15 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
             metric=str(cast(ProjectionBackendLike, self._e.backend).distance),
             limit=int(n_results),
         )
-        records = [dict(match.get("record") or {}) for match in matches]
+        records = [_json_object(match.get("record") or {}) for match in matches]
         effective_include = include or ["documents", "metadatas", "distances"]
-        result: dict[str, JsonValue] = {
+        result: JsonObject = {
             "ids": [[str(record.get("id") or "") for record in records]]
         }
         if "documents" in effective_include:
             result["documents"] = [[record.get("document") for record in records]]
         if "metadatas" in effective_include:
-            result["metadatas"] = [
-                [dict(record.get("metadata") or {}) for record in records]
-            ]
+            result["metadatas"] = [[_json_object(record.get("metadata") or {}) for record in records]]
         if "embeddings" in effective_include:
             result["embeddings"] = [
                 [
@@ -206,14 +216,14 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
         rows = [cast(Mapping[str, object], row) for row in rows if isinstance(row, Mapping)]
         if not rows:
             return None
-        payloads = [dict(row.get("payload") or {}) for row in rows]
-        result: dict[str, JsonValue] = {
+        payloads = [_json_object(row.get("payload") or {}) for row in rows]
+        result: JsonObject = {
             "ids": [str(payload.get("id") or row.get("key") or "") for payload, row in zip(payloads, rows)]
         }
         if "documents" in include:
             result["documents"] = [payload.get("document") for payload in payloads]
         if "metadatas" in include:
-            result["metadatas"] = [dict(payload.get("metadata") or {}) for payload in payloads]
+            result["metadatas"] = [_json_object(payload.get("metadata") or {}) for payload in payloads]
         if "embeddings" in include:
             result["embeddings"] = [None for _ in payloads]
         return result
@@ -237,12 +247,12 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
         )
         if native is not None:
             return native
-        result = run_awaitable_blocking(self._e.backend.node_get(
+        result = _json_object(run_awaitable_blocking(self._e.backend.node_get(
             ids=ids,
             include=include,
             where=where,
             limit=limit,
-        ))
+        )))
         if not result.get("ids"):
             return self._stage1_fallback_get(
                 entity_kind="node", ids=ids, where=where, limit=limit, include=include
@@ -268,12 +278,12 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
         )
         if native is not None:
             return native
-        result = run_awaitable_blocking(self._e.backend.edge_get(
+        result = _json_object(run_awaitable_blocking(self._e.backend.edge_get(
             ids=ids,
             include=include,
             where=where,
             limit=limit,
-        ))
+        )))
         if not result.get("ids"):
             return self._stage1_fallback_get(
                 entity_kind="edge", ids=ids, where=where, limit=limit, include=include
@@ -346,13 +356,13 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
         limit: int | None = 10000,
     ) -> dict[str, JsonValue]:
         """Read structural endpoint rows through the engine read boundary."""
-        return run_awaitable_blocking(
+        return _json_object(run_awaitable_blocking(
             self._e.backend.edge_endpoints_get(
                 where=where,
                 include=include or ["documents", "metadatas"],
                 limit=limit,
             )
-        )
+            ))
 
     # Canonical read API
     def get_nodes(
