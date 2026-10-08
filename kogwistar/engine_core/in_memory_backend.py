@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """Volatile in-memory backend used for local demos, tutorials, and tests.
 
 This backend is intentionally small but not simplistic:
@@ -30,6 +28,8 @@ The same pattern can be parameterized in pytest fixtures so a test can opt into:
 - real backend + real/provider embeddings for fuller coverage
 """
 
+from __future__ import annotations
+
 import copy
 import json
 import math
@@ -44,13 +44,13 @@ from kogwistar.engine_core.storage_backend import (
 from kogwistar.engine_core.embedding_profile import EmbeddingStorageState
 
 
-def _is_operator_dict(value: Any) -> bool:
+def _is_operator_dict(value: object) -> bool:
     return isinstance(value, dict) and any(
         isinstance(k, str) and k.startswith("$") for k in value.keys()
     )
 
 
-def _safe_cmp(left: Any, right: Any, op: str) -> bool:
+def _safe_cmp(left: object, right: object, op: str) -> bool:
     try:
         if op == "$eq":
             return left == right
@@ -69,7 +69,7 @@ def _safe_cmp(left: Any, right: Any, op: str) -> bool:
     return False
 
 
-def _contains_any(left: Any, expected: Any) -> bool:
+def _contains_any(left: object, expected: object) -> bool:
     if isinstance(left, (list, tuple, set, frozenset)):
         if isinstance(expected, (list, tuple, set, frozenset)):
             return any(item in expected for item in left)
@@ -82,7 +82,7 @@ def _contains_any(left: Any, expected: Any) -> bool:
 _MISSING = object()
 
 
-def _matches_field(value: Any, condition: Any) -> bool:
+def _matches_field(value: object, condition: object) -> bool:
     if value is _MISSING:
         return False
     if _is_operator_dict(condition):
@@ -132,7 +132,9 @@ def _matches_field(value: Any, condition: Any) -> bool:
     return value == condition
 
 
-def _matches_where_python(metadata: dict[str, Any], where: dict[str, Any] | None) -> bool:
+def _matches_where_python(
+    metadata: dict[str, object], where: dict[str, object] | None
+) -> bool:
     if not where:
         return True
     if not isinstance(where, dict):
@@ -162,7 +164,9 @@ def _matches_where_python(metadata: dict[str, Any], where: dict[str, Any] | None
     return True
 
 
-def _matches_where(metadata: dict[str, Any], where: dict[str, Any] | None) -> bool:
+def _matches_where(
+    metadata: dict[str, object], where: dict[str, object] | None
+) -> bool:
     """Evaluate `where` through selected contract owner without API change."""
     from kogwistar._rust_bridge import (
         contract_implementation_mode,
@@ -201,7 +205,7 @@ def _cosine_similarity(left: Sequence[float], right: Sequence[float]) -> float:
     return dot / (left_norm * right_norm)
 
 
-def _as_list(value: Any) -> list[Any]:
+def _as_list(value: object) -> list[object]:
     if value is None:
         return []
     if isinstance(value, list):
@@ -213,7 +217,7 @@ def _as_list(value: Any) -> list[Any]:
 class _StoredRow:
     id: str
     document: str
-    metadata: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, object] = field(default_factory=dict)
     embedding: list[float] | None = None
 
 
@@ -244,7 +248,7 @@ class _InMemoryCollection:
         *,
         ids: Sequence[str],
         documents: Sequence[str] | None = None,
-        metadatas: Sequence[dict[str, Any]] | None = None,
+        metadatas: Sequence[dict[str, object]] | None = None,
         embeddings: Sequence[Sequence[float]] | None = None,
         replace: bool = False,
     ) -> None:
@@ -292,15 +296,15 @@ class _InMemoryCollection:
         *,
         ids: Sequence[str],
         documents: Sequence[str] | None = None,
-        metadatas: Sequence[dict[str, Any]] | None = None,
+        metadatas: Sequence[dict[str, object]] | None = None,
         embeddings: Sequence[Sequence[float]] | None = None,
-        **_: Any,
+        **_: object,
     ) -> None:
         self._store(
             ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings
         )
 
-    def upsert(self, **kwargs: Any) -> None:
+    def upsert(self, **kwargs: object) -> None:
         self.add(**kwargs)
 
     def update(
@@ -308,9 +312,9 @@ class _InMemoryCollection:
         *,
         ids: Sequence[str],
         documents: Sequence[str | None] | None = None,
-        metadatas: Sequence[dict[str, Any]] | None = None,
+        metadatas: Sequence[dict[str, object]] | None = None,
         embeddings: Sequence[Sequence[float]] | None = None,
-        **_: Any,
+        **_: object,
     ) -> None:
         ids_list = [str(i) for i in ids]
         docs_list = list(documents or [])
@@ -342,7 +346,7 @@ class _InMemoryCollection:
         self,
         *,
         ids: Sequence[str] | None = None,
-        where: dict[str, Any] | None = None,
+        where: dict[str, object] | None = None,
         limit: int | None = None,
     ) -> list[_StoredRow]:
         if ids is not None:
@@ -360,9 +364,9 @@ class _InMemoryCollection:
         rows: list[_StoredRow],
         *,
         include: Sequence[str] | None = None,
-    ) -> dict[str, Any]:
+    ) -> dict[str, object]:
         include_set = set(include or ["documents", "metadatas", "embeddings"])
-        out: dict[str, Any] = {"ids": [row.id for row in rows]}
+        out: dict[str, object] = {"ids": [row.id for row in rows]}
         out["documents"] = [row.document for row in rows]
         out["metadatas"] = [copy.deepcopy(row.metadata) for row in rows]
         out["embeddings"] = [
@@ -376,11 +380,11 @@ class _InMemoryCollection:
         self,
         *,
         ids: Sequence[str] | None = None,
-        where: dict[str, Any] | None = None,
+        where: dict[str, object] | None = None,
         include: Sequence[str] | None = None,
         limit: int | None = 200,
-        **_: Any,
-    ) -> dict[str, Any]:
+        **_: object,
+    ) -> dict[str, object]:
         rows = self._select_rows(ids=ids, where=where, limit=limit)
         return self._format_get(rows, include=include)
 
@@ -390,10 +394,10 @@ class _InMemoryCollection:
         query_embeddings: Sequence[Sequence[float]] | None = None,
         query_texts: Sequence[str] | None = None,
         n_results: int = 10,
-        where: dict[str, Any] | None = None,
+        where: dict[str, object] | None = None,
         include: Sequence[str] | None = None,
-        **_: Any,
-    ) -> dict[str, Any]:
+        **_: object,
+    ) -> dict[str, object]:
         include_set = set(include or ["documents", "metadatas", "embeddings"])
         if query_embeddings is None and query_texts is not None:
             query_embeddings = self._backend.embed(query_texts)
@@ -413,7 +417,7 @@ class _InMemoryCollection:
 
         ids_batches: list[list[str]] = []
         docs_batches: list[list[str]] = []
-        metas_batches: list[list[dict[str, Any]]] = []
+        metas_batches: list[list[dict[str, object]]] = []
         embs_batches: list[list[list[float] | None]] = []
         dist_batches: list[list[float]] = []
 
@@ -443,7 +447,7 @@ class _InMemoryCollection:
                 [1.0 - max(score, -1.0) for score, _ in ranked[: max(int(n_results), 0)]]
             )
 
-        out: dict[str, Any] = {"ids": ids_batches}
+        out: dict[str, object] = {"ids": ids_batches}
         out["documents"] = docs_batches
         out["metadatas"] = metas_batches
         out["embeddings"] = embs_batches
@@ -460,8 +464,8 @@ class _InMemoryCollection:
         self,
         *,
         ids: Sequence[str] | None = None,
-        where: dict[str, Any] | None = None,
-        **_: Any,
+        where: dict[str, object] | None = None,
+        **_: object,
     ) -> None:
         if ids is not None:
             for row_id in [str(i) for i in ids]:
@@ -855,7 +859,8 @@ class AsyncInMemoryTwoStageProjectionAdapter(_InMemoryTwoStageProjectionAdapter)
         prepared: list[tuple[str, str, str, str, dict[str, Any]]] = []
         outcomes: dict[str, BaseException | None] = {}
         for job in jobs:
-            value = lambda name: job.get(name) if isinstance(job, dict) else getattr(job, name, None)
+            def value(name: str) -> object:
+                return job.get(name) if isinstance(job, dict) else getattr(job, name, None)
             job_id = str(value("job_id") or "")
             entity_kind = str(value("entity_kind") or "")
             entity_id = str(value("entity_id") or "")
