@@ -1,6 +1,6 @@
-from __future__ import annotations
-
 """Durable latest-health registry for long-running operational services."""
+
+from __future__ import annotations
 
 import json
 import os
@@ -8,9 +8,12 @@ import socket
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
 from .models import Grounding, Node, Span
+from ..json_types import JsonValue
+
+JsonObject = dict[str, JsonValue]
 
 if TYPE_CHECKING:
     from .engine import GraphKnowledgeEngine
@@ -32,7 +35,7 @@ class ServiceHealthDefinition:
     deterministic: bool
     llm_assisted: bool
     version: str | None = None
-    config_metadata: dict[str, Any] = field(default_factory=dict)
+    config_metadata: JsonObject = field(default_factory=dict)
     operator_tags: tuple[str, ...] = ()
     workspace_id: str | None = None
     heartbeat_ttl_ms: int = 60_000
@@ -83,10 +86,10 @@ class ServiceHealthRegistry:
         namespace: str | None = None,
         workspace_id: str | None = None,
         version: str | None = None,
-        config_metadata: dict[str, Any] | None = None,
+        config_metadata: JsonObject | None = None,
         operator_tags: list[str] | tuple[str, ...] | None = None,
         heartbeat_ttl_ms: int = 60_000,
-    ) -> dict[str, Any]:
+    ) -> JsonObject:
         now = _now_ms()
         ns = str(namespace or getattr(self.engine, "namespace", "default") or "default")
         definition = ServiceHealthDefinition(
@@ -141,7 +144,7 @@ class ServiceHealthRegistry:
         host: str | None = None,
         pid: int | None = None,
         started_at_ms: int | None = None,
-    ) -> dict[str, Any]:
+    ) -> JsonObject:
         payload = self._require_payload(
             service_id,
             workspace_id=workspace_id,
@@ -191,7 +194,7 @@ class ServiceHealthRegistry:
         last_error: str | None = None,
         host: str | None = None,
         pid: int | None = None,
-    ) -> dict[str, Any]:
+    ) -> JsonObject:
         payload = self._require_payload(
             service_id,
             workspace_id=workspace_id,
@@ -255,7 +258,7 @@ class ServiceHealthRegistry:
         instance_id: str | None = None,
         status: str = "stopped",
         last_error: str | None = None,
-    ) -> dict[str, Any]:
+    ) -> JsonObject:
         payload = self._require_payload(
             service_id,
             workspace_id=workspace_id,
@@ -294,7 +297,7 @@ class ServiceHealthRegistry:
         *,
         workspace_id: str | None = None,
         namespace: str | None = None,
-    ) -> dict[str, Any] | None:
+    ) -> JsonObject | None:
         get_projection = getattr(self.engine.meta_sqlite, "get_named_projection", None)
         if not callable(get_projection):
             return None
@@ -315,12 +318,12 @@ class ServiceHealthRegistry:
         workspace_id: str | None = None,
         namespace: str | None = None,
         limit: int = 1000,
-    ) -> list[dict[str, Any]]:
+    ) -> list[JsonObject]:
         list_projection = getattr(self.engine.meta_sqlite, "list_named_projections", None)
         if not callable(list_projection):
             return []
         rows = list_projection(SERVICE_HEALTH_PROJECTION_NAMESPACE)
-        out: list[dict[str, Any]] = []
+        out: list[JsonObject] = []
         for row in rows:
             payload = row.get("payload") if isinstance(row, dict) else None
             if not isinstance(payload, dict):
@@ -338,9 +341,9 @@ class ServiceHealthRegistry:
         *,
         workspace_id: str | None = None,
         now_ms: int | None = None,
-    ) -> list[dict[str, Any]]:
+    ) -> list[JsonObject]:
         now = int(now_ms or _now_ms())
-        stale: list[dict[str, Any]] = []
+        stale: list[JsonObject] = []
         for payload in self.list_services(workspace_id=workspace_id, limit=10_000):
             last_seen = _optional_int(payload.get("last_seen_ms"))
             ttl = int(payload.get("heartbeat_ttl_ms", 60_000) or 60_000)
@@ -360,7 +363,7 @@ class ServiceHealthRegistry:
         repaired = 0
         skipped = 0
         repaired_service_ids: list[str] = []
-        rebuilt: dict[str, dict[str, Any]] = {}
+        rebuilt: dict[str, JsonObject] = {}
         for node in events:
             payload = self._event_payload(node)
             if payload is None:
@@ -420,11 +423,11 @@ class ServiceHealthRegistry:
 
     def _merge_definition(
         self,
-        existing: dict[str, Any] | None,
+        existing: JsonObject | None,
         definition: ServiceHealthDefinition,
         *,
         now_ms: int,
-    ) -> dict[str, Any]:
+    ) -> JsonObject:
         payload = dict(existing or {})
         payload.update(self._definition_payload(definition))
         payload.setdefault("instance_id", None)
@@ -439,7 +442,7 @@ class ServiceHealthRegistry:
         return payload
 
     @staticmethod
-    def _definition_payload(definition: ServiceHealthDefinition) -> dict[str, Any]:
+    def _definition_payload(definition: ServiceHealthDefinition) -> JsonObject:
         return {
             "service_id": definition.service_id,
             "workspace_id": definition.workspace_id,
@@ -455,7 +458,7 @@ class ServiceHealthRegistry:
         }
 
     @staticmethod
-    def _definition_changed(existing: dict[str, Any], candidate: dict[str, Any]) -> bool:
+    def _definition_changed(existing: JsonObject, candidate: JsonObject) -> bool:
         keys = {
             "workspace_id",
             "namespace",
@@ -473,7 +476,7 @@ class ServiceHealthRegistry:
     def _store(
         self,
         service_id: str,
-        payload: dict[str, Any],
+        payload: JsonObject,
         *,
         workspace_id: str | None = None,
         namespace: str | None = None,
@@ -502,7 +505,7 @@ class ServiceHealthRegistry:
         *,
         service_id: str,
         event_type: str,
-        payload: dict[str, Any],
+        payload: JsonObject,
     ) -> None:
         now = _now_ms()
         text = json.dumps(payload, ensure_ascii=False, sort_keys=True)
@@ -530,7 +533,7 @@ class ServiceHealthRegistry:
         *,
         workspace_id: str | None = None,
         namespace: str | None = None,
-    ) -> dict[str, Any]:
+    ) -> JsonObject:
         payload = self.get_service(
             service_id,
             workspace_id=workspace_id,
@@ -583,13 +586,13 @@ class ServiceHealthRegistry:
             raise KeyError(f"namespace required for scoped service health: {service_id}")
         return f"{scoped_workspace}|{scoped_namespace}|{service_id}"
 
-    def _projection_rows(self) -> list[dict[str, Any]]:
+    def _projection_rows(self) -> list[JsonObject]:
         list_projection = getattr(self.engine.meta_sqlite, "list_named_projections", None)
         if not callable(list_projection):
             return []
         return list_projection(SERVICE_HEALTH_PROJECTION_NAMESPACE)
 
-    def _get_projection_payload_by_key(self, key: str) -> dict[str, Any] | None:
+    def _get_projection_payload_by_key(self, key: str) -> JsonObject | None:
         get_projection = getattr(self.engine.meta_sqlite, "get_named_projection", None)
         if not callable(get_projection):
             return None
@@ -613,7 +616,7 @@ class ServiceHealthRegistry:
         return nodes
 
     @staticmethod
-    def _event_payload(node: Node) -> dict[str, Any] | None:
+    def _event_payload(node: Node) -> JsonObject | None:
         raw = node.properties.get("payload_json")
         if not isinstance(raw, str) or not raw:
             return None
@@ -625,10 +628,10 @@ class ServiceHealthRegistry:
 
     @staticmethod
     def _apply_event_payload(
-        service_payload: dict[str, Any],
+        service_payload: JsonObject,
         *,
         event_type: str,
-        payload: dict[str, Any],
+        payload: JsonObject,
         event_ts_ms: int | None,
     ) -> None:
         if event_type in {"service.registered", "service.config_changed"}:
@@ -679,7 +682,7 @@ class ServiceHealthRegistry:
             return
 
     @staticmethod
-    def _advance_last_seen_ms(service_payload: dict[str, Any], observed_at_ms: Any) -> None:
+    def _advance_last_seen_ms(service_payload: JsonObject, observed_at_ms: object) -> None:
         observed = _optional_int(observed_at_ms)
         if observed is None:
             return
@@ -687,7 +690,7 @@ class ServiceHealthRegistry:
         service_payload["last_seen_ms"] = observed if current is None else max(current, observed)
 
     @staticmethod
-    def _coalesce_scope(primary: Any, fallback: Any) -> str | None:
+    def _coalesce_scope(primary: object, fallback: object) -> str | None:
         value = primary if primary is not None else fallback
         if value is None:
             return None
@@ -695,7 +698,7 @@ class ServiceHealthRegistry:
         return text if text else None
 
 
-def _optional_int(value: Any) -> int | None:
+def _optional_int(value: object) -> int | None:
     if value is None:
         return None
     try:
@@ -704,7 +707,7 @@ def _optional_int(value: Any) -> int | None:
         return None
 
 
-def _max_optional_int(*values: Any) -> int | None:
+def _max_optional_int(*values: object) -> int | None:
     nums = [_optional_int(value) for value in values]
     valid = [value for value in nums if value is not None]
     return max(valid) if valid else None
