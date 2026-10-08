@@ -2,7 +2,7 @@ import hashlib
 import uuid
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Protocol
 
 from .async_compat import run_awaitable_blocking
 from .embedding_profile import EmbeddingStorageState
@@ -141,7 +141,7 @@ def _chroma_safe_kwargs(kwargs: dict[str, object]) -> dict[str, object]:
 
 
 class _AwaitableValue:
-    def __init__(self, value: Any):
+    def __init__(self, value: object):
         self._value = value
 
     def __await__(self):
@@ -150,7 +150,7 @@ class _AwaitableValue:
 
         return _done().__await__()
 
-    def __getattr__(self, name: str) -> Any:
+    def __getattr__(self, name: str) -> object:
         return getattr(self._value, name)
 
     def __bool__(self) -> bool:
@@ -168,7 +168,7 @@ class _AwaitableDict(dict):
         return _done().__await__()
 
 
-def _awaitable_result(value: Any) -> Any:
+def _awaitable_result(value: object) -> object:
     if isinstance(value, dict):
         return _AwaitableDict(value)
     return _AwaitableValue(value)
@@ -262,177 +262,177 @@ class ChromaBackend:
         return _awaitable_result(run_awaitable_blocking(fn(**_chroma_safe_kwargs(kwargs))))
 
     # --- node_index ---
-    def node_index_get(self, **kwargs) -> Any:
+    def node_index_get(self, **kwargs: object) -> object:
         return self.call("node_index", "get", **kwargs)
 
-    def node_index_query(self, **kwargs) -> Any:
+    def node_index_query(self, **kwargs: object) -> object:
         return self.call("node_index", "query", **kwargs)
 
-    def node_index_add(self, **kwargs) -> Any:
+    def node_index_add(self, **kwargs: object) -> object:
         return self.call("node_index", "add", **kwargs)
 
-    def node_index_upsert(self, **kwargs) -> Any:
+    def node_index_upsert(self, **kwargs: object) -> object:
         return self.call("node_index", "upsert", **kwargs)
 
-    def node_index_update(self, **kwargs) -> Any:
+    def node_index_update(self, **kwargs: object) -> object:
         return self.call("node_index", "update", **kwargs)
 
-    def node_index_delete(self, **kwargs) -> Any:
+    def node_index_delete(self, **kwargs: object) -> object:
         return self.call("node_index", "delete", **kwargs)
 
     # --- nodes ---
-    def node_get(self, **kwargs) -> Any:
+    def node_get(self, **kwargs: object) -> object:
         return self.call("node", "get", **kwargs)
 
-    def node_query(self, **kwargs) -> Any:
+    def node_query(self, **kwargs: object) -> object:
         return self.call("node", "query", **kwargs)
 
-    def node_add(self, **kwargs) -> Any:
+    def node_add(self, **kwargs: object) -> object:
         return self.call("node", "add", **kwargs)
 
-    def node_upsert(self, **kwargs) -> Any:
+    def node_upsert(self, **kwargs: object) -> object:
         return self.call("node", "upsert", **kwargs)
 
-    def node_update(self, **kwargs) -> Any:
+    def node_update(self, **kwargs: object) -> object:
         return self.call("node", "update", **kwargs)
 
-    def node_delete(self, **kwargs) -> Any:
+    def node_delete(self, **kwargs: object) -> object:
         return self.call("node", "delete", **kwargs)
 
     # --- edges ---
-    def edge_get(self, **kwargs) -> Any:
+    def edge_get(self, **kwargs: object) -> object:
         return self.call("edge", "get", **kwargs)
 
-    def edge_query(self, **kwargs) -> Any:
+    def edge_query(self, **kwargs: object) -> object:
         return self.call("edge", "query", **kwargs)
 
-    def edge_add(self, **kwargs) -> Any:
+    def edge_add(self, **kwargs: object) -> object:
         return self.call("edge", "add", **kwargs)
 
-    def edge_upsert(self, **kwargs) -> Any:
+    def edge_upsert(self, **kwargs: object) -> object:
         return self.call("edge", "upsert", **kwargs)
 
-    def edge_update(self, **kwargs) -> Any:
+    def edge_update(self, **kwargs: object) -> object:
         return self.call("edge", "update", **kwargs)
 
-    def edge_delete(self, **kwargs) -> Any:
+    def edge_delete(self, **kwargs: object) -> object:
         return self.call("edge", "delete", **kwargs)
 
     # --- edge_endpoints ---
-    def edge_endpoints_get(self, **kwargs) -> Any:
+    def edge_endpoints_get(self, **kwargs: object) -> object:
         return self.call("edge_endpoints", "get", **kwargs)
 
-    def edge_endpoints_query(self, **kwargs) -> Any:
+    def edge_endpoints_query(self, **kwargs: object) -> object:
         raise ValueError(
             "edge_endpoints is structural; semantic query is unsupported; "
             "use edge_endpoints_get with metadata filters"
         )
 
-    def edge_endpoints_add(self, **kwargs) -> Any:
+    def edge_endpoints_add(self, **kwargs: object) -> object:
         return self.call("edge_endpoints", "add", **kwargs)
 
-    def edge_endpoints_upsert(self, **kwargs) -> Any:
+    def edge_endpoints_upsert(self, **kwargs: object) -> object:
         return self.call("edge_endpoints", "upsert", **kwargs)
 
-    def edge_endpoints_update(self, **kwargs) -> Any:
+    def edge_endpoints_update(self, **kwargs: object) -> object:
         return self.call("edge_endpoints", "update", **kwargs)
 
-    def edge_endpoints_delete(self, **kwargs) -> Any:
+    def edge_endpoints_delete(self, **kwargs: object) -> object:
         return self.call("edge_endpoints", "delete", **kwargs)
 
     # --- documents ---
-    def document_get(self, **kwargs) -> Any:
+    def document_get(self, **kwargs: object) -> object:
         return self.call("document", "get", **kwargs)
 
-    def document_query(self, **kwargs) -> Any:
+    def document_query(self, **kwargs: object) -> object:
         return self.call("document", "query", **kwargs)
 
-    def document_add(self, **kwargs) -> Any:
+    def document_add(self, **kwargs: object) -> object:
         return self.call("document", "add", **kwargs)
 
-    def document_upsert(self, **kwargs) -> Any:
+    def document_upsert(self, **kwargs: object) -> object:
         return self.call("document", "upsert", **kwargs)
 
-    def document_update(self, **kwargs) -> Any:
+    def document_update(self, **kwargs: object) -> object:
         return self.call("document", "update", **kwargs)
 
-    def document_delete(self, **kwargs) -> Any:
+    def document_delete(self, **kwargs: object) -> object:
         return self.call("document", "delete", **kwargs)
 
     # --- domains ---
-    def domain_get(self, **kwargs) -> Any:
+    def domain_get(self, **kwargs: object) -> object:
         return self.call("domain", "get", **kwargs)
 
-    def domain_query(self, **kwargs) -> Any:
+    def domain_query(self, **kwargs: object) -> object:
         return self.call("domain", "query", **kwargs)
 
-    def domain_add(self, **kwargs) -> Any:
+    def domain_add(self, **kwargs: object) -> object:
         return self.call("domain", "add", **kwargs)
 
-    def domain_upsert(self, **kwargs) -> Any:
+    def domain_upsert(self, **kwargs: object) -> object:
         return self.call("domain", "upsert", **kwargs)
 
-    def domain_update(self, **kwargs) -> Any:
+    def domain_update(self, **kwargs: object) -> object:
         return self.call("domain", "update", **kwargs)
 
-    def domain_delete(self, **kwargs) -> Any:
+    def domain_delete(self, **kwargs: object) -> object:
         return self.call("domain", "delete", **kwargs)
 
     # --- node_docs ---
-    def node_docs_get(self, **kwargs) -> Any:
+    def node_docs_get(self, **kwargs: object) -> object:
         return self.call("node_docs", "get", **kwargs)
 
-    def node_docs_query(self, **kwargs) -> Any:
+    def node_docs_query(self, **kwargs: object) -> object:
         return self.call("node_docs", "query", **kwargs)
 
-    def node_docs_add(self, **kwargs) -> Any:
+    def node_docs_add(self, **kwargs: object) -> object:
         return self.call("node_docs", "add", **kwargs)
 
-    def node_docs_upsert(self, **kwargs) -> Any:
+    def node_docs_upsert(self, **kwargs: object) -> object:
         return self.call("node_docs", "upsert", **kwargs)
 
-    def node_docs_update(self, **kwargs) -> Any:
+    def node_docs_update(self, **kwargs: object) -> object:
         return self.call("node_docs", "update", **kwargs)
 
-    def node_docs_delete(self, **kwargs) -> Any:
+    def node_docs_delete(self, **kwargs: object) -> object:
         return self.call("node_docs", "delete", **kwargs)
 
     # --- node_refs ---
-    def node_refs_get(self, **kwargs) -> Any:
+    def node_refs_get(self, **kwargs: object) -> object:
         return self.call("node_refs", "get", **kwargs)
 
-    def node_refs_query(self, **kwargs) -> Any:
+    def node_refs_query(self, **kwargs: object) -> object:
         return self.call("node_refs", "query", **kwargs)
 
-    def node_refs_add(self, **kwargs) -> Any:
+    def node_refs_add(self, **kwargs: object) -> object:
         return self.call("node_refs", "add", **kwargs)
 
-    def node_refs_upsert(self, **kwargs) -> Any:
+    def node_refs_upsert(self, **kwargs: object) -> object:
         return self.call("node_refs", "upsert", **kwargs)
 
-    def node_refs_update(self, **kwargs) -> Any:
+    def node_refs_update(self, **kwargs: object) -> object:
         return self.call("node_refs", "update", **kwargs)
 
-    def node_refs_delete(self, **kwargs) -> Any:
+    def node_refs_delete(self, **kwargs: object) -> object:
         return self.call("node_refs", "delete", **kwargs)
 
     # --- edge_refs ---
-    def edge_refs_get(self, **kwargs) -> Any:
+    def edge_refs_get(self, **kwargs: object) -> object:
         return self.call("edge_refs", "get", **kwargs)
 
-    def edge_refs_query(self, **kwargs) -> Any:
+    def edge_refs_query(self, **kwargs: object) -> object:
         return self.call("edge_refs", "query", **kwargs)
 
-    def edge_refs_add(self, **kwargs) -> Any:
+    def edge_refs_add(self, **kwargs: object) -> object:
         return self.call("edge_refs", "add", **kwargs)
 
-    def edge_refs_upsert(self, **kwargs) -> Any:
+    def edge_refs_upsert(self, **kwargs: object) -> object:
         return self.call("edge_refs", "upsert", **kwargs)
 
-    def edge_refs_update(self, **kwargs) -> Any:
+    def edge_refs_update(self, **kwargs: object) -> object:
         return self.call("edge_refs", "update", **kwargs)
 
-    def edge_refs_delete(self, **kwargs) -> Any:
+    def edge_refs_delete(self, **kwargs: object) -> object:
         return self.call("edge_refs", "delete", **kwargs)
 
 
@@ -448,20 +448,20 @@ class AsyncChromaBackend(ChromaBackend):
             result = await result
         return result
 
-    async def async_node_get(self, **kwargs) -> Any:
+    async def async_node_get(self, **kwargs: object) -> object:
         return await self.async_call("node", "get", **kwargs)
 
-    async def async_node_upsert(self, **kwargs) -> Any:
+    async def async_node_upsert(self, **kwargs: object) -> object:
         return await self.async_call("node", "upsert", **kwargs)
 
-    async def async_node_delete(self, **kwargs) -> Any:
+    async def async_node_delete(self, **kwargs: object) -> object:
         return await self.async_call("node", "delete", **kwargs)
 
-    async def async_edge_get(self, **kwargs) -> Any:
+    async def async_edge_get(self, **kwargs: object) -> object:
         return await self.async_call("edge", "get", **kwargs)
 
-    async def async_edge_upsert(self, **kwargs) -> Any:
+    async def async_edge_upsert(self, **kwargs: object) -> object:
         return await self.async_call("edge", "upsert", **kwargs)
 
-    async def async_edge_delete(self, **kwargs) -> Any:
+    async def async_edge_delete(self, **kwargs: object) -> object:
         return await self.async_call("edge", "delete", **kwargs)
