@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Literal, Mapping
+from typing import Literal
 
 from kogwistar.id_provider import stable_id
+from kogwistar.json_types import JsonValue
 
 
 TargetKind = Literal["node", "edge", "artifact"]
@@ -16,13 +18,13 @@ class LogicalRef:
     target_id: str
 
 
-def _as_mapping(value: Any) -> Mapping[str, Any] | None:
+def _as_mapping(value: object) -> Mapping[str, object] | None:
     if isinstance(value, Mapping):
         return value
     return None
 
 
-def _first_text(*values: Any) -> str:
+def _first_text(*values: object) -> str:
     for value in values:
         if value is None:
             continue
@@ -61,7 +63,7 @@ def logical_ref_id(
     )
 
 
-def logical_ref_from_entity(entity: Any) -> LogicalRef | None:
+def logical_ref_from_entity(entity: object) -> LogicalRef | None:
     data = _as_mapping(entity)
     if data is None and hasattr(entity, "model_dump"):
         data = _as_mapping(entity.model_dump(field_mode="backend"))  # type: ignore[attr-defined]
@@ -111,7 +113,7 @@ def logical_ref_from_entity(entity: Any) -> LogicalRef | None:
     )
 
 
-def is_reference_artifact(entity: Any) -> bool:
+def is_reference_artifact(entity: object) -> bool:
     return logical_ref_from_entity(entity) is not None
 
 
@@ -123,10 +125,10 @@ def build_reference_node_payload(
     summary: str,
     pointer_id: str | None = None,
     graph_space: str | None = None,
-    extra_properties: Mapping[str, Any] | None = None,
-    extra_metadata: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
-    properties: dict[str, Any] = {
+    extra_properties: Mapping[str, JsonValue] | None = None,
+    extra_metadata: Mapping[str, JsonValue] | None = None,
+) -> dict[str, JsonValue]:
+    properties: dict[str, JsonValue] = {
         "is_pointer": True,
         "pointer_mode": "live",
         "pointer_kind": pointer_kind,
@@ -140,7 +142,7 @@ def build_reference_node_payload(
     if extra_properties:
         properties.update(extra_properties)
 
-    metadata: dict[str, Any] = {
+    metadata: dict[str, JsonValue] = {
         "entity_type": "reference_pointer",
         "is_pointer": True,
         "pointer_mode": "live",
@@ -156,7 +158,7 @@ def build_reference_node_payload(
     if extra_metadata:
         metadata.update(extra_metadata)
 
-    payload: dict[str, Any] = {
+    payload: dict[str, JsonValue] = {
         "label": label,
         "type": "reference_pointer",
         "summary": summary,
@@ -179,10 +181,10 @@ def build_reference_edge_payload(
     summary: str,
     pointer_id: str | None = None,
     graph_space: str | None = None,
-    extra_properties: Mapping[str, Any] | None = None,
-    extra_metadata: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
-    properties: dict[str, Any] = {
+    extra_properties: Mapping[str, JsonValue] | None = None,
+    extra_metadata: Mapping[str, JsonValue] | None = None,
+) -> dict[str, JsonValue]:
+    properties: dict[str, JsonValue] = {
         "is_pointer": True,
         "pointer_mode": "live",
         "pointer_kind": pointer_kind,
@@ -196,7 +198,7 @@ def build_reference_edge_payload(
     if extra_properties:
         properties.update(extra_properties)
 
-    metadata: dict[str, Any] = {
+    metadata: dict[str, JsonValue] = {
         "entity_type": "reference_pointer_edge",
         "is_pointer": True,
         "pointer_mode": "live",
@@ -212,7 +214,7 @@ def build_reference_edge_payload(
     if extra_metadata:
         metadata.update(extra_metadata)
 
-    payload: dict[str, Any] = {
+    payload: dict[str, JsonValue] = {
         "source_ids": list(source_ids),
         "target_ids": list(target_ids),
         "relation": relation,
