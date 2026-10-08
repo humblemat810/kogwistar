@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Optional, Tuple
+from typing import TYPE_CHECKING, Optional, Tuple
 
 from ..async_compat import run_awaitable_blocking
 from ...llm_tasks import ExtractGraphTaskRequest
@@ -116,7 +116,7 @@ class IngestSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         self,
         content: str,
         doc: Document,
-    ) -> Tuple[Any, Optional[LLMGraphExtraction], Optional[str]]:
+    ) -> Tuple[object, Optional[LLMGraphExtraction], Optional[str]]:
         result = self._e.llm_tasks.extract_graph(
             ExtractGraphTaskRequest(
                 content=content,
@@ -142,7 +142,7 @@ class IngestSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         self,
         *,
         document_id: str,
-        page_text: str | list[str] | dict[str, Any],
+        page_text: str | list[str] | dict[str, object],
         page_number: int | None = None,
         auto_adjudicate: bool = True,
         extraction_schema_mode: ExtractionSchemaMode | None = None,
