@@ -758,20 +758,26 @@ class GraphKnowledgeEngine:
 
     def query_nodes(
         self,
-        *args,
-        query=None,
-        query_embeddings=None,
-        include=["documents", "embeddings", "metadatas"],
-        node_type: Type[Node] = Node,
-        **kwargs,
-    ):
-        return self.read.query_nodes(
-            *args,
-            query=query,
-            query_embeddings=query_embeddings,
-            include=include,
-            node_type=node_type,
-            **kwargs,
+        *args: object,
+        query: str | None = None,
+        query_embeddings: list[list[float]] | None = None,
+        include: Sequence[str] | None = None,
+        node_type: Type[TNode] = Node,
+        **kwargs: object,
+    ) -> list[list[TNode]]:
+        selected_include = list(
+            include if include is not None else ("documents", "embeddings", "metadatas")
+        )
+        return cast(
+            list[list[TNode]],
+            self.read.query_nodes(
+                *args,
+                query=query,
+                query_embeddings=query_embeddings,
+                include=selected_include,
+                node_type=node_type,
+                **kwargs,
+            ),
         )
 
     def search_nodes_as_of(
@@ -806,20 +812,26 @@ class GraphKnowledgeEngine:
 
     def query_edges(
         self,
-        *args,
-        query=None,
-        query_embeddings=None,
-        include=["documents", "embeddings", "metadatas"],
-        edge_type: Type[Edge] = Edge,
-        **kwargs,
-    ):
-        return self.read.query_edges(
-            *args,
-            query=query,
-            query_embeddings=query_embeddings,
-            include=include,
-            edge_type=edge_type,
-            **kwargs,
+        *args: object,
+        query: str | None = None,
+        query_embeddings: list[list[float]] | None = None,
+        include: Sequence[str] | None = None,
+        edge_type: Type[TEdge] = Edge,
+        **kwargs: object,
+    ) -> list[list[TEdge]]:
+        selected_include = list(
+            include if include is not None else ("documents", "embeddings", "metadatas")
+        )
+        return cast(
+            list[list[TEdge]],
+            self.read.query_edges(
+                *args,
+                query=query,
+                query_embeddings=query_embeddings,
+                include=selected_include,
+                edge_type=edge_type,
+                **kwargs,
+            ),
         )
 
     def nodes_from_single_or_id_query_result(
