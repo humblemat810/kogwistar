@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import os
-from typing import Literal, Mapping, Sequence
+from typing import Callable, Literal, Mapping, Protocol, Sequence, cast
 
 from pydantic import BaseModel
 
@@ -28,6 +28,14 @@ from .contracts import (
 from .errors import ProviderDependencyError
 
 ProviderName = Literal["gemini", "openai", "ollama"] # add your own
+
+
+class _RunnableLike(Protocol):
+    def invoke(self, input_value: object) -> object: ...
+
+
+class _PromptLike(Protocol):
+    def __or__(self, other: object) -> _RunnableLike: ...
 
 
 @dataclass(frozen=True)
@@ -108,7 +116,7 @@ class _LangChainRunner(_Runner):
                 "Default task provider needs 'langchain-core'. Install with: pip install 'kogwistar[full]'"
             ) from e
 
-        prompt = ChatPromptTemplate.from_messages(list(messages))
+        prompt = cast(_PromptLike, ChatPromptTemplate.from_messages(list(messages)))
         structured = build_structured_output_runnable(
             self._model,
             schema,
@@ -133,7 +141,7 @@ class _LangChainRunner(_Runner):
             raise ProviderDependencyError(
                 "Default task provider needs 'langchain-core'. Install with: pip install 'kogwistar[full]'"
             ) from e
-        prompt = ChatPromptTemplate.from_messages(list(messages))
+        prompt = cast(_PromptLike, ChatPromptTemplate.from_messages(list(messages)))
         result = (prompt | self._model).invoke(dict(variables))
         if isinstance(result, str):
             return result
@@ -162,7 +170,7 @@ def _build_runner(provider: ProviderName, config: DefaultTaskProviderConfig) -> 
         except Exception:
             return _MissingRunner(_missing_provider_message(provider))
         return _LangChainRunner(
-            ChatGoogleGenerativeAI(
+            cast(Callable[..., object], ChatGoogleGenerativeAI)(
                 model=config.gemini_model_name,
                 temperature=0.1,
                 max_tokens=None,
@@ -173,11 +181,11 @@ def _build_runner(provider: ProviderName, config: DefaultTaskProviderConfig) -> 
 
     if provider == "ollama":
         try:
-            from langchain_ollama import ChatOllama
+            from langchain_ollama import ChatOllama  # type: ignore[reportMissingImports]
         except Exception:
             return _MissingRunner(_missing_provider_message(provider))
         return _LangChainRunner(
-            ChatOllama(
+            cast(Callable[..., object], ChatOllama)(
                 model=config.ollama_model_name,
                 temperature=0.1,
             )
@@ -188,7 +196,7 @@ def _build_runner(provider: ProviderName, config: DefaultTaskProviderConfig) -> 
     except Exception:
         return _MissingRunner(_missing_provider_message(provider))
     return _LangChainRunner(
-        AzureChatOpenAI(
+        cast(Callable[..., object], AzureChatOpenAI)(
             deployment_name=os.getenv("OPENAI_DEPLOYMENT_NAME_GPT4_1"),
             model_name=os.getenv("OPENAI_MODEL_NAME_GPT4_1"),
             azure_endpoint=os.getenv("OPENAI_DEPLOYMENT_ENDPOINT_GPT4_1"),
