@@ -20,11 +20,46 @@ R = TypeVar("R")
 CacheBackend = Literal["auto", "joblib", "diskcache", "none"]
 
 
-class MemoryLike(Protocol):
+class CachedCallable(Protocol[P, R]):
+    """Callable returned by a cache provider for a typed function."""
+
+    def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R: ...
+
+    def clear(self, *args: object, **kwargs: object) -> None: ...
+
+    def check_call_in_cache(self, *args: object, **kwargs: object) -> bool: ...
+
+
+class CacheProvider(Protocol):
+    """Minimal provider surface required by :class:`CacheMemory`."""
+
+    @overload
+    def cache(
+        self, function: Callable[P, R], **kwargs: Any
+    ) -> CachedCallable[P, R]: ...
+
+    @overload
+    def cache(
+        self, function: None = None, **kwargs: Any
+    ) -> Callable[[Callable[P, R]], CachedCallable[P, R]]: ...
+
+    def cache(
+        self, function: Callable[P, R] | None = None, **kwargs: Any
+    ) -> CachedCallable[P, R] | Callable[[Callable[P, R]], CachedCallable[P, R]]: ...
+
+    def clear(self, *args: object, **kwargs: object) -> None: ...
+
+    def close(self) -> None: ...
+
+
+class MemoryLike(CacheProvider, Protocol):
     """Common cache surface used by Kogwistar call sites."""
 
-    def cache(self, function: Callable[P, R] | None = None, **kwargs: Any) -> Any:
-        ...
+    # This named protocol preserves the historical public type name while
+    # making provider implementations interchangeable and generic.
+    def cache(
+        self, function: Callable[P, R] | None = None, **kwargs: Any
+    ) -> CachedCallable[P, R] | Callable[[Callable[P, R]], CachedCallable[P, R]]: ...
 
 
 class CacheBackendUnavailable(RuntimeError):
@@ -42,14 +77,14 @@ class _FunctionWrapper:
     def call(self, *args: P.args, **kwargs: P.kwargs) -> R:
         return self(*args, **kwargs)
 
-    def clear(self, *args: Any, **kwargs: Any) -> None:
+    def clear(self, *args: object, **kwargs: object) -> None:
         clear = getattr(self._function, "clear", None)
         if clear is None:
             clear = getattr(self._function, "cache_clear", None)
         if callable(clear):
             clear(*args, **kwargs)
 
-    def check_call_in_cache(self, *args: Any, **kwargs: Any) -> bool:
+    def check_call_in_cache(self, *args: object, **kwargs: object) -> bool:
         checker = getattr(self._function, "check_call_in_cache", None)
         if callable(checker):
             return bool(checker(*args, **kwargs))
@@ -60,7 +95,10 @@ class _NoCacheMemory:
     def __init__(self, location: str | Path | None = None, **_: Any) -> None:
         self.location = location
 
-    def clear(self, *_: Any, **__: Any) -> None:
+    def clear(self, *_: object, **__: object) -> None:
+        return None
+
+    def close(self) -> None:
         return None
 
     @overload
@@ -89,7 +127,7 @@ class _DiskCacheMemory:
         self.location = location
         self._cache = Cache(str(location))
 
-    def clear(self, *_: Any, **__: Any) -> None:
+    def clear(self, *_: object, **__: object) -> None:
         self._cache.clear()
 
     def close(self) -> None:
@@ -149,7 +187,7 @@ class CacheMemory:
 
         if selected == "none" or location is None:
             self.backend = "none"
-            self._delegate: Any = _NoCacheMemory(location, **kwargs)
+            self._delegate: CacheProvider = _NoCacheMemory(location, **kwargs)
             return
 
         try:
@@ -169,10 +207,12 @@ class CacheMemory:
             return
         self.backend = selected
 
-    def cache(self, function: Callable[P, R] | None = None, **kwargs: Any) -> Any:
+    def cache(
+        self, function: Callable[P, R] | None = None, **kwargs: Any
+    ) -> CachedCallable[P, R] | Callable[[Callable[P, R]], CachedCallable[P, R]]:
         return self._delegate.cache(function, **kwargs)
 
-    def clear(self, *args: Any, **kwargs: Any) -> None:
+    def clear(self, *args: object, **kwargs: object) -> None:
         clear = getattr(self._delegate, "clear", None)
         if callable(clear):
             clear(*args, **kwargs)
@@ -196,7 +236,7 @@ def _joblib_module() -> Any | None:
     return joblib
 
 
-def cache_hash(value: Any) -> str:
+def cache_hash(value: object) -> str:
     """Return a stable cache key using Joblib or portable pickle hashing."""
 
     joblib = _joblib_module()
