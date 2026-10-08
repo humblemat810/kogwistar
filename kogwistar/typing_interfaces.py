@@ -8,6 +8,7 @@ from typing import (
     Sequence,
     TypeAlias,
     TypeVar,
+    Iterator,
     runtime_checkable,
     TYPE_CHECKING,
 )
@@ -136,6 +137,50 @@ class SqlAlchemyEngineLike(Protocol):
     def connect(self) -> AbstractContextManager[object]: ...
 
     def dispose(self) -> None: ...
+
+
+class SqlAlchemyScalarResultLike(Protocol):
+    """Small scalar-result surface used by optional SQLAlchemy adapters."""
+
+    def all(self) -> Sequence[object]: ...
+
+
+class SqlAlchemyMappingResultLike(Protocol):
+    def first(self) -> Mapping[str, object] | None: ...
+
+
+class SqlAlchemyResultLike(Protocol):
+    """Dependency-light result surface for typed SQLAlchemy integration."""
+
+    def scalar_one(self) -> object: ...
+
+    def scalar_one_or_none(self) -> object | None: ...
+
+    def scalars(self) -> SqlAlchemyScalarResultLike: ...
+
+    def mappings(self) -> SqlAlchemyMappingResultLike: ...
+
+    def first(self) -> object | None: ...
+
+    def __iter__(self) -> Iterator[object]: ...
+
+
+class SqlAlchemyConnectionLike(Protocol):
+    """Minimal connection operations used without importing SQLAlchemy types."""
+
+    def execute(
+        self,
+        statement: object,
+        *args: object,
+        **kwargs: object,
+    ) -> SqlAlchemyResultLike: ...
+
+    def exec_driver_sql(
+        self,
+        statement: str,
+        *args: object,
+        **kwargs: object,
+    ) -> SqlAlchemyResultLike: ...
 
 
 if TYPE_CHECKING:
