@@ -39,7 +39,7 @@ class EntityRefModel(BaseModel):
     url: str | None
 
     def model_dump_entity_ref(self, *arg, **kwarg):
-        return EntityRef(super().model_dump(*arg, **kwarg))
+        return cast(EntityRef, super().model_dump(*arg, **kwarg))
 
 
 # ---- Change event -----------------------------------------------------
@@ -60,24 +60,42 @@ class ChangeEvent:
 
     # ---- Serialization ------------------------------------------------
 
-    def to_jsonable(self) -> dict[str, object]:
-        return {
+    def to_jsonable(self) -> dict[str, JsonValue]:
+        return cast(
+            dict[str, JsonValue],
+            {
             "seq": self.seq,
             "op": self.op,
             "ts_unix_ms": self.ts_unix_ms,
-            "entity": self.entity,
+            "entity": cast(JsonValue, self.entity),
             "payload": self.payload,
             "run_id": self.run_id,
             "step_id": self.step_id,
-        }
+            },
+        )
 
     @staticmethod
     def from_jsonable(d: Mapping[str, object]) -> ChangeEvent:
+        entity_value = d.get("entity")
+        if entity_value is None:
+            entity = None
+        elif isinstance(entity_value, Mapping):
+            entity = cast(EntityRef, dict(entity_value))
+        else:
+            raise TypeError("entity must be a JSON object or null")
+
+        seq_value = d.get("seq")
+        ts_value = d.get("ts_unix_ms")
+        if not isinstance(seq_value, (int, float, str)) or isinstance(seq_value, bool):
+            raise TypeError("seq must be an integer-compatible JSON scalar")
+        if not isinstance(ts_value, (int, float, str)) or isinstance(ts_value, bool):
+            raise TypeError("ts_unix_ms must be an integer-compatible JSON scalar")
+
         return ChangeEvent(
-            seq=int(d["seq"]),
+            seq=int(seq_value),
             op=cast(Op, d["op"]),
-            ts_unix_ms=int(d["ts_unix_ms"]),
-            entity=cast(EntityRef | None, d.get("entity")),
+            ts_unix_ms=int(ts_value),
+            entity=entity,
             payload=cast(JsonValue | None, d.get("payload")),
             run_id=cast(str | None, d.get("run_id")),
             step_id=cast(str | None, d.get("step_id")),
