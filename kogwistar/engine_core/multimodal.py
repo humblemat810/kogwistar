@@ -9,11 +9,12 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Annotated, Any, Literal, Mapping, Union
+from typing import Annotated, Literal, Mapping, Union
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from kogwistar.logical_refs import LogicalRef
+from kogwistar.json_types import JsonValue
 
 
 Modality = Literal[
@@ -175,7 +176,7 @@ class LegacyLocator(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     kind: Literal["legacy"] = "legacy"
-    payload: Mapping[str, Any]
+    payload: Mapping[str, JsonValue]
 
 
 Locator = Annotated[
