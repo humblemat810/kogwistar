@@ -7,7 +7,10 @@ callbacks, opaque memory, and guardrails are diagnosed instead of executed.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Mapping
+from typing import cast
+
+from kogwistar.json_types import JsonValue
 
 from kogwistar.runtime.models import WorkflowDesignArtifact
 from kogwistar.runtime.models import WorkflowInvocationRequest
@@ -22,11 +25,23 @@ class CrewAIImportDiagnostic:
     severity: str = "warning"
 
 
-def import_crewai_flow(description: Mapping[str, Any]) -> tuple[WorkflowDesignArtifact, tuple[CrewAIImportDiagnostic, ...]]:
+def _json_mapping(value: JsonValue | None) -> Mapping[str, JsonValue]:
+    """Treat malformed external JSON values as absent mappings."""
+
+    return cast(Mapping[str, JsonValue], value) if isinstance(value, Mapping) else {}
+
+
+def _json_items(value: JsonValue | None) -> list[JsonValue]:
+    return value if isinstance(value, list) else []
+
+
+def import_crewai_flow(
+    description: Mapping[str, JsonValue],
+) -> tuple[WorkflowDesignArtifact, tuple[CrewAIImportDiagnostic, ...]]:
     """Translate static task/dependency mappings into an ordinary workflow."""
 
     workflow_id = str(description.get("workflow_id") or "crewai.imported.v1")
-    raw_nodes = list(description.get("tasks") or description.get("nodes") or [])
+    raw_nodes = _json_items(description.get("tasks") or description.get("nodes"))
     if not raw_nodes:
         raise ValueError("CrewAI import requires a non-empty static task list")
     diagnostics: list[CrewAIImportDiagnostic] = []
@@ -35,14 +50,15 @@ def import_crewai_flow(description: Mapping[str, Any]) -> tuple[WorkflowDesignAr
             diagnostics.append(CrewAIImportDiagnostic(code, f"{field} is not imported into runtime authority"))
     ids: list[str] = []
     nodes = []
-    def _task_value(raw: Any, index: int, key: str) -> Any:
-        return raw.get(key) if isinstance(raw, Mapping) else None
+    def _task_value(raw: JsonValue, index: int, key: str) -> JsonValue | None:
+        del index
+        return _json_mapping(raw).get(key)
 
-    def _task_key(raw: Any, index: int) -> str:
+    def _task_key(raw: JsonValue, index: int) -> str:
         return str(_task_value(raw, index, "id") or _task_value(raw, index, "name") or index)
 
     for index, raw in enumerate(raw_nodes):
-        item = dict(raw) if isinstance(raw, Mapping) else {"name": str(raw)}
+        item = dict(_json_mapping(raw)) if isinstance(raw, Mapping) else {"name": str(raw)}
         node_id = f"wf:{workflow_id}:{item.get('id') or item.get('name') or index}"
         ids.append(node_id)
         nodes.append(
@@ -67,7 +83,7 @@ def import_crewai_flow(description: Mapping[str, Any]) -> tuple[WorkflowDesignAr
         item = dict(raw) if isinstance(raw, Mapping) else {}
         depends = item.get("depends_on") or item.get("dependencies")
         if depends:
-            values = [depends] if isinstance(depends, str) else list(depends)
+            values = [depends] if isinstance(depends, str) else _json_items(depends)
             for dep in values:
                 dep_index = next(
                     (i for i, candidate in enumerate(raw_nodes) if _task_key(candidate, i) == str(dep)),
@@ -92,7 +108,7 @@ def import_crewai_flow(description: Mapping[str, Any]) -> tuple[WorkflowDesignAr
 
 
 def crewai_delegated_invocation(
-    task: Mapping[str, Any], *, parent_run_id: str, step_seq: int
+    task: Mapping[str, JsonValue], *, parent_run_id: str, step_seq: int
 ) -> WorkflowInvocationRequest:
     """Map an explicit CrewAI delegation target to normal nested invocation."""
 
@@ -106,10 +122,12 @@ def crewai_delegated_invocation(
     )
 
 
-def static_semantic_signature(description: Mapping[str, Any]) -> tuple[tuple[str, ...], tuple[tuple[str, str], ...]]:
+def static_semantic_signature(
+    description: Mapping[str, JsonValue],
+) -> tuple[tuple[str, ...], tuple[tuple[str, str], ...]]:
     """Return a stable supported-subset signature for importer round trips."""
 
-    raw_nodes = list(description.get("tasks") or description.get("nodes") or [])
+    raw_nodes = _json_items(description.get("tasks") or description.get("nodes"))
     names = tuple(
         str(item.get("id") or item.get("name") or index)
         if isinstance(item, Mapping)
@@ -118,9 +136,9 @@ def static_semantic_signature(description: Mapping[str, Any]) -> tuple[tuple[str
     )
     edges: list[tuple[str, str]] = []
     for index, raw in enumerate(raw_nodes):
-        item = dict(raw) if isinstance(raw, Mapping) else {}
+        item = dict(_json_mapping(raw)) if isinstance(raw, Mapping) else {}
         depends = item.get("depends_on") or item.get("dependencies")
-        values = [depends] if isinstance(depends, str) else list(depends or ())
+        values = [depends] if isinstance(depends, str) else _json_items(depends)
         if values:
             for dep in values:
                 edges.append((str(dep), names[index]))
