@@ -14,6 +14,7 @@ from .catalog import (
     DurableCatalogStore,
 )
 from .compression import (
+    CompressionAuthorizer,
     CompressionDecision,
     CompressionPolicy,
     CompressionRequest,
@@ -140,6 +141,7 @@ __all__ = [
     "CatalogSemanticRanker",
     "CatalogStore",
     "CompressionDecision",
+    "CompressionAuthorizer",
     "CompressionPolicy",
     "CompressionRequest",
     "CompressionResult",
