@@ -6,12 +6,13 @@ from dataclasses import dataclass
 from typing import Generic, Protocol, TypeVar
 
 from kogwistar.id_provider import stable_id
+from kogwistar.json_types import JsonValue
 
 
 TState = TypeVar("TState")
 TEvent = TypeVar("TEvent")
 TSnapshot = TypeVar("TSnapshot")
-ProjectionPayload = dict[str, object]
+ProjectionPayload = dict[str, JsonValue]
 _PROCESSED_EVENT_ID_TAIL_LIMIT = 1024
 
 
@@ -105,13 +106,13 @@ def refresh_checkpointed_named_projection(
     workspace_id: str,
     source_namespace: str,
     projection_schema_version: int,
-    decode_current: Callable[[Mapping[str, object]], ProjectionLoadResult[TState]],
+    decode_current: Callable[[Mapping[str, JsonValue]], ProjectionLoadResult[TState]],
     create_state: Callable[[], TState],
     decode_event: Callable[[str], TEvent],
     event_key: Callable[[TEvent], str],
     apply_event: Callable[[TState, TEvent, int], None],
     build_payload: Callable[[TState, ProjectionCheckpoint, Sequence[str]], ProjectionPayload],
-    build_snapshot: Callable[[Mapping[str, object]], TSnapshot],
+    build_snapshot: Callable[[Mapping[str, JsonValue]], TSnapshot],
     include_event: Callable[[str, str, str, str], bool] | None = None,
     rebuild_from_scratch: bool = False,
 ) -> TSnapshot:

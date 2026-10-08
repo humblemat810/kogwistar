@@ -15,6 +15,7 @@ from typing import Callable, Mapping, Protocol, cast, runtime_checkable
 from urllib.parse import urlsplit, urlunsplit
 
 from kogwistar.runtime.checkpointed_projection import ProjectionPayload
+from kogwistar.json_types import JsonObject, JsonValue
 
 
 PROFILE_REGISTRY_NAMESPACE = "__kogwistar_embedding_profiles_v1__"
@@ -98,7 +99,7 @@ class EmbeddingProfile:
         if self.max_image_patches is not None and int(self.max_image_patches) <= 0:
             raise ValueError("embedding profile max_image_patches must be positive")
 
-    def as_dict(self) -> dict[str, object]:
+    def as_dict(self) -> JsonObject:
         result = {
             "provider": str(self.provider).strip().lower(),
             "model": str(self.model).strip(),
@@ -126,7 +127,7 @@ class EmbeddingProfile:
         ).hexdigest()
 
     @classmethod
-    def from_mapping(cls, value: Mapping[str, object]) -> "EmbeddingProfile":
+    def from_mapping(cls, value: Mapping[str, JsonValue]) -> "EmbeddingProfile":
         if not isinstance(value, Mapping):
             raise TypeError("embedding profile payload must be a mapping")
         return cls(
@@ -331,11 +332,11 @@ class EmbeddingProfileRegistry:
         inspector: EmbeddingStorageInspector,
         *,
         configured: EmbeddingProfile | None = None,
-    ) -> dict[str, object]:
+    ) -> JsonObject:
         scope = self._key(inspector)
         state = inspector.inspect_embedding_storage()
         projection = self._metadata.get_named_projection(PROFILE_REGISTRY_NAMESPACE, scope)
-        result: dict[str, object] = {
+        result: JsonObject = {
             "storage_scope": scope,
             "storage_state": {
                 "backend_kind": state.backend_kind,
@@ -459,7 +460,7 @@ class EmbeddingProfileRegistry:
         return self._validate_current(scope, winner, configured)
 
     @staticmethod
-    def _registered_profile(scope: str, projection: Mapping[str, object]) -> EmbeddingProfile:
+    def _registered_profile(scope: str, projection: Mapping[str, JsonValue]) -> EmbeddingProfile:
         payload = projection.get("payload") or {}
         EmbeddingProfileRegistry._validate_schema(scope, projection, payload)
         try:
@@ -472,7 +473,7 @@ class EmbeddingProfileRegistry:
     @staticmethod
     def _validate_current(
         scope: str,
-        projection: Mapping[str, object],
+        projection: Mapping[str, JsonValue],
         configured: EmbeddingProfile,
     ) -> EmbeddingProfile:
         payload = projection.get("payload") or {}
@@ -494,8 +495,8 @@ class EmbeddingProfileRegistry:
     @staticmethod
     def _validate_schema(
         scope: str,
-        projection: Mapping[str, object],
-        payload: Mapping[str, object],
+        projection: Mapping[str, JsonValue],
+        payload: Mapping[str, JsonValue],
     ) -> None:
         try:
             projection_version = int(projection.get("projection_schema_version", -1))
