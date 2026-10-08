@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Literal, cast
+from typing import Literal, cast
 
 from kogwistar.messaging.service import LaneMessagingService
 from kogwistar.messaging.models import ProjectedLaneMessageRow
@@ -21,6 +21,7 @@ from kogwistar.runtime.runtime import StepContext
 
 
 ControlPolicy = Literal["steer", "queue", "cancel_and_replace"]
+JsonObject = dict[str, JsonValue]
 _TERMINAL_MESSAGE_STATUSES = {"completed", "failed", "cancelled", "dead-letter"}
 
 
@@ -79,16 +80,16 @@ def _payload(row: ProjectedLaneMessageRow) -> dict[str, JsonValue]:
     return cast(dict[str, JsonValue], dict(value)) if isinstance(value, Mapping) else {}
 
 
-def _claims(state: Mapping[str, Any], key: str) -> list[dict[str, Any]]:
+def _claims(state: Mapping[str, JsonValue], key: str) -> list[JsonObject]:
     raw = state.get(key, [])
     if not isinstance(raw, list):
         return []
-    return [dict(item) for item in raw if isinstance(item, Mapping)]
+    return [cast(JsonObject, dict(item)) for item in raw if isinstance(item, Mapping)]
 
 
 def _ack_claims(
     messaging: LaneMessagingService,
-    claims: list[dict[str, Any]],
+    claims: list[JsonObject],
 ) -> None:
     for claim in claims:
         message_id = str(claim.get("message_id") or "").strip()
@@ -155,7 +156,7 @@ def register_control_point(
         high_water = int(state.get(spec.high_water_key) or 0)
         candidate = accepted[0] if accepted else None
         if candidate is None:
-            empty_update: dict[str, Any] = {
+            empty_update: JsonObject = {
                 spec.pending_claims_key: [],
                 "agent_control_received": False,
                 "agent_control_policy": spec.policy,
@@ -206,7 +207,7 @@ def register_control_point(
             "step_id": getattr(row, "step_id", None),
             "run_id": str(getattr(row, "run_id", "") or ""),
         }
-        update: dict[str, Any] = {
+        update: JsonObject = {
             spec.output_key: None if duplicate else _payload(row),
             spec.pending_claims_key: [claim_record],
             spec.high_water_key: next_high_water,
