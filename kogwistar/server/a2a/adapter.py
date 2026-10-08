@@ -6,7 +6,7 @@ import ipaddress
 import json
 from dataclasses import dataclass
 from urllib.parse import urlsplit
-from typing import Callable, Iterable, Mapping, Protocol
+from typing import Iterable, Mapping, Protocol
 
 from ...json_types import JsonValue
 
@@ -67,22 +67,62 @@ class A2ATaskMappingStore(Protocol):
     def put(self, task_id: str, context_id: str, run_id: str) -> None: ...
 
 
+class A2ASubmitter(Protocol):
+    """Submit an ordinary host-owned run for an external A2A task."""
+
+    def __call__(
+        self, *, context_id: str, message: A2AMessage, **kwargs: object
+    ) -> Mapping[str, JsonValue]: ...
+
+
+class A2ATaskInspector(Protocol):
+    def __call__(self, run_id: str, /) -> Mapping[str, JsonValue]: ...
+
+
+class A2ATaskCanceller(Protocol):
+    def __call__(self, run_id: str, /) -> Mapping[str, JsonValue]: ...
+
+
+class A2ATaskResumer(Protocol):
+    def __call__(self, run_id: str, message: A2AMessage, /) -> Mapping[str, JsonValue]: ...
+
+
+class A2AEventReader(Protocol):
+    def __call__(self, run_id: str, after: int, /) -> Iterable[Mapping[str, JsonValue]]: ...
+
+
+class A2AAuthorizer(Protocol):
+    def __call__(self, context_id: str, role: str, /) -> bool: ...
+
+
+class A2ADeliveryEnqueuer(Protocol):
+    def __call__(self, payload: Mapping[str, JsonValue], /) -> Mapping[str, JsonValue]: ...
+
+
+class A2ACallbackSigner(Protocol):
+    def __call__(self, delivery_id: str, body: bytes, /) -> Mapping[str, str]: ...
+
+
+class A2ADeliveryAuditor(Protocol):
+    def __call__(self, payload: Mapping[str, JsonValue], /) -> None: ...
+
+
 class A2AAdapter:
     """Map external task/context IDs to ordinary Kogwistar run APIs."""
 
     def __init__(
         self,
         *,
-        submit: Callable[..., Mapping[str, JsonValue]],
-        inspect: Callable[[str], Mapping[str, JsonValue]],
-        cancel: Callable[[str], Mapping[str, JsonValue]],
-        resume: Callable[[str, A2AMessage], Mapping[str, JsonValue]] | None = None,
-        events: Callable[[str, int], Iterable[Mapping[str, JsonValue]]] | None = None,
-        authorize: Callable[[str, str], bool] | None = None,
+        submit: A2ASubmitter,
+        inspect: A2ATaskInspector,
+        cancel: A2ATaskCanceller,
+        resume: A2ATaskResumer | None = None,
+        events: A2AEventReader | None = None,
+        authorize: A2AAuthorizer | None = None,
         card: A2AAgentCard | None = None,
-        enqueue_delivery: Callable[[Mapping[str, JsonValue]], Mapping[str, JsonValue]] | None = None,
-        sign_callback: Callable[[str, bytes], Mapping[str, str]] | None = None,
-        audit_delivery: Callable[[Mapping[str, JsonValue]], None] | None = None,
+        enqueue_delivery: A2ADeliveryEnqueuer | None = None,
+        sign_callback: A2ACallbackSigner | None = None,
+        audit_delivery: A2ADeliveryAuditor | None = None,
         allowed_callback_hosts: Iterable[str] = (),
         max_push_body_bytes: int = 256 * 1024,
         task_mapping_store: A2ATaskMappingStore | None = None,
