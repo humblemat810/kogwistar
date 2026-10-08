@@ -9,24 +9,40 @@ from __future__ import annotations
 import json
 import urllib.error
 import urllib.request
-from typing import Any, Protocol, TypeVar, runtime_checkable
+from typing import Any, Protocol, Self, TypeVar, runtime_checkable
+
+from kogwistar.json_types import JsonValue
 
 class StructuredModelLike(Protocol):
     @classmethod
-    def model_validate(cls, payload: Any) -> Any: ...
+    def model_validate(cls, payload: object, /) -> Self: ...
+
+    @classmethod
+    def model_json_schema(cls) -> dict[str, JsonValue]: ...
 
 
 TStructuredModel = TypeVar("TStructuredModel", bound=StructuredModelLike)
+TStructuredModel_co = TypeVar(
+    "TStructuredModel_co", bound=StructuredModelLike, covariant=True
+)
+
+
+class StructuredOutputRunnable(Protocol[TStructuredModel_co]):
+    """Runnable returned by a structured-output provider."""
+
+    def invoke(
+        self, messages: object, config: object | None = None,
+    ) -> dict[str, object]: ...
 
 
 @runtime_checkable
 class SupportsStructuredOutput(Protocol):
     def with_structured_output(
         self,
-        schema: Any,
+        schema: type[TStructuredModel],
         *args: Any,
         **kwargs: Any,
-    ) -> Any: ...
+    ) -> StructuredOutputRunnable[TStructuredModel]: ...
 
 
 class StructuredBridgeChatModel:
@@ -58,7 +74,9 @@ class StructuredBridgeChatModel:
         _ = include_raw, kwargs
         return _StructuredBridgeResponse(self, schema)
 
-    def complete(self, messages: Any, schema: Any) -> dict[str, Any]:
+    def complete(
+        self, messages: object, schema: type[TStructuredModel]
+    ) -> dict[str, Any]:
         body = {
             "model": self.model,
             "messages": bridge_messages(messages),
@@ -100,14 +118,14 @@ class _StructuredBridgeResponse:
         self.model = model
         self.schema = schema
 
-    def invoke(self, messages: Any, config: Any = None) -> dict[str, Any]:
+    def invoke(self, messages: object, config: object | None = None) -> dict[str, object]:
         _ = config
         payload = self.model.complete(messages, self.schema)
         parsed = self.schema.model_validate(payload)
         return {"parsed": parsed, "raw": payload, "parsing_error": None}
 
 
-def bridge_messages(messages: Any) -> list[dict[str, str]]:
+def bridge_messages(messages: object) -> list[dict[str, str]]:
     """Convert common chat-message objects without exposing local paths."""
     if not isinstance(messages, (list, tuple)):
         messages = [messages]
@@ -145,7 +163,7 @@ class _ProviderChainResponse:
         self.models = models
         self.schema = schema
 
-    def invoke(self, messages: Any, config: Any = None) -> dict[str, Any]:
+    def invoke(self, messages: object, config: object | None = None) -> dict[str, object]:
         last_error: Exception | None = None
         for index, (provider, model) in enumerate(self.models):
             try:
@@ -168,6 +186,7 @@ class _ProviderChainResponse:
 __all__ = [
     "ProviderChainChatModel",
     "StructuredModelLike",
+    "StructuredOutputRunnable",
     "StructuredBridgeChatModel",
     "SupportsStructuredOutput",
     "bridge_messages",
