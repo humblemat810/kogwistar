@@ -1,8 +1,9 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
-from typing import Any, Literal, Self, Sequence, TypeAlias
+from typing import Literal, Mapping, Self, Sequence, TypeAlias
 from kogwistar.typing_interfaces import EngineLike
 from typing import Iterable
+from kogwistar.json_types import JsonValue
 
 from .models import ConversationEdge, ConversationNode
 import json
@@ -66,7 +67,7 @@ class ContextItem:
     # Conversation
     role: Role
 
-    extra: dict | None = None
+    extra: dict[str, JsonValue] | None = None
 
     # provenance / tracing
     node_id: str | None = None
@@ -198,7 +199,12 @@ class _GroupedPolicyOrdering:
             if it.kind != "tail_turn":
                 return 10**9
             extra = it.extra or {}
-            return int(extra.get("turn_index", 10**9))
+            turn_index = extra.get("turn_index", 10**9)
+            return (
+                int(turn_index)
+                if isinstance(turn_index, (int, float, str))
+                else 10**9
+            )
 
         out.sort(
             key=lambda x: (self._rank.get(x.kind, 99), turn_ix(x), (x.node_id or ""))
@@ -610,15 +616,21 @@ class ContextSources:
     # -------------------------
     def _load_node_rows(
         self, conversation_id: str
-    ) -> tuple[list[Any], list[Any], list[Any]]:
+    ) -> tuple[list[JsonValue], list[JsonValue], list[JsonValue]]:
         got = self.engine.backend.node_get(
             where={"conversation_id": conversation_id},
             include=["documents", "metadatas"],
         )
+        if not isinstance(got, Mapping):
+            return [], [], []
         ids = got.get("ids") or []
         docs = got.get("documents") or []
         metas = got.get("metadatas") or []
-        return ids, docs, metas
+        return (
+            list(ids) if isinstance(ids, list) else [],
+            list(docs) if isinstance(docs, list) else [],
+            list(metas) if isinstance(metas, list) else [],
+        )
 
     def _load_acl_visible_nodes(
         self, conversation_id: str
@@ -642,9 +654,9 @@ class ContextSources:
     # -------------------------
     def _decode_nodes(
         self,
-        ids: Iterable[Any],
-        docs: Iterable[Any],
-        metas: Iterable[Any],
+        ids: Iterable[JsonValue],
+        docs: Iterable[JsonValue],
+        metas: Iterable[JsonValue],
     ) -> tuple[dict[str, ConversationNode], dict[str, dict]]:
         by_id: dict[str, ConversationNode] = {}
         meta_by_id: dict[str, dict] = {}
@@ -663,7 +675,7 @@ class ContextSources:
             meta_by_id[sid] = base.get("metadata") or {}
         return by_id, meta_by_id
 
-    def _safe_json_dict(self, doc: Any) -> dict:
+    def _safe_json_dict(self, doc: object) -> dict[str, JsonValue]:
         if not isinstance(doc, str):
             return {}
         try:
@@ -673,7 +685,7 @@ class ContextSources:
             return {}
 
     def _safe_validate_conversation_node(
-        self, payload: dict
+        self, payload: Mapping[str, JsonValue]
     ) -> ConversationNode | None:
         try:
             return ConversationNode.model_validate(payload)
@@ -770,6 +782,10 @@ class ContextSources:
             where={"doc_id": f"conv:{conversation_id}"},
             include=["metadatas"],
         )
+        if not isinstance(egot, Mapping):
+            return _EdgeSelection(
+                memctx_ids, ptr_ids, edge_ids_for_memctx, edge_ids_for_ptr
+            )
         eids = egot.get("ids") or []
         emetas = egot.get("metadatas") or []
 
@@ -800,7 +816,9 @@ class ContextSources:
             memctx_ids, ptr_ids, edge_ids_for_memctx, edge_ids_for_ptr
         )
 
-    def _ids_from_json_list(self, raw: Any) -> list[str]:
+    def _ids_from_json_list(self, raw: object) -> list[str]:
+        if not isinstance(raw, str):
+            return []
         try:
             xs = json.loads(raw or "[]")
         except Exception:
@@ -809,7 +827,7 @@ class ContextSources:
             return []
         return [str(x) for x in xs if x is not None]
 
-    def _first_id_from_json_list(self, raw: Any) -> str | None:
+    def _first_id_from_json_list(self, raw: object) -> str | None:
         ids = self._ids_from_json_list(raw)
         return ids[0] if ids else None
 
