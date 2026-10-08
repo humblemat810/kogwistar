@@ -15,7 +15,7 @@ import json
 import time
 from collections.abc import Awaitable, Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Callable, Optional, Protocol, TypeVar, Tuple, cast
+from typing import TYPE_CHECKING, Callable, Optional, Protocol, TypeVar, Tuple, cast
 from fastapi import HTTPException
 
 
@@ -28,6 +28,7 @@ from ..engine_core.models import Grounding, MentionVerification, Span
 from ..engine_core.async_compat import run_awaitable_blocking
 from .policy import get_chat_tail
 from ..server.auth_middleware import get_current_capabilities, has_explicit_capabilities_claim
+from ..json_types import JsonValue
 
 if TYPE_CHECKING:
     from .models import MetaFromLastSummary
@@ -48,10 +49,10 @@ class ToolCallIdFactory(Protocol):
 class SubworkflowRunner(Protocol):
     """Invoke a child workflow with its tool-shaped keyword payload."""
 
-    def __call__(self, **kwargs: Any) -> object | Awaitable[object]: ...
+    def __call__(self, **kwargs: JsonValue) -> object | Awaitable[object]: ...
 
 
-def _safe_json(obj: Any) -> str:
+def _safe_json(obj: object) -> str:
     try:
         return json.dumps(obj, ensure_ascii=False, default=str)
     except Exception:
@@ -103,8 +104,8 @@ class ToolRunner:
         turn_node_id: str,
         turn_index: int,
         tool_name: str,
-        args: list,
-        kwargs: dict[str, Any],
+        args: list[JsonValue],
+        kwargs: dict[str, JsonValue],
         prev_turn_meta_summary: MetaFromLastSummary,
     ) -> tuple[ConversationNode, ConversationNode | None, str]:
         try:
@@ -187,8 +188,8 @@ class ToolRunner:
         turn_node_id: str,
         turn_index: int,
         tool_name: str,
-        input_args: list,
-        input_kwargs: dict[str, Any],
+        input_args: list[JsonValue],
+        input_kwargs: dict[str, JsonValue],
         call_node: ConversationNode,
         result_summary: str,
         result_payload: Mapping[str, object],
@@ -329,8 +330,8 @@ class ToolRunner:
         turn_node_id: str,
         turn_index: int,
         tool_name: str,
-        args: list,
-        kwargs: dict[str, Any],
+        args: list[JsonValue],
+        kwargs: dict[str, JsonValue],
         handler: Callable[..., T | Awaitable[T]],
         prev_turn_meta_summary: MetaFromLastSummary,
         render_result: Optional[Callable[[T], str]] = None,
@@ -498,11 +499,11 @@ class ToolRunner:
         turn_node_id: str,
         turn_index: int,
         tool_name: str,
-        args: list,
-        kwargs: dict[str, Any],
+        args: list[JsonValue],
+        kwargs: dict[str, JsonValue],
         subworkflow_runner: SubworkflowRunner,
         prev_turn_meta_summary: MetaFromLastSummary,
-        render_result: Optional[Callable[[Any], str]] = None,
+        render_result: Optional[Callable[[object], str]] = None,
         orchestrator: ConversationOrchestrator | None = None,
         tool_kind: str = "workflow/subworkflow",
         execution_mode: str = "child-process",
