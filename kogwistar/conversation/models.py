@@ -16,7 +16,8 @@ from pydantic import (
     field_validator,
     model_validator,
 )
-from typing import Any, ClassVar, Dict, List, Literal, Self, Tuple
+from kogwistar.json_types import JsonValue
+from typing import ClassVar, Dict, List, Literal, Self, Tuple
 
 # Public compatibility re-export used by agentic_answering at runtime.
 from kogwistar.provenance import EvidencePackDigest as EvidencePackDigest  # noqa: F401
@@ -77,7 +78,7 @@ class ContextSnapshotMetadata(BaseModel):
 
     # ---- Storage helpers for Chroma / flat metadata ----
 
-    def to_chroma_metadata(self) -> Dict[str, Any]:
+    def to_chroma_metadata(self) -> Dict[str, JsonValue]:
         """
         Flatten to Chroma-friendly metadata (primitives only).
         Keeps all extra fields too, but flattens `cost`.
@@ -89,7 +90,9 @@ class ContextSnapshotMetadata(BaseModel):
         return d
 
     @classmethod
-    def from_chroma_metadata(cls, meta: Dict[str, Any]) -> "ContextSnapshotMetadata":
+    def from_chroma_metadata(
+        cls, meta: Dict[str, JsonValue]
+    ) -> "ContextSnapshotMetadata":
         """
         Reconstruct from flat Chroma metadata. Accepts either:
         - flattened cost keys (cost.char_count / cost.token_count), or
@@ -120,7 +123,7 @@ class ContextSnapshotMetadata(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def _accept_flat_cost_on_direct_init(cls, values: Any) -> Any:
+    def _accept_flat_cost_on_direct_init(cls, values: object) -> object:
         """
         Optional: allows ContextSnapshotMetadata(**meta_from_chroma) directly,
         without calling from_chroma_metadata().
@@ -234,7 +237,7 @@ class ConversationRoleMixin(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def sync_conversation_metadata(cls, data: Any, info: ValidationInfo) -> Any:
+    def sync_conversation_metadata(cls, data: object, info: ValidationInfo) -> object:
         if isinstance(data, dict):
             metadata = data.get("metadata", {}) or {}
             for field in ["role", "turn_index", "conversation_id", "user_id"]:
@@ -271,7 +274,7 @@ class ConversationAIResponse(BaseModel):
     projected_conversation_edge_ids: List[str] = Field(default_factory=list)
     run_trace_node_id: None | str = None
     response_node_id: str | None = None
-    meta: Dict[str, Any] = Field(default_factory=dict)
+    meta: Dict[str, JsonValue] = Field(default_factory=dict)
 
 
 class ConversationEdge(Edge):
