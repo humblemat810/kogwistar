@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Mapping, Protocol
 
+from kogwistar.json_types import JsonValue
+
 from .catalog import CatalogStore
 from .providers import ProviderInactiveError, ProviderRegistration, ProviderRegistry
 from .skills import (
@@ -22,23 +24,25 @@ from .skills import (
     validate_skill_artifact,
 )
 
+JsonObject = dict[str, JsonValue]
+
 
 class McpInvoker(Protocol):
     """Invoke one discovered MCP operation at an explicitly named boundary."""
 
-    def __call__(self, provider_local_id: str, **kwargs: object) -> object: ...
+    def __call__(self, provider_local_id: str, **kwargs: JsonValue) -> JsonValue: ...
 
 
 class DescriptorLoader(Protocol):
     """Load bounded provider descriptors without granting execution authority."""
 
-    def __call__(self) -> list[Mapping[str, object]]: ...
+    def __call__(self) -> list[Mapping[str, JsonValue]]: ...
 
 
 class McpSchemaDescriber(Protocol):
     """Describe one already-discovered MCP operation."""
 
-    def __call__(self, provider_local_id: str, /) -> Mapping[str, object]: ...
+    def __call__(self, provider_local_id: str, /) -> Mapping[str, JsonValue]: ...
 
 
 class McpSchemaAuthorizer(Protocol):
@@ -50,19 +54,19 @@ class McpSchemaAuthorizer(Protocol):
 class SkillAuthorizer(Protocol):
     """Authorize one external skill or project record."""
 
-    def __call__(self, payload: Mapping[str, object], /) -> bool: ...
+    def __call__(self, payload: Mapping[str, JsonValue], /) -> bool: ...
 
 
 class SkillParser(Protocol):
     """Convert an authorized external payload into a validated skill artifact."""
 
-    def __call__(self, source: Mapping[str, object], /) -> SkillGraphArtifact: ...
+    def __call__(self, source: Mapping[str, JsonValue], /) -> SkillGraphArtifact: ...
 
 
 class KnowledgeWriter(Protocol):
     """Persist one scoped knowledge record and return its stable reference."""
 
-    def __call__(self, record: Mapping[str, object], /) -> str: ...
+    def __call__(self, record: Mapping[str, JsonValue], /) -> str: ...
 
 
 class FilesystemSkillProvider:
@@ -76,8 +80,8 @@ class FilesystemSkillProvider:
         if not self.root.is_dir():
             raise ValueError("skill provider root must be a directory")
 
-    def descriptors(self) -> list[Mapping[str, object]]:
-        values: list[Mapping[str, object]] = []
+    def descriptors(self) -> list[Mapping[str, JsonValue]]:
+        values: list[Mapping[str, JsonValue]] = []
         for path in sorted(self.root.rglob("*.md")):
             if not path.is_file():
                 continue
@@ -125,15 +129,15 @@ class McpDiscoveryProvider:
         self._describe = describe
         self._invoke = invoke
 
-    def descriptors(self) -> list[Mapping[str, object]]:
+    def descriptors(self) -> list[Mapping[str, JsonValue]]:
         return [dict(item) for item in self._descriptors()]
 
-    def describe(self, provider_local_id: str) -> Mapping[str, object]:
+    def describe(self, provider_local_id: str) -> Mapping[str, JsonValue]:
         if self._describe is None:
             raise LookupError("MCP schema loading is unavailable")
         return dict(self._describe(provider_local_id))
 
-    def invoke(self, provider_local_id: str, **kwargs: object) -> object:
+    def invoke(self, provider_local_id: str, **kwargs: JsonValue) -> JsonValue:
         if self._invoke is None:
             raise PermissionError("MCP invocation is not configured")
         return self._invoke(provider_local_id, **kwargs)
@@ -149,14 +153,14 @@ def select_mcp_schemas(
     authorize: McpSchemaAuthorizer | None = None,
     max_schemas: int = 16,
     max_bytes: int = 64 * 1024,
-) -> dict[str, Mapping[str, object]]:
+) -> dict[str, Mapping[str, JsonValue]]:
     """Load only selected, authorized, bounded schemas for one model call."""
 
     if authorize is None:
         raise PermissionError("MCP schema selection requires an authorization callback")
     if len(provider_local_ids) > max_schemas:
         raise ValueError("selected MCP schema count exceeds bound")
-    selected: dict[str, Mapping[str, object]] = {}
+    selected: dict[str, Mapping[str, JsonValue]] = {}
     total_bytes = 0
     for local_id in provider_local_ids:
         key = str(local_id)
