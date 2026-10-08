@@ -4,7 +4,7 @@ import argparse
 import json
 import os
 from pathlib import Path
-from typing import Any
+from kogwistar.json_types import JsonValue
 
 import httpx
 from pydantic import ValidationError
@@ -41,9 +41,9 @@ def _request_json(
     *,
     method: str,
     url: str,
-    params: dict[str, Any] | None = None,
-    json_body: dict[str, Any] | None = None,
-) -> dict[str, Any]:
+    params: dict[str, JsonValue] | None = None,
+    json_body: dict[str, JsonValue] | None = None,
+) -> dict[str, JsonValue]:
     with httpx.Client(timeout=30.0) as client:
         resp = client.request(method, url, params=params, json=json_body)
         resp.raise_for_status()
@@ -52,7 +52,7 @@ def _request_json(
         return resp.json()
 
 
-def _print_json(payload: dict[str, Any]) -> None:
+def _print_json(payload: dict[str, JsonValue]) -> None:
     print(json.dumps(payload, indent=2, ensure_ascii=False))
 
 
