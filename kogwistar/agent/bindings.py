@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from typing import cast
+from typing import Protocol, cast
 
 from kogwistar.acl.derivation import (
     ACLInput,
@@ -37,6 +37,12 @@ from .read_tools import AgentReadTools, ReadScope
 # The provider protocols are the single source of truth for these contracts.
 FakeModel = ModelProvider[JsonValue]
 FakeTool = ToolProvider[JsonValue]
+
+
+class InvocationFactory(Protocol):
+    """Build a validated nested workflow request for one runtime step."""
+
+    def __call__(self, context: StepContext, /) -> WorkflowInvocationRequest: ...
 
 
 class SequenceFakeModel:
@@ -359,7 +365,7 @@ def register_catalog_search_step(
 
 
 def make_nested_invocation_handler(
-    invocation_factory: Callable[[StepContext], WorkflowInvocationRequest],
+    invocation_factory: InvocationFactory,
 ) -> Callable[[StepContext], RunSuccess]:
     """Create an ordinary resolver handler returning one nested invocation."""
 
@@ -384,7 +390,9 @@ def validate_invocation_request(
     return request
 
 
-def static_invocation(workflow_id: str, *, result_state_key: str = "agent_action_result") -> Callable[[StepContext], WorkflowInvocationRequest]:
+def static_invocation(
+    workflow_id: str, *, result_state_key: str = "agent_action_result"
+) -> InvocationFactory:
     def _factory(ctx: StepContext) -> WorkflowInvocationRequest:
         return validate_invocation_request(WorkflowInvocationRequest(
             workflow_id=workflow_id,
@@ -397,7 +405,7 @@ def static_invocation(workflow_id: str, *, result_state_key: str = "agent_action
 
 def dynamic_invocation(
     design: WorkflowDesignArtifact, *, result_state_key: str = "agent_action_result"
-) -> Callable[[StepContext], WorkflowInvocationRequest]:
+) -> InvocationFactory:
     def _factory(ctx: StepContext) -> WorkflowInvocationRequest:
         return validate_invocation_request(WorkflowInvocationRequest(
             workflow_id=design.workflow_id,
