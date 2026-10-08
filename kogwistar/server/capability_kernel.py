@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from time import time
-from typing import Any, Iterable
+from typing import Iterable
 
 from fastapi import HTTPException
+
+from ..json_types import JsonValue
 
 
 @dataclass(frozen=True)
@@ -141,7 +143,7 @@ class CapabilityKernel:
         )
         raise HTTPException(status_code=403, detail=detail)
 
-    def snapshot(self) -> dict[str, Any]:
+    def snapshot(self) -> dict[str, JsonValue]:
         return {
             "specs": [
                 {
