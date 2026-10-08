@@ -9,12 +9,13 @@ import math
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Protocol
 from urllib.parse import quote
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from kogwistar.engine_core.embedding_profile import NamedProjectionStore
+from kogwistar.runtime.checkpointed_projection import ProjectionPayload
 
 _TOKEN_RE = re.compile(r"[\w.-]+", re.UNICODE)
 _LOG = logging.getLogger(__name__)
@@ -135,7 +136,7 @@ class CatalogStore:
         acl_enabled: bool = True,
         acl_checker: CatalogAcl | None = None,
         group_acl_checker: CatalogGroupAcl | None = None,
-        metadata: Any | None = None,
+        metadata: object | None = None,
         projection_namespace: str = CATALOG_PROJECTION_NAMESPACE,
         semantic_ranker: CatalogSemanticRanker | None = None,
         tenant_id: str | None = None,
@@ -559,7 +560,7 @@ class DurableCatalogStore(CatalogStore):
         *,
         tenant_id: str | None,
         project_id: str | None,
-        **kwargs: Any,
+        **kwargs: object,
     ) -> None:
         self.tenant_id = tenant_id
         self.project_id = project_id
@@ -656,12 +657,18 @@ class DurableCatalogStore(CatalogStore):
                 self._entries[logical_id] = entry
 
     @staticmethod
-    def _cas_values(row: dict[str, Any] | None) -> tuple[int | None, int | None]:
+    def _cas_values(row: ProjectionPayload | None) -> tuple[int | None, int | None]:
         if row is None:
             return None, None
         return int(row.get("last_authoritative_seq", 0)), int(row.get("last_materialized_seq", 0))
 
-    def _cas(self, key: str, payload: dict[str, Any], row: dict[str, Any] | None, revision: int) -> None:
+    def _cas(
+        self,
+        key: str,
+        payload: ProjectionPayload,
+        row: ProjectionPayload | None,
+        revision: int,
+    ) -> None:
         expected_a, expected_m = self._cas_values(row)
         if not self._durable_metadata.compare_and_swap_named_projection(
             self._projection_namespace,
@@ -681,11 +688,11 @@ class DurableCatalogStore(CatalogStore):
         *,
         namespace: str,
         key: str,
-        payload: dict[str, Any],
-        row: dict[str, Any] | None,
+        payload: ProjectionPayload,
+        row: ProjectionPayload | None,
         revision: int,
         status: str = "ready",
-    ) -> dict[str, Any]:
+    ) -> ProjectionPayload:
         expected_a, expected_m = DurableCatalogStore._cas_values(row)
         return {
             "namespace": namespace,
@@ -699,7 +706,7 @@ class DurableCatalogStore(CatalogStore):
             "materialization_status": status,
         }
 
-    def prepare_upsert_update(self, entry: CatalogEntry) -> tuple[CatalogEntry, list[dict[str, Any]]]:
+    def prepare_upsert_update(self, entry: CatalogEntry) -> tuple[CatalogEntry, list[ProjectionPayload]]:
         """Build immutable revision/current-pointer CAS updates without applying."""
 
         self._assert_write_scope(tenant_id=entry.tenant_id, project_id=entry.project_id)
@@ -723,7 +730,7 @@ class DurableCatalogStore(CatalogStore):
         revision_row = self._durable_metadata.get_named_projection(
             self._projection_namespace, revision_key
         )
-        updates: list[dict[str, Any]] = []
+        updates: list[ProjectionPayload] = []
         if revision_row is None:
             updates.append(
                 self._update(
@@ -755,7 +762,7 @@ class DurableCatalogStore(CatalogStore):
         )
         return entry.model_copy(deep=True), updates
 
-    def apply_prepared_updates(self, updates: list[dict[str, Any]]) -> None:
+    def apply_prepared_updates(self, updates: list[ProjectionPayload]) -> None:
         """Apply same-store updates atomically through existing metadata CAS."""
 
         if not updates:
@@ -838,7 +845,7 @@ class DurableCatalogStore(CatalogStore):
             self._entries.pop(logical_id, None)
         return removed
 
-    def get(self, logical_id: str, **kwargs: Any) -> CatalogEntry | None:
+    def get(self, logical_id: str, **kwargs: object) -> CatalogEntry | None:
         if not self._matches_store_scope(
             tenant_id=kwargs.get("tenant_id"), project_id=kwargs.get("project_id")
         ):
@@ -846,7 +853,7 @@ class DurableCatalogStore(CatalogStore):
         self._refresh()
         return super().get(logical_id, **kwargs)
 
-    def history(self, logical_id: str, **kwargs: Any) -> tuple[CatalogEntry, ...]:
+    def history(self, logical_id: str, **kwargs: object) -> tuple[CatalogEntry, ...]:
         if not self._matches_store_scope(
             tenant_id=kwargs.get("tenant_id"), project_id=kwargs.get("project_id")
         ):
@@ -854,7 +861,7 @@ class DurableCatalogStore(CatalogStore):
         self._refresh()
         return super().history(logical_id, **kwargs)
 
-    def browse(self, *args: Any, **kwargs: Any) -> tuple[CatalogEntry, ...]:
+    def browse(self, *args: object, **kwargs: object) -> tuple[CatalogEntry, ...]:
         if not self._matches_store_scope(
             tenant_id=kwargs.get("tenant_id"), project_id=kwargs.get("project_id")
         ):
@@ -862,7 +869,7 @@ class DurableCatalogStore(CatalogStore):
         self._refresh()
         return super().browse(*args, **kwargs)
 
-    def search(self, *args: Any, **kwargs: Any) -> tuple[CatalogSearchResult, ...]:
+    def search(self, *args: object, **kwargs: object) -> tuple[CatalogSearchResult, ...]:
         if not self._matches_store_scope(
             tenant_id=kwargs.get("tenant_id"), project_id=kwargs.get("project_id")
         ):
@@ -870,7 +877,7 @@ class DurableCatalogStore(CatalogStore):
         self._refresh()
         return super().search(*args, **kwargs)
 
-    def group_tree(self, *args: Any, **kwargs: Any) -> tuple[CatalogGroup, ...]:
+    def group_tree(self, *args: object, **kwargs: object) -> tuple[CatalogGroup, ...]:
         if not self._matches_store_scope(
             tenant_id=kwargs.get("tenant_id"), project_id=kwargs.get("project_id")
         ):
