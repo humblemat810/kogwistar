@@ -9,7 +9,8 @@ from __future__ import annotations
 import json
 import urllib.error
 import urllib.request
-from typing import Any, Protocol, Self, TypeVar, runtime_checkable
+from collections.abc import Mapping
+from typing import Protocol, Self, TypeVar, runtime_checkable
 
 from kogwistar.json_types import JsonValue
 
@@ -40,8 +41,8 @@ class SupportsStructuredOutput(Protocol):
     def with_structured_output(
         self,
         schema: type[TStructuredModel],
-        *args: Any,
-        **kwargs: Any,
+        include_raw: bool = True,
+        **kwargs: object,
     ) -> StructuredOutputRunnable[TStructuredModel]: ...
 
 
@@ -69,14 +70,14 @@ class StructuredBridgeChatModel:
         self,
         schema: type[TStructuredModel],
         include_raw: bool = True,
-        **kwargs: Any,
+        **kwargs: object,
     ) -> "_StructuredBridgeResponse":
         _ = include_raw, kwargs
         return _StructuredBridgeResponse(self, schema)
 
     def complete(
         self, messages: object, schema: type[TStructuredModel]
-    ) -> dict[str, Any]:
+    ) -> dict[str, object]:
         body = {
             "model": self.model,
             "messages": bridge_messages(messages),
@@ -95,7 +96,7 @@ class StructuredBridgeChatModel:
         for attempt in range(self.max_retries + 1):
             try:
                 with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
-                    result = json.loads(response.read().decode("utf-8"))
+                    result: object = json.loads(response.read().decode("utf-8"))
                 break
             except urllib.error.HTTPError as exc:
                 detail = exc.read().decode("utf-8", errors="replace")[:1000]
@@ -108,9 +109,9 @@ class StructuredBridgeChatModel:
                     raise TimeoutError(f"structured bridge unavailable: {exc}") from exc
         else:
             raise TimeoutError("structured bridge exhausted retries")
-        if not isinstance(result, dict) or not isinstance(result.get("output"), dict):
+        if not isinstance(result, Mapping) or not isinstance(result.get("output"), Mapping):
             raise TypeError("structured bridge returned no structured output object")
-        return result["output"]
+        return dict(result["output"])
 
 
 class _StructuredBridgeResponse:
@@ -152,7 +153,7 @@ class ProviderChainChatModel:
         self,
         schema: type[TStructuredModel],
         include_raw: bool = True,
-        **kwargs: Any,
+        **kwargs: object,
     ) -> "_ProviderChainResponse":
         _ = include_raw, kwargs
         return _ProviderChainResponse(self.models, schema)
