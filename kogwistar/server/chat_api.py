@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any, Callable
+from typing import Callable
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from kogwistar.server.chat_service import ChatRunService
 from kogwistar.server.error_reporting import internal_http_error
+from kogwistar.json_types import JsonValue
 
 
 class CreateConversationIn(BaseModel):
@@ -27,7 +28,7 @@ class SubmitAnswerIn(BaseModel):
 class ResumeRunIn(BaseModel):
     suspended_node_id: str = Field(min_length=1)
     suspended_token_id: str = Field(min_length=1)
-    client_result: dict[str, Any] = Field(default_factory=dict)
+    client_result: dict[str, JsonValue] = Field(default_factory=dict)
     workflow_id: str = Field(min_length=1)
     conversation_id: str = Field(min_length=1)
     turn_node_id: str = Field(min_length=1)
@@ -44,7 +45,7 @@ def _as_http_error(exc: Exception) -> HTTPException:
     return internal_http_error(exc)
 
 
-def _sse_frame(*, event_type: str, seq: int, payload: dict[str, Any]) -> str:
+def _sse_frame(*, event_type: str, seq: int, payload: dict[str, JsonValue]) -> str:
     return f"id: {seq}\nevent: {event_type}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
@@ -52,9 +53,9 @@ def create_chat_router(
     *,
     get_service: Callable[[], ChatRunService],
     require_role: Callable[[str], None],
-    require_namespace: Callable[[Any], None],
-    conversation_namespace: Any,
-    workflow_namespaces: Any,
+    require_namespace: Callable[[object], None],
+    conversation_namespace: object,
+    workflow_namespaces: object,
     get_user_id: Callable[[], str | None] | None = None,
 ):
     router = APIRouter(prefix="/api", tags=["chat"])
