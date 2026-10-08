@@ -11,7 +11,12 @@ from typing import Mapping, Protocol
 from kogwistar.json_types import JsonValue
 
 from .catalog import CatalogStore
-from .providers import ProviderInactiveError, ProviderRegistration, ProviderRegistry
+from .providers import (
+    ProviderCleanup,
+    ProviderInactiveError,
+    ProviderRegistration,
+    ProviderRegistry,
+)
 from .skills import (
     SkillGraphArtifact,
     SkillGraphEdge,
@@ -67,12 +72,6 @@ class KnowledgeWriter(Protocol):
     """Persist one scoped knowledge record and return its stable reference."""
 
     def __call__(self, record: Mapping[str, JsonValue], /) -> str: ...
-
-
-class ProviderCleanup(Protocol):
-    """Remove derived views owned by one provider identity."""
-
-    def __call__(self, provider_id: str, /) -> None: ...
 
 
 class FilesystemSkillProvider:

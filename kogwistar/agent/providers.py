@@ -81,6 +81,18 @@ class CompressorProvider(Protocol):
     def compress(self, request: Mapping[str, JsonValue]) -> Mapping[str, JsonValue]: ...
 
 
+class ProviderOperation(Protocol[TOperationResult]):
+    """Run one provider operation while its registration is held active."""
+
+    def __call__(self) -> TOperationResult: ...
+
+
+class ProviderCleanup(Protocol):
+    """Remove derived views owned by one provider identity."""
+
+    def __call__(self, provider_id: str, /) -> None: ...
+
+
 def normalize_descriptor(
     descriptor: Mapping[str, JsonValue], *, provider_id: str, provider_version: str = "v1"
 ) -> CatalogEntry:
@@ -322,7 +334,7 @@ class ProviderRegistry:
     def run_if_active(
         self,
         registration: ProviderRegistration,
-        operation: Callable[[], TOperationResult],
+        operation: ProviderOperation[TOperationResult],
     ) -> TOperationResult:
         """Commit provider work only while exact registration remains active."""
 
@@ -360,7 +372,7 @@ class ProviderRegistry:
         provider_id: str,
         version: str = "v1",
         *,
-        cleanup: Callable[[str], None] | None = None,
+        cleanup: ProviderCleanup | None = None,
     ) -> None:
         """Retract projections before retiring ownership.
 
