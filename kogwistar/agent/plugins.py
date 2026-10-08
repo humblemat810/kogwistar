@@ -6,7 +6,7 @@ import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Mapping, Protocol
+from typing import Mapping, Protocol
 
 from kogwistar.json_types import JsonValue
 
@@ -67,6 +67,12 @@ class KnowledgeWriter(Protocol):
     """Persist one scoped knowledge record and return its stable reference."""
 
     def __call__(self, record: Mapping[str, JsonValue], /) -> str: ...
+
+
+class ProviderCleanup(Protocol):
+    """Remove derived views owned by one provider identity."""
+
+    def __call__(self, provider_id: str, /) -> None: ...
 
 
 class FilesystemSkillProvider:
@@ -305,7 +311,7 @@ def make_skill_projection_cleanup(
     projection: SkillProjectionStore,
     catalog: CatalogStore | None = None,
     materializer: DurableSkillCatalogMaterializer | None = None,
-) -> Callable[[str], None]:
+) -> ProviderCleanup:
     """Return provider-unload cleanup for only derived skill/catalog views."""
 
     if (
