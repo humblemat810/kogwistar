@@ -16,6 +16,7 @@ from typing import Any, Callable
 
 from kogwistar.conversation.models import ConversationNode
 from kogwistar.conversation.service import ConversationService
+from kogwistar.json_types import JsonValue
 
 from .chat_service_conversation_queries import _ConversationQueryService
 from .chat_service_run_execution import _RunExecutionService
@@ -50,6 +51,8 @@ from .run_registry import RunRegistry
 from .service_daemon import ServiceSupervisor
 from kogwistar.runtime.cost_ledger import CostLedger
 
+JsonObject = dict[str, JsonValue]
+
 
 class ChatRunService:
     """Facade that composes workflow design, conversation, run execution, and replay collaborators."""
@@ -71,8 +74,8 @@ class ChatRunService:
         get_conversation_engine: Callable[[], Any],
         get_workflow_engine: Callable[[], Any],
         run_registry: RunRegistry,
-        answer_runner: Callable[[AnswerRunRequest], dict[str, Any]] | None = None,
-        runtime_runner: Callable[[RuntimeRunRequest], dict[str, Any]] | None = None,
+        answer_runner: Callable[[AnswerRunRequest], JsonObject] | None = None,
+        runtime_runner: Callable[[RuntimeRunRequest], JsonObject] | None = None,
         default_runtime_kind: str = "sync",
     ) -> None:
         self._get_knowledge_engine = get_knowledge_engine
@@ -160,7 +163,7 @@ class ChatRunService:
         required: str | list[str] | set[str] | tuple[str, ...],
         *,
         approval_message: str | None = None,
-    ) -> dict[str, Any]:
+    ) -> JsonObject:
         decision = self.capability_kernel.require(
             subject=self._capability_subject(),
             action=action,
@@ -185,7 +188,7 @@ class ChatRunService:
         subject: str | None = None,
         action: str,
         capabilities: str | list[str] | tuple[str, ...],
-    ) -> dict[str, Any]:
+    ) -> JsonObject:
         owner = str(subject or self._capability_subject()).strip().lower()
         self.capability_kernel.grant(
             subject=owner, action=action, capabilities=capabilities
@@ -197,24 +200,18 @@ class ChatRunService:
         *,
         subject: str | None = None,
         capability: str,
-    ) -> dict[str, Any]:
+    ) -> JsonObject:
         owner = str(subject or self._capability_subject()).strip().lower()
         self.capability_kernel.revoke(subject=owner, capability=capability)
         return self.capability_snapshot()
 
-    def capability_snapshot(self) -> dict[str, Any]:
-        snap = self.capability_kernel.snapshot()
-        snap["current_subject"] = self._capability_subject()
-        snap["effective_capabilities"] = list(self._effective_capabilities())
-        return snap
-
     def _publish(
-        self, run_id: str, event_type: str, payload: dict[str, Any] | None = None
-    ) -> dict[str, Any]:
+        self, run_id: str, event_type: str, payload: JsonObject | None = None
+    ) -> JsonObject:
         return self.run_registry.append_event(run_id, event_type, payload)
 
     @staticmethod
-    def _json_safe(value: Any) -> Any:
+    def _json_safe(value: object) -> JsonValue:
         return json_safe(value)
 
     @staticmethod
@@ -656,7 +653,7 @@ class ChatRunService:
             },
         }
 
-    def visibility_snapshot(self) -> dict[str, Any]:
+    def visibility_snapshot(self) -> JsonObject:
         self._require_capability(
             "read_security_scope",
             ["read_security_scope", "project_view"],
@@ -677,7 +674,7 @@ class ChatRunService:
             "can_access_public": can_access_security_scope("public", shared=True),
         }
 
-    def capability_snapshot(self) -> dict[str, Any]:
+    def capability_snapshot(self) -> JsonObject:
         self._require_capability(
             "project_view",
             ["project_view", "read_security_scope"],
@@ -697,7 +694,7 @@ class ChatRunService:
         action: str,
         capabilities: str | list[str] | tuple[str, ...],
         subject: str | None = None,
-    ) -> dict[str, Any]:
+    ) -> JsonObject:
         self._require_capability(
             "approve_action",
             ["approve_action"],
@@ -714,7 +711,7 @@ class ChatRunService:
         *,
         capability: str,
         subject: str | None = None,
-    ) -> dict[str, Any]:
+    ) -> JsonObject:
         self._require_capability(
             "approve_action",
             ["approve_action"],
