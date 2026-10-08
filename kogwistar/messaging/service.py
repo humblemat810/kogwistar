@@ -5,7 +5,7 @@ import json
 import time
 import uuid
 from contextlib import nullcontext
-from typing import Any
+from typing import TYPE_CHECKING
 
 from kogwistar.engine_core.engine import scoped_namespace
 from kogwistar.engine_core.models import Edge, Grounding, Node, Span
@@ -24,6 +24,9 @@ from .models import (
     LaneMessageSendResult,
     ProjectedLaneMessageRow,
 )
+
+if TYPE_CHECKING:
+    from kogwistar.engine_core.engine import GraphKnowledgeEngine
 
 
 def _now_epoch() -> int:
@@ -163,7 +166,7 @@ def _lane_record_from_payload(
 
 
 class LaneMessagingService:
-    def __init__(self, engine: Any) -> None:
+    def __init__(self, engine: "GraphKnowledgeEngine") -> None:
         self.engine = engine
 
     def send_message(
