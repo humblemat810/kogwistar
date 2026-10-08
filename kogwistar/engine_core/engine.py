@@ -187,8 +187,14 @@ P = ParamSpec("P")
 R = TypeVar("R")
 
 
-def cached(memory: Memory, fn: Callable[P, R], *args, **kwargs) -> Callable[P, R]:
-    return cast(Callable[P, R], memory.cache(fn, *args, **kwargs))
+def cached(
+    memory: Memory,
+    fn: Callable[P, R],
+    **options: object,
+) -> Callable[P, R]:
+    """Apply the configured cache while preserving the callable signature."""
+
+    return cast(Callable[P, R], memory.cache(fn, **options))
 
 
 def _optional_dependency_error(*, extra: str, detail: str) -> RuntimeError:
