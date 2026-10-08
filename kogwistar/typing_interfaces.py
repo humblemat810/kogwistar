@@ -2,15 +2,11 @@
 from __future__ import annotations
 
 from typing import (
-    Dict,
-    List,
     Mapping,
-    Optional,
     Protocol,
     Sequence,
     TypeAlias,
     TypeVar,
-    Union,
     runtime_checkable,
     TYPE_CHECKING,
 )
@@ -48,14 +44,14 @@ Image: TypeAlias = object
 URI: TypeAlias = str
 ID: TypeAlias = str
 Include: TypeAlias = list[str]
-QueryResult: TypeAlias = Dict[str, JsonValue]
-Where: TypeAlias = Dict[str, JsonValue]
-WhereDocument: TypeAlias = Dict[str, JsonValue]
-IDs: TypeAlias = List[str]
+QueryResult: TypeAlias = dict[str, JsonValue]
+Where: TypeAlias = dict[str, JsonValue]
+WhereDocument: TypeAlias = dict[str, JsonValue]
+IDs: TypeAlias = list[str]
 _TCollectionValue = TypeVar("_TCollectionValue")
 OneOrMany: TypeAlias = _TCollectionValue | Sequence[_TCollectionValue]
-GetResult: TypeAlias = Dict[str, JsonValue]
-Metadata: TypeAlias = Dict[str, ChromaScalar]
+GetResult: TypeAlias = dict[str, JsonValue]
+Metadata: TypeAlias = dict[str, ChromaScalar]
 
 
 class CollectionLike(Protocol):
@@ -154,24 +150,24 @@ class NodeLike(Protocol):
     def summary(self) -> str: ...
 
     @property
-    def domain_id(self) -> Optional[str]: ...
+    def domain_id(self) -> str | None: ...
 
     @property
-    def canonical_entity_id(self) -> Optional[str]: ...
+    def canonical_entity_id(self) -> str | None: ...
 
     @property
-    def properties(self) -> Optional[Mapping[str, object]]: ...
+    def properties(self) -> Mapping[str, object] | None: ...
 
     @property
-    def mentions(self) -> Optional[Sequence[object]]: ...
+    def mentions(self) -> Sequence[object] | None: ...
 
     @property
-    def embedding(self) -> Optional[Sequence[float]]: ...
+    def embedding(self) -> Sequence[float] | None: ...
 
     @property
-    def doc_id(self) -> Optional[str]: ...
+    def doc_id(self) -> str | None: ...
 
-    def model_dump(self) -> Dict[str, object]: ...
+    def model_dump(self) -> dict[str, object]: ...
     def model_dump_json(self) -> str: ...
 
 
@@ -181,19 +177,19 @@ class EdgeLike(NodeLike, Protocol):
     def relation(self) -> str: ...
 
     @property
-    def source_ids(self) -> Optional[Sequence[str]]: ...
+    def source_ids(self) -> Sequence[str] | None: ...
 
     @property
-    def target_ids(self) -> Optional[Sequence[str]]: ...
+    def target_ids(self) -> Sequence[str] | None: ...
 
     @property
-    def source_edge_ids(self) -> Optional[Sequence[str]]: ...
+    def source_edge_ids(self) -> Sequence[str] | None: ...
 
     @property
-    def target_edge_ids(self) -> Optional[Sequence[str]]: ...
+    def target_edge_ids(self) -> Sequence[str] | None: ...
 
 
-AdjudicationTarget: TypeAlias = Union[NodeLike, EdgeLike]
+AdjudicationTarget: TypeAlias = NodeLike | EdgeLike
 
 # -------------------------
 # Shared engine surface
@@ -219,26 +215,26 @@ class ReadLike(Protocol):
     def node_exists(
         self,
         ids: Sequence[str] | None = None,
-        where: Dict[str, JsonValue] | None = None,
+        where: dict[str, JsonValue] | None = None,
     ) -> bool: ...
 
     def edge_exists(
         self,
         ids: Sequence[str] | None = None,
-        where: Dict[str, JsonValue] | None = None,
+        where: dict[str, JsonValue] | None = None,
     ) -> bool: ...
 
     def get_node_metadatas(
         self,
         ids: Sequence[str] | None = None,
-        where: Dict[str, JsonValue] | None = None,
+        where: dict[str, JsonValue] | None = None,
         limit: int | None = 200,
     ) -> list[dict[str, JsonValue]]: ...
 
     def get_edge_metadatas(
         self,
         ids: Sequence[str] | None = None,
-        where: Dict[str, JsonValue] | None = None,
+        where: dict[str, JsonValue] | None = None,
         limit: int | None = 400,
     ) -> list[dict[str, JsonValue]]: ...
 
