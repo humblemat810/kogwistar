@@ -38,6 +38,7 @@ if TYPE_CHECKING:
 
 import os
 import time
+from collections.abc import MutableMapping
 
 from ..utils.embedding_vectors import normalize_embedding_vector
 from typing import TYPE_CHECKING, Any, Callable, Dict, Union
@@ -84,6 +85,18 @@ def _deps(ctx: StepContext) -> Dict[str, Any]:
     return deps
 
 
+def _append_op_log(state: object, entry: str) -> None:
+    """Append a conversation operation to the JSON-like workflow state."""
+
+    if not isinstance(state, MutableMapping):
+        raise TypeError("workflow state must be a mutable mapping")
+    current = state.get("op_log")
+    if isinstance(current, list):
+        current.append(entry)
+    else:
+        state["op_log"] = [entry]
+
+
 def _chat_service(deps: Dict[str, Any]):
     from .service import ConversationService
 
@@ -106,7 +119,7 @@ def _aa_agent(ctx: StepContext):
 @default_resolver.register("start")
 def _start(ctx: StepContext) -> StepRunResult:
     with ctx.state_write as state:
-        state.setdefault("op_log", []).append("start")
+        _append_op_log(state, "start")
         state["started"] = True
     result = RunSuccess(
         conversation_node_id=None,
@@ -118,7 +131,7 @@ def _start(ctx: StepContext) -> StepRunResult:
 @default_resolver.register("noop")
 def _noop(ctx: StepContext) -> StepRunResult:
     with ctx.state_write as state:
-        state.setdefault("op_log", []).append("noop")
+        _append_op_log(state, "noop")
         turn_index = state.get("turn_index")
 
     mts = _get_prev_turn_meta_summary_from_state_or_deps(ctx)
@@ -284,7 +297,7 @@ def _add_user_turn(ctx: "StepContext") -> "StepRunResult":
     mts.prev_node_distance_from_last_summary += 1
 
     with ctx.state_write as state:
-        state.setdefault("op_log", []).append("add_user_turn")
+        _append_op_log(state, "add_user_turn")
 
     mts_json = None
     # if we synthesized mts (duck type), mirror it back as json so runtime can checkpoint it
@@ -371,7 +384,7 @@ def _link_prev_turn(ctx: "StepContext") -> "StepRunResult":
     )
 
     with ctx.state_write as state:
-        state.setdefault("op_log", []).append("link_prev_turn")
+        _append_op_log(state, "link_prev_turn")
 
     return RunSuccess(
         conversation_node_id=edge_id,
@@ -444,7 +457,7 @@ def _link_assistant_turn(ctx: "StepContext") -> "StepRunResult":
     )
 
     with ctx.state_write as state:
-        state.setdefault("op_log", []).append("link_assistant_turn")
+        _append_op_log(state, "link_assistant_turn")
 
     return RunSuccess(
         conversation_node_id=edge_id,
@@ -526,7 +539,7 @@ def _memory_retrieve(ctx: StepContext) -> StepRunResult:
     """
     deps = _deps(ctx)
     with ctx.state_write as state:
-        state.setdefault("op_log", []).append("memory_retrieve")
+        _append_op_log(state, "memory_retrieve")
 
     from .memory_retriever import MemoryRetriever
     from ..runtime.serialize import to_jsonable
@@ -581,7 +594,7 @@ def _kg_retrieve(ctx: StepContext) -> StepRunResult:
     """Retrieve KG facts/links based on query and memory seed ids."""
     deps = _deps(ctx)
     with ctx.state_write as state:
-        state.setdefault("op_log", []).append("kg_retrieve")
+        _append_op_log(state, "kg_retrieve")
 
     from .knowledge_retriever import KnowledgeRetriever
     from ..runtime.serialize import to_jsonable
@@ -651,7 +664,7 @@ def _memory_pin(ctx: StepContext) -> StepRunResult:
     """Pin selected memory into the conversation graph."""
     deps = _deps(ctx)
     with ctx.state_write as state:
-        state.setdefault("op_log", []).append("memory_pin")
+        _append_op_log(state, "memory_pin")
 
     from .memory_retriever import MemoryRetriever
 
@@ -703,7 +716,7 @@ def _kg_pin(ctx: StepContext) -> StepRunResult:
     """Pin selected KG nodes/edges (as pointers) into the conversation graph."""
     deps = _deps(ctx)
     with ctx.state_write as state:
-        state.setdefault("op_log", []).append("kg_pin")
+        _append_op_log(state, "kg_pin")
     state = ctx.state_view
     from .knowledge_retriever import KnowledgeRetriever
 
@@ -765,7 +778,7 @@ def _answer(ctx: StepContext) -> StepRunResult:
     deps = _deps(ctx)
     cache_dir = getattr(ctx, "cache_dir", None)
     with ctx.state_write as state:
-        state.setdefault("op_log", []).append("answer")
+        _append_op_log(state, "answer")
     state = ctx.state_view
     mts = _get_prev_turn_meta_summary_from_state_or_deps(ctx)
     answer_only = deps.get("answer_only")
@@ -979,7 +992,7 @@ def _decide_summarize(ctx: StepContext) -> StepRunResult:
     """
     deps = _deps(ctx)
     with ctx.state_write as state:
-        state.setdefault("op_log", []).append("decide_summarize")
+        _append_op_log(state, "decide_summarize")
     st = ctx.state_view
     mts = _get_prev_turn_meta_summary_from_state_or_deps(ctx)
 
@@ -1070,7 +1083,7 @@ def _summarize(ctx: StepContext) -> StepRunResult:
     """Summarize last batch and reset distances (legacy behavior)."""
     deps = _deps(ctx)
     with ctx.state_write as state:
-        state.setdefault("op_log", []).append("summarize")
+        _append_op_log(state, "summarize")
     state = ctx.state_view
     prev_turn_meta_summary: MetaFromLastSummary = deps.get("prev_turn_meta_summary")
     summarize_batch = deps.get("summarize_batch")
@@ -1123,7 +1136,7 @@ def _summarize(ctx: StepContext) -> StepRunResult:
 @default_resolver.register("end")
 def _end(ctx: StepContext) -> StepRunResult:
     with ctx.state_write as state:
-        state.setdefault("op_log", []).append("end")
+        _append_op_log(state, "end")
     result = RunSuccess(conversation_node_id=None, state_update=[("u", {"done": True})])
     return result
 
