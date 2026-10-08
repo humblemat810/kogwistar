@@ -7,15 +7,17 @@ import re
 import time
 import asyncio
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Protocol, TypeAlias
+from typing import TYPE_CHECKING, Protocol, TypeAlias, cast
+
+from ..json_types import JsonObject
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncEngine
 
 
 _SCHEMA_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-ProjectionPayload: TypeAlias = dict[str, object]
-ProjectionUpdate: TypeAlias = dict[str, object]
+ProjectionPayload: TypeAlias = JsonObject
+ProjectionUpdate: TypeAlias = JsonObject
 
 
 class AsyncNamedProjectionMetadata(Protocol):
@@ -97,7 +99,7 @@ class AsyncPostgresNamedProjectionStore:
         value = json.loads(raw) if isinstance(raw, str) else raw
         if not isinstance(value, dict):
             raise ValueError("named projection payload must decode to an object")
-        return value
+        return cast(ProjectionPayload, value)
 
     @classmethod
     def _row(cls, row: Sequence[object]) -> ProjectionPayload:

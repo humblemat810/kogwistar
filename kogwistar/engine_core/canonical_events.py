@@ -5,6 +5,9 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from collections.abc import Iterable
+from typing import cast
+
+from ..json_types import JsonObject
 
 
 @dataclass(frozen=True)
@@ -16,7 +19,7 @@ class CanonicalEntityRevision:
     entity_id: str
     revision: int
     state: str
-    payload: dict[str, object]
+    payload: JsonObject
 
     @property
     def is_deleted(self) -> bool:
@@ -70,6 +73,6 @@ def read_canonical_entity_revision(
             entity_id=str(entity_id),
             revision=int(seq),
             state=state,
-            payload=payload,
+            payload=cast(JsonObject, payload),
         )
     return latest

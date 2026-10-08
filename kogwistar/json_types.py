@@ -9,3 +9,4 @@ JsonValue = TypeAliasType(
     "JsonValue",
     JsonScalar | list["JsonValue"] | dict[str, "JsonValue"],
 )
+JsonObject = dict[str, JsonValue]

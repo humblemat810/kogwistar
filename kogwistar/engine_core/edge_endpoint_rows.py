@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Protocol
 
+from ..json_types import JsonObject
+
 
 class EdgeEndpointLike(Protocol):
     """Structural edge surface required by endpoint projection adapters."""
@@ -18,10 +20,10 @@ class EdgeEndpointLike(Protocol):
     def safe_get_id(self) -> str: ...
 
 
-def edge_endpoint_rows(edge: EdgeEndpointLike) -> list[dict[str, object]]:
+def edge_endpoint_rows(edge: EdgeEndpointLike) -> list[JsonObject]:
     """Return deterministic, non-semantic endpoint rows for an edge."""
     edge_id = str(edge.safe_get_id())
-    rows: list[dict[str, object]] = []
+    rows: list[JsonObject] = []
     for role, endpoint_ids, endpoint_type in (
         ("src", edge.source_ids or [], "node"),
         ("tgt", edge.target_ids or [], "node"),
