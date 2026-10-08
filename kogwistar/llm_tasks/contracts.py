@@ -12,7 +12,9 @@ from pydantic import BaseModel
 
 from .errors import MissingTaskError
 
-ProviderKind: TypeAlias = Literal["gemini", "openai", "custom", "unknown"]
+ProviderKind: TypeAlias = Literal[
+    "gemini", "openai", "ollama", "custom", "unknown"
+]
 ExtractionSchemaMode: TypeAlias = Literal[
     "full", "lean", "flattened_lean", "flattened_full"
 ]
