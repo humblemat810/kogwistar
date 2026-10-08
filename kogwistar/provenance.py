@@ -5,8 +5,9 @@ from __future__ import annotations
 from collections.abc import Mapping
 from hashlib import sha256
 import json
-from typing import Any
+from typing import cast
 
+from .json_types import JsonValue
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -25,33 +26,41 @@ class EvidencePackDigest(BaseModel):
     model_config = ConfigDict(extra="allow")
 
 
+def _string_ids(value: JsonValue | None) -> list[str]:
+    """Read a JSON list as string identifiers, ignoring non-list values."""
+
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if str(item)]
+
+
 def canonicalize_evidence_pack_digest(
-    digest: Mapping[str, Any] | EvidencePackDigest,
-) -> dict[str, Any]:
+    digest: Mapping[str, JsonValue] | EvidencePackDigest,
+) -> dict[str, JsonValue]:
     """Normalize an evidence-pack payload for stable hashing."""
 
     if isinstance(digest, EvidencePackDigest):
-        payload = digest.model_dump(mode="python")
+        payload = cast(dict[str, JsonValue], digest.model_dump(mode="python"))
     else:
         payload = dict(digest)
 
-    payload["node_ids"] = sorted(
-        str(node_id) for node_id in payload.get("node_ids") or [] if str(node_id)
+    payload["node_ids"] = cast(
+        list[JsonValue], sorted(_string_ids(payload.get("node_ids")))
     )
-    payload["edge_ids"] = sorted(
-        str(edge_id) for edge_id in payload.get("edge_ids") or [] if str(edge_id)
+    payload["edge_ids"] = cast(
+        list[JsonValue], sorted(_string_ids(payload.get("edge_ids")))
     )
     payload.pop("evidence_pack_hash", None)
     return payload
 
 
 def evidence_pack_digest_hash(
-    digest: Mapping[str, Any] | EvidencePackDigest,
+    digest: Mapping[str, JsonValue] | EvidencePackDigest,
 ) -> str:
     """Return a deterministic content hash for an evidence-pack payload."""
 
     if isinstance(digest, EvidencePackDigest):
-        bridge_payload = digest.model_dump(mode="python")
+        bridge_payload = cast(dict[str, JsonValue], digest.model_dump(mode="python"))
     else:
         bridge_payload = dict(digest)
     payload = canonicalize_evidence_pack_digest(digest)
