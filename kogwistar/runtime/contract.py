@@ -34,7 +34,7 @@ Conventions:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Callable, Dict, List, Tuple
+from typing import TYPE_CHECKING, Dict, List, Protocol, Tuple
 
 from .models import StepRunResult, WorkflowEdge, WorkflowState, get_route_next_names
 from .serialize import JsonValue
@@ -95,8 +95,15 @@ class WorkflowEdgeInfo:
         return info
 
 
-if TYPE_CHECKING:
-    Predicate = Callable[[WorkflowEdgeInfo, WorkflowState, Result], bool]
+class Predicate(Protocol):
+    """Evaluate one workflow edge without mutating runtime state."""
+
+    def __call__(
+        self,
+        edge: WorkflowEdgeInfo,
+        state: WorkflowState,
+        result: object,
+    ) -> bool: ...
 
 
 class BasePredicate:
