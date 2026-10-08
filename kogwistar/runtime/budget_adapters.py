@@ -4,6 +4,8 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
+from kogwistar.json_types import JsonValue
+
 from .budget import BudgetAttribution, BudgetEvent
 
 
@@ -91,7 +93,7 @@ def adapt_budget_events(
     return []
 
 
-def summarize_budget_events(events: list[BudgetEvent]) -> dict[str, object]:
+def summarize_budget_events(events: list[BudgetEvent]) -> dict[str, JsonValue]:
     input_tokens = 0
     cached_input_tokens = 0
     output_tokens = 0
