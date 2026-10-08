@@ -6,10 +6,11 @@ import hashlib
 import json
 from typing import Literal
 
+from kogwistar.json_types import JsonValue
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
-ContextItem = dict[str, object]
+ContextItem = dict[str, JsonValue]
 
 
 class ContextPolicy(BaseModel):
