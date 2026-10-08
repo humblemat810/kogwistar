@@ -11,7 +11,7 @@ from __future__ import annotations
 
 
 from dataclasses import dataclass, field, replace
-from typing import Any, Callable, List, Optional, Protocol, cast
+from typing import Any, List, Optional, Protocol, cast
 
 from kogwistar.llm_tasks import LLMTaskSet, SummarizeContextTaskRequest
 
@@ -32,7 +32,7 @@ from .models import (
     KnowledgeRetrievalResult,
     AddTurnResult,
 )
-from .tool_runner import ToolRunner
+from .tool_runner import ToolCallIdFactory, ToolRunner
 from .memory_retriever import MemoryRetriever, MemoryPinResult, MemoryRetrievalResult
 from .knowledge_retriever import KnowledgeRetriever
 from .policy import get_chat_tail, last_summary_of_node
@@ -813,7 +813,7 @@ class ConversationOrchestrator:
         conversation_engine: GraphKnowledgeEngine,
         ref_knowledge_engine: GraphKnowledgeEngine,
         workflow_engine: GraphKnowledgeEngine | None = None,
-        tool_call_id_factory: Callable | None = None,
+        tool_call_id_factory: ToolCallIdFactory | None = None,
         llm_tasks: LLMTaskSet | None = None,
         agent_cache_dir: str | None = None,
     ) -> None:
