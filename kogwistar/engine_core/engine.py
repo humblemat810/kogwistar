@@ -95,13 +95,14 @@ class _BackendCallBridge:
     #     verifier=VF.ensemble_default,          # or VF.coverage_only / VF.strict_with_min_span
     # )
     # """
-from typing import TYPE_CHECKING, List, Optional, Dict, Any, Tuple, cast, TypeVar, ParamSpec
+from typing import TYPE_CHECKING, List, Optional, Dict, Any, Tuple, cast, TypeVar, ParamSpec, Mapping
 
 try:
     from typing import Self, TypeAlias
 except ImportError:  # pragma: no cover - py<3.11 compatibility
     from typing_extensions import TypeAlias
 from ..typing_interfaces import EmbeddingFunctionLike, ReadLike, WriteLike
+from ..json_types import JsonValue
 from ..graph_query import GraphQuery
 from kogwistar.extraction import BaseDocValidator
 from .models import (
@@ -823,24 +824,35 @@ class GraphKnowledgeEngine:
 
     def nodes_from_single_or_id_query_result(
         self,
-        got,
+        got: Mapping[str, JsonValue],
         node_type: Type[TNode] = Node,
     ) -> list[TNode]:
         return self.read.nodes_from_single_or_id_query_result(got, node_type=node_type)
 
     def edges_from_single_or_id_query_result(
-        self, got, edge_type: Type[Edge] = Edge, include=None
-    ):
+        self,
+        got: Mapping[str, JsonValue],
+        edge_type: Type[TEdge] = Edge,
+        include: Sequence[str] | None = None,
+    ) -> list[TEdge]:
         return self.read.edges_from_single_or_id_query_result(
             got,
             edge_type=edge_type,
             include=include,
         )
 
-    def nodes_from_query_result(self, gots, node_type: Type[Node] = Node):
+    def nodes_from_query_result(
+        self,
+        gots: Mapping[str, JsonValue],
+        node_type: Type[TNode] = Node,
+    ) -> list[list[TNode]]:
         return self.read.nodes_from_query_result(gots, node_type=node_type)
 
-    def edges_from_query_result(self, gots, edge_type: Type[Edge] = Edge):
+    def edges_from_query_result(
+        self,
+        gots: Mapping[str, JsonValue],
+        edge_type: Type[TEdge] = Edge,
+    ) -> list[list[TEdge]]:
         return self.read.edges_from_query_result(gots, edge_type=edge_type)
 
     def _where_update_from_resolve_mode(
