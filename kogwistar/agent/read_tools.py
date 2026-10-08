@@ -11,7 +11,7 @@ import base64
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Protocol, cast
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
@@ -20,6 +20,7 @@ from kogwistar.server.capability_kernel import CapabilityKernel
 from .catalog import CatalogEntry, CatalogSearchResult, CatalogStore
 from .providers import ProviderRegistry
 from .skills import SkillGraphArtifact, SkillProjectionStore
+from kogwistar.json_types import JsonValue
 
 
 class ReadScope(BaseModel):
@@ -47,12 +48,12 @@ class ReadScope(BaseModel):
 
 @dataclass(frozen=True, slots=True)
 class ReadPage:
-    items: tuple[dict[str, Any], ...]
+    items: tuple[dict[str, JsonValue], ...]
     next_cursor: str | None
     limit: int
     truncated: bool
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, JsonValue]:
         return {
             "items": [dict(item) for item in self.items],
             "next_cursor": self.next_cursor,
@@ -62,15 +63,15 @@ class ReadPage:
 
 
 class VisibilityChecker(Protocol):
-    def __call__(self, item: Mapping[str, Any], scope: ReadScope) -> bool: ...
+    def __call__(self, item: Mapping[str, object], scope: ReadScope) -> bool: ...
 
 
 class ReadSource(Protocol):
     """Minimal object protocol; concrete server services already satisfy it."""
 
 
-def _json_safe(value: Any) -> Any:
-    return json.loads(json.dumps(value, ensure_ascii=False, default=str))
+def _json_safe(value: object) -> JsonValue:
+    return cast(JsonValue, json.loads(json.dumps(value, ensure_ascii=False, default=str)))
 
 
 def _decode_cursor(cursor: str | None) -> int:
@@ -90,7 +91,7 @@ def _encode_cursor(offset: int) -> str:
 
 
 def _page(
-    values: Sequence[Mapping[str, Any]], *, cursor: str | None, limit: int, max_limit: int
+    values: Sequence[Mapping[str, object]], *, cursor: str | None, limit: int, max_limit: int
 ) -> ReadPage:
     if limit < 1 or limit > max_limit:
         raise ValueError(f"limit must be between 1 and {max_limit}")
@@ -110,7 +111,9 @@ def _effective_limit(limit: int | None, max_limit: int) -> int:
     return min(20, max_limit) if limit is None else limit
 
 
-def _source_items(source: Any, method: str, **kwargs: Any) -> list[Mapping[str, Any]]:
+def _source_items(
+    source: object, method: str, **kwargs: object
+) -> list[Mapping[str, object]]:
     if source is None:
         return []
     if isinstance(source, Mapping):
@@ -141,13 +144,13 @@ class AgentReadTools:
         providers: ProviderRegistry | None = None,
         skill_projection_store: SkillProjectionStore | None = None,
         skill_artifacts: Mapping[str, SkillGraphArtifact] | None = None,
-        mcp_descriptors: Mapping[str, Mapping[str, Any]] | None = None,
+        mcp_descriptors: Mapping[str, Mapping[str, object]] | None = None,
         capability_kernel: CapabilityKernel | None = None,
-        execution_source: Any | None = None,
-        memory_source: Any | None = None,
-        knowledge_source: Any | None = None,
-        wisdom_source: Any | None = None,
-        glossary_source: Any | None = None,
+        execution_source: object | None = None,
+        memory_source: object | None = None,
+        knowledge_source: object | None = None,
+        wisdom_source: object | None = None,
+        glossary_source: object | None = None,
         visibility_checker: VisibilityChecker | None = None,
         acl_required: bool = True,
         max_limit: int = 100,
@@ -171,7 +174,7 @@ class AgentReadTools:
         self.max_limit = max_limit
         self.max_resource_bytes = max_resource_bytes
 
-    def _visible(self, item: Mapping[str, Any], scope: ReadScope) -> bool:
+    def _visible(self, item: Mapping[str, object], scope: ReadScope) -> bool:
         explicitly_global = bool(item.get("is_global")) or item.get("visibility") == "global"
         for key, expected in (
             ("tenant_id", scope.tenant_id),
@@ -194,7 +197,9 @@ class AgentReadTools:
             return bool(self.visibility_checker(item, scope))
         return not self.acl_required
 
-    def _filter(self, items: list[Mapping[str, Any]], scope: ReadScope) -> list[dict[str, Any]]:
+    def _filter(
+        self, items: list[Mapping[str, object]], scope: ReadScope
+    ) -> list[dict[str, JsonValue]]:
         return [_json_safe(dict(item)) for item in items if self._visible(item, scope)]
 
     def catalog_search(
@@ -238,7 +243,9 @@ class AgentReadTools:
         items = self._filter([entry.model_dump(mode="json") for entry in entries], scope)
         return _page(items, cursor=cursor, limit=_effective_limit(limit, self.max_limit), max_limit=self.max_limit)
 
-    def catalog_get(self, logical_id: str, *, scope: ReadScope) -> dict[str, Any] | None:
+    def catalog_get(
+        self, logical_id: str, *, scope: ReadScope
+    ) -> dict[str, JsonValue] | None:
         entry = self.catalog.get(
             logical_id,
             principal=scope.principal_id,
@@ -267,7 +274,7 @@ class AgentReadTools:
         return self._visible(entry.model_dump(mode="python"), scope)
 
     @staticmethod
-    def _catalog_result(result: CatalogSearchResult) -> dict[str, Any]:
+    def _catalog_result(result: CatalogSearchResult) -> dict[str, JsonValue]:
         item = result.entry.model_dump(mode="json")
         item["match"] = result.match
         item["score"] = result.score
@@ -280,7 +287,7 @@ class AgentReadTools:
         scope: ReadScope,
         representation: str = "descriptor",
         resource: str | None = None,
-    ) -> dict[str, Any] | None:
+    ) -> dict[str, JsonValue] | None:
         descriptor = self.catalog_get(logical_id, scope=scope)
         if descriptor is None:
             return None
@@ -329,18 +336,22 @@ class AgentReadTools:
         resource: str,
         *,
         scope: ReadScope,
-    ) -> dict[str, Any] | None:
+    ) -> dict[str, JsonValue] | None:
         return self.skill_get(
             logical_id, scope=scope, representation="raw", resource=resource
         )
 
-    def mcp_describe(self, logical_id: str, *, scope: ReadScope) -> dict[str, Any] | None:
+    def mcp_describe(
+        self, logical_id: str, *, scope: ReadScope
+    ) -> dict[str, JsonValue] | None:
         descriptor = self.mcp_descriptors.get(logical_id)
         if descriptor is None or not self._visible(descriptor, scope):
             return None
         return _json_safe(dict(descriptor))
 
-    def capability_describe(self, name: str, *, scope: ReadScope) -> dict[str, Any] | None:
+    def capability_describe(
+        self, name: str, *, scope: ReadScope
+    ) -> dict[str, JsonValue] | None:
         del scope
         if self.capability_kernel is None:
             return None
@@ -361,7 +372,7 @@ class AgentReadTools:
         scope: ReadScope,
         cursor: str | None = None,
         limit: int | None = None,
-        **kwargs: Any,
+        **kwargs: object,
     ) -> ReadPage:
         effective_limit = _effective_limit(limit, self.max_limit)
         if self.execution_source is None:
@@ -370,14 +381,16 @@ class AgentReadTools:
         return _page(items, cursor=cursor, limit=effective_limit, max_limit=self.max_limit)
 
     def execution_get(
-        self, method: str, *, scope: ReadScope, **kwargs: Any
-    ) -> dict[str, Any] | None:
+        self, method: str, *, scope: ReadScope, **kwargs: object
+    ) -> dict[str, JsonValue] | None:
         if self.execution_source is None:
             return None
         items = self._filter(_source_items(self.execution_source, method, **kwargs), scope)
         return items[0] if items else None
 
-    def run_status(self, run_id: str, *, scope: ReadScope) -> dict[str, Any] | None:
+    def run_status(
+        self, run_id: str, *, scope: ReadScope
+    ) -> dict[str, JsonValue] | None:
         return self.execution_get("get_run", scope=scope, run_id=run_id)
 
     def run_events(
@@ -486,7 +499,7 @@ class AgentReadTools:
 
     def knowledge_get(
         self, entity_id: str, *, scope: ReadScope
-    ) -> dict[str, Any] | None:
+    ) -> dict[str, JsonValue] | None:
         items = self._filter(
             _source_items(self.knowledge_source, "get", entity_id=entity_id), scope
         )
@@ -562,15 +575,15 @@ class AgentReadTools:
         self,
         operation: str,
         *,
-        payload: Mapping[str, Any],
+        payload: Mapping[str, object],
         scope: ReadScope,
-    ) -> dict[str, Any] | None:
+    ) -> dict[str, JsonValue] | None:
         """Dispatch only the shared read contract used by REST/MCP adapters."""
 
         operation = str(operation).strip().lower()
         data = dict(payload)
         if operation == "catalog.search":
-            result: Any = self.catalog_search(scope=scope, **data)
+            result: object = self.catalog_search(scope=scope, **data)
         elif operation == "catalog.browse":
             result = self.catalog_browse(scope=scope, **data)
         elif operation == "catalog.get":
