@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any
 
+from kogwistar.json_types import JsonValue
 from kogwistar.ontology import OntologyPackage
 
 from .catalog import CatalogEntry, CatalogStore
@@ -26,8 +26,8 @@ class OntologyCatalogProvider:
         self.tenant_id = tenant_id
         self.project_id = project_id
 
-    def descriptors(self) -> list[Mapping[str, Any]]:
-        values: list[Mapping[str, Any]] = []
+    def descriptors(self) -> list[Mapping[str, JsonValue]]:
+        values: list[Mapping[str, JsonValue]] = []
         for descriptor in self.package.descriptors:
             values.append(
                 {
