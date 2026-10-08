@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Literal, Mapping, Optional, TypedDict
+from typing import Literal, Mapping, Optional, TypedDict, cast
 from pydantic import BaseModel
+
+from ..json_types import JsonValue
 
 
 # ---- Operation types -------------------------------------------------
@@ -50,7 +52,7 @@ class ChangeEvent:
     ts_unix_ms: int
 
     entity: Optional[EntityRef] = None
-    payload: Any = None
+    payload: JsonValue | None = None
 
     # Optional provenance / debug fields
     run_id: Optional[str] = None
@@ -58,7 +60,7 @@ class ChangeEvent:
 
     # ---- Serialization ------------------------------------------------
 
-    def to_jsonable(self) -> dict[str, Any]:
+    def to_jsonable(self) -> dict[str, object]:
         return {
             "seq": self.seq,
             "op": self.op,
@@ -70,13 +72,13 @@ class ChangeEvent:
         }
 
     @staticmethod
-    def from_jsonable(d: Mapping[str, Any]) -> ChangeEvent:
+    def from_jsonable(d: Mapping[str, object]) -> ChangeEvent:
         return ChangeEvent(
             seq=int(d["seq"]),
-            op=d["op"],  # type: ignore[arg-type]
+            op=cast(Op, d["op"]),
             ts_unix_ms=int(d["ts_unix_ms"]),
-            entity=d.get("entity"),
-            payload=d.get("payload"),
-            run_id=d.get("run_id"),
-            step_id=d.get("step_id"),
+            entity=cast(EntityRef | None, d.get("entity")),
+            payload=cast(JsonValue | None, d.get("payload")),
+            run_id=cast(str | None, d.get("run_id")),
+            step_id=cast(str | None, d.get("step_id")),
         )
