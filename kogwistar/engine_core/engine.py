@@ -54,11 +54,14 @@ from .subsystems import (
 )
 from .search_index.service import SearchIndexService
 from .types import (
+    EdgePreAddHook,
     EngineType,
     ExtractionSchemaMode,
+    NodePreAddHook,
     OffsetMismatchPolicy,
     OffsetRepairScorer,
     ResolvedExtractionSchemaMode,
+    ToolCallIdFactory,
 )
 from ..graph_kinds import normalize_graph_kind
 from .utils.aliasing import AliasBookStore
@@ -1386,7 +1389,7 @@ class GraphKnowledgeEngine:
         self._oplog = None
         if debug_dir is not None:
             self._oplog = OplogWriter(debug_dir / "changes.jsonl", fsync=False)
-        self.tool_call_id_factory: Callable[[], str] | None = None
+        self.tool_call_id_factory: ToolCallIdFactory | None = None
 
         self._disable_event_log = False
         self.query = GraphQuery(self)
@@ -1418,9 +1421,9 @@ class GraphKnowledgeEngine:
         self._metadata: EngineSQLite | EnginePostgresMetaStore
 
         self.alias_books = AliasBookStore()
-        self.pre_add_node_hooks: list[Callable[[Node], None]] = []
-        self.pre_add_edge_hooks: list[Callable[[Edge], bool]] = []
-        self.pre_add_pure_edge_hooks: list[Callable[[Edge], bool]] = []
+        self.pre_add_node_hooks: list[NodePreAddHook] = []
+        self.pre_add_edge_hooks: list[EdgePreAddHook] = []
+        self.pre_add_pure_edge_hooks: list[EdgePreAddHook] = []
         self.allow_missing_doc_id_on_endpoint_rows_hooks: list[
             Callable[[Edge], bool]
         ] = []

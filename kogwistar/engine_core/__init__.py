@@ -91,11 +91,14 @@ from kogwistar.engine_core.multimodal import (
 )
 from kogwistar.typing_interfaces import TokenAwareEmbeddingFunction
 from kogwistar.engine_core.types import (
+    EdgePreAddHook,
     EngineType,
     ExtractionSchemaMode,
+    NodePreAddHook,
     OffsetMismatchPolicy,
     OffsetRepairScorer,
     ResolvedExtractionSchemaMode,
+    ToolCallIdFactory,
 )
 
 __all__ = [
@@ -181,9 +184,12 @@ __all__ = [
     "TokenAwareEmbeddingFunction",
     "EngineType",
     "ExtractionSchemaMode",
+    "EdgePreAddHook",
+    "NodePreAddHook",
     "ResolvedExtractionSchemaMode",
     "OffsetMismatchPolicy",
     "OffsetRepairScorer",
+    "ToolCallIdFactory",
     "ReadSubsystem",
     "WriteSubsystem",
     "ExtractSubsystem",
