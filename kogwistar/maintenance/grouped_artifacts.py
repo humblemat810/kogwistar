@@ -7,6 +7,7 @@ from typing import Any, Callable
 from kogwistar.maintenance.artifacts import (
     write_versioned_artifact,
 )
+from kogwistar.maintenance.contracts import BeforeWrite
 from kogwistar.maintenance.models import GroupedArtifactWriteResult
 
 
@@ -21,7 +22,7 @@ def write_grouped_versioned_artifacts(
     build_node_for_group: Callable[[str, list[Any], list[Any], int], Any],
     match_where_for_group: Callable[[str], dict[str, Any]],
     replace_existing: bool = True,
-    before_write: Callable[[str], None] | None = None,
+    before_write: BeforeWrite[str] | None = None,
 ) -> list[GroupedArtifactWriteResult]:
     """Write one replacement artifact per grouped source slice."""
     from kogwistar.engine_core.engine import scoped_namespace

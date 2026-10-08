@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from kogwistar.engine_core.engine import scoped_namespace
+from kogwistar.maintenance.contracts import BeforeWrite
 from kogwistar.maintenance.artifacts import write_versioned_artifact
 from kogwistar.wisdom.models import ExecutionWisdomTemplateResult
 from kogwistar.workflow.analytics import (
@@ -23,7 +24,7 @@ def write_execution_wisdom_artifacts(
     build_node_for_pattern: Callable[[ExecutionFailurePattern, list[Any], int], Any],
     match_where_for_pattern: Callable[[ExecutionFailurePattern], dict[str, Any]],
     min_failure_signals: int = 2,
-    before_write: Callable[[ExecutionFailurePattern], None] | None = None,
+    before_write: BeforeWrite[ExecutionFailurePattern] | None = None,
 ) -> list[ExecutionWisdomTemplateResult]:
     """Write one wisdom artifact per repeated execution-failure pattern."""
     with scoped_namespace(source_engine, source_namespace):

@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from kogwistar.maintenance.template import (
         run_grouped_maintenance_template,
     )
+    from kogwistar.maintenance.contracts import BeforeWrite
 
 __all__ = [
     "VersionedArtifactWriteResult",
@@ -33,6 +34,7 @@ __all__ = [
     "write_grouped_versioned_artifacts",
     "write_versioned_artifact",
     "run_grouped_maintenance_template",
+    "BeforeWrite",
 ]
 
 _EXPORTS = {
@@ -42,6 +44,7 @@ _EXPORTS = {
     "write_grouped_versioned_artifacts": "kogwistar.maintenance.grouped_artifacts",
     "MaintenanceTemplateResult": "kogwistar.maintenance.models",
     "run_grouped_maintenance_template": "kogwistar.maintenance.template",
+    "BeforeWrite": "kogwistar.maintenance.contracts",
 }
 
 

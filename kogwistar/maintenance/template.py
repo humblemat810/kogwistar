@@ -7,6 +7,7 @@ from typing import Any, Callable
 from kogwistar.maintenance.grouped_artifacts import (
     write_grouped_versioned_artifacts,
 )
+from kogwistar.maintenance.contracts import BeforeWrite
 from kogwistar.maintenance.models import MaintenanceTemplateResult
 
 
@@ -21,7 +22,7 @@ def run_grouped_maintenance_template(
     build_node_for_group: Callable[[str, list[Any], list[Any], int], Any],
     match_where_for_group: Callable[[str], dict[str, Any]],
     replace_existing: bool = True,
-    before_write: Callable[[str], None] | None = None,
+    before_write: BeforeWrite[str] | None = None,
 ) -> MaintenanceTemplateResult:
     grouped_results = write_grouped_versioned_artifacts(
         source_engine,
