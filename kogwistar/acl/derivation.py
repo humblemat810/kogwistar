@@ -10,8 +10,9 @@ from __future__ import annotations
 import warnings
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, Iterable, Literal, Mapping, Protocol, cast
+from typing import Iterable, Literal, Mapping, Protocol, cast
 
+from ..json_types import JsonValue
 from .graph import ACLMode, ACLRecord
 
 
@@ -72,10 +73,10 @@ class ACLJoin:
     owner_id: str | None
     security_scope: str | None
     source_ids: tuple[str, ...]
-    inputs: tuple[dict[str, Any], ...]
+    inputs: tuple[dict[str, JsonValue], ...]
     clean_room: bool = False
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, JsonValue]:
         return {
             "mode": self.mode,
             "owner_id": self.owner_id,
@@ -113,7 +114,7 @@ class ACLDerivationResult:
     def source_ids(self) -> tuple[str, ...]:
         return self.original_acl.source_ids
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, JsonValue]:
         return {
             "original_acl": self.original_acl.mode,
             "proposed_acl": self.proposed_mode,
@@ -135,7 +136,7 @@ class ACLDerivationResult:
             "clean_room": self.clean_room,
         }
 
-    def to_metadata(self) -> dict[str, Any]:
+    def to_metadata(self) -> dict[str, JsonValue]:
         """Return metadata suitable for a derived node/artifact."""
         return {
             "acl_mode": self.final_mode,
@@ -147,7 +148,7 @@ class ACLDerivationResult:
         }
 
 
-def coerce_acl_input(value: ACLInput | ACLRecord | Mapping[str, Any]) -> ACLInput:
+def coerce_acl_input(value: ACLInput | ACLRecord | Mapping[str, object]) -> ACLInput:
     """Parse trusted ACL descriptors; missing ACL fails closed to private."""
     if isinstance(value, ACLInput):
         return value
@@ -183,7 +184,7 @@ def coerce_acl_input(value: ACLInput | ACLRecord | Mapping[str, Any]) -> ACLInpu
 
 
 def join_acl_inputs(
-    inputs: Iterable[ACLInput | ACLRecord | Mapping[str, Any]],
+    inputs: Iterable[ACLInput | ACLRecord | Mapping[str, object]],
     *,
     clean_room: bool = False,
 ) -> ACLJoin:
@@ -227,11 +228,11 @@ def join_acl_inputs(
 class Declassifier(Protocol):
     """Propose a bounded ACL change from non-content derivation metadata."""
 
-    def __call__(self, audit: Mapping[str, Any], /) -> Mapping[str, Any]: ...
+    def __call__(self, audit: Mapping[str, JsonValue], /) -> Mapping[str, object]: ...
 
 
 def derive_acl(
-    inputs: Iterable[ACLInput | ACLRecord | Mapping[str, Any]],
+    inputs: Iterable[ACLInput | ACLRecord | Mapping[str, object]],
     *,
     policy: str | None = "STRICT",
     declassifier: Declassifier | None = None,
