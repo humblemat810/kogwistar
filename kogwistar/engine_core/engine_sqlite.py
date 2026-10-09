@@ -9,7 +9,8 @@ from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TypeAlias
+from types import TracebackType
+from typing import Literal, TypeAlias
 
 from ..json_types import JsonValue
 from ..messaging.models import ProjectedLaneMessageRow
@@ -171,7 +172,12 @@ class _LeasedSQLiteConnection(sqlite3.Connection):
             if lease is not None:
                 lease.release()
 
-    def __exit__(self, exc_type, exc_value, traceback):
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> Literal[False]:
         try:
             return super().__exit__(exc_type, exc_value, traceback)
         finally:
@@ -1707,7 +1713,7 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
         from_seq: int = 1,
         to_seq: int | None = None,
         batch_size: int = 500,
-    ):
+    ) -> Iterator[sqlite3.Row]:
         next_seq = int(from_seq)
         while True:
             active = get_active_sqlite_conn()
