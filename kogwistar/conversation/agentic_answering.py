@@ -53,6 +53,7 @@ from .models import (
     ConversationNode,
     MetaFromLastSummary,
 )
+from .conversation_context import PromptContext
 from .policy import get_chat_tail
 
 if TYPE_CHECKING:
@@ -938,7 +939,7 @@ class AgenticAnsweringAgent:
         out["workflow_status"] = getattr(run_result, "status", "succeeded")
         return out
 
-    def _get_last_user_text(self, conversation: Any) -> str:
+    def _get_last_user_text(self, conversation: object) -> str:
         if conversation is None:
             return ""
 
@@ -1273,7 +1274,7 @@ class AgenticAnsweringAgent:
         used_node_ids: list[str],
         out_model_schema: dict[str, Any],
         out_model: type[BaseM] = AnswerWithCitations,
-    ):
+    ) -> dict[str, Any]:
         """Ask the LLM to answer AND cite exact mention/span indices from the provided evidence pack."""
         alias_book, prompt_pack = _project_evidence_pack_for_prompt(evidence_pack)
         # Build a compact, indexable embedding for the LLM
@@ -1510,7 +1511,7 @@ class AgenticAnsweringAgent:
         run_step_seq: int,
         attempt_seq: int,
         stage: str,
-        view: Any,
+        view: PromptContext,
         model_name: str,
         budget_tokens: int,
         tail_turn_index: int,
@@ -1873,15 +1874,15 @@ class AgenticAnsweringAgent:
 
     def _add_link_to_new_turn(
         self,
-        edge_id,
-        turn_node,
-        prev_node,
-        conversation_id,
-        span,
+        edge_id: str,
+        turn_node: ConversationNode,
+        prev_node: ConversationNode,
+        conversation_id: str,
+        span: Span | None,
         prev_turn_meta_summary: MetaFromLastSummary,
         causal_type: str | None = "chain",
-        clock=None,
-    ):
+        clock: object | None = None,
+    ) -> ConversationEdge:
         meta = {
             "relation": "next_turn",
             "target_id": turn_node.id,
@@ -1899,11 +1900,15 @@ class AgenticAnsweringAgent:
             }
 
         provenance_span = span or Span.from_dummy_for_conversation()
+        prev_node_id = prev_node.id
+        turn_node_id = turn_node.id
+        if prev_node_id is None or turn_node_id is None:
+            raise ValueError("conversation turn links require persisted node IDs")
 
         seq_edge = ConversationEdge(
             id=edge_id,
-            source_ids=[prev_node.id],
-            target_ids=[turn_node.id],
+            source_ids=[prev_node_id],
+            target_ids=[turn_node_id],
             relation="next_turn",
             label="next_turn",
             type="relationship",
@@ -1929,7 +1934,7 @@ class AgenticAnsweringAgent:
         response_node_id: str,
         used_node_ids: list[str],
         provenance_span: Span | list[Span],
-        prev_turn_meta_summary,
+        prev_turn_meta_summary: MetaFromLastSummary,
     ) -> None:
         scope = f"conv:{conversation_id}"
         eid = edge_id(
