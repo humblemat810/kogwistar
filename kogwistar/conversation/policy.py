@@ -346,7 +346,9 @@ def get_chat_tail(
     return nodes2[-1]
 
 
-def last_summary_of_node(engine: GraphKnowledgeEngine, node: ConversationNode):
+def last_summary_of_node(
+    engine: GraphKnowledgeEngine, node: ConversationNode
+) -> list[ConversationNode]:
     summaries = engine.read.get_nodes(
         where=where_and(
             {"conversation_id": node.conversation_id},
@@ -364,7 +366,7 @@ def last_summary_of_node(engine: GraphKnowledgeEngine, node: ConversationNode):
         if node.turn_index is not None and ti <= node.turn_index and ti > best_idx:
             best = s
             best_idx = ti
-    return [best] if best is not None else []
+    return [cast(ConversationNode, best)] if best is not None else []
 
 
 def install_engine_hooks(engine: GraphKnowledgeEngine) -> None:
