@@ -36,8 +36,8 @@ class _Tracer(Protocol):
 def opentelemetry_available() -> bool:
     """Return whether the optional OpenTelemetry API and SDK are installed."""
     try:
-        import opentelemetry.sdk.trace  # noqa: F401
-        import opentelemetry.trace  # noqa: F401
+        import opentelemetry.sdk.trace  # pyright: ignore[reportMissingImports]  # noqa: F401
+        import opentelemetry.trace  # pyright: ignore[reportMissingImports]  # noqa: F401
     except ImportError:
         return False
     return True

@@ -4,9 +4,10 @@ import json
 import shutil
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.json_types import JsonObject
 
 HISTORY_NAMESPACE = "bridge_governance_history"
 PROJECTION_NAMESPACE = "bridge_governance"
@@ -188,7 +189,7 @@ class BridgeGovernanceProjectionService:
         self._meta.replace_named_projection(
             PROJECTION_NAMESPACE,
             interaction_key,
-            rebuilding_payload,
+            cast(JsonObject, rebuilding_payload),
             last_authoritative_seq=latest_authoritative_seq,
             last_materialized_seq=int(
                 (existing or {}).get("last_materialized_seq") or 0

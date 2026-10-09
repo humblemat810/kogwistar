@@ -1241,6 +1241,8 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         )
 
     def add_domain(self, domain: Domain) -> None:
+        if domain.id is None:
+            raise ValueError("domain id is required for persistence")
         document = domain.model_dump_json()
         metadata = self._e.chroma_sanitize_metadata(
             {"name": domain.name, "description": domain.description}

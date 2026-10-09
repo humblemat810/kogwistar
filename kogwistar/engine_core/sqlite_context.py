@@ -197,6 +197,7 @@ class SQLiteDatabaseLease:
         self._path_key = path_key
         self._file_identity = file_identity
         self._released = False
+        self.context_id = ""
 
     def refresh_file_identity(self, database: str | os.PathLike[str]) -> None:
         new_keys = _database_keys(database)

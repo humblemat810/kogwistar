@@ -17,7 +17,9 @@ import json
 import re
 
 import httpx
-from langchain_mcp_adapters.client import MultiServerMCPClient
+from langchain_mcp_adapters.client import (  # pyright: ignore[reportMissingImports]
+    MultiServerMCPClient,
+)
 
 # ---------- helpers ----------
 

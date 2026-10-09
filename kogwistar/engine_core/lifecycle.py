@@ -76,7 +76,10 @@ class LifecycleSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             next_frontier_ids: set[str] = set()
 
             for item in frontier:
-                item_id = str(item.id)
+                item_id_value = getattr(item, "id", None)
+                if item_id_value is None:
+                    continue
+                item_id = str(item_id_value)
                 if item_id in visited:
                     continue
                 visited.add(item_id)

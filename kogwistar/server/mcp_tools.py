@@ -994,7 +994,7 @@ def commit_merge(inp: CrossDocAdjOut):
             if pairs.right_kind == "entity"
             else _fetch_edges([pairs.right])[0]
         )
-        lkind, rkind, same_entity = pairs.left_kind, pairs.right_kind, pairs.same_entity
+        same_entity = pairs.same_entity
         if same_entity:
             verdict = AdjudicationVerdict(
                 same_entity=bool(pairs.same_entity),
@@ -1201,7 +1201,7 @@ workflow_mcp = build_workflow_mcp(
 mcp.mount(conversation_mcp)
 mcp.mount(workflow_mcp)
 
-__all__ = [
+__all__ = [  # pyright: ignore[reportUnsupportedDunderAll]
     name
     for name in globals()
     if not name.startswith("_")

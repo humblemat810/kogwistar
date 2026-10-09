@@ -495,7 +495,7 @@ class LambdaSandbox(Sandbox):
     def run(
         self, code: str, state: dict[str, Any], context: dict[str, Any]
     ) -> StepRunResult:
-        import boto3
+        import boto3  # pyright: ignore[reportMissingImports]
 
         client = boto3.client("lambda", region_name=self.region_name)
         payload = json.dumps({"code": code, "state": state, "context": context})

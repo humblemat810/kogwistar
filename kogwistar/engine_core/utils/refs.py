@@ -248,8 +248,9 @@ def merge_refs(
 
     seen = {key(r): r for r in old}
     for r in new_refs or []:
-        if hasattr(r, "model_dump"):
-            r2 = cast(RefPayload, r.model_dump(field_mode="backend"))
+        model_dump = getattr(r, "model_dump", None)
+        if callable(model_dump):
+            r2 = cast(RefPayload, model_dump(field_mode="backend"))
         elif isinstance(r, dict):
             r2 = cast(RefPayload, r)
         else:

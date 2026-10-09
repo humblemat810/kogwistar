@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from collections.abc import Sequence
+from typing import Any, cast
 
 from ..utils.embedding_vectors import normalize_embedding_vector
 from .storage_backend import TwoStageProjectionCapability
@@ -211,7 +212,7 @@ class RustPostgresTwoStageProjectionAdapter:
             if not callable(provider):
                 raise RuntimeError("Rust two-stage batch requires an embedding provider")
             raw = provider([str(item[3].get("document") or "") for item in prepared])
-            embeddings = list(raw)
+            embeddings = list(cast(Sequence[list[float]], raw))
             if len(embeddings) != len(prepared):
                 raise RuntimeError("embedding provider returned wrong batch length")
         except BaseException as exc:

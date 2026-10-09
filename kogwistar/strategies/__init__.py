@@ -43,7 +43,6 @@ __all__ = [
     "Adjudicator",
     "CompositeProposer",
     "DefaultVerifier",
-    "DefaultVerifierEdgeLike",
     "EngineLike",
     "IAdjudicator",
     "LLMBatchAdjudicatorImpl",

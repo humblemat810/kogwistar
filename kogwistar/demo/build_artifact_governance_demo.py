@@ -464,6 +464,7 @@ def _workflow_shape(
         "node_ids": sorted(nodes.keys()),
         "edge_ids": sorted(
             edge.id for edges in adj.values() for edge in list(edges or [])
+            if edge.id is not None
         ),
     }
 
