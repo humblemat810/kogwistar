@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import BaseModel
 
@@ -42,6 +42,7 @@ from kogwistar.engine_core.models import (
     ContextCost,
     Grounding,
     MentionVerification,
+    Role,
     Span,
 )
 from kogwistar.id_provider import stable_id
@@ -51,6 +52,15 @@ from kogwistar.server.auth_middleware import get_current_agent_id, get_security_
 
 if TYPE_CHECKING:
     from kogwistar.engine_core.engine import GraphKnowledgeEngine
+
+
+def _backend_map(value: object) -> dict[str, Any]:
+    """Narrow backend JSON responses at the storage boundary."""
+    return cast(dict[str, Any], value)
+
+
+def _json_int(value: object, default: int = 0) -> int:
+    return value if type(value) is int else default
 
 
 class _ApproxTokenizer:
@@ -82,7 +92,7 @@ class ConversationService:
             ref_knowledge_engine=knowledge_engine,
             workflow_engine=workflow_engine,
             llm_tasks=self.llm_tasks,
-            tool_call_id_factory=stable_id,
+            tool_call_id_factory=lambda *parts: str(stable_id(*parts)),
         )
 
     @classmethod
@@ -94,10 +104,13 @@ class ConversationService:
         workflow_engine: GraphKnowledgeEngine | None = None,
         llm_tasks: LLMTaskSet | None = None,
     ) -> ConversationService:
-        cache = getattr(conversation_engine, "_conversation_service_cache", None)
+        cache = cast(
+            dict[tuple[int, int | None, int], ConversationService] | None,
+            getattr(conversation_engine, "_conversation_service_cache", None),
+        )
         if cache is None:
             cache = {}
-            conversation_engine._conversation_service_cache = cache
+            setattr(conversation_engine, "_conversation_service_cache", cache)
 
         ke = knowledge_engine or conversation_engine
         we = workflow_engine
@@ -144,7 +157,7 @@ class ConversationService:
     ) -> str:
         eng = self.conversation_engine
         node_id = f"wf_cancel_req|{run_id}"
-        got = eng.backend.node_get(ids=[node_id], include=[])
+        got = _backend_map(eng.backend.node_get(ids=[node_id], include=[]))
         if got.get("ids"):
             return node_id
 
@@ -155,6 +168,7 @@ class ConversationService:
             summary=f"workflow cancel requested for run_id={run_id}",
             doc_id=f"conv:{conversation_id}",
             conversation_id=conversation_id,
+            user_id=requested_by,
             role="system",
             turn_index=None,
             level_from_root=0,
@@ -179,7 +193,7 @@ class ConversationService:
         eng.write.add_node(node)
 
         run_node_id = f"wf_run|{run_id}"
-        run_got = eng.backend.node_get(ids=[run_node_id], include=[])
+        run_got = _backend_map(eng.backend.node_get(ids=[run_node_id], include=[]))
         if run_got.get("ids"):
             content = f"{run_node_id} cancel_requested {node_id}"
             span = Span(
@@ -205,7 +219,7 @@ class ConversationService:
             edge_id = str(
                 stable_id("workflow.edge", "cancel_request", run_node_id, node_id)
             )
-            existing_edge = eng.backend.edge_get(ids=[edge_id], include=[])
+            existing_edge = _backend_map(eng.backend.edge_get(ids=[edge_id], include=[]))
             if not existing_edge.get("ids"):
                 edge = ConversationEdge(
                     id=edge_id,
@@ -247,7 +261,7 @@ class ConversationService:
     ) -> str:
         eng = self.conversation_engine
         node_id = f"wf_cancelled|{run_id}"
-        got = eng.backend.node_get(ids=[node_id], include=[])
+        got = _backend_map(eng.backend.node_get(ids=[node_id], include=[]))
         if got.get("ids"):
             return node_id
 
@@ -258,6 +272,7 @@ class ConversationService:
             summary=f"workflow cancelled run_id={run_id}",
             doc_id=f"conv:{conversation_id}",
             conversation_id=conversation_id,
+            user_id=None,
             role="system",
             turn_index=None,
             level_from_root=0,
@@ -286,10 +301,10 @@ class ConversationService:
         eng.write.add_node(node)
 
         run_node_id = f"wf_run|{run_id}"
-        run_got = eng.backend.node_get(ids=[run_node_id], include=[])
+        run_got = _backend_map(eng.backend.node_get(ids=[run_node_id], include=[]))
         if run_got.get("ids"):
             edge_id = str(stable_id("workflow.edge", "cancelled", run_node_id, node_id))
-            existing_edge = eng.backend.edge_get(ids=[edge_id], include=[])
+            existing_edge = _backend_map(eng.backend.edge_get(ids=[edge_id], include=[]))
             if not existing_edge.get("ids"):
                 edge = ConversationEdge(
                     id=edge_id,
@@ -325,7 +340,7 @@ class ConversationService:
                     node_id,
                 )
             )
-            existing_edge = eng.backend.edge_get(ids=[edge_id], include=[])
+            existing_edge = _backend_map(eng.backend.edge_get(ids=[edge_id], include=[]))
             if not existing_edge.get("ids"):
                 edge = ConversationEdge(
                     id=edge_id,
@@ -361,7 +376,7 @@ class ConversationService:
                     str(last_processed_node_id),
                 )
             )
-            existing_edge = eng.backend.edge_get(ids=[edge_id], include=[])
+            existing_edge = _backend_map(eng.backend.edge_get(ids=[edge_id], include=[]))
             if not existing_edge.get("ids"):
                 edge = ConversationEdge(
                     id=edge_id,
@@ -544,7 +559,7 @@ class ConversationService:
             conversation_id=conversation_id,
             turn_id=turn_id,
             mem_id=mem_id,
-            role=role,
+            role=cast(Role, role),
             content=content,
             filtering_callback=filtering_callback,
             max_retrieval_level=max_retrieval_level,
@@ -689,7 +704,9 @@ class ConversationService:
 
             non_turn_kept = [i for i in kept if i.kind != "tail_turn"]
             turn_kept = [i for i in kept if i.kind == "tail_turn"]
-            turn_kept.sort(key=lambda x: int((x.extra or {}).get("turn_index", 10**9)))
+            turn_kept.sort(
+                key=lambda x: _json_int((x.extra or {}).get("turn_index"), 10**9)
+            )
             kept = non_turn_kept + turn_kept
         else:
             iter_items = apply_ordering(
@@ -752,7 +769,9 @@ class ConversationService:
 
         non_turn_kept = [i for i in kept if i.kind != "tail_turn"]
         turn_kept = [i for i in kept if i.kind == "tail_turn"]
-        turn_kept.sort(key=lambda x: int((x.extra or {}).get("turn_index", 10**9)))
+        turn_kept.sort(
+            key=lambda x: _json_int((x.extra or {}).get("turn_index"), 10**9)
+        )
         kept = non_turn_kept + turn_kept
 
         renderer = ContextRenderer()
@@ -867,6 +886,7 @@ class ConversationService:
         )
 
         meta_model = ContextSnapshotMetadata(
+            level_from_root=0,
             run_id=run_id,
             run_step_seq=int(run_step_seq),
             attempt_seq=int(attempt_seq),
@@ -890,7 +910,7 @@ class ConversationService:
             )
         )
 
-        existing = eng.backend.node_get(ids=[sid], include=[])
+        existing = _backend_map(eng.backend.node_get(ids=[sid], include=[]))
         if not existing.get("ids"):
             node = ConversationNode(
                 id=sid,
@@ -929,7 +949,7 @@ class ConversationService:
                     "conversation.edge", scope, "depends_on", sid, nid, str(ordinal)
                 )
             )
-            ex = eng.backend.edge_get(ids=[eid], include=[])
+            ex = _backend_map(eng.backend.edge_get(ids=[eid], include=[]))
             if ex.get("ids"):
                 continue
             doc_id = scope
@@ -983,7 +1003,7 @@ class ConversationService:
             limit=10_000,
         )
         snaps = [
-            n
+            cast(ConversationNode, n)
             for n in snaps
             if str(getattr(n, "conversation_id", "") or "") == conversation_id
         ]
@@ -992,7 +1012,7 @@ class ConversationService:
 
         def _k(n: ConversationNode):
             try:
-                return int((n.metadata or {}).get("run_step_seq", 0))
+                return _json_int((n.metadata or {}).get("run_step_seq"))
             except Exception:
                 return 0
 
@@ -1003,8 +1023,10 @@ class ConversationService:
         *,
         snapshot_node_id: str,
     ) -> dict[str, Any]:
-        got = self.conversation_engine.backend.node_get(
-            ids=[snapshot_node_id], include=["documents", "metadatas"]
+        got = _backend_map(
+            self.conversation_engine.backend.node_get(
+                ids=[snapshot_node_id], include=["documents", "metadatas"]
+            )
         )
         ids = got.get("ids") or []
         if not ids:
