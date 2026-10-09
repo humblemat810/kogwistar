@@ -419,8 +419,8 @@ class ConversationService:
 
     def _create_conversation_primitive(
         self,
-        user_id,
-        conv_id=None,
+        user_id: str,
+        conv_id: str | None = None,
         node_id: str | None | uuid.UUID = None,
     ) -> tuple[str, str]:
         from kogwistar.conversation.conversation_orchestrator import (
@@ -924,7 +924,7 @@ class ConversationService:
         model_name: str = "",
         budget_tokens: int = 0,
         tail_turn_index: int = 0,
-        extra_hash_payload=None,
+        extra_hash_payload: dict[str, Any] | None = None,
         llm_input_payload: dict[str, Any] | None = None,
         evidence_pack_digest: dict[str, Any] | None = None,
     ) -> str:
@@ -937,12 +937,12 @@ class ConversationService:
         """
         eng = self.conversation_engine
 
-        def _stable_json(obj: Any) -> str:
+        def _stable_json(obj: object) -> str:
             return json.dumps(
                 obj, ensure_ascii=False, sort_keys=True, separators=(",", ":")
             )
 
-        def _snapshot_hash(payload: Any) -> str:
+        def _snapshot_hash(payload: object) -> str:
             h = hashlib.sha256()
             h.update(_stable_json(payload).encode("utf-8"))
             return h.hexdigest()
@@ -1106,7 +1106,7 @@ class ConversationService:
         if not snaps:
             return None
 
-        def _k(n: ConversationNode):
+        def _k(n: ConversationNode) -> int:
             try:
                 return _json_int((n.metadata or {}).get("run_step_seq"))
             except Exception:
@@ -1163,7 +1163,10 @@ class ConversationService:
             return None
 
     def get_ai_conversation_response(
-        self, conversation_id, ref_knowledge_engine=None, model_names=None
+        self,
+        conversation_id: str,
+        ref_knowledge_engine: GraphKnowledgeEngine | None = None,
+        model_names: list[str] | None = None,
     ) -> ConversationAIResponse:
         if (
             ref_knowledge_engine is not None
