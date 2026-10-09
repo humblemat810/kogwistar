@@ -33,15 +33,17 @@ from __future__ import annotations
 import copy
 import json
 import math
+from collections.abc import Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Any, Sequence
+from typing import Any
+
+from kogwistar.engine_core.embedding_profile import EmbeddingStorageState
 from kogwistar.engine_core.in_memory_meta import InMemoryMetaStore
 from kogwistar.engine_core.storage_backend import (
     NoopUnitOfWork,
     TwoStageProjectionCapability,
 )
-from kogwistar.engine_core.embedding_profile import EmbeddingStorageState
 from kogwistar.json_types import JsonValue
 
 JsonObject = dict[str, JsonValue]
@@ -225,7 +227,7 @@ class _StoredRow:
 
 
 class _InMemoryCollection:
-    def __init__(self, *, name: str, backend: "InMemoryBackend"):
+    def __init__(self, *, name: str, backend: InMemoryBackend):
         self.name = name
         self._backend = backend
         self._rows: dict[str, _StoredRow] = {}
@@ -1060,7 +1062,7 @@ class _DummyLock:
     def release(self) -> None:
         return None
 
-    def __enter__(self) -> "_DummyLock":
+    def __enter__(self) -> _DummyLock:
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
@@ -1101,6 +1103,6 @@ build_fake_backend = build_in_memory_backend
 
 __all__ = [
     "InMemoryBackend",
-    "build_in_memory_backend",
     "build_fake_backend",
+    "build_in_memory_backend",
 ]

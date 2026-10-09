@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import pytest
 
-from kogwistar.conversation.models import ConversationEdge, ConversationNode, ConversationRole
-from kogwistar.engine_core.models import Edge, Node
+from kogwistar.conversation.models import (
+    ConversationEdge,
+    ConversationNode,
+    ConversationRole,
+)
 from kogwistar.engine_core.in_memory_backend import InMemoryBackend
+from kogwistar.engine_core.models import Edge, Node
 from kogwistar.id_provider import stable_id
 from kogwistar.server.run_registry import RunRegistry
 from tests._helpers.graph_builders import (
@@ -18,7 +24,7 @@ from tests.core._async_chroma_real import (
     make_real_async_chroma_uow,
     real_chroma_server,  # noqa: F401
 )
-from typing import TYPE_CHECKING
+
 if TYPE_CHECKING:
     from kogwistar.engine_core.engine import GraphKnowledgeEngine
 pytestmark = [pytest.mark.core]

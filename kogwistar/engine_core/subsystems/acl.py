@@ -1,10 +1,12 @@
 from __future__ import annotations
+
 import json
-from typing import TYPE_CHECKING, Any, Literal, Sequence, cast
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from ...acl.graph import (
-    ACLGrain,
     ACLDecision,
+    ACLGrain,
     ACLNodeReadDecision,
     ACLRecord,
     ACLTarget,
@@ -16,8 +18,8 @@ from ...engine_core.models import Document, Edge, Grounding, Node, Span
 from ...engine_core.vector_search import VectorSearchHit
 from ...id_provider import stable_id
 from ...json_types import JsonValue
-from .base import NamespaceProxy
 from ...typing_interfaces import ReadLike, WriteLike
+from .base import NamespaceProxy
 
 if TYPE_CHECKING:
     from ..engine import GraphKnowledgeEngine
@@ -32,7 +34,7 @@ def _as_acl_grain(value: str | None) -> ACLGrain | None:
 
 
 class ACLSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
-    def __init__(self, engine: "GraphKnowledgeEngine") -> None:
+    def __init__(self, engine: GraphKnowledgeEngine) -> None:
         super().__init__(engine)
         # ACLGraph is a cacheable projection. Loaders point it back to canonical truth.
         self._e.acl_graph.bind_loaders(
@@ -51,7 +53,10 @@ class ACLSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
 
     def current_principal_context(self) -> tuple[str, tuple[str, ...], str | None]:
         try:
-            from ...server.auth_middleware import get_current_agent_id, get_security_scope
+            from ...server.auth_middleware import (
+                get_current_agent_id,
+                get_security_scope,
+            )
 
             principal_id = str(get_current_agent_id() or "").strip().lower()
             security_scope = str(get_security_scope() or "").strip().lower() or None
@@ -1163,7 +1168,7 @@ class ACLSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
 
 
 class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
-    def __init__(self, engine: "GraphKnowledgeEngine", raw_read: ReadLike) -> None:
+    def __init__(self, engine: GraphKnowledgeEngine, raw_read: ReadLike) -> None:
         super().__init__(engine)
         self._raw = raw_read
 
@@ -1353,7 +1358,7 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
 
 
 class ACLAwareWriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"], WriteLike):
-    def __init__(self, engine: "GraphKnowledgeEngine", raw_write: WriteLike) -> None:
+    def __init__(self, engine: GraphKnowledgeEngine, raw_write: WriteLike) -> None:
         super().__init__(engine)
         self._raw = raw_write
 

@@ -34,7 +34,7 @@ Conventions:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Dict, List, Protocol, Tuple
+from typing import TYPE_CHECKING, Protocol
 
 from .models import StepRunResult, WorkflowEdge, WorkflowState, get_route_next_names
 from .serialize import JsonValue
@@ -43,7 +43,7 @@ if TYPE_CHECKING:
     from ..engine_core.engine import GraphKnowledgeEngine
 
 Json = JsonValue
-State = Dict[str, Json]
+State = dict[str, Json]
 Result = Json
 
 
@@ -63,7 +63,7 @@ class WorkflowNodeInfo:
     fanout: bool
 
 
-from ..engine_core.models import Node, Edge
+from ..engine_core.models import Edge, Node
 
 
 @dataclass(frozen=True)
@@ -151,7 +151,7 @@ def build_workflow_from_engine(
     return WorkflowSpec(workflow_id=workflow_id, start_node_id=start)
 
 
-def _iter_wf_nodes(*, engine: GraphKnowledgeEngine, workflow_id: str) -> List[Node]:
+def _iter_wf_nodes(*, engine: GraphKnowledgeEngine, workflow_id: str) -> list[Node]:
     return engine.get_nodes(
         where={
             "$and": [{"entity_type": "workflow_node"}, {"workflow_id": workflow_id}]
@@ -160,7 +160,7 @@ def _iter_wf_nodes(*, engine: GraphKnowledgeEngine, workflow_id: str) -> List[No
     )
 
 
-def _iter_wf_edges(*, engine: GraphKnowledgeEngine, workflow_id: str) -> List[Edge]:
+def _iter_wf_edges(*, engine: GraphKnowledgeEngine, workflow_id: str) -> list[Edge]:
     return engine.get_edges(
         where={
             "$and": [{"entity_type": "workflow_edge"}, {"workflow_id": workflow_id}]
@@ -173,12 +173,12 @@ def load_workflow_graph(
     *,
     engine: GraphKnowledgeEngine,
     spec: WorkflowSpec,
-) -> Tuple[Dict[str, WorkflowNodeInfo], Dict[str, List[WorkflowEdgeInfo]]]:
+) -> tuple[dict[str, WorkflowNodeInfo], dict[str, list[WorkflowEdgeInfo]]]:
     """Loads node/edge info needed by the executor."""
     nodes_raw = _iter_wf_nodes(engine=engine, workflow_id=spec.workflow_id)
     edges_raw = _iter_wf_edges(engine=engine, workflow_id=spec.workflow_id)
 
-    nodes: Dict[str, WorkflowNodeInfo] = {}
+    nodes: dict[str, WorkflowNodeInfo] = {}
     for n in nodes_raw:
         md = n.metadata or {}
         info = WorkflowNodeInfo(
@@ -193,7 +193,7 @@ def load_workflow_graph(
             raise ValueError(f"workflow node {n.safe_get_id()} missing metadata wf_op")
         nodes[n.safe_get_id()] = info
 
-    adj: Dict[str, List[WorkflowEdgeInfo]] = {nid: [] for nid in nodes.keys()}
+    adj: dict[str, list[WorkflowEdgeInfo]] = {nid: [] for nid in nodes.keys()}
     for e in edges_raw:
         md = e.metadata or {}
 
@@ -224,7 +224,7 @@ def validate_workflow(
     *,
     engine: GraphKnowledgeEngine,
     spec: WorkflowSpec,
-    predicate_registry: Dict[str, Predicate],
+    predicate_registry: dict[str, Predicate],
 ) -> None:
     """
     Validates:

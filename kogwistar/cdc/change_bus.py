@@ -1,17 +1,18 @@
 # knowledge_graph_engine/changes/change_bus.py
 from __future__ import annotations
-import threading
+
 import queue
+import threading
 from collections.abc import Mapping
-from typing import cast
+from typing import Protocol, cast
 
 import requests
 
+from kogwistar.json_types import JsonValue
 from kogwistar.utils import log as logmod
 from kogwistar.utils.log import bind_log_context
+
 from .change_event import ChangeEvent
-from kogwistar.json_types import JsonValue
-from typing import Protocol
 
 
 class ChangeSink(Protocol):

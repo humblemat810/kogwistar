@@ -1,6 +1,8 @@
-import httpx
 import asyncio
 import os
+
+import httpx
+
 
 async def test_httpx_conn():
     raw_url = os.getenv("GRAPHRAG_SERVER_URL", "http://localhost:28110")

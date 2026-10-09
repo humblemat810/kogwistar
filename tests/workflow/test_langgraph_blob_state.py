@@ -1,18 +1,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import pytest
 
 pytest.importorskip("langgraph")
 
 
-from kogwistar.runtime.langgraph_converter import (
-    to_langgraph,
-    LGConverterOptions,
-)
 from kogwistar.runtime.contract import BasePredicate
+from kogwistar.runtime.langgraph_converter import (
+    LGConverterOptions,
+    to_langgraph,
+)
 
 pytestmark = [pytest.mark.ci, pytest.mark.requires_langgraph]
 
@@ -26,7 +26,7 @@ class FakeNode:
     op: str
     terminal: bool
     fanout: bool
-    metadata: Dict[str, Any] | None = None
+    metadata: dict[str, Any] | None = None
 
     def safe_get_id(self):
         return self.id
@@ -37,11 +37,11 @@ class FakeEdge:
     id: str
     label: str
     predicate: str | None
-    source_ids: List[str]
-    target_ids: List[str]
+    source_ids: list[str]
+    target_ids: list[str]
     multiplicity: str
     is_default: bool
-    metadata: Dict[str, Any] | None = None
+    metadata: dict[str, Any] | None = None
 
     def safe_get_id(self):
         return self.id
@@ -106,7 +106,7 @@ def _e(
 
 
 class FakeWorkflowEngine:
-    def __init__(self, nodes: List[FakeNode], edges: List[FakeEdge]):
+    def __init__(self, nodes: list[FakeNode], edges: list[FakeEdge]):
         self._nodes = list(nodes)
         self._edges = list(edges)
 
@@ -157,7 +157,7 @@ class RR:
 
 class Resolver:
     def __init__(
-        self, handlers: Dict[str, Any], schema: Optional[Dict[str, str]] = None
+        self, handlers: dict[str, Any], schema: dict[str, str] | None = None
     ):
         self._h = dict(handlers)
         self._schema = dict(schema or {})
@@ -165,7 +165,7 @@ class Resolver:
     def resolve(self, op: str):
         return self._h[op]
 
-    def describe_state(self) -> Dict[str, str]:
+    def describe_state(self) -> dict[str, str]:
         return dict(self._schema)
 
 

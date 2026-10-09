@@ -37,9 +37,10 @@ import time
 import traceback
 import uuid
 import webbrowser
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -54,16 +55,16 @@ from kogwistar.engine_core.models import (
     Node,
     Span,
 )
-from kogwistar.runtime.models import RunSuccess, WorkflowEdge, WorkflowNode
-from kogwistar.runtime.resolvers import MappingStepResolver
-from kogwistar.runtime.runtime import WorkflowRuntime
-from kogwistar.utils.kge_debug_dump import dump_paired_bundles
 from kogwistar.extraction import (
     find_all_exact,
     fuzzy_find_best_spans,
     pick_nearest,
     refresh_context,
 )
+from kogwistar.runtime.models import RunSuccess, WorkflowEdge, WorkflowNode
+from kogwistar.runtime.resolvers import MappingStepResolver
+from kogwistar.runtime.runtime import WorkflowRuntime
+from kogwistar.utils.kge_debug_dump import dump_paired_bundles
 
 # Default loop budget for internal self-loop emits. Times To Loop
 DEFAULT_TTL = 4
@@ -195,7 +196,7 @@ class ClawEventStore:
             )
 
     def enqueue_input(
-        self, *, conversation_id: str, event_type: str, payload: Dict[str, Any]
+        self, *, conversation_id: str, event_type: str, payload: dict[str, Any]
     ) -> str:
         eid = f"in|{uuid.uuid4()}"
         now = _now_ms()
@@ -213,7 +214,7 @@ class ClawEventStore:
             )
         return eid
 
-    def claim_next_pending(self) -> Optional[Dict[str, Any]]:
+    def claim_next_pending(self) -> dict[str, Any] | None:
         # "claim" is stateful: pending -> processing in one transaction.
         # This is different from read-only queue probes like has_pending_user_message.
         with sqlite3.connect(self.db_path) as c:
@@ -257,7 +258,7 @@ class ClawEventStore:
         *,
         conversation_id: str,
         event_type: str,
-        payload: Dict[str, Any],
+        payload: dict[str, Any],
         source_event_id: str,
         run_id: str,
     ) -> str:
@@ -298,7 +299,7 @@ class ClawEventStore:
             ).fetchone()
         return int((r[0] if r else 0) or 0)
 
-    def list_events(self, *, direction: str, limit: int) -> list[Dict[str, Any]]:
+    def list_events(self, *, direction: str, limit: int) -> list[dict[str, Any]]:
         with sqlite3.connect(self.db_path) as c:
             c.row_factory = sqlite3.Row
             rows = c.execute(
@@ -316,7 +317,7 @@ class ClawEventStore:
         return out
 
 
-def _llm_route(payload: Dict[str, Any], ttl: int) -> Dict[str, Any]:
+def _llm_route(payload: dict[str, Any], ttl: int) -> dict[str, Any]:
     """Tool: LLM routing policy for self-loop vs output gate.
 
     Instruction includes self-emit semantics and TTL safety.
@@ -436,7 +437,7 @@ class ClawResolver(MappingStepResolver):
     def execute_action(self, ctx) -> RunSuccess:
         deps = dict(ctx.state_view["_deps"])
         store: ClawEventStore = deps["event_store"]
-        tools: Dict[str, Callable[..., Dict[str, Any]]] = deps["tool_registry"]
+        tools: dict[str, Callable[..., dict[str, Any]]] = deps["tool_registry"]
         e = dict(ctx.state_view["event"])
         p = dict(ctx.state_view["payload"])
         ttl = int(ctx.state_view["ttl"])
@@ -524,7 +525,7 @@ class ClawResolver(MappingStepResolver):
 class ClawRuntimeApp:
     data_dir: Path
     workflow_id: str = "claw.loop.v1"
-    cdc_publish_endpoint: Optional[str] = None
+    cdc_publish_endpoint: str | None = None
 
     def __post_init__(self) -> None:
         if self.cdc_publish_endpoint:
@@ -551,10 +552,10 @@ class ClawRuntimeApp:
         )
         self._ensure_workflow()
 
-    def _tool_registry(self) -> Dict[str, Callable[..., Dict[str, Any]]]:
+    def _tool_registry(self) -> dict[str, Callable[..., dict[str, Any]]]:
         """Register tools (KG writer + LLM router)."""
 
-        def add_knowledge(*, payload: Dict[str, Any], ttl: int) -> Dict[str, Any]:
+        def add_knowledge(*, payload: dict[str, Any], ttl: int) -> dict[str, Any]:
             doc_id = str(payload.get("doc_id") or f"doc:claw:{uuid.uuid4().hex[:8]}")
             subject = str(payload.get("subject") or "Subject")
             relation = str(payload.get("relation") or "related_to")
@@ -777,7 +778,7 @@ class ClawRuntimeApp:
             self.workflow_engine.write.add_edge(e)
         return workflow_id
 
-    def purge_doc_graph(self, *, doc_id: str) -> Dict[str, int]:
+    def purge_doc_graph(self, *, doc_id: str) -> dict[str, int]:
         """CR-safe cleanup for one document's graph footprint before reseeding.
         In normal heavy provenance usage, delete is only an escape hatch or demo reset.
 
@@ -814,7 +815,7 @@ class ClawRuntimeApp:
 
     def _repair_mentions_in_memory(
         self, *, content: str, items: list[Any]
-    ) -> Dict[str, int]:
+    ) -> dict[str, int]:
         """Repair mention spans in-memory for nodes/edges before first persist."""
         fixed_items = 0
         fixed_spans = 0
@@ -842,7 +843,7 @@ class ClawRuntimeApp:
             "failed_spans": failed_spans,
         }
 
-    def seed_background_hypergraph(self) -> Dict[str, Any]:
+    def seed_background_hypergraph(self) -> dict[str, Any]:
         """Notebook-style background knowledge seeding with hypergraph primitives.
 
         This intentionally uses explicit `# Step` comments so readers can follow
@@ -1156,7 +1157,7 @@ class ClawRuntimeApp:
         )
         return failed, False, "failed"
 
-    def repair_provenance_for_doc(self, doc_id: str) -> Dict[str, Any]:
+    def repair_provenance_for_doc(self, doc_id: str) -> dict[str, Any]:
         """Refine span correctness for all mentions in nodes/edges of a document."""
         doc = self.knowledge_engine.get_document(doc_id)
         content = doc.content or ""
@@ -1218,7 +1219,7 @@ class ClawRuntimeApp:
         }
 
     def enqueue(
-        self, *, conversation_id: str, event_type: str, payload: Dict[str, Any]
+        self, *, conversation_id: str, event_type: str, payload: dict[str, Any]
     ) -> str:
         # `ttl` here is loop budget; callers may also include `expires_at_ms` separately.
         if "ttl" not in payload:
@@ -1291,7 +1292,7 @@ class ClawRuntimeApp:
 
     def render_cdc_pages(
         self, *, out_dir: Path, cdc_ws_url: str, embed_empty: bool
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         template_html = (
             ROOT / "kogwistar" / "templates" / "d3.html"
         ).read_text(encoding="utf-8")
@@ -1311,7 +1312,7 @@ class ClawRuntimeApp:
             "meta": meta,
         }
 
-    def check_ollama(self) -> Dict[str, Any]:
+    def check_ollama(self) -> dict[str, Any]:
         """Step -1: verify Ollama is installed/reachable for local LLM workflows."""
         try:
             p = subprocess.run(
@@ -1321,7 +1322,7 @@ class ClawRuntimeApp:
         except Exception as e:
             return {"ok": False, "output": str(e)}
 
-    def get_hypergraph_snapshot(self) -> Dict[str, Any]:
+    def get_hypergraph_snapshot(self) -> dict[str, Any]:
         """Return compact hypergraph snapshot for tutorial display."""
         nodes = self.knowledge_engine.read.get_nodes(limit=200)
         edges = self.knowledge_engine.read.get_edges(limit=300)
@@ -1358,7 +1359,7 @@ class ClawRuntimeApp:
         return out
 
 
-def _parse_payload(s: str) -> Dict[str, Any]:
+def _parse_payload(s: str) -> dict[str, Any]:
     x = json.loads(s)
     if not isinstance(x, dict):
         raise ValueError("--payload must be JSON object")
@@ -1572,7 +1573,7 @@ class TutorialResolver(MappingStepResolver):
             and str(e.get("event_type")) != "system.stop"
         )
         did_enqueue = False
-        next_id: Optional[str] = None
+        next_id: str | None = None
 
         # route is authoritative:
         # - route=self  -> may enqueue continuation
@@ -1596,7 +1597,7 @@ class TutorialResolver(MappingStepResolver):
             )
             did_enqueue = True
 
-        out_payload: Dict[str, Any] = {"route": route, "reason": d.get("reason")}
+        out_payload: dict[str, Any] = {"route": route, "reason": d.get("reason")}
         if d.get("output") is not None:
             out_payload["result"] = d.get("output")
         if next_id is not None:

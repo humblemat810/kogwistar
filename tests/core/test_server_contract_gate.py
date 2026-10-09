@@ -6,7 +6,6 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
-
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "server_contract_gate.py"
 

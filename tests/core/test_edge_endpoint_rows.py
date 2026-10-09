@@ -6,7 +6,6 @@ import pytest
 
 from kogwistar.engine_core.edge_endpoint_rows import edge_endpoint_rows
 
-
 pytestmark = [pytest.mark.ci, pytest.mark.core, pytest.mark.unit]
 
 

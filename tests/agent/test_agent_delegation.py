@@ -13,7 +13,6 @@ from kogwistar.agent import (
     delegated_initial_state,
 )
 
-
 pytestmark = [pytest.mark.ci, pytest.mark.core, pytest.mark.regression]
 
 

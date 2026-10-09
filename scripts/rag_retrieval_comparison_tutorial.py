@@ -33,7 +33,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-
 # ============================================================================
 # %% Cell 1: Imports, Paths, And Shared Vocabulary
 # This first cell plays the role of a notebook setup block.
@@ -294,11 +293,11 @@ class FakeSectionPlannerClient:
         self.chat = self._Chat(self)
 
     class _Chat:
-        def __init__(self, outer: "FakeSectionPlannerClient") -> None:
+        def __init__(self, outer: FakeSectionPlannerClient) -> None:
             self.completions = outer._Completions(outer)
 
     class _Completions:
-        def __init__(self, outer: "FakeSectionPlannerClient") -> None:
+        def __init__(self, outer: FakeSectionPlannerClient) -> None:
             self._outer = outer
 
         def create(

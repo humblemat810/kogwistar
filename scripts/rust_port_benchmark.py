@@ -1,24 +1,24 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
 import json
 import logging
 import os
-from pathlib import Path
 import sys
 import time
-from typing import Any, Callable
+from collections.abc import Callable
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
 
 from kogwistar.runtime.models import RunSuccess
-from kogwistar.runtime.resolvers import MappingStepResolver
-from kogwistar.runtime.runtime import WorkflowRuntime
 from kogwistar.runtime.perf_profile import (
     _build_profile_engine,
     _mk_edge,
     _mk_node,
 )
-
+from kogwistar.runtime.resolvers import MappingStepResolver
+from kogwistar.runtime.runtime import WorkflowRuntime
 
 ROOT = Path(__file__).resolve().parents[1]
 DATASET_VERSION = "rust-port-benchmark-v1"

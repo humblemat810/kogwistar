@@ -2,9 +2,10 @@ import json
 import os
 from pathlib import Path
 
-# When run as a module, we can use relative imports or just assume kogwistar is in path
-from ..runtime.models import WorkflowNodeMetadata, WorkflowEdgeMetadata
 from pydantic_extension.model_slicing import use_mode
+
+# When run as a module, we can use relative imports or just assume kogwistar is in path
+from ..runtime.models import WorkflowEdgeMetadata, WorkflowNodeMetadata
 
 
 def export_schemas():

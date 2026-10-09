@@ -3,13 +3,13 @@ from __future__ import annotations
 import argparse
 import json
 import warnings
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Mapping, Sequence
+from typing import Any
 
 from kogwistar.engine_core.models import Grounding, MentionVerification, Node, Span
 from kogwistar.runtime import MappingStepResolver, StepContext, WorkflowRuntime
 from kogwistar.runtime.models import RunSuccess
-
 
 warnings.filterwarnings(
     "ignore",
@@ -42,16 +42,16 @@ def _entity_to_dict(entity: Any) -> dict[str, Any]:
         "metadata": _jsonable_copy(metadata),
     }
     if hasattr(entity, "source_ids"):
-        payload["source_ids"] = list(getattr(entity, "source_ids") or [])
+        payload["source_ids"] = list(entity.source_ids or [])
     if hasattr(entity, "target_ids"):
-        payload["target_ids"] = list(getattr(entity, "target_ids") or [])
+        payload["target_ids"] = list(entity.target_ids or [])
     if hasattr(entity, "relation"):
         payload["relation"] = str(getattr(entity, "relation", ""))
     if hasattr(entity, "type"):
         payload["type"] = str(getattr(entity, "type", ""))
     if hasattr(entity, "mentions"):
         mentions = []
-        for grounding in list(getattr(entity, "mentions") or []):
+        for grounding in list(entity.mentions or []):
             spans = []
             for span in list(getattr(grounding, "spans", []) or []):
                 spans.append(
@@ -711,7 +711,7 @@ class GraphArtifactPipelineFramework:
         }
         return transition_map
 
-    def build_resolver(self, agent: "NoteGraphCuratorAgent") -> MappingStepResolver:
+    def build_resolver(self, agent: NoteGraphCuratorAgent) -> MappingStepResolver:
         resolver = MappingStepResolver()
         resolver.set_state_schema(
             {
@@ -943,7 +943,7 @@ class GraphArtifactPipelineFramework:
 
     def build_runtime(
         self,
-        agent: "NoteGraphCuratorAgent",
+        agent: NoteGraphCuratorAgent,
         *,
         graph_store: DemoGraphStore,
         conversation_id: str,
@@ -972,7 +972,7 @@ class GraphArtifactPipelineFramework:
 
     def run(
         self,
-        agent: "NoteGraphCuratorAgent",
+        agent: NoteGraphCuratorAgent,
         *,
         graph_store: DemoGraphStore | None = None,
         conversation_id: str = "demo-conversation",

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
 from collections.abc import Mapping
+from dataclasses import asdict, dataclass
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,7 +23,7 @@ class EntityEventEnvelope:
         return asdict(self)
 
     @classmethod
-    def from_mapping(cls, value: Mapping[str, object]) -> "EntityEventEnvelope":
+    def from_mapping(cls, value: Mapping[str, object]) -> EntityEventEnvelope:
         return cls(
             namespace=str(value["namespace"]),
             seq=int(value["seq"]),

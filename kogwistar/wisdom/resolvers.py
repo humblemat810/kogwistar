@@ -4,9 +4,14 @@ from dataclasses import asdict, replace
 from typing import Any
 
 from kogwistar.engine_core.engine import scoped_namespace
+from kogwistar.policy import DefaultDreamLoopPolicy
 from kogwistar.runtime.models import RunSuccess
 from kogwistar.runtime.resolvers import MappingStepResolver
 from kogwistar.wisdom.dream_loop import (
+    DreamLoopEvidence,
+    DreamLoopSignal,
+    ProposalEvaluation,
+    WisdomRevisionProposal,
     _evaluation_edge_from_evaluation,
     _evaluation_node_from_evaluation,
     _normalize_dream_loop_decision,
@@ -16,16 +21,11 @@ from kogwistar.wisdom.dream_loop import (
     _reasoning_node_from_proposal,
     _workflow_artifact_node,
     _workflow_lineage_edge,
-    DreamLoopEvidence,
-    DreamLoopSignal,
-    ProposalEvaluation,
-    WisdomRevisionProposal,
     build_wisdom_revision_proposals_for_signals,
     collect_dream_loop_evidence,
     evaluate_wisdom_revision_proposal,
     select_dream_loop_signals,
 )
-from kogwistar.policy import DefaultDreamLoopPolicy
 
 dream_default_resolver = MappingStepResolver()
 

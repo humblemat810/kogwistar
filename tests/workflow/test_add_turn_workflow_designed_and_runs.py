@@ -1,23 +1,25 @@
 
 import json
 
+import pytest
 
 from kogwistar.conversation.resolvers import RunSuccess
-from kogwistar.runtime.models import (
-    WorkflowRunNode,
-    WorkflowStepExecNode,
-)
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.models import (
     Grounding,
-    Span,
     MentionVerification,
+    Span,
+)
+from kogwistar.runtime.contract import WorkflowSpec, validate_workflow
+from kogwistar.runtime.design import validate_workflow_design
+from kogwistar.runtime.models import (
+    WorkflowEdge,
+    WorkflowNode,
+    WorkflowRunNode,
+    WorkflowStepExecNode,
 )
 from kogwistar.runtime.runtime import WorkflowRuntime
-from kogwistar.runtime.models import WorkflowEdge, WorkflowNode
-from kogwistar.runtime.contract import validate_workflow, WorkflowSpec
-from kogwistar.runtime.design import validate_workflow_design
-import pytest
+
 pytestmark = pytest.mark.ci_full
 
 def _span() -> Span:

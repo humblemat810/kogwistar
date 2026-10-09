@@ -1,4 +1,5 @@
 import pytest
+
 pytestmark = pytest.mark.ci_full
 
 pytest.importorskip("fastapi")
@@ -26,9 +27,9 @@ DOC_ID = "pytest-doc-upsert-1"
 def test_graph_upsert_llm_batch_with_references():
     # clean slate (best-effort)
 
-    from kogwistar.server_mcp_with_admin import app
-    from kogwistar.engine_core.engine import GraphKnowledgeEngine
     import kogwistar.server_mcp_with_admin as server
+    from kogwistar.engine_core.engine import GraphKnowledgeEngine
+    from kogwistar.server_mcp_with_admin import app
 
     client = TestClient(app)
     headers = _rw_headers(client)

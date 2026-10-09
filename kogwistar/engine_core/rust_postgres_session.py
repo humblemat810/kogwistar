@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import contextvars
-from contextlib import contextmanager
-from typing import Any, Iterator
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
+from typing import Any
 
 from kogwistar._rust_bridge import store_postgres
 from kogwistar.engine_core.rust_meta_sqlite import RustEngineSQLite

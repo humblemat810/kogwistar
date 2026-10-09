@@ -4,10 +4,12 @@ import tempfile
 from pathlib import Path
 
 import pytest
+
 pytestmark = pytest.mark.core
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.models import (
+    QUESTION_KEY,
     AdjudicationQuestionCode,
     AdjudicationVerdict,
     Document,
@@ -15,7 +17,6 @@ from kogwistar.engine_core.models import (
     LLMMergeAdjudication,
     MentionVerification,
     Node,
-    QUESTION_KEY,
     Span,
 )
 from tests._helpers.embeddings import build_test_embedding_function

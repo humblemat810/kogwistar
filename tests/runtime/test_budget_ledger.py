@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import pytest
 
+from kogwistar.conversation.conversation_state_contracts import (
+    PrevTurnMetaSummaryModel,
+    WorkflowStateModel,
+)
 from kogwistar.runtime.budget import (
     BudgetExhaustedError,
     BudgetLedger,
@@ -9,10 +13,6 @@ from kogwistar.runtime.budget import (
 )
 from kogwistar.runtime.budget_adapters import adapt_budget_events
 from kogwistar.runtime.cost_ledger import CostLedger
-from kogwistar.conversation.conversation_state_contracts import (
-    PrevTurnMetaSummaryModel,
-    WorkflowStateModel,
-)
 
 pytestmark = [pytest.mark.ci, pytest.mark.runtime]
 

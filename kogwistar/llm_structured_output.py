@@ -8,7 +8,6 @@ from .llm_tasks.providers import (
     SupportsStructuredOutput,
 )
 
-
 TStructuredModel = TypeVar("TStructuredModel", bound=StructuredModelLike)
 
 

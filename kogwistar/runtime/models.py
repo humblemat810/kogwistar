@@ -1,4 +1,5 @@
-from typing import ClassVar, Literal, Optional, TypeAlias
+from typing import ClassVar, Literal, TypeAlias
+
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from ..engine_core.models import Edge, Node
@@ -221,7 +222,7 @@ StateUpdate: TypeAlias = (
 
 def get_route_next_names(result: object) -> list[str]:
     try:
-        route_names = getattr(result, "_route_next")
+        route_names = result._route_next
     except Exception:
         route_names = None
     if route_names is None:
@@ -230,7 +231,7 @@ def get_route_next_names(result: object) -> list[str]:
 
 
 class RunFailure(BaseModel):
-    conversation_node_id: Optional[str] = None
+    conversation_node_id: str | None = None
     state_update: list[StateUpdate]  # can still update, append an error message
     update: dict[str, object] | None = None
     errors: list[str]
@@ -245,7 +246,7 @@ class RunFailure(BaseModel):
 
 
 class RunSuspended(BaseModel):
-    conversation_node_id: Optional[str] = None
+    conversation_node_id: str | None = None
     state_update: list[StateUpdate] = Field(default_factory=list)
     update: dict[str, object] | None = None
     next_step_names: list[str] = Field(default_factory=list, alias="_route_next")

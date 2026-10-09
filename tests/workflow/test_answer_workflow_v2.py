@@ -1,18 +1,18 @@
 import pytest
 
 from kogwistar.conversation.agentic_answering import (
-    AgenticAnsweringAgent,
     AgentConfig,
+    AgenticAnsweringAgent,
     AnswerEvaluation,
     AnswerWithCitations,
     EvidenceSelection,
 )
-from kogwistar.id_provider import stable_id
 from kogwistar.conversation.models import (
     FilteringResult,
     MetaFromLastSummary,
 )
 from kogwistar.conversation.service import ConversationService
+from kogwistar.id_provider import stable_id
 from kogwistar.llm_tasks import (
     AdjudicateBatchTaskResult,
     AdjudicatePairTaskResult,

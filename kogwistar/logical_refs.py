@@ -7,7 +7,6 @@ from typing import Literal
 from kogwistar.id_provider import stable_id
 from kogwistar.json_types import JsonValue
 
-
 TargetKind = Literal["node", "edge", "artifact"]
 
 

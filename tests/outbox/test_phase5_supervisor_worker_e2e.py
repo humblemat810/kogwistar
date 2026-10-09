@@ -1,9 +1,9 @@
 import os
 import signal
+import subprocess
 import sys
 import time
 import uuid
-import subprocess
 from pathlib import Path
 
 import pytest

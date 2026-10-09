@@ -1,19 +1,18 @@
 # ruff: noqa: E402
 
 import pytest
+
 pytestmark = pytest.mark.ci_full
 pytest.importorskip("sqlalchemy")
 
-from kogwistar.runtime.design import build_workflow_from_engine
-
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
-from kogwistar.engine_core.postgres_backend import PgVectorBackend
-
 from kogwistar.engine_core.models import (
     Grounding,
-    Span,
     MentionVerification,
+    Span,
 )
+from kogwistar.engine_core.postgres_backend import PgVectorBackend
+from kogwistar.runtime.design import build_workflow_from_engine
 from kogwistar.runtime.models import WorkflowEdge, WorkflowNode
 
 

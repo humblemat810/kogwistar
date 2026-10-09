@@ -1,11 +1,12 @@
-import pytest
 from dataclasses import dataclass
-from typing import Any, Dict, List, Set
+from typing import Any
+
+import pytest
 
 pytest.importorskip("langgraph")
 
-from kogwistar.runtime.langgraph_converter import to_langgraph
 from kogwistar.runtime.contract import BasePredicate
+from kogwistar.runtime.langgraph_converter import to_langgraph
 
 pytestmark = pytest.mark.ci
 
@@ -16,7 +17,7 @@ class FakeWorkflowNode:
     op: str
     terminal: bool = False
     fanout: bool = False
-    metadata: Dict[str, Any] | None = None
+    metadata: dict[str, Any] | None = None
 
     def __post_init__(self):
         if self.metadata is None:
@@ -30,9 +31,9 @@ class FakeWorkflowNode:
 class FakeWorkflowEdge:
     id: str
     label: str
-    source_ids: List[str]
-    target_ids: List[str]
-    metadata: Dict[str, Any]
+    source_ids: list[str]
+    target_ids: list[str]
+    metadata: dict[str, Any]
 
     def safe_get_id(self) -> str:
         return self.id
@@ -40,7 +41,7 @@ class FakeWorkflowEdge:
 
 class FakeWorkflowEngine:
     def __init__(
-        self, nodes: List[FakeWorkflowNode], edges: List[FakeWorkflowEdge]
+        self, nodes: list[FakeWorkflowNode], edges: list[FakeWorkflowEdge]
     ) -> None:
         self.nodes = nodes
         self.edges = edges
@@ -93,8 +94,8 @@ def _n(
     )
 
 
-def _seen_nodes(compiled, init_state: Dict[str, Any]) -> Set[str]:
-    seen: Set[str] = set()
+def _seen_nodes(compiled, init_state: dict[str, Any]) -> set[str]:
+    seen: set[str] = set()
     for ev in compiled.stream(init_state, stream_mode="updates"):
         for k in ev.keys():
             if isinstance(k, str) and not k.startswith("__"):
@@ -263,7 +264,7 @@ def test_parallel_fanout_merges_appends_real_langgraph():
             "add_y": lambda state: RR([("a", {"events": "y"})]),
         }
     )
-    preds: Dict[str, BasePredicate] = {}
+    preds: dict[str, BasePredicate] = {}
 
     compiled = to_langgraph(
         workflow_engine=engine,

@@ -3,14 +3,19 @@ from __future__ import annotations
 import importlib
 import os
 import pathlib
+from collections.abc import Callable
 from threading import Lock
-from typing import TYPE_CHECKING, Any, Callable, Generic, TypeVar
+from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 from fastapi.templating import Jinja2Templates
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.graph_query import GraphQuery
-from kogwistar.server.bootstrap import build_graph_engine, build_sqlalchemy_engine, load_server_storage_settings
+from kogwistar.server.bootstrap import (
+    build_graph_engine,
+    build_sqlalchemy_engine,
+    load_server_storage_settings,
+)
 from kogwistar.server.chat_service import ChatRunService
 from kogwistar.server.run_registry import RunRegistry
 

@@ -13,8 +13,8 @@ from kogwistar.engine_core.two_stage_chroma import (
     chroma_two_stage_capability,
 )
 from kogwistar.graph_query import GraphQuery
-from tests._helpers.graph_builders import build_entity_node, build_relationship_edge
 from tests._helpers.embeddings import build_test_embedding_function
+from tests._helpers.graph_builders import build_entity_node, build_relationship_edge
 from tests.core.two_stage_case_catalog import two_stage_case
 
 

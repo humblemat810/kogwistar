@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping, Protocol
+from typing import Protocol
 
 from kogwistar.json_types import JsonValue
 
@@ -18,11 +19,11 @@ from .providers import (
     ProviderRegistry,
 )
 from .skills import (
-    SkillGraphArtifact,
-    SkillGraphEdge,
     DurableCatalogStore,
     DurableSkillCatalogMaterializer,
     DurableSkillProjectionStore,
+    SkillGraphArtifact,
+    SkillGraphEdge,
     SkillProjectionStore,
     catalog_entries_from_artifact,
     parse_skill_text,
@@ -540,11 +541,11 @@ __all__ = [
     "FilesystemSkillProvider",
     "LlmWikiIngestionAdapter",
     "McpDiscoveryProvider",
-    "ingest_filesystem_skill",
-    "mark_inferred_edges_as_candidates",
-    "deduplicate_inferred_edges",
     "ProjectGlossaryProvider",
     "ProjectPluginManifest",
-    "select_mcp_schemas",
+    "deduplicate_inferred_edges",
+    "ingest_filesystem_skill",
     "ingest_project_glossary_to_knowledge",
+    "mark_inferred_edges_as_candidates",
+    "select_mcp_schemas",
 ]

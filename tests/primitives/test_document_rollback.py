@@ -1,8 +1,8 @@
 
 import pytest
 
-from kogwistar.engine_core.models import Document
 from kogwistar.engine_core.models import (
+    Document,
     LLMGraphExtraction,
     Span,
 )
@@ -17,7 +17,6 @@ from kogwistar.llm_tasks import (
     RepairCitationsTaskResult,
     SummarizeContextTaskResult,
 )
-
 from tests._kg_factories import kg_document
 
 pytestmark = pytest.mark.core

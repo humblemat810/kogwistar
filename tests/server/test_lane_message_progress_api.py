@@ -6,10 +6,9 @@ from pathlib import Path
 
 import pytest
 
+from kogwistar.server.auth_middleware import claims_ctx
 from tests._helpers.engine_factories import FakeEmbeddingFunction
 from tests._helpers.server_fixtures import build_engine_triplet
-from kogwistar.server.auth_middleware import claims_ctx
-
 
 pytestmark = pytest.mark.server
 

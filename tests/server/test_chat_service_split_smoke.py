@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+
 import pytest
+
 pytest.importorskip("fastapi")
 pytest.importorskip("mcp")
 import threading
@@ -10,6 +12,7 @@ import threading
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from kogwistar.server.chat_api import create_chat_router
 from kogwistar.server.chat_service import (
     AnswerRunRequest,
     ChatRunService,
@@ -17,12 +20,11 @@ from kogwistar.server.chat_service import (
     RuntimeRunRequest,
     WorkflowProjectionRebuildingError,
 )
-from kogwistar.server.chat_api import create_chat_router
-from kogwistar.server.runtime_api import create_runtime_router
 from kogwistar.server.chat_service_workflow_design import (
     _WorkflowDesignService,
 )
 from kogwistar.server.resources import _LazyResource
+from kogwistar.server.runtime_api import create_runtime_router
 
 pytestmark = pytest.mark.ci_full
 

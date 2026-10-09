@@ -8,7 +8,6 @@ from typing import Protocol
 
 from ..json_types import JsonValue
 
-
 _VISIBILITY_VALUES = {"internal", "review", "knowledge", "projection", "wisdom"}
 
 
@@ -284,17 +283,17 @@ __all__ = [
     "ArtifactVisibilityPolicy",
     "DefaultArtifactVisibilityPolicy",
     "DefaultDerivedKnowledgePolicy",
-    "DefaultKnowledgeLifecyclePolicy",
     "DefaultDreamLoopPolicy",
-    "DefaultPromotionPolicy",
+    "DefaultKnowledgeLifecyclePolicy",
     "DefaultProjectionEligibilityPolicy",
+    "DefaultPromotionPolicy",
     "DefaultWisdomPolicy",
     "DerivedKnowledgePolicy",
     "KnowledgeLifecyclePolicy",
+    "ProjectionEligibilityPolicy",
     "PromotionContext",
     "PromotionDecision",
     "PromotionPolicy",
-    "ProjectionEligibilityPolicy",
     "SourceQueryDecision",
     "WisdomPolicy",
 ]

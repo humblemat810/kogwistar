@@ -14,12 +14,13 @@ if str(ROOT) not in sys.path:
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.llm_tasks import (
-    build_default_llm_tasks,
     AnswerWithCitationsTaskRequest,
     AnswerWithCitationsTaskResult,
     SummarizeContextTaskRequest,
     SummarizeContextTaskResult,
+    build_default_llm_tasks,
 )
+
 
 def vertex_ai_answer_task(request: AnswerWithCitationsTaskRequest) -> AnswerWithCitationsTaskResult:
     """Detailed boilerplate for a direct REST API call to Vertex AI Gemini."""

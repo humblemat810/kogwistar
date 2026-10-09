@@ -14,15 +14,18 @@ for candidate in (ROOT, SCRIPTS_DIR):
     if text not in sys.path:
         sys.path.insert(0, text)
 
+import hashlib
+import math
+import re
+from collections.abc import Sequence
+
 from kogwistar.engine_core.models import (
     Grounding,
     MentionVerification,
     Span,
 )
-import re
-import math
-from typing import Sequence
-import hashlib
+
+
 class LexicalHashEmbeddingFunction:
     """Small deterministic lexical embedder for tutorial reproducibility."""
 

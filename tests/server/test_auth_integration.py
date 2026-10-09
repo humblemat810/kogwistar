@@ -1,13 +1,18 @@
 from __future__ import annotations
+
 import json
 import os
+
 import pytest
+
 pytest.importorskip("fastapi")
 pytest.importorskip("mcp")
 pytest.importorskip("sqlalchemy")
-from fastapi.testclient import TestClient
 from unittest.mock import AsyncMock, patch
+
+from fastapi.testclient import TestClient
 from sqlalchemy.orm import sessionmaker
+
 from .auth_env import TEST_JWT_ALG, TEST_JWT_SECRET
 
 os.environ.setdefault("JWT_SECRET", TEST_JWT_SECRET)
@@ -18,9 +23,9 @@ from kogwistar.server.auth.db import (
     create_auth_engine,
     init_auth_db,
 )
+from kogwistar.server.auth.models import ExternalIdentity, User
 from kogwistar.server.auth.seeding import seed_auth_data
 from kogwistar.server.auth.service import AuthService
-from kogwistar.server.auth.models import User, ExternalIdentity
 
 pytestmark = [pytest.mark.ci_full]
 

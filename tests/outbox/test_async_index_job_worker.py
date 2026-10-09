@@ -5,15 +5,13 @@ import threading
 
 import pytest
 
-from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.chroma_backend import AsyncChromaBackend
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.workers.async_index_job_worker import AsyncIndexJobWorker
 from tests._helpers.embeddings import build_test_embedding_function
 from tests._helpers.fake_backend import build_fake_backend
-from tests._helpers.graph_builders import build_entity_node
-from tests._helpers.graph_builders import build_relationship_edge
+from tests._helpers.graph_builders import build_entity_node, build_relationship_edge
 from tests.core.two_stage_case_catalog import two_stage_case
-
 
 pytestmark = [pytest.mark.ci, pytest.mark.runtime_async]
 

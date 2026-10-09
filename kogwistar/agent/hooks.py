@@ -11,7 +11,6 @@ from typing import Literal, Protocol, cast
 
 from kogwistar.json_types import JsonValue
 
-
 HookFailureMode = Literal["fail_open", "fail_closed"]
 HookEffect = Literal["observe", "annotate"]
 JsonObject = dict[str, JsonValue]
@@ -249,4 +248,4 @@ async def _run_sync_async(
     return result_box[0] if result_box else None
 
 
-__all__ = ["HookFailureMode", "HookEffect", "HookSpec", "HookResult", "HookRegistry"]
+__all__ = ["HookEffect", "HookFailureMode", "HookRegistry", "HookResult", "HookSpec"]

@@ -1,14 +1,21 @@
-from contextlib import asynccontextmanager
 import asyncio
 import threading
+from contextlib import asynccontextmanager
 
 import pytest
+
 pytestmark = [pytest.mark.core, pytest.mark.runtime]
 import json
-from typing import Any
-from pathlib import Path
 import uuid
+from pathlib import Path
+from typing import Any
+
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.models import (
+    Grounding,
+    MentionVerification,
+    Span,
+)
 from kogwistar.engine_core.postgres_backend import PgVectorBackend
 from kogwistar.runtime.models import (
     RunFailure,
@@ -17,21 +24,17 @@ from kogwistar.runtime.models import (
     WorkflowEdge,
     WorkflowNode,
 )
-from kogwistar.runtime.runtime import WorkflowRuntime, StepContext
 from kogwistar.runtime.resolvers import MappingStepResolver
+from kogwistar.runtime.runtime import StepContext, WorkflowRuntime
 from kogwistar.runtime.sandbox import SandboxRequest
-from tests.conftest import FakeEmbeddingFunction, _is_missing_pgvector_extension
 from tests._helpers.fake_backend import build_fake_backend
+from tests.conftest import FakeEmbeddingFunction, _is_missing_pgvector_extension
 from tests.core._async_chroma_real import (
     make_real_async_chroma_backend,
+)
+from tests.core._async_chroma_real import (
     # Imported for pytest fixture discovery in file-isolated compatibility runs.
     real_chroma_server as real_chroma_server,  # noqa: F401
-)
-
-from kogwistar.engine_core.models import Span, Grounding
-
-from kogwistar.engine_core.models import (
-    MentionVerification,
 )
 
 

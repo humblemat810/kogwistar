@@ -15,12 +15,12 @@ from typing import Protocol, cast
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
+from kogwistar.json_types import JsonValue
 from kogwistar.server.capability_kernel import CapabilityKernel
 
 from .catalog import CatalogEntry, CatalogSearchResult, CatalogStore
 from .providers import ProviderRegistry
 from .skills import SkillGraphArtifact, SkillProjectionStore
-from kogwistar.json_types import JsonValue
 
 
 class ReadScope(BaseModel):

@@ -1,9 +1,10 @@
 import pytest
+
 pytest.importorskip("sqlalchemy")
 
 # NOTE: this test uses the v2 patched engine/backend copies living in /mnt/data.
-from kogwistar.engine_core.engine_postgres import PgVectorBackend
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.engine_postgres import PgVectorBackend
 
 
 @pytest.mark.ci_full

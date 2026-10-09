@@ -10,8 +10,8 @@ import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from .models import Grounding, Node, Span
 from ..json_types import JsonValue
+from .models import Grounding, Node, Span
 
 JsonObject = dict[str, JsonValue]
 
@@ -72,7 +72,7 @@ class ServiceHealthRegistry:
     heartbeat state is a durable named projection.
     """
 
-    def __init__(self, engine: "GraphKnowledgeEngine") -> None:
+    def __init__(self, engine: GraphKnowledgeEngine) -> None:
         self.engine = engine
 
     def declare_service(
@@ -723,7 +723,7 @@ def _host_name() -> str | None:
 __all__ = [
     "SERVICE_HEALTH_PROJECTION_NAMESPACE",
     "ServiceHealthDefinition",
-    "ServiceHealthRepairResult",
     "ServiceHealthRegistry",
+    "ServiceHealthRepairResult",
     "ServiceInstanceHealth",
 ]

@@ -8,8 +8,8 @@ from kogwistar.engine_core.engine_postgres_meta import (
     POSTGRES_BOOTSTRAP_ADVISORY_LOCK_KEY,
     EnginePostgresMetaStore,
 )
-from kogwistar.engine_core.postgres_backend import _set_active_conn
 from kogwistar.engine_core.in_memory_meta import InMemoryMetaStore
+from kogwistar.engine_core.postgres_backend import _set_active_conn
 
 
 class _Result:

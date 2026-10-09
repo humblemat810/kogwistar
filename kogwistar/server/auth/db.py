@@ -1,10 +1,12 @@
 from __future__ import annotations
+
 import os
 
 from sqlalchemy import create_engine
 from sqlalchemy.engine import URL, make_url
-from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
+
 from .models import Base
 
 _SessionLocal = None

@@ -701,7 +701,7 @@ class AsyncRustRuntimeAuthority:
         run_id: str,
         durable_initial: Mapping[str, Any],
         dependencies: Mapping[str, Any],
-    ) -> "RunResult":
+    ) -> RunResult:
         from .runtime import RunResult
 
         deadline = time.monotonic() + float(
@@ -763,7 +763,7 @@ class AsyncRustRuntimeAuthority:
         turn_node_id: str | None,
         initial_state: Mapping[str, Any],
         run_id: str,
-    ) -> "RunResult":
+    ) -> RunResult:
         if initial_state.get("dream_deps"):
             raise RustRuntimeAuthorityError(
                 "dream_deps is not represented by Rust worker contract v1"
@@ -804,7 +804,7 @@ async def run_with_rust_authority_async(
     initial_state: Mapping[str, Any],
     run_id: str,
     cache_dir: str | os.PathLike[str] | None,
-) -> "RunResult":
+) -> RunResult:
     url = rust_runtime_authority_url()
     if url is None:
         raise RustRuntimeAuthorityError("Rust runtime authority URL is not configured")

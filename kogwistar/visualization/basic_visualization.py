@@ -1,7 +1,8 @@
-from ..engine_core.engine import GraphKnowledgeEngine
-from ..engine_core.models import Node, Edge
-from typing import Iterable, Optional
 import json
+from collections.abc import Iterable
+
+from ..engine_core.engine import GraphKnowledgeEngine
+from ..engine_core.models import Edge, Node
 
 
 def _fmt_span_short(r: dict) -> str:
@@ -107,9 +108,9 @@ class Visualizer:
     def resolve_readable(
         self,
         *,
-        node_ids: Optional[Iterable[str]] = None,
-        edge_ids: Optional[Iterable[str]] = None,
-        by_doc_id: Optional[str] = None,
+        node_ids: Iterable[str] | None = None,
+        edge_ids: Iterable[str] | None = None,
+        by_doc_id: str | None = None,
         include_refs: bool = False,
     ) -> dict:
         """

@@ -35,7 +35,7 @@ if TYPE_CHECKING:
 class RustStepCallback(Protocol):
     """Callback resolved for one durable runtime operation."""
 
-    def __call__(self, context: "StepContext") -> Any: ...
+    def __call__(self, context: StepContext) -> Any: ...
 
 
 class RustStepResolver(Protocol):
@@ -907,7 +907,7 @@ class AsyncRustRuntimeWorker:
         headers: Mapping[str, str] | None = None,
         timeout: float = 30.0,
         client: httpx.AsyncClient | None = None,
-    ) -> "AsyncRustRuntimeWorker":
+    ) -> AsyncRustRuntimeWorker:
         return cls(
             base_url=base_url,
             worker_id=worker_id,

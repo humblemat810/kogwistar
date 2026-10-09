@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from typing import Any, Callable, ParamSpec, Protocol, TypeVar
+from collections.abc import Callable
+from typing import Any, ParamSpec, Protocol, TypeVar
 
 from kogwistar.server.mcp_registry import McpRegistry
-
 
 _P = ParamSpec("_P")
 _R = TypeVar("_R")

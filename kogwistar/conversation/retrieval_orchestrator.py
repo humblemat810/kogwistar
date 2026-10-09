@@ -1,25 +1,23 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Optional
 
 from kogwistar.llm_tasks import LLMTaskSet
 
-from .callbacks import RetrievalFilteringCallback
-from .models import KnowledgeRetrievalResult
-
-from .memory_retriever import MemoryRetriever, MemoryRetrievalResult, MemoryPinResult
-from .knowledge_retriever import KnowledgeRetriever
 from ..engine_core.models import Span
+from .callbacks import RetrievalFilteringCallback
+from .knowledge_retriever import KnowledgeRetriever
+from .memory_retriever import MemoryPinResult, MemoryRetrievalResult, MemoryRetriever
+from .models import KnowledgeRetrievalResult
 
 
 @dataclass(slots=True)
 class RetrievalOutcome:
     memory: MemoryRetrievalResult
     knowledge: KnowledgeRetrievalResult
-    memory_pin: Optional[MemoryPinResult]
-    pinned_kg_pointer_node_ids: List[str]
-    pinned_kg_edge_ids: List[str]
+    memory_pin: MemoryPinResult | None
+    pinned_kg_pointer_node_ids: list[str]
+    pinned_kg_edge_ids: list[str]
 
     @property
     def memory_context_node_id(self):
@@ -77,7 +75,7 @@ class RetrievalOrchestrator:
         conversation_id: str,
         mem_id: str,
         user_text: str,
-        query_embedding: List[float],
+        query_embedding: list[float],
         turn_node_id: str,
         turn_index: int,
         self_span: Span,
@@ -101,7 +99,7 @@ class RetrievalOrchestrator:
         )
 
         # 3) pin memory_context into current canvas (if any selection)
-        memory_pin: Optional[MemoryPinResult] = None
+        memory_pin: MemoryPinResult | None = None
         if mem.selected and mem.memory_context_text:
             memory_pin = self.memory_retriever.pin_selected(
                 user_id=user_id,

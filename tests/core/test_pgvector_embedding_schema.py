@@ -10,7 +10,6 @@ from kogwistar.engine_core.postgres_backend import (
     PgVectorSchemaMismatchError,
 )
 
-
 pytestmark = [pytest.mark.ci, pytest.mark.unit, pytest.mark.regression]
 
 
@@ -18,7 +17,7 @@ class _Result:
     def __init__(self, rows: list[dict[str, str]]) -> None:
         self._rows = rows
 
-    def mappings(self) -> "_Result":
+    def mappings(self) -> _Result:
         return self
 
     def all(self) -> list[dict[str, str]]:
@@ -47,7 +46,7 @@ class _AsyncConnection:
     def __init__(self) -> None:
         self.index = 0
 
-    async def __aenter__(self) -> "_AsyncConnection":
+    async def __aenter__(self) -> _AsyncConnection:
         return self
 
     async def __aexit__(self, *_args: object) -> None:

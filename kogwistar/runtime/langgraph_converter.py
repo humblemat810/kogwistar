@@ -8,21 +8,17 @@ Send/Command plus blob-state bookkeeping.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import (
     TYPE_CHECKING,
-    Any,
-    Dict,
-    List,
-    Optional,
-    Sequence,
-    Tuple,
     Annotated,
-    Mapping,
+    Any,
     Literal,
     NamedTuple,
     cast,
 )
+
 from typing_extensions import TypedDict
 
 from kogwistar.runtime import design as wf_design
@@ -36,11 +32,11 @@ if TYPE_CHECKING:
 
 
 class _LangGraphImports(NamedTuple):
-    state_graph: type["LangGraphStateGraph"]
+    state_graph: type[LangGraphStateGraph]
     start: str
     end: str
-    command: type["LangGraphCommand"]
-    send: type["LangGraphSend"]
+    command: type[LangGraphCommand]
+    send: type[LangGraphSend]
 
 
 def _import_langgraph() -> _LangGraphImports:
@@ -61,7 +57,7 @@ def _import_langgraph() -> _LangGraphImports:
     )
 
 
-StateUpdate = Tuple[str, Dict[str, Any]]  # ('u'|'a'|'e', {k: v})
+StateUpdate = tuple[str, dict[str, Any]]  # ('u'|'a'|'e', {k: v})
 
 
 @dataclass(frozen=True)
@@ -116,14 +112,14 @@ def _apply_state_update(mute_state: dict, state_update: Sequence[StateUpdate]) -
 
 
 def _concat_updates(
-    left: Optional[List[StateUpdate]], right: Optional[List[StateUpdate]]
-) -> List[StateUpdate]:
+    left: list[StateUpdate] | None, right: list[StateUpdate] | None
+) -> list[StateUpdate]:
     return list(left or []) + list(right or [])
 
 
 def _delta_to_updates(
     delta: Mapping[str, Any], schema: Mapping[str, str] | None
-) -> List[StateUpdate]:
+) -> list[StateUpdate]:
     """Convert a native update dict into ('u'/'a'/'e') updates using schema."""
     sch = dict(schema or {})
     buckets: dict[str, dict[str, Any]] = {"u": {}, "a": {}, "e": {}}
@@ -132,7 +128,7 @@ def _delta_to_updates(
         if mode not in buckets:
             mode = "u"
         buckets[mode][str(k)] = v
-    out: List[StateUpdate] = []
+    out: list[StateUpdate] = []
     for mode in ("u", "a", "e"):
         if buckets[mode]:
             out.append((mode, buckets[mode]))
@@ -143,7 +139,7 @@ def _resolve_start_nodes_and_adj(
     *,
     workflow_engine: Any,
     workflow_id: str,
-) -> tuple[Any, Dict[str, Any], Dict[str, List[Any]], Dict[str, List[Any]]]:
+) -> tuple[Any, dict[str, Any], dict[str, list[Any]], dict[str, list[Any]]]:
     return wf_design.load_workflow_design(
         workflow_engine=workflow_engine, workflow_id=workflow_id
     )
@@ -156,12 +152,12 @@ def _export_node_metadata(node: Any) -> dict[str, Any]:
 
 def _route_next(
     *,
-    edges: List[Any],
+    edges: list[Any],
     state: dict,
     last_result: Any,
     fanout: bool,
-    predicate_registry: Dict[str, BasePredicate],
-) -> List[str]:
+    predicate_registry: dict[str, BasePredicate],
+) -> list[str]:
     """Choose next node ids from outgoing edges.
 
     Semantics:
@@ -223,7 +219,7 @@ def _invoke_step(*, resolver: Any, fn: Any, op: str, node_id: str, state: Any) -
 # ----------------------------
 
 
-def _blob_reducer(left: Optional[dict], right: Optional[dict]) -> dict:
+def _blob_reducer(left: dict | None, right: dict | None) -> dict:
     """Reducer for '__blob__' field.
 
     Nodes emit updates as: {'__ops__': [('u'|'a'|'e', {...}), ...]}
@@ -255,7 +251,7 @@ class LGBlobState(TypedDict, total=False):
 
 
 class LGApplyState(TypedDict, total=False):
-    __updates__: Annotated[List[StateUpdate], _concat_updates]
+    __updates__: Annotated[list[StateUpdate], _concat_updates]
     __goto__: Any
 
 
@@ -264,8 +260,8 @@ def to_langgraph(
     workflow_engine: Any,
     workflow_id: str,
     step_resolver: Any,
-    predicate_registry: Dict[str, BasePredicate],
-    options: Optional[LGConverterOptions] = None,
+    predicate_registry: dict[str, BasePredicate],
+    options: LGConverterOptions | None = None,
 ):
     """Compile one workflow into LangGraph using a diagram-first or semantics-first mapping.
 
@@ -317,7 +313,7 @@ def to_langgraph(
             def make_step(nid: str, node_obj: Any, fn_, op_name: str):
                 def step_node(state: LGApplyState) -> Command:
                     out = _invoke_step(resolver=step_resolver, fn=fn_, op=op_name, node_id=nid, state=state)
-                    updates: List[StateUpdate]
+                    updates: list[StateUpdate]
                     if isinstance(out, dict):
                         updates = _delta_to_updates(out, schema)
 

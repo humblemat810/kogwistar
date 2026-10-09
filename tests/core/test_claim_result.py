@@ -7,7 +7,6 @@ import pytest
 from kogwistar.engine_core.engine_sqlite import EngineSQLite
 from kogwistar.engine_core.in_memory_meta import InMemoryMetaStore
 
-
 pytestmark = pytest.mark.core
 
 

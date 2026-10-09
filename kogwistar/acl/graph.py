@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 from collections import OrderedDict
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from threading import RLock
-from typing import Iterable, Literal, Mapping, Protocol
+from typing import Literal, Protocol
 
 from ..json_types import JsonValue
-
 
 ACLMode = Literal["private", "shared", "scope", "group", "public"]
 ACLGrain = Literal["document", "grounding", "span", "node", "edge", "artifact"]
@@ -22,7 +22,7 @@ class ACLRecordLoader(Protocol):
         grain: ACLGrain | None,
         entity_id: str,
         target_item_id: str | None,
-    ) -> Iterable["ACLRecord"]: ...
+    ) -> Iterable[ACLRecord]: ...
 
 
 class ACLTargetLoader(Protocol):

@@ -1,10 +1,10 @@
 from __future__ import annotations
-#### log utils
 
+#### log utils
 import logging
+import os
 import sqlite3
 import threading
-import os
 import traceback
 from contextlib import closing
 
@@ -157,36 +157,36 @@ logging.shutdown()
 # ----------------------------
 
 
-from dataclasses import dataclass
-from pathlib import Path
 import contextlib
 import contextvars
 import logging
 import sys
+from collections.abc import Iterator
+from dataclasses import dataclass
 from logging.handlers import RotatingFileHandler
-from typing import Dict, Optional, Iterator, Literal
-
+from pathlib import Path
+from typing import Literal
 
 EngineType = Literal["conversation", "workflow", "kg"]
 
 
 # Context fields you’ll want everywhere
-_ctx_engine_type: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+_ctx_engine_type: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "engine_type", default=None
 )
-_ctx_engine_id: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+_ctx_engine_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "engine_id", default=None
 )
-_ctx_conversation_id: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+_ctx_conversation_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "conversation_id", default=None
 )
-_ctx_workflow_run_id: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+_ctx_workflow_run_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "workflow_run_id", default=None
 )
-_ctx_step_id: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+_ctx_step_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "step_id", default=None
 )
-_ctx_op: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+_ctx_op: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "op", default=None
 )
 
@@ -207,12 +207,12 @@ class ContextFilter(logging.Filter):
 @contextlib.contextmanager
 def bind_log_context(
     *,
-    engine_type: Optional[str] = None,
-    engine_id: Optional[str] = None,
-    conversation_id: Optional[str] = None,
-    workflow_run_id: Optional[str] = None,
-    step_id: Optional[str] = None,
-    op: Optional[str] = None,
+    engine_type: str | None = None,
+    engine_id: str | None = None,
+    conversation_id: str | None = None,
+    workflow_run_id: str | None = None,
+    step_id: str | None = None,
+    op: str | None = None,
 ) -> Iterator[None]:
     """
     Context manager to bind IDs to logs without passing them around.
@@ -269,7 +269,7 @@ class EngineLogConfig:
     backup_count: int = 5
 
     enable_sqlite: bool = False
-    sqlite_db_path: Optional[Path] = None
+    sqlite_db_path: Path | None = None
     enable_jsonl: bool = False
 
     mode: Literal["prod", "pytest"] = "prod"
@@ -287,8 +287,8 @@ class EngineLogManager:
     """
 
     _configured: bool = False
-    _config: Optional[EngineLogConfig] = None
-    _loggers: Dict[str, logging.Logger] = {}
+    _config: EngineLogConfig | None = None
+    _loggers: dict[str, logging.Logger] = {}
 
     @classmethod
     def reset(cls) -> None:
@@ -333,7 +333,7 @@ class EngineLogManager:
         enable_files: bool = True,
         enable_jsonl: bool = True,
         enable_sqlite: bool = False,
-        sqlite_db_path: Optional[Path] = None,
+        sqlite_db_path: Path | None = None,
         max_bytes: int = 10 * 1024 * 1024,
         backup_count: int = 5,
     ) -> None:
@@ -547,8 +547,8 @@ def kg_logger() -> logging.Logger:
     return EngineLogManager.get_logger("kg")
 
 
-import json
 import datetime as _dt
+import json
 
 
 class JsonlFormatter(logging.Formatter):

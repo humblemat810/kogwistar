@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any
 
 import pytest
 
@@ -28,7 +28,7 @@ def async_pg_engine(
 
 def _dummy_ref(
     *, doc_id: str, edge_id: str
-) -> tuple[str, str, Dict[str, Any], List[float] | None]:
+) -> tuple[str, str, dict[str, Any], list[float] | None]:
     _id = f"ref|{doc_id}|{edge_id}"
     doc = f'{{"doc_id":"{doc_id}","edge_id":"{edge_id}"}}'
     meta = {"doc_id": doc_id, "edge_id": edge_id, "entity_type": "edge_ref"}
@@ -41,9 +41,9 @@ def test_phase3_pg_backend_edge_refs_roundtrip_async(async_pg_engine) -> None:
     assert isinstance(be, PgVectorBackend)
     be.ensure_schema()
 
-    ids: List[str] = []
-    docs: List[str] = []
-    metas: List[Dict[str, Any]] = []
+    ids: list[str] = []
+    docs: list[str] = []
+    metas: list[dict[str, Any]] = []
 
     for edge_id in ("e1", "e2", "e3"):
         _id, doc, meta, _ = _dummy_ref(doc_id="docA", edge_id=edge_id)
@@ -77,15 +77,15 @@ def test_phase3_pg_backend_node_update_metadata_merge_async(async_pg_engine) -> 
 
     _id = "n1"
     doc = "node one"
-    meta0: Dict[str, Any] = {"a": 1, "keep": "x", "nested": {"x": 1}}
+    meta0: dict[str, Any] = {"a": 1, "keep": "x", "nested": {"x": 1}}
 
     be.node_add(ids=[_id], documents=[doc], metadatas=[meta0], embeddings=None)
 
-    patch: Dict[str, Any] = {"a": 2, "b": 3, "nested": {"y": 2}}
+    patch: dict[str, Any] = {"a": 2, "b": 3, "nested": {"y": 2}}
     be.node_update(ids=[_id], metadatas=[patch])
 
     got = be.node_get(ids=[_id], include=["metadatas", "documents"], limit=10)
-    metas_out: List[Dict[str, Any]] = got.get("metadatas") or []
+    metas_out: list[dict[str, Any]] = got.get("metadatas") or []
     assert len(metas_out) == 1
 
     m = metas_out[0]

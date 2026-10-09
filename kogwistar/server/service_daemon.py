@@ -3,14 +3,14 @@ from __future__ import annotations
 import json
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
 from pydantic import BaseModel, Field
 
 from kogwistar.engine_core.models import Grounding, Node, Span
 from kogwistar.json_types import JsonValue
-
 
 SERVICE_PROJECTION_NAMESPACE = "service_registry"
 SERVICE_TRIGGER_TYPES = {

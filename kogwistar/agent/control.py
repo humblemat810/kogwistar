@@ -12,13 +12,12 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal, cast
 
-from kogwistar.messaging.service import LaneMessagingService
-from kogwistar.messaging.models import ProjectedLaneMessageRow
 from kogwistar.json_types import JsonValue
+from kogwistar.messaging.models import ProjectedLaneMessageRow
+from kogwistar.messaging.service import LaneMessagingService
 from kogwistar.runtime.models import RunFailure, RunSuccess
 from kogwistar.runtime.resolvers import MappingStepResolver
 from kogwistar.runtime.runtime import StepContext
-
 
 ControlPolicy = Literal["steer", "queue", "cancel_and_replace"]
 JsonObject = dict[str, JsonValue]
@@ -267,7 +266,7 @@ def terminalize_control_messages(
 __all__ = [
     "ControlPointSpec",
     "ControlPolicy",
-    "register_control_point",
     "register_control_ack_step",
+    "register_control_point",
     "terminalize_control_messages",
 ]

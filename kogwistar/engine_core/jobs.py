@@ -2,11 +2,11 @@ from __future__ import annotations
 
 """Typed facade over the durable metastore job queue."""
 
-import json
 import hashlib
+import json
 import uuid
 from dataclasses import dataclass
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from .engine import GraphKnowledgeEngine
@@ -37,7 +37,7 @@ class JobQueueItem:
 class JobQueueSubsystem:
     """Generic durable job facade backed by the existing ``index_jobs`` table."""
 
-    def __init__(self, engine: "GraphKnowledgeEngine") -> None:
+    def __init__(self, engine: GraphKnowledgeEngine) -> None:
         self.engine = engine
 
     def require_available(self, *, enqueue: bool = False, claim: bool = False) -> None:

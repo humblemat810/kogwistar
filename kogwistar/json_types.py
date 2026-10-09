@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing_extensions import TypeAliasType
+from typing import TypeAliasType
 
 JsonScalar = TypeAliasType("JsonScalar", None | bool | int | float | str)
 JsonValue = TypeAliasType(

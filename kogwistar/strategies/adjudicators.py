@@ -5,22 +5,22 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from os import PathLike
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
-from ..utils.cache_backend import Memory
 from pydantic import BaseModel
 
-from .types import EngineLike, IAdjudicator
 from ..engine_core.models import (
+    QUESTION_DESC,
+    QUESTION_KEY,
     AdjudicationQuestionCode,
     AdjudicationTarget,
     Edge,
     LLMMergeAdjudication,
     Node,
-    QUESTION_DESC,
-    QUESTION_KEY,
 )
 from ..llm_tasks import AdjudicateBatchTaskRequest, AdjudicatePairTaskRequest
+from ..utils.cache_backend import Memory
+from .types import EngineLike, IAdjudicator
 
 
 @dataclass(frozen=True)
@@ -30,7 +30,7 @@ class PairAdjudicationTrace:
     parsing_error: str | None
 
 
-def _normalize_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+def _normalize_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return json.loads(json.dumps(payload, sort_keys=True, default=str))
 
 
@@ -46,9 +46,9 @@ def _invoke_adjudicate_pair_task(
     pair_task,
     *,
     question: str,
-    left: Dict[str, Any],
-    right: Dict[str, Any],
-) -> Dict[str, Any]:
+    left: dict[str, Any],
+    right: dict[str, Any],
+) -> dict[str, Any]:
     result = pair_task(
         AdjudicatePairTaskRequest(
             question=question,
@@ -121,17 +121,17 @@ class LLMBatchAdjudicatorImpl:
         )
 
     @staticmethod
-    def _compact(x: Any) -> Dict[str, Any]:
+    def _compact(x: Any) -> dict[str, Any]:
         d = getattr(x, "model_dump", lambda: x)()
         if not isinstance(d, dict):
             return {"kind": LLMBatchAdjudicatorImpl._kind(x)}
-        out: Dict[str, Any] = {
+        out: dict[str, Any] = {
             "kind": d.get("type") or LLMBatchAdjudicatorImpl._kind(x),
             "type": d.get("type"),
             "name": d.get("label") or d.get("name") or d.get("title"),
             "summary": d.get("summary"),
         }
-        attrs: Dict[str, Any] = {}
+        attrs: dict[str, Any] = {}
         for k in ("relation", "date", "country", "ticker", "role"):
             if d.get(k) is not None:
                 attrs[k] = d[k]
@@ -148,17 +148,17 @@ class LLMBatchAdjudicatorImpl:
 
     def adjudicate_batch(
         self,
-        pairs: List[Tuple[Any, Any]],
+        pairs: list[tuple[Any, Any]],
         *,
         question_code: int,
-    ) -> Tuple[List[LLMMergeAdjudication], str]:
+    ) -> tuple[list[LLMMergeAdjudication], str]:
         if not pairs:
             return [], QUESTION_KEY[AdjudicationQuestionCode(question_code)]
 
         qcode = AdjudicationQuestionCode(question_code)
         qkey = QUESTION_KEY[qcode]
 
-        uniq: List[Tuple[str, str, Any]] = []
+        uniq: list[tuple[str, str, Any]] = []
         seen = set()
         for l, r in pairs:
             for x in (l, r):
@@ -170,10 +170,10 @@ class LLMBatchAdjudicatorImpl:
                 seen.add(t)
                 uniq.append((k, i, x))
 
-        alias_for: Dict[Tuple[str, str], str] = {
+        alias_for: dict[tuple[str, str], str] = {
             (k, i): f"n{idx}" for idx, (k, i, _) in enumerate(uniq)
         }
-        inv_alias: Dict[str, Tuple[str, str]] = {v: k for k, v in alias_for.items()}
+        inv_alias: dict[str, tuple[str, str]] = {v: k for k, v in alias_for.items()}
 
         mapping_table = [
             {
@@ -184,7 +184,7 @@ class LLMBatchAdjudicatorImpl:
             for code in AdjudicationQuestionCode
         ]
 
-        compact: Dict[str, Dict[str, Any]] = {}
+        compact: dict[str, dict[str, Any]] = {}
         for k, i, x in uniq:
             aid = alias_for[(k, i)]
             item = self._compact(x)
@@ -212,7 +212,7 @@ class LLMBatchAdjudicatorImpl:
             for item in result.verdict_payloads
         ]
 
-        result_items: List[LLMMergeAdjudication] = []
+        result_items: list[LLMMergeAdjudication] = []
         for item in out_items:
             md = item.model_dump()
             la = md.get("left_id")
@@ -276,7 +276,7 @@ class Adjudicator(IAdjudicator):
             )
 
         verdict_payload = payload.get("verdict_payload")
-        adjudication: Optional[LLMMergeAdjudication]
+        adjudication: LLMMergeAdjudication | None
         parsing_error = payload.get("parsing_error")
         if verdict_payload is None:
             adjudication = None
@@ -297,7 +297,7 @@ class Adjudicator(IAdjudicator):
         left: AdjudicationTarget,
         right: AdjudicationTarget,
         question: str,
-    ) -> Dict[Any, Any] | BaseModel:
+    ) -> dict[Any, Any] | BaseModel:
         trace = self.adjudicate_pair_trace(left, right, question)
         if trace.adjudication is None:
             raise ValueError(
@@ -307,7 +307,7 @@ class Adjudicator(IAdjudicator):
 
     def adjudicate_merge(
         self, left_node: Node | Edge, right_node: Node | Edge
-    ) -> Dict[Any, Any] | BaseModel:
+    ) -> dict[Any, Any] | BaseModel:
         left = (
             self.e.adjudicate.target_from_node(left_node)
             if isinstance(left_node, Node)
@@ -323,8 +323,8 @@ class Adjudicator(IAdjudicator):
 
     def batch_adjudicate_merges(
         self,
-        pairs: List[Tuple["Node", "Node"]],
-        question_code: "AdjudicationQuestionCode" = AdjudicationQuestionCode.SAME_ENTITY,
+        pairs: list[tuple[Node, Node]],
+        question_code: AdjudicationQuestionCode = AdjudicationQuestionCode.SAME_ENTITY,
     ):
         """Batch same-kind merge adjudications with local signature deduplication.
 
@@ -360,11 +360,11 @@ class Adjudicator(IAdjudicator):
 
         def compact_payload(n: Node):
             d = n.model_dump()
-            out: Dict[str, Any] = {}
+            out: dict[str, Any] = {}
             out["kind"] = node_kind(n)
             out["type"] = d.get("type")
             out["name"] = d.get("name") or d.get("label") or d.get("title")
-            attrs: Dict[str, Any] = {}
+            attrs: dict[str, Any] = {}
             for k in ("dob", "country", "ticker", "date", "role", "source"):
                 if k in d and d[k] is not None:
                     attrs[k] = d[k]

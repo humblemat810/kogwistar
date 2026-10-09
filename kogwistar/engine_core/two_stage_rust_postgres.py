@@ -5,8 +5,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from .storage_backend import TwoStageProjectionCapability
 from ..utils.embedding_vectors import normalize_embedding_vector
+from .storage_backend import TwoStageProjectionCapability
 
 
 def rust_postgres_two_stage_capability() -> TwoStageProjectionCapability:

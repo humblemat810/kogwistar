@@ -1,20 +1,23 @@
 ﻿# tests/conftest.py
 from __future__ import annotations
-import shutil
+
+import asyncio
+import dataclasses
 import hashlib
-import uuid
 import json
 import os
-import re
-import asyncio
 import pathlib
-import tempfile
+import re
+import shutil
 import sys
+import tempfile
+import uuid
 from contextlib import suppress
-from _pytest.monkeypatch import MonkeyPatch
 from typing import Any, cast
-import dataclasses
 from unittest.mock import MagicMock
+
+from _pytest.monkeypatch import MonkeyPatch
+
 from .auth_env import TEST_JWT_ALG, TEST_JWT_SECRET, ensure_test_jwt_env
 from .net_helpers import pick_free_port
 
@@ -96,7 +99,8 @@ def _sqlite_execution_binding_per_test():
         yield
     finally:
         reset_sqlite_context()
-from typing import Optional, Iterator, TYPE_CHECKING
+from collections.abc import Iterator
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     import sqlalchemy as sa
@@ -116,14 +120,14 @@ try:
     from kogwistar.conversation.service import ConversationService
     from kogwistar.engine_core.engine import GraphKnowledgeEngine
     from kogwistar.engine_core.models import (
+        AdjudicationVerdict,
         Edge,
+        Grounding,
         LLMGraphExtraction,
         LLMMergeAdjudication,
-        AdjudicationVerdict,
+        MentionVerification,
         Node,
         Span,
-        Grounding,
-        MentionVerification,
     )
     from kogwistar.llm_tasks import LLMTaskSet
 except Exception:  # pragma: no cover - allow lightweight test subsets on limited envs
@@ -208,8 +212,8 @@ def _release_test_chroma_process_resources():
         # whose optional Chroma dependencies are absent remains collectable.
         with suppress(Exception):
             from tests.core._async_chroma_real import (
-                _close_async_chroma_server_clients,
                 _LIVE_REAL_CHROMA_SERVERS,
+                _close_async_chroma_server_clients,
                 stop_real_chroma_server,
             )
 
@@ -227,9 +231,8 @@ def _release_test_chroma_process_resources():
             SharedSystemClient.clear_system_cache()
 
 
-from pathlib import Path
-
 import logging
+from pathlib import Path
 
 logging.captureWarnings(True)
 
@@ -357,11 +360,11 @@ def llm_tasks(llm_provider_name, llm_cache_dir, llm_cache_tracker) -> Iterator[L
     Function-scoped LLM task set with centralized joblib caching.
     Supports gemini, openai, and ollama.
     """
-    from kogwistar.utils.cache_backend import Memory
     from kogwistar.llm_tasks import (
-        build_default_llm_tasks,
         DefaultTaskProviderConfig,
+        build_default_llm_tasks,
     )
+    from kogwistar.utils.cache_backend import Memory
 
     # Configure the base task set
     config = DefaultTaskProviderConfig(
@@ -948,16 +951,30 @@ def mcp_admin_server(tmp_path: Path) -> Iterator[dict[str, Any]]:
 
 
 from tests._helpers.embeddings import build_test_embedding_function
+
 # Shared test API: other test modules import these helpers from conftest.
 from tests._helpers.engine_factories import (
     FakeEmbeddingFunction as FakeEmbeddingFunction,  # noqa: F401
+)
+from tests._helpers.engine_factories import (
     FakeStructuredRunnable,
-    _is_missing_pgvector_extension as _is_missing_pgvector_extension,  # noqa: F401
+)
+from tests._helpers.engine_factories import (
     _install_conversation_policy as _install_conversation_policy,  # noqa: F401
+)
+from tests._helpers.engine_factories import (
+    _is_missing_pgvector_extension as _is_missing_pgvector_extension,  # noqa: F401
+)
+from tests._helpers.engine_factories import (
     _make_async_engine as _make_async_engine,  # noqa: F401
+)
+from tests._helpers.engine_factories import (
     _make_engine_pair as _make_engine_pair,  # noqa: F401
+)
+from tests._helpers.engine_factories import (
     _make_workflow_engine as _make_workflow_engine,  # noqa: F401
 )
+
 try:
     from tests._helpers.fake_backend import build_fake_backend
 except Exception:  # pragma: no cover - allow collection without the engine stack
@@ -1139,7 +1156,7 @@ def _mk_span_from_excerpt(
 
 
 @pytest.fixture(scope="session")
-def pg_container() -> Iterator[Optional["PostgresContainer"]]:
+def pg_container() -> Iterator[PostgresContainer | None]:
     """
     Spin up a disposable Postgres for the whole test session.
 
@@ -1210,7 +1227,7 @@ def pg_container() -> Iterator[Optional["PostgresContainer"]]:
 
 
 @pytest.fixture(scope="session")
-def pg_dsn(pg_container: Optional[PostgresContainer]) -> Optional[str]:
+def pg_dsn(pg_container: PostgresContainer | None) -> str | None:
     """
     SQLAlchemy DSN for the running test container.
     """
@@ -1229,7 +1246,7 @@ def pg_dsn(pg_container: Optional[PostgresContainer]) -> Optional[str]:
 
 
 @pytest.fixture(scope="session")
-def sa_engine(pg_dsn: Optional[str]) -> Iterator[Any]:
+def sa_engine(pg_dsn: str | None) -> Iterator[Any]:
     if (not has_sa) or pg_dsn is None:
         yield None
         return
@@ -1244,7 +1261,7 @@ def sa_engine(pg_dsn: Optional[str]) -> Iterator[Any]:
 
 
 @pytest.fixture(scope="session")
-def async_sa_engine(pg_dsn: Optional[str]) -> Iterator[Any]:
+def async_sa_engine(pg_dsn: str | None) -> Iterator[Any]:
     if (not has_sa) or pg_dsn is None:
         yield None
         return
@@ -1266,7 +1283,7 @@ def async_sa_engine(pg_dsn: Optional[str]) -> Iterator[Any]:
 
 
 @pytest.fixture()
-def pg_schema(sa_engine) -> Iterator[Optional[str]]:
+def pg_schema(sa_engine) -> Iterator[str | None]:
     """
     Unique schema per test, dropped afterwards.
 
@@ -1286,7 +1303,7 @@ def pg_schema(sa_engine) -> Iterator[Optional[str]]:
 
 
 @pytest.fixture()
-def async_pg_schema(async_sa_engine) -> Iterator[Optional[str]]:
+def async_pg_schema(async_sa_engine) -> Iterator[str | None]:
     """
     Unique schema per async test, dropped afterwards.
     """
@@ -1373,11 +1390,13 @@ class _FakeLLMForExtraction:
     def invoke(self, variables):
         # Deterministic graph from any document
         from kogwistar.engine_core.models import (
+            LLMEdge as LLME,
+        )
+        from kogwistar.engine_core.models import (
             LLMGraphExtraction as LLMGE,
         )
         from kogwistar.engine_core.models import (
             LLMNode as LLMN,
-            LLMEdge as LLME,
         )
 
         parsed = LLMGE(

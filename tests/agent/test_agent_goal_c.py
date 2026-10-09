@@ -11,34 +11,35 @@ from kogwistar.agent import (
     CatalogEntry,
     CatalogStore,
     ControlPointSpec,
+    FunctionFakeTool,
     ReadScope,
     SequenceFakeModel,
     build_goal_workflow,
     build_normal_workflow,
     build_plan_workflow,
-    FunctionFakeTool,
-    register_tool_step,
     dynamic_invocation,
     graph_signature,
     register_catalog_search_step,
     register_control_ack_step,
     register_control_point,
-    validate_control_point_placement,
-    terminalize_control_messages,
     register_model_step,
     register_tool_step,
     static_invocation,
+    terminalize_control_messages,
+    validate_control_point_placement,
     validate_invocation_request,
     without_agent_mode_metadata,
 )
-from kogwistar.runtime import MappingStepResolver, StepContext
-from kogwistar.runtime.base_runtime import apply_state_update_inplace
-from kogwistar.runtime.base_runtime import BaseRuntime, checkpointable_state_copy
-from kogwistar.runtime.models import RunFailure, RunSuccess, WorkflowInvocationRequest
-from kogwistar.runtime import WorkflowRuntime
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.messaging.models import ProjectedLaneMessageRow
 from kogwistar.messaging.service import LaneMessagingService
+from kogwistar.runtime import MappingStepResolver, StepContext, WorkflowRuntime
+from kogwistar.runtime.base_runtime import (
+    BaseRuntime,
+    apply_state_update_inplace,
+    checkpointable_state_copy,
+)
+from kogwistar.runtime.models import RunFailure, RunSuccess, WorkflowInvocationRequest
 from tests._helpers.embeddings import ConstantEmbeddingFunction
 from tests._helpers.fake_backend import build_fake_backend
 

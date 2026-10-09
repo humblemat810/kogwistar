@@ -1,16 +1,20 @@
 # shortids.py
 from __future__ import annotations
-import json
+
 import hashlib
+import json
 import pathlib
 import re
-from typing import Any, Iterable
+from collections.abc import Iterable
 from contextvars import ContextVar
+from typing import Any
 
 from ._rust_bridge import (
     RustParityError,
     contract_implementation_mode,
     json_contract_compatible,
+)
+from ._rust_bridge import (
     short_id_transform as _rust_short_id_transform,
 )
 

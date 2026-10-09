@@ -17,8 +17,8 @@ This module provides utilities to:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 import re
+from dataclasses import dataclass, field
 from threading import RLock
 from typing import Literal
 
@@ -155,7 +155,7 @@ class AliasBook:
         return self.resolve(alias_or_id, kind="edge")
 
     @classmethod
-    def deterministic(cls, node_ids: list[str], edge_ids: list[str]) -> "AliasBook":
+    def deterministic(cls, node_ids: list[str], edge_ids: list[str]) -> AliasBook:
         """Create a restart-stable book for one immutable prompt projection."""
         book = cls()
         book.assign_for_sets(sorted(set(node_ids)), sorted(set(edge_ids)))

@@ -4,6 +4,7 @@ pytestmark = pytest.mark.core
 
 from tests._helpers.fake_backend import build_fake_backend
 
+
 class DummyEF:
     def name(self):
         return "DummyEF"

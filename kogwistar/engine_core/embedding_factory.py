@@ -13,11 +13,12 @@ Each provider implements the ChromaDB EmbeddingFunction protocol:
 
 from __future__ import annotations
 
-import logging
-import os
 import importlib
+import logging
 import math
-from typing import Protocol, Sequence, cast
+import os
+from collections.abc import Sequence
+from typing import Protocol, cast
 
 from ..utils.embedding_vectors import normalize_embedding_vector
 

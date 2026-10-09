@@ -24,13 +24,13 @@ _LOG = logging.getLogger(__name__)
 class CatalogAcl(Protocol):
     """Authorize one catalog entry for a principal."""
 
-    def __call__(self, entry: "CatalogEntry", principal: str, /) -> bool: ...
+    def __call__(self, entry: CatalogEntry, principal: str, /) -> bool: ...
 
 
 class CatalogGroupAcl(Protocol):
     """Authorize one catalog group for a principal."""
 
-    def __call__(self, group: "CatalogGroup", principal: str, /) -> bool: ...
+    def __call__(self, group: CatalogGroup, principal: str, /) -> bool: ...
 
 
 class CatalogSemanticRanker(Protocol):
@@ -39,7 +39,7 @@ class CatalogSemanticRanker(Protocol):
     def __call__(
         self,
         query: str,
-        entries: tuple["CatalogEntry", ...],
+        entries: tuple[CatalogEntry, ...],
         /,
     ) -> Mapping[str, float]: ...
 CATALOG_PROJECTION_NAMESPACE = "agent_catalog"
@@ -59,7 +59,7 @@ def scoped_projection_namespace(
     return f"{base}:tenant={component(tenant_id)}:project={component(project_id)}"
 
 
-def catalog_entry_fingerprint(entry: "CatalogEntry") -> str:
+def catalog_entry_fingerprint(entry: CatalogEntry) -> str:
     """Fingerprint normalized descriptor content, not only its source bytes."""
 
     payload = entry.model_dump(mode="json")

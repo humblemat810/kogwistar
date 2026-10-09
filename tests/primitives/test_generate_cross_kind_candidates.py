@@ -5,6 +5,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
+
 pytestmark = pytest.mark.core
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
@@ -31,7 +32,6 @@ from kogwistar.llm_tasks import (
 )
 from tests._helpers.embeddings import build_test_embedding_function
 from tests._helpers.fake_backend import build_fake_backend
-
 
 _required_env = (
     "OPENAI_DEPLOYMENT_NAME_GPT4_1",
@@ -290,7 +290,7 @@ def test_generate_cross_kind_candidates_happy_path(engine: GraphKnowledgeEngine)
         candidate.left,
         candidate.right,
         candidate.question,
-        cache_dir=getattr(engine, "_test_cache_dir"),
+        cache_dir=engine._test_cache_dir,
     )
     _assert_positive_trace(candidate, trace)
 
@@ -378,6 +378,6 @@ def test_generate_cross_kind_candidates_happy_path_real_llm_reason(
         candidate.left,
         candidate.right,
         candidate.question,
-        cache_dir=getattr(engine, "_test_cache_dir") / "real_provider",
+        cache_dir=engine._test_cache_dir / "real_provider",
     )
     _assert_positive_trace(candidate, trace)

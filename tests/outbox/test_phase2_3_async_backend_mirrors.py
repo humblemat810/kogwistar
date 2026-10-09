@@ -10,9 +10,11 @@ pytest_plugins = ["tests.core._async_chroma_real"]
 pytestmark = pytest.mark.ci_full
 pytest.importorskip("sqlalchemy")
 
-from kogwistar.engine_core.engine import GraphKnowledgeEngine # noqa: E402
-from tests.conftest import _make_async_engine # noqa: E402
-from typing import Any # noqa: E402
+from typing import Any  # noqa: E402
+
+from kogwistar.engine_core.engine import GraphKnowledgeEngine  # noqa: E402
+from tests.conftest import _make_async_engine  # noqa: E402
+
 
 def _count_events(eng: GraphKnowledgeEngine, ns: str) -> int:
     return sum(1 for _ in eng.meta_sqlite.iter_entity_events(namespace=ns, from_seq=1))
@@ -70,7 +72,7 @@ def _mk_node(node_id: str, *, doc_id: str):
 
 
 def _mk_edge(edge_id: str, src: str, tgt: str, doc_id: str):
-    from kogwistar.engine_core.models import Grounding, Edge, Span
+    from kogwistar.engine_core.models import Edge, Grounding, Span
 
     sp = Span.from_dummy_for_document()
     sp.doc_id = doc_id

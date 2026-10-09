@@ -70,8 +70,8 @@ def require_acl_protocols(*, policy: object, read: object, write: object) -> Non
 
 
 __all__ = [
-    "ACLPolicyProtocol",
     "ACLAwareReadProtocol",
     "ACLAwareWriteProtocol",
+    "ACLPolicyProtocol",
     "require_acl_protocols",
 ]

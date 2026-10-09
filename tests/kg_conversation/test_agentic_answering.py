@@ -1,8 +1,3 @@
-import sys
-import types
-from dataclasses import dataclass, field
-from typing import Any, Optional, List
-
 # ---------------------------------------------------------------------------
 # Test-time shims
 #   - LangChain: optional dependency (not needed in these unit tests)
@@ -10,11 +5,16 @@ from typing import Any, Optional, List
 # ---------------------------------------------------------------------------
 import json
 import os
+import sys
+import types
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from types import SimpleNamespace
-from typing import Callable, ParamSpec, TypeVar, cast
-from kogwistar.utils.cache_backend import Memory
+from typing import Any, ParamSpec, TypeVar, cast
+
 from pydantic import BaseModel
 
+from kogwistar.utils.cache_backend import Memory
 
 P = ParamSpec("P")
 R = TypeVar("R")
@@ -124,7 +124,7 @@ def _install_gke_models_stub() -> None:
 
     @dataclass
     class Grounding:
-        spans: List[Span] = field(default_factory=list)
+        spans: list[Span] = field(default_factory=list)
 
     @dataclass
     class ConversationNode:
@@ -134,12 +134,12 @@ def _install_gke_models_stub() -> None:
         summary: str
         conversation_id: str
         role: str
-        turn_index: Optional[int]
+        turn_index: int | None
         properties: dict
         mentions: list
         metadata: dict
-        domain_id: Optional[str]
-        canonical_entity_id: Optional[str]
+        domain_id: str | None
+        canonical_entity_id: str | None
 
     @dataclass
     class ConversationEdge:
@@ -152,8 +152,8 @@ def _install_gke_models_stub() -> None:
         summary: str
         doc_id: str
         mentions: list
-        domain_id: Optional[str]
-        canonical_entity_id: Optional[str]
+        domain_id: str | None
+        canonical_entity_id: str | None
         properties: dict
         embedding: Any = None
         metadata: dict = field(default_factory=dict)
@@ -174,14 +174,14 @@ _install_gke_models_stub()
 import pytest
 
 from kogwistar.conversation.agentic_answering import (
-    AgenticAnsweringAgent,
-    AnswerWithCitations,
-    AnswerEvaluation,
     AgentConfig,
-    pointer_id,
-    edge_id,
-    snapshot_hash,
+    AgenticAnsweringAgent,
+    AnswerEvaluation,
+    AnswerWithCitations,
     EvidenceSelection,
+    edge_id,
+    pointer_id,
+    snapshot_hash,
 )
 from kogwistar.engine_core.models import Span
 from kogwistar.llm_tasks import (
@@ -740,7 +740,7 @@ def test_agent_with_real_llm_cached(monkeypatch, engine, conversation_engine):
             # e.g. if model returns `["N1"]`
             return list(json.loads(text))
 
-    from typing import Type, TypeVar
+    from typing import TypeVar
 
     BaseM = TypeVar("BaseM", bound=BaseModel)
 
@@ -752,7 +752,7 @@ def test_agent_with_real_llm_cached(monkeypatch, engine, conversation_engine):
         evidence_pack: dict[str, Any],
         used_node_ids: list[str],
         out_model_schema: dict[str, Any],
-        out_model: Type[BaseM],
+        out_model: type[BaseM],
     ) -> str:
         messages = [
             {

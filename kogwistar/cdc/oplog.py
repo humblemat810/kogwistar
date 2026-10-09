@@ -1,9 +1,11 @@
 # knowledge_graph_engine/changes/oplog.py
 from __future__ import annotations
+
 import json
 import os
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Iterator, Optional
+
 from .change_event import ChangeEvent
 
 
@@ -32,7 +34,7 @@ class OplogReader:
         self.path = path
 
     def iter_since(
-        self, *, since_seq: int, limit: Optional[int] = None
+        self, *, since_seq: int, limit: int | None = None
     ) -> Iterator[ChangeEvent]:
         if not self.path.exists():
             return

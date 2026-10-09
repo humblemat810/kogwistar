@@ -5,9 +5,6 @@
 # `python scripts/tutorial_sections/01_hello_graph_engine.py`
 
 # %%
-from kogwistar.engine_core.engine import GraphKnowledgeEngine
-from kogwistar.engine_core.models import Edge, Node
-
 from _helpers import (
     LexicalHashEmbeddingFunction,
     banner,
@@ -15,6 +12,9 @@ from _helpers import (
     show,
     tutorial_grounding,
 )
+
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.models import Edge, Node
 
 data_dir = reset_data_dir("01_hello_graph_engine")
 engine = GraphKnowledgeEngine(

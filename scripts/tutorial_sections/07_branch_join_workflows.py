@@ -3,13 +3,12 @@
 # This walkthrough focuses on resolver telemetry and suspend/resume.
 
 # %%
+from _helpers import banner, reset_data_dir, show
 from runtime_tutorial_ladder import (
     level1_resolvers_and_deps,
     level2_pause_and_resume,
     reset_data,
 )
-
-from _helpers import banner, reset_data_dir, show
 
 data_dir = reset_data_dir("07_branch_join_workflows")
 show("reset", reset_data(data_dir))

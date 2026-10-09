@@ -2,12 +2,13 @@ from __future__ import annotations
 
 """Dream-loop sampling and proposal helpers for wisdom maintenance."""
 
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from typing import Any, Callable, Iterable, Mapping, Sequence
+from typing import Any
 
-from kogwistar.id_provider import stable_id
 from kogwistar.engine_core.engine import scoped_namespace
 from kogwistar.engine_core.models import Edge, Grounding, Node, Span
+from kogwistar.id_provider import stable_id
 from kogwistar.policy import DefaultDreamLoopPolicy
 from kogwistar.wisdom.proposals import ProposalEvaluation, WisdomRevisionProposal
 

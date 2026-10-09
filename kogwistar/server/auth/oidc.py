@@ -4,15 +4,14 @@ import base64
 import hashlib
 import secrets
 from collections.abc import Mapping
-from urllib.parse import urlencode
 from typing import cast
+from urllib.parse import urlencode
 
 import httpx
 import jwt as pyjwt
 from jwt import InvalidTokenError
 
 from kogwistar.json_types import JsonValue
-
 
 JsonObject = dict[str, JsonValue]
 

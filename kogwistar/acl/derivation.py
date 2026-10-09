@@ -8,13 +8,13 @@ No model-produced ACL field is trusted by this module.
 from __future__ import annotations
 
 import warnings
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Iterable, Literal, Mapping, Protocol, cast
+from typing import Literal, Protocol, cast
 
 from ..json_types import JsonValue
 from .graph import ACLMode, ACLRecord
-
 
 ACLDerivationPolicy = Literal["STRICT", "LLM_GUARDED"]
 DeclassificationResult = Literal[
@@ -364,12 +364,12 @@ def derive_acl(
 
 
 __all__ = [
+    "LLM_GUARDED_WARNING",
     "ACLDerivationPolicy",
+    "ACLDerivationResult",
     "ACLInput",
     "ACLJoin",
-    "ACLDerivationResult",
     "Declassifier",
-    "LLM_GUARDED_WARNING",
     "coerce_acl_input",
     "derive_acl",
     "join_acl_inputs",

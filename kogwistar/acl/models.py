@@ -6,7 +6,6 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from ..engine_core.models import Edge, Node
 
-
 ACLGrainLiteral = Literal["document", "grounding", "span", "node", "edge", "artifact"]
 ACLEdgeTypeLiteral = Literal["acl_supersedes", "acl_targets_truth", "acl_covers_usage"]
 

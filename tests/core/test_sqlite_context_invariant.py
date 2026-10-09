@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-from concurrent.futures import ThreadPoolExecutor
-from contextvars import Context, copy_context
 import json
 import os
-from pathlib import Path
 import sqlite3
 import threading
+from concurrent.futures import ThreadPoolExecutor
+from contextvars import Context, copy_context
+from pathlib import Path
 
 import pytest
 
@@ -20,7 +20,6 @@ from kogwistar.engine_core.sqlite_context import (
     select_sqlite_implementation,
     sqlite_execution_context,
 )
-
 
 pytestmark = [pytest.mark.ci, pytest.mark.core]
 
@@ -366,8 +365,9 @@ def test_direct_native_python_overlap_fails_before_database_mutation(
 
 @pytest.mark.requires_rust
 def test_native_transaction_id_cannot_cross_contexts(tmp_path: Path) -> None:
-    from kogwistar import _rust
     from kogwistar._rust import RustStoreValueError
+
+    from kogwistar import _rust
 
     path = tmp_path / "transaction.db"
     transaction_id = "same-transaction-token"

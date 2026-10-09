@@ -1,11 +1,12 @@
 from __future__ import annotations
+
 import pytest
+
 pytestmark = pytest.mark.ci_full
 
 import importlib
 import json
 from typing import Any
-
 
 
 def _template_html() -> str:

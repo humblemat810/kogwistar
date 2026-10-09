@@ -1,12 +1,14 @@
 
+import pytest
+
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.models import (
-    PureChromaNode,
     PureChromaEdge,
+    PureChromaNode,
     PureGraph,
 )
 from tests._helpers.embeddings import ConstantEmbeddingFunction
-import pytest
+
 pytestmark = pytest.mark.ci_full
 
 def test_puregraph_persist(tmp_path):

@@ -9,13 +9,13 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Annotated, Literal, Mapping, Union
+from collections.abc import Mapping
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from kogwistar.logical_refs import LogicalRef
 from kogwistar.json_types import JsonValue
-
+from kogwistar.logical_refs import LogicalRef
 
 Modality = Literal[
     "text",
@@ -39,7 +39,7 @@ class TextRangeLocator(BaseModel):
     page_number: int | None = Field(None, ge=1)
 
     @model_validator(mode="after")
-    def validate_order(self) -> "TextRangeLocator":
+    def validate_order(self) -> TextRangeLocator:
         if self.end_char <= self.start_char:
             raise ValueError("text range end_char must be greater than start_char")
         return self
@@ -59,7 +59,7 @@ class SpatialRegionLocator(BaseModel):
     timestamp_ms: int | None = Field(None, ge=0)
 
     @model_validator(mode="after")
-    def validate_bounds(self) -> "SpatialRegionLocator":
+    def validate_bounds(self) -> SpatialRegionLocator:
         if self.coordinate_system == "normalized_0_1":
             if self.x + self.width > 1.0 or self.y + self.height > 1.0:
                 raise ValueError("normalized spatial region must stay within 0..1")
@@ -74,7 +74,7 @@ class TemporalIntervalLocator(BaseModel):
     end_ms: int = Field(..., gt=0)
 
     @model_validator(mode="after")
-    def validate_order(self) -> "TemporalIntervalLocator":
+    def validate_order(self) -> TemporalIntervalLocator:
         if self.end_ms <= self.start_ms:
             raise ValueError("temporal interval end_ms must be greater than start_ms")
         return self
@@ -93,7 +93,7 @@ class VideoRegionTrackLocator(BaseModel):
     manifest_schema_version: int = Field(1, ge=1)
 
     @model_validator(mode="after")
-    def validate_manifest(self) -> "VideoRegionTrackLocator":
+    def validate_manifest(self) -> VideoRegionTrackLocator:
         if self.end_ms <= self.start_ms:
             raise ValueError("video track end_ms must be greater than start_ms")
         try:
@@ -118,7 +118,7 @@ class VideoTrackRegion(BaseModel):
     mask_sha256: str | None = Field(None, min_length=64, max_length=64)
 
     @model_validator(mode="after")
-    def validate_shape(self) -> "VideoTrackRegion":
+    def validate_shape(self) -> VideoTrackRegion:
         if self.kind == "bounding_box":
             if None in {self.x, self.y, self.width, self.height}:
                 raise ValueError("bounding_box regions require x, y, width, and height")
@@ -160,7 +160,7 @@ class VideoTrackManifest(BaseModel):
     frames: tuple[VideoTrackFrame, ...] = Field(..., min_length=1)
 
     @model_validator(mode="after")
-    def validate_order(self) -> "VideoTrackManifest":
+    def validate_order(self) -> VideoTrackManifest:
         frame_indices = [frame.frame_index for frame in self.frames]
         timestamps = [frame.timestamp_ms for frame in self.frames]
         if frame_indices != sorted(set(frame_indices)):
@@ -180,13 +180,7 @@ class LegacyLocator(BaseModel):
 
 
 Locator = Annotated[
-    Union[
-        TextRangeLocator,
-        SpatialRegionLocator,
-        TemporalIntervalLocator,
-        VideoRegionTrackLocator,
-        LegacyLocator,
-    ],
+    TextRangeLocator | SpatialRegionLocator | TemporalIntervalLocator | VideoRegionTrackLocator | LegacyLocator,
     Field(discriminator="kind"),
 ]
 
@@ -205,7 +199,7 @@ class MultimodalSpan(BaseModel):
     locator: Locator
 
     @model_validator(mode="after")
-    def validate_evidence(self) -> "MultimodalSpan":
+    def validate_evidence(self) -> MultimodalSpan:
         try:
             int(self.content_sha256, 16)
         except ValueError as exc:
@@ -270,7 +264,7 @@ class PinnedLogicalRef(BaseModel):
     event_seq: int | None = Field(None, ge=0)
 
     @model_validator(mode="after")
-    def validate_pin(self) -> "PinnedLogicalRef":
+    def validate_pin(self) -> PinnedLogicalRef:
         if self.role == "source_map" and self.mode != "pinned":
             raise ValueError("source_map references must be pinned")
         if self.mode == "pinned" and self.revision_id is None and self.event_seq is None:
@@ -293,7 +287,7 @@ class EmbeddingReference(BaseModel):
     targets: tuple[PinnedLogicalRef, ...] = Field(..., min_length=1)
 
     @model_validator(mode="after")
-    def validate_targets(self) -> "EmbeddingReference":
+    def validate_targets(self) -> EmbeddingReference:
         source_maps = [target for target in self.targets if target.role == "source_map"]
         if not source_maps:
             raise ValueError("embedding references require a source_map target")

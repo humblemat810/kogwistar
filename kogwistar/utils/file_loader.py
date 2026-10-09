@@ -1,6 +1,6 @@
-from typing import Optional, Callable, Iterable, Tuple
 import os
 import pathlib
+from collections.abc import Callable, Iterable
 from json import JSONDecodeError
 
 
@@ -13,24 +13,22 @@ def nullable_concat(a: list | None, b: list | None) -> list | None:
 class RawFileLoader:
     def __init__(
         self,
-        env_flist_path: Optional[str] = None,
+        env_flist_path: str | None = None,
         allow_file_list: None | list[str] = None,
-        allow_file_list_ref: Optional[str] = None,
+        allow_file_list_ref: str | None = None,
         max_num_file=float("inf"),
         oldest_datetime=None,
         newest_datetime=None,
         root_folder_name: str | None = None,
         #  in_folder_name :Optional[str] = None,
-        walk_root: Optional[str] = None,
-        compare_root: Optional[str] = None,
+        walk_root: str | None = None,
+        compare_root: str | None = None,
         include=None,
         bucket_blob_connection_str=None,
-        file_walker_callback: Optional[
-            Callable[[str, Optional[int]], Iterable[Tuple[str, str, str]]]
-        ] = None,
+        file_walker_callback: Callable[[str, int | None], Iterable[tuple[str, str, str]]] | None = None,
         pattern=None,
         allow_startwith_relative_paths=False,
-        filtering_callbacks: Optional[list[Callable]] = None,
+        filtering_callbacks: list[Callable] | None = None,
     ):
         """file loader to either backward support for local folder loading behaviour, or cloud bucket/ blob stoages
 
@@ -50,7 +48,7 @@ class RawFileLoader:
         self.oldest_datetime = oldest_datetime
         self.newest_datetime = newest_datetime
         self.bucket_blob_connection_str = bucket_blob_connection_str
-        self.file_walker_callback: Optional[Callable] = file_walker_callback
+        self.file_walker_callback: Callable | None = file_walker_callback
         if root_folder_name is None:
             root_folder_name = os.getcwd()
         if walk_root is None:
@@ -60,7 +58,7 @@ class RawFileLoader:
             compare_root = walk_root
         self.compare_root = compare_root
         self.max_num_file = max_num_file
-        allowed_relative_paths: Optional[list[str]] = None
+        allowed_relative_paths: list[str] | None = None
 
         if allow_file_list_ref is not None:
             if allow_file_list is None:
@@ -162,9 +160,9 @@ class RawFileLoader:
         leaf_only=False,
         file_non_exist_ok=False,
         include=None,
-        allowed_files: Optional[list[str]] = None,
+        allowed_files: list[str] | None = None,
         # allowed_prefixes : Optional[list[str | int]] = None,
-        allowed_relative_paths: Optional[list[str]] = None,
+        allowed_relative_paths: list[str] | None = None,
     ):
         """Iterate through availble files
 
@@ -331,7 +329,7 @@ class RawFileLoader:
 def filter_folder(
     folder_root=os.path.join("..", "doc_data", "split_pages"),
     min_page=45,
-    max_page: int | float = 55,
+    max_page: float = 55,
     first=10,
     verbose=True,
 ):

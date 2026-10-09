@@ -1,11 +1,12 @@
 import pytest
+
 pytest.importorskip("sqlalchemy")
 
 pytestmark = pytest.mark.ci_full
 from kogwistar.server.auth.db import (
     create_auth_engine,
-    init_auth_db,
     get_session,
+    init_auth_db,
 )
 from kogwistar.server.auth.service import AuthService
 

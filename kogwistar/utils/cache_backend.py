@@ -7,13 +7,14 @@ The provider can be selected explicitly with ``KOGWISTAR_CACHE_BACKEND``.
 
 from __future__ import annotations
 
-import os
 import hashlib
+import os
 import pickle
 import sys
+from collections.abc import Callable
 from functools import wraps
 from pathlib import Path
-from typing import Any, Callable, Literal, ParamSpec, Protocol, TypeVar, overload
+from typing import Any, Literal, ParamSpec, Protocol, TypeVar, overload
 
 P = ParamSpec("P")
 R = TypeVar("R")

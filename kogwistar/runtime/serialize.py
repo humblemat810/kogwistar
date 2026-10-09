@@ -3,7 +3,8 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
-from typing import Any, Mapping
+from collections.abc import Mapping
+from typing import Any
 
 from ..json_types import JsonValue
 

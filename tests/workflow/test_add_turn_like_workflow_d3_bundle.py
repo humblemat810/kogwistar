@@ -1,24 +1,24 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.models import (
     Grounding,
-    Span,
     MentionVerification,
+    Span,
 )
-
-from kogwistar.runtime.runtime import State
-from kogwistar.runtime.models import StepRunResult
-from kogwistar.runtime.models import RunSuccess
-from kogwistar.runtime.models import WorkflowEdge, WorkflowNode
-
-
-from kogwistar.runtime.runtime import WorkflowRuntime
+from kogwistar.runtime.models import (
+    RunSuccess,
+    StepRunResult,
+    WorkflowEdge,
+    WorkflowNode,
+)
+from kogwistar.runtime.runtime import State, WorkflowRuntime
 
 # IMPORTANT: use your existing dumper (calls to_d3_force internally)
 from kogwistar.utils.kge_debug_dump import dump_paired_bundles  # type: ignore
-import pytest
 
 pytestmark = pytest.mark.ci_full
 

@@ -1,16 +1,27 @@
 from __future__ import annotations
 
-from copy import deepcopy
 import importlib
 import json
 import math
-from typing import TYPE_CHECKING, Any, List, Literal, Type, cast
+from copy import deepcopy
+from typing import TYPE_CHECKING, Any, Literal, cast
 
-from ..async_compat import run_awaitable_blocking
-from ...id_provider import stable_id
-from ...extraction import BaseDocValidator
-from ...llm_tasks import ExtractGraphTaskRequest
 from pydantic import BaseModel
+
+from ...extraction import BaseDocValidator
+from ...fuzzy_offsets import (
+    default_offset_repair_scorer as _shared_default_offset_repair_scorer,
+)
+from ...fuzzy_offsets import (
+    find_best_fuzzy_span as _shared_find_best_fuzzy_span,
+)
+from ...fuzzy_offsets import (
+    offset_repair_threshold as _shared_offset_repair_threshold,
+)
+from ...id_provider import stable_id
+from ...llm_tasks import ExtractGraphTaskRequest
+from ...typing_interfaces import ExtractLike
+from ..async_compat import run_awaitable_blocking
 from ..models import (
     AssocFlattenedLLMGraphExtraction,
     Document,
@@ -19,11 +30,6 @@ from ..models import (
     LLMGraphExtraction,
     Node,
     Span,
-)
-from ...fuzzy_offsets import (
-    default_offset_repair_scorer as _shared_default_offset_repair_scorer,
-    find_best_fuzzy_span as _shared_find_best_fuzzy_span,
-    offset_repair_threshold as _shared_offset_repair_threshold,
 )
 from ..types import (
     ExtractionSchemaMode,
@@ -39,14 +45,13 @@ from ..utils.aliasing import (
     uuid_to_base62,
 )
 from .base import NamespaceProxy
-from ...typing_interfaces import ExtractLike
 
 if TYPE_CHECKING:
     from ..engine import GraphKnowledgeEngine
 
 
 class ExtractSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ExtractLike):
-    def __init__(self, engine: "GraphKnowledgeEngine") -> None:
+    def __init__(self, engine: GraphKnowledgeEngine) -> None:
         super().__init__(engine)
 
     def _engine_const(self, name: str, default: Any) -> Any:
@@ -669,12 +674,12 @@ class ExtractSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ExtractLike):
         out: list[Span] = []
         for span in grounding.spans:
             out.append(self.delias_one_span(span, real_doc_id))
-        grounding_type: Type = type(grounding)
+        grounding_type: type = type(grounding)
         return grounding_type.model_validate({"spans": out})
 
     def dealias_span(
         self,
-        mentions: List[Grounding] | None,
+        mentions: list[Grounding] | None,
         real_doc_id: str,
     ):
         if not mentions or len(mentions) == 0:

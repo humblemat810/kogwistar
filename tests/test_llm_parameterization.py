@@ -1,5 +1,7 @@
-import pytest
 import os
+
+import pytest
+
 from kogwistar.llm_tasks import LLMTaskSet
 
 pytestmark = pytest.mark.ci

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from typing import Optional
 from pydantic import BaseModel, Field
 
 
@@ -10,7 +9,7 @@ class IndexingItem(BaseModel):
     keywords: list[str] = Field(default_factory=list)
     aliases: list[str] = Field(default_factory=list)
     provision: str
-    doc_id: Optional[str] = None
+    doc_id: str | None = None
 
 
 class AddIndexEntriesInput(BaseModel):

@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Callable, Protocol
+from typing import Protocol
 
-from kogwistar.runtime.models import RunSuccess, WorkflowDesignArtifact, WorkflowInvocationRequest
-
+from kogwistar.runtime.models import (
+    RunSuccess,
+    WorkflowDesignArtifact,
+    WorkflowInvocationRequest,
+)
 
 AgentState = dict[str, object]
 

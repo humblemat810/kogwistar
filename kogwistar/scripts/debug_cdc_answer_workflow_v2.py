@@ -36,7 +36,7 @@ import time
 import webbrowser
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).absolute().parent.parent.parent))
 
@@ -84,14 +84,14 @@ def _wait_tcp_open(host: str, port: int, timeout_s: float = 16.0) -> None:
 @dataclass
 class CdcValidationReport:
     count: int
-    first_seq: Optional[int]
-    last_seq: Optional[int]
+    first_seq: int | None
+    last_seq: int | None
     non_monotonic: int
     missing_fields: int
     bad_types: int
 
 
-def _validate_event_shape(ev: Dict[str, Any]) -> tuple[bool, str]:
+def _validate_event_shape(ev: dict[str, Any]) -> tuple[bool, str]:
     if not isinstance(ev, dict):
         return False, "event is not a dict"
     if "op" not in ev:

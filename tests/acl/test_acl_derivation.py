@@ -2,10 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-from kogwistar.acl import ACLInput, ACLGraph, derive_acl, join_acl_inputs
+from kogwistar.acl import ACLGraph, ACLInput, derive_acl, join_acl_inputs
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from tests._helpers.fake_backend import build_fake_backend
-
 
 pytestmark = [pytest.mark.ci, pytest.mark.core, pytest.mark.regression]
 

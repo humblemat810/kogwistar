@@ -5,7 +5,7 @@ import inspect
 import json
 import time
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
 
 @dataclass
@@ -14,7 +14,7 @@ class AsyncWorkerTickMetrics:
     done: int = 0
     retried: int = 0
     failed: int = 0
-    avg_job_duration_s: Optional[float] = None
+    avg_job_duration_s: float | None = None
 
 
 async def _maybe_await(value: Any) -> Any:

@@ -13,7 +13,6 @@ from typing import Any
 
 from .._rust_bridge import store_sqlite
 
-
 _TRANSITION_FIELDS = frozenset(
     {
         "contract_version",

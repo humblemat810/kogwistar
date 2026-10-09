@@ -1,65 +1,60 @@
 from __future__ import annotations
-from os import PathLike
 
-import time
 import json
-import uuid
+import logging
+import pathlib
 import queue
+import time
+import uuid
+from collections.abc import Callable, Mapping
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
+from os import PathLike
 from typing import (
     TYPE_CHECKING,
     Any,
-    Callable,
-    Dict,
-    List,
-    Mapping,
-    Optional,
     Protocol,
-    Tuple,
     cast,
 )
-from concurrent.futures import ThreadPoolExecutor
-import pathlib
-import logging
-from contextlib import contextmanager, nullcontext
 
-from kogwistar.id_provider import stable_id
-from kogwistar.utils.log import bind_log_context
-from kogwistar.runtime.models import StateUpdate
 from kogwistar.engine_core.models import MentionVerification
 from kogwistar.engine_core.sqlite_context import sqlite_execution_bound
+from kogwistar.id_provider import stable_id
+from kogwistar.runtime.budget import BudgetAttribution, StateBackedBudgetLedger
+from kogwistar.runtime.budget_adapters import adapt_budget_events
 from kogwistar.runtime.models import (
     RunFailure,
+    StateUpdate,
     WorkflowCancelledNode,
     WorkflowCheckpointNode,
     WorkflowCompletedNode,
-    WorkflowFailedNode,
-    WorkflowEdge,
     WorkflowDesignArtifact,
-    WorkflowNode,
+    WorkflowEdge,
+    WorkflowFailedNode,
     WorkflowInvocationRequest,
+    WorkflowNode,
     WorkflowRunNode,
     WorkflowRuntimeEdge,
     WorkflowState,
     WorkflowStepExecNode,
 )
-from kogwistar.runtime.budget import BudgetAttribution, StateBackedBudgetLedger
-from kogwistar.runtime.budget_adapters import adapt_budget_events
+from kogwistar.utils.log import bind_log_context
 
-from .contract import CancellationChecker, Predicate
-from .design import validate_workflow_design
-from .serialize import JsonValue, try_serialize_with_ref
-from .projections import (
-    WORKFLOW_RUNTIME_PROJECTION_SCHEMA_VERSION,
-    workflow_checkpoint_latest_projection_namespace,
-    workflow_run_status_projection_namespace,
-)
 from ..engine_core.async_compat import run_awaitable_blocking
 from .base_runtime import (
     BaseRuntime,
     apply_state_update_inplace,
     validate_initial_state,
 )
+from .contract import CancellationChecker, Predicate
+from .design import validate_workflow_design
+from .projections import (
+    WORKFLOW_RUNTIME_PROJECTION_SCHEMA_VERSION,
+    workflow_checkpoint_latest_projection_namespace,
+    workflow_run_status_projection_namespace,
+)
+from .serialize import JsonValue, try_serialize_with_ref
 
 if TYPE_CHECKING:
     from ..engine_core.engine import GraphKnowledgeEngine
@@ -134,7 +129,7 @@ def _tarjan_scc(n: int, succ: list[list[int]]) -> tuple[list[int], list[list[int
 def _compute_may_reach_join_bitsets_python(
     *,
     node_ids: list[str],
-    adj: dict[str, list["WorkflowEdge"]],
+    adj: dict[str, list[WorkflowEdge]],
     join_ids: list[str],
 ) -> dict[str, int]:
     """
@@ -207,7 +202,7 @@ def _compute_may_reach_join_bitsets_python(
 def _compute_may_reach_join_bitsets(
     *,
     node_ids: list[str],
-    adj: dict[str, list["WorkflowEdge"]],
+    adj: dict[str, list[WorkflowEdge]],
     join_ids: list[str],
 ) -> dict[str, int]:
     """Select static join lineage implementation without changing call shape.
@@ -215,7 +210,10 @@ def _compute_may_reach_join_bitsets(
     Python remains the independent oracle in ``python`` and ``shadow`` modes.
     Rust is canonical in ``rust`` mode; dynamic workflow routing stays Python.
     """
-    from kogwistar._rust_bridge import runtime_implementation_mode, runtime_workflow_may_reach_join
+    from kogwistar._rust_bridge import (
+        runtime_implementation_mode,
+        runtime_workflow_may_reach_join,
+    )
 
     mode = runtime_implementation_mode()
     edges = [
@@ -256,7 +254,7 @@ def _iter_bits(mask: int):
 
 RunID = uuid.UUID | str
 Json = JsonValue
-State = Dict[str, Json]
+State = dict[str, Json]
 # Result = Json
 
 
@@ -289,8 +287,7 @@ def sink_observes_otel(sink: Any) -> bool:
     if type(sink).__module__ == "kogwistar.runtime.telemetry_otel":
         return True
     return any(sink_observes_otel(item) for item in getattr(sink, "_sinks", ()))
-from typing import TypeAlias, Any
-
+from typing import TypeAlias
 
 from kogwistar.engine_core.models import Grounding, Span
 
@@ -304,23 +301,22 @@ class StepResolver(Protocol):
 
     def __call__(self, op: str) -> StepFn: ...
 
-from dataclasses import field
-from typing import Dict
-from types import MappingProxyType
 import threading
+from dataclasses import field
+from types import MappingProxyType
 
 
 @dataclass
 class RunResult:
     run_id: str
     final_state: WorkflowState
-    mq: queue.Queue[Dict[str, Json]]
+    mq: queue.Queue[dict[str, Json]]
     status: str = "succeeded"
     errors: list[str] = field(default_factory=list)
 
 
 class _StateWriteTxn:
-    def __init__(self, ctx: "StepContext"):
+    def __init__(self, ctx: StepContext):
         self._ctx = ctx
 
     def __enter__(self) -> WorkflowState:
@@ -335,17 +331,17 @@ class _StateWriteTxn:
         self._ctx._state_lock.release()
 
 
-from dataclasses import dataclass, InitVar
-from typing import Dict
+from dataclasses import InitVar, dataclass
+
+from kogwistar.cdc.sqlite_sink import _get_shared_sqlite_sink
 
 from .telemetry import (
-    TraceContext,
-    EventSink,
-    EventEmitter,
-    bind_logger,
     BoundLoggerAdapter,
+    EventEmitter,
+    EventSink,
+    TraceContext,
+    bind_logger,
 )
-from kogwistar.cdc.sqlite_sink import _get_shared_sqlite_sink
 
 
 @dataclass
@@ -356,8 +352,8 @@ class RouteDecision:
     selected:  list of (edge_id, to_node_id, reason) entries for chosen edges.
     """
 
-    evaluated: List[Tuple[str, bool]]
-    selected: List[Tuple[str, str, str]]
+    evaluated: list[tuple[str, bool]]
+    selected: list[tuple[str, str, str]]
 
 
 @dataclass
@@ -381,7 +377,7 @@ class StepContext:
     )
 
     # --- runtime capabilities ---
-    message_queue: "queue.Queue[Dict[str, Json]]" = field(
+    message_queue: queue.Queue[dict[str, Json]] = field(
         repr=False, default_factory=queue.Queue
     )
     lane_message_sender: LaneMessageSenderLike | None = field(repr=False, default=None)
@@ -391,16 +387,16 @@ class StepContext:
     events: EventEmitter | None = field(repr=False, default=None)
 
     # Accept `state=` in __init__ but don't store it as a field
-    state: InitVar["WorkflowState"] = None  # type: ignore[assignment]
+    state: InitVar[WorkflowState] = None  # type: ignore[assignment]
 
     # real storage
-    _state: "WorkflowState" = field(init=False, repr=False)
+    _state: WorkflowState = field(init=False, repr=False)
     _state_lock: threading.RLock = field(
         default_factory=threading.RLock, init=False, repr=False
     )
     log: BoundLoggerAdapter = field(init=False, repr=False)
     
-    def __post_init__(self, state: "WorkflowState") -> None:
+    def __post_init__(self, state: WorkflowState) -> None:
         self._state = state
         # bind a correlated logger for resolver-level details
         self.log = bind_logger(logging.getLogger("workflow.resolver"), self.trace_ctx)
@@ -410,10 +406,10 @@ class StepContext:
         return MappingProxyType(self._state)
 
     @property
-    def state_write(self) -> "_StateWriteTxn":
+    def state_write(self) -> _StateWriteTxn:
         return _StateWriteTxn(self)
 
-    def publish(self, msg: Dict[str, Json]) -> None:
+    def publish(self, msg: dict[str, Json]) -> None:
         self.message_queue.put(msg)
 
     def send_lane_message(self, **kwargs: Json) -> object:
@@ -463,7 +459,7 @@ class StepContext:
             )
         sink(event)
 
-    def drain(self, max_items: int = 200) -> List[Dict[str, Json]]:
+    def drain(self, max_items: int = 200) -> list[dict[str, Json]]:
         raise Exception(
             "current design does not allow mq drained in context, but only by orchestrator"
         )
@@ -591,7 +587,7 @@ class WorkflowRuntime(BaseRuntime):
         workflow_engine: GraphKnowledgeEngine,
         conversation_engine: GraphKnowledgeEngine,
         step_resolver: StepResolver,
-        predicate_registry: Dict[str, Predicate],
+        predicate_registry: dict[str, Predicate],
         checkpoint_every_n_steps: int = 1,
         max_workers: int = 4,
         transaction_mode: str | None = None,  # "step" | "run" | "none" (default auto)
@@ -1389,7 +1385,7 @@ class WorkflowRuntime(BaseRuntime):
                             conversation_id=str(conversation_id),
                             turn_node_id=str(turn_node_id),
                         ),
-                        payload=getattr(client_result, "resume_payload"),
+                        payload=client_result.resume_payload,
                     )
                 except Exception:
                     pass
@@ -1575,7 +1571,7 @@ class WorkflowRuntime(BaseRuntime):
         conversation_id: str,
         turn_node_id: str | None = None,  # parent run may trigger another run in a node
         initial_state: WorkflowState,
-        run_id: Optional[str] = None,
+        run_id: str | None = None,
         cache_dir = None,
         _resume_step_seq: int | None = None,
         _resume_last_exec_node: WorkflowStepExecNode | WorkflowRunNode | None = None,
@@ -1642,7 +1638,7 @@ class WorkflowRuntime(BaseRuntime):
             self.state_lock[str(run_id)] = Lock()
 
             # an interworker, orchestrator message channel
-            mq: queue.Queue[Dict[str, Json]] = queue.Queue(maxsize=10000)
+            mq: queue.Queue[dict[str, Json]] = queue.Queue(maxsize=10000)
 
             start, nodes, adj = validate_workflow_design(
                 workflow_engine=self.workflow_engine,
@@ -1937,14 +1933,14 @@ class WorkflowRuntime(BaseRuntime):
             except Exception:
                 pass
             # state_mutex_lock: threading.Lock = threading.Lock()
-            scheduled_q: queue.Queue[Tuple[str, int, str, str | None]] = (
+            scheduled_q: queue.Queue[tuple[str, int, str, str | None]] = (
                 queue.Queue()
             )  # (node_id, mask, token_id, parent_token_id)
             pending_tokens: set[tuple[str, int, str, str | None]] = set()
             inflight_tokens: set[tuple[str, int, str, str | None]] = set()
             suspended_tokens: dict[str, tuple[str, int, str, str | None]] = {}
             done_q: queue.Queue[
-                Tuple[str, StepRunResult, int, str, str | None, str, int]
+                tuple[str, StepRunResult, int, str, str | None, str, int]
             ] = queue.Queue()  # (node_id, result, duration_ms, token_id, parent_token_id, status, mask)
             cancel_pending = False
             cancel_info: dict[str, Any] | None = None
@@ -1953,7 +1949,7 @@ class WorkflowRuntime(BaseRuntime):
             run_errors: list[str] = []
 
             graveyard: queue.Queue[
-                Tuple[str, StepRunResult, int, str, str | None, str, int]
+                tuple[str, StepRunResult, int, str, str | None, str, int]
             ] = queue.Queue()
 
             # Tiny scheduler-only critical section:
@@ -2281,7 +2277,7 @@ class WorkflowRuntime(BaseRuntime):
                 finally:
                     t.name = old_name
 
-            inflight: Dict[tuple[str, int, str], Any] = {}
+            inflight: dict[tuple[str, int, str], Any] = {}
             last_exec_node = (
                 _resume_last_exec_node
                 if _resume_last_exec_node is not None
@@ -2936,7 +2932,7 @@ class WorkflowRuntime(BaseRuntime):
                                         step_seq=int(step_seq_current),
                                         node_id=str(node_id),
                                     ),
-                                    payload=getattr(run_result, "resume_payload"),
+                                    payload=run_result.resume_payload,
                                 )
                             except Exception:
                                 pass
@@ -3283,12 +3279,12 @@ class WorkflowRuntime(BaseRuntime):
 
     def _route_next(
         self,
-        edges: List[WorkflowEdge],
+        edges: list[WorkflowEdge],
         state: WorkflowState,
         last_result: StepRunResult,
         fanout: bool,
-        nodes: Optional[dict[str, WorkflowNode]] = None,
-    ) -> tuple[List[str], RouteDecision]:
+        nodes: dict[str, WorkflowNode] | None = None,
+    ) -> tuple[list[str], RouteDecision]:
         """
         Waterfall routing:
 
@@ -4032,7 +4028,7 @@ class WorkflowRuntime(BaseRuntime):
         token_id: str | None = None,
         parent_token_id: str | None = None,
         join_mask: int | None = None,
-        last_exec_node: Optional[WorkflowStepExecNode | WorkflowRunNode] = None,
+        last_exec_node: WorkflowStepExecNode | WorkflowRunNode | None = None,
     ) -> WorkflowStepExecNode:
         # from kogwistar.models import WorkflowStepExecNode, Grounding, Span  # adjust import path
 
@@ -4217,7 +4213,7 @@ class WorkflowRuntime(BaseRuntime):
         run_id: str,
         step_seq: int,
         state: WorkflowState,
-        last_exec_node: Optional[WorkflowStepExecNode | WorkflowRunNode] = None,
+        last_exec_node: WorkflowStepExecNode | WorkflowRunNode | None = None,
         trace_context: TraceContext | None = None,
     ) -> None:
         from kogwistar.engine_core.models import (

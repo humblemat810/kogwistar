@@ -18,7 +18,6 @@ from kogwistar.agent import (
 )
 from kogwistar.server.capability_kernel import CapabilityKernel, CapabilitySpec
 
-
 pytestmark = [pytest.mark.ci, pytest.mark.core, pytest.mark.regression]
 
 

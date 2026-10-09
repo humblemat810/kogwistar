@@ -4,11 +4,12 @@ import contextvars
 import json
 import sqlite3
 import uuid
+from collections.abc import Iterator
 from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterator, Optional, TypeAlias
+from typing import TypeAlias
 
 from ..json_types import JsonValue
 from ..messaging.models import ProjectedLaneMessageRow
@@ -65,18 +66,18 @@ class IndexJobRow:
     coalesce_key: str
     op: str
     status: str
-    lease_until: Optional[int]
-    next_run_at: Optional[int]
+    lease_until: int | None
+    next_run_at: int | None
     max_retries: int
     retry_count: int
-    last_error: Optional[str]
-    payload_json: Optional[str]
+    last_error: str | None
+    payload_json: str | None
     created_at: int
     updated_at: int
-    claim_token: Optional[str] = None
-    accepted_result_json: Optional[str] = None
-    accepted_result_sha256: Optional[str] = None
-    accepted_at: Optional[int] = None
+    claim_token: str | None = None
+    accepted_result_json: str | None = None
+    accepted_result_sha256: str | None = None
+    accepted_at: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -752,7 +753,7 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
         entity_id: str,
         index_kind: str,
         op: str,
-        payload_json: Optional[str] = None,
+        payload_json: str | None = None,
         max_retries: int = 10,
         namespace: str = "default",
     ) -> str:
@@ -821,7 +822,7 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
         *,
         limit: int = 50,
         lease_seconds: int = 60,
-        namespace: Optional[str] = "default",
+        namespace: str | None = "default",
     ) -> list[IndexJobRow]:
         """Lease runnable jobs from the SQLite-backed queue.
 
@@ -1042,11 +1043,11 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
     def list_index_jobs(
         self,
         *,
-        status: Optional[str] = None,
-        entity_kind: Optional[str] = None,
-        entity_id: Optional[str] = None,
-        index_kind: Optional[str] = None,
-        namespace: Optional[str] = "default",
+        status: str | None = None,
+        entity_kind: str | None = None,
+        entity_id: str | None = None,
+        index_kind: str | None = None,
+        namespace: str | None = "default",
         limit: int = 1000,
     ) -> list[IndexJobRow]:
         where: list[str] = []
@@ -1555,7 +1556,7 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
 
     def get_index_applied_fingerprint(
         self, *, namespace: str = "default", coalesce_key: str
-    ) -> Optional[str]:
+    ) -> str | None:
         with self.connect() as conn:
             with closing(
                 conn.execute(
@@ -1571,8 +1572,8 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
         *,
         namespace: str = "default",
         coalesce_key: str,
-        applied_fingerprint: Optional[str],
-        last_job_id: Optional[str] = None,
+        applied_fingerprint: str | None,
+        last_job_id: str | None = None,
     ) -> None:
         now = self._now_epoch()
         with self.transaction() as conn:
@@ -1889,7 +1890,7 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
 
     def _get_projection_row(
         self, table_name: str, namespace: str, key: str
-    ) -> Optional[JsonObject]:
+    ) -> JsonObject | None:
         spec = self._projection_table_spec(table_name)
         with self.connect() as conn:
             row = conn.execute(
@@ -2024,7 +2025,7 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
             "newest_updated_at_ms": int(row[2]) if row else 0,
         }
 
-    def get_named_projection(self, namespace: str, key: str) -> Optional[JsonObject]:
+    def get_named_projection(self, namespace: str, key: str) -> JsonObject | None:
         return self._get_projection_row(
             NAMED_PROJECTION_TABLE.table_name, namespace, key
         )
@@ -2142,7 +2143,7 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
     # mechanics; two-stage query routing and promotion remain future work.
     def get_stage1_node_projection(
         self, namespace: str, node_id: str
-    ) -> Optional[JsonObject]:
+    ) -> JsonObject | None:
         row = self._get_projection_row(
             STAGE1_NODE_PROJECTION_TABLE.table_name, namespace, node_id
         )
@@ -2249,7 +2250,7 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
 
     def get_workflow_design_projection(
         self, *, workflow_id: str
-    ) -> Optional[JsonObject]:
+    ) -> JsonObject | None:
         projection = self.get_named_projection("workflow_design", str(workflow_id))
         if projection is None:
             return None
@@ -2375,7 +2376,7 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
         workflow_id: str,
         max_version: int,
         schema_version: int,
-    ) -> Optional[JsonObject]:
+    ) -> JsonObject | None:
         with self.connect() as conn:
             row = conn.execute(
                 """
@@ -2449,7 +2450,7 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
         workflow_id: str,
         version: int,
         schema_version: int,
-    ) -> Optional[JsonObject]:
+    ) -> JsonObject | None:
         with self.connect() as conn:
             row = conn.execute(
                 """
@@ -2519,7 +2520,7 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
                 ),
             )
 
-    def get_server_run(self, run_id: str) -> Optional[JsonObject]:
+    def get_server_run(self, run_id: str) -> JsonObject | None:
         with self.connect() as conn:
             row = conn.execute(
                 """

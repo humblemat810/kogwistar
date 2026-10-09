@@ -7,38 +7,43 @@ import json
 import queue
 import time
 import uuid
+from collections.abc import Awaitable, Callable, Mapping
 from contextlib import nullcontext
 from typing import (
     TYPE_CHECKING,
     Any,
-    Awaitable,
-    Callable,
     ContextManager,
-    Mapping,
     Protocol,
     TypeAlias,
     cast,
 )
 
-from .models import RunFailure, StepRunResult, WorkflowState
+from kogwistar.engine_core.sqlite_context import sqlite_execution_bound
+
+from .base_runtime import (
+    BaseRuntime,
+    apply_state_update_inplace,
+    validate_initial_state,
+)
 from .contract import CancellationChecker, Predicate
 from .executor import TerminalStatus, WorkflowExecutor
-from .base_runtime import BaseRuntime, apply_state_update_inplace, validate_initial_state
-from .telemetry import TraceContext
-from kogwistar.engine_core.sqlite_context import sqlite_execution_bound
+from .models import RunFailure, StepRunResult, WorkflowState
 from .runtime import (
-    LaneMessageEventSinkLike,
-    LaneMessageSenderLike,
     EventEmitter,
     EventSink,
+    LaneMessageEventSinkLike,
+    LaneMessageSenderLike,
     RunResult,
     StepContext,
-    WorkflowRuntime as ThreadedWorkflowRuntime,
     _compute_may_reach_join_bitsets,
     _iter_bits,
     derive_child_authority_context,
     sink_observes_otel,
 )
+from .runtime import (
+    WorkflowRuntime as ThreadedWorkflowRuntime,
+)
+from .telemetry import TraceContext
 
 # Compatibility anchor for tests and internal helper wiring.
 WorkflowRuntime = ThreadedWorkflowRuntime
@@ -294,7 +299,7 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
         parent_authority_context: Mapping[str, Any] | None = None,
     ) -> RunResult:
         if getattr(invocation, "workflow_design", None) is not None:
-            wf_design = getattr(invocation, "workflow_design")
+            wf_design = invocation.workflow_design
             if str(getattr(wf_design, "workflow_id", "")) != str(
                 getattr(invocation, "workflow_id", "")
             ):

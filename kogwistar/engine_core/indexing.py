@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import json
-import uuid
 import time
+import uuid
 from dataclasses import dataclass
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from .async_compat import run_awaitable_blocking
 from .canonical_events import CanonicalEntityRevision, read_canonical_entity_revision
-from .models import Node, Edge, Span, Grounding
+from .models import Edge, Grounding, Node, Span
 
 if TYPE_CHECKING:
     # Avoid runtime import cycles; we only need this for typing.
@@ -50,7 +50,7 @@ class IndexingSubsystem:
     - reduce "god object" feel in engine.py
     """
 
-    engine: "GraphKnowledgeEngine"
+    engine: GraphKnowledgeEngine
 
     _PHASE1_JOIN_INDEX_KINDS = ("node_docs", "node_refs", "edge_refs", "edge_endpoints")
 

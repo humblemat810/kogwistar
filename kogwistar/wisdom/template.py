@@ -2,11 +2,12 @@ from __future__ import annotations
 
 """Reusable execution-history wisdom emission helpers."""
 
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from kogwistar.engine_core.engine import scoped_namespace
-from kogwistar.maintenance.contracts import BeforeWrite
 from kogwistar.maintenance.artifacts import write_versioned_artifact
+from kogwistar.maintenance.contracts import BeforeWrite
 from kogwistar.wisdom.models import ExecutionWisdomTemplateResult
 from kogwistar.workflow.analytics import (
     ExecutionFailurePattern,

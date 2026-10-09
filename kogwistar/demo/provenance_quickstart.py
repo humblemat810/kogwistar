@@ -6,8 +6,9 @@ import math
 import re
 import shutil
 import webbrowser
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 from kogwistar.conversation.models import (
     ConversationAIResponse,
@@ -27,7 +28,6 @@ from kogwistar.engine_core.models import (
 )
 from kogwistar.runtime.replay import replay_to
 from kogwistar.utils.kge_debug_dump import dump_paired_bundles
-
 
 DEFAULT_QUESTION = "How does Kogwistar make AI workflows replayable and auditable?"
 
@@ -56,7 +56,7 @@ class DeterministicLexicalEmbeddingFunction:
     @classmethod
     def build_from_config(
         cls, config: dict[str, object] | None = None
-    ) -> "DeterministicLexicalEmbeddingFunction":
+    ) -> DeterministicLexicalEmbeddingFunction:
         _ = config
         return cls()
 

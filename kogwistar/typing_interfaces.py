@@ -1,32 +1,38 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager
 from typing import (
-    Mapping,
+    TYPE_CHECKING,
     Literal,
     Protocol,
-    Sequence,
     TypeAlias,
     TypeVar,
-    Iterator,
     runtime_checkable,
-    TYPE_CHECKING,
 )
 
 try:
     from typing import TypeAlias
 except ImportError:  # pragma: no cover - py<3.10 compatibility
-    from typing_extensions import TypeAlias
+    from typing import TypeAlias
 
 from .json_types import JsonValue
 
 if TYPE_CHECKING:
     from .engine_core.models import (
         AdjudicationTarget as GraphAdjudicationTarget,
+    )
+    from .engine_core.models import (
         AdjudicationVerdict,
+    )
+    from .engine_core.models import (
         Document as EngineDoc,
+    )
+    from .engine_core.models import (
         Edge as GraphEdge,
+    )
+    from .engine_core.models import (
         Node as GraphNode,
     )
     from .engine_core.storage_backend import StorageBackend
@@ -265,7 +271,7 @@ class ReadLike(Protocol):
 
     def search_nodes_as_of_scored(
         self, *args: object, **kwargs: object
-    ) -> list["VectorSearchHit[GraphNode]"]: ...
+    ) -> list[VectorSearchHit[GraphNode]]: ...
 
     def get_document(self, doc_id: str) -> EngineDoc: ...
 
@@ -443,7 +449,7 @@ class StrategyEngineLike(EngineLike, Protocol):
     def lifecycle(self) -> LifecycleLike: ...
 
     @property
-    def llm_tasks(self) -> "LLMTaskSet": ...
+    def llm_tasks(self) -> LLMTaskSet: ...
     allow_cross_kind_adjudication: bool
     cross_kind_strategy: str
 

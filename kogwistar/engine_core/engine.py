@@ -1,23 +1,29 @@
 from __future__ import annotations
 
-from contextlib import contextmanager
 import contextvars
-import threading
-
 import pathlib
-import uuid
-
-
+import threading
 import time
+import uuid
+from contextlib import contextmanager
 
-from .utils import AliasBook
-from .async_compat import run_sync_or_awaitable
-from .async_compat import run_awaitable_blocking
-
+from ..acl.graph import ACLGraph
+from ..graph_kinds import normalize_graph_kind
+from ..utils.log import bind_log_context
+from ..workers.index_job_worker import IndexJobWorker
+from .acl_protocol import require_acl_protocols
+from .async_compat import run_awaitable_blocking, run_sync_or_awaitable
 from .chroma_backend import ChromaBackend, ChromaStorageInspector
-
-
+from .embedding_profile import (
+    EmbeddingProfile,
+    EmbeddingProfileRegistry,
+)
+from .indexing import IndexingSubsystem
+from .jobs import JobQueueSubsystem
+from .recovery import RecoverySubsystem
 from .rust_meta_sqlite import build_sqlite_meta_store
+from .search_index.service import SearchIndexService
+from .service_health import ServiceHealthRegistry
 from .storage_backend import (
     AtomicMutationCapability,
     NoopUnitOfWork,
@@ -27,22 +33,10 @@ from .storage_backend import (
     get_two_stage_projection_adapter,
     get_two_stage_projection_capability,
 )
-from .acl_protocol import require_acl_protocols
-from .embedding_profile import (
-    EmbeddingProfile,
-    EmbeddingProfileRegistry,
-)
-from .vector_search import VectorSearchHit
-from ..workers.index_job_worker import IndexJobWorker
-from ..utils.log import bind_log_context
-from .indexing import IndexingSubsystem
-from .jobs import JobQueueSubsystem
-from .recovery import RecoverySubsystem
-from .service_health import ServiceHealthRegistry
 from .subsystems import (
-    ACLSubsystem,
     ACLAwareReadSubsystem,
     ACLAwareWriteSubsystem,
+    ACLSubsystem,
     AdjudicateSubsystem,
     EmbedSubsystem,
     ExtractSubsystem,
@@ -52,7 +46,6 @@ from .subsystems import (
     RollbackSubsystem,
     WriteSubsystem,
 )
-from .search_index.service import SearchIndexService
 from .types import (
     EdgePreAddHook,
     EngineType,
@@ -63,9 +56,9 @@ from .types import (
     ResolvedExtractionSchemaMode,
     ToolCallIdFactory,
 )
-from ..graph_kinds import normalize_graph_kind
+from .utils import AliasBook
 from .utils.aliasing import AliasBookStore
-from ..acl.graph import ACLGraph
+from .vector_search import VectorSearchHit
 
 
 class _BackendCallBridge:
@@ -98,66 +91,63 @@ class _BackendCallBridge:
     #     verifier=VF.ensemble_default,          # or VF.coverage_only / VF.strict_with_min_span
     # )
     # """
-from typing import TYPE_CHECKING, List, Optional, Dict, Any, Tuple, cast, TypeVar, ParamSpec, Mapping
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar, cast
 
 try:
     from typing import Self, TypeAlias
 except ImportError:  # pragma: no cover - py<3.11 compatibility
-    from typing_extensions import TypeAlias
-from ..typing_interfaces import EmbeddingFunctionLike, ReadLike, WriteLike
-from ..json_types import JsonValue
-from ..graph_query import GraphQuery
-from kogwistar.extraction import BaseDocValidator
-from .models import (
-    Node,
-    Edge,
-    Document,
-    Domain,
-    Grounding,
-    PureChromaNode,
-    PureChromaEdge,
-    PureGraph,
-    Span,
-    LLMGraphExtraction,
-    AdjudicationTarget,
-    AdjudicationCandidate,
-    AdjudicationQuestionCode,
-    AdjudicationVerdict,
+    from typing import TypeAlias
+import json
+import math
+import os
+import warnings
+from collections.abc import Callable, Iterable, Sequence
+from datetime import datetime
+from functools import wraps
+from typing import (
+    Literal,
+    Protocol,
+    Union,
 )
-from ..cdc.change_event import Op, EntityRefModel
+
+from dotenv import load_dotenv
+from pydantic import BaseModel
+
+from kogwistar.cdc.change_bus import ChangeBus, FastAPIChangeSink
+from kogwistar.cdc.change_event import ChangeEvent
+from kogwistar.cdc.oplog import OplogWriter
+from kogwistar.extraction import BaseDocValidator
+
+from ..cdc.change_event import EntityRefModel, Op
+from ..graph_query import GraphQuery
+from ..integrations.openai_embeddings import build_azure_embedding_fn_from_env
+from ..json_types import JsonValue
 from ..llm_tasks import (
     DefaultTaskProviderConfig,
     LLMTaskSet,
     build_default_llm_tasks,
     validate_llm_task_set,
 )
-from ..integrations.openai_embeddings import build_azure_embedding_fn_from_env
-import json
-import os
-from dotenv import load_dotenv
+from ..typing_interfaces import EmbeddingFunctionLike, ReadLike, WriteLike
 from ..utils.cache_backend import Memory
-from functools import wraps
-import warnings
 from .models import (
+    AdjudicationCandidate,
+    AdjudicationQuestionCode,
+    AdjudicationTarget,
+    AdjudicationVerdict,
+    Document,
+    Domain,
+    Edge,
     GraphExtractionWithIDs,
+    Grounding,
+    LLMGraphExtraction,
+    Node,
+    PureChromaEdge,
+    PureChromaNode,
+    PureGraph,
+    Span,
 )
-from typing import (
-    Callable,
-    Iterable,
-    Sequence,
-    Literal,
-    Protocol,
-    Type,
-    Union,
-)
-import math
-
-from datetime import datetime
-from kogwistar.cdc.change_bus import ChangeBus, FastAPIChangeSink
-from kogwistar.cdc.change_event import ChangeEvent
-from kogwistar.cdc.oplog import OplogWriter
-
-from pydantic import BaseModel
 
 if TYPE_CHECKING:
     from ..messaging.models import (
@@ -173,18 +163,18 @@ try:
 except Exception:
     _HAS_RAPIDFUZZ = False
 
-PageLike = Union[str, Dict[str, Any]]
+PageLike = Union[str, dict[str, Any]]
 NodeOrEdge: TypeAlias = Node | Edge
 
 
 class StorageBackendFactory(Protocol):
     """Build the backend bound to one graph engine instance."""
 
-    def __call__(self, engine: "GraphKnowledgeEngine", /) -> StorageBackend: ...
+    def __call__(self, engine: GraphKnowledgeEngine, /) -> StorageBackend: ...
 
 if TYPE_CHECKING:
-    from .engine_sqlite import EngineSQLite
     from .engine_postgres_meta import EnginePostgresMetaStore
+    from .engine_sqlite import EngineSQLite
     from .postgres_backend import PgVectorBackend
 
     T = TypeVar("T", Node, Edge)
@@ -282,7 +272,7 @@ def _json_or_none(v):
     return None if v is None else json.dumps(v)
 
 
-def _node_doc_and_meta(n: Union["Node", "PureChromaNode"]) -> tuple[str, dict]:
+def _node_doc_and_meta(n: Node | PureChromaNode) -> tuple[str, dict]:
     """Return (documents_string, metadata_dict) for Chroma. helper when inserting to backend db,"""
     """Extract and flatten certain fields that can be searched via collection """
     doc = n.model_dump_json(field_mode="backend", exclude=["embedding", "metadata"])
@@ -309,7 +299,7 @@ def _node_doc_and_meta(n: Union["Node", "PureChromaNode"]) -> tuple[str, dict]:
     return doc, meta
 
 
-def _edge_doc_and_meta(e: Union["Edge", "PureChromaEdge"]) -> tuple[str, dict]:
+def _edge_doc_and_meta(e: Edge | PureChromaEdge) -> tuple[str, dict]:
     """Return (documents_string, metadata_dict) for Chroma."""
     doc = e.model_dump_json(field_mode="backend")
     # Preserve edge metadata in the backend row.  Reads reconstruct metadata
@@ -427,8 +417,7 @@ except Exception:
 
     Embeddings = list[list[float]]  # type: ignore
 
-from typing import Any, Callable
-
+from typing import Any
 
 # ---------------------------------------------------------------------------
 # Embedding providers — now in embedding_factory.py
@@ -621,11 +610,11 @@ class GraphKnowledgeEngine:
     def redirect_edge(self, from_id: str, to_id: str, **kw) -> bool:
         return self.lifecycle.redirect_edge(from_id, to_id, **kw)
 
-    def node_ids_by_doc(self, doc_id: str) -> List[str]:
+    def node_ids_by_doc(self, doc_id: str) -> list[str]:
 
         return self._nodes_by_doc(doc_id)
 
-    def edge_ids_by_doc(self, doc_id: str) -> List[str]:
+    def edge_ids_by_doc(self, doc_id: str) -> list[str]:
 
         return self._edge_ids_by_doc(doc_id)
 
@@ -637,7 +626,7 @@ class GraphKnowledgeEngine:
     def embedding_function(self, val):
         self._ef = val
 
-    def _infer_doc_id_from_ref(self, ref: Span) -> Optional[str]:
+    def _infer_doc_id_from_ref(self, ref: Span) -> str | None:
         """Best-effort: prefer explicit ref.doc_id; else try to parse document_page_url like 'document/<id>'."""
         did = getattr(ref, "doc_id", None)
         if did:
@@ -652,14 +641,12 @@ class GraphKnowledgeEngine:
 
     def extract_reference_contexts(
         self,
-        node_or_id: Union[
-            Node | Edge, str
-        ],  # also works if you pass an Edge or edge id
+        node_or_id: Node | Edge | str,  # also works if you pass an Edge or edge id
         *,
         window_chars: int = 120,
-        max_contexts: Optional[int] = None,
+        max_contexts: int | None = None,
         prefer_label_fallback: bool = True,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         return self.read.extract_reference_contexts(
             node_or_id=node_or_id,
             window_chars=window_chars,
@@ -703,14 +690,14 @@ class GraphKnowledgeEngine:
     def get_nodes(
         self,
         ids: Sequence[str] | None = None,
-        node_type: Type[Node] | None = None,
+        node_type: type[Node] | None = None,
         include: None | list[str] = None,
         where=None,
         limit: None | int = 200,
         resolve_mode: Literal[
             "active_only", "redirect", "include_tombstones"
         ] = "active_only",
-    ) -> List[Node]:
+    ) -> list[Node]:
         return self.read.get_nodes(
             ids=ids,
             node_type=node_type,
@@ -729,7 +716,7 @@ class GraphKnowledgeEngine:
         principal_id: str,
         principal_groups: Sequence[str] = (),
         security_scope: str | None = None,
-        node_type: Type[Node] | None = None,
+        node_type: type[Node] | None = None,
         include: None | list[str] = None,
         resolve_mode: Literal[
             "active_only", "redirect", "include_tombstones"
@@ -765,7 +752,7 @@ class GraphKnowledgeEngine:
         query: str | None = None,
         query_embeddings: list[list[float]] | None = None,
         include: Sequence[str] | None = None,
-        node_type: Type[TNode] = Node,
+        node_type: type[TNode] = Node,
         **kwargs: object,
     ) -> list[list[TNode]]:
         selected_include = list(
@@ -792,7 +779,7 @@ class GraphKnowledgeEngine:
         where: dict[str, Any] | None = None,
         n_results: int = 20,
         follow_redirects: bool = True,
-        node_type: Type[Node] = Node,
+        node_type: type[Node] = Node,
         include: list[str] | None = None,
         max_redirect_hops: int = 16,
         **kwargs,
@@ -819,7 +806,7 @@ class GraphKnowledgeEngine:
         query: str | None = None,
         query_embeddings: list[list[float]] | None = None,
         include: Sequence[str] | None = None,
-        edge_type: Type[TEdge] = Edge,
+        edge_type: type[TEdge] = Edge,
         **kwargs: object,
     ) -> list[list[TEdge]]:
         selected_include = list(
@@ -840,7 +827,7 @@ class GraphKnowledgeEngine:
     def nodes_from_single_or_id_query_result(
         self,
         got: Mapping[str, JsonValue],
-        node_type: Type[TNode] = Node,
+        node_type: type[TNode] = Node,
     ) -> list[TNode]:
         return cast(
             list[TNode],
@@ -850,7 +837,7 @@ class GraphKnowledgeEngine:
     def edges_from_single_or_id_query_result(
         self,
         got: Mapping[str, JsonValue],
-        edge_type: Type[TEdge] = Edge,
+        edge_type: type[TEdge] = Edge,
         include: Sequence[str] | None = None,
     ) -> list[TEdge]:
         return cast(
@@ -865,7 +852,7 @@ class GraphKnowledgeEngine:
     def nodes_from_query_result(
         self,
         gots: Mapping[str, JsonValue],
-        node_type: Type[TNode] = Node,
+        node_type: type[TNode] = Node,
     ) -> list[list[TNode]]:
         return cast(
             list[list[TNode]],
@@ -875,7 +862,7 @@ class GraphKnowledgeEngine:
     def edges_from_query_result(
         self,
         gots: Mapping[str, JsonValue],
-        edge_type: Type[TEdge] = Edge,
+        edge_type: type[TEdge] = Edge,
     ) -> list[list[TEdge]]:
         return cast(
             list[list[TEdge]],
@@ -890,14 +877,14 @@ class GraphKnowledgeEngine:
     def get_edges(
         self,
         ids: Sequence[str] | None = None,
-        edge_type: Type[Edge] | None = None,
+        edge_type: type[Edge] | None = None,
         where=None,
         limit: int | None = 400,
         include: None | list[str] = None,
         resolve_mode: Literal[
             "active_only", "redirect", "include_tombstones"
         ] = "active_only",
-    ) -> List[Edge]:
+    ) -> list[Edge]:
         return self.read.get_edges(
             ids=ids,
             edge_type=edge_type,
@@ -914,7 +901,7 @@ class GraphKnowledgeEngine:
         principal_id: str,
         principal_groups: Sequence[str] = (),
         security_scope: str | None = None,
-        edge_type: Type[Edge] | None = None,
+        edge_type: type[Edge] | None = None,
         include: None | list[str] = None,
         resolve_mode: Literal[
             "active_only", "redirect", "include_tombstones"
@@ -942,10 +929,10 @@ class GraphKnowledgeEngine:
             )
         return edges[0]
 
-    def all_nodes_for_doc(self, doc_id: str) -> List[Node]:
+    def all_nodes_for_doc(self, doc_id: str) -> list[Node]:
         return self.get_nodes(self._nodes_by_doc(doc_id))
 
-    def all_edges_for_doc(self, doc_id: str) -> List[Edge]:
+    def all_edges_for_doc(self, doc_id: str) -> list[Edge]:
         return self.get_edges(self._edge_ids_by_doc(doc_id))
 
     def _delete_edge_ref_rows(self, edge_id: str) -> None:
@@ -1004,7 +991,7 @@ class GraphKnowledgeEngine:
     def enqueue_index_job(self, *args: object, **kwargs: object) -> str:
         return self.indexing.enqueue_index_job(*args, **kwargs)
 
-    def send_lane_message(self, *args: object, **kwargs: object) -> "LaneMessageSendResult":
+    def send_lane_message(self, *args: object, **kwargs: object) -> LaneMessageSendResult:
         from kogwistar.messaging import LaneMessagingService
 
         return LaneMessagingService(self).send_message(*args, **kwargs)
@@ -1016,7 +1003,7 @@ class GraphKnowledgeEngine:
 
     def claim_projected_lane_messages(
         self, *args: object, **kwargs: object
-    ) -> list["ProjectedLaneMessageRow"]:
+    ) -> list[ProjectedLaneMessageRow]:
         from kogwistar.messaging import LaneMessagingService
 
         return LaneMessagingService(self).claim_pending(*args, **kwargs)
@@ -1038,7 +1025,7 @@ class GraphKnowledgeEngine:
 
     def list_projected_lane_messages(
         self, *args: object, **kwargs: object
-    ) -> list["ProjectedLaneMessageRow"]:
+    ) -> list[ProjectedLaneMessageRow]:
         from kogwistar.messaging import LaneMessagingService
 
         return LaneMessagingService(self).list_projected(*args, **kwargs)
@@ -1050,7 +1037,7 @@ class GraphKnowledgeEngine:
 
     def repair_lane_message_projection(
         self, *args: object, **kwargs: object
-    ) -> "LaneMessageProjectionRepairResult":
+    ) -> LaneMessageProjectionRepairResult:
         from kogwistar.messaging import LaneMessagingService
 
         return LaneMessagingService(self).repair_projection(*args, **kwargs)
@@ -1085,7 +1072,7 @@ class GraphKnowledgeEngine:
         lease_seconds: int = 60,
         max_jobs_per_tick: int = 200,
         namespace: str | None = None,
-    ) -> "IndexJobWorker":
+    ) -> IndexJobWorker:
         return self.indexing.make_index_job_worker(
             max_inflight=max_inflight,
             batch_size=batch_size,
@@ -1102,7 +1089,7 @@ class GraphKnowledgeEngine:
     #     return _default_ref(doc_id, excerpt)
     #     pass
     @staticmethod
-    def chroma_sanitize_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
+    def chroma_sanitize_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
         """Drop keys whose values are None. ChromaDB metadata rejects None values."""
         return _strip_none(
             metadata
@@ -1113,7 +1100,7 @@ class GraphKnowledgeEngine:
         return _strip_none(d)
 
     @staticmethod
-    def _json_or_none(obj: Any) -> Optional[str]:
+    def _json_or_none(obj: Any) -> str | None:
         return json.dumps(obj) if obj is not None else None
 
     def _exists_node(self, rid: str) -> bool:
@@ -1412,17 +1399,18 @@ class GraphKnowledgeEngine:
         )
         # to do- refractor via composition. protocol template in strategies.py, strategies helper in ./strategies/
         # strategies now are function objects
+        from kogwistar.strategies import IAdjudicator
+
         from ..strategies import (
-            VectorProposer,
+            Adjudicator,
             DefaultVerifier,
             PreferExistingCanonical,
-            Adjudicator,
-            VerifierConfig
+            VectorProposer,
+            VerifierConfig,
         )
 
         # from .strategies.adjudicators import LLMPairAdjudicatorImpl, LLMBatchAdjudicatorImpl
         from ..strategies.types import Verifier
-        from kogwistar.strategies import IAdjudicator
 
         self.proposer = proposer or VectorProposer(self)
         self.adjudicator: IAdjudicator = adjudicator or Adjudicator(self)
@@ -1637,13 +1625,14 @@ class GraphKnowledgeEngine:
                     SQLiteChromaTwoStageProjectionAdapter(self)
                 )
         elif _is_pgvector_backend_instance(backend):
-            from .engine_postgres_meta import EnginePostgresMetaStore
-            from .rust_postgres_session import RustEnginePostgresMetaStore
             from kogwistar._rust_bridge import (
                 graph_store_implementation_mode,
                 meta_store_implementation_mode,
                 postgres_authority_implementation_mode,
             )
+
+            from .engine_postgres_meta import EnginePostgresMetaStore
+            from .rust_postgres_session import RustEnginePostgresMetaStore
 
             if type(backend) is str:
                 raise Exception("unreacheable")
@@ -1830,7 +1819,7 @@ class GraphKnowledgeEngine:
         # Fast path may attempt to apply immediately; correctness relies on reconciliation.
         self._phase1_enable_index_jobs: bool = True
         self._phase1_enable_validation_cache: bool = True
-        self.embeddings: Optional[Callable[[str], Optional[List[float]]]] = (
+        self.embeddings: Callable[[str], list[float] | None] | None = (
             build_azure_embedding_fn_from_env()
         )
 
@@ -1838,7 +1827,7 @@ class GraphKnowledgeEngine:
         self._cached_extract_graph_with_llm = self.memory.cache( # engine owned, use engine cache
             self.extract_graph_with_llm, ignore=["self"]
         )
-        self.cached_embed: Optional[Callable[[str], Iterable[float]]] = None
+        self.cached_embed: Callable[[str], Iterable[float]] | None = None
         if embedding_cache_path:
             self.embedding_cache = Memory(location=embedding_cache_path)
 
@@ -1982,11 +1971,11 @@ class GraphKnowledgeEngine:
 
     # ... existing methods ...
     @staticmethod
-    def _node_doc_and_meta(n: "Node") -> tuple[str, dict]:
+    def _node_doc_and_meta(n: Node) -> tuple[str, dict]:
         return _node_doc_and_meta(n)
 
     @staticmethod
-    def _edge_doc_and_meta(e: "Edge") -> tuple[str, dict]:
+    def _edge_doc_and_meta(e: Edge) -> tuple[str, dict]:
         return _edge_doc_and_meta(e)
 
     def _maybe_reindex_edge_refs(self, edge: Edge, *, force: bool = False) -> None:
@@ -2012,13 +2001,13 @@ class GraphKnowledgeEngine:
     ) -> Grounding:
         return self.extract.dealias_one_grounding(grounding, real_doc_id)
 
-    def _dealias_span(self, mentions: List[Grounding] | None, real_doc_id: str):
+    def _dealias_span(self, mentions: list[Grounding] | None, real_doc_id: str):
         return self.extract.dealias_span(mentions, real_doc_id)
 
-    def _target_from_node(self, n: "Node") -> "AdjudicationTarget":
+    def _target_from_node(self, n: Node) -> AdjudicationTarget:
         return self.adjudicate.target_from_node(n)
 
-    def _target_from_edge(self, e: "Edge") -> "AdjudicationTarget":
+    def _target_from_edge(self, e: Edge) -> AdjudicationTarget:
         return self.adjudicate.target_from_edge(e)
 
     def check_document_exist(self, document_id: str | list[str]):
@@ -2030,7 +2019,7 @@ class GraphKnowledgeEngine:
         return self.extract.fetch_document_text(document_id)
 
     @staticmethod
-    def _cosine(u: List[float], v: List[float]) -> Optional[float]:
+    def _cosine(u: list[float], v: list[float]) -> float | None:
         if not u or not v or len(u) != len(v):
             return None
         dot = sum(a * b for a, b in zip(u, v))
@@ -2104,7 +2093,7 @@ class GraphKnowledgeEngine:
         return self.collection_lock[collection_name]
 
     @engine_context
-    def add_node(self, node: Node, doc_id: Optional[str] = None) -> None:
+    def add_node(self, node: Node, doc_id: str | None = None) -> None:
         return self.write.add_node(node, doc_id=doc_id)
 
     def _fanout_endpoints_rows(self, edge: Edge, doc_id: str | None):
@@ -2114,14 +2103,14 @@ class GraphKnowledgeEngine:
         return self.write.enrich_edge_meta(edge)
 
     @engine_context
-    def add_edge(self, edge: Edge, doc_id: Optional[str] = None) -> None:
+    def add_edge(self, edge: Edge, doc_id: str | None = None) -> None:
         return self.write.add_edge(edge, doc_id=doc_id)
 
-    async def async_add_node(self, node: Node, doc_id: Optional[str] = None) -> None:
+    async def async_add_node(self, node: Node, doc_id: str | None = None) -> None:
         """Use the async projection arrangement without sync IO fallback."""
         return await self.write.add_node_async(node, doc_id=doc_id)
 
-    async def async_add_edge(self, edge: Edge, doc_id: Optional[str] = None) -> None:
+    async def async_add_edge(self, edge: Edge, doc_id: str | None = None) -> None:
         """Use the async projection arrangement without sync IO fallback."""
         return await self.write.add_edge_async(edge, doc_id=doc_id)
 
@@ -2136,12 +2125,12 @@ class GraphKnowledgeEngine:
         return self.write.index_node_docs(node)
 
     def _nodes_by_doc(
-        self, doc_id: str, insertion_method: Optional[str] = None
+        self, doc_id: str, insertion_method: str | None = None
     ) -> list[str]:
         return self.read.node_ids_by_doc(doc_id, insertion_method=insertion_method)
 
     def _edge_ids_by_doc(
-        self, doc_id: str, insertion_method: Optional[str] = None
+        self, doc_id: str, insertion_method: str | None = None
     ) -> list[str]:
         return self.read.edge_ids_by_doc(doc_id, insertion_method=insertion_method)
 
@@ -2154,7 +2143,7 @@ class GraphKnowledgeEngine:
     def rebuild_all_edge_refs(self) -> int:
         return self.write.rebuild_all_edge_refs()
 
-    def edges_by_doc(self, doc_id: str, where: Optional[dict] = None) -> list[str]:
+    def edges_by_doc(self, doc_id: str, where: dict | None = None) -> list[str]:
         return self.read.edges_by_doc(doc_id, where=where)
 
     def list_edges_with_ref_filter(
@@ -2168,11 +2157,11 @@ class GraphKnowledgeEngine:
     def edges_by_ids(self, edge_ids):
         return run_awaitable_blocking(self.backend.edge_get(ids=edge_ids))
 
-    def nodes_by_doc(self, doc_id: str, *, where: Optional[dict] = None) -> list[str]:
+    def nodes_by_doc(self, doc_id: str, *, where: dict | None = None) -> list[str]:
         return self.read.nodes_by_doc(doc_id, where=where)
 
     def list_nodes_with_ref_filter(
-        self, doc_id: str, *, where: Optional[dict] = None
+        self, doc_id: str, *, where: dict | None = None
     ) -> list[Node]:
         return self.read.list_nodes_with_ref_filter(doc_id, where=where)
 
@@ -2192,12 +2181,12 @@ class GraphKnowledgeEngine:
     # ----------------------------
     # Vector queries
     # ----------------------------
-    def vector_search_nodes(self, embedding: List[float], top_k: int = 5):
+    def vector_search_nodes(self, embedding: list[float], top_k: int = 5):
         return run_awaitable_blocking(
             self.backend.node_query(query_embeddings=[embedding], n_results=top_k)
         )
 
-    def vector_search_edges(self, embedding: List[float], top_k: int = 5):
+    def vector_search_edges(self, embedding: list[float], top_k: int = 5):
         return run_awaitable_blocking(
             self.backend.edge_query(query_embeddings=[embedding], n_results=top_k)
         )
@@ -2324,7 +2313,7 @@ class GraphKnowledgeEngine:
 
     def _extract_graph_with_llm(
         self, content: str, doc: Document
-    ) -> Tuple[Any, Optional[LLMGraphExtraction], Optional[str]]:
+    ) -> tuple[Any, LLMGraphExtraction | None, str | None]:
         return self.ingest.extract_graph_with_llm_internal(content, doc)
 
     def _ingest_text_with_llm(
@@ -2470,12 +2459,12 @@ class GraphKnowledgeEngine:
     def generate_merge_candidates_doc_brute_force(
         self,
         kind: str = "node",
-        scope_doc_id: Optional[str] = None,
+        scope_doc_id: str | None = None,
         top_k: int = 200,
         *,
         # NEW optional knobs:
-        allowed_docs: Optional[List[str]] = None,
-        anchor_doc_id: Optional[str] = None,
+        allowed_docs: list[str] | None = None,
+        anchor_doc_id: str | None = None,
         cross_doc_only: bool = False,
         anchor_only: bool = True,
     ):
@@ -2510,15 +2499,15 @@ class GraphKnowledgeEngine:
 
     def generate_cross_kind_candidates(
         self,
-        scope_doc_id: Optional[str] = None,
+        scope_doc_id: str | None = None,
         limit_per_bucket: int = 200,
         *,
         # NEW optional knobs:
-        allowed_docs: Optional[List[str]] = None,
-        anchor_doc_id: Optional[str] = None,
+        allowed_docs: list[str] | None = None,
+        anchor_doc_id: str | None = None,
         cross_doc_only: bool = False,
         anchor_only: bool = True,
-    ) -> List[AdjudicationCandidate]:
+    ) -> list[AdjudicationCandidate]:
         """
         Back-compat:
         - Without new knobs and with scope_doc_id set, behave as before (same-doc only).
@@ -2558,12 +2547,12 @@ class GraphKnowledgeEngine:
 
     def generate_merge_candidates(
         self,
-        new_node: Union[Node, str, Sequence[Union[Node, str]]],
+        new_node: Node | str | Sequence[Node | str],
         top_k: int = 10,
         *,
         # NEW optional knobs (post-filtering on vector hits):
-        allowed_docs: Optional[List[str]] = None,
-        anchor_doc_id: Optional[str] = None,
+        allowed_docs: list[str] | None = None,
+        anchor_doc_id: str | None = None,
         cross_doc_only: bool = False,
         anchor_only: bool = True,
     ):
@@ -2600,15 +2589,15 @@ class GraphKnowledgeEngine:
 
     def adjudicate_merge(
         self, left_node: Node | Edge, right_node: Node | Edge
-    ) -> Dict[Any, Any] | BaseModel:
+    ) -> dict[Any, Any] | BaseModel:
         """deligate to adjudicator to commit merge if any nodes/ edges was (supposedly) earlier decided meaning the same.
         The api only join them with reconsidering."""
         return self.adjudicator.adjudicate_merge(left_node, right_node)
 
     def batch_adjudicate_merges(
         self,
-        pairs: List[Tuple["Node", "Node"]],
-        question_code: "AdjudicationQuestionCode" = AdjudicationQuestionCode.SAME_ENTITY,
+        pairs: list[tuple[Node, Node]],
+        question_code: AdjudicationQuestionCode = AdjudicationQuestionCode.SAME_ENTITY,
     ):
         if not pairs:
             return []
@@ -2618,7 +2607,7 @@ class GraphKnowledgeEngine:
         self,
         *,
         document_id: str,
-        page_text: str | List[str] | Dict[str, Any],
+        page_text: str | list[str] | dict[str, Any],
         page_number: int | None = None,
         auto_adjudicate: bool = True,
         extraction_schema_mode: ExtractionSchemaMode | None = None,
@@ -2639,16 +2628,16 @@ class GraphKnowledgeEngine:
         self,
         document_id: str,
         *,
-        source_text: Optional[str] = None,
+        source_text: str | None = None,
         min_ngram: int = 5,
         threshold: float = 0.70,
-        weights: Dict[str, float] = {
+        weights: dict[str, float] = {
             "rapidfuzz": 0.5,
             "coverage": 0.3,
             "embedding": 0.2,
         },
         update_edges: bool = True,
-    ) -> Dict[str, int]:
+    ) -> dict[str, int]:
         to_return = self.verifier.verify_mentions_for_doc(
             document_id,
             source_text=source_text,
@@ -2664,8 +2653,8 @@ class GraphKnowledgeEngine:
         *,
         kind: str,  # "node" | "edge"
         insertion_method: str,
-        ids: Optional[Iterable[str]] = None,  # optionally restrict to this set
-        doc_id: Optional[str] = None,  # optionally restrict to a document
+        ids: Iterable[str] | None = None,  # optionally restrict to this set
+        doc_id: str | None = None,  # optionally restrict to a document
     ) -> list[str]:
         return self.read.ids_with_insertion_method(
             kind=kind,
@@ -2681,7 +2670,7 @@ class GraphKnowledgeEngine:
         ref: Span,
         *,
         min_ngram: int = 5,
-        weights: Dict[str, float] = {
+        weights: dict[str, float] = {
             "rapidfuzz": 0.5,
             "coverage": 0.3,
             "embedding": 0.2,
@@ -2699,17 +2688,17 @@ class GraphKnowledgeEngine:
 
     def verify_mentions_for_items(
         self,
-        items: List[Tuple[str, str]],  # list of ("node"|"edge", id)
+        items: list[tuple[str, str]],  # list of ("node"|"edge", id)
         *,
-        source_text_by_doc: Optional[Dict[str, str]] = None,
+        source_text_by_doc: dict[str, str] | None = None,
         min_ngram: int = 5,
         threshold: float = 0.70,
-        weights: Dict[str, float] = {
+        weights: dict[str, float] = {
             "rapidfuzz": 0.5,
             "coverage": 0.3,
             "embedding": 0.2,
         },
-    ) -> Dict[str, int]:
+    ) -> dict[str, int]:
         """
         Targeted verification for a mixed set of nodes/edges.
         source_text_by_doc lets you pass pre-fetched doc text keyed by doc_id.

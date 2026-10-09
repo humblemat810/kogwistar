@@ -4,7 +4,6 @@ import pytest
 
 from kogwistar.demo.budget_branch_pin_demo import run_budget_branch_pin_demo
 
-
 pytestmark = [pytest.mark.core]
 
 

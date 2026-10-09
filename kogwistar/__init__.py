@@ -11,6 +11,7 @@ from kogwistar.provenance import EvidencePackDigest, evidence_pack_digest_hash
 __version__ = "0.2.5"
 
 if TYPE_CHECKING:
+    from kogwistar import shortids
     from kogwistar.conversation.conversation_orchestrator import (
         ConversationOrchestrator,
     )
@@ -25,38 +26,37 @@ if TYPE_CHECKING:
         VideoTrackManifest,
         VideoTrackRegion,
     )
-    from kogwistar.provenance import EvidencePackDigest
     from kogwistar.llm_tasks import (
         DefaultTaskProviderConfig,
         LLMTaskSet,
         build_default_llm_tasks,
     )
+    from kogwistar.provenance import EvidencePackDigest
     from kogwistar.runtime import WorkflowRuntime
-    from kogwistar import shortids
 
 __all__ = [
-    "GraphKnowledgeEngine",
-    "WorkflowRuntime",
     "ConversationOrchestrator",
     "ConversationService",
-    "LLMTaskSet",
     "DefaultTaskProviderConfig",
-    "build_default_llm_tasks",
-    "Node",
-    "Edge",
     "Document",
-    "Span",
-    "Grounding",
-    "MultimodalSpan",
-    "PinnedLogicalRef",
+    "Edge",
     "EmbeddingReference",
+    "EvidencePackDigest",
+    "GraphKnowledgeEngine",
+    "Grounding",
+    "LLMTaskSet",
+    "MultimodalSpan",
+    "Node",
+    "PinnedLogicalRef",
+    "Span",
     "VideoTrackFrame",
     "VideoTrackManifest",
     "VideoTrackRegion",
-    "EvidencePackDigest",
+    "WorkflowRuntime",
+    "build_default_llm_tasks",
     "evidence_pack_digest_hash",
-    "shortids",
     "list_submodules",
+    "shortids",
 ]
 
 _PACKAGE_DIR = Path(__file__).resolve().parent

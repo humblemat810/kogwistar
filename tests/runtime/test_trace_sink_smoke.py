@@ -8,10 +8,10 @@ import pytest
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.models import Grounding, MentionVerification, Span
-from kogwistar.runtime.sinks import JsonlEventSink
 from kogwistar.runtime.models import RunSuccess, WorkflowEdge, WorkflowNode
 from kogwistar.runtime.resolvers import MappingStepResolver
 from kogwistar.runtime.runtime import WorkflowRuntime
+from kogwistar.runtime.sinks import JsonlEventSink
 from tests._helpers.fake_backend import build_fake_backend
 from tests.conftest import FakeEmbeddingFunction
 

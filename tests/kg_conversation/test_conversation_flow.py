@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 import pytest
+
 # This six-turn matrix invokes Gemini/Ollama provider paths for every backend.
 # Short deterministic v2 parity coverage remains in ci_full; provider behavior
 # belongs to slow/manual model validation, not ADR-015 compatibility CI.
@@ -9,33 +10,33 @@ pytestmark = pytest.mark.slow
 
 pytest.importorskip("chromadb")
 pytest.importorskip("langchain_core")
+from collections.abc import Callable
+from typing import ParamSpec, TypeVar, cast
+
 from langchain_core.language_models import BaseChatModel
+
+from kogwistar.cdc.oplog import OplogWriter
 from kogwistar.conversation.filtering import candiate_filtering_callback
 from kogwistar.conversation.models import (
     FilteringResult,
     MetaFromLastSummary,
 )
 from kogwistar.conversation.service import ConversationService
-from kogwistar.cdc.oplog import OplogWriter
 from kogwistar.engine_core.models import (
-    Node,
-    Span,
     Grounding,
     MentionVerification,
+    Node,
+    Span,
 )
-
-
-from typing import Callable, TypeVar, ParamSpec, cast
-from kogwistar.utils.cache_backend import Memory
 from kogwistar.id_provider import stable_id
-
+from kogwistar.utils.cache_backend import Memory
 
 # def _fake_ef_dim(dim: int):
 #     def _ef(texts):
 #         return [[0.01] * dim for _ in texts]
 #     return _ef
+from tests.conftest import _make_engine_pair  #, FakeEmbeddingFunction
 
-from tests.conftest import _make_engine_pair#, FakeEmbeddingFunction
 # def _make_engine_pair(*, backend_kind: str, tmp_path, sa_engine, pg_schema, dim: int = 3):
 #     """
 #     Build (kg_engine, conv_engine) for either chroma or the pg-backed path.

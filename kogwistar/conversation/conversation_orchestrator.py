@@ -9,33 +9,33 @@ It is intentionally lightweight and uses your existing retrievers/agents.
 
 from __future__ import annotations
 
-
 from dataclasses import dataclass, field, replace
-from typing import Any, List, Optional, Protocol, cast
+from typing import Any, Protocol, cast
 
-from kogwistar.llm_tasks import LLMTaskSet, SummarizeContextTaskRequest
-
-from .models import ConversationEdge, MetaFromLastSummary
-from .callbacks import RetrievalFilteringCallback
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.id_provider import stable_id
-from .conversation_state_contracts import (
-    WorkflowStateModel,
-    PrevTurnMetaSummaryModel,
-    ConversationWorkflowState,
-)
-from ..engine_core.models import Grounding, MentionVerification, Span, Role
+from kogwistar.llm_tasks import LLMTaskSet, SummarizeContextTaskRequest
+
+from ..engine_core.models import Grounding, MentionVerification, Role, Span
 from ..utils.embedding_vectors import normalize_embedding_vector
+from .callbacks import RetrievalFilteringCallback
+from .conversation_state_contracts import (
+    ConversationWorkflowState,
+    PrevTurnMetaSummaryModel,
+    WorkflowStateModel,
+)
+from .knowledge_retriever import KnowledgeRetriever
+from .memory_retriever import MemoryPinResult, MemoryRetrievalResult, MemoryRetriever
 from .models import (
+    AddTurnResult,
     ConversationAIResponse,
+    ConversationEdge,
     ConversationNode,
     KnowledgeRetrievalResult,
-    AddTurnResult,
+    MetaFromLastSummary,
 )
-from .tool_runner import ToolCallIdFactory, ToolRunner
-from .memory_retriever import MemoryRetriever, MemoryPinResult, MemoryRetrievalResult
-from .knowledge_retriever import KnowledgeRetriever
 from .policy import get_chat_tail, last_summary_of_node
+from .tool_runner import ToolCallIdFactory, ToolRunner
 
 
 class TokenEstimator(Protocol):
@@ -57,14 +57,14 @@ class OrchestratorState:
     current_turn_node_id: str | None = None
     turn_index: int | None = None
     self_span: Span | None = None
-    embedding: List[float] | None = None
+    embedding: list[float] | None = None
 
     # retrieval artifacts
     memory: MemoryRetrievalResult | None = None
     knowledge: KnowledgeRetrievalResult | None = None
     memory_pin: MemoryPinResult | None = None
-    pinned_kg_pointer_node_ids: List[str] = field(default_factory=list)
-    pinned_kg_edge_ids: List[str] = field(default_factory=list)
+    pinned_kg_pointer_node_ids: list[str] = field(default_factory=list)
+    pinned_kg_edge_ids: list[str] = field(default_factory=list)
 
     # answer
     answer: ConversationAIResponse | None = None
@@ -85,10 +85,10 @@ class ExecClock:
     run_step_seq: int
     attempt_seq: int = 0
 
-    def bump_step(self) -> "ExecClock":
+    def bump_step(self) -> ExecClock:
         return replace(self, run_step_seq=self.run_step_seq + 1, attempt_seq=0)
 
-    def bump_attempt(self) -> "ExecClock":
+    def bump_attempt(self) -> ExecClock:
         return replace(self, attempt_seq=self.attempt_seq + 1)
 
 
@@ -1274,7 +1274,7 @@ class ConversationOrchestrator:
         st.knowledge = kg
 
         # pin memory (not a tool call; it's a graph mutation derived from the tool outputs)
-        memory_pin: Optional[MemoryPinResult] = None
+        memory_pin: MemoryPinResult | None = None
         if mem.selected and mem.memory_context_text:
             memory_pin = mem_retriever.pin_selected(
                 user_id=user_id,
@@ -1725,7 +1725,7 @@ class ConversationOrchestrator:
         self,
         *,
         conversation_id: str,
-        model_names: Optional[list[str]] = None,
+        model_names: list[str] | None = None,
         prev_turn_meta_summary: MetaFromLastSummary,
         cache_dir = None,
     ) -> ConversationAIResponse:
@@ -1742,7 +1742,7 @@ class ConversationOrchestrator:
         the conversation graph response workflow.
         """
 
-        from .agentic_answering import AgenticAnsweringAgent, AgentConfig
+        from .agentic_answering import AgentConfig, AgenticAnsweringAgent
 
         model_names = model_names or [
             str(

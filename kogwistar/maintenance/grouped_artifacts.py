@@ -2,7 +2,8 @@ from __future__ import annotations
 
 """Grouped replacement-artifact helpers for maintenance flows."""
 
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from kogwistar.maintenance.artifacts import (
     write_versioned_artifact,

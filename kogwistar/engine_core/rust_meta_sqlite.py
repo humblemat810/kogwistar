@@ -1,16 +1,17 @@
 from __future__ import annotations
 
 import contextvars
+import uuid
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import fields
 from pathlib import Path
-from typing import Any, Iterator
-from .event_envelope import EntityEventEnvelope
-import uuid
+from typing import Any
 
 from kogwistar._rust_bridge import store_sqlite
 from kogwistar.engine_core.engine_sqlite import IndexJobRow, ProjectedLaneMessageSqlRow
 
+from .event_envelope import EntityEventEnvelope
 
 _INDEX_JOB_FIELDS = {field.name for field in fields(IndexJobRow)}
 _LANE_MESSAGE_FIELDS = {field.name for field in fields(ProjectedLaneMessageSqlRow)}

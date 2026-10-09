@@ -9,7 +9,6 @@ from tests._helpers.fake_backend import build_fake_backend
 from tests._helpers.span_consistent_seed import build_span_consistent_debug_rag_seed
 from tests.conftest import FakeEmbeddingFunction
 
-
 pytestmark = pytest.mark.ci
 
 

@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import json
 import shutil
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
-
 
 HISTORY_NAMESPACE = "bridge_governance_history"
 PROJECTION_NAMESPACE = "bridge_governance"

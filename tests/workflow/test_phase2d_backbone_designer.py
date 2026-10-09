@@ -1,8 +1,10 @@
 # ruff: noqa: E402
 from __future__ import annotations
 
-from kogwistar.conversation.designer import ConversationWorkflowDesigner
 import pytest
+
+from kogwistar.conversation.designer import ConversationWorkflowDesigner
+
 pytestmark = pytest.mark.ci_full
 
 pytest.importorskip("chromadb")

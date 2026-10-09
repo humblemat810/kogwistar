@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import time
-import asyncio
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Protocol, TypeAlias, cast
 
@@ -58,7 +58,7 @@ class AsyncPostgresNamedProjectionStore:
     serialized with the same PostgreSQL advisory-lock rule as the sync store.
     """
 
-    def __init__(self, engine: "AsyncEngine", *, schema: str = "public") -> None:
+    def __init__(self, engine: AsyncEngine, *, schema: str = "public") -> None:
         if not callable(getattr(engine, "begin", None)) or not callable(
             getattr(engine, "connect", None)
         ):

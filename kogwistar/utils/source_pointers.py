@@ -4,7 +4,6 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Literal
 
-
 SourcePointerEndMode = Literal["exclusive", "inclusive"]
 
 

@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from importlib import import_module
 import json
 import math
 import os
 import sys
+import uuid
+from importlib import import_module
 from types import ModuleType
 from typing import Any
-import uuid
 
 
 class RustExtensionUnavailableError(RuntimeError):

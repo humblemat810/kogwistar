@@ -4,13 +4,14 @@ import argparse
 import json
 import shutil
 import sqlite3
-import sys
 import subprocess
+import sys
 import uuid
 import warnings
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -34,9 +35,8 @@ from kogwistar.runtime.models import (
     WorkflowNode,
 )
 from kogwistar.runtime.resolvers import MappingStepResolver
-from kogwistar.runtime.sandbox import SandboxFactory, SandboxRequest
 from kogwistar.runtime.runtime import StepContext, WorkflowRuntime
-
+from kogwistar.runtime.sandbox import SandboxFactory, SandboxRequest
 
 WORKFLOW_ID = "tutorial_runtime_pause_resume_v2"
 SANDBOX_WORKFLOW_ID = "tutorial_runtime_sandboxed_ops_v2"

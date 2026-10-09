@@ -6,6 +6,7 @@ from collections.abc import Awaitable, Callable, Iterable, Mapping
 from graphlib import TopologicalSorter
 from typing import TYPE_CHECKING, Any, cast
 
+from ..async_compat import run_awaitable_blocking
 from ..models import (
     Document,
     Edge,
@@ -18,7 +19,6 @@ from ..models import (
     PureGraph,
     Span,
 )
-from ..async_compat import run_awaitable_blocking
 from ..utils.aliasing import _is_alias, _is_new_edge, _is_new_node, _is_uuid
 from .base import NamespaceProxy
 
@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 
 
 class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
-    def __init__(self, engine: "GraphKnowledgeEngine") -> None:
+    def __init__(self, engine: GraphKnowledgeEngine) -> None:
         super().__init__(engine)
 
     @staticmethod

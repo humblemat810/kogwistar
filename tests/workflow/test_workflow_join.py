@@ -1,12 +1,12 @@
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, List
+from typing import Any
 
 import pytest
 
-from kogwistar.runtime.runtime import StepContext, WorkflowRuntime
-from kogwistar.runtime.resolvers import MappingStepResolver
 from kogwistar.runtime.models import RunSuccess
+from kogwistar.runtime.resolvers import MappingStepResolver
+from kogwistar.runtime.runtime import StepContext, WorkflowRuntime
 
 pytestmark = pytest.mark.ci_full
 
@@ -16,7 +16,7 @@ class FakeNode:
     op: str
     terminal: bool
     fanout: bool
-    metadata: Dict[str, Any] | None = None
+    metadata: dict[str, Any] | None = None
 
     def safe_get_id(self):
         return self.id
@@ -27,11 +27,11 @@ class FakeEdge:
     id: str
     label: str
     predicate: str
-    source_ids: List[str]
-    target_ids: List[str]
+    source_ids: list[str]
+    target_ids: list[str]
     multiplicity: int
     is_default: bool
-    metadata: Dict[str, Any] | None = None
+    metadata: dict[str, Any] | None = None
 
     def safe_get_id(self):
         return self.id
@@ -64,7 +64,7 @@ class FakeConversationEngine:
 
 
 class FakeWorkflowEngine:
-    def __init__(self, nodes: List[FakeNode], edges: List[FakeEdge]) -> None:
+    def __init__(self, nodes: list[FakeNode], edges: list[FakeEdge]) -> None:
         self._nodes = nodes
         self._edges = edges
         self.read = self
@@ -220,7 +220,7 @@ def test_join_barrier_waits_for_all_arrivals(max_workers: int):
         max_workers=max_workers,
     )
 
-    state: Dict[str, Any] = {}
+    state: dict[str, Any] = {}
     _run_result = rt.run(
         workflow_id=wid,
         conversation_id="conv_test",
@@ -320,7 +320,7 @@ def test_join_does_not_wait_for_branch_that_can_no_longer_reach_it():
         max_workers=2,
     )
 
-    state: Dict[str, Any] = {}
+    state: dict[str, Any] = {}
     run_result = rt.run(
         workflow_id=wid,
         conversation_id="conv_test",
@@ -424,7 +424,7 @@ def test_nested_joins_human_debug(capsys):
         max_workers=2,
     )
 
-    state: Dict[str, Any] = {"testcase_rt_join_debug": True}
+    state: dict[str, Any] = {"testcase_rt_join_debug": True}
     run_result = rt.run(
         workflow_id=wid,
         conversation_id="conv_test",

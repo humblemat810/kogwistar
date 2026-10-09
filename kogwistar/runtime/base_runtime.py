@@ -18,7 +18,12 @@ from .._rust_bridge import (
 from ..id_provider import stable_id
 from .budget import StateBackedBudgetLedger
 from .contract import Predicate
-from .models import StateUpdate, WorkflowDesignArtifact, WorkflowInvocationRequest, WorkflowState
+from .models import (
+    StateUpdate,
+    WorkflowDesignArtifact,
+    WorkflowInvocationRequest,
+    WorkflowState,
+)
 from .routing import RouteComputation, compute_route_next
 
 if TYPE_CHECKING:

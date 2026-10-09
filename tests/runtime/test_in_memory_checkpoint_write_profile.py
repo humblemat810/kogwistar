@@ -6,13 +6,12 @@ import pytest
 
 from kogwistar.runtime.perf_profile import (
     format_profile_report,
-    profile_in_memory_index_job_breakdown,
-    profile_in_memory_index_job_worker_parallel,
     profile_in_memory_checkpoint_write,
     profile_in_memory_checkpoint_write_mode,
+    profile_in_memory_index_job_breakdown,
+    profile_in_memory_index_job_worker_parallel,
     profile_simple_resolver_workflow,
 )
-
 
 pytestmark = [pytest.mark.manual, pytest.mark.core, pytest.mark.runtime]
 

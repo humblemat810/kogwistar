@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import sqlite3
 
-
 _EXTERNAL_CONTENT_FTS_SQL = """
 CREATE VIRTUAL TABLE IF NOT EXISTS semantic_index_fts
 USING fts5(

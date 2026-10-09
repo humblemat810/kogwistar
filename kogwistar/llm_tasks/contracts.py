@@ -7,7 +7,7 @@ from typing import Literal, Protocol
 try:
     from typing import TypeAlias
 except ImportError:  # pragma: no cover - py<3.10 compatibility
-    from typing_extensions import TypeAlias
+    from typing import TypeAlias
 
 from pydantic import BaseModel
 

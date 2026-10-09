@@ -4,12 +4,11 @@ from pathlib import Path
 
 import pytest
 
+from kogwistar.engine_core.engine_postgres_meta import EnginePostgresMetaStore
 from kogwistar.engine_core.engine_sqlite import EngineSQLite
 from kogwistar.engine_core.in_memory_meta import InMemoryMetaStore
-from kogwistar.engine_core.engine_postgres_meta import EnginePostgresMetaStore
 from kogwistar.engine_core.meta_lane_messages import LaneMessageMetaStoreMixin
 from kogwistar.messaging.models import ProjectedLaneMessageRow
-
 
 pytestmark = pytest.mark.core
 

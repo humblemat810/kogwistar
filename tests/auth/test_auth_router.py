@@ -1,25 +1,30 @@
 import os
+
 import pytest
+
 pytest.importorskip("fastapi")
 pytest.importorskip("mcp")
 pytest.importorskip("sqlalchemy")
 from fastapi.testclient import TestClient
+
 from ..auth_env import TEST_JWT_ALG, TEST_JWT_SECRET
 
 os.environ.setdefault("JWT_SECRET", TEST_JWT_SECRET)
 os.environ.setdefault("JWT_ALG", TEST_JWT_ALG)
 
 pytestmark = pytest.mark.ci
-from kogwistar.server_mcp_with_admin import app, JWT_SECRET, JWT_ALG
+from unittest.mock import AsyncMock
+from urllib.parse import parse_qs, urlparse
+
+from jose import jwt
+
 from kogwistar.server.auth.db import (
     create_auth_engine,
-    init_auth_db,
     get_session,
+    init_auth_db,
 )
 from kogwistar.server.auth.service import AuthService
-from jose import jwt
-from urllib.parse import urlparse, parse_qs
-from unittest.mock import AsyncMock
+from kogwistar.server_mcp_with_admin import JWT_ALG, JWT_SECRET, app
 
 
 @pytest.fixture(scope="module")

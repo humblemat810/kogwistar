@@ -1,25 +1,27 @@
 from __future__ import annotations
 
 import uuid
-from typing import List, Optional, cast
+from typing import cast
 
-from kogwistar.llm_tasks import LLMTaskSet
-
-from .models import RetrievalResult
-from .callbacks import RetrievalFilteringCallback
-
-from .models import ConversationEdge
 from kogwistar.conversation.agentic_answering import snapshot_hash
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
-from .models import KnowledgeRetrievalResult
 from kogwistar.id_provider import stable_id
+from kogwistar.llm_tasks import LLMTaskSet
 from kogwistar.logical_refs import (
     LogicalRef,
     build_reference_node_payload,
 )
 
-from .models import ConversationNode, FilteringResult, MetaFromLastSummary
 from ..engine_core.models import Grounding, Span
+from .callbacks import RetrievalFilteringCallback
+from .models import (
+    ConversationEdge,
+    ConversationNode,
+    FilteringResult,
+    KnowledgeRetrievalResult,
+    MetaFromLastSummary,
+    RetrievalResult,
+)
 
 
 class KnowledgeRetriever:
@@ -56,7 +58,7 @@ class KnowledgeRetriever:
         self.deep_seed_limit = deep_seed_limit
 
     def _shallow_query(
-        self, *, query_embedding: List[float], max_retrieval_level
+        self, *, query_embedding: list[float], max_retrieval_level
     ) -> RetrievalResult:
         node_batches = self.ref_knowledge_engine.read.query_nodes(
             query_embeddings=[query_embedding],
@@ -89,7 +91,7 @@ class KnowledgeRetriever:
         # return (rows.get("ids") or [[]])[0] or []
 
     def _deep_seeded_semantic(
-        self, *, user_text: str, seed_kg_node_ids: List[str], max_retrieval_level=2
+        self, *, user_text: str, seed_kg_node_ids: list[str], max_retrieval_level=2
     ) -> RetrievalResult:
         seed_ids = seed_kg_node_ids[: self.deep_seed_limit]
         # out: List[str] = []
@@ -114,8 +116,8 @@ class KnowledgeRetriever:
         *,
         user_text: str,
         context_text: str,
-        query_embedding: List[float],
-        seed_kg_node_ids: Optional[List[str]] = None,
+        query_embedding: list[float],
+        seed_kg_node_ids: list[str] | None = None,
         max_retrieval_level: int = 2,
     ) -> KnowledgeRetrievalResult:
         shallow_results = self._shallow_query(
@@ -192,12 +194,12 @@ class KnowledgeRetriever:
         turn_node_id: str,
         turn_index: int,
         self_span: Span,
-        selected_knowledge: Optional[FilteringResult],
-        selected_knowledge_nodes: Optional[RetrievalResult] = None,
+        selected_knowledge: FilteringResult | None,
+        selected_knowledge_nodes: RetrievalResult | None = None,
         prev_turn_meta_summary: MetaFromLastSummary | None = None,
-    ) -> tuple[List[str], List[str]]:
-        pinned_pointer_node_ids: List[str] = []
-        pinned_edge_ids: List[str] = []
+    ) -> tuple[list[str], list[str]]:
+        pinned_pointer_node_ids: list[str] = []
+        pinned_edge_ids: list[str] = []
 
         # ref_kg_engine: GraphKnowledgeEngine
         # ref_kg_engine = self.ref_knowledge_engine

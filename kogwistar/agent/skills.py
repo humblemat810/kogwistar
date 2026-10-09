@@ -2,23 +2,24 @@
 
 from __future__ import annotations
 
+import asyncio
+import copy
 import hashlib
 import json
 import re
 import shlex
-import copy
-import asyncio
 from collections.abc import Mapping
 from typing import Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from .catalog import CatalogEntry, DurableCatalogStore, scoped_projection_namespace
 from kogwistar.engine_core.embedding_profile import (
     AsyncNamedProjectionStore,
     NamedProjectionStore,
 )
 from kogwistar.json_types import JsonValue
+
+from .catalog import CatalogEntry, DurableCatalogStore, scoped_projection_namespace
 
 SkillStepKind = Literal[
     "instruction",
@@ -35,7 +36,7 @@ JsonObject = dict[str, JsonValue]
 class SkillProjectionAcl(Protocol):
     """Authorize one skill projection artifact for a principal."""
 
-    def __call__(self, artifact: "SkillGraphArtifact", principal: str, /) -> bool: ...
+    def __call__(self, artifact: SkillGraphArtifact, principal: str, /) -> bool: ...
 
 _SAFE_COMMAND_CHARS = re.compile(r"[;&|<>`$]|\n")
 _SHELL_WRAPPERS = {"sh", "bash", "zsh", "fish", "cmd", "cmd.exe", "powershell", "pwsh"}
@@ -76,7 +77,7 @@ class SkillGraphNode(BaseModel):
     metadata: JsonObject = Field(default_factory=dict)
 
     @model_validator(mode="after")
-    def _safe_invocation(self) -> "SkillGraphNode":
+    def _safe_invocation(self) -> SkillGraphNode:
         if self.invocable and self.binding_status != "validated":
             raise ValueError("only validated skill bindings may be invocable")
         if self.kind in {"script_call", "command_template"} and not self.required_capabilities:
@@ -116,7 +117,7 @@ class SkillGraphArtifact(BaseModel):
     provenance: JsonObject = Field(default_factory=dict)
 
     @model_validator(mode="after")
-    def _bounded_graph(self) -> "SkillGraphArtifact":
+    def _bounded_graph(self) -> SkillGraphArtifact:
         if len(self.nodes) > 256 or len(self.edges) > 512:
             raise ValueError("skill graph exceeds deterministic ingestion bounds")
         node_ids = {node.node_id for node in self.nodes}
@@ -156,7 +157,7 @@ class SkillProjectionRequest(BaseModel):
     lane_id: str = ""
 
     @model_validator(mode="after")
-    def _derive_lane(self) -> "SkillProjectionRequest":
+    def _derive_lane(self) -> SkillProjectionRequest:
         self.lane_id = f"ws:{self.tenant_id}:{self.project_id}:g:projection:lane:skills"
         return self
 
@@ -172,7 +173,7 @@ class SkillExecutionPlan(BaseModel):
     evidence_refs: list[str] = Field(default_factory=list)
     source_fingerprint: str
     projection_revision: int
-    execution_policy: "SkillExecutionPolicy | None" = None
+    execution_policy: SkillExecutionPolicy | None = None
 
 
 class SkillExecutionPolicy(BaseModel):
@@ -192,7 +193,7 @@ class SkillExecutionPolicy(BaseModel):
     allow_network: bool = False
 
     @model_validator(mode="after")
-    def _safe_policy(self) -> "SkillExecutionPolicy":
+    def _safe_policy(self) -> SkillExecutionPolicy:
         if self.cwd is not None:
             validate_package_relative_path(self.cwd)
         if any(not str(key).strip() or "=" in str(key) for key in self.environment_keys):

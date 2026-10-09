@@ -1,15 +1,15 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
 import json
 import time
 import uuid
 from contextlib import nullcontext
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
+from kogwistar.acl import current_acl_context
 from kogwistar.engine_core.engine import scoped_namespace
 from kogwistar.engine_core.models import Edge, Grounding, Node, Span
-from kogwistar.acl import current_acl_context
 from kogwistar.id_provider import stable_id
 from kogwistar.server.auth_middleware import (
     can_access_security_scope,
@@ -87,7 +87,7 @@ def _compact_json(value: object) -> str | None:
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 
-def _coerce_lane_datetime(value: datetime | int | float | str | None) -> datetime | None:
+def _coerce_lane_datetime(value: datetime | float | str | None) -> datetime | None:
     if value is None:
         return None
     if isinstance(value, datetime):
@@ -108,7 +108,7 @@ def _coerce_lane_datetime(value: datetime | int | float | str | None) -> datetim
             return None
 
 
-def _coerce_lane_epoch(value: datetime | int | float | str | None) -> int | None:
+def _coerce_lane_epoch(value: datetime | float | str | None) -> int | None:
     dt = _coerce_lane_datetime(value)
     if dt is not None:
         return int(dt.timestamp())
@@ -166,7 +166,7 @@ def _lane_record_from_payload(
 
 
 class LaneMessagingService:
-    def __init__(self, engine: "GraphKnowledgeEngine") -> None:
+    def __init__(self, engine: GraphKnowledgeEngine) -> None:
         self.engine = engine
 
     def send_message(
@@ -629,10 +629,10 @@ class LaneMessagingService:
         recipient_id: str | None = None,
         correlation_id: str | None = None,
         reply_to_message_id: str | None = None,
-        created_at_gte: datetime | int | float | str | None = None,
-        created_at_lte: datetime | int | float | str | None = None,
-        available_at_gte: datetime | int | float | str | None = None,
-        available_at_lte: datetime | int | float | str | None = None,
+        created_at_gte: datetime | float | str | None = None,
+        created_at_lte: datetime | float | str | None = None,
+        available_at_gte: datetime | float | str | None = None,
+        available_at_lte: datetime | float | str | None = None,
         limit: int = 1000,
         newest_first: bool = False,
     ) -> list[ProjectedLaneMessageRow]:
@@ -689,11 +689,11 @@ class LaneMessagingService:
         recipient_id: str | None = None,
         correlation_id: str | None = None,
         reply_to_message_id: str | None = None,
-        available_at_gte: datetime | int | float | str | None = None,
-        available_at_lte: datetime | int | float | str | None = None,
+        available_at_gte: datetime | float | str | None = None,
+        available_at_lte: datetime | float | str | None = None,
         idempotency_key: str | None = None,
-        created_at_gte: datetime | int | float | str | None = None,
-        created_at_lte: datetime | int | float | str | None = None,
+        created_at_gte: datetime | float | str | None = None,
+        created_at_lte: datetime | float | str | None = None,
         limit: int = 100,
         newest_first: bool = False,
     ) -> list[Node]:

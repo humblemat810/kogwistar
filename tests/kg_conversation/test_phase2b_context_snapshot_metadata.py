@@ -1,4 +1,5 @@
 import pytest
+
 pytestmark = pytest.mark.ci_full
 
 from kogwistar.conversation.models import ContextSnapshotMetadata

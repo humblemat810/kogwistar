@@ -6,13 +6,15 @@ from typing import Any
 
 import pytest
 
+from kogwistar import shortids
+from kogwistar.engine_core.in_memory_backend import (
+    _matches_where,
+    _matches_where_python,
+)
 from kogwistar.id_provider import stable_id
 from kogwistar.provenance import evidence_pack_digest_hash
-from kogwistar.runtime.serialize import stable_json_dumps
-from kogwistar.engine_core.in_memory_backend import _matches_where, _matches_where_python
-from kogwistar import shortids
 from kogwistar.runtime.base_runtime import apply_state_update_inplace
-
+from kogwistar.runtime.serialize import stable_json_dumps
 
 pytestmark = [pytest.mark.ci, pytest.mark.core]
 
@@ -102,7 +104,7 @@ def test_metadata_filter_invalid_input_differential(
     monkeypatch.setenv("KOGWISTAR_IMPL_CONTRACTS", "rust")
     with pytest.raises(exception) as raised:
         _matches_where(metadata, where)
-    assert getattr(raised.value, "code") == code
+    assert raised.value.code == code
 
 
 def test_metadata_filter_shadow_does_not_reenter_oracle(monkeypatch) -> None:
@@ -155,7 +157,7 @@ def test_runtime_state_reducer_parity_idempotency_and_invalid_inputs(monkeypatch
     assert state == {"items": ["seed", "a", "b", "c"], "keep": {"v": 1}, "answer": 1}
     with pytest.raises(Exception) as raised:
         apply_state_update_inplace({}, [("u", {"x": 1})], {"x": 2})
-    assert getattr(raised.value, "code") == "KOGWISTAR_CONTRACT_STATE_UPDATE_CONFLICT"
+    assert raised.value.code == "KOGWISTAR_CONTRACT_STATE_UPDATE_CONFLICT"
     with pytest.raises(TypeError):
         apply_state_update_inplace({}, [("e", {"items": 1})])
     with pytest.raises(AttributeError):
@@ -270,7 +272,7 @@ def test_entity_event_replay_golden_and_error_taxonomy(_native_extension) -> Non
     assert canonical["type"] == "entity.tombstone"
     with pytest.raises(ValueError) as raised:
         _native_extension.canonical_entity_event('{"type":"other","entity":{"id":"x"},"event_seq":1}')
-    assert getattr(raised.value, "code") == "KOGWISTAR_CONTRACT_EVENT_TYPE_UNSUPPORTED"
+    assert raised.value.code == "KOGWISTAR_CONTRACT_EVENT_TYPE_UNSUPPORTED"
 
     errors = json.loads((ROOT / "contracts" / "golden" / "errors.json").read_text())
     expected_codes = {item["code"] for item in errors["errors"]}
@@ -285,9 +287,9 @@ def test_entity_event_replay_golden_and_error_taxonomy(_native_extension) -> Non
     }
     with pytest.raises(ValueError) as raised:
         _native_extension.short_id_transform(json.dumps(invalid_short))
-    assert getattr(raised.value, "code") in expected_codes
+    assert raised.value.code in expected_codes
     with pytest.raises(ValueError) as raised:
         _native_extension.apply_state_update(
             '{"state":{},"state_update":[["u",{"x":1}]],"update":{"x":2}}'
         )
-    assert getattr(raised.value, "code") in expected_codes
+    assert raised.value.code in expected_codes

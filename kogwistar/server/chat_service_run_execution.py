@@ -6,21 +6,21 @@ import pathlib
 import threading
 from typing import Any
 
+from kogwistar.cdc.sqlite_sink import _get_shared_sqlite_sink
 from kogwistar.conversation.agentic_answering import AgenticAnsweringAgent
 from kogwistar.conversation.models import (
     FilteringResult,
     MetaFromLastSummary,
 )
 from kogwistar.id_provider import new_id_str
-from kogwistar.cdc.sqlite_sink import _get_shared_sqlite_sink
-from kogwistar.runtime.telemetry import EventEmitter
 from kogwistar.runtime.replay import load_checkpoint
+from kogwistar.runtime.telemetry import EventEmitter
 
 from .chat_service_shared import (
     AnswerRunRequest,
     RunCancelledError,
-    RuntimeRunRequest,
     RuntimeResumeRequest,
+    RuntimeRunRequest,
     _BaseComponent,
     bind_auth_claims,
     capture_auth_claims,
@@ -415,8 +415,8 @@ class _RunExecutionService(_BaseComponent):
 
     def _default_runtime_runner(self, req: RuntimeRunRequest) -> dict[str, Any]:
         from kogwistar.conversation.resolvers import default_resolver
-        from kogwistar.runtime.budget import StateBackedBudgetLedger
         from kogwistar.runtime.async_runtime import AsyncWorkflowRuntime
+        from kogwistar.runtime.budget import StateBackedBudgetLedger
         from kogwistar.runtime.runtime import WorkflowRuntime
 
         def predicate_always(_workflow_info, _state, _last_result):
@@ -514,9 +514,9 @@ class _RunExecutionService(_BaseComponent):
 
     def _default_resume_runner(self, req: RuntimeResumeRequest) -> dict[str, Any]:
         from kogwistar.conversation.resolvers import default_resolver
+        from kogwistar.runtime.async_runtime import AsyncWorkflowRuntime
         from kogwistar.runtime.budget import StateBackedBudgetLedger
         from kogwistar.runtime.models import RunFailure, RunSuccess, RunSuspended
-        from kogwistar.runtime.async_runtime import AsyncWorkflowRuntime
         from kogwistar.runtime.runtime import WorkflowRuntime
 
         def predicate_always(_workflow_info, _state, _last_result):

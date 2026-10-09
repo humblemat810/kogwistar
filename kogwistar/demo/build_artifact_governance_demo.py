@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import json
 import shutil
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Annotated, Any, Literal, Sequence
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field
 from pydantic_extension.model_slicing import ModeSlicingMixin
@@ -20,7 +21,6 @@ from kogwistar.runtime.models import (
     WorkflowNode,
 )
 from kogwistar.runtime.replay import replay_to
-
 
 PUBLIC_MODE = "public"
 

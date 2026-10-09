@@ -6,7 +6,6 @@ import pytest
 
 from kogwistar.engine_core import AsyncNamedProjectionStore
 
-
 pytestmark = [pytest.mark.ci, pytest.mark.core, pytest.mark.unit]
 
 

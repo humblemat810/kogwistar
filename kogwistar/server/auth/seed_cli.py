@@ -1,8 +1,10 @@
 from __future__ import annotations
+
 import argparse
-import sys
 import os
-from .db import create_auth_engine, init_auth_db, get_session
+import sys
+
+from .db import create_auth_engine, get_session, init_auth_db
 from .seeding import seed_auth_data
 
 

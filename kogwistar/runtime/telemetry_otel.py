@@ -8,12 +8,12 @@ import queue
 import threading
 import time
 from collections.abc import Mapping
-from typing import Any, Optional, Protocol
+from typing import Any, Protocol
 
 
 class _Span(Protocol):
     def add_event(
-        self, name: str, attributes: Optional[Mapping[str, Any]] = None
+        self, name: str, attributes: Mapping[str, Any] | None = None
     ) -> None: ...
 
     def end(self) -> None: ...
@@ -29,21 +29,21 @@ class _Tracer(Protocol):
         name: str,
         *,
         context: Any = None,
-        attributes: Optional[Mapping[str, Any]] = None,
+        attributes: Mapping[str, Any] | None = None,
     ) -> _Span: ...
 
 
 def opentelemetry_available() -> bool:
     """Return whether the optional OpenTelemetry API and SDK are installed."""
     try:
-        import opentelemetry.trace  # noqa: F401
         import opentelemetry.sdk.trace  # noqa: F401
+        import opentelemetry.trace  # noqa: F401
     except ImportError:
         return False
     return True
 
 
-def try_create_opentelemetry_sink(**kwargs: Any) -> "OpenTelemetrySink | None":
+def try_create_opentelemetry_sink(**kwargs: Any) -> OpenTelemetrySink | None:
     """Create optional sink, or disable observability when OTel is absent."""
     try:
         return OpenTelemetrySink.from_opentelemetry(**kwargs)
@@ -73,14 +73,14 @@ class OpenTelemetrySink:
         *,
         context_factory: Any = None,
         queue_max: int = 1_000,
-        logger: Optional[logging.Logger] = None,
+        logger: logging.Logger | None = None,
     ) -> None:
         if queue_max <= 0:
             raise ValueError("queue_max must be positive")
         self._tracer = tracer
         self._context_factory = context_factory
         self._log = logger or logging.getLogger(__name__)
-        self._queue: "queue.Queue[dict[str, Any]]" = queue.Queue(maxsize=queue_max)
+        self._queue: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=queue_max)
         self._stop = threading.Event()
         self._closed = False
         self._lock = threading.Lock()
@@ -101,7 +101,7 @@ class OpenTelemetrySink:
         *,
         instrumentation_name: str = "kogwistar.runtime",
         **kwargs: Any,
-    ) -> "OpenTelemetrySink":
+    ) -> OpenTelemetrySink:
         """Create sink using installed OTel API; raises ImportError if absent."""
         from opentelemetry import trace
 

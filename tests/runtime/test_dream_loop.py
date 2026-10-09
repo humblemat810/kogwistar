@@ -4,23 +4,24 @@ from dataclasses import replace
 
 import pytest
 
-from kogwistar.policy import DefaultDreamLoopPolicy
-from kogwistar.runtime.base_runtime import checkpointable_state_copy
-from kogwistar.runtime.base_runtime import validate_initial_state
 from kogwistar.conversation.conversation_state_contracts import (
     PrevTurnMetaSummaryModel,
     WorkflowStateModel,
 )
+from kogwistar.policy import DefaultDreamLoopPolicy
+from kogwistar.runtime.base_runtime import (
+    checkpointable_state_copy,
+    validate_initial_state,
+)
 from kogwistar.runtime.serialize import try_serialize_with_ref
 from kogwistar.wisdom.dream_loop import (
-    collect_dream_loop_evidence,
-    default_dream_loop_decider,
     DreamLoopSignal,
     build_wisdom_revision_proposals,
+    collect_dream_loop_evidence,
+    default_dream_loop_decider,
     evaluate_wisdom_revision_proposal,
     select_dream_loop_signals,
 )
-
 
 pytestmark = [pytest.mark.core, pytest.mark.runtime]
 

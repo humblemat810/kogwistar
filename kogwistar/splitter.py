@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List
 
 
 @dataclass(frozen=True)
@@ -19,7 +18,7 @@ def split_doc_deterministic(
     max_chars: int = 6000,
     overlap_chars: int = 400,
     prefer_window: int | None = None,
-) -> List[Chunk]:
+) -> list[Chunk]:
     """
     Deterministic, offset-preserving splitter.
 
@@ -101,7 +100,7 @@ def split_doc_deterministic(
         # 5) No boundary found → hard cut
         return hard_end
 
-    chunks: List[Chunk] = []
+    chunks: list[Chunk] = []
     start = 0
     cnt = 0
     while start < n:

@@ -1,16 +1,16 @@
 import pytest
+
 pytestmark = pytest.mark.core
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
-from tests._helpers.embeddings import build_test_embedding_function
-from tests._helpers.fake_backend import build_fake_backend
-
 from kogwistar.engine_core.models import (
     Grounding,
     MentionVerification,
     Node,
     Span,
 )
+from tests._helpers.embeddings import build_test_embedding_function
+from tests._helpers.fake_backend import build_fake_backend
 
 
 @pytest.fixture(scope="function")

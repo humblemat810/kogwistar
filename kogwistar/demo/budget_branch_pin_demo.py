@@ -11,7 +11,12 @@ from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.in_memory_backend import build_in_memory_backend
 from kogwistar.engine_core.models import Grounding, MentionVerification, Span
 from kogwistar.runtime.budget import RateBudgetWindow
-from kogwistar.runtime.models import RunSuccess, RunSuspended, WorkflowEdge, WorkflowNode
+from kogwistar.runtime.models import (
+    RunSuccess,
+    RunSuspended,
+    WorkflowEdge,
+    WorkflowNode,
+)
 from kogwistar.runtime.runtime import StepContext, WorkflowRuntime
 
 

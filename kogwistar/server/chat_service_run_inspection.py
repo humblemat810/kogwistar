@@ -11,7 +11,9 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from kogwistar.runtime.projections import workflow_checkpoint_latest_projection_namespace
+from kogwistar.runtime.projections import (
+    workflow_checkpoint_latest_projection_namespace,
+)
 from kogwistar.runtime.replay import load_checkpoint, replay_to
 
 from .chat_service_shared import _BaseComponent

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 import math
 from collections.abc import Mapping
+from dataclasses import dataclass, field
 from typing import Any
 
 from kogwistar.json_types import JsonValue
@@ -151,7 +151,7 @@ class BudgetLedger:
 
     def debit(
         self,
-        amount: int | float,
+        amount: float,
         *,
         reason: str = "step",
         source: str = "runtime",
@@ -237,7 +237,7 @@ class StateBackedBudgetLedger:
             current = self.ceilings.get(key)
             self.ceilings[key] = value if current is None else min(current, value)
 
-    def _bounded_limit(self, key: str, default: int | float = 0) -> int | float:
+    def _bounded_limit(self, key: str, default: float = 0) -> int | float:
         raw = self.state.get(key, default)
         raw_value = float(raw or 0) if key == "cost_budget" else int(raw or 0)
         ceiling = self.ceilings.get(key)
@@ -374,7 +374,7 @@ class StateBackedBudgetLedger:
 
     def debit(
         self,
-        amount: int | float,
+        amount: float,
         *,
         reason: str = "step",
         source: str = "runtime",
@@ -465,7 +465,7 @@ class StateBackedBudgetLedger:
 
     def debit_time(
         self,
-        amount_ms: int | float,
+        amount_ms: float,
         *,
         reason: str = "step",
         source: str = "runtime",

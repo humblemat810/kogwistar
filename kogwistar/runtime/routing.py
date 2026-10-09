@@ -155,7 +155,7 @@ def compute_route_next(
             targets = [str(value) for value in (getattr(edge, "target_ids", None) or [])]
             first_target = targets[0] if targets else ""
             try:
-                priority = int(getattr(edge, "priority"))
+                priority = int(edge.priority)
             except Exception:
                 priority = int(_edge_info(edge).priority)
             route_payload.append(
@@ -164,7 +164,7 @@ def compute_route_next(
                     "target_ids": targets,
                     "aliases": sorted(_edge_aliases(edge, first_target)) if first_target else [],
                     "predicate": (
-                        str(getattr(edge, "predicate"))
+                        str(edge.predicate)
                         if getattr(edge, "predicate", None) is not None
                         else None
                     ),

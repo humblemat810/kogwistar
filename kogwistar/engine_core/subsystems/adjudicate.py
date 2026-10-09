@@ -3,17 +3,17 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any
 
+from ...typing_interfaces import AdjudicateLike
 from ..async_compat import run_awaitable_blocking
 from ..models import AdjudicationTarget, Edge, Node
 from .base import NamespaceProxy
-from ...typing_interfaces import AdjudicateLike
 
 if TYPE_CHECKING:
     from ..engine import GraphKnowledgeEngine
 
 
 class AdjudicateSubsystem(NamespaceProxy["GraphKnowledgeEngine"], AdjudicateLike):
-    def __init__(self, engine: "GraphKnowledgeEngine") -> None:
+    def __init__(self, engine: GraphKnowledgeEngine) -> None:
         super().__init__(engine)
 
     def target_from_node(self, n: Node) -> AdjudicationTarget:

@@ -1,12 +1,14 @@
 from __future__ import annotations
+
+import json
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Literal, Mapping, Self, Sequence, TypeAlias
-from kogwistar.typing_interfaces import EngineLike
-from typing import Iterable
+from typing import Literal, Self, TypeAlias
+
 from kogwistar.json_types import JsonValue
+from kogwistar.typing_interfaces import EngineLike
 
 from .models import ConversationEdge, ConversationNode
-import json
 
 Role: TypeAlias = Literal["system", "user", "assistant", "tool"]
 # system include kg graph, internal summary, filtering thinking, reasoning from llm call
@@ -569,7 +571,7 @@ class ContextSources:
     def __init__(
         self,
         *,
-        conversation_engine: "EngineLike",
+        conversation_engine: EngineLike,
         tail_turns: int = 8,
         include_summaries: bool = True,
         include_memory_context: bool = True,
@@ -950,7 +952,7 @@ class ContextSources:
 
 @dataclass
 class EngineConversationStore:
-    engine: "EngineLike"
+    engine: EngineLike
 
     def get_turns(self, conversation_id: str) -> list[ContextMessage]:
         # 1) fetch all conversation nodes for this conversation_id

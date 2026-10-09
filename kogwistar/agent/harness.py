@@ -9,7 +9,6 @@ from typing import Protocol
 from .limits import AgentBudgetPolicy
 from .profile import AgentProfile
 
-
 AgentState = dict[str, object]
 
 

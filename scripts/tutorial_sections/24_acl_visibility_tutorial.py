@@ -13,10 +13,10 @@ os.environ["JWT_SECRET"] = "tutorial-acl-secret"
 os.environ["JWT_ISS"] = "tutorial"
 
 import jwt
+from _helpers import banner, show
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from _helpers import banner, show
 from kogwistar.server.auth_middleware import (
     JWTProtectMiddleware,
     get_current_role,

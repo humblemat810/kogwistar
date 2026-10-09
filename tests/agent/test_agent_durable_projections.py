@@ -1,38 +1,37 @@
 """Deterministic durable skill/catalog projection acceptance tests."""
 
-from threading import Event, Thread
 import asyncio
+from threading import Event, Thread
 
 import pytest
 
 from kogwistar.agent import (
+    AsyncDurableSkillCatalogMaterializer,
     CatalogEntry,
     CatalogGroup,
     CatalogStore,
     DurableCatalogStore,
     DurableSkillCatalogMaterializer,
-    AsyncDurableSkillCatalogMaterializer,
     DurableSkillProjectionStore,
-    ProviderInactiveError,
     ProviderCollisionError,
+    ProviderInactiveError,
     ProviderRegistry,
     SkillProjectionStore,
     catalog_entries_from_artifact,
     compile_approved_proposal_to_skill,
     materialize_skill_artifact,
 )
-from kogwistar.agent.read_tools import AgentReadTools, ReadScope
 from kogwistar.agent.plugins import (
     FilesystemSkillProvider,
     LlmWikiIngestionAdapter,
     ingest_filesystem_skill,
 )
+from kogwistar.agent.read_tools import AgentReadTools, ReadScope
 from kogwistar.agent.skills import parse_skill_text
-from kogwistar.engine_core.in_memory_meta import InMemoryMetaStore
-from kogwistar.engine_core.engine_sqlite import EngineSQLite
 from kogwistar.engine_core.async_named_projection import AsyncSQLiteNamedProjectionStore
+from kogwistar.engine_core.engine_sqlite import EngineSQLite
+from kogwistar.engine_core.in_memory_meta import InMemoryMetaStore
 from kogwistar.wisdom.proposals import ProposalEvaluation, WisdomRevisionProposal
-
 
 pytestmark = [pytest.mark.ci, pytest.mark.core, pytest.mark.unit]
 

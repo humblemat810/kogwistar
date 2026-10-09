@@ -10,7 +10,6 @@ import pytest
 from kogwistar._rust_bridge import RustParityError, store_postgres, store_sqlite
 from kogwistar.engine_core.engine_sqlite import EngineSQLite
 
-
 pytestmark = [pytest.mark.ci, pytest.mark.core]
 
 

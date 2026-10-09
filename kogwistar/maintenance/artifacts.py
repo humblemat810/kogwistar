@@ -3,7 +3,8 @@ from __future__ import annotations
 """Helpers for append-only maintenance artifacts."""
 
 import time
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from kogwistar.engine_core.engine import scoped_namespace
 from kogwistar.maintenance.models import VersionedArtifactWriteResult
@@ -23,7 +24,7 @@ def write_versioned_artifact(
 
         created_at_ms = int(time.time() * 1000)
         new_node = build_node(existing, created_at_ms)
-        new_id = str(getattr(new_node, "id"))
+        new_id = str(new_node.id)
         existing_match = next(
             (node for node in existing if str(getattr(node, "id", "")) == new_id),
             None,
@@ -45,7 +46,7 @@ def write_versioned_artifact(
                 try:
                     engine.lifecycle.redirect_node(
                         str(old_node.id),
-                        str(getattr(new_node, "id")),
+                        str(new_node.id),
                     )
                 except Exception:
                     # This helper is best-effort on lifecycle replacement.

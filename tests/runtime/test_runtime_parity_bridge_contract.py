@@ -3,13 +3,15 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
-from dataclasses import dataclass
-from pathlib import Path
 import time
 import uuid
+from dataclasses import dataclass
+from pathlib import Path
 
 import pytest
 
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.models import Grounding, MentionVerification, Span
 from kogwistar.runtime import AsyncWorkflowRuntime, WorkflowRuntime
 from kogwistar.runtime.models import (
     RunFailure,
@@ -24,8 +26,6 @@ from kogwistar.runtime.models import (
 )
 from kogwistar.runtime.replay import load_checkpoint, replay_to
 from kogwistar.runtime.resolvers import AsyncMappingStepResolver, MappingStepResolver
-from kogwistar.engine_core.engine import GraphKnowledgeEngine
-from kogwistar.engine_core.models import Grounding, MentionVerification, Span
 from tests._helpers.embeddings import ConstantEmbeddingFunction
 from tests._helpers.fake_backend import build_fake_backend
 

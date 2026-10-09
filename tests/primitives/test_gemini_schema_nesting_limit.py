@@ -5,9 +5,9 @@ import os
 from typing import Any
 
 import pytest
-from kogwistar.utils.cache_backend import Memory
 from pydantic import BaseModel, Field, create_model
 
+from kogwistar.utils.cache_backend import Memory
 
 
 def _build_non_recursive_nested_schema(depth: int) -> type[BaseModel]:

@@ -3,10 +3,12 @@ from __future__ import annotations
 import functools
 import inspect
 import json
-from typing import Any, Callable, ParamSpec, Type, TypeVar, cast, overload
+from collections.abc import Callable
+from typing import Any, ParamSpec, TypeVar, cast, overload
+
+from pydantic import BaseModel
 
 from .cache_backend import Memory
-from pydantic import BaseModel
 
 P = ParamSpec("P")
 M = TypeVar("M")
@@ -18,7 +20,7 @@ def _stable_json(obj: Any) -> str:
     )
 
 
-from typing import TypeVar, ParamSpec
+from typing import ParamSpec, TypeVar
 
 P = ParamSpec("P")
 R = TypeVar("R")
@@ -38,7 +40,7 @@ def cached(
 def cache_pydantic_structured(
     *,
     memory: Memory,
-    model: Type[BaseM],
+    model: type[BaseM],
     fn: Callable[P, BaseM],
     ignore: list[str] | None = None,
     dump_exclude: set[str] | None = None,
@@ -55,7 +57,7 @@ def cache_pydantic_structured(
 def cache_pydantic_structured(
     *,
     memory: Memory,
-    model: Type[BaseM] | None,
+    model: type[BaseM] | None,
     fn: Callable[P, BaseM],
     ignore: list[str] | None = None,
     dump_exclude: set[str] | None = None,
@@ -135,11 +137,13 @@ def cache_pydantic_structured(
 
 
 if __name__ == "__main__":
-    from pathlib import Path
-    from .cache_backend import Memory
-    from pydantic import BaseModel
     import shutil
     import tempfile
+    from pathlib import Path
+
+    from pydantic import BaseModel
+
+    from .cache_backend import Memory
 
     # ----------------------------
     # Fake Pydantic output model
@@ -157,7 +161,7 @@ if __name__ == "__main__":
             self.calls = 0
 
         def _select_used_evidence(
-            self, question: str, candidates: list[dict], out_model: Type[BaseM]
+            self, question: str, candidates: list[dict], out_model: type[BaseM]
         ) -> BaseM:
             # simulate "LLM" work
             self.calls += 1
@@ -169,11 +173,11 @@ if __name__ == "__main__":
 
         @staticmethod
         def entry(
-            agent: "FakeAgent",
+            agent: FakeAgent,
             question: str,
             candidates: list[dict],
             out_schema,
-            out_model: Type[BaseM],
+            out_model: type[BaseM],
         ) -> BaseM:
             return agent._select_used_evidence(
                 question=question, candidates=candidates, out_model=out_model

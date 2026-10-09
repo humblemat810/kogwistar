@@ -18,7 +18,6 @@ from kogwistar.runtime.models import (
     WorkflowNode,
 )
 
-
 ROOT = Path(__file__).resolve().parents[1]
 GOLDEN_ROOT = ROOT / "contracts" / "golden"
 

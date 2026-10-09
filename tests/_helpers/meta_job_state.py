@@ -11,9 +11,9 @@ def set_index_job_state(
     *,
     job_id: str,
     status: str,
-    lease_until: int | float | None = None,
-    next_run_at: int | float | None = None,
-    updated_at: int | float | None = None,
+    lease_until: float | None = None,
+    next_run_at: float | None = None,
+    updated_at: float | None = None,
 ) -> None:
     now = int(time.time())
     updated_at_int = int(updated_at if updated_at is not None else now)

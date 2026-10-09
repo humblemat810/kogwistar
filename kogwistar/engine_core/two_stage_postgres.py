@@ -5,10 +5,10 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from ..utils.embedding_vectors import normalize_embedding_vector
 from .async_compat import run_awaitable_blocking
 from .edge_endpoint_rows import edge_endpoint_rows
 from .storage_backend import TwoStageProjectionCapability
-from ..utils.embedding_vectors import normalize_embedding_vector
 
 
 def postgres_two_stage_capability() -> TwoStageProjectionCapability:

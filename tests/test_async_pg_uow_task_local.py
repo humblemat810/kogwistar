@@ -17,7 +17,7 @@ class _FakeAsyncConn:
 
 
 class _FakeBeginCtx:
-    def __init__(self, engine: "_FakeAsyncEngine"):
+    def __init__(self, engine: _FakeAsyncEngine):
         self._engine = engine
 
     async def __aenter__(self):

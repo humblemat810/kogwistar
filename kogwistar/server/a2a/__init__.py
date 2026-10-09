@@ -6,8 +6,8 @@ from .adapter import (
     A2AMessage,
     A2APushDelivery,
     A2APushSubscription,
-    A2ATaskMappingStore,
     A2ATask,
+    A2ATaskMappingStore,
 )
 
 __all__ = [
@@ -16,6 +16,6 @@ __all__ = [
     "A2AMessage",
     "A2APushDelivery",
     "A2APushSubscription",
-    "A2ATaskMappingStore",
     "A2ATask",
+    "A2ATaskMappingStore",
 ]

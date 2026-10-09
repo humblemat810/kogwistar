@@ -5,33 +5,33 @@ from __future__ import annotations
 import pytest
 
 from kogwistar.agent import (
-    CatalogStore,
-    CatalogGroup,
     CatalogEntry,
+    CatalogGroup,
+    CatalogStore,
     FilesystemSkillProvider,
     LlmWikiIngestionAdapter,
     McpDiscoveryProvider,
     ProjectGlossaryProvider,
     ProjectPluginManifest,
     ProviderRegistry,
-    SkillProjectionStore,
     SkillExecutionPolicy,
+    SkillProjectionRequest,
+    SkillProjectionStore,
     build_skill_execution_evidence,
+    deduplicate_inferred_edges,
     ingest_filesystem_skill,
     ingest_project_glossary_to_knowledge,
-    deduplicate_inferred_edges,
     mark_inferred_edges_as_candidates,
+    prepare_skill_execution,
     select_mcp_schemas,
 )
+from kogwistar.agent.plugins import make_skill_projection_cleanup
 from kogwistar.agent.skills import (
     attach_glossary_references,
     catalog_entries_from_artifact,
     parse_skill_text,
     validate_skill_artifact,
 )
-from kogwistar.agent.plugins import make_skill_projection_cleanup
-from kogwistar.agent import SkillProjectionRequest, prepare_skill_execution
-
 
 pytestmark = [pytest.mark.ci, pytest.mark.core, pytest.mark.unit]
 

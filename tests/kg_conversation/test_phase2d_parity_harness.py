@@ -1,40 +1,39 @@
 from __future__ import annotations
 
 import pytest
+
 pytestmark = pytest.mark.core
 from dataclasses import replace
-from typing import Any, Type, TypeVar
+from typing import Any, TypeVar
 
 from pydantic import BaseModel
 
+from kogwistar.conversation.agentic_answering import (
+    AgentConfig,
+    AgenticAnsweringAgent,
+    AnswerEvaluation,
+    AnswerWithCitations,
+)
+from kogwistar.conversation.conversation_orchestrator import (
+    ConversationOrchestrator,
+    get_id_for_conversation_turn,
+)
 from kogwistar.conversation.models import (
     ConversationNode,
     MetaFromLastSummary,
     RetrievalResult,
 )
-from kogwistar.id_provider import stable_id
 from kogwistar.engine_core.models import Grounding
-from kogwistar.conversation.conversation_orchestrator import (
-    ConversationOrchestrator,
-    get_id_for_conversation_turn,
-)
-from kogwistar.conversation.agentic_answering import (
-    AgentConfig,
-    AgenticAnsweringAgent,
-    AnswerWithCitations,
-    AnswerEvaluation,
-)
+from kogwistar.id_provider import stable_id
 from kogwistar.llm_tasks.contracts import SummarizeContextTaskResult
-
-from tests.conftest import _make_engine_pair  # reuse canonical engine fixture builder
-from tests._helpers.graph_builders import mk_conversation_span as _mk_span
-
 from tests._helpers.conv_view import (
     ConvGraphView,
-    extract_conv_view,
     assert_views_equivalent,
+    extract_conv_view,
 )
+from tests._helpers.graph_builders import mk_conversation_span as _mk_span
 from tests._helpers.runners import run_v1_scenario, run_v2_scenario
+from tests.conftest import _make_engine_pair  # reuse canonical engine fixture builder
 
 BaseM = TypeVar("BaseM", bound=BaseModel)
 
@@ -74,7 +73,7 @@ def _retrieve_candidates_stub(q: str):
 
 
 def _materialize_evidence_pack_stub(
-    agent: "AgenticAnsweringAgent",
+    agent: AgenticAnsweringAgent,
     *,
     node_ids: list[str],
     edge_ids: list[str] | None = None,
@@ -86,14 +85,14 @@ def _materialize_evidence_pack_stub(
 
 
 def _generate_answer_with_citations_stub(
-    agent: "AgenticAnsweringAgent",
+    agent: AgenticAnsweringAgent,
     *,
     system_prompt: str,
     question: str,
     evidence_pack: dict[str, Any],
     used_node_ids: list[str],
     out_model_schema: dict[str, Any],
-    out_model: Type[BaseM],
+    out_model: type[BaseM],
 ):
     # keep signature? ideally match your real one too, but this one may not be inspected by joblib
     return AnswerWithCitations(
@@ -104,14 +103,14 @@ def _generate_answer_with_citations_stub(
 
 
 def _validate_or_repair_citations_stub(
-    agent: "AgenticAnsweringAgent",
+    agent: AgenticAnsweringAgent,
     *,
     system_prompt: str,
     question: str,
     evidence_pack: dict[str, Any],
     used_node_ids: list[str],
     answer: dict | list,
-    answer_in_model: Type[AnswerWithCitations],
+    answer_in_model: type[AnswerWithCitations],
 ):
     return AnswerWithCitations(
         text="ok",

@@ -1,10 +1,11 @@
 # tests/test_ingest_document_with_llm_cache.py
 import json
-import pytest
-from kogwistar.utils.cache_backend import Memory
 import os
 import pathlib
 
+import pytest
+
+from kogwistar.utils.cache_backend import Memory
 from tests._kg_factories import kg_document
 
 # Calls the configured Gemini provider on a cache miss. A local joblib hit is

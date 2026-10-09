@@ -7,7 +7,6 @@ import inspect
 
 from tests.core.two_stage_case_catalog import TWO_STAGE_COMMON_CASES
 
-
 BACKEND_TEST_MODULES = {
     "in_memory": "tests.core.test_two_stage_projection_capability",
     "chroma": "tests.core.test_two_stage_chroma",

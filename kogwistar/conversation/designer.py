@@ -2,11 +2,11 @@ from ..engine_core.models import Grounding, Span
 from ..runtime.design import BaseWorkflowDesigner
 from ..runtime.models import WorkflowEdge, WorkflowNode
 from .agentic_answering_design import (
+    DEBUG_RAG_WORKFLOW_ID,
     agentic_answering_expected_ops,
     build_agentic_answering_workflow_design,
     build_debug_rag_workflow_design,
     debug_rag_expected_ops,
-    DEBUG_RAG_WORKFLOW_ID,
     materialize_workflow_design_artifact,
 )
 
@@ -65,7 +65,7 @@ class AgenticAnsweringWorkflowDesigner(BaseWorkflowDesigner):
                 pass
 
         if mode == "backbone":
-            from ..engine_core.models import Span, Grounding
+            from ..engine_core.models import Grounding, Span
 
             wid = lambda suffix: f"wf:{workflow_id}:{suffix}"
             sp = Span.from_dummy_for_workflow(workflow_id)

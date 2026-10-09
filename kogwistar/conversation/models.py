@@ -1,12 +1,6 @@
-from dataclasses import asdict, dataclass, field
 import json
-
-from kogwistar.engine_core.models import (
-    BaseNodeMetadata,
-    ContextCost,
-    Edge,
-    Node,
-)
+from dataclasses import asdict, dataclass, field
+from typing import ClassVar, Literal, Self
 
 from pydantic import (
     BaseModel,
@@ -16,12 +10,17 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+
+from kogwistar.engine_core.models import (
+    BaseNodeMetadata,
+    ContextCost,
+    Edge,
+    Node,
+)
 from kogwistar.json_types import JsonValue
-from typing import ClassVar, Dict, List, Literal, Self, Tuple
 
 # Public compatibility re-export used by agentic_answering at runtime.
 from kogwistar.provenance import EvidencePackDigest as EvidencePackDigest  # noqa: F401
-
 
 # --- Phase 1: chat-edge intent classification (causality) ---
 
@@ -70,7 +69,7 @@ class ContextSnapshotMetadata(BaseModel):
     tail_turn_index: int = Field(0, ge=0)
 
     # Determinism + audit
-    used_node_ids: List[str] = Field(default_factory=list)
+    used_node_ids: list[str] = Field(default_factory=list)
     rendered_context_hash: str
     cost: ContextCost = Field(default_factory=ContextCost)
 
@@ -78,7 +77,7 @@ class ContextSnapshotMetadata(BaseModel):
 
     # ---- Storage helpers for Chroma / flat metadata ----
 
-    def to_chroma_metadata(self) -> Dict[str, JsonValue]:
+    def to_chroma_metadata(self) -> dict[str, JsonValue]:
         """
         Flatten to Chroma-friendly metadata (primitives only).
         Keeps all extra fields too, but flattens `cost`.
@@ -91,7 +90,7 @@ class ContextSnapshotMetadata(BaseModel):
 
     @classmethod
     def from_chroma_metadata(
-        cls, meta: Dict[str, JsonValue]
+        cls, meta: dict[str, JsonValue]
     ) -> "ContextSnapshotMetadata":
         """
         Reconstruct from flat Chroma metadata. Accepts either:
@@ -268,13 +267,13 @@ class ConversationAIResponse(BaseModel):
         default=False, description="If True, request summarization this turn."
     )
 
-    used_kg_node_ids: List[str] = Field(default_factory=list)
-    used_memory_node_ids: List[str] = Field(default_factory=list)
-    projected_conversation_node_ids: List[str] = Field(default_factory=list)
-    projected_conversation_edge_ids: List[str] = Field(default_factory=list)
+    used_kg_node_ids: list[str] = Field(default_factory=list)
+    used_memory_node_ids: list[str] = Field(default_factory=list)
+    projected_conversation_node_ids: list[str] = Field(default_factory=list)
+    projected_conversation_edge_ids: list[str] = Field(default_factory=list)
     run_trace_node_id: None | str = None
     response_node_id: str | None = None
-    meta: Dict[str, JsonValue] = Field(default_factory=dict)
+    meta: dict[str, JsonValue] = Field(default_factory=dict)
 
 
 class ConversationEdge(Edge):
@@ -290,7 +289,7 @@ class ConversationEdge(Edge):
     # id_policy: ClassVar[Literal["event", "canonical"]] = "canonical"
     # id_kind: ClassVar[str] = "model"  # override per subclass if you want stable separation
 
-    def identity_key(self) -> Tuple[str, ...]:
+    def identity_key(self) -> tuple[str, ...]:
         """
         Subclasses with id_policy="canonical" MUST override this.
         Should return stable, minimal identity parts.
@@ -337,7 +336,7 @@ class ConversationNode(ConversationRoleMixin, Node):
     # id_kind: ClassVar[str] = "model"  # override per subclass if you want stable separation
     id_kind: ClassVar[str] = "conversation.node"
 
-    def identity_key(self) -> Tuple[str, ...]:
+    def identity_key(self) -> tuple[str, ...]:
         # from conversation_orchestrator import get_id_for_conversation_turn
         """
         Subclasses with id_policy="canonical" MUST override this.
@@ -402,8 +401,8 @@ class ConversationNode(ConversationRoleMixin, Node):
 
 @dataclass
 class RetrievalResult:
-    nodes: List[Node]
-    edges: List[Edge]
+    nodes: list[Node]
+    edges: list[Edge]
 
 
 @dataclass
@@ -422,13 +421,13 @@ class MemoryRetrievalResult(BaseToolResult):
 
     # Derived artifacts
     memory_context_text: None | str
-    seed_kg_node_ids: List[str]
+    seed_kg_node_ids: list[str]
 
 
 @dataclass(kw_only=True)
 class MemoryPinResult(BaseToolResult):
     memory_context_node: ConversationNode
-    pinned_edges: List[ConversationEdge]
+    pinned_edges: list[ConversationEdge]
     visibility: str = "private"
     security_scope: str | None = None
     shared_with: tuple[str, ...] = ()

@@ -3,12 +3,12 @@ from __future__ import annotations
 import argparse
 import json
 import warnings
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Mapping, Sequence
+from typing import Any
 
 from kogwistar.runtime import MappingStepResolver, StepContext, WorkflowRuntime
 from kogwistar.runtime.models import RunSuccess
-
 
 warnings.filterwarnings(
     "ignore",
@@ -745,7 +745,7 @@ class PlanActObserveNoApprovalFramework(PlanActObserveFramework):
 class BatchNotesOrganizerAdapter:
     """Adapter that makes the same notes-organizer usable by a batch-style framework."""
 
-    agent: "MockNotesOrganizerAgent"
+    agent: MockNotesOrganizerAgent
 
     def batch_notes(self) -> list[dict[str, str]]:
         return [dict(note) for note in self.agent.notes]
@@ -919,7 +919,7 @@ class BatchClassifyThenApplyFramework:
         _engine, transition_map = self.build_workflow()
         return transition_map
 
-    def run(self, agent: "MockNotesOrganizerAgent") -> dict[str, Any]:
+    def run(self, agent: MockNotesOrganizerAgent) -> dict[str, Any]:
         adapter = BatchNotesOrganizerAdapter(agent)
         runtime, _workflow_engine, trace_sink = self.build_runtime(adapter)
         with warnings.catch_warnings():

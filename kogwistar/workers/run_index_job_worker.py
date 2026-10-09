@@ -9,7 +9,7 @@ python -m kogwistar.workers.run_index_job_worker \
 
 import argparse
 import os
-from typing import Any, Optional
+from typing import Any
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 
@@ -86,7 +86,7 @@ def build_worker(eng: GraphKnowledgeEngine, args: argparse.Namespace) -> IndexJo
     )
 
 
-def main(argv: Optional[list[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Run the GKE index_jobs worker")
     ap.add_argument(
         "--backend",

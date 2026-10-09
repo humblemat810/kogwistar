@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Literal, TypedDict, cast
+
 from pydantic import BaseModel
 
 from ..json_types import JsonValue
-
 
 # ---- Operation types -------------------------------------------------
 

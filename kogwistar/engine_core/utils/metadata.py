@@ -2,10 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime, timezone
 from collections.abc import Iterable, Mapping
+from datetime import datetime, timezone
 from typing import Any, TypeAlias, TypeVar
-
 
 Metadata: TypeAlias = dict[str, Any]
 MetadataPatch: TypeAlias = Mapping[str, object]

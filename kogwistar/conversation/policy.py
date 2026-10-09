@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any
 
 from kogwistar.engine_core.async_compat import run_awaitable_blocking
 from kogwistar.engine_core.scoped_seq import (
@@ -12,9 +12,9 @@ from kogwistar.engine_core.scoped_seq import (
 from kogwistar.graph_kinds import KIND_CHAT
 
 from .models import (
+    CONVERSATION_EDGE_CAUSAL_TYPE_BY_RELATION,
     ConversationEdge,
     ConversationNode,
-    CONVERSATION_EDGE_CAUSAL_TYPE_BY_RELATION,
 )
 
 
@@ -35,7 +35,7 @@ def where_and(*clauses: dict) -> dict:
     return {"$and": flat}
 
 
-def edge_endpoints_exists(engine: "GraphKnowledgeEngine", *, where: dict) -> bool:
+def edge_endpoints_exists(engine: GraphKnowledgeEngine, *, where: dict) -> bool:
     res = run_awaitable_blocking(
         engine.backend.edge_endpoints_get(where=where, include=["metadatas"], limit=1)
     )
@@ -44,7 +44,7 @@ def edge_endpoints_exists(engine: "GraphKnowledgeEngine", *, where: dict) -> boo
 
 
 def edge_endpoints_first_edge_id(
-    engine: "GraphKnowledgeEngine", *, where: dict
+    engine: GraphKnowledgeEngine, *, where: dict
 ) -> str | None:
     res = run_awaitable_blocking(
         engine.backend.edge_endpoints_get(where=where, include=["metadatas"], limit=1)
@@ -78,7 +78,7 @@ def doc_id_for_edge(edge: ConversationEdge) -> str | None:
 
 
 def is_duplicate_next_turn_noop(
-    engine: "GraphKnowledgeEngine", edge: ConversationEdge
+    engine: GraphKnowledgeEngine, edge: ConversationEdge
 ) -> bool:
     if engine.kg_graph_type != KIND_CHAT:
         return False
@@ -134,7 +134,7 @@ def normalize_edge_metadata(edge: ConversationEdge) -> None:
     edge.metadata = md
 
 
-def validate_edge_add(engine: "GraphKnowledgeEngine", edge: ConversationEdge) -> None:
+def validate_edge_add(engine: GraphKnowledgeEngine, edge: ConversationEdge) -> None:
     if engine.kg_graph_type != KIND_CHAT:
         return
 
@@ -203,7 +203,7 @@ def validate_edge_add(engine: "GraphKnowledgeEngine", edge: ConversationEdge) ->
 
 
 def _conversation_scope_id(
-    engine: "GraphKnowledgeEngine", subject: Any
+    engine: GraphKnowledgeEngine, subject: Any
 ) -> str | None:
     _ = engine
     conv_id = getattr(subject, "conversation_id", None)
@@ -215,7 +215,7 @@ def _conversation_scope_id(
 
 
 def _conversation_should_stamp(
-    engine: "GraphKnowledgeEngine", subject: Any
+    engine: GraphKnowledgeEngine, subject: Any
 ) -> bool:
     _ = subject
     return bool(getattr(engine, "kg_graph_type", None) == KIND_CHAT)
@@ -228,11 +228,11 @@ _CONVERSATION_SEQ_HOOK_CONFIG = ScopedSeqHookConfig(
 )
 
 
-def maybe_assign_seq(engine: "GraphKnowledgeEngine", node: Any) -> None:
+def maybe_assign_seq(engine: GraphKnowledgeEngine, node: Any) -> None:
     maybe_assign_node_scoped_seq(engine, node, config=_CONVERSATION_SEQ_HOOK_CONFIG)
 
 
-def get_last_seq_node(engine: "GraphKnowledgeEngine", conversation_id, min_seq=None):
+def get_last_seq_node(engine: GraphKnowledgeEngine, conversation_id, min_seq=None):
     if min_seq is None:
         min_seq = engine.meta_sqlite.next_user_seq(conversation_id)
     if engine.kg_graph_type != KIND_CHAT:
@@ -261,7 +261,7 @@ def get_last_seq_node(engine: "GraphKnowledgeEngine", conversation_id, min_seq=N
 
 
 def get_chat_tail(
-    engine: "GraphKnowledgeEngine",
+    engine: GraphKnowledgeEngine,
     conversation_id: str,
     min_turn_index: int | None = None,
     tail_search_includes: list[str] = [
@@ -270,7 +270,7 @@ def get_chat_tail(
         "conversation_summary",
         "assistant_turn",
     ],
-) -> Optional[ConversationNode]:
+) -> ConversationNode | None:
     if engine.kg_graph_type != KIND_CHAT:
         raise RuntimeError("chat-only call")
     got = run_awaitable_blocking(
@@ -303,7 +303,7 @@ def get_chat_tail(
     return nodes2[-1]
 
 
-def last_summary_of_node(engine: "GraphKnowledgeEngine", node: ConversationNode):
+def last_summary_of_node(engine: GraphKnowledgeEngine, node: ConversationNode):
     summaries = engine.read.get_nodes(
         where=where_and(
             {"conversation_id": node.conversation_id},
@@ -324,7 +324,7 @@ def last_summary_of_node(engine: "GraphKnowledgeEngine", node: ConversationNode)
     return [best] if best is not None else []
 
 
-def install_engine_hooks(engine: "GraphKnowledgeEngine") -> None:
+def install_engine_hooks(engine: GraphKnowledgeEngine) -> None:
     if getattr(engine, "_chat_policy_hooks_ready", False):
         return
     install_scoped_seq_hooks(

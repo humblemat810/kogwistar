@@ -2,17 +2,23 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from hashlib import sha256
 from threading import RLock
-from typing import Callable, Literal, Mapping, Protocol, TypeVar, cast, runtime_checkable
+from typing import (
+    Literal,
+    Protocol,
+    TypeVar,
+    cast,
+    runtime_checkable,
+)
 
 from kogwistar.engine_core.embedding_profile import NamedProjectionStore
 from kogwistar.json_types import JsonValue
 from kogwistar.runtime import ProjectionPayload
 
 from .catalog import CatalogEntry
-
 
 PROVIDER_LIFECYCLE_NAMESPACE = "agent_provider_lifecycle"
 
@@ -148,7 +154,7 @@ class ProviderCleanupToken(str):
     generation: int
     lifecycle_token: str
 
-    def __new__(cls, registration: ProviderRegistration) -> "ProviderCleanupToken":
+    def __new__(cls, registration: ProviderRegistration) -> ProviderCleanupToken:
         value = str.__new__(cls, registration.identity.provider_id)
         value.provider_version = registration.identity.version
         value.generation = registration.generation

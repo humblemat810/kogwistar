@@ -5,44 +5,42 @@ if True:
     logger = logging.getLogger(__name__)
     logger.addHandler(logging.NullHandler())
     logger.debug("loading models")
-from ..id_provider import new_id_str, stable_id
 from typing import (
-    List,
-    Literal,
-    Optional,
-    Dict,
-    Any,
-    Type,
-    Union,
     Annotated,
+    Any,
     ClassVar,
-    Tuple,
+    Literal,
+    Union,
     cast,
 )
+
+from ..id_provider import new_id_str, stable_id
 
 try:
     from typing import Self, TypeAlias
 except ImportError:  # pragma: no cover - py<3.11 compatibility
-    from typing_extensions import Self, TypeAlias
+    from typing import Self, TypeAlias
+import json
+from enum import IntEnum
+
 from pydantic import (
     BaseModel,
-    Field,
-    model_validator,
-    field_validator,
-    ValidationInfo,
     ConfigDict,
+    Field,
+    ValidationInfo,
+    field_validator,
+    model_validator,
 )
-from enum import IntEnum
-import json
 from pydantic_extension.model_slicing import (
-    ModeSlicingMixin,
-    FrontendField,
     BackendField,
-    LLMField,
-    DtoType,
     BackendType,
+    DtoType,
+    FrontendField,
+    LLMField,
+    ModeSlicingMixin,
 )
-from pydantic_extension.model_slicing.mixin import ExcludeMode, DtoField
+from pydantic_extension.model_slicing.mixin import DtoField, ExcludeMode
+
 from .multimodal import MultimodalSpan
 
 JsonPrimitive = Union[str, int, float, bool, None]
@@ -79,11 +77,11 @@ Role: TypeAlias = Literal["user", "assistant", "system", "tool"]
 
 
 class IdPolicyMixin(BaseModel):
-    id: Optional[str] = Field(default=None)
+    id: str | None = Field(default=None)
     id_policy: ClassVar[Literal["event", "canonical"]] = "event"
     id_kind: ClassVar[str] = "model"
 
-    def identity_key(self) -> Tuple[str, ...]:
+    def identity_key(self) -> tuple[str, ...]:
         """
         Subclasses with id_policy="canonical" MUST override this.
         Should return stable, minimal identity parts.
@@ -125,7 +123,7 @@ class ContextCost:
             char_count=self.char_count + other.char_count, token_count=tc
         )
 
-    def to_flat_metadata(self, *, prefix: str = "cost") -> Dict[str, Any]:
+    def to_flat_metadata(self, *, prefix: str = "cost") -> dict[str, Any]:
         # You requested dot keys.
         return {
             f"{prefix}.char_count": int(self.char_count),
@@ -136,14 +134,14 @@ class ContextCost:
 
     @staticmethod
     def from_flat_metadata(
-        meta: Dict[str, Any], *, prefix: str = "cost"
+        meta: dict[str, Any], *, prefix: str = "cost"
     ) -> "ContextCost":
         cc_key = f"{prefix}.char_count"
         tc_key = f"{prefix}.token_count"
 
         char_count = int(meta.get(cc_key, 0) or 0)
         token_raw = meta.get(tc_key, None)
-        token_count: Optional[int]
+        token_count: int | None
         if token_raw is None or token_raw == "":
             token_count = None
         else:
@@ -174,10 +172,10 @@ class MentionVerification(BaseModel):
         "llm", "levenshtein", "regex", "heuristic", "human", "ensemble", "system"
     ] = Field(..., description="How the mention was verified")
     is_verified: bool = Field(..., description="Whether the mention appears correct")
-    score: Optional[float] = Field(
+    score: float | None = Field(
         None, ge=0.0, le=1.0, description="Confidence score (if applicable)"
     )
-    notes: Optional[str] = Field(None, description="Free-text rationale or hints")
+    notes: str | None = Field(None, description="Free-text rationale or hints")
 
 
 class Span(ModeSlicingMixin, BaseModel):
@@ -232,15 +230,13 @@ class Span(ModeSlicingMixin, BaseModel):
     )
     # Optional extras
     # only for chunked text document
-    chunk_id: Optional[
-        Annotated[str, LLMField(), ExcludeMode("frontend", "backend", "dto", "llm_in")]
-    ] = Field(None, description="source text chunk id for chunked text")
-    source_cluster_id: Annotated[Optional[str], ExcludeMode("llm_in")] = Field(
+    chunk_id: Annotated[str, LLMField(), ExcludeMode("frontend", "backend", "dto", "llm_in")] | None = Field(None, description="source text chunk id for chunked text")
+    source_cluster_id: Annotated[str | None, ExcludeMode("llm_in")] = Field(
         None, description="source text cluster id"
     )
 
     verification: Annotated[
-        Optional[MentionVerification], BackendField(), ExcludeMode("llm", "llm_in")
+        MentionVerification | None, BackendField(), ExcludeMode("llm", "llm_in")
     ] = Field(None, description="Result of validating the mention correctness")
 
     @field_validator("excerpt", "context_before", "context_after", mode="before")
@@ -413,13 +409,13 @@ class Span(ModeSlicingMixin, BaseModel):
 class Domain(IdPolicyMixin, BaseModel):
     id: str = Field(..., description="Unique identifier for the domain")
     name: str = Field(..., description="Name of the domain")
-    description: Optional[str] = Field(
+    description: str | None = Field(
         None, description="Optional description of the domain"
     )
     # id_policy: ClassVar[Literal["event", "canonical"]] = "canonical"
     # id_kind: ClassVar[str] = "model"  # override per subclass if you want stable separation
 
-    def identity_key(self) -> Tuple[str, ...]:
+    def identity_key(self) -> tuple[str, ...]:
         """
         Subclasses with id_policy="canonical" MUST override this.
         Should return stable, minimal identity parts.
@@ -430,7 +426,7 @@ class Domain(IdPolicyMixin, BaseModel):
 # -------------------------
 # Core graph entities
 # -------------------------
-from typing import Mapping
+from collections.abc import Mapping
 
 
 class GraphEntityBase(ModeSlicingMixin, BaseModel):
@@ -439,29 +435,25 @@ class GraphEntityBase(ModeSlicingMixin, BaseModel):
         ..., description="Type of entity"
     )
     summary: str = Field(..., description="Summary of the node/relationship")
-    domain_id: Annotated[Optional[str], ExcludeMode("llm_in")] = Field(
+    domain_id: Annotated[str | None, ExcludeMode("llm_in")] = Field(
         None, description="Domain ID this entity belongs to"
     )
-    canonical_entity_id: Annotated[Optional[str], ExcludeMode("llm_in")] = Field(
+    canonical_entity_id: Annotated[str | None, ExcludeMode("llm_in")] = Field(
         None,
         description="Canonical ID to link equivalents (e.g., Wikidata QID or internal UUID)",
     )
     properties: Annotated[
-        Optional[
-            Mapping[
-                str, JsonPrimitive | list[JsonPrimitive] | Mapping[str, JsonPrimitive]
-            ]
-        ],
+        Mapping[str, JsonPrimitive | list[JsonPrimitive] | Mapping[str, JsonPrimitive]] | None,
         ExcludeMode("llm_in"),
     ] = Field(None, description="Optional flat properties (JSON primitives only)")
 
 
 class Grounding(ModeSlicingMixin, BaseModel):
     spans: Annotated[
-        List[Span], FrontendField(), BackendField(), DtoField(), LLMField()
+        list[Span], FrontendField(), BackendField(), DtoField(), LLMField()
     ] = Field(default_factory=list)
     multimodal_spans: Annotated[
-        List[MultimodalSpan], FrontendField(), BackendField(), DtoField()
+        list[MultimodalSpan], FrontendField(), BackendField(), DtoField()
     ] = Field(default_factory=list)
 
     def __init__(self, spans=None, /, **data):
@@ -530,7 +522,7 @@ class GraphEntityExtractionBase(GraphEntityBase):
     # the groundings wrap grouped supporting spans
 
     mentions: Annotated[
-        List[Grounding], FrontendField(), BackendField(), DtoField(), LLMField()
+        list[Grounding], FrontendField(), BackendField(), DtoField(), LLMField()
     ] = Field(
         ...,
         min_length=1,
@@ -546,7 +538,7 @@ class GraphEntityExtractionBase(GraphEntityBase):
     @field_validator("mentions")
     @classmethod
     def _require_non_empty_groundings(
-        cls, mentions: List[Grounding], info: ValidationInfo
+        cls, mentions: list[Grounding], info: ValidationInfo
     ):
 
         if not mentions:
@@ -555,7 +547,7 @@ class GraphEntityExtractionBase(GraphEntityBase):
             g.validate_from_source()
         return mentions
 
-    def to_type(self, type: Type):
+    def to_type(self, type: type):
         if type is GraphEntityRefBase:
             return self.coerce_to_db()
         else:
@@ -573,7 +565,7 @@ class GraphEntityRefBase(GraphEntityBase):
     # the mentions warps Grounding
 
     mentions: Annotated[
-        List[Grounding], FrontendField(), BackendField(), DtoField(), LLMField()
+        list[Grounding], FrontendField(), BackendField(), DtoField(), LLMField()
     ] = Field(
         ...,
         min_length=1,
@@ -597,7 +589,7 @@ class GraphEntityRefBase(GraphEntityBase):
     # NEED-FIX
     @field_validator("mentions")
     @classmethod
-    def _require_non_empty_refs(cls, mentions: List[Grounding], info: ValidationInfo):
+    def _require_non_empty_refs(cls, mentions: list[Grounding], info: ValidationInfo):
         try:
             if not mentions:
                 raise ValueError("At least one mentions is required")
@@ -648,15 +640,15 @@ class GraphEntityRefBase(GraphEntityBase):
 
 
 class EdgeMixin(ModeSlicingMixin, BaseModel):
-    source_ids: List[str] = Field(..., description="List of source node IDs")
-    target_ids: List[str] = Field(..., description="List of target node IDs")
+    source_ids: list[str] = Field(..., description="List of source node IDs")
+    target_ids: list[str] = Field(..., description="List of target node IDs")
     relation: str = Field(
         ..., description="Type of relationship between source and target nodes"
     )
-    source_edge_ids: Annotated[Optional[List[str]], ExcludeMode("llm_in")] = Field(
+    source_edge_ids: Annotated[list[str] | None, ExcludeMode("llm_in")] = Field(
         ..., description="List of source edge IDs"
     )
-    target_edge_ids: Annotated[Optional[List[str]], ExcludeMode("llm_in")] = Field(
+    target_edge_ids: Annotated[list[str] | None, ExcludeMode("llm_in")] = Field(
         ..., description="List of target edge IDs"
     )
 
@@ -665,7 +657,7 @@ class EdgeMixin(ModeSlicingMixin, BaseModel):
 # Storage-facing mixin (embedding OPTIONAL)
 # -------------------------
 
-from typing import Sequence
+from collections.abc import Sequence
 
 
 class BaseNodeMetadata(BaseModel):
@@ -681,12 +673,12 @@ class BaseNodeMetadata(BaseModel):
 
 
 class ChromaMixin(BaseModel):
-    id: Optional[str] = Field(default=None, description="Unique identifier")
-    embedding: Optional[Sequence[float]] = Field(
+    id: str | None = Field(default=None, description="Unique identifier")
+    embedding: Sequence[float] | None = Field(
         None, description="Vector embedding for the entity"
     )
     # Optional but handy to keep JSON and Chroma metadata aligned
-    doc_id: Optional[str] = Field(
+    doc_id: str | None = Field(
         None, description="Document ID from which this entity was extracted"
     )
     metadata: dict = Field({}, description="metadata")
@@ -703,7 +695,7 @@ class ChromaMixin(BaseModel):
 class LLMMixin(ModeSlicingMixin, BaseModel):
     default_include_modes: ClassVar[set[str]] = {"llm"}
     include_unmarked_for_modes: ClassVar[set[str]] = {"llm", "llm_in"}
-    id: Optional[str] = Field(
+    id: str | None = Field(
         default=None,
         description=(
             "Identifier before persistence. For new objects, prefer a temp token "
@@ -712,7 +704,7 @@ class LLMMixin(ModeSlicingMixin, BaseModel):
         ),
     )
     # No embedding in LLM schema to avoid bloating the output
-    local_id: Optional[str] = Field(
+    local_id: str | None = Field(
         None,
         description=(
             "Preferred batch-local temporary identifier for a new object. Use "
@@ -749,8 +741,8 @@ class PureChromaEdge(ChromaMixin, EdgeMixin, GraphEntityBase):
 
 
 class PureGraph(ModeSlicingMixin, BaseModel):
-    nodes: List[PureChromaNode] = Field(..., description="List of refless nodes")
-    edges: List[PureChromaEdge] = Field(..., description="List of refless edges")
+    nodes: list[PureChromaNode] = Field(..., description="List of refless nodes")
+    edges: list[PureChromaEdge] = Field(..., description="List of refless edges")
 
 
 class ChromaValidateSourceMixin(BaseModel):
@@ -762,7 +754,7 @@ class ChromaValidateSourceMixin(BaseModel):
 class LevelAwareMixin(BaseModel):
     """Mixin to handle level_from_root synchronization with metadata"""
 
-    level_from_root: Optional[int] = Field(
+    level_from_root: int | None = Field(
         None,
         description="Hierarchy level from root, metadata store final authoritative",
     )
@@ -832,7 +824,7 @@ class Node(
     # id_policy: ClassVar[Literal["event", "canonical"]] = "canonical"
     # id_kind: ClassVar[str] = "model"  # override per subclass if you want stable separation
 
-    def identity_key(self) -> Tuple[str, ...]:
+    def identity_key(self) -> tuple[str, ...]:
         """
         Subclasses with id_policy="canonical" MUST override this.
         Should return stable, minimal identity parts.
@@ -877,7 +869,7 @@ class Edge(
     # id_policy: ClassVar[Literal["event", "canonical"]] = "canonical"
     # id_kind: ClassVar[str] = "model"  # override per subclass if you want stable separation
 
-    def identity_key(self) -> Tuple[str, ...]:
+    def identity_key(self) -> tuple[str, ...]:
         """
         Subclasses with id_policy="canonical" MUST override this.
         Should return stable, minimal identity parts.
@@ -969,7 +961,7 @@ class LLMNodeExtraction(LLMNode):
     "extracted node information"
 
     mentions: Annotated[
-        List[GroundginMandatoryExcerpt],
+        list[GroundginMandatoryExcerpt],
         FrontendField(),
         BackendField(),
         DtoField(),
@@ -983,7 +975,7 @@ class LLMEdgeExtraction(LLMEdge):
     "extracted edge information"
 
     mentions: Annotated[
-        List[GroundginMandatoryExcerpt],
+        list[GroundginMandatoryExcerpt],
         FrontendField(),
         BackendField(),
         DtoField(),
@@ -1101,7 +1093,7 @@ class FlattenedSpan(Span):
         span: Span,
         *,
         span_id: str,
-        insertion_method: Optional[str] = None,
+        insertion_method: str | None = None,
     ) -> "FlattenedSpan":
         # Respect llm slice semantics: keep llm fields (e.g. chunk_id), drop backend-only fields.
         payload = span.model_dump(field_mode="llm")
@@ -1113,7 +1105,7 @@ class FlattenedSpan(Span):
             payload, context={"insertion_method": resolved_insertion_method}
         )
 
-    def to_canonical(self, *, insertion_method: Optional[str] = None) -> Span:
+    def to_canonical(self, *, insertion_method: str | None = None) -> Span:
         # Use llm mode so chunk_id survives and insertion_method remains an explicit reconstruction concern.
         payload = self.model_dump(field_mode="llm", exclude={"id"})
         resolved_insertion_method = (
@@ -1140,15 +1132,15 @@ class FlattenedGrounding(ModeSlicingMixin, BaseModel):
     include_unmarked_for_modes: ClassVar[set[str]] = {"llm"}
 
     span_ids: Annotated[
-        List[str], FrontendField(), BackendField(), DtoField(), LLMField()
+        list[str], FrontendField(), BackendField(), DtoField(), LLMField()
     ] = Field(default_factory=list)
     multimodal_span_ids: Annotated[
-        List[str], FrontendField(), BackendField(), DtoField()
+        list[str], FrontendField(), BackendField(), DtoField()
     ] = Field(default_factory=list)
 
     @field_validator("span_ids")
     @classmethod
-    def _normalize_span_ids(cls, span_ids: List[str] | None):
+    def _normalize_span_ids(cls, span_ids: list[str] | None):
         if span_ids is None:
             return []
         return span_ids
@@ -1201,7 +1193,7 @@ class FlattenedLLMNode(LLMMixin, GraphEntityBase):
     include_unmarked_for_modes: ClassVar[set[str]] = {"llm"}
 
     mentions: Annotated[
-        List[FlattenedGrounding],
+        list[FlattenedGrounding],
         FrontendField(),
         BackendField(),
         DtoField(),
@@ -1214,7 +1206,7 @@ class FlattenedLLMNode(LLMMixin, GraphEntityBase):
 
     @field_validator("mentions")
     @classmethod
-    def _require_non_empty_groundings(cls, mentions: List[FlattenedGrounding]):
+    def _require_non_empty_groundings(cls, mentions: list[FlattenedGrounding]):
         if not mentions:
             raise ValueError("At least one grounding is required")
         return mentions
@@ -1275,7 +1267,7 @@ class FlattenedLLMEdge(LLMMixin, EdgeMixin, GraphEntityBase):
     include_unmarked_for_modes: ClassVar[set[str]] = {"llm"}
 
     mentions: Annotated[
-        List[FlattenedGrounding],
+        list[FlattenedGrounding],
         FrontendField(),
         BackendField(),
         DtoField(),
@@ -1288,7 +1280,7 @@ class FlattenedLLMEdge(LLMMixin, EdgeMixin, GraphEntityBase):
 
     @field_validator("mentions")
     @classmethod
-    def _require_non_empty_groundings(cls, mentions: List[FlattenedGrounding]):
+    def _require_non_empty_groundings(cls, mentions: list[FlattenedGrounding]):
         if not mentions:
             raise ValueError("At least one grounding is required")
         return mentions
@@ -1358,20 +1350,20 @@ class FlattenedLLMEdge(LLMMixin, EdgeMixin, GraphEntityBase):
 class FlattenedLLMGraphExtraction(ModeSlicingMixin, BaseModel):
     include_unmarked_for_modes: ClassVar[set[str]] = {"llm"}
 
-    spans: List[FlattenedSpan] = Field(
+    spans: list[FlattenedSpan] = Field(
         ..., description="Root-level spans referenced by node/edge groundings"
     )
-    multimodal_spans: List[FlattenedMultimodalSpan] = Field(default_factory=list)
-    nodes: List[FlattenedLLMNode] = Field(
+    multimodal_spans: list[FlattenedMultimodalSpan] = Field(default_factory=list)
+    nodes: list[FlattenedLLMNode] = Field(
         ..., description="List of extracted flattened nodes"
     )
-    edges: List[FlattenedLLMEdge] = Field(
+    edges: list[FlattenedLLMEdge] = Field(
         ..., description="List of extracted flattened edges"
     )
 
     @field_validator("spans")
     @classmethod
-    def _validate_unique_span_ids(cls, spans: List[FlattenedSpan]):
+    def _validate_unique_span_ids(cls, spans: list[FlattenedSpan]):
         seen: set[str] = set()
         for sp in spans:
             if sp.id in seen:
@@ -1382,7 +1374,7 @@ class FlattenedLLMGraphExtraction(ModeSlicingMixin, BaseModel):
     @field_validator("multimodal_spans")
     @classmethod
     def _validate_unique_multimodal_span_ids(
-        cls, spans: List[FlattenedMultimodalSpan]
+        cls, spans: list[FlattenedMultimodalSpan]
     ):
         seen: set[str] = set()
         for span in spans:
@@ -1437,7 +1429,7 @@ class FlattenedLLMGraphExtraction(ModeSlicingMixin, BaseModel):
         cls,
         graph: "LLMGraphExtraction",
         *,
-        insertion_method: Optional[str] = None,
+        insertion_method: str | None = None,
     ) -> "FlattenedLLMGraphExtraction":
         span_to_id: dict[tuple, str] = {}
         flat_spans: list[FlattenedSpan] = []
@@ -1516,7 +1508,7 @@ class FlattenedLLMGraphExtraction(ModeSlicingMixin, BaseModel):
         )
 
     def to_canonical(
-        self, *, insertion_method: Optional[str] = None
+        self, *, insertion_method: str | None = None
     ) -> "LLMGraphExtraction":
         span_by_id: dict[str, Span] = {
             sp.id: sp.to_canonical(insertion_method=insertion_method)
@@ -1550,7 +1542,7 @@ class AssocFlattenedGroundingRow(ModeSlicingMixin, BaseModel):
         ...,
         description="Required temporary grounding id within this extraction payload, e.g. 'gr:1'",
     )
-    multimodal_span_ids: List[str] = Field(default_factory=list)
+    multimodal_span_ids: list[str] = Field(default_factory=list)
 
 
 class AssocNodeGroundingLink(ModeSlicingMixin, BaseModel):
@@ -1594,7 +1586,7 @@ class AssocFlattenedLLMNode(LLMMixin, GraphEntityBase):
             properties=node.properties,
         )
 
-    def to_canonical(self, *, mentions: List[Grounding]) -> "LLMNode":
+    def to_canonical(self, *, mentions: list[Grounding]) -> "LLMNode":
         return LLMNode(
             id=self.id,
             local_id=self.local_id,
@@ -1629,7 +1621,7 @@ class AssocFlattenedLLMEdge(LLMMixin, EdgeMixin, GraphEntityBase):
             target_edge_ids=edge.target_edge_ids,
         )
 
-    def to_canonical(self, *, mentions: List[Grounding]) -> "LLMEdge":
+    def to_canonical(self, *, mentions: list[Grounding]) -> "LLMEdge":
         return LLMEdge(
             id=self.id,
             local_id=self.local_id,
@@ -1651,35 +1643,35 @@ class AssocFlattenedLLMEdge(LLMMixin, EdgeMixin, GraphEntityBase):
 class AssocFlattenedLLMGraphExtraction(ModeSlicingMixin, BaseModel):
     include_unmarked_for_modes: ClassVar[set[str]] = {"llm"}
 
-    spans: List[FlattenedSpan] = Field(
+    spans: list[FlattenedSpan] = Field(
         ..., description="Root-level spans referenced by grounding-span link table"
     )
-    multimodal_spans: List[FlattenedMultimodalSpan] = Field(default_factory=list)
-    nodes: List[AssocFlattenedLLMNode] = Field(
+    multimodal_spans: list[FlattenedMultimodalSpan] = Field(default_factory=list)
+    nodes: list[AssocFlattenedLLMNode] = Field(
         ..., description="Flattened nodes without nested mentions"
     )
-    edges: List[AssocFlattenedLLMEdge] = Field(
+    edges: list[AssocFlattenedLLMEdge] = Field(
         ..., description="Flattened edges without nested mentions"
     )
-    groundings: List[AssocFlattenedGroundingRow] = Field(
+    groundings: list[AssocFlattenedGroundingRow] = Field(
         ..., description="Root-level grounding rows"
     )
-    node_groundings: List[AssocNodeGroundingLink] = Field(
+    node_groundings: list[AssocNodeGroundingLink] = Field(
         ...,
         description="Link table: node index -> grounding id (ordered mention list for each node)",
     )
-    edge_groundings: List[AssocEdgeGroundingLink] = Field(
+    edge_groundings: list[AssocEdgeGroundingLink] = Field(
         ...,
         description="Link table: edge index -> grounding id (ordered mention list for each edge)",
     )
-    grounding_spans: List[AssocGroundingSpanLink] = Field(
+    grounding_spans: list[AssocGroundingSpanLink] = Field(
         ...,
         description="Link table: grounding id -> span id (ordered span list for each grounding)",
     )
 
     @field_validator("spans")
     @classmethod
-    def _validate_unique_span_ids(cls, spans: List[FlattenedSpan]):
+    def _validate_unique_span_ids(cls, spans: list[FlattenedSpan]):
         seen: set[str] = set()
         for sp in spans:
             if sp.id in seen:
@@ -1690,7 +1682,7 @@ class AssocFlattenedLLMGraphExtraction(ModeSlicingMixin, BaseModel):
     @field_validator("multimodal_spans")
     @classmethod
     def _validate_unique_multimodal_span_ids(
-        cls, spans: List[FlattenedMultimodalSpan]
+        cls, spans: list[FlattenedMultimodalSpan]
     ):
         seen: set[str] = set()
         for span in spans:
@@ -1702,7 +1694,7 @@ class AssocFlattenedLLMGraphExtraction(ModeSlicingMixin, BaseModel):
     @field_validator("groundings")
     @classmethod
     def _validate_unique_grounding_ids(
-        cls, groundings: List[AssocFlattenedGroundingRow]
+        cls, groundings: list[AssocFlattenedGroundingRow]
     ):
         seen: set[str] = set()
         for g in groundings:
@@ -1817,7 +1809,7 @@ class AssocFlattenedLLMGraphExtraction(ModeSlicingMixin, BaseModel):
         cls,
         graph: "LLMGraphExtraction",
         *,
-        insertion_method: Optional[str] = None,
+        insertion_method: str | None = None,
     ) -> "AssocFlattenedLLMGraphExtraction":
         span_to_id: dict[tuple, str] = {}
         flat_spans: list[FlattenedSpan] = []
@@ -1931,7 +1923,7 @@ class AssocFlattenedLLMGraphExtraction(ModeSlicingMixin, BaseModel):
         )
 
     def to_canonical(
-        self, *, insertion_method: Optional[str] = None
+        self, *, insertion_method: str | None = None
     ) -> "LLMGraphExtraction":
         span_by_id: dict[str, Span] = {
             sp.id: sp.to_canonical(insertion_method=insertion_method)
@@ -2002,11 +1994,11 @@ class AssocFlattenedLLMGraphExtraction(ModeSlicingMixin, BaseModel):
     @classmethod
     def from_llm_in_payload(
         cls,
-        sliced: "Union[AssocFlattenedLLMGraphExtraction['llm_in'], dict, BaseModel]",
+        sliced: "AssocFlattenedLLMGraphExtraction['llm_in'] | dict | BaseModel",
         *,
-        doc_id: Optional[str],
-        content: Optional[str],
-        insertion_method: Optional[str] = None,
+        doc_id: str | None,
+        content: str | None,
+        insertion_method: str | None = None,
         context_window_chars: int = 80,
     ) -> "AssocFlattenedLLMGraphExtraction":
         if content is None:
@@ -2087,11 +2079,11 @@ class AssocFlattenedLLMGraphExtraction(ModeSlicingMixin, BaseModel):
     @classmethod
     def to_canonical_from_llm_in_payload(
         cls,
-        sliced: "Union[AssocFlattenedLLMGraphExtraction['llm_in'], dict, BaseModel]",
+        sliced: "AssocFlattenedLLMGraphExtraction['llm_in'] | dict | BaseModel",
         *,
-        doc_id: Optional[str],
-        content: Optional[str],
-        insertion_method: Optional[str] = None,
+        doc_id: str | None,
+        content: str | None,
+        insertion_method: str | None = None,
         context_window_chars: int = 80,
     ) -> "LLMGraphExtraction":
         resolved_insertion_method = insertion_method or "llm"
@@ -2113,8 +2105,8 @@ class GraphExtractionWithIDs(ModeSlicingMixin, BaseModel):
         BaseModel (_type_): _description_
     """
 
-    nodes: List[Node] = Field(..., description="List of nodes")
-    edges: List[Edge] = Field(..., description="List of edges")
+    nodes: list[Node] = Field(..., description="List of nodes")
+    edges: list[Edge] = Field(..., description="List of edges")
 
 
 class LLMGraphExtraction(ModeSlicingMixin, BaseModel):
@@ -2124,8 +2116,8 @@ class LLMGraphExtraction(ModeSlicingMixin, BaseModel):
     """
 
     include_unmarked_for_modes: ClassVar[set[str]] = {"llm"}
-    nodes: List[LLMNode] = Field(..., description="List of extracted nodes")
-    edges: List[LLMEdge] = Field(..., description="List of extracted edges")
+    nodes: list[LLMNode] = Field(..., description="List of extracted nodes")
+    edges: list[LLMEdge] = Field(..., description="List of extracted edges")
 
     @model_validator(mode="before")
     @classmethod
@@ -2139,14 +2131,14 @@ class LLMGraphExtraction(ModeSlicingMixin, BaseModel):
         return self
 
     def to_flattened(
-        self, *, insertion_method: Optional[str] = None
+        self, *, insertion_method: str | None = None
     ) -> "FlattenedLLMGraphExtraction":
         return FlattenedLLMGraphExtraction.from_canonical(
             self, insertion_method=insertion_method
         )
 
     def to_assoc_flattened(
-        self, *, insertion_method: Optional[str] = None
+        self, *, insertion_method: str | None = None
     ) -> "AssocFlattenedLLMGraphExtraction":
         return AssocFlattenedLLMGraphExtraction.from_canonical(
             self, insertion_method=insertion_method
@@ -2157,7 +2149,7 @@ class LLMGraphExtraction(ModeSlicingMixin, BaseModel):
         return self.__class__["llm_in"].model_validate(payload)
 
     def to_lean_assoc_flattened(
-        self, *, insertion_method: Optional[str] = None
+        self, *, insertion_method: str | None = None
     ) -> "AssocFlattenedLLMGraphExtraction['llm_in']":
         full_assoc = AssocFlattenedLLMGraphExtraction.from_canonical(
             self, insertion_method=insertion_method
@@ -2168,11 +2160,11 @@ class LLMGraphExtraction(ModeSlicingMixin, BaseModel):
     @classmethod
     def from_llm_in_payload(
         cls,
-        sliced: "Union[LLMGraphExtraction['llm_in'], dict, BaseModel]",
+        sliced: "LLMGraphExtraction['llm_in'] | dict | BaseModel",
         insertion_method,
         *,
-        doc_id: Optional[str] = None,
-        content: Optional[str] = None,
+        doc_id: str | None = None,
+        content: str | None = None,
         context_window_chars: int = 80,
     ) -> "LLMGraphExtraction":
         if content is None:
@@ -2271,11 +2263,11 @@ class LLMGraphExtraction(ModeSlicingMixin, BaseModel):
     @classmethod
     def from_normal_llm(
         cls,
-        sliced: "Union[LLMGraphExtraction['llm'], LLMGraphExtraction['llm_in'], dict, BaseModel]",
+        sliced: "LLMGraphExtraction['llm'] | LLMGraphExtraction['llm_in'] | dict | BaseModel",
         insertion_method,
         *,
-        doc_id: Optional[str] = None,
-        content: Optional[str] = None,
+        doc_id: str | None = None,
+        content: str | None = None,
         context_window_chars: int = 80,
     ) -> "LLMGraphExtraction":
         if isinstance(sliced, BaseModel):
@@ -2326,11 +2318,11 @@ class LLMGraphExtraction(ModeSlicingMixin, BaseModel):
     @classmethod
     def from_flattened_llm(
         cls,
-        sliced: "Union[FlattenedLLMGraphExtraction, AssocFlattenedLLMGraphExtraction, AssocFlattenedLLMGraphExtraction['llm_in'], dict, BaseModel]",
+        sliced: "FlattenedLLMGraphExtraction | AssocFlattenedLLMGraphExtraction | AssocFlattenedLLMGraphExtraction['llm_in'] | dict | BaseModel",
         insertion_method,
         *,
-        doc_id: Optional[str] = None,
-        content: Optional[str] = None,
+        doc_id: str | None = None,
+        content: str | None = None,
         context_window_chars: int = 80,
     ) -> "LLMGraphExtraction":
         if isinstance(sliced, AssocFlattenedLLMGraphExtraction):
@@ -2526,11 +2518,11 @@ class LLMGraphExtraction(ModeSlicingMixin, BaseModel):
     @classmethod
     def FromLLMSlice(
         cls,
-        sliced: "Union[LLMGraphExtraction['llm'], LLMGraphExtraction['llm_in'], FlattenedLLMGraphExtraction, AssocFlattenedLLMGraphExtraction['llm_in'], dict, BaseModel]",
+        sliced: "LLMGraphExtraction['llm'] | LLMGraphExtraction['llm_in'] | FlattenedLLMGraphExtraction | AssocFlattenedLLMGraphExtraction['llm_in'] | dict | BaseModel",
         insertion_method,
         *,
-        doc_id: Optional[str] = None,
-        content: Optional[str] = None,
+        doc_id: str | None = None,
+        content: str | None = None,
         context_window_chars: int = 80,
     ) -> "LLMGraphExtraction":
         if isinstance(sliced, FlattenedLLMGraphExtraction):
@@ -2630,7 +2622,7 @@ class AdjudicationVerdict(BaseModel):
         ..., ge=0.0, le=1.0, description="Confidence score for the adjudication"
     )
     reason: str = Field(..., description="Natural language rationale for the decision")
-    canonical_entity_id: Optional[str] = Field(
+    canonical_entity_id: str | None = Field(
         None,
         description="If applicable, the canonical ID both should map to (new or existing)",
     )
@@ -2642,7 +2634,8 @@ class LLMMergeAdjudication(BaseModel):
     verdict: AdjudicationVerdict = Field(..., description="Final adjudication verdict")
 
 
-from typing import Literal, Optional, Dict, Any, List
+from typing import Any, Literal
+
 from pydantic import BaseModel, Field
 from pydantic_extension.model_slicing import ModeSlicingMixin
 
@@ -2653,21 +2646,21 @@ class AdjudicationTarget(BaseModel):
     kind: Literal["node", "edge"] = Field(..., description="What is being adjudicated")
     id: str = Field(..., description="UUID of the node or edge")
     # Optional snapshot fields help the LLM (and offline rules) decide without re-fetching.
-    label: Optional[str] = None
-    type: Optional[str] = None
-    summary: Optional[str] = None
-    relation: Optional[str] = None  # for edges
-    source_ids: Optional[List[str]] = None  # for edges
-    target_ids: Optional[List[str]] = None  # for edges
-    source_edge_ids: Optional[List[str]] = None  # for meta-edges
-    target_edge_ids: Optional[List[str]] = None  # for meta-edges
-    domain_id: Optional[str] = None
-    canonical_entity_id: Optional[str] = None
-    properties: Optional[Dict[str, Any]] = None
+    label: str | None = None
+    type: str | None = None
+    summary: str | None = None
+    relation: str | None = None  # for edges
+    source_ids: list[str] | None = None  # for edges
+    target_ids: list[str] | None = None  # for edges
+    source_edge_ids: list[str] | None = None  # for meta-edges
+    target_edge_ids: list[str] | None = None  # for meta-edges
+    domain_id: str | None = None
+    canonical_entity_id: str | None = None
+    properties: dict[str, Any] | None = None
 
 
 class BatchAdjudications(BaseModel):
-    merge_adjudications: List[LLMMergeAdjudication]
+    merge_adjudications: list[LLMMergeAdjudication]
 
 
 class AdjudicationCandidate(BaseModel):
@@ -2692,7 +2685,6 @@ class Chunk:
 # -------------------------
 # Document
 # -------------------------
-from typing import Tuple
 
 
 class Document(ModeSlicingMixin, BaseModel):
@@ -2707,21 +2699,21 @@ class Document(ModeSlicingMixin, BaseModel):
     type: BackendType[
         DtoType[Literal["text", "ocr_document", "text_chunked"] | str]
     ] = Field(..., description="Type of document, e.g., 'ocr', 'pdf'")
-    metadata: BackendType[DtoType[Optional[Dict[str, Any]]]] = Field(
+    metadata: BackendType[DtoType[dict[str, Any] | None]] = Field(
         None, description="Additional metadata for the document"
     )
-    domain_id: BackendType[Optional[str]] = Field(
+    domain_id: BackendType[str | None] = Field(
         None, description="Optional domain this document belongs to"
     )
     processed: BackendType[bool] = Field(
         False,
         description="Whether the document has been processed, source map is produced, set true only you are migrating from server or is directly from trusted ingestor",
     )
-    embeddings: BackendType[Optional[Any]] = Field(
+    embeddings: BackendType[Any | None] = Field(
         None,
         description="embedding for collection",
     )
-    source_map: BackendType[Optional[Dict[str, Any]]] = Field(
+    source_map: BackendType[dict[str, Any] | None] = Field(
         None,
         description="source_map for chunk boundary, not for LLM ingestion, chunk id to character index range",
     )
@@ -2767,7 +2759,7 @@ class Document(ModeSlicingMixin, BaseModel):
 
     @classmethod
     def from_ocr(cls, id: str, ocr_content: dict, type: str):
-        def prepare_document_for_llm(doc_dict: Dict) -> Tuple[Dict, Dict[str, Dict]]:
+        def prepare_document_for_llm(doc_dict: dict) -> tuple[dict, dict[str, dict]]:
             # Simple restructure of input format
             filename = list(doc_dict.keys())[0]
             pages_data = doc_dict[filename]
@@ -2808,7 +2800,7 @@ class Document(ModeSlicingMixin, BaseModel):
         self.update_source_map()
 
     def update_source_map(self):
-        source_map: Dict[str, Any] = {}
+        source_map: dict[str, Any] = {}
         from ..splitter import split_doc_deterministic
 
         chunks = split_doc_deterministic(content=str(self.content), doc_id=self.id)
@@ -2951,11 +2943,11 @@ class OCRClusterResponse(ModeSlicingMixin, BaseModel):
     non_text_objects: DtoType[list[NonTextCluster]] = Field(
         description="the non-OCR object results. Share cluster number uniqueness with OCR texts. "
     )
-    is_empty_page: DtoType[Optional[bool]] = Field(
+    is_empty_page: DtoType[bool | None] = Field(
         default=False,
         description="true if the whole page is empty without recognisable text.",
     )
-    printed_page_number: DtoType[Optional[str]] = Field(
+    printed_page_number: DtoType[str | None] = Field(
         description='the page number identified from OCR texts, can be in form of roman numerals such as "i", "ii", "iii", "iv"...; '
         'Arabic numeral such as 1, 2, 3... or letter such as "a", "b", "c"...\n'
         'Sometimes the are surrounded by symbols such as "- 1 -", "- 2 -"'
@@ -3044,7 +3036,7 @@ class SplitPage(OCRClusterResponseBc):
     # model not for LLM response
     pdf_page_num: int
     metadata: SplitPageMeta
-    refined_version: Optional[OCRClusterResponse[DtoField]] = Field(
+    refined_version: OCRClusterResponse[DtoField] | None = Field(
         default=None,
         description="refined processed/ grouped/ merged version of ocr text clusters. ",
     )

@@ -2,15 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Callable
+from collections.abc import Callable
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
+from kogwistar.json_types import JsonValue
 from kogwistar.server.chat_service import ChatRunService
 from kogwistar.server.error_reporting import internal_http_error
-from kogwistar.json_types import JsonValue
 
 
 class CreateConversationIn(BaseModel):

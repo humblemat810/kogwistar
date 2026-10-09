@@ -1,17 +1,17 @@
 import os
-from typing import Any, Dict, List, Tuple
+from typing import Any
 
 import pytest
-from kogwistar.utils.cache_backend import Memory
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.models import (
+    QUESTION_KEY,
     AdjudicationQuestionCode,
     Edge,
     LLMMergeAdjudication,
     Node,
-    QUESTION_KEY,
 )
+from kogwistar.utils.cache_backend import Memory
 from tests._kg_factories import kg_document, kg_grounding
 
 pytestmark = [pytest.mark.ci_full, pytest.mark.llm_real]
@@ -89,7 +89,7 @@ def test_batch_adjudication_par_llm_cache_full(engine: GraphKnowledgeEngine, tmp
     ):
         engine.write.add_node(node, doc_id=doc.id)
 
-    node_node_pairs: List[Tuple[Node, Node]] = [
+    node_node_pairs: list[tuple[Node, Node]] = [
         (usa, usa_alias),
         (nyc, nyc_alias),
         (paris, france),
@@ -188,7 +188,7 @@ def test_batch_adjudication_par_llm_cache_full(engine: GraphKnowledgeEngine, tmp
     )
     engine.write.add_edge(e_geo_diff, doc_id=doc.id)
 
-    edge_edge_pairs: List[Tuple[Edge, Edge]] = [
+    edge_edge_pairs: list[tuple[Edge, Edge]] = [
         (e_geo1, e_geo2),
         (e_emp1, e_emp2),
         (e_geo1, e_misc),
@@ -222,14 +222,14 @@ def test_batch_adjudication_par_llm_cache_full(engine: GraphKnowledgeEngine, tmp
     )
     engine.write.add_node(n_misc, doc_id=doc.id)
 
-    cross_pairs: List[Tuple[Any, Any]] = [
+    cross_pairs: list[tuple[Any, Any]] = [
         (n_emp, e_emp1),
         (n_geo, e_geo1),
         (n_misc, e_emp1),
         (n_emp, e_misc),
     ]
 
-    pairs_all: List[Tuple[Any, Any]] = node_node_pairs + edge_edge_pairs + cross_pairs
+    pairs_all: list[tuple[Any, Any]] = node_node_pairs + edge_edge_pairs + cross_pairs
 
     def _wire_entry(obj):
         return {
@@ -237,7 +237,7 @@ def test_batch_adjudication_par_llm_cache_full(engine: GraphKnowledgeEngine, tmp
             "id": obj.id,
         }
 
-    wire_pairs: List[Dict[str, Any]] = [
+    wire_pairs: list[dict[str, Any]] = [
         {"left": _wire_entry(left), "right": _wire_entry(right)}
         for left, right in pairs_all
     ]
@@ -248,7 +248,7 @@ def test_batch_adjudication_par_llm_cache_full(engine: GraphKnowledgeEngine, tmp
 
     @memory.cache
     def _run_adjudication_cached(
-        persist_dir: str, cached_wire_pairs: List[Dict[str, Any]], qcode_int: int
+        persist_dir: str, cached_wire_pairs: list[dict[str, Any]], qcode_int: int
     ):
         eng = GraphKnowledgeEngine(persist_directory=persist_dir)
 
@@ -260,7 +260,7 @@ def test_batch_adjudication_par_llm_cache_full(engine: GraphKnowledgeEngine, tmp
             got = eng.backend.edge_get(ids=[edge_id], include=["documents"])
             return Edge.model_validate_json(got["documents"][0])
 
-        pairs: List[Tuple[Any, Any]] = []
+        pairs: list[tuple[Any, Any]] = []
         for item in cached_wire_pairs:
             left = (
                 _get_edge(item["left"]["id"])
@@ -298,7 +298,7 @@ def test_batch_adjudication_par_llm_cache_full(engine: GraphKnowledgeEngine, tmp
     i_ee = slice(4, 8)
     i_xx = slice(8, 12)
 
-    def pos_count(items: List[LLMMergeAdjudication]) -> int:
+    def pos_count(items: list[LLMMergeAdjudication]) -> int:
         return sum(1 for item in items if item.verdict.same_entity is True)
 
     assert pos_count(results[i_nn]) >= 1

@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import Protocol
 
 from kogwistar.conversation.models import ConversationEdge, ConversationNode
@@ -18,6 +18,7 @@ from kogwistar.engine_core.models import Grounding, MentionVerification, Span
 from kogwistar.id_provider import stable_id
 from kogwistar.json_types import JsonValue
 from kogwistar.typing_interfaces import WriteLike
+
 from .workflows import build_normal_workflow
 
 
@@ -269,13 +270,13 @@ def persist_summary_projection(
 
 
 __all__ = [
-    "CompressionDecision",
+    "POLICIES",
     "CompressionAuthorizer",
+    "CompressionDecision",
     "CompressionEngineLike",
     "CompressionPolicy",
     "CompressionRequest",
     "CompressionResult",
-    "POLICIES",
     "build_compression_request",
     "build_compression_workflow",
     "persist_summary_projection",

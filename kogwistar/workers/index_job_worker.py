@@ -5,8 +5,9 @@ import json
 import signal
 import sys
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable, Optional, TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
     from ..engine_core.engine import GraphKnowledgeEngine
@@ -21,7 +22,7 @@ class WorkerTickMetrics:
     done: int = 0
     retried: int = 0
     failed: int = 0
-    avg_job_duration_s: Optional[float] = None
+    avg_job_duration_s: float | None = None
 
 
 class IndexJobWorker:
@@ -43,7 +44,7 @@ class IndexJobWorker:
         batch_size: int = 50,
         lease_seconds: int = 60,
         max_jobs_per_tick: int = 200,
-        namespace: Optional[str] = None,
+        namespace: str | None = None,
     ) -> None:
         self.engine = engine
         self.max_inflight = int(max_inflight)
@@ -180,7 +181,7 @@ class IndexJobWorker:
         self,
         *,
         job: object,
-        batch_results: Optional[dict[str, BaseException | None]],
+        batch_results: dict[str, BaseException | None] | None,
         namespace: str,
         entity_cache: dict[tuple[str, str, str], object],
         mark_done,
@@ -247,8 +248,8 @@ def run_forever(
     *,
     worker: IndexJobWorker,
     tick_interval_s: float = 0.5,
-    stop_flag: Optional[Callable[[], bool]] = None,
-    on_tick: Optional[Callable[[WorkerTickMetrics], None]] = None,
+    stop_flag: Callable[[], bool] | None = None,
+    on_tick: Callable[[WorkerTickMetrics], None] | None = None,
 ) -> None:
     """Runnable loop for a worker process."""
     while True:

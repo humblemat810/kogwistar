@@ -159,7 +159,7 @@ __all__ = [
     "BestEffortDistiller",
     "DistillationRequest",
     "DistillationResult",
+    "WisdomSubmitter",
     "compile_approved_proposal_to_skill",
     "record_skill_use_observation",
-    "WisdomSubmitter",
 ]

@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List
+from typing import Any
 
 from .runtime import apply_state_update_inplace
 
-State = Dict[str, Any]
+State = dict[str, Any]
 
 
 def load_checkpoint(*, conversation_engine: Any, run_id: str, step_seq: int) -> State:
@@ -27,7 +27,7 @@ def load_checkpoint(*, conversation_engine: Any, run_id: str, step_seq: int) -> 
     return json.loads(md["state_json"])
 
 
-def _apply_state_update(state: State, state_update: List[Any]) -> None:
+def _apply_state_update(state: State, state_update: list[Any]) -> None:
     """
     Replay-side reducer. Must match WorkflowRuntime.apply_state_update semantics.
 

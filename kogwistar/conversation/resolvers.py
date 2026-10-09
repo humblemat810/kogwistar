@@ -23,6 +23,8 @@ The orchestrator should populate `_deps` in the workflow initial_state.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from .models import (
     ConversationEdge,
     ConversationNode,
@@ -31,52 +33,46 @@ from .models import (
     MetaFromLastSummary,
 )
 
-from typing import TYPE_CHECKING
-
 if TYPE_CHECKING:
     from kogwistar.runtime.models import StateUpdate
 
 import os
 import time
-from collections.abc import MutableMapping
+from collections.abc import Callable, MutableMapping
+from typing import TYPE_CHECKING, Any
+
+from kogwistar.json_types import JsonValue
 
 from ..utils.embedding_vectors import normalize_embedding_vector
-from typing import TYPE_CHECKING, Any, Callable, Dict, Union
-from kogwistar.json_types import JsonValue
 
 # Best-effort self-inspection for state schema inference
 
 Json = JsonValue
 if TYPE_CHECKING:
+    from kogwistar.runtime.runtime import StepContext, StepRunResult
+
     from .tool_runner import ToolRunner
-    from kogwistar.runtime.runtime import StepContext
-    from kogwistar.runtime.runtime import StepRunResult
 
-    RawStepFn = Callable[[StepContext], Union[Json, StepRunResult]]
-
-from kogwistar.runtime.models import RunSuccess  # noqa: E402
+    RawStepFn = Callable[[StepContext], Json | StepRunResult]
 
 # Import your real RunResult types from kogwistar.runtime/models
-
-
 from kogwistar.engine_core.models import Span  # noqa: E402
-
+from kogwistar.runtime.models import RunSuccess  # noqa: E402
+from kogwistar.runtime.resolvers import MappingStepResolver  # noqa: E402
 
 # Agentic answering helper types
 from .agentic_answering import (  # noqa: E402
     AgenticAnsweringAgent,
-    snapshot_hash,
-    AnswerWithCitations,
     AnswerEvaluation,
+    AnswerWithCitations,
+    snapshot_hash,
 )
-
-from kogwistar.runtime.resolvers import MappingStepResolver  # noqa: E402
 
 default_resolver = MappingStepResolver()
 conversation_default_resolver = default_resolver
 
 
-def _deps(ctx: StepContext) -> Dict[str, Any]:
+def _deps(ctx: StepContext) -> dict[str, Any]:
     deps = ctx.state_view.get("_deps")
     if not isinstance(deps, dict):
         raise RuntimeError(
@@ -97,7 +93,7 @@ def _append_op_log(state: object, entry: str) -> None:
         state["op_log"] = [entry]
 
 
-def _chat_service(deps: Dict[str, Any]):
+def _chat_service(deps: dict[str, Any]):
     from .service import ConversationService
 
     ce = deps["conversation_engine"]
@@ -152,7 +148,7 @@ def _noop(ctx: StepContext) -> StepRunResult:
 
 
 def _get_prev_turn_meta_summary_from_state_or_deps(
-    ctx: "StepContext",
+    ctx: StepContext,
 ) -> MetaFromLastSummary:
     """Return the shared core previous-summary model.
 
@@ -178,7 +174,7 @@ def _get_prev_turn_meta_summary_from_state_or_deps(
 
 
 @default_resolver.register("add_user_turn")
-def _add_user_turn(ctx: "StepContext") -> "StepRunResult":
+def _add_user_turn(ctx: StepContext) -> StepRunResult:
     """Create/persist the user turn node (workflow primitive).
 
     Expected state (best-effort):
@@ -328,7 +324,7 @@ def _add_user_turn(ctx: "StepContext") -> "StepRunResult":
 
 
 @default_resolver.register("link_prev_turn")
-def _link_prev_turn(ctx: "StepContext") -> "StepRunResult":
+def _link_prev_turn(ctx: StepContext) -> StepRunResult:
     """Link prev tail turn -> current turn via next_turn edge."""
     deps = _deps(ctx)
     ce = deps["conversation_engine"]
@@ -393,7 +389,7 @@ def _link_prev_turn(ctx: "StepContext") -> "StepRunResult":
 
 
 @default_resolver.register("link_assistant_turn")
-def _link_assistant_turn(ctx: "StepContext") -> "StepRunResult":
+def _link_assistant_turn(ctx: StepContext) -> StepRunResult:
     """Link user turn -> assistant response turn via next_turn edge."""
     deps = _deps(ctx)
     ce = deps["conversation_engine"]
@@ -541,8 +537,8 @@ def _memory_retrieve(ctx: StepContext) -> StepRunResult:
     with ctx.state_write as state:
         _append_op_log(state, "memory_retrieve")
 
-    from .memory_retriever import MemoryRetriever
     from ..runtime.serialize import to_jsonable
+    from .memory_retriever import MemoryRetriever
 
     mem_retriever = MemoryRetriever(
         conversation_engine=deps["conversation_engine"],
@@ -596,8 +592,8 @@ def _kg_retrieve(ctx: StepContext) -> StepRunResult:
     with ctx.state_write as state:
         _append_op_log(state, "kg_retrieve")
 
-    from .knowledge_retriever import KnowledgeRetriever
     from ..runtime.serialize import to_jsonable
+    from .knowledge_retriever import KnowledgeRetriever
 
     max_retrieval_level = int(deps.get("max_retrieval_level", 2))
 
@@ -690,8 +686,8 @@ def _memory_pin(ctx: StepContext) -> StepRunResult:
             mem_id=state["mem_id"],
             turn_index=state["turn_index"],
             self_span=state["self_span"],
-            selected_memory=getattr(mem_rehydrated, "selected"),
-            memory_context_text=getattr(mem_rehydrated, "memory_context_text"),
+            selected_memory=mem_rehydrated.selected,
+            memory_context_text=mem_rehydrated.memory_context_text,
             prev_turn_meta_summary=prev_turn_meta_summary,
         )
 
@@ -875,13 +871,14 @@ def _answer(ctx: StepContext) -> StepRunResult:
         ce = deps.get("conversation_engine")
         if ce is not None:
             try:
-                from .models import ConversationNode
-                from .conversation_orchestrator import get_id_for_conversation_turn
                 from kogwistar.engine_core.models import (
                     Grounding,
                     MentionVerification,
                     Span,
                 )
+
+                from .conversation_orchestrator import get_id_for_conversation_turn
+                from .models import ConversationNode
 
                 conversation_id = str(state["conversation_id"])
                 user_id = str(state.get("user_id") or "")
@@ -1349,8 +1346,8 @@ def _aa_materialize_evidence_pack(ctx: StepContext) -> StepRunResult:
         sv.get("materialize_depth") or agent.config.materialize_depth
     )
 
-    from ..utils.pydanic_model_consumer_wrapper import cache_pydantic_structured
     from ..utils.cache_backend import Memory
+    from ..utils.pydanic_model_consumer_wrapper import cache_pydantic_structured
     from .models import EvidencePackDigest
 
     mem = Memory(
@@ -1424,8 +1421,8 @@ def _aa_generate_answer_with_citations(ctx: StepContext) -> StepRunResult:
         with ctx.state_write as state:
             state.setdefault("_rt", {})["view"] = view
 
-    from ..utils.pydanic_model_consumer_wrapper import cache_pydantic_structured
     from ..utils.cache_backend import Memory
+    from ..utils.pydanic_model_consumer_wrapper import cache_pydantic_structured
 
     mem = Memory(
         location=os.path.join(agent.cache_dir, "_generate_answer_with_citations")
@@ -1519,8 +1516,8 @@ def _aa_validate_or_repair_citations(ctx: StepContext) -> StepRunResult:
         with ctx.state_write as state:
             state.setdefault("_rt", {})["view"] = view
 
-    from ..utils.pydanic_model_consumer_wrapper import cache_pydantic_structured
     from ..utils.cache_backend import Memory
+    from ..utils.pydanic_model_consumer_wrapper import cache_pydantic_structured
 
     mem = Memory(
         location=os.path.join(agent.cache_dir, "_generate_answer_with_citations")

@@ -6,7 +6,6 @@ import pytest
 
 from kogwistar.server.a2a import A2AAdapter, A2AAgentCard, A2AMessage
 
-
 pytestmark = [pytest.mark.ci, pytest.mark.core, pytest.mark.unit]
 
 

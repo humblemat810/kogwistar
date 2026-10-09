@@ -3,10 +3,9 @@
 # This companion combines the runtime level 3 telemetry surface with the claw loop command path.
 
 # %%
+from _helpers import banner, reset_data_dir, show
 from runtime_tutorial_ladder import level3_observability_and_langgraph, reset_data
 from tutorial_ladder import level3_command_hints
-
-from _helpers import banner, reset_data_dir, show
 
 runtime_data_dir = reset_data_dir("10_event_log_replay_and_cdc_runtime")
 claw_hint_dir = reset_data_dir("10_event_log_replay_and_cdc_claw")

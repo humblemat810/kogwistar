@@ -12,45 +12,46 @@ import asyncio
 import contextlib
 import json
 import threading
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from kogwistar.conversation.models import ConversationNode
 from kogwistar.conversation.service import ConversationService
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.json_types import JsonValue
+from kogwistar.runtime.cost_ledger import CostLedger
 
-from .chat_service_conversation_queries import _ConversationQueryService
-from .chat_service_run_execution import _RunExecutionService
-from .chat_service_run_inspection import _RunInspectionService
-from .chat_service_shared import (
-    AnswerRunRequest,
-    RunCancelledError,
-    RuntimeRunRequest,
-    RuntimeResumeRequest,
-    WorkflowProjectionRebuildingError,
-    json_safe,
-    now_ms,
-    workflow_namespace,
-)
-from .capability_kernel import CapabilityKernel, DEFAULT_CAPABILITY_SPECS
 from .auth_middleware import (
     can_access_security_scope,
     describe_storage_security_mapping,
     get_current_agent_id,
     get_current_capabilities,
     get_current_role,
-    get_execution_namespace,
     get_current_subject,
     get_current_user_id,
-    has_explicit_capabilities_claim,
+    get_execution_namespace,
     get_security_scope,
     get_storage_namespace,
+    has_explicit_capabilities_claim,
+)
+from .capability_kernel import DEFAULT_CAPABILITY_SPECS, CapabilityKernel
+from .chat_service_conversation_queries import _ConversationQueryService
+from .chat_service_run_execution import _RunExecutionService
+from .chat_service_run_inspection import _RunInspectionService
+from .chat_service_shared import (
+    AnswerRunRequest,
+    RunCancelledError,
+    RuntimeResumeRequest,
+    RuntimeRunRequest,
+    WorkflowProjectionRebuildingError,
+    json_safe,
+    now_ms,
+    workflow_namespace,
 )
 from .chat_service_workflow_design import _WorkflowDesignService
-from .run_scheduler import RunScheduler
 from .run_registry import RunRegistry
+from .run_scheduler import RunScheduler
 from .service_daemon import ServiceSupervisor
-from kogwistar.runtime.cost_ledger import CostLedger
 
 JsonObject = dict[str, JsonValue]
 

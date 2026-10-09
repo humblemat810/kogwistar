@@ -6,7 +6,6 @@ from dataclasses import dataclass
 
 from kogwistar.runtime.budget import StateBackedBudgetLedger
 
-
 RuntimeState = dict[str, object]
 
 
@@ -90,7 +89,7 @@ class AgentBudgetPolicy:
         return ledger
 
 
-def _remaining(limit: int | float, used: int | float) -> int | float | None:
+def _remaining(limit: float, used: float) -> int | float | None:
     if not limit:
         return None
     return max(0, limit - used)

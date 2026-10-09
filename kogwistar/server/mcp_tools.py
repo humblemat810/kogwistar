@@ -2,17 +2,12 @@ from __future__ import annotations
 
 import functools
 import os
+from collections.abc import Callable
 from typing import (
     Any,
-    Callable,
     ClassVar,
-    Dict,
-    List,
     Literal,
-    Optional,
     ParamSpec,
-    Set,
-    Tuple,
     TypeVar,
 )
 
@@ -20,7 +15,7 @@ from fastapi import HTTPException
 from pydantic import BaseModel, Field
 from starlette.types import Receive, Scope, Send
 
-import kogwistar.shortids as shortids
+from kogwistar import shortids
 from kogwistar.engine_core.models import (
     AdjudicationQuestionCode,
     AdjudicationVerdict,
@@ -43,9 +38,9 @@ from kogwistar.server.auth_middleware import (
     get_current_role,
     get_current_subject,
     get_current_user_id,
-    reset_current_role,
     require_role,
     require_workflow_access,
+    reset_current_role,
     set_current_role,
 )
 from kogwistar.server.chat_mcp import (
@@ -207,39 +202,39 @@ def _server_chat_service():
 
 
 class FindEdgesOut(BaseModel):
-    edges: List[str]
+    edges: list[str]
 
 
 class NeighborsOut(BaseModel):
-    nodes: List[str]
-    edges: List[str]
+    nodes: list[str]
+    edges: list[str]
 
 
 class KHopLayer(BaseModel):
-    nodes: List[str]
-    edges: List[str]
+    nodes: list[str]
+    edges: list[str]
 
 
 class KHopOut(BaseModel):
-    layers: List[KHopLayer]
+    layers: list[KHopLayer]
 
 
 class ShortestPathOut(BaseModel):
-    path: List[str]
+    path: list[str]
 
 
 class SeedExpandOut(BaseModel):
-    seeds: List[str]
-    layers: List[KHopLayer]
+    seeds: list[str]
+    layers: list[KHopLayer]
 
 
 @tool_roles({Role.RO, Role.RW})
 @mcp.tool()
 def kg_find_edges(
-    relation: Optional[str] = None,
-    src_label_contains: Optional[str] = None,
-    tgt_label_contains: Optional[str] = None,
-    doc_id: Optional[str] = None,
+    relation: str | None = None,
+    src_label_contains: str | None = None,
+    tgt_label_contains: str | None = None,
+    doc_id: str | None = None,
 ) -> FindEdgesOut:
     eids = gq.get().find_edges(
         relation=relation,
@@ -252,14 +247,14 @@ def kg_find_edges(
 
 @tool_roles({Role.RO, Role.RW})
 @mcp.tool()
-def kg_neighbors(rid: str, doc_id: Optional[str] = None) -> NeighborsOut:
+def kg_neighbors(rid: str, doc_id: str | None = None) -> NeighborsOut:
     nb = gq.get().neighbors(rid, doc_id=doc_id)
     return NeighborsOut(nodes=sorted(nb["nodes"]), edges=sorted(nb["edges"]))
 
 
 @tool_roles({Role.RO, Role.RW})
 @mcp.tool()
-def kg_k_hop(start_ids: List[str], k: int = 1, doc_id: Optional[str] = None) -> KHopOut:
+def kg_k_hop(start_ids: list[str], k: int = 1, doc_id: str | None = None) -> KHopOut:
     layers = [
         KHopLayer(nodes=sorted(L["nodes"]), edges=sorted(L["edges"]))
         for L in gq.get().k_hop(start_ids, k=k, doc_id=doc_id)
@@ -270,7 +265,7 @@ def kg_k_hop(start_ids: List[str], k: int = 1, doc_id: Optional[str] = None) -> 
 @tool_roles({Role.RO, Role.RW})
 @mcp.tool()
 def kg_shortest_path(
-    src_id: str, dst_id: str, doc_id: Optional[str] = None, max_depth: int = 8
+    src_id: str, dst_id: str, doc_id: str | None = None, max_depth: int = 8
 ) -> ShortestPathOut:
     return ShortestPathOut(
         path=gq.get().shortest_path(src_id, dst_id, doc_id=doc_id, max_depth=max_depth)
@@ -280,7 +275,7 @@ def kg_shortest_path(
 @tool_roles({Role.RO, Role.RW})
 @mcp.tool()
 def kg_semantic_seed_then_expand_text(
-    text: str, top_k: int = 5, hops: int = 1, doc_ids: Optional[str] = None
+    text: str, top_k: int = 5, hops: int = 1, doc_ids: str | None = None
 ) -> SeedExpandOut:
     doc_ids_coerced = None
     if doc_ids:
@@ -308,15 +303,15 @@ def kg_semantic_seed_then_expand_text(
 
 
 class DocParseIn(Document["dto"]):
-    id: Optional[str]  # pyright: ignore[reportGeneralTypeIssues, reportIncompatibleVariableOverride]
+    id: str | None  # pyright: ignore[reportGeneralTypeIssues, reportIncompatibleVariableOverride]
     content: str
     type: str = "text"
 
 
 class DocParseOut(BaseModel):
     doc_id: str
-    chunk_ids: List[str]
-    summary_node_id: Optional[str]
+    chunk_ids: list[str]
+    summary_node_id: str | None
 
 
 @tool_roles({Role.RW})
@@ -350,14 +345,14 @@ def doc_parse(inp: DocParseIn) -> DocParseOut:
 
 
 class KGExtractIn(BaseModel):
-    id: Optional[str]
+    id: str | None
     mode: str = "skip-if-exists"
 
 
 class KGExtractOut(BaseModel):
     doc_id: str
-    node_ids: List[str]
-    edge_ids: List[str]
+    node_ids: list[str]
+    edge_ids: list[str]
     nodes_added: int
     edges_added: int
 
@@ -414,7 +409,7 @@ def kg_extract(inp: KGExtractIn) -> KGExtractOut:
     @memory.cache()
     def get_reparsed_extraction(content):
         extracted = eng.extract.cached_extract_graph_with_llm(content=content)
-        parsed_llm: LLMGraphExtraction["llm"] = extracted["parsed"]
+        parsed_llm: LLMGraphExtraction[llm] = extracted["parsed"]
         parsed = LLMGraphExtraction.FromLLMSlice(
             parsed_llm, insertion_method="llm_graph_extraction"
         )
@@ -437,22 +432,22 @@ def kg_extract(inp: KGExtractIn) -> KGExtractOut:
 
 
 class CytoscapeOut(BaseModel):
-    elements: List[dict]
+    elements: list[dict]
     mode: str
-    doc_id: Optional[str]
+    doc_id: str | None
 
 
 class D3Out(BaseModel):
-    nodes: List[dict]
-    links: List[dict]
+    nodes: list[dict]
+    links: list[dict]
     mode: str
-    doc_id: Optional[str]
+    doc_id: str | None
 
 
 @tool_roles({Role.RO, Role.RW})
 @mcp.tool()
 def kg_viz_cytoscape_json(
-    doc_id: Optional[str] = None, mode: str = "reify"
+    doc_id: str | None = None, mode: str = "reify"
 ) -> CytoscapeOut:
     payload = to_cytoscape(engine, doc_id=doc_id, mode=mode)
     return CytoscapeOut.model_validate(payload)
@@ -460,24 +455,24 @@ def kg_viz_cytoscape_json(
 
 @tool_roles({Role.RO, Role.RW})
 @mcp.tool()
-def kg_viz_d3_json(doc_id: Optional[str] = None, mode: str = "reify") -> D3Out:
+def kg_viz_d3_json(doc_id: str | None = None, mode: str = "reify") -> D3Out:
     payload = to_d3_force(engine, doc_id=doc_id, mode=mode)
     return D3Out.model_validate(payload)
 
 
 class LoadPersistedIn(BaseModel):
-    doc_ids: List[str]
-    insertion_method: Optional[str] = None
+    doc_ids: list[str]
+    insertion_method: str | None = None
     sid: bool = True
 
 
 class LoadPersistedOut(BaseModel):
-    node_ids: List[str]
-    edge_ids: List[str]
+    node_ids: list[str]
+    edge_ids: list[str]
 
 
 def _load_persisted_graph(
-    doc_ids: List[str], insertion_method: Optional[str] = None
+    doc_ids: list[str], insertion_method: str | None = None
 ) -> LoadPersistedOut:
     eng = engine.get()
     node_ids: set[str] = set()
@@ -514,9 +509,9 @@ def kg_load_persisted(inp: LoadPersistedIn) -> LoadPersistedOut:
 
 
 class CrossDocAdjIn(BaseModel):
-    doc_ids: List[str]
+    doc_ids: list[str]
     kind: Literal["node", "edge", "any"] = "any"
-    insertion_method: Optional[str] = None
+    insertion_method: str | None = None
     max_pairs_per_bucket: int = 50
     commit: bool = False
     scope: Literal["cross-doc", "within-doc"] = "cross-doc"
@@ -528,10 +523,10 @@ class CrossDocAdjItem(BaseModel):
     right: str
     left_kind: Literal["entity", "relationship"]
     right_kind: Literal["entity", "relationship"]
-    same_entity: Optional[bool]
-    confidence: Optional[float] = None
-    reason: Optional[str] = None
-    canonical_id: Optional[str] = None
+    same_entity: bool | None
+    confidence: float | None = None
+    reason: str | None = None
+    canonical_id: str | None = None
 
 
 class CrossDocAdjOut(BaseModel):
@@ -540,11 +535,11 @@ class CrossDocAdjOut(BaseModel):
     positives: int
     negatives: int
     abstain: int
-    committed_ids: List[str]
-    results: List[CrossDocAdjItem]
+    committed_ids: list[str]
+    results: list[CrossDocAdjItem]
 
 
-def _fetch_nodes(ids: List[str]) -> List[Node]:
+def _fetch_nodes(ids: list[str]) -> list[Node]:
     eng = engine.get()
     if hasattr(eng, "get_nodes"):
         return eng.get_nodes(ids)
@@ -552,7 +547,7 @@ def _fetch_nodes(ids: List[str]) -> List[Node]:
     return [Node.model_validate_json(j) for j in (got.get("documents") or [])]
 
 
-def _fetch_edges(ids: List[str]) -> List[Edge]:
+def _fetch_edges(ids: list[str]) -> list[Edge]:
     eng = engine.get()
     if hasattr(eng, "get_edges"):
         return eng.get_edges(ids)
@@ -560,7 +555,7 @@ def _fetch_edges(ids: List[str]) -> List[Edge]:
     return [Edge.model_validate_json(j) for j in (got.get("documents") or [])]
 
 
-def _primary_doc_of(n: Node) -> Optional[str]:
+def _primary_doc_of(n: Node) -> str | None:
     if getattr(n, "doc_id", None):
         return n.doc_id
     for r in n.mentions or []:
@@ -570,11 +565,11 @@ def _primary_doc_of(n: Node) -> Optional[str]:
     return None
 
 
-def _norm(s: Optional[str]) -> str:
+def _norm(s: str | None) -> str:
     return (s or "").strip().lower()
 
 
-def _sigtext(n_or_e: Any) -> Optional[str]:
+def _sigtext(n_or_e: Any) -> str | None:
     props = getattr(n_or_e, "properties", None) or {}
     st = props.get("signature_text")
     return st if isinstance(st, str) else None
@@ -586,7 +581,7 @@ def _sigtext(n_or_e: Any) -> Optional[str]:
 def kg_crossdoc_adjudicate_anykind(inp: CrossDocAdjIn) -> CrossDocAdjOut:
     require_role("rw")
 
-    def _pairable(di: Optional[str], dj: Optional[str]) -> bool:
+    def _pairable(di: str | None, dj: str | None) -> bool:
         if inp.scope == "cross-doc":
             if inp.strict_crossdoc and (not di or not dj):
                 return False
@@ -596,17 +591,17 @@ def kg_crossdoc_adjudicate_anykind(inp: CrossDocAdjIn) -> CrossDocAdjOut:
         return bool(di) and bool(dj) and (di != dj)
 
     loaded = _load_persisted_graph(inp.doc_ids, insertion_method=inp.insertion_method)
-    node_objs: List[Node] = _fetch_nodes(loaded.node_ids) if loaded.node_ids else []
-    edge_objs: List[Edge] = _fetch_edges(loaded.edge_ids) if loaded.edge_ids else []
+    node_objs: list[Node] = _fetch_nodes(loaded.node_ids) if loaded.node_ids else []
+    edge_objs: list[Edge] = _fetch_edges(loaded.edge_ids) if loaded.edge_ids else []
 
-    nodes_by_key: Dict[Tuple[str, str], List[Tuple[Node, Optional[str]]]] = {}
+    nodes_by_key: dict[tuple[str, str], list[tuple[Node, str | None]]] = {}
     for n in node_objs:
         nodes_by_key.setdefault((n.type, _norm(n.label)), []).append(
             (n, _primary_doc_of(n))
         )
 
-    edges_by_sig: Dict[str, List[Tuple[Edge, Optional[str]]]] = {}
-    edges_by_rel_label: Dict[Tuple[str, str], List[Tuple[Edge, Optional[str]]]] = {}
+    edges_by_sig: dict[str, list[tuple[Edge, str | None]]] = {}
+    edges_by_rel_label: dict[tuple[str, str], list[tuple[Edge, str | None]]] = {}
     for e in edge_objs:
         did = _primary_doc_of(e)
         st = _sigtext(e)
@@ -617,9 +612,9 @@ def kg_crossdoc_adjudicate_anykind(inp: CrossDocAdjIn) -> CrossDocAdjOut:
                 (e.relation or "", _norm(e.label)), []
             ).append((e, did))
 
-    pairs: List[Tuple[Any, Any]] = []
+    pairs: list[tuple[Any, Any]] = []
 
-    def _cap_pairing(items: List[Tuple[Any, Optional[str]]]):
+    def _cap_pairing(items: list[tuple[Any, str | None]]):
         made = 0
         for i in range(len(items)):
             for j in range(i + 1, len(items)):
@@ -647,7 +642,7 @@ def kg_crossdoc_adjudicate_anykind(inp: CrossDocAdjIn) -> CrossDocAdjOut:
                 _cap_pairing(items)
 
     if inp.kind == "any":
-        nodes_by_sig: Dict[str, List[Tuple[Node, Optional[str]]]] = {}
+        nodes_by_sig: dict[str, list[tuple[Node, str | None]]] = {}
         for n in node_objs:
             st = _sigtext(n)
             if st:
@@ -668,7 +663,7 @@ def kg_crossdoc_adjudicate_anykind(inp: CrossDocAdjIn) -> CrossDocAdjOut:
                 if made >= inp.max_pairs_per_bucket:
                     break
 
-        edge_label_map: Dict[str, List[Tuple[Edge, Optional[str]]]] = {}
+        edge_label_map: dict[str, list[tuple[Edge, str | None]]] = {}
         for e in edge_objs:
             edge_label_map.setdefault(_norm(e.label), []).append(
                 (e, _primary_doc_of(e))
@@ -709,9 +704,9 @@ def kg_crossdoc_adjudicate_anykind(inp: CrossDocAdjIn) -> CrossDocAdjOut:
             else "entity"
         )
 
-    results: List[CrossDocAdjItem] = []
+    results: list[CrossDocAdjItem] = []
     pos = neg = abst = 0
-    committed: List[str] = []
+    committed: list[str] = []
     for (left, right), out in zip(pairs, adjudications):
         verdict: AdjudicationVerdict = getattr(out, "verdict", out)
         lkind = _kind(left)
@@ -784,22 +779,22 @@ class ProposePair(BaseModel):
 
 
 class ProposeOut(BaseModel):
-    pairs: List[ProposePair]
+    pairs: list[ProposePair]
 
 
 class ProposeVectorIn(BaseModel):
-    new_node_ids: Optional[List[str]] = None
-    new_edge_ids: Optional[List[str]] = None
+    new_node_ids: list[str] | None = None
+    new_edge_ids: list[str] | None = None
     top_k: int = 10
     score_mode: Literal["distance", "similarity"] = "distance"
     max_distance: float = 0.35
     min_similarity: float = 0.65
     include_edges: bool = True
-    allowed_docs: Optional[List[str]] = None
-    anchor_doc_id: Optional[str] = None
+    allowed_docs: list[str] | None = None
+    anchor_doc_id: str | None = None
     cross_doc_only: bool = False
     anchor_only: bool = True
-    where: Optional[str | dict] = None
+    where: str | dict | None = None
 
 
 @tool_roles({Role.RO, Role.RW})
@@ -837,8 +832,8 @@ def propose_vector(inp: ProposeVectorIn) -> ProposeOut:
 
 
 def _ids_matching_where(
-    kind: Literal["node", "edge"], where: Dict[str, Any]
-) -> Set[str]:
+    kind: Literal["node", "edge"], where: dict[str, Any]
+) -> set[str]:
     eng = engine.get()
     if not where:
         return set()
@@ -850,18 +845,18 @@ def _ids_matching_where(
 
 
 class ProposeBruteForceIn(BaseModel):
-    PairableNodeTypes: ClassVar[List[Literal["node", "edge", "any"]]] = [
+    PairableNodeTypes: ClassVar[list[Literal["node", "edge", "any"]]] = [
         "node",
         "edge",
         "any",
     ]
     pair_kind: str = "any_any"
-    allowed_docs: Optional[List[str]] = None
-    anchor_doc_id: Optional[str] = None
+    allowed_docs: list[str] | None = None
+    anchor_doc_id: str | None = None
     cross_doc_only: bool = False
     anchor_only: bool = True
-    limit_per_bucket: Optional[int] = 200
-    where: Optional[dict] = None
+    limit_per_bucket: int | None = 200
+    where: dict | None = None
 
 
 @tool_roles({Role.RO, Role.RW})
@@ -915,7 +910,7 @@ def kg_propose_bruteforce(inp: ProposeBruteForceIn) -> ProposeOut:
 
 
 class AdjPairsIn(BaseModel):
-    pairs: List[ProposePair]
+    pairs: list[ProposePair]
     commit: bool = False
 
 
@@ -952,7 +947,7 @@ def adjudicate_pairs(inp: AdjPairsIn) -> CrossDocAdjOut:
     if inp.commit:
         require_role("rw")
     eng = engine.get()
-    pairs: List[Tuple[Node | Edge, Node | Edge]] = [None] * len(inp.pairs)  # type: ignore
+    pairs: list[tuple[Node | Edge, Node | Edge]] = [None] * len(inp.pairs)  # type: ignore
     for i, pair_info in enumerate(inp.pairs):
 
         def fetch_any(id, kind):
@@ -977,9 +972,9 @@ def adjudicate_pairs(inp: AdjPairsIn) -> CrossDocAdjOut:
             else "entity"
         )
 
-    results: List[CrossDocAdjItem] = []
+    results: list[CrossDocAdjItem] = []
     pos = neg = abst = 0
-    committed: List[str] = []
+    committed: list[str] = []
     for (left, right), out in zip(pairs, adjudications):
         verdict: AdjudicationVerdict = getattr(out, "verdict", out)
         lkind = _kind(left)
@@ -1045,23 +1040,23 @@ def adjudicate_pairs(inp: AdjPairsIn) -> CrossDocAdjOut:
 
 
 class KGUpsertIn(BaseModel):
-    content: Optional[str] = Field(
+    content: str | None = Field(
         None, description="If provided and doc is new, store this as document content"
     )
     insertion_method: str = Field(
         "api_upsert", description="Provenance tag copied into each ReferenceSession"
     )
-    nodes: List[Dict[str, Any]] = Field(
+    nodes: list[dict[str, Any]] = Field(
         default_factory=list, description="PureNode-shaped dicts"
     )
-    edges: List[Dict[str, Any]] = Field(
+    edges: list[dict[str, Any]] = Field(
         default_factory=list, description="PureEdge-shaped dicts"
     )
 
 
 class GraphUpsertOut(BaseModel):
-    node_ids: List[str]
-    edge_ids: List[str]
+    node_ids: list[str]
+    edge_ids: list[str]
     nodes_added: int
     edges_added: int
 

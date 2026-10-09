@@ -23,7 +23,7 @@ def test_with_lexical_embeddings(conversation_engine):
 import hashlib
 import math
 import re
-from typing import Sequence
+from collections.abc import Sequence
 
 try:
     from chromadb.api.types import Embeddings

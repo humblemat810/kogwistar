@@ -2,12 +2,13 @@ from __future__ import annotations
 
 """Reusable maintenance templates."""
 
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
+from kogwistar.maintenance.contracts import BeforeWrite
 from kogwistar.maintenance.grouped_artifacts import (
     write_grouped_versioned_artifacts,
 )
-from kogwistar.maintenance.contracts import BeforeWrite
 from kogwistar.maintenance.models import MaintenanceTemplateResult
 
 

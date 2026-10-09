@@ -40,10 +40,11 @@ No second metadata hierarchy or persistence bundle is required.
 
 from __future__ import annotations
 
+import inspect
+from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
-import inspect
-from typing import AsyncContextManager, AsyncIterator, Iterator, Literal, Protocol, cast
+from typing import AsyncContextManager, Literal, Protocol, cast
 
 from ..json_types import JsonValue
 from .models import Edge, Node

@@ -1,7 +1,11 @@
 """Console launcher for the Rust server embedded in the native wheel."""
 from __future__ import annotations
 
-from ._rust_bridge import RustExtensionUnavailableError, _load_extension, server_implementation_mode
+from ._rust_bridge import (
+    RustExtensionUnavailableError,
+    _load_extension,
+    server_implementation_mode,
+)
 
 
 def main() -> None:

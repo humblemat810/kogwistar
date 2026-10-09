@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
+from kogwistar.engine_core.engine_postgres_meta import EnginePostgresMetaStore
 from kogwistar.engine_core.engine_sqlite import EngineSQLite
 from kogwistar.engine_core.in_memory_meta import InMemoryMetaStore
-from kogwistar.engine_core.engine_postgres_meta import EnginePostgresMetaStore
 
 
 def _row(namespace: str, key: str, value: int, *, expected: int | None = None) -> dict:

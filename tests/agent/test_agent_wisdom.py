@@ -13,7 +13,6 @@ from kogwistar.agent import (
 )
 from kogwistar.wisdom.proposals import ProposalEvaluation, WisdomRevisionProposal
 
-
 pytestmark = [pytest.mark.ci, pytest.mark.core, pytest.mark.unit]
 
 

@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import ipaddress
 import json
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from typing import Protocol
 from urllib.parse import urlsplit
-from typing import Iterable, Mapping, Protocol
 
 from ...json_types import JsonValue
 

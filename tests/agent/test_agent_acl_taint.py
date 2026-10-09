@@ -7,7 +7,6 @@ from kogwistar.agent import SequenceFakeModel, register_model_step, register_too
 from kogwistar.runtime import MappingStepResolver, StepContext
 from kogwistar.runtime.base_runtime import apply_state_update_inplace
 
-
 pytestmark = [pytest.mark.ci, pytest.mark.core, pytest.mark.workflow]
 
 

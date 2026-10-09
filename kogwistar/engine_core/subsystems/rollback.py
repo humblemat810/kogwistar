@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 
 
 class RollbackSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
-    def __init__(self, engine: "GraphKnowledgeEngine") -> None:
+    def __init__(self, engine: GraphKnowledgeEngine) -> None:
         super().__init__(engine)
 
     def _filter_mentions_for_document(self, mentions, document_id: str):

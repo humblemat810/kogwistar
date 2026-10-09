@@ -6,8 +6,8 @@ import pytest
 
 from kogwistar.conversation.models import BaseToolResult, ConversationNode
 from kogwistar.conversation.tool_runner import ToolRunner
-from kogwistar.engine_core.models import Grounding, MentionVerification, Span
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.models import Grounding, MentionVerification, Span
 from kogwistar.runtime import MappingStepResolver, WorkflowRuntime
 from kogwistar.runtime.models import (
     RunSuccess,
@@ -17,7 +17,6 @@ from kogwistar.runtime.models import (
 )
 from tests._helpers.embeddings import ConstantEmbeddingFunction
 from tests._helpers.fake_backend import build_fake_backend
-
 
 pytestmark = pytest.mark.conversation
 

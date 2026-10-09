@@ -6,9 +6,9 @@ protocol framing and transports to the official MCP Python SDK.
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
-import asyncio
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -185,7 +185,7 @@ class McpRegistry:
 
         return register(function) if function is not None else register
 
-    def mount(self, child: "McpRegistry") -> None:
+    def mount(self, child: McpRegistry) -> None:
         self._children.append(child)
 
     def _record_for(self, name: str) -> _ToolRecord | None:
@@ -244,8 +244,11 @@ class McpRegistry:
     async def _visible_tools(self) -> list[types.Tool]:
         if not self._filter_tools:
             return await self.list_tools()
+        from kogwistar.server.auth_middleware import (
+            get_current_namespaces,
+            get_current_role,
+        )
         from kogwistar.server.mcp_tools import _tool_allowed
-        from kogwistar.server.auth_middleware import get_current_namespaces, get_current_role
 
         role = get_current_role()
         namespaces = get_current_namespaces()
@@ -262,8 +265,11 @@ class McpRegistry:
         *,
         enforce_visibility: bool = False,
     ) -> types.CallToolResult:
+        from kogwistar.server.auth_middleware import (
+            get_current_namespaces,
+            get_current_role,
+        )
         from kogwistar.server.mcp_tools import _tool_allowed
-        from kogwistar.server.auth_middleware import get_current_namespaces, get_current_role
 
         record = self._record_for(name)
         if record is None:

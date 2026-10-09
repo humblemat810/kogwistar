@@ -12,6 +12,7 @@ from kogwistar.engine_core.models import (
 )
 from kogwistar.engine_core.multimodal import (
     EmbeddingReference,
+    PinnedLogicalRef,
     SpatialRegionLocator,
     TemporalIntervalLocator,
     TextRangeLocator,
@@ -19,10 +20,8 @@ from kogwistar.engine_core.multimodal import (
     VideoTrackFrame,
     VideoTrackManifest,
     VideoTrackRegion,
-    PinnedLogicalRef,
 )
 from kogwistar.logical_refs import LogicalRef
-
 
 CONTENT_SHA = "a" * 64
 PROFILE_SHA = "b" * 64

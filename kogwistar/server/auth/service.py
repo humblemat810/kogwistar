@@ -12,7 +12,6 @@ from kogwistar.json_types import JsonValue
 
 from .repository import AuthRepository
 
-
 AuthScope = str | Sequence[str]
 
 

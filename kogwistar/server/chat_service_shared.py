@@ -12,11 +12,11 @@ import contextlib
 import json
 import threading
 import time
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
-from typing import Callable, Iterator, Protocol, cast, runtime_checkable
+from typing import Protocol, cast, runtime_checkable
 
-from kogwistar.conversation.models import MetaFromLastSummary
-from kogwistar.conversation.models import ConversationNode
+from kogwistar.conversation.models import ConversationNode, MetaFromLastSummary
 from kogwistar.conversation.service import ConversationService
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.json_types import JsonValue

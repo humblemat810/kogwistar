@@ -11,7 +11,6 @@ from kogwistar.engine_core.models import Grounding, Node, Span
 from kogwistar.maintenance.template import run_grouped_maintenance_template
 from tests._helpers.fake_backend import build_fake_backend
 
-
 pytestmark = [pytest.mark.core, pytest.mark.runtime]
 
 

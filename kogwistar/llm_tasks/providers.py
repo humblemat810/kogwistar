@@ -14,6 +14,7 @@ from typing import Protocol, Self, TypeVar, runtime_checkable
 
 from kogwistar.json_types import JsonValue
 
+
 class StructuredModelLike(Protocol):
     @classmethod
     def model_validate(cls, payload: object, /) -> Self: ...
@@ -71,7 +72,7 @@ class StructuredBridgeChatModel:
         schema: type[TStructuredModel],
         include_raw: bool = True,
         **kwargs: object,
-    ) -> "_StructuredBridgeResponse":
+    ) -> _StructuredBridgeResponse:
         _ = include_raw, kwargs
         return _StructuredBridgeResponse(self, schema)
 
@@ -154,7 +155,7 @@ class ProviderChainChatModel:
         schema: type[TStructuredModel],
         include_raw: bool = True,
         **kwargs: object,
-    ) -> "_ProviderChainResponse":
+    ) -> _ProviderChainResponse:
         _ = include_raw, kwargs
         return _ProviderChainResponse(self.models, schema)
 
@@ -186,9 +187,9 @@ class _ProviderChainResponse:
 
 __all__ = [
     "ProviderChainChatModel",
+    "StructuredBridgeChatModel",
     "StructuredModelLike",
     "StructuredOutputRunnable",
-    "StructuredBridgeChatModel",
     "SupportsStructuredOutput",
     "bridge_messages",
 ]

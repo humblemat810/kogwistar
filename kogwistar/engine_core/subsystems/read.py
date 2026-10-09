@@ -2,23 +2,13 @@ from __future__ import annotations
 
 import ast
 import json
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime, timezone
 from typing import (
+    TYPE_CHECKING,
     Literal,
-    Mapping,
-    Optional,
-    Sequence,
-    Type,
     TypeVar,
-    Union,
     cast,
-)
-from typing import TYPE_CHECKING
-
-from ...utils.embedding_vectors import (
-    normalize_embedding_rows,
-    normalize_embedding_vector,
 )
 
 from ...entity_registry import (
@@ -27,13 +17,17 @@ from ...entity_registry import (
     pick_edge_type,
     pick_node_type,
 )
+from ...json_types import JsonObject, JsonValue
+from ...typing_interfaces import ProjectionBackendLike, ReadLike
+from ...utils.embedding_vectors import (
+    normalize_embedding_rows,
+    normalize_embedding_vector,
+)
 from ..async_compat import run_awaitable_blocking
 from ..models import Document, Edge, Node
 from ..utils.refs import ref_doc_id
 from ..vector_search import VectorSearchHit, similarity_from_distance
 from .base import NamespaceProxy
-from ...typing_interfaces import ProjectionBackendLike, ReadLike
-from ...json_types import JsonObject, JsonValue
 
 if TYPE_CHECKING:
     from ..engine import GraphKnowledgeEngine
@@ -57,7 +51,7 @@ def _json_objects(value: object) -> list[JsonObject]:
 
 
 class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
-    def __init__(self, engine: "GraphKnowledgeEngine") -> None:
+    def __init__(self, engine: GraphKnowledgeEngine) -> None:
         super().__init__(engine)
 
     @staticmethod
@@ -368,7 +362,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
     def get_nodes(
         self,
         ids: Sequence[str] | None = None,
-        node_type: Type[Node] | None = None,
+        node_type: type[Node] | None = None,
         include: list[str] | None = None,
         where=None,
         limit: int | None = 200,
@@ -421,7 +415,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
     def get_edges(
         self,
         ids: Sequence[str] | None = None,
-        edge_type: Type[Edge] | None = None,
+        edge_type: type[Edge] | None = None,
         where=None,
         limit: int | None = 400,
         include: list[str] | None = None,
@@ -516,7 +510,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
         query=None,
         query_embeddings=None,
         include=["documents", "embeddings", "metadatas"],
-        node_type: Type[TNode] | None = None,
+        node_type: type[TNode] | None = None,
         **kwargs,
     ) -> list[list[TNode]]:
         if query_embeddings is not None:
@@ -558,7 +552,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
             ),
         )
         return self.nodes_from_query_result(
-            got, node_type=cast(Type[TNode], node_type or Node)
+            got, node_type=cast(type[TNode], node_type or Node)
         )
 
     def _coerce_ts_utc(self, raw: object) -> datetime | None:
@@ -614,7 +608,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
         node: Node,
         *,
         as_of: datetime,
-        node_type: Type[Node],
+        node_type: type[Node],
         cache: dict[str, Node],
         follow_redirects: bool,
         max_redirect_hops: int,
@@ -670,7 +664,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
         where: dict[str, JsonValue] | None = None,
         n_results: int = 20,
         follow_redirects: bool = True,
-        node_type: Type[Node] = Node,
+        node_type: type[Node] = Node,
         include: list[str] | None = None,
         max_redirect_hops: int = 16,
         **kwargs,
@@ -701,7 +695,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
         where: dict[str, JsonValue] | None = None,
         n_results: int = 20,
         follow_redirects: bool = True,
-        node_type: Type[Node] = Node,
+        node_type: type[Node] = Node,
         include: list[str] | None = None,
         max_redirect_hops: int = 16,
         similarity_threshold: float | None = None,
@@ -840,7 +834,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
         query=None,
         query_embeddings=None,
         include=["documents", "embeddings", "metadatas"],
-        edge_type: Type[TEdge] | None = None,
+        edge_type: type[TEdge] | None = None,
         **kwargs,
     ) -> list[list[TEdge]]:
         if query_embeddings is None:
@@ -877,13 +871,13 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
             ),
         )
         return self.edges_from_query_result(
-            got, edge_type=cast(Type[TEdge], edge_type or Edge)
+            got, edge_type=cast(type[TEdge], edge_type or Edge)
         )
 
     def nodes_from_single_or_id_query_result(
         self,
         got: Mapping[str, JsonValue],
-        node_type: Type[TNode] = Node,
+        node_type: type[TNode] = Node,
     ) -> list[TNode]:
         docs: list[str] = cast(list[str], got.get("documents"))
         if docs is None:
@@ -918,7 +912,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
         return res
 
     def edges_from_single_or_id_query_result(
-        self, got: Mapping[str, JsonValue], edge_type: Type[TEdge] = Edge, include=None
+        self, got: Mapping[str, JsonValue], edge_type: type[TEdge] = Edge, include=None
     ) -> list[TEdge]:
         if include is None:
             include = ["documents", "metadatas", "embeddings"]
@@ -951,7 +945,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
         return res
 
     def nodes_from_query_result(
-        self, gots: Mapping[str, JsonValue], node_type: Type[TNode] = Node
+        self, gots: Mapping[str, JsonValue], node_type: type[TNode] = Node
     ) -> list[list[TNode]]:
         res: list[list[TNode]] = []
         id_rows = cast(list[list[str]], gots.get("ids") or [])
@@ -970,7 +964,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
         return res
 
     def edges_from_query_result(
-        self, gots: Mapping[str, JsonValue], edge_type: Type[TEdge] = Edge
+        self, gots: Mapping[str, JsonValue], edge_type: type[TEdge] = Edge
     ) -> list[list[TEdge]]:
         res: list[list[TEdge]] = []
         id_rows = cast(list[list[str]], gots.get("ids") or [])
@@ -997,7 +991,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
             return {"lifecycle_status": "active"}
         return {}
 
-    def _infer_doc_id_from_ref(self, ref) -> Optional[str]:
+    def _infer_doc_id_from_ref(self, ref) -> str | None:
         did = getattr(ref, "doc_id", None)
         if did:
             return did
@@ -1010,10 +1004,10 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
 
     def extract_reference_contexts(
         self,
-        node_or_id: Union[Node | Edge, str],
+        node_or_id: Node | Edge | str,
         *,
         window_chars: int = 120,
-        max_contexts: Optional[int] = None,
+        max_contexts: int | None = None,
         prefer_label_fallback: bool = True,
     ) -> list[dict[str, object]]:
         from ..models import GraphEntityRefBase
@@ -1248,8 +1242,8 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
         *,
         kind: str,
         insertion_method: str,
-        ids: Optional[Sequence[str]] = None,
-        doc_id: Optional[str] = None,
+        ids: Sequence[str] | None = None,
+        doc_id: str | None = None,
     ) -> list[str]:
         """
         Return distinct node_ids/edge_ids that have at least one reference row with the

@@ -1,16 +1,16 @@
 from __future__ import annotations
 
-import os
 import importlib
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
-from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.async_compat import (
     run_awaitable_blocking,
 )
 from kogwistar.engine_core.chroma_backend import ChromaBackend
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.typing_interfaces import SqlAlchemyEngineLike
 
 if TYPE_CHECKING:

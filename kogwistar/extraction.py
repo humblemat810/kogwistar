@@ -1,19 +1,22 @@
+from collections.abc import Callable, Iterable
+
 from kogwistar.engine_core.models import (
-    Span,
     Document,
     MentionVerification,
+    Span,
 )
 from kogwistar.fuzzy_offsets import (
     FuzzySpanHit as FuzzyHit,
+)
+from kogwistar.fuzzy_offsets import (
     find_fuzzy_spans,
 )
 from kogwistar.typing_interfaces import EngineLike
-from typing import Optional, List, Iterable, Callable
 
 # ---------- exact matching ----------
 
 
-def find_all_exact(text: str, needle: str) -> List[int]:
+def find_all_exact(text: str, needle: str) -> list[int]:
     if not needle:
         return []
     out = []
@@ -24,7 +27,7 @@ def find_all_exact(text: str, needle: str) -> List[int]:
     return out
 
 
-def pick_nearest(starts: Iterable[int], origin: int) -> Optional[int]:
+def pick_nearest(starts: Iterable[int], origin: int) -> int | None:
     starts = list(starts)
     if not starts:
         return None
@@ -100,8 +103,8 @@ def fuzzy_find_best_spans(
     orig_start: int,
     *,
     max_hits: int = 20,
-    scan_band: Optional[int] = None,
-) -> List[FuzzyHit]:
+    scan_band: int | None = None,
+) -> list[FuzzyHit]:
     """
     Return up to `max_hits` candidate spans (start,end,score) with score >= threshold,
     preferring hits near orig_start.

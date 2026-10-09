@@ -15,7 +15,6 @@ from kogwistar.runtime.models import WorkflowDesignArtifact, WorkflowEdge, Workf
 from kogwistar.wisdom.dream_loop import DreamLoopDecision, run_dream_loop_cycle
 from tests._helpers.fake_backend import build_fake_backend
 
-
 pytestmark = [pytest.mark.core, pytest.mark.runtime, pytest.mark.e2e]
 
 

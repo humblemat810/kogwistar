@@ -13,14 +13,19 @@ from pathlib import Path
 from typing import Any
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
-from kogwistar.engine_core.models import Edge, Grounding, MentionVerification, Node, Span
 from kogwistar.engine_core.in_memory_backend import build_in_memory_backend
+from kogwistar.engine_core.models import (
+    Edge,
+    Grounding,
+    MentionVerification,
+    Node,
+    Span,
+)
 from kogwistar.engine_core.postgres_backend import PgVectorBackend
-from kogwistar.runtime.models import WorkflowEdge, WorkflowNode
-from kogwistar.runtime.models import RunSuccess
+from kogwistar.json_types import JsonValue
+from kogwistar.runtime.models import RunSuccess, WorkflowEdge, WorkflowNode
 from kogwistar.runtime.resolvers import MappingStepResolver
 from kogwistar.runtime.runtime import WorkflowRuntime
-from kogwistar.json_types import JsonValue
 
 JsonObject = dict[str, JsonValue]
 

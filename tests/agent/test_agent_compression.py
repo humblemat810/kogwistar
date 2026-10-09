@@ -13,7 +13,6 @@ from kogwistar.agent import (
     should_request_compression,
 )
 
-
 pytestmark = [pytest.mark.ci, pytest.mark.core, pytest.mark.unit]
 
 

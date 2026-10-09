@@ -2,18 +2,21 @@ from __future__ import annotations
 
 """TO-DO  ingestor responsibility to verify that empty excerpt is only allowed if that source there is really empty only."""
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import List, Optional, Sequence, TYPE_CHECKING
+from typing import TYPE_CHECKING
+
+from pydantic import BaseModel, Field
 
 from .utils.cache_backend import Memory
-from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
 import json
+
 from .engine_core.engine import GraphKnowledgeEngine
-from .engine_core.models import Document, Edge, Span as GroundingSpan
-from .engine_core.models import Node
+from .engine_core.models import Document, Edge, Node
+from .engine_core.models import Span as GroundingSpan
 from .llm_structured_output import build_structured_output_runnable
 from .utils.embedding_vectors import normalize_embedding_vector
 
@@ -32,7 +35,7 @@ REL_DOCUMENT_DETAILED_BY = "document_detailed_by"  # document_node -> final_summ
 # Joblib cache (disk-persistent)
 # -----------------------------
 # Default under the engine's persist directory for easy cleanup/backups
-def _default_cache_dir(persist_dir: Optional[str]) -> str:
+def _default_cache_dir(persist_dir: str | None) -> str:
     base = persist_dir or "./chroma_db"
     return f"{base.rstrip('/')}/.ingester_cache"
 
@@ -58,7 +61,7 @@ class FinalSummariseResponse(BaseModel):
 
 
 class SummarizeResponse(BaseModel):
-    micro_chunks: List[MiniChunk] = Field(
+    micro_chunks: list[MiniChunk] = Field(
         ...,
         description="Ordered micro-chunks covering the input span without large overlap.",
     )
@@ -69,13 +72,13 @@ class GroupItem(BaseModel):
 
     title: str = Field(..., description="Group title.")
     summary: str = Field(..., description="Higher-level summary of the group.")
-    member_indices: List[int] = Field(
+    member_indices: list[int] = Field(
         ..., description="Indices into the provided chunk list, in order."
     )
 
 
 class GroupResponse(BaseModel):
-    groups: List[GroupItem]
+    groups: list[GroupItem]
 
 
 # -----------------------------
@@ -120,7 +123,7 @@ class SummaryChunk(BaseModel):
 class BaseDocumentGraphIngestor:
     engine: GraphKnowledgeEngine
     llm: BaseChatModel
-    cache_dir: Optional[str] = None
+    cache_dir: str | None = None
 
     def __post_init__(self):
         self.use_uuid = False
@@ -151,8 +154,8 @@ class BaseDocumentGraphIngestor:
         self,
         *,
         document: Document,
-        pages: Optional[Sequence[str]] = None,
-    ) -> Optional[List[str]]:
+        pages: Sequence[str] | None = None,
+    ) -> list[str] | None:
         """
         Best-effort normalize "pages" input:
           - if pages argument is provided -> list[str]
@@ -197,7 +200,7 @@ class BaseDocumentGraphIngestor:
         group_size: int = 5,
         max_levels: int = 6,
         force_summarise_after_levels: int = 3,
-        pages: Optional[Sequence[str]] = None,
+        pages: Sequence[str] | None = None,
     ) -> dict:
         """
         Run the hierarchical side-car ingestion pipeline for one document.
@@ -228,7 +231,7 @@ class BaseDocumentGraphIngestor:
             self._persist_adjacency(document.id, [n.id for n in leaf_nodes])
 
             # Current layer = leaves -> summarize into micro-chunks (level 0)   # self.engine.node_ids_by_doc(document.id)
-            current_layer: List[SummaryChunk] = self._summarize_layer(
+            current_layer: list[SummaryChunk] = self._summarize_layer(
                 document.id, leaves, level=0
             )
 
@@ -355,10 +358,10 @@ class BaseDocumentGraphIngestor:
         max_chars: int,
         doc_id,
         *,
-        pages: Optional[List[str]] = None,
-    ) -> List[LeafChunk]:
+        pages: list[str] | None = None,
+    ) -> list[LeafChunk]:
         if pages:
-            leaves: List[LeafChunk] = []
+            leaves: list[LeafChunk] = []
             for i, page in enumerate(pages, start=1):
                 pid = f"doc:{doc_id}|leaf:{uuid.uuid4() if self.use_uuid else i}"
                 span = Span(start_page=i, end_page=i, start_char=0, end_char=len(page))
@@ -367,7 +370,7 @@ class BaseDocumentGraphIngestor:
 
         if "\f" in text:  # respect page breaks if present
             raw_pages = [p for p in (seg.strip() for seg in text.split("\f")) if p]
-            leaves: List[LeafChunk] = []
+            leaves: list[LeafChunk] = []
             pos_char = 0
             for i, page in enumerate(raw_pages, start=1):
                 pid = f"doc:{doc_id}|leaf:{uuid.uuid4() if self.use_uuid else i}"
@@ -378,8 +381,8 @@ class BaseDocumentGraphIngestor:
 
         # greedily pack paragraphs into ~max_chars chunks
         paras = [p for p in text.replace("\r\n", "\n").split("\n\n") if p.strip()]
-        leaves: List[LeafChunk] = []
-        buf: List[str] = []
+        leaves: list[LeafChunk] = []
+        buf: list[str] = []
         cur_len = 0
         start_char_global = 0
         page_counter = 1  # if no page info, keep page=1 for all
@@ -523,7 +526,7 @@ class BaseDocumentGraphIngestor:
 
     def _summarize_layer(
         self, doc_id: str, leaves: Sequence[LeafChunk], *, level: int
-    ) -> List[SummaryChunk]:
+    ) -> list[SummaryChunk]:
         """Summarize each leaf into micro-chunks and persist that local layer.
 
         Each leaf is summarized independently, producing one or more SummaryChunk
@@ -531,8 +534,8 @@ class BaseDocumentGraphIngestor:
         adjacency are persisted immediately so later grouping steps work against
         committed graph entities, not only transient chunk objects.
         """
-        out: List[SummaryChunk] = []
-        counts_per_leaf: List[int] = []
+        out: list[SummaryChunk] = []
+        counts_per_leaf: list[int] = []
 
         # 1) Summarize each leaf into micro-chunks (collect SummaryChunk objects)
         for leaf in leaves:
@@ -588,7 +591,7 @@ class BaseDocumentGraphIngestor:
 
     def _group_layer(
         self, doc_id: str, current: Sequence[SummaryChunk], *, level: int
-    ) -> List[SummaryChunk]:
+    ) -> list[SummaryChunk]:
         """Group adjacent summary chunks into a higher-level layer.
 
         Grouping is LLM-assisted but keyed for deterministic cache reuse. Each child
@@ -604,7 +607,7 @@ class BaseDocumentGraphIngestor:
         key = f"group:v1|doc:{doc_id}|level:{level}|n:{len(current)}"
         res: GroupResponse = self._cached_group(key, items_text, max_groups)
 
-        children: List[SummaryChunk] = []
+        children: list[SummaryChunk] = []
         for i, g in enumerate(res.groups):
             # derive span as min..max of member spans
             members = [current[i] for i in g.member_indices if 0 <= i < len(current)]
@@ -668,8 +671,8 @@ class BaseDocumentGraphIngestor:
 
     def _persist_leaf_nodes(
         self, doc_id: str, leaves: Sequence[LeafChunk]
-    ) -> List[Node]:
-        nodes: List[Node] = []
+    ) -> list[Node]:
+        nodes: list[Node] = []
         for i, leaf in enumerate(leaves, start=1):
             leaf_text = leaf.text.lstrip("\ufeff") if isinstance(leaf.text, str) else leaf.text
             try:
@@ -852,7 +855,7 @@ class BaseDocumentGraphIngestor:
             self.engine.write.add_edge(e2, doc_id=doc_id)
 
     def _ref(
-        self, doc_id: str, span: GroundingSpan, *, excerpt: Optional[str]
+        self, doc_id: str, span: GroundingSpan, *, excerpt: str | None
     ) -> GroundingSpan:
         start_page = getattr(span, "start_page", None)
         end_page = getattr(span, "end_page", None)

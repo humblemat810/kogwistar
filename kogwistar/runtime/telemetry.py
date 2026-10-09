@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import atexit
-from contextlib import closing
 import json
 import logging
 import queue
@@ -9,10 +8,11 @@ import sqlite3
 import threading
 import time
 import uuid
+from collections.abc import Mapping, Sequence
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional, Protocol, Sequence
-
+from typing import Any, Protocol
 
 # -----------------------------
 # Trace / event schema helpers
@@ -35,7 +35,7 @@ def _new_w3c_span_id() -> str:
     return uuid.uuid4().hex[:16]
 
 
-def _valid_w3c_id(value: Optional[str], length: int) -> bool:
+def _valid_w3c_id(value: str | None, length: int) -> bool:
     if not isinstance(value, str) or len(value) != length:
         return False
     try:
@@ -57,12 +57,12 @@ class TraceContext:
     node_id: str
     attempt: int = 1
 
-    conversation_id: Optional[str] = None
-    turn_node_id: Optional[str] = None
+    conversation_id: str | None = None
+    turn_node_id: str | None = None
 
-    trace_id: Optional[str] = None
-    span_id: Optional[str] = None
-    parent_span_id: Optional[str] = None
+    trace_id: str | None = None
+    span_id: str | None = None
+    parent_span_id: str | None = None
 
     @property
     def has_valid_w3c_ids(self) -> bool:
@@ -74,7 +74,7 @@ class TraceContext:
             or _valid_w3c_id(self.parent_span_id, 16)
         )
 
-    def require_valid_w3c_ids(self) -> "TraceContext":
+    def require_valid_w3c_ids(self) -> TraceContext:
         """Reject pseudo/domain IDs before an adapter treats them as trace IDs."""
         if not self.has_valid_w3c_ids:
             raise ValueError("TraceContext does not contain valid W3C trace IDs")
@@ -89,9 +89,9 @@ class TraceContext:
         step_seq: int,
         node_id: str,
         attempt: int = 1,
-        conversation_id: Optional[str] = None,
-        turn_node_id: Optional[str] = None,
-    ) -> "TraceContext":
+        conversation_id: str | None = None,
+        turn_node_id: str | None = None,
+    ) -> TraceContext:
         """Create a vendor-neutral W3C root without changing legacy defaults."""
         return cls(
             run_id=run_id,
@@ -108,11 +108,11 @@ class TraceContext:
     def child_span(
         self,
         *,
-        token_id: Optional[str] = None,
-        step_seq: Optional[int] = None,
-        node_id: Optional[str] = None,
-        attempt: Optional[int] = None,
-    ) -> "TraceContext":
+        token_id: str | None = None,
+        step_seq: int | None = None,
+        node_id: str | None = None,
+        attempt: int | None = None,
+    ) -> TraceContext:
         """Create a new span in this trace while retaining domain correlation."""
         parent = self.with_span_defaults()
         return TraceContext(
@@ -132,11 +132,11 @@ class TraceContext:
         self,
         *,
         run_id: str,
-        token_id: Optional[str] = None,
+        token_id: str | None = None,
         step_seq: int = 0,
         node_id: str = "start",
         attempt: int = 1,
-    ) -> "TraceContext":
+    ) -> TraceContext:
         """Create a nested workflow context with a new run and span identity."""
         parent = self.with_span_defaults()
         return TraceContext(
@@ -152,7 +152,7 @@ class TraceContext:
             parent_span_id=parent.span_id,
         )
 
-    def with_span_defaults(self) -> "TraceContext":
+    def with_span_defaults(self) -> TraceContext:
         """
         Provide conventional defaults:
           trace_id = run_id
@@ -175,7 +175,7 @@ class TraceContext:
             parent_span_id=self.parent_span_id or token_span,
         )
 
-    def as_fields(self) -> Dict[str, Any]:
+    def as_fields(self) -> dict[str, Any]:
         ctx = self.with_span_defaults()
         return {
             "run_id": ctx.run_id,
@@ -199,7 +199,7 @@ class TraceContext:
 class EventSink(Protocol):
     """Best-effort telemetry destination; never a workflow authority."""
 
-    def emit(self, evt: Dict[str, Any]) -> None: ...
+    def emit(self, evt: dict[str, Any]) -> None: ...
 
     def flush(self, timeout: float = 1.0) -> bool: ...
 
@@ -217,12 +217,12 @@ class FanoutEventSink:
     """Small sink composition that isolates one observer from another."""
 
     def __init__(
-        self, sinks: Sequence[EventSink], *, logger: Optional[logging.Logger] = None
+        self, sinks: Sequence[EventSink], *, logger: logging.Logger | None = None
     ) -> None:
         self._sinks = tuple(sinks)
         self._log = logger or logging.getLogger(__name__)
 
-    def emit(self, evt: Dict[str, Any]) -> None:
+    def emit(self, evt: dict[str, Any]) -> None:
         for sink in self._sinks:
             try:
                 sink.emit(evt)
@@ -279,7 +279,7 @@ class SQLiteEventSink:
         batch_size: int = 200,
         flush_interval_ms: int = 250,
         drop_when_full: bool = False,
-        logger: Optional[logging.Logger] = None,
+        logger: logging.Logger | None = None,
     ) -> None:
         self.db_path = str(db_path)
         self.table = table
@@ -288,7 +288,7 @@ class SQLiteEventSink:
         self.drop_when_full = drop_when_full
         self._log = logger or logging.getLogger(__name__)
 
-        self._q: "queue.Queue[dict | _FlushBarrier]" = queue.Queue(maxsize=queue_max)
+        self._q: queue.Queue[dict | _FlushBarrier] = queue.Queue(maxsize=queue_max)
         self._stop = threading.Event()
         self._thr = threading.Thread(
             target=self._run, name=f"wf-trace-sqlite-writer-{db_path}", daemon=True
@@ -339,7 +339,7 @@ class SQLiteEventSink:
         finally:
             conn.close()
 
-    def emit(self, evt: Dict[str, Any]) -> None:
+    def emit(self, evt: dict[str, Any]) -> None:
         """
         Enqueue a fully-formed event dict (already includes required fields).
         """
@@ -499,8 +499,8 @@ class EventEmitter:
     def __init__(
         self,
         *,
-        sink: Optional[EventSink] = None,
-        logger: Optional[logging.Logger] = None,
+        sink: EventSink | None = None,
+        logger: logging.Logger | None = None,
         log_prefix: str = "WF_EVT",
     ) -> None:
         self.sink = sink

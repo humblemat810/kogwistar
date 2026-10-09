@@ -9,13 +9,12 @@ from pathlib import Path
 
 import pytest
 
-from kogwistar.engine_core.models import Grounding, Node, Span
 from kogwistar.engine_core.engine import GraphKnowledgeEngine, scoped_namespace
+from kogwistar.engine_core.models import Grounding, Node, Span
 from kogwistar.id_provider import stable_id
 from kogwistar.messaging.service import LaneMessagingService
 from kogwistar.server.auth_middleware import claims_ctx
 from tests._helpers.fake_backend import build_fake_backend
-
 
 pytestmark = pytest.mark.core
 

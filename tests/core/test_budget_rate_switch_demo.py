@@ -4,7 +4,6 @@ import pytest
 
 from kogwistar.demo.budget_rate_switch_demo import run_budget_rate_switch_demo
 
-
 pytestmark = [pytest.mark.core]
 
 

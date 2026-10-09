@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from .models import WorkflowNode
-
 from .resolvers import BaseResolver
 
 """Workflow design helpers.
@@ -13,16 +12,18 @@ from .resolvers import BaseResolver
 """
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
-from kogwistar.runtime.models import WorkflowEdge
+from typing import Any, Optional
+
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.runtime.models import WorkflowEdge
+
 from .contract import Predicate
 
 PredicateName = Optional[str]
 def _terminal_reachable_python(
     *,
     start_node_id: str,
-    adj: Dict[str, List[WorkflowEdge]],
+    adj: dict[str, list[WorkflowEdge]],
     terminals: set[str],
 ) -> bool:
     """Independent Python oracle for static terminal reachability."""
@@ -44,7 +45,7 @@ def _terminal_reachable(
     *,
     node_ids: list[str],
     start_node_id: str,
-    adj: Dict[str, List[WorkflowEdge]],
+    adj: dict[str, list[WorkflowEdge]],
     terminals: set[str],
 ) -> bool:
     from kogwistar._rust_bridge import (
@@ -137,8 +138,8 @@ class WorkflowSpec:
 
     workflow_id: str
     start_node_id: str
-    nodes: Dict[str, WFNode]
-    out_edges: Dict[str, List[WFEdge]]
+    nodes: dict[str, WFNode]
+    out_edges: dict[str, list[WFEdge]]
 
 
 def _engine_get_nodes(workflow_engine: Any, **kwargs):
@@ -194,8 +195,8 @@ def build_workflow_from_engine(
         limit=20000,
     )
 
-    nodes: Dict[str, WFNode] = {}
-    start_node_id: Optional[str] = None
+    nodes: dict[str, WFNode] = {}
+    start_node_id: str | None = None
 
     for n in nodes_raw:
         md = n.metadata or {}
@@ -226,7 +227,7 @@ def build_workflow_from_engine(
             "Set node.metadata['wf_start']=True on exactly one workflow node."
         )
 
-    out_edges: Dict[str, List[WFEdge]] = {nid: [] for nid in nodes.keys()}
+    out_edges: dict[str, list[WFEdge]] = {nid: [] for nid in nodes.keys()}
 
     for e in edges_raw:
         md = e.metadata or {}
@@ -262,11 +263,11 @@ def build_workflow_from_engine(
 
 def load_workflow_design(
     *, workflow_engine: GraphKnowledgeEngine, workflow_id: str
-) -> Tuple[
+) -> tuple[
     WorkflowNode,
-    Dict[str, WorkflowNode],
-    Dict[str, List[WorkflowEdge]],
-    Dict[str, List[WorkflowEdge]],
+    dict[str, WorkflowNode],
+    dict[str, list[WorkflowEdge]],
+    dict[str, list[WorkflowEdge]],
 ]:
     """
     Load workflow graph design from workflow_engine.
@@ -291,8 +292,8 @@ def load_workflow_design(
         edge_type=WorkflowEdge,
     )
 
-    nodes: Dict[str, WorkflowNode] = {}
-    start_nodes: List[WorkflowNode] = []
+    nodes: dict[str, WorkflowNode] = {}
+    start_nodes: list[WorkflowNode] = []
     for n in nodes_raw:
         node_id = n.id
         if node_id is None:
@@ -306,8 +307,8 @@ def load_workflow_design(
             f"workflow_id={workflow_id!r} must have exactly one start node (wf_start=True). Found {len(start_nodes)}"
         )
 
-    adj: Dict[str, List[WorkflowEdge]] = {nid: [] for nid in nodes}
-    rev_adj: Dict[str, List[WorkflowEdge]] = {nid: [] for nid in nodes}
+    adj: dict[str, list[WorkflowEdge]] = {nid: [] for nid in nodes}
+    rev_adj: dict[str, list[WorkflowEdge]] = {nid: [] for nid in nodes}
     for e in edges_raw:
         md = e.metadata or {}
         src = e.source_ids[0]
@@ -333,7 +334,7 @@ def validate_workflow_design(
     *,
     workflow_engine: Any,
     workflow_id: str,
-    predicate_registry: Dict[str, Predicate],
+    predicate_registry: dict[str, Predicate],
     resolver: Any = None,
 ):
     """Validate an engine-backed workflow design.
@@ -409,7 +410,7 @@ class BaseWorkflowDesigner:
         self,
         *,
         workflow_engine: Any,
-        predicate_registry: Dict[str, Predicate],
+        predicate_registry: dict[str, Predicate],
         resolver: BaseResolver | None = None,
     ):
         self.workflow_engine = workflow_engine

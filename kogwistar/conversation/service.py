@@ -5,10 +5,11 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
-from typing import TYPE_CHECKING, Any, Optional, Type
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
 
+from kogwistar.conversation.callbacks import RetrievalFilteringCallback
 from kogwistar.conversation.conversation_context import (
     ContextItem,
     ContextRenderer,
@@ -18,7 +19,6 @@ from kogwistar.conversation.conversation_context import (
     PromptContext,
     apply_ordering,
 )
-from kogwistar.conversation.callbacks import RetrievalFilteringCallback
 from kogwistar.conversation.conversation_orchestrator import (
     ConversationOrchestrator,
 )
@@ -38,7 +38,6 @@ from kogwistar.conversation.policy import (
     normalize_edge_metadata,
     validate_edge_add,
 )
-from kogwistar.llm_tasks import LLMTaskSet
 from kogwistar.engine_core.models import (
     ContextCost,
     Grounding,
@@ -46,6 +45,7 @@ from kogwistar.engine_core.models import (
     Span,
 )
 from kogwistar.id_provider import stable_id
+from kogwistar.llm_tasks import LLMTaskSet
 from kogwistar.runtime import WorkflowRuntime
 from kogwistar.server.auth_middleware import get_current_agent_id, get_security_scope
 
@@ -64,9 +64,9 @@ class ConversationService:
     def __init__(
         self,
         *,
-        conversation_engine: "GraphKnowledgeEngine",
-        knowledge_engine: "GraphKnowledgeEngine",
-        workflow_engine: Optional["GraphKnowledgeEngine"] = None,
+        conversation_engine: GraphKnowledgeEngine,
+        knowledge_engine: GraphKnowledgeEngine,
+        workflow_engine: GraphKnowledgeEngine | None = None,
         llm_tasks: LLMTaskSet | None = None,
         runtime_cls: type[WorkflowRuntime] = WorkflowRuntime,
     ) -> None:
@@ -88,12 +88,12 @@ class ConversationService:
     @classmethod
     def from_engine(
         cls,
-        conversation_engine: "GraphKnowledgeEngine",
+        conversation_engine: GraphKnowledgeEngine,
         *,
-        knowledge_engine: "GraphKnowledgeEngine | None" = None,
-        workflow_engine: "GraphKnowledgeEngine | None" = None,
+        knowledge_engine: GraphKnowledgeEngine | None = None,
+        workflow_engine: GraphKnowledgeEngine | None = None,
         llm_tasks: LLMTaskSet | None = None,
-    ) -> "ConversationService":
+    ) -> ConversationService:
         cache = getattr(conversation_engine, "_conversation_service_cache", None)
         if cache is None:
             cache = {}
@@ -119,9 +119,9 @@ class ConversationService:
     @classmethod
     def orchestrator_for_engine(
         cls,
-        conversation_engine: "GraphKnowledgeEngine",
+        conversation_engine: GraphKnowledgeEngine,
         *,
-        ref_knowledge_engine: "GraphKnowledgeEngine",
+        ref_knowledge_engine: GraphKnowledgeEngine,
     ) -> ConversationOrchestrator:
         svc = cls.from_engine(
             conversation_engine,
@@ -484,7 +484,7 @@ class ConversationService:
             "conversation_summary",
             "assistant_turn",
         ],
-    ) -> Optional[ConversationNode]:
+    ) -> ConversationNode | None:
         return get_chat_tail(
             self.conversation_engine,
             conversation_id=conversation_id,
@@ -500,7 +500,7 @@ class ConversationService:
         conversation_id: str,
         min_turn_index: int | None = None,
         tail_search_includes: list[str] | None = None,
-    ) -> Optional[ConversationNode]:
+    ) -> ConversationNode | None:
         return self._get_conversation_tail(
             conversation_id=conversation_id,
             min_turn_index=min_turn_index,
@@ -524,7 +524,7 @@ class ConversationService:
         mem_id: str,
         role: str,
         content: str,
-        ref_knowledge_engine: "GraphKnowledgeEngine",
+        ref_knowledge_engine: GraphKnowledgeEngine,
         filtering_callback: RetrievalFilteringCallback,
         max_retrieval_level: int = 2,
         summary_char_threshold=12000,
@@ -567,7 +567,7 @@ class ConversationService:
         _ = conversation_id
         return "You are a helpful assistant. Answer the user using the conversation and any provided evidence."
 
-    def get_response_model(self, conversation_id) -> Type[BaseModel]:
+    def get_response_model(self, conversation_id) -> type[BaseModel]:
         _ = conversation_id
         return ConversationAIResponse
 

@@ -8,7 +8,6 @@ from .async_compat import run_awaitable_blocking
 from .embedding_profile import EmbeddingStorageState
 from .storage_backend import AtomicMutationCapability
 
-
 _VECTOR_COLLECTION_NAMES = (
     "nodes_index",
     "nodes",

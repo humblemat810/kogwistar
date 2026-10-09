@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 import os
-from typing import Callable, Literal, Mapping, Protocol, Sequence, cast
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
+from typing import Literal, Protocol, cast
 
 from pydantic import BaseModel
 
@@ -181,7 +182,9 @@ def _build_runner(provider: ProviderName, config: DefaultTaskProviderConfig) -> 
 
     if provider == "ollama":
         try:
-            from langchain_ollama import ChatOllama  # type: ignore[reportMissingImports]
+            from langchain_ollama import (
+                ChatOllama,  # type: ignore[reportMissingImports]
+            )
         except Exception:
             return _MissingRunner(_missing_provider_message(provider))
         return _LangChainRunner(

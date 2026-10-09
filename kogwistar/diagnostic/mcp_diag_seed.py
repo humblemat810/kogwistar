@@ -10,6 +10,7 @@
 #   python mcp_diag_seed.py --url http://127.0.0.1:28110/mcp --doc-id D1 --delete
 
 from __future__ import annotations
+
 import argparse
 import asyncio
 import json

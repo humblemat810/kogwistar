@@ -4,7 +4,6 @@ import importlib.util
 from pathlib import Path
 from types import ModuleType
 
-
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "durable_store_capability_gate.py"
 

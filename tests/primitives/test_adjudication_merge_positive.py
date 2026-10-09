@@ -1,18 +1,19 @@
 import json
-from typing import Mapping
+from collections.abc import Mapping
 
 import pytest
+
 pytestmark = pytest.mark.core
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.models import (
+    QUESTION_KEY,
     AdjudicationQuestionCode,
     AdjudicationVerdict,
     Document,
     Grounding,
     MentionVerification,
     Node,
-    QUESTION_KEY,
     Span,
 )
 from kogwistar.llm_tasks import (

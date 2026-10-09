@@ -20,27 +20,32 @@ Design notes:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import base64
 import copy
 import hashlib
 import json
 import os
 import re
 import time
-import base64
-
-from typing import Any, Callable, Mapping, Optional, ParamSpec, Sequence, Type, TypeVar, cast
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    ParamSpec,
+    TypeVar,
+    cast,
+)
 
 from pydantic import BaseModel, Field
+
 from kogwistar.llm_tasks import (
     AnswerWithCitationsTaskRequest,
     LLMTaskSet,
     RepairCitationsTaskRequest,
 )
-from kogwistar.runtime.contract import CancellationChecker
-from typing import TYPE_CHECKING
-
 from kogwistar.llm_tasks.contracts import AnswerWithCitationsTaskResult
+from kogwistar.runtime.contract import CancellationChecker
 
 from .models import (
     ConversationEdge,
@@ -53,22 +58,22 @@ if TYPE_CHECKING:
     from ..engine_core.engine import GraphKnowledgeEngine
     from ..runtime import WorkflowEdgeInfo
 
-from .conversation_state_contracts import ConversationWorkflowState
-
-from ..engine_core.models import (
-    Grounding,
-    Span,
-)
-from ..runtime.models import StepRunResult
-from ..utils.cache_paths import joblib_cache_path
-from ..utils.cache_backend import Memory
-from ..utils.embedding_vectors import normalize_embedding_vector
-from ..engine_core.utils import AliasBook
 from kogwistar.logical_refs import (
     LogicalRef,
     build_reference_edge_payload,
     build_reference_node_payload,
 )
+
+from ..engine_core.models import (
+    Grounding,
+    Span,
+)
+from ..engine_core.utils import AliasBook
+from ..runtime.models import StepRunResult
+from ..utils.cache_backend import Memory
+from ..utils.cache_paths import joblib_cache_path
+from ..utils.embedding_vectors import normalize_embedding_vector
+from .conversation_state_contracts import ConversationWorkflowState
 
 BaseM = TypeVar("BaseM", bound=BaseModel)
 
@@ -118,7 +123,7 @@ def _project_evidence_pack_for_prompt(
 
 
 def _restore_citation_node_ids(
-    payload: Mapping[str, Any], *, model: Type[BaseM], book: AliasBook
+    payload: Mapping[str, Any], *, model: type[BaseM], book: AliasBook
 ) -> dict[str, Any]:
     """Expand provider citation aliases before any host-side validation/storage."""
     restored = model.model_validate(payload).model_dump(mode="python")
@@ -163,7 +168,7 @@ def context_messages_hash(messages: Sequence[object]) -> str:
 
 
 def _engine_query_nodes(
-    engine: "GraphKnowledgeEngine",
+    engine: GraphKnowledgeEngine,
     *,
     query_embeddings: list[list[float]],
     n_results: int,
@@ -189,7 +194,7 @@ def _engine_query_nodes(
 
 
 def _engine_get_nodes(
-    engine: "GraphKnowledgeEngine", *, ids: list[str], include: list[str]
+    engine: GraphKnowledgeEngine, *, ids: list[str], include: list[str]
 ) -> object:
     reader = getattr(engine, "read", None)
     if reader is not None and callable(getattr(reader, "get_nodes", None)):
@@ -198,7 +203,7 @@ def _engine_get_nodes(
 
 
 def _engine_get_edges(
-    engine: "GraphKnowledgeEngine", *, ids: list[str], include: list[str]
+    engine: GraphKnowledgeEngine, *, ids: list[str], include: list[str]
 ) -> object:
     reader = getattr(engine, "read", None)
     if reader is not None and callable(getattr(reader, "get_edges", None)):
@@ -362,7 +367,7 @@ class AgenticAnsweringAgent:
 
     @staticmethod
     def _select_used_evidence_entry(
-        agent: "AgenticAnsweringAgent",
+        agent: AgenticAnsweringAgent,
         *,
         system_prompt: str,
         question: str,
@@ -415,7 +420,7 @@ class AgenticAnsweringAgent:
         conversation_engine: GraphKnowledgeEngine,
         knowledge_engine: GraphKnowledgeEngine,
         llm_tasks: LLMTaskSet,
-        config: Optional[AgentConfig] = None,
+        config: AgentConfig | None = None,
         cache_dir: str | None = str(joblib_cache_path("agentic_answering")),
     ):
         self.conversation_engine = conversation_engine
@@ -542,8 +547,8 @@ class AgenticAnsweringAgent:
             used_node_ids = selection.used_node_ids[: self.config.max_used]
             used_edge_ids = list(getattr(selection, "used_edge_ids", []) or [])
             last_used = used_node_ids
-            from ..utils.pydanic_model_consumer_wrapper import cache_pydantic_structured
             from ..utils.cache_backend import Memory
+            from ..utils.pydanic_model_consumer_wrapper import cache_pydantic_structured
 
             # 5) Materialize evidence pack for answering + citation picking
             mem = Memory(
@@ -789,7 +794,7 @@ class AgenticAnsweringAgent:
         conversation_id: str,
         user_id: str | None = None,
         prev_turn_meta_summary: MetaFromLastSummary,
-        workflow_engine: "GraphKnowledgeEngine | None" = None,
+        workflow_engine: GraphKnowledgeEngine | None = None,
         workflow_id: str = "agentic_answering.v2",
         run_id: str | None = None,
         # quick-fix for nested runs: reuse outer trace emitter when available
@@ -1066,7 +1071,7 @@ class AgenticAnsweringAgent:
 
     @staticmethod
     def _materialize_evidence_pack(
-        agent: "AgenticAnsweringAgent",
+        agent: AgenticAnsweringAgent,
         *,
         node_ids: list[str],
         edge_ids: list[str] | None = None,
@@ -1250,14 +1255,14 @@ class AgenticAnsweringAgent:
 
     @staticmethod
     def _generate_answer_with_citations(
-        agent: "AgenticAnsweringAgent",
+        agent: AgenticAnsweringAgent,
         *,
         system_prompt: str,
         question: str,
         evidence_pack: dict[str, Any],
         used_node_ids: list[str],
         out_model_schema: dict[str, Any],
-        out_model: Type[BaseM] = AnswerWithCitations,
+        out_model: type[BaseM] = AnswerWithCitations,
     ):
         """Ask the LLM to answer AND cite exact mention/span indices from the provided evidence pack."""
         alias_book, prompt_pack = _project_evidence_pack_for_prompt(evidence_pack)
@@ -1312,14 +1317,14 @@ class AgenticAnsweringAgent:
 
     @staticmethod
     def _validate_or_repair_citations(
-        agent: "AgenticAnsweringAgent",
+        agent: AgenticAnsweringAgent,
         *,
         system_prompt: str,
         question: str,
         evidence_pack: dict[str, Any],
         used_node_ids: list[str],
         answer: dict | list,
-        answer_in_model: Type[AnswerWithCitations],
+        answer_in_model: type[AnswerWithCitations],
     ) -> dict:
         """Validate citations; if invalid, ask the LLM to repair once (with retries).
 
@@ -1420,7 +1425,7 @@ class AgenticAnsweringAgent:
 
     @staticmethod
     def _evaluate_answer(
-        agent: "AgenticAnsweringAgent",
+        agent: AgenticAnsweringAgent,
         *,
         system_prompt: str,
         question: str,
@@ -1428,7 +1433,7 @@ class AgenticAnsweringAgent:
         used_node_ids: list[str],
         evidence_pack: dict[str, Any],
         out_model_schema: dict[str, Any],
-        out_model: Type[BaseM],
+        out_model: type[BaseM],
     ) -> BaseM:
         """Coarse sufficiency check (best-effort structured output)."""
         ev_lines: list[str] = []

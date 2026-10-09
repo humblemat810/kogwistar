@@ -1,14 +1,16 @@
-import os
-import pytest
 import json
+import os
+import pathlib
+import sys
+from typing import cast
+
+import pytest
+
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.models import LLMGraphExtraction
 from kogwistar.llm_tasks import DefaultTaskProviderConfig
-from typing import cast
-import sys
-import pathlib
-from tests._kg_factories import kg_document
 from tests._helpers.embeddings import build_test_embedding_function
+from tests._kg_factories import kg_document
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
@@ -57,6 +59,7 @@ def test_ingest_documentS_with_llm(engine: GraphKnowledgeEngine) -> None:
         "use source_ids or target_ids for nodes; use source_edge_ids or target_edge_ids for nodes. "
     )
     import pathlib
+
     from kogwistar.utils.cache_backend import Memory
 
     cache_dir = os.path.join(".cache", "test", pathlib.Path(__file__).name, "extract")
@@ -104,7 +107,7 @@ def test_ingest_documentS_with_llm(engine: GraphKnowledgeEngine) -> None:
                 retry -= 1
                 if retry == 0:
                     raise Exception("fail too many retries")
-            parsed: LLMGraphExtraction["llm"] = raw_with_parsed["parsed"]
+            parsed: LLMGraphExtraction[llm] = raw_with_parsed["parsed"]
             return {"raw": raw_with_parsed["raw"], "parsed": parsed.model_dump()}
 
         extracted = _extract_only(

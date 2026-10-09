@@ -2,13 +2,14 @@ from __future__ import annotations
 
 """Shared provenance primitives used across conversation and promotion flows."""
 
+import json
 from collections.abc import Mapping
 from hashlib import sha256
-import json
 from typing import cast
 
-from .json_types import JsonValue
 from pydantic import BaseModel, ConfigDict, Field
+
+from .json_types import JsonValue
 
 
 class EvidencePackDigest(BaseModel):

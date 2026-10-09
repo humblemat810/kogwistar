@@ -22,8 +22,8 @@ import math
 import re
 import shutil
 import sys
-import types
 import tempfile
+import types
 from collections import Counter, deque
 from dataclasses import dataclass
 from pathlib import Path
@@ -59,7 +59,13 @@ HAVE_REAL_GRAPH_KNOWLEDGE_ENGINE = False
 # ============================================================================
 
 try:
-    from kogwistar.engine_core.models import Edge, Grounding, MentionVerification, Node, Span
+    from kogwistar.engine_core.models import (
+        Edge,
+        Grounding,
+        MentionVerification,
+        Node,
+        Span,
+    )
     from kogwistar.graph_query import GraphQuery
     HAVE_REAL_KOGWISTAR_MODELS = True
 except Exception:
@@ -111,7 +117,7 @@ except Exception:
             return json.dumps(self, default=lambda o: o.__dict__)
 
         @classmethod
-        def model_validate_json(cls, payload: str) -> "Node":
+        def model_validate_json(cls, payload: str) -> Node:
             data = json.loads(payload)
             data["mentions"] = [
                 Grounding(spans=[Span(**span) for span in grounding["spans"]])
@@ -143,7 +149,7 @@ except Exception:
             return json.dumps(self, default=lambda o: o.__dict__)
 
         @classmethod
-        def model_validate_json(cls, payload: str) -> "Edge":
+        def model_validate_json(cls, payload: str) -> Edge:
             data = json.loads(payload)
             data["mentions"] = [
                 Grounding(spans=[Span(**span) for span in grounding["spans"]])
@@ -302,6 +308,8 @@ from scripts.rag_retrieval_comparison_tutorial import (
     normalize_text,
     short_excerpt,
     tokenize,
+)
+from scripts.rag_retrieval_comparison_tutorial import (
     RetrievalTutorial as RawTutorial,
 )
 
@@ -344,7 +352,7 @@ class KGRecord:
 
 
 class TutorialRead:
-    def __init__(self, engine: "TutorialMemoryEngine") -> None:
+    def __init__(self, engine: TutorialMemoryEngine) -> None:
         self._e = engine
 
     def node_ids_by_doc(self, doc_id: str) -> list[str]:
@@ -365,7 +373,7 @@ class TutorialRead:
 
 
 class TutorialWrite:
-    def __init__(self, engine: "TutorialMemoryEngine") -> None:
+    def __init__(self, engine: TutorialMemoryEngine) -> None:
         self._e = engine
 
     def add_node(self, node: Node) -> None:

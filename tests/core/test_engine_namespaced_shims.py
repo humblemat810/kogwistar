@@ -10,8 +10,8 @@ import pytest
 pytestmark = pytest.mark.ci
 
 from kogwistar.engine_core.engine import (
-    GraphKnowledgeEngine,
     _SHIM_METHOD_MAP,
+    GraphKnowledgeEngine,
     scoped_namespace,
 )
 from tests._helpers.fake_backend import build_fake_backend

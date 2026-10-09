@@ -1,14 +1,14 @@
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
-import uuid
 
 from kogwistar.engine_core.engine import (
     AliasBook,
     base62_to_uuid,
     uuid_to_base62,
 )
-from kogwistar.engine_core.models import LLMGraphExtraction, Edge, Node
+from kogwistar.engine_core.models import Edge, LLMGraphExtraction, Node
 from kogwistar.engine_core.utils import AliasKindMismatchError, UnknownAliasError
 from tests._kg_factories import kg_document, kg_grounding, kg_llm_grounding_payload
 

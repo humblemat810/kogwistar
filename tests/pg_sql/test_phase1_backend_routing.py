@@ -3,13 +3,11 @@ from __future__ import annotations
 import inspect
 import re
 from pathlib import Path
-from typing import List
 
 import pytest
 
-
-from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core import models
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
 
 pytestmark = pytest.mark.ci_full
 
@@ -144,7 +142,7 @@ def test_phase1_no_direct_collection_method_calls_in_engine() -> None:
         r"\.nodes_index_collection\.(add|get|query|update|upsert|delete)\(",
     ]
 
-    offenders: List[str] = [pat for pat in direct_patterns if re.search(pat, src)]
+    offenders: list[str] = [pat for pat in direct_patterns if re.search(pat, src)]
     assert not offenders, (
         "Direct collection calls still exist in GraphKnowledgeEngine. "
         "Route them through `self.backend.*`.\n"

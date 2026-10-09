@@ -1,14 +1,15 @@
 # graph_query.py — polished traversal layer with higher‑level APIs
 from __future__ import annotations
-from collections import deque
-from typing import Dict, Set, List, Optional, Iterable
-import json
+
 import asyncio
 import inspect
-
-from .engine_core.models import Node, Edge
-from .engine_core.async_compat import run_awaitable_blocking
+import json
+from collections import deque
+from collections.abc import Iterable
 from typing import TYPE_CHECKING
+
+from .engine_core.async_compat import run_awaitable_blocking
+from .engine_core.models import Edge, Node
 
 if TYPE_CHECKING:
     from .engine_core.engine import GraphKnowledgeEngine
@@ -36,7 +37,7 @@ class GraphQuery:
     """
 
     # ---- construction ----
-    def __init__(self, engine: "GraphKnowledgeEngine"):
+    def __init__(self, engine: GraphKnowledgeEngine):
         self.e = engine
 
     def _read_nodes(self, *, ids=None, where=None) -> list[Node]:
@@ -269,9 +270,9 @@ class GraphQuery:
         return result
 
     async def neighbors_async(
-        self, rid: str, *, direction: str = "both", doc_id: Optional[str] = None,
+        self, rid: str, *, direction: str = "both", doc_id: str | None = None,
         allow_jump_edge: bool = True,
-    ) -> Dict[str, Set[str]]:
+    ) -> dict[str, set[str]]:
         """Async traversal path for async backends and pending Stage-1 rows."""
         if getattr(self.e, "backend", None) is None:
             return self.neighbors(rid, direction=direction, doc_id=doc_id, allow_jump_edge=allow_jump_edge)
@@ -365,17 +366,17 @@ class GraphQuery:
         return rows
 
     # ---- doc scoping ----
-    def nodes_in_doc(self, doc_id: str) -> List[Node]:
+    def nodes_in_doc(self, doc_id: str) -> list[Node]:
         ids = self.e.read.node_ids_by_doc(doc_id)
         return self._read_nodes(ids=ids) if ids else []
 
-    def edges_in_doc(self, doc_id: str) -> List[Edge]:
+    def edges_in_doc(self, doc_id: str) -> list[Edge]:
         ids = self.e.read.edge_ids_by_doc(doc_id)
         return self._read_edges(ids=ids) if ids else []
 
     def document_subgraph(
-        self, doc_id: str, *, center_ids: Optional[Iterable[str]] = None, hops: int = 1
-    ) -> Dict[str, List]:
+        self, doc_id: str, *, center_ids: Iterable[str] | None = None, hops: int = 1
+    ) -> dict[str, list]:
         """Return a small subgraph for a document: seeds + k‑hop neighborhood.
         If center_ids omitted, seeds are all nodes in the doc (bounded by hops=0/1 recommended).
         """
@@ -385,8 +386,8 @@ class GraphQuery:
             seeds = self.e.read.node_ids_by_doc(doc_id)
         layers = self.k_hop(seeds, k=max(0, hops), doc_id=doc_id)
         # Flatten and dedupe
-        node_ids: Set[str] = set(seeds)
-        edge_ids: Set[str] = set()
+        node_ids: set[str] = set(seeds)
+        edge_ids: set[str] = set()
         for L in layers:
             node_ids |= set(L["nodes"])  # discovered opposite endpoints
             edge_ids |= set(L["edges"])  # incident edges
@@ -395,7 +396,7 @@ class GraphQuery:
         return {"seed_ids": seeds, "nodes": nodes, "edges": edges, "layers": layers}
 
     # ---- document summary helpers ----
-    def final_summary_node_id(self, doc_id: str) -> Optional[str]:
+    def final_summary_node_id(self, doc_id: str) -> str | None:
         """Find the single node that has a 'summarizes_document' edge -> docnode:{doc_id}."""
         tgt = f"docnode:{doc_id}"
         eps = self._endpoint_rows(
@@ -418,7 +419,7 @@ class GraphQuery:
                 return row.get("endpoint_id")
         return None
 
-    def final_summary_node(self, doc_id: str) -> Optional[Node]:
+    def final_summary_node(self, doc_id: str) -> Node | None:
         rid = self.final_summary_node_id(doc_id)
         if not rid:
             return None
@@ -431,9 +432,9 @@ class GraphQuery:
         rid: str,
         *,
         direction: str = "both",
-        doc_id: Optional[str] = None,
+        doc_id: str | None = None,
         allow_jump_edge=True,
-    ) -> Dict[str, Set[str]]:
+    ) -> dict[str, set[str]]:
         """
         For a node-id: neighbors are incident edges and opposite endpoint nodes.
         For an edge-id: neighbors are endpoint nodes and meta-edges (if any).
@@ -485,18 +486,18 @@ class GraphQuery:
 
     def k_hop(
         self,
-        start_ids: List[str],
+        start_ids: list[str],
         k: int = 2,
         *,
-        doc_id: Optional[str] = None,
+        doc_id: str | None = None,
         allow_jump_edge=False,
-    ) -> List[Dict[str, Set[str]]]:
-        visited: Set[str] = set()
-        frontier: Set[str] = set(start_ids)
-        layers: List[Dict[str, Set[str]]] = []
+    ) -> list[dict[str, set[str]]]:
+        visited: set[str] = set()
+        frontier: set[str] = set(start_ids)
+        layers: list[dict[str, set[str]]] = []
 
         for _ in range(max(0, k)):
-            next_frontier: Set[str] = set()
+            next_frontier: set[str] = set()
             layer_nodes, layer_edges = set(), set()
             for rid in frontier:
                 if rid in visited:
@@ -517,9 +518,9 @@ class GraphQuery:
         src_id: str,
         dst_id: str,
         *,
-        doc_id: Optional[str] = None,
+        doc_id: str | None = None,
         max_depth: int = 8,
-    ) -> List[str]:
+    ) -> list[str]:
         if src_id == dst_id:
             return [src_id]
         q = deque([(src_id, [src_id])])
@@ -544,19 +545,19 @@ class GraphQuery:
     def search_nodes(
         self,
         *,
-        label_contains: Optional[str] = None,
-        summary_contains: Optional[str] = None,
-        type: Optional[str] = None,
-        doc_id: Optional[str] = None,
+        label_contains: str | None = None,
+        summary_contains: str | None = None,
+        type: str | None = None,
+        doc_id: str | None = None,
         limit: int = 200,
-    ) -> List[str]:
+    ) -> list[str]:
         """Return node IDs filtered by simple metadata and post‑filtered by JSON fields."""
         where = {}
         if doc_id:
             where["doc_id"] = doc_id
         # Pull candidate set by doc scope, then filter by JSON to avoid over‑constraining Chroma metadata
         nodes = self._read_nodes(where=(where or None))
-        out: List[str] = []
+        out: list[str] = []
         for n in nodes:
             nid = n.safe_get_id()
             if not nid:
@@ -581,9 +582,9 @@ class GraphQuery:
         src_substr: str,
         dst_substr: str,
         *,
-        doc_id: Optional[str] = None,
+        doc_id: str | None = None,
         max_depth: int = 8,
-    ) -> List[str]:
+    ) -> list[str]:
         """Find a shortest path between any node whose label contains src_substr and any whose label contains dst_substr."""
         src_candidates = self.search_nodes(
             label_contains=src_substr, doc_id=doc_id, limit=50
@@ -591,7 +592,7 @@ class GraphQuery:
         dst_candidates = set(
             self.search_nodes(label_contains=dst_substr, doc_id=doc_id, limit=50)
         )
-        best: List[str] = []
+        best: list[str] = []
         for s in src_candidates:
             for t in dst_candidates:
                 p = self.shortest_path(s, t, doc_id=doc_id, max_depth=max_depth)
@@ -602,11 +603,11 @@ class GraphQuery:
     def find_edges(
         self,
         *,
-        relation: Optional[str] = None,
-        src_label_contains: Optional[str] = None,
-        tgt_label_contains: Optional[str] = None,
-        doc_id: Optional[str] = None,
-    ) -> List[str]:
+        relation: str | None = None,
+        src_label_contains: str | None = None,
+        tgt_label_contains: str | None = None,
+        doc_id: str | None = None,
+    ) -> list[str]:
         where = {}
         if relation:
             where["relation"] = relation
@@ -617,7 +618,7 @@ class GraphQuery:
         elif len(where) > 1:
             where = {"$and": [{k: v} for k, v in where.items()]}
         edges = self._read_edges(where=where)
-        out: List[str] = []
+        out: list[str] = []
         for e in edges:
             eid = e.safe_get_id()
             if not eid:
@@ -644,17 +645,17 @@ class GraphQuery:
         return out
 
     def adjacency_list(
-        self, node_ids: Iterable[str], *, doc_id: Optional[str] = None
-    ) -> Dict[str, Dict[str, Set[str]]]:
+        self, node_ids: Iterable[str], *, doc_id: str | None = None
+    ) -> dict[str, dict[str, set[str]]]:
         """For each node id, return {node_id: {"nodes": set(), "edges": set()}}"""
-        out: Dict[str, Dict[str, Set[str]]] = {}
+        out: dict[str, dict[str, set[str]]] = {}
         for nid in node_ids:
             out[nid] = self.neighbors(nid, doc_id=doc_id)
         return out
 
     # ---- semantic seed ----
     def semantic_seed_then_expand(
-        self, query_embedding: List[float], *, top_k: int = 5, hops: int = 1
+        self, query_embedding: list[float], *, top_k: int = 5, hops: int = 1
     ):
         query_reader = getattr(getattr(self.e, "read", None), "query_nodes", None)
         hits = (

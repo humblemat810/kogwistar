@@ -3,7 +3,7 @@
 # This companion persists a prompt view as a `context_snapshot`.
 
 # %%
-from kogwistar.conversation.service import ConversationService
+from _helpers import banner, reset_data_dir, show
 from tutorial_ladder import (
     _ensure_seed,
     deterministic_filter_callback,
@@ -11,7 +11,7 @@ from tutorial_ladder import (
     seed_data,
 )
 
-from _helpers import banner, reset_data_dir, show
+from kogwistar.conversation.service import ConversationService
 
 data_dir = reset_data_dir("05_context_snapshot_and_replay")
 show("reset", reset_data(data_dir))

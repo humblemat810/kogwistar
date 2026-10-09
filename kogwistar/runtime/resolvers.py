@@ -1,10 +1,10 @@
 from __future__ import annotations
+
 import functools
 import warnings
+from typing import TYPE_CHECKING
 
 from kogwistar.utils.log import bind_log_context
-
-from typing import TYPE_CHECKING
 
 """Workflow step resolvers.
 
@@ -29,12 +29,12 @@ Handlers are expected to retrieve dependencies from `ctx.state["_deps"]`, e.g.:
 The orchestrator should populate `_deps` in the workflow initial_state.
 """
 
-from dataclasses import dataclass
-from typing import Any, Callable, Dict, Mapping, Optional, Protocol, Union
-
 # Best-effort self-inspection for state schema inference
 import ast
 import inspect
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
+from typing import Any, Protocol
 
 from kogwistar.runtime.serialize import JsonValue
 
@@ -47,7 +47,7 @@ if TYPE_CHECKING:
 class RawStepFn(Protocol):
     """Callable contract for one runtime workflow step."""
 
-    def __call__(self, context: "StepContext", /) -> Union[Json, StepRunResult]: ...
+    def __call__(self, context: StepContext, /) -> Json | StepRunResult: ...
 
 from kogwistar.runtime.models import RunFailure, RunSuccess, RunSuspended, StepRunResult
 from kogwistar.runtime.sandbox import SandboxRequest
@@ -68,8 +68,8 @@ _LEGACY_UPDATE_WARNING_EMITTED = False
 
 @dataclass
 class MappingStepResolver(BaseResolver):
-    handlers: Dict[str, RawStepFn]
-    default: Optional[RawStepFn] = None
+    handlers: dict[str, RawStepFn]
+    default: RawStepFn | None = None
 
     @property
     def ops(self) -> set[str]:
@@ -77,9 +77,9 @@ class MappingStepResolver(BaseResolver):
 
     def __init__(
         self,
-        handlers: Optional[Mapping[str, RawStepFn]] = None,
+        handlers: Mapping[str, RawStepFn] | None = None,
         *,
-        default: Optional[RawStepFn] = None,
+        default: RawStepFn | None = None,
     ) -> None:
         self.handlers = dict(handlers or {})
         self.default = default
@@ -91,9 +91,9 @@ class MappingStepResolver(BaseResolver):
         # Preferred merge mode per state key: 'u' overwrite, 'a' append, 'e' extend
         self._state_schema: dict[str, str] = {}
         # The sandbox to use
-        self._sandbox: Optional["Sandbox"] = None
+        self._sandbox: Sandbox | None = None
 
-    def set_sandbox(self, sandbox: "Sandbox"):
+    def set_sandbox(self, sandbox: Sandbox):
         self._sandbox = sandbox
 
     def close_sandbox_run(self, run_id: str) -> None:
@@ -164,7 +164,7 @@ class MappingStepResolver(BaseResolver):
         return _wrapped
 
     def _maybe_execute_sandboxed(
-        self, *, op: str, ctx: "StepContext", out: JsonValue | StepRunResult
+        self, *, op: str, ctx: StepContext, out: JsonValue | StepRunResult
     ) -> JsonValue | StepRunResult:
         if op not in self.sandboxed_ops:
             return out
@@ -208,7 +208,7 @@ class MappingStepResolver(BaseResolver):
         return None
 
     @staticmethod
-    def _sandbox_context(ctx: "StepContext") -> dict[str, Any]:
+    def _sandbox_context(ctx: StepContext) -> dict[str, Any]:
         return {
             "run_id": ctx.run_id,
             "workflow_id": ctx.workflow_id,
@@ -312,7 +312,7 @@ class MappingStepResolver(BaseResolver):
         return self.resolve(op)
 
 
-def _deps(ctx: StepContext) -> Dict[str, Any]:
+def _deps(ctx: StepContext) -> dict[str, Any]:
     deps = ctx.state_view.get("_deps")
     if not isinstance(deps, dict):
         raise RuntimeError(

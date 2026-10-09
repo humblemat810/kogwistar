@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-
-
 """Core restart-recovery coordination and operator visibility surfaces."""
 
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
+
 if TYPE_CHECKING:
     from kogwistar.engine_core.engine import GraphKnowledgeEngine
 
@@ -15,7 +15,6 @@ from ..runtime.projections import (
     workflow_checkpoint_latest_projection_namespace,
     workflow_run_status_projection_namespace,
 )
-
 
 TERMINAL_RUN_STATUSES = {"succeeded", "failed", "cancelled", "completed"}
 TERMINAL_CHECKPOINT_STATUSES = {"succeeded", "failed", "cancelled", "completed"}
@@ -26,7 +25,7 @@ class ResumePolicy:
     auto_resume: bool = False
     only_restartable: bool = True
     require_resume_marker: bool = True
-    resume_runner: Callable[["CheckpointRecoveryState"], Any] | None = None
+    resume_runner: Callable[[CheckpointRecoveryState], Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)

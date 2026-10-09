@@ -10,7 +10,7 @@ import os
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 try:
     from dotenv import load_dotenv
@@ -39,20 +39,28 @@ from kogwistar.runtime.models import (
 from kogwistar.server.auth_middleware import (
     # Compatibility exports consumed by auth clients and tests.
     JWT_ALG as JWT_ALG,  # noqa: F401
+)
+from kogwistar.server.auth_middleware import (
     JWT_AUD as JWT_AUD,  # noqa: F401
+)
+from kogwistar.server.auth_middleware import (
     JWT_ISS as JWT_ISS,  # noqa: F401
+)
+from kogwistar.server.auth_middleware import (
     JWT_SECRET as JWT_SECRET,  # noqa: F401
+)
+from kogwistar.server.auth_middleware import (
     ROLE_ORDER,
     DevStreamGuardMiddleware,
     JWTProtectMiddleware,
     NameSpace,
+    get_app_jwt_settings,
+    get_current_subject,
+    get_current_user_id,
     get_jwt_alg,
     get_jwt_aud,
     get_jwt_iss,
     get_jwt_secret,
-    get_app_jwt_settings,
-    get_current_subject,
-    get_current_user_id,
     require_capability,
     require_namespace,
     require_role,
@@ -60,10 +68,9 @@ from kogwistar.server.auth_middleware import (
     set_auth_app,
 )
 from kogwistar.server.chat_api import create_chat_router
-from kogwistar.server.syscall_api import create_syscall_router
 from kogwistar.server.error_reporting import internal_http_error
-from kogwistar.server.mcp_tools import MCPRoleMiddleware, mcp
 from kogwistar.server.mcp_tools import *  # noqa: F401,F403
+from kogwistar.server.mcp_tools import MCPRoleMiddleware, mcp
 from kogwistar.server.resources import (
     auth_engine_resource,
     chat_service,
@@ -79,6 +86,7 @@ from kogwistar.server.resources import (
     workflow_persist_directory,
 )
 from kogwistar.server.runtime_api import create_runtime_router
+from kogwistar.server.syscall_api import create_syscall_router
 from kogwistar.visualization.graph_viz import to_cytoscape, to_d3_force
 
 load_dotenv()
@@ -662,9 +670,9 @@ def admin_delete_doc(doc_id: str):
 # http://localhost:28110/api/viz/d3.json?doc_id=&mode=reify
 @app.get("/api/viz/cytoscape.json")
 def api_viz_cytoscape(
-    doc_id: Optional[str] = None,
+    doc_id: str | None = None,
     mode: str = "reify",
-    insertion_method: Optional[str] = None,  # NEW
+    insertion_method: str | None = None,  # NEW
     graph_type: str = "knowledge",
 ):
     gt = (graph_type or "knowledge").lower()
@@ -684,9 +692,9 @@ def api_viz_cytoscape(
 @app.get("/viz/d3.bundle", response_class=HTMLResponse)
 def viz_d3_bundle(
     request: Request,
-    doc_id: Optional[str] = None,
+    doc_id: str | None = None,
     mode: str = "reify",
-    insertion_method: Optional[str] = None,
+    insertion_method: str | None = None,
     graph_type: str = "knowledge",  # knowledge|conversation|workflow|wisdom
 ):
     gt = (graph_type or "knowledge").lower()
@@ -726,10 +734,10 @@ def viz_d3_bundle(
 
 @app.get("/api/viz/d3.json")
 def api_viz_d3(
-    doc_id: Optional[str] = None,
+    doc_id: str | None = None,
     mode: str = "reify",
-    insertion_method: Optional[str] = None,
-    graph_type: Optional[str] = None,  # NEW: knowledge|conversation|workflow|wisdom
+    insertion_method: str | None = None,
+    graph_type: str | None = None,  # NEW: knowledge|conversation|workflow|wisdom
 ):
     graph_type = (graph_type or "knowledge").lower()
     if graph_type == "conversation":
@@ -749,20 +757,20 @@ def api_viz_d3(
 class DocumentGraphProposal(BaseModel):
     doc_id: str
     insertion_method: str = "document_parser_v1"
-    nodes: List[Dict[str, Any]]
-    edges: List[Dict[str, Any]] = []
+    nodes: list[dict[str, Any]]
+    edges: list[dict[str, Any]] = []
 
 class DocumentGraphValidationResult(BaseModel):
     ok: bool
-    node_errors: Dict[str, str] = {}
-    edge_errors: Dict[str, str] = {}
+    node_errors: dict[str, str] = {}
+    edge_errors: dict[str, str] = {}
 
 @app.post("/api/document.validate_graph", response_model=DocumentGraphValidationResult)
 async def document_validate_graph(payload: DocumentGraphProposal):
     # inp =await request.json()
     # payload = documentGraphProposal.model_validate(inp['payload'])
-    node_errors: Dict[str, str] = {}
-    edge_errors: Dict[str, str] = {}
+    node_errors: dict[str, str] = {}
+    edge_errors: dict[str, str] = {}
 
     # try to coerce nodes
     for n in payload.nodes:
@@ -818,24 +826,24 @@ class GraphUpsertLLMIn(BaseModel):
     """
 
     doc_id: str = Field(..., description="Document id to scope persistence")
-    content: Optional[str] = Field(
+    content: str | None = Field(
         None, description="If provided and doc is new, store this as document content"
     )
     doc_type: str = Field("text", description="Document type")
     insertion_method: str = Field(
         "api_upsert", description="Provenance tag copied into each ReferenceSession"
     )
-    nodes: List[Dict[str, Any]] = Field(
+    nodes: list[dict[str, Any]] = Field(
         default_factory=list, description="LLMNode['llm']-shaped dicts"
     )
-    edges: List[Dict[str, Any]] = Field(
+    edges: list[dict[str, Any]] = Field(
         default_factory=list, description="LLMEdge['llm']-shaped dicts"
     )
 
 class DocumentGraphUpsertOut(BaseModel):
     document_id: str
-    node_ids: List[str]
-    edge_ids: List[str]
+    node_ids: list[str]
+    edge_ids: list[str]
     nodes_added: int
     edges_added: int
 
@@ -935,15 +943,15 @@ def api_graph_upsert_llm(inp: GraphUpsertLLMIn):
 class DocumentGraphUpsert(BaseModel):
     doc_id: str
     insertion_method: str = "document_parser_v1"
-    nodes: List[Node]
-    edges: List[Edge] = []
+    nodes: list[Node]
+    edges: list[Edge] = []
 
 
 class DocumentGraphUpsertResult(BaseModel):
     status: str
     inserted_nodes: int
     inserted_edges: int
-    engine_result: Dict[str, Any] | None = None
+    engine_result: dict[str, Any] | None = None
 
 class DocumentUpsert(BaseModel):
     doc_id: str
@@ -1042,30 +1050,30 @@ class KGUpsertIn(BaseModel):
     - references may use document alias token ::DOC:: in URLs; we’ll de-alias to doc_id.
     """
 
-    content: Optional[str] = Field(
+    content: str | None = Field(
         None, description="If provided and doc is new, store this as document content"
     )
     insertion_method: str = Field(
         "api_upsert", description="Provenance tag copied into each ReferenceSession"
     )
-    nodes: List[Dict[str, Any]] = Field(
+    nodes: list[dict[str, Any]] = Field(
         default_factory=list, description="PureNode-shaped dicts"
     )
-    edges: List[Dict[str, Any]] = Field(
+    edges: list[dict[str, Any]] = Field(
         default_factory=list, description="PureEdge-shaped dicts"
     )
 class GraphUpsertOut(BaseModel):
-    node_ids: List[str]
-    edge_ids: List[str]
+    node_ids: list[str]
+    edge_ids: list[str]
     nodes_added: int
     edges_added: int
 
 @app.get("/viz/cytoscape", response_class=HTMLResponse)
 def viz_cytoscape(
     request: Request,
-    doc_id: Optional[str] = None,
+    doc_id: str | None = None,
     mode: str = "reify",
-    insertion_method: Optional[str] = None,
+    insertion_method: str | None = None,
 ):
     return templates.TemplateResponse(
         "cytoscape.html",
@@ -1080,9 +1088,9 @@ def viz_cytoscape(
 @app.get("/viz/d3", response_class=HTMLResponse)
 def viz_d3(
     request: Request,
-    doc_id: Optional[str] = None,
+    doc_id: str | None = None,
     mode: str = "reify",
-    insertion_method: Optional[str] = None,
+    insertion_method: str | None = None,
 ):
     return templates.TemplateResponse(
         "d3.html",
@@ -1097,9 +1105,9 @@ def viz_d3(
 @app.get("/viz/go", response_class=HTMLResponse)
 def viz_go(
     request: Request,
-    doc_id: Optional[str] = None,
+    doc_id: str | None = None,
     mode: str = "reify",
-    insertion_method: Optional[str] = None,
+    insertion_method: str | None = None,
 ):
     return templates.TemplateResponse(
         "go.html",
@@ -1112,13 +1120,15 @@ def viz_go(
     )
 
 from pydantic import BaseModel
+
+
 class IndexingItem(BaseModel):
     node_id: str
     canonical_title: str
-    keywords: List[str]
-    aliases: List[str]
+    keywords: list[str]
+    aliases: list[str]
     provision: str
-    doc_id: Optional[str]
+    doc_id: str | None
 
 @app.post("/api/add_index_entries")
 def add_index_entries(payload: AddIndexEntriesInput):
@@ -1141,6 +1151,7 @@ app.mount("/", mcp_app)
 def main() -> None:
     """Console entrypoint for `knowledge-mcp`."""
     import os
+
     import uvicorn
 
     _configure_console_logging()

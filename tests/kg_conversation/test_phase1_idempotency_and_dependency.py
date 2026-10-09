@@ -2,19 +2,20 @@
 from __future__ import annotations
 
 import json
-import pytest
 from typing import Literal
+
+import pytest
+
 from kogwistar.conversation.models import (
     ConversationEdge,
     ConversationNode,
 )
 from kogwistar.engine_core.models import (
     Grounding,
-    Span,
     MentionVerification,
+    Span,
 )
 from tests.conftest import _make_engine_pair
-
 
 pytestmark = pytest.mark.parametrize(
     "phase1_engine_pair",

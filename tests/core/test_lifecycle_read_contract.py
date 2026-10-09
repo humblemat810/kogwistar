@@ -9,7 +9,6 @@ from kogwistar.engine_core.models import Grounding, Node, Span
 from kogwistar.engine_core.utils.refs import backend_update_record_lifecycle
 from tests._helpers.fake_backend import build_fake_backend
 
-
 pytestmark = pytest.mark.regression
 
 # This is the portable base contract.  The pgvector parameter below joins

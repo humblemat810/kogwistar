@@ -13,10 +13,10 @@ if TYPE_CHECKING:
     from kogwistar.messaging.service import LaneMessagingService
 
 __all__ = [
-    "LaneMessagingService",
     "LaneMessageLookup",
     "LaneMessageProjectionRepairResult",
     "LaneMessageSendResult",
+    "LaneMessagingService",
     "ProjectedLaneMessageRow",
 ]
 

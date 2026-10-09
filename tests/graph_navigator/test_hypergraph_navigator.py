@@ -12,22 +12,21 @@ contract that future integration tests and implementation must satisfy:
 """
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Set
 
 
 @dataclass
 class PrincipalContext:
     principal_id: str
     security_scope: str = ""
-    groups: Set[str] = field(default_factory=set)
-    visible_ids: Set[str] = field(default_factory=set)
+    groups: set[str] = field(default_factory=set)
+    visible_ids: set[str] = field(default_factory=set)
 
 
 @dataclass
 class Node:
     node_id: str
-    required_groundings: Set[str] = field(default_factory=set)
-    required_spans: Set[str] = field(default_factory=set)
+    required_groundings: set[str] = field(default_factory=set)
+    required_spans: set[str] = field(default_factory=set)
 
 
 @dataclass
@@ -46,9 +45,9 @@ class Pointer:
 @dataclass
 class DerivedArtifact:
     artifact_id: str
-    source_closure: Set[str]
+    source_closure: set[str]
     stale: bool = False
-    sanitizer_proof_id: Optional[str] = None
+    sanitizer_proof_id: str | None = None
 
 
 class ContractVisibilityOracle:
@@ -78,7 +77,7 @@ class ContractNavigator:
             and self.visibility.can_see(edge.target_id)
         )
 
-    def dereference(self, pointer: Pointer) -> Optional[str]:
+    def dereference(self, pointer: Pointer) -> str | None:
         if not self.visibility.can_see(pointer.pointer_id):
             return None
         if not self.visibility.can_see(pointer.target_id):
@@ -104,15 +103,15 @@ class ContractNavigator:
 
 
 class ReverseProvenanceIndex:
-    def __init__(self, mapping: Dict[str, List[str]]):
+    def __init__(self, mapping: dict[str, list[str]]):
         self.mapping = mapping
 
-    def direct_dependents(self, source_id: str) -> List[str]:
+    def direct_dependents(self, source_id: str) -> list[str]:
         return list(self.mapping.get(source_id, []))
 
-    def dependency_closure(self, source_id: str, *, max_items: int = 100) -> Set[str]:
+    def dependency_closure(self, source_id: str, *, max_items: int = 100) -> set[str]:
         """Return bounded downstream closure from one changed source."""
-        seen: Set[str] = set()
+        seen: set[str] = set()
         frontier = [source_id]
         while frontier and len(seen) < max_items:
             current = frontier.pop(0)
@@ -126,7 +125,7 @@ class ReverseProvenanceIndex:
         return seen
 
 
-def _nav_for(visible_ids: Set[str]) -> ContractNavigator:
+def _nav_for(visible_ids: set[str]) -> ContractNavigator:
     context = PrincipalContext(
         principal_id="agent-a",
         security_scope="tenant-a",

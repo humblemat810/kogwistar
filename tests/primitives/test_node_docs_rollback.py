@@ -1,9 +1,9 @@
 # tests/test_node_docs_rollback.py
 import pytest
+
 pytestmark = pytest.mark.ci_full
 
 from kogwistar.engine_core.models import Node
-
 from tests._kg_factories import kg_document, kg_grounding
 from tests.conftest import _make_engine_pair
 

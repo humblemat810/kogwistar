@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from kogwistar.conversation.models import EvidencePackDigest as ConversationEvidencePackDigest
+from kogwistar.conversation.models import (
+    EvidencePackDigest as ConversationEvidencePackDigest,
+)
 from kogwistar.provenance import EvidencePackDigest, evidence_pack_digest_hash
 
 

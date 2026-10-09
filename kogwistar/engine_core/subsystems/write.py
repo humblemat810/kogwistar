@@ -3,20 +3,25 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
-from typing import TYPE_CHECKING, Any, Sequence, cast
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, Any, cast
 
 from ...cdc.change_event import EntityRefModel
+from ...typing_interfaces import WriteLike
+from ...utils.embedding_vectors import normalize_embedding_vector
 from ..async_compat import run_awaitable_blocking
 from ..models import Document, Domain, Edge, Node, PureChromaEdge, PureChromaNode
 from ..utils.metadata import json_or_none, strip_none
-from ...utils.embedding_vectors import normalize_embedding_vector
 from ..utils.refs import (
     edge_doc_and_meta as edge_doc_and_meta_util,
+)
+from ..utils.refs import (
     extract_doc_ids_from_refs,
+)
+from ..utils.refs import (
     node_doc_and_meta as node_doc_and_meta_util,
 )
 from .base import NamespaceProxy
-from ...typing_interfaces import WriteLike
 
 if TYPE_CHECKING:
     from ..engine import GraphKnowledgeEngine
@@ -44,7 +49,7 @@ def _refs_fingerprint(refs) -> str:
 
 
 class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"], WriteLike):
-    def __init__(self, engine: "GraphKnowledgeEngine") -> None:
+    def __init__(self, engine: GraphKnowledgeEngine) -> None:
         super().__init__(engine)
 
     # Canonical write API
@@ -114,6 +119,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"], WriteLike):
         """Await async providers; isolate legacy sync providers from the loop."""
         import asyncio
         import inspect
+
         from ...utils.embedding_vectors import normalize_embedding_vector
 
         provider = getattr(self._e, "_ef", None)

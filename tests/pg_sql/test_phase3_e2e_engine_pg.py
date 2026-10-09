@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import List
 
 import pytest
+
 pytest.importorskip("sqlalchemy")
 
-from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core import models
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.postgres_backend import (
     PgVectorBackend,
     PostgresUnitOfWork,
@@ -55,7 +55,7 @@ def _make_edge(*, src: str, tgt: str, relation: str, doc_id: str) -> models.Edge
 
 
 def _dummy_embed(dim: int):
-    def _emb(texts: List[str]) -> List[List[float]]:
+    def _emb(texts: list[str]) -> list[list[float]]:
         return [[0.0] * dim for _ in texts]
 
     return _emb

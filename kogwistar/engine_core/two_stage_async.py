@@ -7,9 +7,9 @@ import json
 from contextlib import asynccontextmanager
 from typing import Any
 
-from .storage_backend import TwoStageProjectionCapability
-from .edge_endpoint_rows import edge_endpoint_rows
 from ..utils.embedding_vectors import normalize_embedding_vector
+from .edge_endpoint_rows import edge_endpoint_rows
+from .storage_backend import TwoStageProjectionCapability
 from .two_stage_rust_postgres import RustPostgresTwoStageProjectionAdapter
 
 

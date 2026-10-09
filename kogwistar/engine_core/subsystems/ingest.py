@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Optional, Tuple
+from typing import TYPE_CHECKING
 
-from ..async_compat import run_awaitable_blocking
 from ...llm_tasks import ExtractGraphTaskRequest
-
+from ..async_compat import run_awaitable_blocking
 from ..models import (
     AdjudicationVerdict,
     Document,
@@ -20,7 +19,7 @@ if TYPE_CHECKING:
 
 
 class IngestSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
-    def __init__(self, engine: "GraphKnowledgeEngine") -> None:
+    def __init__(self, engine: GraphKnowledgeEngine) -> None:
         super().__init__(engine)
 
     def ingest_document_with_llm(
@@ -116,7 +115,7 @@ class IngestSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         self,
         content: str,
         doc: Document,
-    ) -> Tuple[object, Optional[LLMGraphExtraction], Optional[str]]:
+    ) -> tuple[object, LLMGraphExtraction | None, str | None]:
         result = self._e.llm_tasks.extract_graph(
             ExtractGraphTaskRequest(
                 content=content,

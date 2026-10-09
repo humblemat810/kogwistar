@@ -4,22 +4,19 @@ Use lazy imports to avoid package-init circular imports during migration.
 """
 
 from typing import TYPE_CHECKING
+
 from kogwistar.conversation.span_compat import install_span_compat_aliases
 
 install_span_compat_aliases()
 
 
 if TYPE_CHECKING:
-    from kogwistar.conversation.designer import (
-        ConversationWorkflowDesigner,
-        AgenticAnsweringWorkflowDesigner,
-    )
     from kogwistar.conversation.agentic_answering import (
         AgenticAnsweringAgent,
     )
     from kogwistar.conversation.conversation_context import (
-        ConversationContextBuilder,
         ContextSources,
+        ConversationContextBuilder,
         PromptContext,
     )
     from kogwistar.conversation.conversation_orchestrator import (
@@ -27,6 +24,10 @@ if TYPE_CHECKING:
     )
     from kogwistar.conversation.conversation_state_contracts import (
         ConversationWorkflowState,
+    )
+    from kogwistar.conversation.designer import (
+        AgenticAnsweringWorkflowDesigner,
+        ConversationWorkflowDesigner,
     )
     from kogwistar.conversation.knowledge_retriever import (
         KnowledgeRetriever,
@@ -36,32 +37,32 @@ if TYPE_CHECKING:
         RetrievalOrchestrator,
     )
     from kogwistar.conversation.service import ConversationService
-    from kogwistar.conversation.tool_runner import ToolRunner
     from kogwistar.conversation.tool_registry import (
         ToolDefinition,
         ToolReceipt,
         ToolRegistry,
         ToolRequirement,
     )
+    from kogwistar.conversation.tool_runner import ToolRunner
 
 __all__ = [
     "AgenticAnsweringAgent",
-    "ConversationWorkflowDesigner",
     "AgenticAnsweringWorkflowDesigner",
-    "ConversationContextBuilder",
     "ContextSources",
-    "PromptContext",
+    "ConversationContextBuilder",
     "ConversationOrchestrator",
+    "ConversationService",
+    "ConversationWorkflowDesigner",
     "ConversationWorkflowState",
     "KnowledgeRetriever",
     "MemoryRetriever",
+    "PromptContext",
     "RetrievalOrchestrator",
-    "ConversationService",
-    "ToolRunner",
     "ToolDefinition",
     "ToolReceipt",
     "ToolRegistry",
     "ToolRequirement",
+    "ToolRunner",
 ]
 
 
@@ -74,8 +75,8 @@ def __getattr__(name: str):
         return AgenticAnsweringAgent
     if name in ("ConversationContextBuilder", "ContextSources", "PromptContext"):
         from kogwistar.conversation.conversation_context import (
-            ConversationContextBuilder,
             ContextSources,
+            ConversationContextBuilder,
             PromptContext,
         )
 

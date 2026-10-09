@@ -25,13 +25,13 @@ class OffsetRepairScorer(Protocol):
 class NodePreAddHook(Protocol):
     """Inspect a node before the engine submits it to storage."""
 
-    def __call__(self, node: "Node", /) -> None: ...
+    def __call__(self, node: Node, /) -> None: ...
 
 
 class EdgePreAddHook(Protocol):
     """Accept or reject an edge before the engine submits it to storage."""
 
-    def __call__(self, edge: "Edge", /) -> bool: ...
+    def __call__(self, edge: Edge, /) -> bool: ...
 
 
 class ToolCallIdFactory(Protocol):

@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import pytest
 
-from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.chroma_backend import ChromaBackend
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.storage_backend import (
-    get_async_two_stage_projection_adapter,
     TwoStageProjectionCapability,
+    get_async_two_stage_projection_adapter,
     get_two_stage_projection_adapter,
     get_two_stage_projection_capability,
 )

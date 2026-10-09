@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from math import isfinite
 from typing import Generic, TypeVar
 
-
 TNode = TypeVar("TNode")
 
 

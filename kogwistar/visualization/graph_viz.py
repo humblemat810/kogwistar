@@ -2,33 +2,32 @@
 from __future__ import annotations
 
 import json
-from typing import Dict, List, Optional, Tuple, Type, TypeVar, Union, TYPE_CHECKING
-
-from ..runtime.models import WorkflowEdge, WorkflowNode
+from typing import TYPE_CHECKING, TypeVar
 
 from ..conversation.models import ConversationEdge, ConversationNode
+from ..runtime.models import WorkflowEdge, WorkflowNode
 
 if TYPE_CHECKING:
     from kogwistar.engine_core.engine import GraphKnowledgeEngine
 
     from ..engine_core.models import (
-        Node,
         Edge,
+        Node,
     )  # , ConversationNode, ConversationEdge, WorkflowEdge, WorkflowNode
 
-    T = TypeVar("T", bound=Union[Node, Edge])
+    T = TypeVar("T", bound=Node | Edge)
 
 
 def _safe_iter(x):
     return x if isinstance(x, list) and x else []
 
 
-def _render_d3_from_raw(nodes, edges, mode: str = "reify") -> Dict:
+def _render_d3_from_raw(nodes, edges, mode: str = "reify") -> dict:
     node_map = {getattr(n, "id", None): n for n in nodes if getattr(n, "id", None)}
     edge_map = {getattr(e, "id", None): e for e in edges if getattr(e, "id", None)}
 
-    out_nodes: Dict[str, Dict] = {}
-    links: List[Dict] = []
+    out_nodes: dict[str, dict] = {}
+    links: list[dict] = []
 
     for nid, n in node_map.items():
         out_nodes[nid] = {
@@ -107,10 +106,10 @@ def _render_d3_from_raw(nodes, edges, mode: str = "reify") -> Dict:
 
 def _load_node_map(
     engine: GraphKnowledgeEngine,
-    ids: List[str],
-    node_type: Type[Node] | None = None,
+    ids: list[str],
+    node_type: type[Node] | None = None,
     include=["documents", "metadatas", "embeddings"],
-) -> Dict[str, Node]:
+) -> dict[str, Node]:
     """Robustly load Node models by ids."""
     from ..engine_core.models import Node
 
@@ -139,10 +138,10 @@ def _load_node_map(
 
 def _load_edge_map(
     engine: GraphKnowledgeEngine,
-    ids: List[str],
-    edge_type: Type[Edge] | None = None,
+    ids: list[str],
+    edge_type: type[Edge] | None = None,
     include=["documents", "metadatas", "embeddings"],
-) -> Dict[str, Edge]:
+) -> dict[str, Edge]:
     """Robustly load Edge models by ids."""
 
     from ..engine_core.models import Edge
@@ -165,9 +164,9 @@ def _load_edge_map(
         return out
 
 
-def _ids_by_doc(engine, doc_id: Optional[str]) -> Tuple[List[str], List[str]]:
+def _ids_by_doc(engine, doc_id: str | None) -> tuple[list[str], list[str]]:
     """Find ids scoped to a doc (fallback-safe)."""
-    def _scan_all(kind: str) -> Tuple[List[str], List[dict], List[str]]:
+    def _scan_all(kind: str) -> tuple[list[str], list[dict], list[str]]:
         getter = getattr(engine.backend, f"{kind}_get", None)
         if not callable(getter):
             return [], [], []
@@ -266,11 +265,11 @@ def _ids_by_doc(engine, doc_id: Optional[str]) -> Tuple[List[str], List[str]]:
 
 def _filter_by_insertion_method(
     engine,
-    ids: List[str],
+    ids: list[str],
     kind: str,  # "node" | "edge"
-    insertion_method: Optional[str],
-    by_doc_id: Optional[str] = None,
-) -> List[str]:
+    insertion_method: str | None,
+    by_doc_id: str | None = None,
+) -> list[str]:
     """Filter ids to those that have at least one ReferenceSession with insertion_method (and optional doc)."""
     if not insertion_method or not ids:
         return ids
@@ -358,9 +357,9 @@ def _filter_by_insertion_method(
 
 def _collect_ids(
     engine,
-    doc_id: Optional[str],
-    insertion_method: Optional[str],
-) -> Tuple[List[str], List[str]]:
+    doc_id: str | None,
+    insertion_method: str | None,
+) -> tuple[list[str], list[str]]:
     """Base selection (doc filter) then optional insertion_method filter."""
     node_ids, edge_ids = _ids_by_doc(engine, doc_id)
     node_ids = _filter_by_insertion_method(
@@ -374,10 +373,10 @@ def _collect_ids(
 
 def to_d3_force(
     engine,
-    doc_id: Optional[str] = None,
+    doc_id: str | None = None,
     mode: str = "reify",  # "reify" | "classic"
-    insertion_method: Optional[str] = None,
-) -> Dict:
+    insertion_method: str | None = None,
+) -> dict:
     """
     D3 payload.
 
@@ -396,8 +395,8 @@ def to_d3_force(
     node_map = _load_node_map(engine, node_ids)
     edge_map = _load_edge_map(engine, edge_ids)
 
-    nodes: Dict[str, Dict] = {}
-    links: List[Dict] = []
+    nodes: dict[str, dict] = {}
+    links: list[dict] = []
 
     # materialize entity nodes
     for nid, n in node_map.items():
@@ -507,9 +506,9 @@ def to_d3_force(
 
 def to_sigma_hypergraph(
     engine,
-    doc_id: Optional[str] = None,
-    insertion_method: Optional[str] = None,
-) -> Dict:
+    doc_id: str | None = None,
+    insertion_method: str | None = None,
+) -> dict:
     """Return the lossless raw hypergraph contract used by the Sigma viewer.
 
     Unlike a D3 force projection, this payload keeps hyperedges as first-class
@@ -568,10 +567,10 @@ def to_sigma_hypergraph(
 
 def to_cytoscape(
     engine,
-    doc_id: Optional[str] = None,
+    doc_id: str | None = None,
     mode: str = "reify",  # "reify" | "classic"
-    insertion_method: Optional[str] = None,
-) -> Dict:
+    insertion_method: str | None = None,
+) -> dict:
     """
     Cytoscape payload.
 
@@ -595,7 +594,7 @@ def to_cytoscape(
     node_map = _load_node_map(engine, node_ids)
     edge_map = _load_edge_map(engine, edge_ids)
 
-    elements: List[Dict] = []
+    elements: list[dict] = []
 
     # entity nodes
     for nid, n in node_map.items():

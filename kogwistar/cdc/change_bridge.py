@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import sys
 import pathlib
+import sys
 
 if __name__ == "__main__":
     sys.path.insert(0, str(pathlib.Path(__file__).absolute().parent.parent.parent))
@@ -10,10 +10,9 @@ import argparse
 import asyncio
 import json
 import logging
-
-from pathlib import Path
 from collections.abc import Mapping
-from typing import Optional, cast
+from pathlib import Path
+from typing import cast
 
 import uvicorn
 from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
@@ -21,8 +20,8 @@ from fastapi.responses import FileResponse, HTMLResponse
 
 # Canonical ChangeEvent type (used by engine).
 from kogwistar.cdc.change_event import ChangeEvent
-from kogwistar.json_types import JsonValue
 from kogwistar.cdc.oplog import OplogReader, OplogWriter
+from kogwistar.json_types import JsonValue
 
 logger = logging.getLogger(__name__)
 log_path = Path(".cdc_debug") / "cdc_bridge.log"
@@ -102,7 +101,7 @@ def create_app(*, oplog_file: Path, fsync: bool = False) -> FastAPI:
     oplog_reader = OplogReader(oplog_file)
 
     # Each subscriber can optionally request a stream filter.
-    subscribers: dict[WebSocket, Optional[str]] = {}
+    subscribers: dict[WebSocket, str | None] = {}
     subs_lock = asyncio.Lock()
     ingest_lock = asyncio.Lock()
 
@@ -215,7 +214,7 @@ def create_app(*, oplog_file: Path, fsync: bool = False) -> FastAPI:
             ev_dicts = [cast(Mapping[str, object], body)]
 
         accepted = 0
-        last_seq: Optional[int] = None
+        last_seq: int | None = None
 
         # Serialize ingest to preserve oplog ordering.
         async with ingest_lock:
@@ -240,7 +239,7 @@ def create_app(*, oplog_file: Path, fsync: bool = False) -> FastAPI:
             default=0,
             description="Replay events with seq > since before switching to live tail.",
         ),
-        stream: Optional[str] = Query(
+        stream: str | None = Query(
             default=None,
             description="Optional graph-type filter (conversation/workflow/knowledge). Backward compatible when omitted.",
         ),
@@ -309,7 +308,7 @@ def reset_oplog(oplog_file: Path) -> None:
         logger.exception("reset_oplog failed for %s: %s", oplog_file, e)
 
 
-def main(argv: Optional[list[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
     p = argparse.ArgumentParser(description="CDC change bridge launcher")

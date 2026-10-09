@@ -1,19 +1,19 @@
-import time
-import time
 import pathlib
+import time
 
 import pytest
+
 pytestmark = pytest.mark.ci_full
 
 pytest.importorskip("sqlalchemy")
 
 from kogwistar.engine_core.chroma_backend import ChromaBackend
-from kogwistar.engine_core.postgres_backend import PgVectorBackend
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
-from kogwistar.engine_core.models import Node, Edge
-from tests.conftest import FakeEmbeddingFunction
+from kogwistar.engine_core.models import Edge, Node
+from kogwistar.engine_core.postgres_backend import PgVectorBackend
 from tests._helpers.fake_backend import InMemoryBackend, build_fake_backend
 from tests._helpers.graph_builders import build_entity_node, build_relationship_edge
+from tests.conftest import FakeEmbeddingFunction
 
 # Reuse raw helpers to avoid duplicating Chroma plumbing.
 # from tests.conftest import add_node_raw, add_edge_raw

@@ -1,9 +1,11 @@
 import json
 import re
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable, Any, TypeVar, ParamSpec, cast
+from typing import Any, ParamSpec, TypeVar, cast
 
 import pytest
+
 from kogwistar.utils.cache_backend import Memory
 
 pytest.importorskip("chromadb")
@@ -21,6 +23,12 @@ from kogwistar.conversation.models import (
 )
 from kogwistar.conversation.service import ConversationService
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.models import (
+    Grounding,
+    Node,
+)
+from kogwistar.engine_core.postgres_backend import PgVectorBackend
+from kogwistar.id_provider import stable_id
 from kogwistar.llm_tasks import (
     AdjudicateBatchTaskResult,
     AdjudicatePairTaskResult,
@@ -32,12 +40,6 @@ from kogwistar.llm_tasks import (
     LLMTaskSet,
     RepairCitationsTaskResult,
     SummarizeContextTaskResult,
-)
-from kogwistar.id_provider import stable_id
-from kogwistar.engine_core.postgres_backend import PgVectorBackend
-from kogwistar.engine_core.models import (
-    Node,
-    Grounding,
 )
 from tests._helpers.engine_factories import FakeEmbeddingFunction
 from tests._helpers.graph_builders import mk_excerpt_span as _mk_span

@@ -12,7 +12,6 @@ from kogwistar.engine_core.sqlite_context import (
     sqlite_execution_context,
 )
 
-
 pytestmark = [pytest.mark.ci, pytest.mark.core]
 
 

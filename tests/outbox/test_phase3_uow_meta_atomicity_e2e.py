@@ -1,12 +1,14 @@
-import uuid
 import threading
+import uuid
+
 import pytest
+
 pytest.importorskip("sqlalchemy")
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.postgres_backend import PgVectorBackend
-from tests.conftest import FakeEmbeddingFunction
 from tests._helpers.fake_backend import build_fake_backend
+from tests.conftest import FakeEmbeddingFunction
 
 EMBEDDING_DIM = 3
 TEST_EMBEDDING = FakeEmbeddingFunction(dim=EMBEDDING_DIM)

@@ -74,7 +74,7 @@ class LaneMessageLookup:
 
 __all__ = [
     "LaneMessageLookup",
-    "ProjectedLaneMessageRow",
-    "LaneMessageSendResult",
     "LaneMessageProjectionRepairResult",
+    "LaneMessageSendResult",
+    "ProjectedLaneMessageRow",
 ]

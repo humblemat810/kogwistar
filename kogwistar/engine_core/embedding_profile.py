@@ -8,15 +8,15 @@ vectors.  The registry is operational metadata, not graph truth.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import hashlib
 import json
-from typing import Callable, Mapping, Protocol, cast, runtime_checkable
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
+from typing import Protocol, cast, runtime_checkable
 from urllib.parse import urlsplit, urlunsplit
 
-from kogwistar.runtime.checkpointed_projection import ProjectionPayload
 from kogwistar.json_types import JsonObject, JsonValue
-
+from kogwistar.runtime.checkpointed_projection import ProjectionPayload
 
 PROFILE_REGISTRY_NAMESPACE = "__kogwistar_embedding_profiles_v1__"
 PROFILE_PROJECTION_SCHEMA_VERSION = 1
@@ -127,7 +127,7 @@ class EmbeddingProfile:
         ).hexdigest()
 
     @classmethod
-    def from_mapping(cls, value: Mapping[str, JsonValue]) -> "EmbeddingProfile":
+    def from_mapping(cls, value: Mapping[str, JsonValue]) -> EmbeddingProfile:
         if not isinstance(value, Mapping):
             raise TypeError("embedding profile payload must be a mapping")
         return cls(
@@ -516,6 +516,9 @@ class EmbeddingProfileRegistry:
 
 
 __all__ = [
+    "PROFILE_PROJECTION_SCHEMA_VERSION",
+    "PROFILE_REGISTRY_NAMESPACE",
+    "AsyncNamedProjectionStore",
     "CorruptEmbeddingProfileError",
     "EmbeddingProfile",
     "EmbeddingProfileError",
@@ -524,9 +527,6 @@ __all__ = [
     "EmbeddingStorageInspector",
     "EmbeddingStorageState",
     "LegacyEmbeddingProfileError",
-    "AsyncNamedProjectionStore",
     "NamedProjectionStore",
-    "PROFILE_PROJECTION_SCHEMA_VERSION",
-    "PROFILE_REGISTRY_NAMESPACE",
     "endpoint_fingerprint",
 ]

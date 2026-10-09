@@ -6,6 +6,7 @@ import types
 from unittest.mock import MagicMock
 
 import pytest
+
 import tests.conftest as test_conf
 
 pytestmark = pytest.mark.ci

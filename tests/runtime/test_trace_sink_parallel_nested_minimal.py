@@ -1,24 +1,26 @@
+import multiprocessing as mp
 import pathlib
 import threading
 import time
-import multiprocessing as mp
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
+
 import pytest
+
 pytestmark = [pytest.mark.core, pytest.mark.runtime]
 
-from kogwistar.engine_core.engine import GraphKnowledgeEngine
-from kogwistar.engine_core.models import Span, Grounding
-from kogwistar.runtime.models import RunSuccess
-from kogwistar.runtime.runtime import WorkflowRuntime, StepContext
-from kogwistar.runtime.resolvers import MappingStepResolver
 import logging
+import os
+
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.models import Grounding, Span
 
 # Reuse your canonical engine factory (already parametrized in other tests)
-from kogwistar.runtime.models import WorkflowEdge, WorkflowNode
-from tests.conftest import _make_engine_pair, FakeEmbeddingFunction
+from kogwistar.runtime.models import RunSuccess, WorkflowEdge, WorkflowNode
+from kogwistar.runtime.resolvers import MappingStepResolver
+from kogwistar.runtime.runtime import StepContext, WorkflowRuntime
 from tests._helpers.fake_backend import build_fake_backend
-import os
+from tests.conftest import FakeEmbeddingFunction, _make_engine_pair
 
 os.environ["ANONYMIZED_TELEMETRY"] = "FALSE"
 

@@ -1,20 +1,25 @@
 from __future__ import annotations
 
 import uuid
-from typing import List, Optional, cast
+from typing import cast
 
 from kogwistar.llm_tasks import LLMTaskSet
 
-from .models import ConversationEdge
-from .models import RetrievalResult
-from .models import ConversationNode, MetaFromLastSummary, Node, Edge, FilteringResult
-from .callbacks import MemorySummarizeCallback, RetrievalFilteringCallback
 from ..engine_core.engine import GraphKnowledgeEngine
 from ..engine_core.models import Grounding, Span
-
-
-from .models import MemoryRetrievalResult, MemoryPinResult
 from ..server.auth_middleware import get_current_agent_id, get_security_scope
+from .callbacks import MemorySummarizeCallback, RetrievalFilteringCallback
+from .models import (
+    ConversationEdge,
+    ConversationNode,
+    Edge,
+    FilteringResult,
+    MemoryPinResult,
+    MemoryRetrievalResult,
+    MetaFromLastSummary,
+    Node,
+    RetrievalResult,
+)
 
 
 def _normalize_visibility_mode(value: object) -> str:
@@ -101,8 +106,8 @@ class MemoryRetriever:
         conversation_engine,
         llm_tasks: LLMTaskSet,
         filtering_callback: RetrievalFilteringCallback,
-        summarize_callback: Optional[MemorySummarizeCallback] = None,
-        prefer_types: Optional[List[str]] = None,
+        summarize_callback: MemorySummarizeCallback | None = None,
+        prefer_types: list[str] | None = None,
     ) -> None:
         self.conversation_engine: GraphKnowledgeEngine = conversation_engine
         self.llm_tasks = llm_tasks
@@ -119,7 +124,7 @@ class MemoryRetriever:
         *,
         user_id: str,
         current_conversation_id: str,
-        query_embedding: List[float],
+        query_embedding: list[float],
         user_text: str,
         context_text: str,
         n_results: int,
@@ -161,7 +166,7 @@ class MemoryRetriever:
         #     candidate_ids = [z[0] for z in zipped]
         #     candidate_docs = [z[1] for z in zipped]
         #     candidate_metas = [z[2] for z in zipped]
-        selected_ids: List[str] = []
+        selected_ids: list[str] = []
         reasoning = ""
         if candidates.nodes or candidates.edges:
             # Keep prompt compact: show meta summaries only
@@ -200,11 +205,11 @@ class MemoryRetriever:
         #                                     reasoning=reasoning,memory_context_text="", seed_kg_node_ids=[])
         # Extract KG seeds from selected nodes when they are reference pointers
 
-        seed_kg_ids: List[str] = []
-        non_kg_node_ids: List[str] = []
-        non_kg_edge_ids: List[str] = []
-        conv_nodes: List[ConversationNode] = []
-        conv_edges: List[ConversationNode] = []
+        seed_kg_ids: list[str] = []
+        non_kg_node_ids: list[str] = []
+        non_kg_edge_ids: list[str] = []
+        conv_nodes: list[ConversationNode] = []
+        conv_edges: list[ConversationNode] = []
         if selected:
             for n in selected.nodes:
                 if n.type != "reference_pointer":
@@ -227,7 +232,7 @@ class MemoryRetriever:
 
         # De-dupe seeds in order
         seen = set()
-        dedup_seeds: List[str] = []
+        dedup_seeds: list[str] = []
         for x in seed_kg_ids:
             if x not in seen:
                 seen.add(x)
@@ -289,7 +294,7 @@ class MemoryRetriever:
         shared_with_agents: list[str] | tuple[str, ...] | None = None,
         security_scope: str | None = None,
         agent_id: str | None = None,
-    ) -> Optional[MemoryPinResult]:
+    ) -> MemoryPinResult | None:
         """Materialize a `memory_context` node into the current conversation canvas.
 
         Edges:
@@ -381,8 +386,8 @@ class MemoryRetriever:
                 security_scope=effective_scope or None,
                 shared_with_principals=shared_values,
             )
-        edge_ids: List[str] = []
-        edges: List[ConversationEdge] = []
+        edge_ids: list[str] = []
+        edges: list[ConversationEdge] = []
         # Turn -> MemoryContext
         e1_id = f"{turn_node_id}::hm::{mem_node.safe_get_id()}"
         e1 = ConversationEdge(

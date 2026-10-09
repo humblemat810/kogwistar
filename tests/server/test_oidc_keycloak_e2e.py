@@ -6,11 +6,13 @@ from urllib.parse import parse_qs, urlparse
 
 import httpx
 import pytest
+
 pytest.importorskip("fastapi")
 pytest.importorskip("mcp")
 pytest.importorskip("sqlalchemy")
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import sessionmaker
+
 from .auth_env import TEST_JWT_ALG, TEST_JWT_SECRET
 
 os.environ.setdefault("JWT_SECRET", TEST_JWT_SECRET)

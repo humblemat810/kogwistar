@@ -7,33 +7,35 @@ retry_failed_refine = False
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 ocr_json_version = "0.1"
-import time
 import base64
-from kogwistar.engine_core.models import (
-    NonText_box_2d,
-    OCRClusterResponse,
-    SplitPage,
-    NonTextCluster,
-    TextCluster,
-)
+import json
+import time
 from typing import (
     TYPE_CHECKING,
-    cast,
-    Optional,
     Literal,
     TypeAlias,
+    cast,
 )
-import json
-from pydantic_extension.model_slicing import (
-    ModeSlicingMixin,
-    DtoType,
-)
-from pydantic_extension.model_slicing.mixin import DtoField
+
 from pydantic import (
     BaseModel,
     Field,
     model_validator,
 )
+from pydantic_extension.model_slicing import (
+    DtoType,
+    ModeSlicingMixin,
+)
+from pydantic_extension.model_slicing.mixin import DtoField
+
+from kogwistar.engine_core.models import (
+    NonText_box_2d,
+    NonTextCluster,
+    OCRClusterResponse,
+    SplitPage,
+    TextCluster,
+)
+
 from .llm_structured_output import build_structured_output_runnable
 
 if TYPE_CHECKING:
@@ -130,11 +132,11 @@ class RawOCRResponse(BaseModel):
     non_text_objects: DtoType[list[NonText_box_2d]] = Field(
         description="the non-OCR object results. Share cluster number uniqueness with OCR texts. "
     )
-    is_empty_page: DtoType[Optional[bool]] = Field(
+    is_empty_page: DtoType[bool | None] = Field(
         default=False,
         description="true if the whole page is empty without recognisable text.",
     )
-    printed_page_number: DtoType[Optional[str]] = Field(
+    printed_page_number: DtoType[str | None] = Field(
         description='the page number identified from OCR texts, can be in form of roman numerals such as "i", "ii", "iii", "iv"...; '
         'Arabic numeral such as 1, 2, 3... or letter such as "a", "b", "c"...\n'
         'Sometimes the are surrounded by symbols such as "- 1 -", "- 2 -"'
@@ -205,7 +207,7 @@ class RawOCRResponse(BaseModel):
 class OCRMetaResponse(BaseModel):
     "meatada of an OCR page"
 
-    printed_page_number: DtoType[Optional[str]] = Field(
+    printed_page_number: DtoType[str | None] = Field(
         description='the page number identified from OCR texts, can be in form of roman numerals such as "i", "ii", "iii", "iv"...; '
         'Arabic numeral such as 1, 2, 3... or letter such as "a", "b", "c"...\n'
         'Sometimes the are surrounded by symbols such as "- 1 -", "- 2 -"'
@@ -253,7 +255,7 @@ class OCRClusterResponseMetaless(ModeSlicingMixin, BaseModel):
     non_text_objects: DtoType[list[NonTextCluster]] = Field(
         description="the non-OCR object results. Share cluster number uniqueness with OCR texts. "
     )
-    printed_page_number: DtoType[Optional[str]] = Field(
+    printed_page_number: DtoType[str | None] = Field(
         description='the page number identified from OCR texts, can be in form of roman numerals such as "i", "ii", "iii", "iv"...; '
         'Arabic numeral such as 1, 2, 3... or letter such as "a", "b", "c"...\n'
         'Sometimes the are surrounded by symbols such as "- 1 -", "- 2 -"'
@@ -271,7 +273,7 @@ class RawOCRResponseMetaless(ModeSlicingMixin, BaseModel):
     non_text_objects: DtoType[list[NonText_box_2d]] = Field(
         description="the non-OCR object results. Share cluster number uniqueness with OCR texts. "
     )
-    printed_page_number: DtoType[Optional[str]] = Field(
+    printed_page_number: DtoType[str | None] = Field(
         "",
         description='the page number identified from OCR texts, can be in form of roman numerals such as "i", "ii", "iii", "iv"...; '
         'Arabic numeral such as 1, 2, 3... or letter such as "a", "b", "c"...\n'

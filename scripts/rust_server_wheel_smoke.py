@@ -5,12 +5,12 @@ from __future__ import annotations
 import importlib.metadata
 import json
 import os
-from pathlib import Path
 import signal
 import subprocess
 import sys
 import time
 import urllib.request
+from pathlib import Path
 
 
 def _get(url: str) -> tuple[int, dict]:
@@ -19,8 +19,9 @@ def _get(url: str) -> tuple[int, dict]:
 
 
 def main() -> None:
-    import kogwistar
     import kogwistar._rust as native
+
+    import kogwistar
 
     package_file = Path(kogwistar.__file__).resolve()
     native_file = Path(native.__file__).resolve()

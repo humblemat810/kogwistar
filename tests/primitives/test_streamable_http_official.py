@@ -1,16 +1,17 @@
 # tests/test_streamable_http_e2e.py
 import asyncio
 import os
+import pathlib
 import socket
 import subprocess
 import sys
 import tempfile
 import time
-import pathlib
+
 import pytest
+
 pytestmark = pytest.mark.ci_full
 import httpx
-
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
@@ -58,7 +59,6 @@ def _server_log_tail(log_file) -> str:
 def _preseed_chroma_dir(persist_dir: str):
     from kogwistar.engine_core.engine import GraphKnowledgeEngine
     from kogwistar.engine_core.models import Edge, Node
-
     from tests._kg_factories import kg_document, kg_grounding
 
     eng = GraphKnowledgeEngine(persist_directory=persist_dir)

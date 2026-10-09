@@ -4,14 +4,16 @@ import asyncio
 import json
 import os
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, cast, Callable
+from typing import Any, cast
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
-from .chat_service import WorkflowProjectionRebuildingError, ChatRunService
+
+from .chat_service import ChatRunService, WorkflowProjectionRebuildingError
 from .error_reporting import internal_http_error
 
 

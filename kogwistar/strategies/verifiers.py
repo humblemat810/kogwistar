@@ -1,14 +1,15 @@
 # strategies/verifiers.py
 # -*- coding: utf-8 -*-
 from __future__ import annotations
-from typing import Dict, Optional, List, Tuple
-from dataclasses import dataclass
-from .types import EngineLike, Verifier
+
 import json
+from dataclasses import dataclass
+
+from .types import EngineLike, Verifier
 
 try:
-    from rapidfuzz.fuzz import ratio as fuzz_ratio
     from rapidfuzz import fuzz
+    from rapidfuzz.fuzz import ratio as fuzz_ratio
 
     _HAS_RAPIDFUZZ = True
 except ImportError:
@@ -53,7 +54,7 @@ class DefaultVerifier(Verifier):
         end = min(len(full_text), end)
         return full_text[start:end]
 
-    def _score_rapidfuzz(self, a: str, b: str) -> Optional[float]:
+    def _score_rapidfuzz(self, a: str, b: str) -> float | None:
         if not _HAS_RAPIDFUZZ:
             return None
         a, b = self._normalize(a), self._normalize(b)
@@ -65,7 +66,7 @@ class DefaultVerifier(Verifier):
     @staticmethod
     def _score_coverage(
         extracted: str, cited: str, min_ngram: int = 5
-    ) -> Optional[float]:
+    ) -> float | None:
         """
         Percent of extracted characters covered by any n-gram (len>=min_ngram)
         that also appears in cited. Simple, fast lower bound for span support.
@@ -100,8 +101,8 @@ class DefaultVerifier(Verifier):
         return float((dot / (nu * nv))) if nu and nv else None
 
     def _ensemble(
-        self, scores: Dict[str, Optional[float]], weights: Dict[str, float]
-    ) -> Optional[float]:
+        self, scores: dict[str, float | None], weights: dict[str, float]
+    ) -> float | None:
         """Weighted average over available (non-None) scores."""
         num = 0.0
         den = 0.0
@@ -118,7 +119,7 @@ class DefaultVerifier(Verifier):
     def _embed_one(self, text: str):
         return self.e.embed.iterative_defensive_emb(text)
 
-    def __init__(self, engine: EngineLike, config: Optional[VerifierConfig] = None):
+    def __init__(self, engine: EngineLike, config: VerifierConfig | None = None):
         self.e: EngineLike = engine
         self.cfg = config or VerifierConfig()
 
@@ -131,7 +132,7 @@ class DefaultVerifier(Verifier):
         ref: Span,
         *,
         min_ngram: int = 5,
-        weights: Dict[str, float] = {
+        weights: dict[str, float] = {
             "rapidfuzz": 0.5,
             "coverage": 0.3,
             "embedding": 0.2,
@@ -187,7 +188,7 @@ class DefaultVerifier(Verifier):
         grounding: Grounding,
         *,
         min_ngram: int = 5,
-        weights: Dict[str, float] = {
+        weights: dict[str, float] = {
             "rapidfuzz": 0.5,
             "coverage": 0.3,
             "embedding": 0.2,
@@ -212,16 +213,16 @@ class DefaultVerifier(Verifier):
         self,
         document_id: str,
         *,
-        source_text: Optional[str] = None,
+        source_text: str | None = None,
         min_ngram: int = 5,
         threshold: float = 0.70,
-        weights: Dict[str, float] = {
+        weights: dict[str, float] = {
             "rapidfuzz": 0.5,
             "coverage": 0.3,
             "embedding": 0.2,
         },
         update_edges: bool = True,
-    ) -> Dict[str, int]:
+    ) -> dict[str, int]:
         """
         Verify all references in nodes (and edges if update_edges=True) for a doc.
         Returns counts of updated items.
@@ -287,17 +288,17 @@ class DefaultVerifier(Verifier):
 
     def verify_mentions_for_items(
         self,
-        items: List[Tuple[str, str]],  # list of ("node"|"edge", id)
+        items: list[tuple[str, str]],  # list of ("node"|"edge", id)
         *,
-        source_text_by_doc: Optional[Dict[str, str]] = None,
+        source_text_by_doc: dict[str, str] | None = None,
         min_ngram: int = 5,
         threshold: float = 0.70,
-        weights: Dict[str, float] = {
+        weights: dict[str, float] = {
             "rapidfuzz": 0.5,
             "coverage": 0.3,
             "embedding": 0.2,
         },
-    ) -> Dict[str, int]:
+    ) -> dict[str, int]:
         """
         Targeted verification for a mixed set of nodes/edges.
         source_text_by_doc lets you pass pre-fetched doc text keyed by doc_id.

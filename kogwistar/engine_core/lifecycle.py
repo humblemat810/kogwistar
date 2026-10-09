@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Callable, Literal, Sequence, TypeVar, TYPE_CHECKING, cast
 import uuid
-from .subsystems.base import NamespaceProxy
+from collections.abc import Callable, Sequence
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING, Literal, TypeVar, cast
+
 from ..typing_interfaces import ProjectionBackendLike
+from .subsystems.base import NamespaceProxy
 
 if TYPE_CHECKING:
     # Avoid runtime import cycles; we only need this for typing.
@@ -74,7 +76,7 @@ class LifecycleSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             next_frontier_ids: set[str] = set()
 
             for item in frontier:
-                item_id = str(getattr(item, "id"))
+                item_id = str(item.id)
                 if item_id in visited:
                     continue
                 visited.add(item_id)

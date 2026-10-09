@@ -6,8 +6,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from kogwistar.runtime.models import WorkflowDesignArtifact, WorkflowInvocationRequest
 from kogwistar.runtime.async_runtime import AsyncWorkflowRuntime
+from kogwistar.runtime.models import WorkflowDesignArtifact, WorkflowInvocationRequest
 from kogwistar.runtime.runtime import RunResult, WorkflowRuntime
 from kogwistar.runtime.telemetry import TraceContext
 

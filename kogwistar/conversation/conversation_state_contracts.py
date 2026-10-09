@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from typing import Optional, TypedDict, cast
-from typing_extensions import NotRequired
+from typing import NotRequired, TypedDict, cast
+
 from pydantic import BaseModel, ConfigDict, Field
 
 from ..engine_core.models import Span
@@ -13,6 +13,7 @@ from .models import (
     MemoryRetrievalResult,
 )
 
+
 class PrevTurnMetaSummaryModel(BaseModel):
     prev_node_char_distance_from_last_summary: int
     prev_node_distance_from_last_summary: int
@@ -22,7 +23,7 @@ class PrevTurnMetaSummaryModel(BaseModel):
 class SummaryStateModel(BaseModel):
     should_summarize: bool = False
     did_summarize: bool = False
-    summary_node_id: Optional[str] = None
+    summary_node_id: str | None = None
 
 
 class BudgetStateModel(BaseModel):
@@ -80,7 +81,7 @@ class ConversationPrevTurnMetaSummaryDict(TypedDict):
 class ConversationSummaryStateDict(TypedDict):
     should_summarize: bool
     did_summarize: bool
-    summary_node_id: Optional[str]
+    summary_node_id: str | None
 
 
 class ConversationBudgetStateDict(TypedDict):

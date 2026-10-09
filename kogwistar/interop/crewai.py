@@ -6,16 +6,13 @@ callbacks, opaque memory, and guardrails are diagnosed instead of executed.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Mapping
 from typing import cast
 
-from kogwistar.json_types import JsonValue
-
-from kogwistar.runtime.models import WorkflowDesignArtifact
-from kogwistar.runtime.models import WorkflowInvocationRequest
-
 from kogwistar.agent.workflows import _artifact, _edge, _node
+from kogwistar.json_types import JsonValue
+from kogwistar.runtime.models import WorkflowDesignArtifact, WorkflowInvocationRequest
 
 
 @dataclass(frozen=True, slots=True)

@@ -8,7 +8,6 @@ from typing import Generic, Protocol, TypeVar
 from kogwistar.id_provider import stable_id
 from kogwistar.json_types import JsonValue
 
-
 TState = TypeVar("TState")
 TEvent = TypeVar("TEvent")
 TSnapshot = TypeVar("TSnapshot")
@@ -194,7 +193,7 @@ def refresh_checkpointed_named_projection(
             processed_event_ids.append(event_id)
             raw_event_count += 1
             if hasattr(event, "ts_ms"):
-                ts_value = getattr(event, "ts_ms")
+                ts_value = event.ts_ms
                 if ts_value is not None:
                     ts_int = int(ts_value)
                     last_source_event_ts_ms = max(last_source_event_ts_ms or ts_int, ts_int)

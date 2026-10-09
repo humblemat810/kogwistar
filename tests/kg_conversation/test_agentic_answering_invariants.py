@@ -1,17 +1,18 @@
 from __future__ import annotations
+
 import pytest
+
 pytestmark = pytest.mark.ci
 
 from dataclasses import dataclass
-from typing import Any, Dict, List
+from typing import Any
 
-
-from kogwistar.conversation.models import MetaFromLastSummary
 from kogwistar.conversation.agentic_answering import pointer_id
+from kogwistar.conversation.models import MetaFromLastSummary
 from kogwistar.engine_core.models import (
-    Span,
-    MentionVerification,
     Grounding,
+    MentionVerification,
+    Span,
 )
 
 
@@ -43,19 +44,19 @@ class _Backend:
     """In-memory backend stub for conversation + KG backends used by projection tests."""
 
     def __init__(self) -> None:
-        self.nodes: Dict[str, Dict[str, Any]] = {}
-        self.edges: Dict[str, Dict[str, Any]] = {}
+        self.nodes: dict[str, dict[str, Any]] = {}
+        self.edges: dict[str, dict[str, Any]] = {}
 
     # ---- Nodes
-    def node_get(self, *, ids: List[str], include: List[str]) -> Dict[str, Any]:
-        out_ids: List[str] = []
-        metas: List[Dict[str, Any]] = []
+    def node_get(self, *, ids: list[str], include: list[str]) -> dict[str, Any]:
+        out_ids: list[str] = []
+        metas: list[dict[str, Any]] = []
         for _id in ids:
             if _id in self.nodes:
                 out_ids.append(_id)
                 if "metadatas" in include:
                     metas.append(self.nodes[_id].get("metadata", {}))
-        resp: Dict[str, Any] = {"ids": out_ids}
+        resp: dict[str, Any] = {"ids": out_ids}
         if "metadatas" in include:
             resp["metadatas"] = metas
         return resp
@@ -63,24 +64,24 @@ class _Backend:
     def node_add(
         self,
         *,
-        ids: List[str],
-        metadatas: List[Dict[str, Any]],
-        documents: List[str],
+        ids: list[str],
+        metadatas: list[dict[str, Any]],
+        documents: list[str],
         embeddings=None,
     ):
         for _id, md, doc in zip(ids, metadatas, documents):
             self.nodes[_id] = {"metadata": md, "document": doc}
 
     # ---- Edges (binary edge storage for invariants tests)
-    def edge_get(self, *, ids: List[str], include: List[str]) -> Dict[str, Any]:
-        out_ids: List[str] = []
-        metas: List[Dict[str, Any]] = []
+    def edge_get(self, *, ids: list[str], include: list[str]) -> dict[str, Any]:
+        out_ids: list[str] = []
+        metas: list[dict[str, Any]] = []
         for _id in ids:
             if _id in self.edges:
                 out_ids.append(_id)
                 if "metadatas" in include:
                     metas.append(self.edges[_id].get("metadata", {}))
-        resp: Dict[str, Any] = {"ids": out_ids}
+        resp: dict[str, Any] = {"ids": out_ids}
         if "metadatas" in include:
             resp["metadatas"] = metas
         return resp
@@ -88,10 +89,10 @@ class _Backend:
     def edge_add(
         self,
         *,
-        ids: List[str],
-        sources: List[str],
-        targets: List[str],
-        metadatas: List[Dict[str, Any]],
+        ids: list[str],
+        sources: list[str],
+        targets: list[str],
+        metadatas: list[dict[str, Any]],
     ):
         for _id, s, t, md in zip(ids, sources, targets, metadatas):
             self.edges[_id] = {"source": s, "target": t, "metadata": md}

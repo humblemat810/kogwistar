@@ -2,14 +2,13 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
+
 import pytest
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.in_memory_backend import build_in_memory_backend
 from kogwistar.engine_core.in_memory_meta import InMemoryMetaStore
-
 from tests.conftest import FakeEmbeddingFunction
-
 
 pytestmark = pytest.mark.core
 

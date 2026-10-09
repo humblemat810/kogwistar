@@ -1,17 +1,17 @@
 from __future__ import annotations
 
+import inspect
+import os
+import sys
+import threading
+import uuid
+from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from functools import wraps
-import inspect
-import os
 from pathlib import Path
-import sys
-import threading
-from typing import Iterator
 from urllib.parse import parse_qs, unquote, urlsplit
-import uuid
 
 
 class SQLiteContextError(RuntimeError):

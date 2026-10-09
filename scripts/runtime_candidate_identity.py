@@ -6,10 +6,10 @@ import hashlib
 import importlib.metadata
 import importlib.util
 import json
-from pathlib import Path
 import platform
 import sys
 import sysconfig
+from pathlib import Path
 
 import kogwistar
 

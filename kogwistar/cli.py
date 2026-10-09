@@ -4,15 +4,15 @@ import argparse
 import json
 import os
 from pathlib import Path
-from kogwistar.json_types import JsonValue
 
 import httpx
 from pydantic import ValidationError
 
 from kogwistar.demo import run_provenance_quickstart
+from kogwistar.json_types import JsonValue
 from kogwistar.ontology import (
-    OntologyPackage,
     OntologyCompositionError,
+    OntologyPackage,
     compose_ontology_packages,
     ontology_package_json_schema,
 )

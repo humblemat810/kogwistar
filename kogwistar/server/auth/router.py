@@ -1,10 +1,13 @@
 from __future__ import annotations
+
 import os
 from urllib.parse import urlsplit
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
-from .service import AuthService
+
 from .oidc import OIDCClient
+from .service import AuthService
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 

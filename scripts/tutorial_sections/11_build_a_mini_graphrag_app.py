@@ -3,9 +3,8 @@
 # This companion stitches together the existing RAG ladder into one short walkthrough.
 
 # %%
-from tutorial_ladder import reset_data, run_level0, run_level1, run_level2, seed_data
-
 from _helpers import banner, reset_data_dir, show
+from tutorial_ladder import reset_data, run_level0, run_level1, run_level2, seed_data
 
 data_dir = reset_data_dir("11_build_a_mini_graphrag_app")
 show("reset", reset_data(data_dir))

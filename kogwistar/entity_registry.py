@@ -43,10 +43,10 @@ def default_edge_type_for_graph_kind(graph_kind: str) -> type[Edge]:
 
 
 def _resolve_class_name(class_name: str) -> object | None:
-    from .engine_core import models as core_models
-    from .conversation import models as chat_models
-    from .runtime import models as runtime_models
     from .acl import models as acl_models
+    from .conversation import models as chat_models
+    from .engine_core import models as core_models
+    from .runtime import models as runtime_models
 
     return (
         getattr(core_models, class_name, None)

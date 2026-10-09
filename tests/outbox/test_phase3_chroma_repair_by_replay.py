@@ -1,6 +1,8 @@
-import uuid
 import pathlib
+import uuid
+
 import pytest
+
 pytestmark = pytest.mark.ci_full
 
 from kogwistar.engine_core.engine import (
@@ -8,8 +10,8 @@ from kogwistar.engine_core.engine import (
     _node_doc_and_meta,
 )
 from kogwistar.engine_core.models import Node
-from tests.conftest import FakeEmbeddingFunction
 from tests._helpers.graph_builders import build_entity_node
+from tests.conftest import FakeEmbeddingFunction
 
 EMBEDDING_DIM = 3
 TEST_EMBEDDING = FakeEmbeddingFunction(dim=EMBEDDING_DIM)

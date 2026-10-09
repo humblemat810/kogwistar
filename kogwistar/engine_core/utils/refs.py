@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Callable, Mapping, Sequence
-from typing import Protocol, TYPE_CHECKING, TypeAlias, cast
+from typing import TYPE_CHECKING, Protocol, TypeAlias, cast
 
 from ..models import Grounding, MentionVerification, Span
 from .metadata import json_or_none, strip_none
@@ -111,7 +111,7 @@ def extract_doc_ids_from_refs(refs: list[Span] | list[Grounding]) -> list[str]:
     return sorted(dict.fromkeys(out))
 
 
-def select_best_grounding(entity: "Node | Edge") -> Grounding:
+def select_best_grounding(entity: Node | Edge) -> Grounding:
     mentions = list(getattr(entity, "mentions", None) or [])
     if mentions:
 
@@ -170,7 +170,7 @@ def select_best_grounding(entity: "Node | Edge") -> Grounding:
     return Grounding(spans=[span])
 
 
-def node_doc_and_meta(n: "Node | PureChromaNode") -> tuple[str, JsonObject]:
+def node_doc_and_meta(n: Node | PureChromaNode) -> tuple[str, JsonObject]:
     doc = n.model_dump_json(field_mode="backend", exclude=["embedding", "metadata"])
     meta = n.metadata
     meta.update(
@@ -195,7 +195,7 @@ def node_doc_and_meta(n: "Node | PureChromaNode") -> tuple[str, JsonObject]:
     return doc, meta
 
 
-def edge_doc_and_meta(e: "Edge | PureChromaEdge") -> tuple[str, JsonObject]:
+def edge_doc_and_meta(e: Edge | PureChromaEdge) -> tuple[str, JsonObject]:
     doc = e.model_dump_json(field_mode="backend")
     # Keep edge metadata in the backend row as well as in the canonical JSON
     # document.  Backend-side filtering must retain graph-space, workspace,

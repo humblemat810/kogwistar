@@ -41,7 +41,8 @@ import json
 import logging
 import uuid
 from collections import deque
-from typing import TYPE_CHECKING, Any, Generator, NotRequired, TypedDict, cast
+from collections.abc import Generator
+from typing import TYPE_CHECKING, Any, NotRequired, TypedDict, cast
 
 if TYPE_CHECKING:
     from sqlalchemy import Row as SQLAlchemyRow

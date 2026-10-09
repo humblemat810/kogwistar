@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 
 
 class SearchIndexService(NamespaceProxy["GraphKnowledgeEngine"]):
-    def __init__(self, engine: "GraphKnowledgeEngine", index_db_path: str) -> None:
+    def __init__(self, engine: GraphKnowledgeEngine, index_db_path: str) -> None:
         super().__init__(engine)
         self.index_db_path = index_db_path
         self.ensure_initialized()

@@ -23,7 +23,6 @@ from kogwistar.runtime.rust_runtime_authority import (
     freeze_runtime_plan,
 )
 
-
 ROOT = Path(__file__).resolve().parents[2]
 RUST_SERVER = (
     ROOT

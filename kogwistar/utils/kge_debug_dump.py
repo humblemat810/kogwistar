@@ -1,23 +1,23 @@
 # kogwistar/utils/kge_debug_dump.py
 from __future__ import annotations
 
-import sys
-import pathlib
 import os
+import pathlib
+import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent.parent))
 import argparse
 import json
 from pathlib import Path
-from typing import Optional, Literal, TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from jinja2 import Environment
 from markupsafe import Markup
 
 if TYPE_CHECKING:
     from kogwistar.engine_core.engine import (
-        GraphKnowledgeEngine,
         EngineType,
+        GraphKnowledgeEngine,
     )
 from kogwistar.visualization.graph_viz import to_d3_force, to_sigma_hypergraph
 
@@ -75,14 +75,14 @@ def dump_d3_bundle(
     engine_type: EngineType | None = None,
     template_html: str,
     out_html: Path,
-    doc_id: Optional[str] = None,
+    doc_id: str | None = None,
     mode: str = "reify",
-    insertion_method: Optional[str] = None,
-    bundle_meta: Optional[dict] = None,
+    insertion_method: str | None = None,
+    bundle_meta: dict | None = None,
     # Live CDC (optional): when enabled, the bundle will connect to an external
     # FastAPI change-bridge (NOT hosted by the engine/debugging process).
     cdc_enabled: bool = False,
-    cdc_ws_url: Optional[str] = None,
+    cdc_ws_url: str | None = None,
     # If true, embed an empty graph (useful for "listen-only" live CDC pages).
     embed_empty: bool = False,
 ) -> Path:
@@ -135,12 +135,12 @@ def dump_sigma_bundle(
     engine_type: EngineType | None = None,
     template_html: str,
     out_html: Path,
-    doc_id: Optional[str] = None,
+    doc_id: str | None = None,
     mode: str = "reify",
-    insertion_method: Optional[str] = None,
-    bundle_meta: Optional[dict] = None,
+    insertion_method: str | None = None,
+    bundle_meta: dict | None = None,
     cdc_enabled: bool = False,
-    cdc_ws_url: Optional[str] = None,
+    cdc_ws_url: str | None = None,
     embed_empty: bool = False,
 ) -> Path:
     """Write a Sigma bundle backed by a lossless raw hypergraph snapshot."""
@@ -197,12 +197,12 @@ def dump_paired_bundles(
     kg_out: str = "kg.bundle.html",
     conversation_out: str = "conversation.bundle.html",
     work_flow_out: str = "workflow.bundle.html",
-    kg_doc_id: Optional[str] = None,
-    conversation_doc_id: Optional[str] = None,
+    kg_doc_id: str | None = None,
+    conversation_doc_id: str | None = None,
     mode: str = "reify",
-    insertion_method: Optional[str] = None,
+    insertion_method: str | None = None,
     # Live CDC (optional)
-    cdc_ws_url: Optional[str] = None,
+    cdc_ws_url: str | None = None,
     embed_empty=False,
     viewer: Literal["d3", "sigma"] = "d3",
 ) -> dict:

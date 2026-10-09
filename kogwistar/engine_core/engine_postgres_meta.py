@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import contextmanager
-from dataclasses import dataclass
 import json
 import logging
 import os
@@ -11,18 +9,19 @@ import sys
 import threading
 import time
 import uuid
-from collections.abc import Mapping
-from typing import Any, Dict, Iterator, List, Optional, cast
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
+from dataclasses import dataclass
+from typing import Any, cast
 
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from .postgres_backend import get_active_conn, _set_active_conn
 from ..messaging.models import ProjectedLaneMessageRow
-from .meta_lane_messages import LaneMessageMetaStoreMixin
-from .event_envelope import EntityEventEnvelope
 from ..typing_interfaces import SqlAlchemyConnectionLike
-
+from .event_envelope import EntityEventEnvelope
+from .meta_lane_messages import LaneMessageMetaStoreMixin
+from .postgres_backend import _set_active_conn, get_active_conn
 
 _SCHEMA_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 # All processes must serialize the startup DDL batch.  This is deliberately a
@@ -158,17 +157,17 @@ class IndexJob:
     coalesce_key: str
     op: str
     status: str
-    lease_until: Optional[str] = None
-    next_run_at: Optional[str] = None
+    lease_until: str | None = None
+    next_run_at: str | None = None
     max_retries: int = 10
     retry_count: int = 0
-    last_error: Optional[str] = None
-    payload_json: Optional[str] = None
-    claim_token: Optional[str] = None
+    last_error: str | None = None
+    payload_json: str | None = None
+    claim_token: str | None = None
     claim_attempts: int = 0
-    accepted_result_json: Optional[str] = None
-    accepted_result_sha256: Optional[str] = None
-    accepted_at: Optional[str] = None
+    accepted_result_json: str | None = None
+    accepted_result_sha256: str | None = None
+    accepted_at: str | None = None
 
 
 @dataclass
@@ -183,20 +182,20 @@ class ProjectedLaneMessage:
     status: str
     seq: int
     conversation_seq: int
-    claimed_by: Optional[str] = None
-    lease_until: Optional[str] = None
+    claimed_by: str | None = None
+    lease_until: str | None = None
     retry_count: int = 0
     created_at: int = 0
     available_at: int = 0
-    run_id: Optional[str] = None
-    step_id: Optional[str] = None
-    correlation_id: Optional[str] = None
-    payload_json: Optional[str] = None
-    error_json: Optional[str] = None
-    prev_message_id: Optional[str] = None
-    next_message_id: Optional[str] = None
-    inbox_tail_message_id: Optional[str] = None
-    conversation_tail_message_id: Optional[str] = None
+    run_id: str | None = None
+    step_id: str | None = None
+    correlation_id: str | None = None
+    payload_json: str | None = None
+    error_json: str | None = None
+    prev_message_id: str | None = None
+    next_message_id: str | None = None
+    inbox_tail_message_id: str | None = None
+    conversation_tail_message_id: str | None = None
 
 
 @dataclass
@@ -634,7 +633,7 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
         entity_id: str,
         index_kind: str,
         op: str,
-        payload_json: Optional[str] = None,
+        payload_json: str | None = None,
         max_retries: int = 10,
     ) -> str:
         """Enqueue durable derived-index work in the Postgres metastore.
@@ -704,8 +703,8 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
         *,
         limit: int = 50,
         lease_seconds: int = 60,
-        namespace: Optional[str] = "default",
-    ) -> List[IndexJob]:
+        namespace: str | None = "default",
+    ) -> list[IndexJob]:
         """Lease runnable jobs from the Postgres-backed queue.
 
         Eligibility is decided in SQL: pending jobs whose delay has elapsed plus
@@ -721,7 +720,7 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
             else f'{self.schema}."{self.index_jobs_table}"'
         )
         namespace_sql = ""
-        params: Dict[str, Any] = {
+        params: dict[str, Any] = {
             "limit": int(limit),
             "lease_seconds": int(lease_seconds),
             "claim_token": str(uuid.uuid4()),
@@ -778,7 +777,7 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
             threading.get_ident(),
         )
 
-        out: List[IndexJob] = []
+        out: list[IndexJob] = []
         for r in rows:
             out.append(
                 IndexJob(
@@ -1000,20 +999,20 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
     def list_index_jobs(
         self,
         *,
-        namespace: Optional[str] = "default",
-        status: Optional[str] = None,
-        entity_kind: Optional[str] = None,
-        entity_id: Optional[str] = None,
-        index_kind: Optional[str] = None,
+        namespace: str | None = "default",
+        status: str | None = None,
+        entity_kind: str | None = None,
+        entity_id: str | None = None,
+        index_kind: str | None = None,
         limit: int = 1000,
-    ) -> List[IndexJob]:
+    ) -> list[IndexJob]:
         ij = (
             f"{self.schema}.{self.index_jobs_table}"
             if self.index_jobs_table == "index_jobs"
             else f'{self.schema}."{self.index_jobs_table}"'
         )
-        where: List[str] = []
-        params: Dict[str, Any] = {"limit": int(limit)}
+        where: list[str] = []
+        params: dict[str, Any] = {"limit": int(limit)}
         if namespace is not None:
             where.append("namespace = :namespace")
             params["namespace"] = namespace
@@ -1042,7 +1041,7 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
         )
         with self.transaction() as conn:
             rows = conn.execute(sql, params).mappings().all()
-        out: List[IndexJob] = []
+        out: list[IndexJob] = []
         for r in rows:
             out.append(
                 IndexJob(
@@ -1368,7 +1367,7 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
     ) -> list[ProjectedLaneMessageRow]:
         table = f"{self.schema}.projected_lane_messages"
         where = ["namespace = :namespace"]
-        params: Dict[str, Any] = {"namespace": str(namespace), "limit": int(limit)}
+        params: dict[str, Any] = {"namespace": str(namespace), "limit": int(limit)}
         _ = reply_to_message_id
         if purpose is not None:
             where.append("purpose = :purpose")
@@ -1465,7 +1464,7 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
 
     def get_index_applied_fingerprint(
         self, *, namespace: str = "default", coalesce_key: str
-    ) -> Optional[str]:
+    ) -> str | None:
         ias = f"{self.schema}.index_applied_state"
         with self.transaction() as conn:
             row = conn.execute(
@@ -1481,8 +1480,8 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
         *,
         namespace: str = "default",
         coalesce_key: str,
-        applied_fingerprint: Optional[str],
-        last_job_id: Optional[str] = None,
+        applied_fingerprint: str | None,
+        last_job_id: str | None = None,
     ) -> None:
         ias = f"{self.schema}.index_applied_state"
         with self.transaction() as conn:
@@ -1750,7 +1749,7 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
             raise ValueError("named projection payload must deserialize to a dict")
         return payload
 
-    def get_named_projection(self, namespace: str, key: str) -> Optional[dict[str, Any]]:
+    def get_named_projection(self, namespace: str, key: str) -> dict[str, Any] | None:
         schema = self.schema
         with self.transaction() as conn:
             row = conn.execute(
@@ -2002,7 +2001,7 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
 
     def get_workflow_design_projection(
         self, *, workflow_id: str
-    ) -> Optional[dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         projection = self.get_named_projection("workflow_design", str(workflow_id))
         if projection is None:
             return None
@@ -2134,7 +2133,7 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
         workflow_id: str,
         max_version: int,
         schema_version: int,
-    ) -> Optional[dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         schema = self.schema
         with self.transaction() as conn:
             row = conn.execute(
@@ -2227,7 +2226,7 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
         workflow_id: str,
         version: int,
         schema_version: int,
-    ) -> Optional[dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         schema = self.schema
         with self.transaction() as conn:
             row = conn.execute(
@@ -2317,7 +2316,7 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                 },
             )
 
-    def get_server_run(self, run_id: str) -> Optional[dict[str, Any]]:
+    def get_server_run(self, run_id: str) -> dict[str, Any] | None:
         schema = self.schema
         with self.transaction() as conn:
             row = conn.execute(
