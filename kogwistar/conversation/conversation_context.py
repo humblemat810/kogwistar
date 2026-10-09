@@ -120,6 +120,29 @@ class ContextOrderingStrategy(Protocol):
         ...
 
 
+class ContextSourceProvider(Protocol):
+    """Provider of graph-derived context items for one conversation."""
+
+    def gather(self, *, conversation_id: str, purpose: str) -> list[ContextItem]:
+        ...
+
+
+class ContextTokenizer(Protocol):
+    """Token-counting dependency used by the context budgeter."""
+
+    def count_tokens(self, text: str) -> int:
+        ...
+
+
+class ContextMessageRenderer(Protocol):
+    """Renderer converting selected context items into model messages."""
+
+    def render(
+        self, items: Sequence[ContextItem], *, purpose: str
+    ) -> list[ContextMessage]:
+        ...
+
+
 class OrderingRegistry:
     def __init__(self) -> None:
         self._m: dict[str, ContextOrderingStrategy] = {}
@@ -350,7 +373,9 @@ ConversationContextView = PromptContext
 
 
 class ContextRenderer:
-    def render(self, items, *, purpose: str):
+    def render(
+        self, items: Sequence[ContextItem], *, purpose: str
+    ) -> list[ContextMessage]:
 
         system_prompt_parts: list[str] = []
         head_summaries: list[str] = []
@@ -411,7 +436,13 @@ class ContextRenderer:
 
 
 class ConversationContextBuilder:
-    def __init__(self, *, sources, tokenizer, renderer):
+    def __init__(
+        self,
+        *,
+        sources: ContextSourceProvider,
+        tokenizer: ContextTokenizer,
+        renderer: ContextMessageRenderer,
+    ) -> None:
         """
         sources: gathers candidate ContextItems (turns/summaries/memory/kg refs)
         tokenizer: count_tokens()
@@ -589,7 +620,7 @@ class ContextSources:
         self.security_scope = security_scope
         self.agent_id = agent_id
 
-    def gather(self, *, conversation_id: str, purpose: str):
+    def gather(self, *, conversation_id: str, purpose: str) -> list[ContextItem]:
         # Phase 1: load nodes
         if getattr(self.engine, "acl_enabled", False):
             by_id, meta_by_id = self._load_acl_visible_nodes(conversation_id)
