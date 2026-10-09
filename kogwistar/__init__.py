@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from importlib import import_module
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from collections.abc import Iterator
+from typing import TYPE_CHECKING
 
 from kogwistar.provenance import EvidencePackDigest, evidence_pack_digest_hash
 
@@ -112,7 +113,9 @@ def _is_public_module_name(name: str) -> bool:
     return not name.startswith("_")
 
 
-def _iter_package_modules(package_dir: Path, package_name: str, recursive: bool):
+def _iter_package_modules(
+    package_dir: Path, package_name: str, recursive: bool
+) -> Iterator[str]:
     for child in package_dir.iterdir():
         if child.name == "__pycache__" or not _is_public_module_name(child.name):
             continue
@@ -136,7 +139,7 @@ def list_submodules(recursive: bool = False) -> list[str]:
     return sorted(set(_iter_package_modules(_PACKAGE_DIR, __name__, recursive)))
 
 
-def __getattr__(name: str) -> Any:
+def __getattr__(name: str) -> object:
     export = _EXPORTS.get(name)
     if export is None:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

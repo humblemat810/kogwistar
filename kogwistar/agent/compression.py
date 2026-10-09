@@ -18,6 +18,7 @@ from kogwistar.engine_core.models import Grounding, MentionVerification, Span
 from kogwistar.id_provider import stable_id
 from kogwistar.json_types import JsonValue
 from kogwistar.typing_interfaces import WriteLike
+from kogwistar.runtime.models import WorkflowDesignArtifact
 
 from .workflows import build_normal_workflow
 
@@ -105,7 +106,9 @@ def policy_for(name: str) -> CompressionPolicy:
         raise ValueError(f"unknown compression policy: {name}") from exc
 
 
-def build_compression_workflow(*, workflow_id: str = "agent.context-compression.v1"):
+def build_compression_workflow(
+    *, workflow_id: str = "agent.context-compression.v1"
+) -> WorkflowDesignArtifact:
     """Return an ordinary audited workflow design for compression execution."""
 
     return build_normal_workflow(

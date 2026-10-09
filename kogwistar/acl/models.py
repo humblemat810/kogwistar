@@ -45,7 +45,7 @@ class ACLNode(Node):
 
     @field_validator("metadata")
     @classmethod
-    def check_acl_node_metadata(cls, value: dict):
+    def check_acl_node_metadata(cls, value: dict) -> dict:
         return ACLNodeMetadata.model_validate(value).model_dump()
 
 
@@ -55,5 +55,5 @@ class ACLEdge(Edge):
 
     @field_validator("metadata")
     @classmethod
-    def check_acl_edge_metadata(cls, value: dict):
+    def check_acl_edge_metadata(cls, value: dict) -> dict:
         return ACLEdgeMetadata.model_validate(value).model_dump()
