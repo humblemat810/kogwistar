@@ -6,7 +6,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any
 
-from kogwistar.engine_core.engine import scoped_namespace
+from kogwistar.engine_core.engine import GraphKnowledgeEngine, scoped_namespace
 from kogwistar.engine_core.models import Edge, Grounding, Node, Span
 from kogwistar.id_provider import stable_id
 from kogwistar.policy import DefaultDreamLoopPolicy
@@ -105,7 +105,7 @@ class DreamLoopRunResult:
     workflow_lineage_edge_ids: tuple[str, ...] = ()
 
 
-def _coerce_signal(item: Any) -> DreamLoopSignal:
+def _coerce_signal(item: object) -> DreamLoopSignal:
     if isinstance(item, DreamLoopSignal):
         return item
 
@@ -198,7 +198,7 @@ def _coerce_signal(item: Any) -> DreamLoopSignal:
     )
 
 
-def _merge_signals(signals: Iterable[Any]) -> list[DreamLoopSignal]:
+def _merge_signals(signals: Iterable[object]) -> list[DreamLoopSignal]:
     merged: dict[str, DreamLoopSignal] = {}
     for item in signals:
         signal = _coerce_signal(item)
@@ -782,7 +782,9 @@ def _evaluation_edge_from_evaluation(
     )
 
 
-def _persist_nodes(engine: Any, namespace: str, nodes: Sequence[Node]) -> list[str]:
+def _persist_nodes(
+    engine: GraphKnowledgeEngine, namespace: str, nodes: Sequence[Node]
+) -> list[str]:
     if not nodes:
         return []
     with scoped_namespace(engine, namespace):
@@ -791,7 +793,9 @@ def _persist_nodes(engine: Any, namespace: str, nodes: Sequence[Node]) -> list[s
     return [str(node.id) for node in nodes]
 
 
-def _persist_edges(engine: Any, namespace: str, edges: Sequence[Edge]) -> list[str]:
+def _persist_edges(
+    engine: GraphKnowledgeEngine, namespace: str, edges: Sequence[Edge]
+) -> list[str]:
     if not edges:
         return []
     with scoped_namespace(engine, namespace):
@@ -800,7 +804,9 @@ def _persist_edges(engine: Any, namespace: str, edges: Sequence[Edge]) -> list[s
     return [str(edge.id) for edge in edges]
 
 
-def _validate_candidate_workflow_design(design: Any, *, fallback_workflow_id: str) -> None:
+def _validate_candidate_workflow_design(
+    design: object, *, fallback_workflow_id: str
+) -> None:
     workflow_id = str(getattr(design, "workflow_id", None) or fallback_workflow_id or "").strip()
     if not workflow_id:
         raise ValueError("synthesized workflow design must have a workflow_id")
@@ -935,7 +941,7 @@ def _workflow_lineage_edge(
 
 
 def _normalize_dream_loop_decision(
-    value: Any,
+    value: object,
     *,
     proposal: WisdomRevisionProposal,
     evidence: DreamLoopEvidence,
@@ -975,17 +981,17 @@ def _normalize_dream_loop_decision(
 
 def run_dream_loop_cycle(
     *,
-    source_engine: Any,
+    source_engine: GraphKnowledgeEngine,
     source_namespace: str,
-    target_engine: Any,
+    target_engine: GraphKnowledgeEngine,
     target_namespace: str,
     source_where: dict[str, Any],
     workflow_id: str,
     created_at_ms: int,
     pending_proposals: Sequence[WisdomRevisionProposal] | None = None,
-    conversation_engine: Any | None = None,
+    conversation_engine: GraphKnowledgeEngine | None = None,
     conversation_namespace: str | None = None,
-    workflow_engine: Any | None = None,
+    workflow_engine: GraphKnowledgeEngine | None = None,
     workflow_namespace: str | None = None,
     policy: DefaultDreamLoopPolicy | None = None,
     budget_remaining: int | None = None,
@@ -1079,6 +1085,8 @@ def run_dream_loop_cycle(
             and not proposal.candidate_workflow_id
         )
         if should_materialize_candidate:
+            if workflow_engine is None or approved_workflow_builder is None:
+                raise RuntimeError("workflow materialization dependencies are missing")
             preview_evaluation = evaluate_wisdom_revision_proposal(
                 proposal,
                 decision=decision.decision,
