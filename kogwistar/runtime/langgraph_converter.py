@@ -8,16 +8,9 @@ Send/Command plus blob-state bookkeeping.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping, MutableMapping, Sequence
 from dataclasses import dataclass
-from typing import (
-    TYPE_CHECKING,
-    Annotated,
-    Any,
-    Literal,
-    NamedTuple,
-    cast,
-)
+from typing import Annotated, Any, Literal, NamedTuple, cast
 
 from typing_extensions import TypedDict
 
@@ -25,24 +18,18 @@ from kogwistar.runtime import design as wf_design
 from kogwistar.runtime.contract import BasePredicate, WorkflowEdgeInfo
 from kogwistar.runtime.routing import compute_route_next
 
-if TYPE_CHECKING:
-    from langgraph.graph import StateGraph as LangGraphStateGraph
-    from langgraph.types import Command as LangGraphCommand
-    from langgraph.types import Send as LangGraphSend
-
-
 class _LangGraphImports(NamedTuple):
-    state_graph: type[LangGraphStateGraph]
+    state_graph: Any
     start: str
     end: str
-    command: type[LangGraphCommand]
-    send: type[LangGraphSend]
+    command: Any
+    send: Any
 
 
 def _import_langgraph() -> _LangGraphImports:
     try:
-        from langgraph.graph import END, START, StateGraph
-        from langgraph.types import Command, Send
+        from langgraph.graph import END, START, StateGraph  # pyright: ignore[reportMissingImports]
+        from langgraph.types import Command, Send  # pyright: ignore[reportMissingImports]
     except Exception as e:  # pragma: no cover - depends on optional env
         raise RuntimeError(
             "LangGraph converter requires optional dependency group 'langgraph'. "
@@ -95,7 +82,9 @@ class LGConverterOptions:
     apply_node_id: str = "__apply__"
 
 
-def _apply_state_update(mute_state: dict, state_update: Sequence[StateUpdate]) -> None:
+def _apply_state_update(
+    mute_state: MutableMapping[str, Any], state_update: Sequence[StateUpdate]
+) -> None:
     """Match WorkflowRuntime.apply_state_update semantics."""
     for kind, payload in state_update:
         if kind == "a":
@@ -153,7 +142,7 @@ def _export_node_metadata(node: Any) -> dict[str, Any]:
 def _route_next(
     *,
     edges: list[Any],
-    state: dict,
+    state: Mapping[str, Any],
     last_result: Any,
     fanout: bool,
     predicate_registry: dict[str, BasePredicate],
@@ -171,7 +160,7 @@ def _route_next(
     """
     return compute_route_next(
         edges=list(edges),
-        state=state,
+        state=dict(state),
         last_result=last_result,
         fanout=fanout,
         predicate_registry=predicate_registry,
@@ -292,10 +281,10 @@ def to_langgraph(
         # --- legacy implementation (kept for compatibility) ---
         sg = StateGraph(LGApplyState)
 
-        def apply_node(state: LGApplyState) -> Command:
+        def apply_node(state: LGApplyState) -> Any:
             pending = state.get(opt.updates_key, []) or []
             if pending:
-                _apply_state_update(state, pending)
+                _apply_state_update(cast(MutableMapping[str, Any], state), pending)
             state[opt.updates_key] = []
             goto = state.pop("__goto__", None) or END
             return Command(goto=goto)
@@ -311,7 +300,7 @@ def to_langgraph(
             )
 
             def make_step(nid: str, node_obj: Any, fn_, op_name: str):
-                def step_node(state: LGApplyState) -> Command:
+                def step_node(state: LGApplyState) -> Any:
                     out = _invoke_step(resolver=step_resolver, fn=fn_, op=op_name, node_id=nid, state=state)
                     updates: list[StateUpdate]
                     if isinstance(out, dict):
@@ -454,7 +443,7 @@ def to_langgraph(
                     sg.add_edge(src, info.dst)
             else:
                 # Router returns a single destination (exclusive choice).
-                def make_router(nid: str, node_obj: Any, edges: list[Any]):
+                def make_visual_router(nid: str, node_obj: Any, edges: list[Any]):
                     possible = {
                         WorkflowEdgeInfo.from_workflow_edge(e).dst for e in edges
                     }
@@ -487,7 +476,7 @@ def to_langgraph(
 
                     return router, path_map
 
-                router_fn, path_map = make_router(src, node_obj, edges)
+                router_fn, path_map = make_visual_router(src, node_obj, edges)
                 sg.add_conditional_edges(src, router_fn, path_map)
 
         return sg.compile()
@@ -564,7 +553,7 @@ def to_langgraph(
         if use_send:
             # --- Fanout-capable node: routing via Command(goto=Send/...) to preserve token semantics ---
             def make_step_send(nid: str, node_obj: Any, fn_, op_name: str):
-                def step_node(state: LGBlobState) -> Command:
+                def step_node(state: LGBlobState) -> Any:
                     blob = cast(dict, state.get(opt.blob_key) or {})
                     token_id = cast(str, blob.get("__token_id__", "root"))
 
@@ -638,7 +627,7 @@ def to_langgraph(
                     elif len(next_nodes) == 1:
                         goto = next_nodes[0]
                     else:
-                        sends: list[Send] = []
+                        sends: list[Any] = []
                         for i, n in enumerate(next_nodes):
                             child_tid = _make_token_id(token_id, i)
                             # put token id into blob via ops, not as a top-level key
@@ -703,7 +692,7 @@ def to_langgraph(
         )
 
         # Conditional router that recomputes next node(s) using the updated blob state.
-        def make_router(nid: str, node_obj: Any):
+        def make_send_router(nid: str, node_obj: Any):
             edges = list(adj.get(nid, []))
 
             # Precompute possible destinations for the path_map (helps with diagram)
@@ -749,7 +738,7 @@ def to_langgraph(
 
             return router, path_map
 
-        router_fn, path_map = make_router(node_id, node)
+        router_fn, path_map = make_send_router(node_id, node)
         sg.add_conditional_edges(node_id, router_fn, path_map)
 
     # Blob init: ensure '__blob__' exists and carries a root token_id.
