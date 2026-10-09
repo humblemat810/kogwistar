@@ -4,8 +4,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, replace
 from typing import Any, cast
 
-from kogwistar.engine_core.engine import GraphKnowledgeEngine
-from kogwistar.engine_core.engine import scoped_namespace
+from kogwistar.engine_core.engine import GraphKnowledgeEngine, scoped_namespace
 from kogwistar.engine_core.models import Node
 from kogwistar.policy import DefaultDreamLoopPolicy
 from kogwistar.runtime.models import RunSuccess

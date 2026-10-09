@@ -34,21 +34,23 @@ import copy
 import inspect
 import json
 import math
-from collections.abc import Awaitable, Sequence
+from collections.abc import Awaitable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Any, TypeGuard, cast
+from types import TracebackType
+from typing import TYPE_CHECKING, TypeGuard, cast
 
 from kogwistar.engine_core.embedding_profile import EmbeddingStorageState
 from kogwistar.engine_core.in_memory_meta import InMemoryMetaStore
+from kogwistar.engine_core.models import Edge, Node
 from kogwistar.engine_core.storage_backend import (
     NoopUnitOfWork,
     TwoStageProjectionCapability,
 )
 from kogwistar.json_types import JsonObject, JsonValue
 
-JsonObject = dict[str, JsonValue]
-
+if TYPE_CHECKING:
+    from kogwistar.engine_core.engine import GraphKnowledgeEngine
 
 def _is_operator_dict(value: object) -> TypeGuard[dict[str, object]]:
     return isinstance(value, dict) and all(isinstance(k, str) for k in value) and any(
@@ -252,7 +254,7 @@ class _StoredRow:
 
 
 class _InMemoryCollection:
-    def __init__(self, *, name: str, backend: InMemoryBackend):
+    def __init__(self, *, name: str, backend: InMemoryBackend) -> None:
         self.name = name
         self._backend = backend
         self._rows: dict[str, _StoredRow] = {}
@@ -524,7 +526,7 @@ class InMemoryBackend:
     supports_historical_tombstone_query = True
     vector_distance_kind = "distance"
 
-    def __init__(self, engine: Any):
+    def __init__(self, engine: GraphKnowledgeEngine) -> None:
         self._engine = engine
         self.unit_of_work = NoopUnitOfWork()
         self.node_index = _InMemoryCollection(name="node_index", backend=self)
@@ -770,7 +772,7 @@ class _InMemoryTwoStageProjectionCommon:
         self.backend = backend
 
     @property
-    def engine(self) -> Any:
+    def engine(self) -> GraphKnowledgeEngine:
         return self.backend._engine
 
     def _enqueue(self, *, entity_kind: str, entity_id: str, op: str) -> None:
@@ -793,7 +795,7 @@ class _InMemoryTwoStageProjectionCommon:
 class _InMemoryTwoStageProjectionAdapter(_InMemoryTwoStageProjectionCommon):
     """Synchronous volatile arrangement used by deterministic tests."""
 
-    def add_node(self, node: Any, *, doc_id: str | None = None) -> None:
+    def add_node(self, node: Node, *, doc_id: str | None = None) -> None:
         if doc_id is not None:
             node.doc_id = doc_id
         doc, meta = self.engine.write.node_doc_and_meta(node)
@@ -806,7 +808,7 @@ class _InMemoryTwoStageProjectionAdapter(_InMemoryTwoStageProjectionCommon):
         )
         self._enqueue(entity_kind="node", entity_id=node.safe_get_id(), op="UPSERT")
 
-    def add_edge(self, edge: Any, *, doc_id: str | None = None) -> None:
+    def add_edge(self, edge: Edge, *, doc_id: str | None = None) -> None:
         if doc_id is not None:
             edge.doc_id = doc_id
         doc = edge.model_dump_json(field_mode="backend", exclude=["embedding"])
@@ -854,7 +856,7 @@ class _InMemoryTwoStageProjectionAdapter(_InMemoryTwoStageProjectionCommon):
 class AsyncInMemoryTwoStageProjectionAdapter(_InMemoryTwoStageProjectionCommon):
     """Non-blocking adapter for the volatile in-memory async test path."""
 
-    async def add_node(self, node: Any, *, doc_id: str | None = None) -> None:
+    async def add_node(self, node: Node, *, doc_id: str | None = None) -> None:
         if doc_id is not None:
             node.doc_id = doc_id
         doc, meta = self.engine.write.node_doc_and_meta(node)
@@ -867,7 +869,7 @@ class AsyncInMemoryTwoStageProjectionAdapter(_InMemoryTwoStageProjectionCommon):
         )
         self._enqueue(entity_kind="node", entity_id=node.safe_get_id(), op="UPSERT")
 
-    async def add_edge(self, edge: Any, *, doc_id: str | None = None) -> None:
+    async def add_edge(self, edge: Edge, *, doc_id: str | None = None) -> None:
         if doc_id is not None:
             edge.doc_id = doc_id
         doc = edge.model_dump_json(field_mode="backend", exclude=["embedding"])
@@ -1007,7 +1009,7 @@ class _FakeMetaStore:
         return None
 
     @contextmanager
-    def transaction(self):
+    def transaction(self) -> Iterator[None]:
         yield None
 
     def next_user_seq(self, user_id: str) -> int:
@@ -1120,7 +1122,7 @@ class _FakeMetaStore:
 
 
 class _DummyLock:
-    def acquire(self, *args: Any, **kwargs: Any) -> bool:
+    def acquire(self, *args: object, **kwargs: object) -> bool:
         return True
 
     def release(self) -> None:
@@ -1129,17 +1131,23 @@ class _DummyLock:
     def __enter__(self) -> _DummyLock:
         return self
 
-    def __exit__(self, exc_type, exc, tb) -> None:
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
         return None
 
 
-def build_in_memory_backend(engine: Any) -> InMemoryBackend:
+def build_in_memory_backend(engine: GraphKnowledgeEngine) -> InMemoryBackend:
     backend = InMemoryBackend(engine)
-    engine.backend_kind = "memory"
+    setattr(engine, "backend_kind", "memory")
     backend.backend_kind = "memory"
-    engine.meta_sqlite = InMemoryMetaStore()
-    engine.meta_sqlite.ensure_initialized()
-    engine.collection_lock = {
+    meta_store = InMemoryMetaStore()
+    meta_store.ensure_initialized()
+    setattr(engine, "meta_sqlite", meta_store)
+    setattr(engine, "collection_lock", {
         "node": _DummyLock(),
         "edge": _DummyLock(),
         "node_index": _DummyLock(),
@@ -1149,16 +1157,16 @@ def build_in_memory_backend(engine: Any) -> InMemoryBackend:
         "node_docs": _DummyLock(),
         "node_refs": _DummyLock(),
         "edge_refs": _DummyLock(),
-    }
-    engine.node_index_collection = backend.node_index
-    engine.node_collection = backend.node
-    engine.edge_collection = backend.edge
-    engine.edge_endpoints_collection = backend.edge_endpoints
-    engine.document_collection = backend.document
-    engine.domain_collection = backend.domain
-    engine.node_docs_collection = backend.node_docs
-    engine.node_refs_collection = backend.node_refs
-    engine.edge_refs_collection = backend.edge_refs
+    })
+    setattr(engine, "node_index_collection", backend.node_index)
+    setattr(engine, "node_collection", backend.node)
+    setattr(engine, "edge_collection", backend.edge)
+    setattr(engine, "edge_endpoints_collection", backend.edge_endpoints)
+    setattr(engine, "document_collection", backend.document)
+    setattr(engine, "domain_collection", backend.domain)
+    setattr(engine, "node_docs_collection", backend.node_docs)
+    setattr(engine, "node_refs_collection", backend.node_refs)
+    setattr(engine, "edge_refs_collection", backend.edge_refs)
     return backend
 
 

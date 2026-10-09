@@ -14,8 +14,8 @@ from typing import cast
 
 from kogwistar.engine_core.models import Edge as GraphEdge
 from kogwistar.engine_core.models import Node as GraphNode
-from kogwistar.typing_interfaces import ReadLike
 from kogwistar.runtime.models import WorkflowEdge
+from kogwistar.typing_interfaces import ReadLike
 
 from .contract import Predicate
 from .models import WorkflowNode
