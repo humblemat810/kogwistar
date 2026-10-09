@@ -8,7 +8,7 @@ from .models import ExternalIdentity, User, WorkflowACL
 
 
 class AuthRepository:
-    def __init__(self, session: Session):
+    def __init__(self, session: Session) -> None:
         self.session = session
 
     def get_user(self, user_id: str) -> User | None:
@@ -47,7 +47,7 @@ class AuthRepository:
         self.session.commit()
         return user
 
-    def update_last_login(self, user_id: str):
+    def update_last_login(self, user_id: str) -> None:
         user = self.get_user(user_id)
         if user:
             user.last_login_at = datetime.utcnow()
@@ -66,7 +66,7 @@ class AuthRepository:
 
     def link_external_identity(
         self, user_id: str, issuer: str, subject: str, email: str | None = None
-    ):
+    ) -> None:
         identity = ExternalIdentity(
             user_id=user_id, issuer=issuer, subject=subject, email=email
         )
@@ -82,7 +82,7 @@ class AuthRepository:
             .first()
         )
 
-    def set_workflow_acl(self, workflow_id: str, user_id: str, role: str):
+    def set_workflow_acl(self, workflow_id: str, user_id: str, role: str) -> None:
         acl = self.get_workflow_acl(workflow_id, user_id)
         if acl:
             acl.role = role

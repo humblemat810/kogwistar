@@ -8,7 +8,7 @@ from .db import create_auth_engine, get_session, init_auth_db
 from .seeding import seed_auth_data
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(
         description="Seed/Upsert Auth data into the database."
     )

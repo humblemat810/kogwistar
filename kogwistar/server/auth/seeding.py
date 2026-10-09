@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from .repository import AuthRepository
 
 
-def seed_auth_data(session: Session, seed_json: str | None = None):
+def seed_auth_data(session: Session, seed_json: str | None = None) -> None:
     repo = AuthRepository(session)
 
     if not seed_json:

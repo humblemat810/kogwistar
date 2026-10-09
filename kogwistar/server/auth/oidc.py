@@ -33,7 +33,7 @@ class OIDCClient:
         issuer: str | None = None,
         scopes: list[str] | None = None,
         clock_skew_seconds: int = 60,
-    ):
+    ) -> None:
         self.client_id = client_id
         self.client_secret = client_secret
         self.discovery_url = discovery_url
@@ -44,7 +44,7 @@ class OIDCClient:
         self._config: JsonObject | None = None
         self._jwk_client: pyjwt.PyJWKClient | None = None
 
-    async def _ensure_config(self):
+    async def _ensure_config(self) -> None:
         if not self._config:
             async with httpx.AsyncClient() as client:
                 resp = await client.get(self.discovery_url)
@@ -59,7 +59,7 @@ class OIDCClient:
             raise ValueError(f"OIDC discovery field {key!r} must be a non-empty string")
         return value
 
-    async def _ensure_jwk_client(self):
+    async def _ensure_jwk_client(self) -> None:
         await self._ensure_config()
         assert self._config is not None
         if self._jwk_client is None:

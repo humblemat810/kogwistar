@@ -23,7 +23,7 @@ class AuthService:
         jwt_alg: str = "HS256",
         jwt_iss: str | None = None,
         jwt_aud: str | None = None,
-    ):
+    ) -> None:
         self.repo = AuthRepository(session)
         resolved_secret = jwt_secret
         if not resolved_secret:

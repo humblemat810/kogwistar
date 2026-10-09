@@ -124,7 +124,7 @@ async def login(
     redirect_uri: str | None = None,
     return_to: str | None = None,
     provider: str | None = None,
-):
+) -> RedirectResponse:
     auth_mode = _get_auth_mode(request)
 
     # redirect_uri override is a dev-only convenience — reject it in prod
@@ -166,7 +166,7 @@ async def callback(
     code: str | None = None,
     error: str | None = None,
     error_description: str | None = None,
-):
+) -> RedirectResponse:
     auth_mode = _get_auth_mode(request)
     if auth_mode == "dev":
         raise HTTPException(
@@ -257,7 +257,9 @@ async def callback(
 
 
 @router.get("/me")
-async def me(request: Request, auth_service: AuthService = Depends(get_auth_service)):
+async def me(
+    request: Request, auth_service: AuthService = Depends(get_auth_service)
+) -> dict[str, JsonValue]:
     claims = getattr(request.state, "claims", None)
     if not claims or "user_id" not in claims:
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -270,5 +272,5 @@ async def me(request: Request, auth_service: AuthService = Depends(get_auth_serv
 
 
 @router.post("/logout")
-async def logout():
+async def logout() -> dict[str, bool]:
     return {"ok": True}
