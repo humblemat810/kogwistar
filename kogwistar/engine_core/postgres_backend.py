@@ -49,7 +49,7 @@ import re
 import sys
 import threading
 import time
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from typing import Any, cast
@@ -57,6 +57,7 @@ from typing import Any, cast
 import sqlalchemy as sa
 from sqlalchemy import event
 from sqlalchemy.dialects import postgresql as psql
+from sqlalchemy.engine import Engine
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from ..json_types import JsonValue
@@ -84,6 +85,18 @@ else:
 
 
 Json = dict[str, JsonValue]
+JsonCallable = Callable[[], Any]
+
+
+def _require_json_object(value: JsonValue, *, name: str) -> Json:
+    if not isinstance(value, dict):
+        raise TypeError(f"{name} must be an object")
+    return cast(Json, value)
+
+
+def _json_value(value: object) -> JsonValue:
+    """Narrow values assembled from SQLAlchemy rows at the JSON boundary."""
+    return cast(JsonValue, value)
 JSONB = psql.JSONB
 
 
@@ -114,7 +127,7 @@ class PgVectorSchemaMismatchError(EmbeddingProfileError):
         self.expected_dimension = expected_dimension
         self.mismatches = tuple(mismatches)
         observed = "; ".join(
-            f'{schema}.{item.table_name}.{item.column_name} is {item.type_name}'
+            f"{schema}.{item.table_name}.{item.column_name} is {item.type_name}"
             for item in self.mismatches
         )
         super().__init__(
@@ -186,7 +199,9 @@ def get_active_conn() -> Any | None:
     return _pg_uow_conn.get()
 
 
-def _install_connection_observability(engine: sa.Engine | AsyncEngine, *, component: str) -> None:
+def _install_connection_observability(
+    engine: sa.Engine | AsyncEngine, *, component: str
+) -> None:
     """Tag checked-out PostgreSQL connections with their Python owner."""
 
     sync_engine = engine.sync_engine if isinstance(engine, AsyncEngine) else engine
@@ -194,9 +209,7 @@ def _install_connection_observability(engine: sa.Engine | AsyncEngine, *, compon
     @event.listens_for(sync_engine, "checkout")
     def _tag_connection(dbapi_connection, connection_record, connection_proxy) -> None:
         del connection_proxy
-        label = (
-            f"kogwistar:{component}:p{os.getpid()}:t{threading.get_ident()}"
-        )[:63]
+        label = (f"kogwistar:{component}:p{os.getpid()}:t{threading.get_ident()}")[:63]
         connection_record.info["kogwistar_application_name"] = label
         cursor = dbapi_connection.cursor()
         try:
@@ -329,7 +342,10 @@ def postgres_connect_args(cfg: PgVectorConfig) -> dict[str, str]:
         options.extend(["-c", f"statement_timeout={int(cfg.statement_timeout_ms)}"])
     if cfg.idle_transaction_timeout_ms is not None:
         options.extend(
-            ["-c", f"idle_in_transaction_session_timeout={int(cfg.idle_transaction_timeout_ms)}"]
+            [
+                "-c",
+                f"idle_in_transaction_session_timeout={int(cfg.idle_transaction_timeout_ms)}",
+            ]
         )
     args: dict[str, str] = {"application_name": cfg.application_name}
     if options:
@@ -352,14 +368,13 @@ class CollectionSpec:
 class PgCollectionFacade:
     """Small, precise adapter that implements the repeated Chroma-shaped verbs."""
 
-    def __init__(
-        self, backend: PgVectorBackend, table: sa.Table, spec: CollectionSpec
-    ):
+    def __init__(self, backend: PgVectorBackend, table: sa.Table, spec: CollectionSpec):
         self._b = backend
         self._t = table
         self._s = spec
 
-    def _call_async(self, fn):
+    def _call_async(self, fn: JsonCallable) -> Any:
+        """Preserve the facade's historical sync/async return convention."""
         return fn()
 
     def add(
@@ -382,13 +397,15 @@ class PgCollectionFacade:
                     embeddings=embeddings,
                 )
             )
-        return _awaitable_result(self._b._upsert(
-            self._t,
-            ids=ids,
-            documents=documents,
-            metadatas=metadatas,
-            embeddings=embeddings,
-        ))
+        return _awaitable_result(
+            self._b._upsert(
+                self._t,
+                ids=ids,
+                documents=documents,
+                metadatas=metadatas,
+                embeddings=embeddings,
+            )
+        )
 
     def upsert(
         self,
@@ -417,9 +434,11 @@ class PgCollectionFacade:
                     self._t, ids=ids, where=where, include=include, limit=limit
                 )
             )
-        return _awaitable_result(self._b._get_flat(
-            self._t, ids=ids, where=where, include=include, limit=limit
-        ))
+        return _awaitable_result(
+            self._b._get_flat(
+                self._t, ids=ids, where=where, include=include, limit=limit
+            )
+        )
 
     def delete(
         self, *, ids: Sequence[str] | None = None, where: Json | None = None
@@ -452,13 +471,15 @@ class PgCollectionFacade:
                         include=include,
                     )
                 )
-            return _awaitable_result(self._b._query_vector(
-                self._t,
-                query_embeddings=query_embeddings,
-                n_results=n_results,
-                where=where,
-                include=include,
-            ))
+            return _awaitable_result(
+                self._b._query_vector(
+                    self._t,
+                    query_embeddings=query_embeddings,
+                    n_results=n_results,
+                    where=where,
+                    include=include,
+                )
+            )
 
         include = include or ["documents", "metadatas"]
         if self._b._is_async_engine:
@@ -467,9 +488,11 @@ class PgCollectionFacade:
                     self._t, where=where, n_results=n_results, include=include
                 )
             )
-        return _awaitable_result(self._b._query_nonvector(
-            self._t, where=where, n_results=n_results, include=include
-        ))
+        return _awaitable_result(
+            self._b._query_nonvector(
+                self._t, where=where, n_results=n_results, include=include
+            )
+        )
 
     def update(
         self,
@@ -497,13 +520,15 @@ class PgCollectionFacade:
                     embeddings=embeddings,
                 )
             )
-        return _awaitable_result(self._b._update_doc_meta_embedding_merge(
-            self._t,
-            ids=ids,
-            documents=documents,
-            metadatas=metadatas,
-            embeddings=embeddings,
-        ))
+        return _awaitable_result(
+            self._b._update_doc_meta_embedding_merge(
+                self._t,
+                ids=ids,
+                documents=documents,
+                metadatas=metadatas,
+                embeddings=embeddings,
+            )
+        )
 
 
 # ----------------------------
@@ -594,7 +619,11 @@ def where_jsonb(
         return (
             sa.and_(
                 *[
-                    where_jsonb(metadata_col, p, numeric_keys=numeric_keys_set)
+                    where_jsonb(
+                        metadata_col,
+                        _require_json_object(p, name="$and item"),
+                        numeric_keys=numeric_keys_set,
+                    )
                     for p in parts
                 ]
             )
@@ -609,7 +638,11 @@ def where_jsonb(
         return (
             sa.or_(
                 *[
-                    where_jsonb(metadata_col, p, numeric_keys=numeric_keys_set)
+                    where_jsonb(
+                        metadata_col,
+                        _require_json_object(p, name="$or item"),
+                        numeric_keys=numeric_keys_set,
+                    )
                     for p in parts
                 ]
             )
@@ -640,9 +673,18 @@ def where_jsonb(
                 if isinstance(sample, bool):
                     rhs_list = [bool(x) for x in vals]
                 elif isinstance(sample, int) and not isinstance(sample, bool):
-                    rhs_list = [int(x) for x in vals]
+                    if not all(
+                        isinstance(x, int) and not isinstance(x, bool) for x in vals
+                    ):
+                        raise TypeError(f"$in for {k} must contain integers")
+                    rhs_list = [int(cast(int, x)) for x in vals]
                 elif isinstance(sample, float):
-                    rhs_list = [float(x) for x in vals]
+                    if not all(
+                        isinstance(x, (int, float)) and not isinstance(x, bool)
+                        for x in vals
+                    ):
+                        raise TypeError(f"$in for {k} must contain numbers")
+                    rhs_list = [float(cast(int | float, x)) for x in vals]
                 else:
                     rhs_list = [str(x) for x in vals]
 
@@ -815,10 +857,17 @@ class PgVectorBackend:
             sa.Column("entity_kind", sa.String, nullable=False),
             sa.Column("entity_id", sa.String, nullable=False),
             sa.Column("document", sa.Text, nullable=False),
-            sa.Column("metadata", JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")),
+            sa.Column(
+                "metadata", JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")
+            ),
             sa.Column("source_fingerprint", sa.String, nullable=False),
             sa.Column("revision", sa.BigInteger, nullable=False, server_default="0"),
-            sa.Column("materialization_status", sa.String, nullable=False, server_default="'pending'"),
+            sa.Column(
+                "materialization_status",
+                sa.String,
+                nullable=False,
+                server_default="'pending'",
+            ),
             sa.Column("updated_at_ms", sa.BigInteger, nullable=False),
             sa.PrimaryKeyConstraint("namespace", "entity_kind", "entity_id"),
         )
@@ -1020,11 +1069,15 @@ class PgVectorBackend:
         if self._is_async_engine:
             return run_awaitable_blocking(self.inspect_embedding_storage_async())
         tables = (self.nodes, self.edges, self.documents, self.domains)
-        with self.engine.connect() as conn:
+        with cast(Engine, self.engine).connect() as conn:
             counts = tuple(
                 (
                     table.name,
-                    int(conn.execute(sa.select(sa.func.count()).select_from(table)).scalar_one()),
+                    int(
+                        conn.execute(
+                            sa.select(sa.func.count()).select_from(table)
+                        ).scalar_one()
+                    ),
                 )
                 for table in tables
             )
@@ -1040,10 +1093,12 @@ class PgVectorBackend:
         """Async counterpart used by async engine bootstrap paths."""
 
         tables = (self.nodes, self.edges, self.documents, self.domains)
-        async with self.engine.connect() as conn:
+        async with cast(AsyncEngine, self.engine).connect() as conn:
             counts_list: list[tuple[str, int]] = []
             for table in tables:
-                result = await conn.execute(sa.select(sa.func.count()).select_from(table))
+                result = await conn.execute(
+                    sa.select(sa.func.count()).select_from(table)
+                )
                 counts_list.append((table.name, int(result.scalar_one())))
             counts = tuple(counts_list)
         return EmbeddingStorageState(
@@ -1053,6 +1108,7 @@ class PgVectorBackend:
             vector_count=sum(count for _name, count in counts),
             details=tuple(f"{name}={count}" for name, count in counts),
         )
+
     # ----------------------------
     # DDL / bootstrap
     # ----------------------------
@@ -1062,7 +1118,7 @@ class PgVectorBackend:
         if self._is_async_engine:
             _run_coro_sync(self._ensure_schema_async())
             return
-        with self.engine.begin() as conn:
+        with cast(Engine, self.engine).begin() as conn:
             self._ensure_schema_sync(conn)
 
     # ----------------------------
@@ -1080,7 +1136,7 @@ class PgVectorBackend:
         if active is not None:
             yield active
             return
-        with self.engine.begin() as conn:
+        with cast(Engine, self.engine).begin() as conn:
             yield conn
 
     @asynccontextmanager
@@ -1090,7 +1146,7 @@ class PgVectorBackend:
         if isinstance(active, AsyncConnection):
             yield active
             return
-        async with self.engine.begin() as conn:
+        async with cast(AsyncEngine, self.engine).begin() as conn:
             yield conn
 
     # ----------------------------
@@ -1142,13 +1198,17 @@ class PgVectorBackend:
         if entity_kind not in {"node", "edge"}:
             raise ValueError(f"unsupported Stage-1 entity kind: {entity_kind!r}")
         with self._conn() as conn:
-            row = conn.execute(
-                sa.select(self.stage1_projections).where(
-                    self.stage1_projections.c.namespace == str(namespace),
-                    self.stage1_projections.c.entity_kind == entity_kind,
-                    self.stage1_projections.c.entity_id == str(entity_id),
+            row = (
+                conn.execute(
+                    sa.select(self.stage1_projections).where(
+                        self.stage1_projections.c.namespace == str(namespace),
+                        self.stage1_projections.c.entity_kind == entity_kind,
+                        self.stage1_projections.c.entity_id == str(entity_id),
+                    )
                 )
-            ).mappings().first()
+                .mappings()
+                .first()
+            )
         return dict(row) if row is not None else None
 
     def stage1_projection_query(
@@ -1171,7 +1231,9 @@ class PgVectorBackend:
         # Keep Stage-1 query semantics aligned with the existing narrow adapter.
         for key, value in (metadata or {}).items():
             if not isinstance(key, str) or isinstance(value, (dict, list, tuple, set)):
-                raise ValueError("PostgreSQL Stage-1 supports flat metadata equality only")
+                raise ValueError(
+                    "PostgreSQL Stage-1 supports flat metadata equality only"
+                )
             q = q.where(table.c.metadata[key].astext == str(value))
         q = q.order_by(table.c.updated_at_ms, table.c.entity_id)
         if limit is not None:
@@ -1209,10 +1271,14 @@ class PgVectorBackend:
             raise ValueError(f"unsupported Stage-1 entity kind: {entity_kind!r}")
         table = self.stage1_projections
         stmt = psql.insert(table).values(
-            namespace=str(namespace), entity_kind=entity_kind,
-            entity_id=str(entity_id), document=str(document),
-            metadata=dict(metadata or {}), source_fingerprint=str(source_fingerprint or ""),
-            revision=int(revision), materialization_status="pending",
+            namespace=str(namespace),
+            entity_kind=entity_kind,
+            entity_id=str(entity_id),
+            document=str(document),
+            metadata=dict(metadata or {}),
+            source_fingerprint=str(source_fingerprint or ""),
+            revision=int(revision),
+            materialization_status="pending",
             updated_at_ms=int(time.time() * 1000),
         )
         stmt = stmt.on_conflict_do_update(
@@ -1235,13 +1301,19 @@ class PgVectorBackend:
         if entity_kind not in {"node", "edge"}:
             raise ValueError(f"unsupported Stage-1 entity kind: {entity_kind!r}")
         async with self._async_conn() as conn:
-            row = (await conn.execute(
-                sa.select(self.stage1_projections).where(
-                    self.stage1_projections.c.namespace == str(namespace),
-                    self.stage1_projections.c.entity_kind == entity_kind,
-                    self.stage1_projections.c.entity_id == str(entity_id),
+            row = (
+                (
+                    await conn.execute(
+                        sa.select(self.stage1_projections).where(
+                            self.stage1_projections.c.namespace == str(namespace),
+                            self.stage1_projections.c.entity_kind == entity_kind,
+                            self.stage1_projections.c.entity_id == str(entity_id),
+                        )
+                    )
                 )
-            )).mappings().first()
+                .mappings()
+                .first()
+            )
         return dict(row) if row is not None else None
 
     async def stage1_projection_query_async(
@@ -1264,7 +1336,9 @@ class PgVectorBackend:
             query = query.where(table.c.entity_id.in_([str(item) for item in ids]))
         for key, value in (metadata or {}).items():
             if not isinstance(key, str) or isinstance(value, (dict, list, tuple, set)):
-                raise ValueError("PostgreSQL Stage-1 supports flat metadata equality only")
+                raise ValueError(
+                    "PostgreSQL Stage-1 supports flat metadata equality only"
+                )
             query = query.where(table.c.metadata[key].astext == str(value))
         query = query.order_by(table.c.updated_at_ms, table.c.entity_id)
         if limit is not None:
@@ -1279,11 +1353,13 @@ class PgVectorBackend:
         if entity_kind not in {"node", "edge"}:
             raise ValueError(f"unsupported Stage-1 entity kind: {entity_kind!r}")
         async with self._async_conn() as conn:
-            await conn.execute(sa.delete(self.stage1_projections).where(
-                self.stage1_projections.c.namespace == str(namespace),
-                self.stage1_projections.c.entity_kind == entity_kind,
-                self.stage1_projections.c.entity_id == str(entity_id),
-            ))
+            await conn.execute(
+                sa.delete(self.stage1_projections).where(
+                    self.stage1_projections.c.namespace == str(namespace),
+                    self.stage1_projections.c.entity_kind == entity_kind,
+                    self.stage1_projections.c.entity_id == str(entity_id),
+                )
+            )
 
     def _ensure_schema_sync(self, conn: sa.Connection) -> None:
         # Extension creation is database-wide.  IF NOT EXISTS does not by
@@ -1293,8 +1369,7 @@ class PgVectorBackend:
         # without holding a process-local lock that other replicas cannot see.
         conn.execute(
             sa.text(
-                "SELECT pg_advisory_xact_lock(" \
-                "hashtext('kogwistar.pgvector.extension'))"
+                "SELECT pg_advisory_xact_lock(hashtext('kogwistar.pgvector.extension'))"
             )
         )
         conn.execute(sa.text("CREATE EXTENSION IF NOT EXISTS vector"))
@@ -1345,9 +1420,10 @@ class PgVectorBackend:
             self.documents.name,
             self.domains.name,
         )
-        rows = conn.execute(
-            sa.text(
-                """
+        rows = (
+            conn.execute(
+                sa.text(
+                    """
                 SELECT c.relname AS table_name,
                        a.attname AS column_name,
                        format_type(a.atttypid, a.atttypmod) AS type_name
@@ -1361,9 +1437,12 @@ class PgVectorBackend:
                    AND a.attnum > 0
                    AND NOT a.attisdropped
                 """
-            ).bindparams(sa.bindparam("table_names", expanding=True)),
-            {"schema": self.schema, "table_names": list(table_names)},
-        ).mappings().all()
+                ).bindparams(sa.bindparam("table_names", expanding=True)),
+                {"schema": self.schema, "table_names": list(table_names)},
+            )
+            .mappings()
+            .all()
+        )
         mismatches: list[PgVectorColumnDimension] = []
         for row in rows:
             type_name = str(row["type_name"])
@@ -1385,13 +1464,14 @@ class PgVectorBackend:
             )
 
     async def _ensure_schema_async(self) -> None:
-        async with self.engine.begin() as conn:
+        async with cast(AsyncEngine, self.engine).begin() as conn:
             await conn.run_sync(self._ensure_schema_sync)
 
     async def _run_in_async_txn(self, fn):
         active = get_active_conn()
         invoke_async = getattr(active, "invoke_async", None)
         if callable(invoke_async):
+
             def _call(sync_conn):
                 token = _pg_uow_conn.set(sync_conn)
                 try:
@@ -1399,9 +1479,10 @@ class PgVectorBackend:
                 finally:
                     _pg_uow_conn.reset(token)
 
-            return await invoke_async(_call)
+            return await cast(Callable[[Callable[[Any], Any]], Awaitable[Any]], invoke_async)(_call)
         invoke_sync = getattr(active, "invoke_sync", None)
         if callable(invoke_sync):
+
             def _call(sync_conn):
                 token = _pg_uow_conn.set(sync_conn)
                 try:
@@ -1411,6 +1492,7 @@ class PgVectorBackend:
 
             return invoke_sync(_call)
         if isinstance(active, AsyncConnection):
+
             def _call(sync_conn):
                 token = _pg_uow_conn.set(sync_conn)
                 try:
@@ -1420,7 +1502,8 @@ class PgVectorBackend:
 
             return await active.run_sync(_call)
 
-        async with self.engine.begin() as conn:
+        async with cast(AsyncEngine, self.engine).begin() as conn:
+
             def _call(sync_conn):
                 token = _pg_uow_conn.set(sync_conn)
                 try:
@@ -1463,9 +1546,9 @@ class PgVectorBackend:
         if "metadatas" in include:
             out["metadatas"] = [dict(r.metadata or {}) for r in rows]
         if "embeddings" in include and has_embedding:
-            out["embeddings"] = [
-                normalize_embedding_vector(r.embedding) for r in rows
-            ]
+            out["embeddings"] = _json_value(
+                [normalize_embedding_vector(r.embedding) for r in rows]
+            )
         return out
 
     async def _get_flat_async(
@@ -1501,9 +1584,9 @@ class PgVectorBackend:
         if "metadatas" in include:
             out["metadatas"] = [dict(r.metadata or {}) for r in rows]
         if "embeddings" in include and has_embedding:
-            out["embeddings"] = [
-                normalize_embedding_vector(r.embedding) for r in rows
-            ]
+            out["embeddings"] = _json_value(
+                [normalize_embedding_vector(r.embedding) for r in rows]
+            )
         return out
 
     def _delete(
@@ -1669,7 +1752,9 @@ class PgVectorBackend:
         op = op_map[self.distance]
 
         # Bind the RHS as a real pgvector type to avoid adapter / text-cast issues.
-        qv_param = sa.bindparam("qv", type_=Vector(self.embedding_dim))
+        qv_param = sa.bindparam(
+            "qv", type_=cast(Callable[[int], Any], Vector)(self.embedding_dim)
+        )
 
         # IMPORTANT: cast to Float so the pgvector result processor doesn't try
         # to parse this column as a Vector.
@@ -1704,20 +1789,21 @@ class PgVectorBackend:
                 if want_embeddings:
                     embs_out.append(
                         [
-                            normalize_embedding_vector(r.embedding, allow_none=False) or []
+                            normalize_embedding_vector(r.embedding, allow_none=False)
+                            or []
                             for r in rows
                         ]
                     )
 
-        out: dict[str, JsonValue] = {"ids": ids_out}
+        out: dict[str, JsonValue] = {"ids": _json_value(ids_out)}
         if "documents" in include:
-            out["documents"] = docs_out
+            out["documents"] = _json_value(docs_out)
         if "metadatas" in include:
-            out["metadatas"] = metas_out
+            out["metadatas"] = _json_value(metas_out)
         if "distances" in include:
-            out["distances"] = dists_out
+            out["distances"] = _json_value(dists_out)
         if want_embeddings:
-            out["embeddings"] = embs_out
+            out["embeddings"] = _json_value(embs_out)
         return out
 
     async def _query_vector_async(
@@ -1745,7 +1831,9 @@ class PgVectorBackend:
 
         op_map = {"cosine": "<=>", "l2": "<->", "ip": "<#>"}
         op = op_map[self.distance]
-        qv_param = sa.bindparam("qv", type_=Vector(self.embedding_dim))
+        qv_param = sa.bindparam(
+            "qv", type_=cast(Callable[[int], Any], Vector)(self.embedding_dim)
+        )
         distance_expr = sa.cast(table.c.embedding.op(op)(qv_param), sa.Float).label(
             "distance"
         )
@@ -1775,20 +1863,21 @@ class PgVectorBackend:
                 if want_embeddings:
                     embs_out.append(
                         [
-                            normalize_embedding_vector(r.embedding, allow_none=False) or []
+                            normalize_embedding_vector(r.embedding, allow_none=False)
+                            or []
                             for r in rows
                         ]
                     )
 
-        out: dict[str, JsonValue] = {"ids": ids_out}
+        out: dict[str, JsonValue] = {"ids": _json_value(ids_out)}
         if "documents" in include:
-            out["documents"] = docs_out
+            out["documents"] = _json_value(docs_out)
         if "metadatas" in include:
-            out["metadatas"] = metas_out
+            out["metadatas"] = _json_value(metas_out)
         if "distances" in include:
-            out["distances"] = dists_out
+            out["distances"] = _json_value(dists_out)
         if want_embeddings:
-            out["embeddings"] = embs_out
+            out["embeddings"] = _json_value(embs_out)
         return out
 
     def _update_doc_meta_embedding_merge(
