@@ -16,7 +16,6 @@ from fastapi import HTTPException
 from pydantic import BaseModel, Field
 from starlette.types import Receive, Scope, Send
 
-from .. import shortids
 from kogwistar.engine_core.models import (
     AdjudicationQuestionCode,
     AdjudicationVerdict,
@@ -49,20 +48,25 @@ from kogwistar.server.chat_mcp import (
     build_workflow_mcp,
 )
 from kogwistar.server.mcp_registry import McpRegistry
-from kogwistar.strategies.proposer import PairKind
 from kogwistar.server.resources import (
     engine,
     gq,
     wisdom_engine,
     wisdom_gq,
 )
-from kogwistar.strategies.proposer import VectorProposer
+from kogwistar.strategies.proposer import PairKind, VectorProposer
 from kogwistar.visualization.graph_viz import to_cytoscape, to_d3_force
+
+from .. import shortids
 
 TOOL_ROLES: dict[str, set[str]] = {}
 TOOL_NAMESPACE: dict[str, set[str]] = {}
 P = ParamSpec("P")
 R = TypeVar("R")
+
+
+class ToolDefinitionError(ValueError):
+    """Raised when a registered MCP tool is missing a valid name."""
 
 
 def tool_roles(roles: set[Role] | Role) -> Callable[[Callable[P, R]], Callable[P, R]]:
@@ -71,7 +75,7 @@ def tool_roles(roles: set[Role] | Role) -> Callable[[Callable[P, R]], Callable[P
     def deco(fn: Callable[P, R]) -> Callable[P, R]:
         name = getattr(fn, "name", None) or getattr(fn, "__name__", None)
         if name is None:
-            raise Exception("name not found")
+            raise ToolDefinitionError("name not found")
         TOOL_ROLES[name] = {r.value for r in allowed}
         original_fn = fn
 

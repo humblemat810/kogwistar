@@ -171,7 +171,7 @@ def _import_override_from_env(env_name: str) -> Callable[..., Any] | None:
     module = importlib.import_module(module_name)
     target = getattr(module, attr_name, None)
     if not callable(target):
-        raise RuntimeError(f"{env_name} target is not callable: {raw}")
+        raise TypeError(f"{env_name} target is not callable: {raw}")
     return target
 
 

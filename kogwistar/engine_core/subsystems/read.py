@@ -593,8 +593,8 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             native
             or run_awaitable_blocking(
                 self._e.backend.node_query(
-                    query_embeddings=query_embeddings,
                     *args,
+                    query_embeddings=query_embeddings,
                     include=include,
                     **kwargs,
                 )

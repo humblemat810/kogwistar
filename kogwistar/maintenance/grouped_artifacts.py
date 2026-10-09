@@ -11,8 +11,8 @@ from kogwistar.maintenance.artifacts import (
 )
 from kogwistar.maintenance.contracts import (
     BeforeWrite,
-    GroupKeyForNode,
     GroupedArtifactNodeBuilder,
+    GroupKeyForNode,
     MatchWhereForGroup,
 )
 from kogwistar.maintenance.models import GroupedArtifactWriteResult

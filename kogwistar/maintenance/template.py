@@ -5,10 +5,10 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
-from kogwistar.maintenance.contracts import BeforeWrite
 from kogwistar.maintenance.contracts import (
-    GroupKeyForNode,
+    BeforeWrite,
     GroupedArtifactNodeBuilder,
+    GroupKeyForNode,
     MatchWhereForGroup,
 )
 from kogwistar.maintenance.grouped_artifacts import (
