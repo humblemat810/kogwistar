@@ -19,7 +19,7 @@ from collections.abc import Mapping
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 import httpx
 
@@ -94,6 +94,34 @@ def _json_copy(value: object, *, field: str) -> JsonValue:
         raise RustWorkerError(f"{field} must be JSON-only: {error}") from error
 
 
+def _json_int(value: JsonValue | None, default: int = 0) -> int:
+    """Decode an integer field from a JSON payload without widening its type."""
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return default
+    return default
+
+
+def _json_object(value: JsonValue | None) -> JsonObject:
+    if isinstance(value, dict):
+        return value
+    return {}
+
+
+def _json_string_list(value: JsonValue | None) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value]
+
+
 def _durable_state(value: Mapping[str, JsonValue], *, field: str) -> JsonObject:
     durable = {
         key: item
@@ -150,9 +178,9 @@ class RustStepResolverAdapter:
             if predicate is not None and predicate not in self.predicate_registry:
                 missing_predicates.add(predicate)
             edge_id = str(raw.get("edge_id") or f"{source}->{target}")
-            aliases = [str(value) for value in (raw.get("aliases") or [])]
+            aliases = _json_string_list(raw.get("aliases"))
             label = aliases[0] if aliases else target.rsplit("|", 1)[-1]
-            priority = int(raw.get("priority", 100))
+            priority = _json_int(raw.get("priority"), 100)
             is_default = bool(raw.get("is_default", False))
             multiplicity = str(raw.get("multiplicity") or "one")
             routes.append(
@@ -165,7 +193,7 @@ class RustStepResolverAdapter:
                     is_default=is_default,
                     multiplicity=multiplicity,
                     source_fanout=bool(raw.get("source_fanout", False)),
-                    join_mask=int(raw.get("join_mask", 0)),
+                    join_mask=_json_int(raw.get("join_mask")),
                     label=label,
                     aliases=tuple(aliases),
                     metadata={
@@ -236,7 +264,7 @@ class RustStepResolverAdapter:
             dependencies = self.dependency_provider(work)
             if not isinstance(dependencies, Mapping):
                 raise RustWorkerError("dependency_provider must return a mapping")
-            state["_deps"] = dependencies
+            state["_deps"] = _json_copy(dict(dependencies), field="worker dependencies")
 
         try:
             resolver = self.step_resolver(op)
@@ -259,14 +287,14 @@ class RustStepResolverAdapter:
             workflow_node_id=node_id,
             op=op,
             token_id=str(payload.get("token_id") or work.get("run_id") or ""),
-            attempt=int(payload.get("attempt", 1)),
-            step_seq=int(payload.get("step_seq", 0)),
+            attempt=_json_int(payload.get("attempt"), 1),
+            step_seq=_json_int(payload.get("step_seq")),
             cache_dir=self.cache_dir,
             conversation_id=str(payload.get("conversation_id") or "") or None,
             turn_node_id=str(payload.get("turn_node_id") or "") or None,
             message_queue=message_queue,
             lane_message_sender=record_lane_message,
-            state=state,
+            state=cast(dict[str, object], state),
             authority_context={"effective_capabilities": ()},
         )
         try:
@@ -305,7 +333,10 @@ class RustStepResolverAdapter:
         lane_message_attempts: list[JsonObject],
     ) -> JsonObject:
         """Apply v1 result restrictions shared by sync-v1 and async-v2 workers."""
-        from kogwistar.runtime.base_runtime import apply_state_update_inplace
+        from kogwistar.runtime.base_runtime import (
+            RuntimeStateUpdate,
+            apply_state_update_inplace,
+        )
         from kogwistar.runtime.models import (
             RunFailure,
             RunSuccess,
@@ -340,14 +371,23 @@ class RustStepResolverAdapter:
         state_update: list[JsonValue] = []
         if changed:
             state_update.append(["u", changed])
-        state_schema = _json_copy(
+        state_schema_value = _json_copy(
             getattr(self.step_resolver, "_state_schema", {}) or {},
             field="resolver state schema",
         )
-        result_state_update = _json_copy(
+        if not isinstance(state_schema_value, dict):
+            raise RustWorkerError("resolver state schema must be an object")
+        state_schema = {str(key): str(value) for key, value in state_schema_value.items()}
+        result_state_update_value = _json_copy(
             result.state_update, field="result.state_update"
         )
-        result_update = _json_copy(result.update, field="result.update")
+        if not isinstance(result_state_update_value, list):
+            raise RustWorkerError("result.state_update must be an array")
+        result_state_update = cast(list[list[JsonValue]], result_state_update_value)
+        result_update_value = _json_copy(result.update, field="result.update")
+        result_update = (
+            result_update_value if isinstance(result_update_value, dict) else {}
+        )
         result_keys = {
             str(key)
             for item in result_state_update
@@ -380,17 +420,19 @@ class RustStepResolverAdapter:
             result_state_update.extend(
                 [mode, values] for mode, values in normalized.items() if values
             )
-        state_update.extend(result_state_update)
+        state_update.extend(cast(list[JsonValue], result_state_update))
         predicted_state = _json_copy(before, field="claimed work state")
+        if not isinstance(predicted_state, dict):
+            raise RustWorkerError("claimed work state must be an object")
         apply_state_update_inplace(
-            predicted_state,
-            state_update,
+            cast(dict[str, object], predicted_state),
+            cast(RuntimeStateUpdate, state_update),
             None,
             state_schema=state_schema,
         )
         computed = compute_route_next(
-            edges=routes,
-            state=predicted_state,
+            edges=cast(list[object], routes),
+            state=cast(Mapping[str, object], predicted_state),
             last_result=result,
             fanout=any(route.source_fanout for route in routes),
             predicate_registry=self.predicate_registry,
@@ -414,17 +456,17 @@ class RustStepResolverAdapter:
             "suspended": "suspended",
             "failure": "failed",
         }[result.status]
-        effect: JsonObject = {
+        effect = cast(JsonObject, {
             "status": status,
-            "state_update": state_update,
-            "state_schema": state_schema,
-            "successors": successors,
+            "state_update": cast(JsonValue, state_update),
+            "state_schema": cast(JsonValue, state_schema),
+            "successors": cast(JsonValue, successors),
             "route_next": get_route_next_names(result),
             "result": {
                 "workflow_status": workflow_status,
                 "final_state": predicted_state,
             },
-        }
+        })
         if isinstance(result, RunFailure):
             effect["errors"] = list(result.errors)
         if isinstance(result, RunSuspended):
@@ -483,7 +525,7 @@ class AsyncRustStepResolverAdapter(RustStepResolverAdapter):
             dependencies = self.dependency_provider(work)
             if not isinstance(dependencies, Mapping):
                 raise RustWorkerError("dependency_provider must return a mapping")
-            state["_deps"] = dependencies
+            state["_deps"] = _json_copy(dict(dependencies), field="worker dependencies")
         try:
             resolve_async = getattr(self.step_resolver, "resolve_async", None)
             resolver = (
@@ -506,14 +548,14 @@ class AsyncRustStepResolverAdapter(RustStepResolverAdapter):
             workflow_node_id=node_id,
             op=op,
             token_id=str(payload.get("token_id") or work.get("run_id") or ""),
-            attempt=int(payload.get("attempt", 1)),
-            step_seq=int(payload.get("step_seq", 0)),
+            attempt=_json_int(payload.get("attempt"), 1),
+            step_seq=_json_int(payload.get("step_seq")),
             cache_dir=self.cache_dir,
             conversation_id=str(payload.get("conversation_id") or "") or None,
             turn_node_id=str(payload.get("turn_node_id") or "") or None,
             message_queue=message_queue,
             lane_message_sender=record_lane_message,
-            state=state,
+            state=cast(dict[str, object], state),
             authority_context={"effective_capabilities": ()},
         )
         try:
@@ -736,7 +778,7 @@ class RustRuntimeWorker:
         work = value.get("work")
         if not isinstance(work, list) or not all(isinstance(item, dict) for item in work):
             raise RustWorkerError("runtime claim response has invalid work list")
-        return work
+        return [cast(JsonObject, item) for item in work]
 
     @staticmethod
     def _result_envelope(
@@ -819,10 +861,10 @@ class RustRuntimeWorker:
         successors = restricted.get("successors", [])
         if not isinstance(successors, list):
             raise RustWorkerError("worker effect successors must be an array")
-        return {
+        return cast(JsonObject, {
             "handoff": required,
-            "effect": restricted,
-        }
+            "effect": cast(JsonValue, restricted),
+        })
 
     def process(self, work: JsonObject) -> JsonObject:
         message_id = str(work.get("message_id") or "")
@@ -965,7 +1007,7 @@ class AsyncRustRuntimeWorker:
         work = value.get("work")
         if not isinstance(work, list) or not all(isinstance(item, dict) for item in work):
             raise RustWorkerError("runtime claim response has invalid work list")
-        return work
+        return [cast(JsonObject, item) for item in work]
 
     async def process(self, work: JsonObject) -> JsonObject:
         message_id = str(work.get("message_id") or "")
