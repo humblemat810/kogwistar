@@ -236,6 +236,19 @@ class RunRegistryTraceBridge:
                 },
             )
 
+    def flush(self, timeout: float = 1.0) -> bool:
+        """Flush the delegated sink when it supports telemetry lifecycle hooks."""
+        flush = getattr(self.delegate, "flush", None)
+        if not callable(flush):
+            return True
+        return bool(flush(timeout=timeout))
+
+    def close(self, timeout: float = 1.0) -> None:
+        """Close the delegated sink without making the registry bridge authoritative."""
+        close = getattr(self.delegate, "close", None)
+        if callable(close):
+            close(timeout=timeout)
+
 
 class RunRegistryLaneMessageEventSink:
     """Mirror durable lane-message events into the run-registry event stream."""

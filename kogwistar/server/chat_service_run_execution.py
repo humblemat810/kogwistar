@@ -4,7 +4,8 @@ import asyncio
 import logging
 import pathlib
 import threading
-from typing import Any
+from collections.abc import Mapping
+from typing import Any, cast
 
 from kogwistar.cdc.sqlite_sink import _get_shared_sqlite_sink
 from kogwistar.conversation.agentic_answering import AgenticAnsweringAgent
@@ -13,7 +14,10 @@ from kogwistar.conversation.models import (
     MetaFromLastSummary,
 )
 from kogwistar.id_provider import new_id_str
+from kogwistar.json_types import JsonObject
 from kogwistar.runtime.replay import load_checkpoint
+from kogwistar.runtime.contract import WorkflowEdgeInfo
+from kogwistar.runtime.models import WorkflowState
 from kogwistar.runtime.telemetry import EventEmitter
 
 from .chat_service_shared import (
@@ -127,6 +131,11 @@ class _RunExecutionService(_BaseComponent):
         if not text:
             return []
         return [text[i : i + chunk_size] for i in range(0, len(text), chunk_size)]
+
+    @staticmethod
+    def _json_object(value: object) -> JsonObject:
+        safe = _RunExecutionService._json_safe(value)
+        return cast(JsonObject, safe) if isinstance(safe, dict) else {}
 
     def _run_answer(self, req: AnswerRunRequest) -> None:
         with bind_auth_claims(req.auth_claims):
@@ -353,7 +362,7 @@ class _RunExecutionService(_BaseComponent):
         )
         self.run_registry.update_status(req.run_id, status="running", started=True)
         try:
-            out = self._json_safe(self.runtime_runner(req) or {})
+            out = self._json_object(self.runtime_runner(req) or {})
             workflow_status = str(
                 out.get("workflow_status") or out.get("status") or "succeeded"
             )
@@ -419,10 +428,12 @@ class _RunExecutionService(_BaseComponent):
         from kogwistar.runtime.budget import StateBackedBudgetLedger
         from kogwistar.runtime.runtime import WorkflowRuntime
 
-        def predicate_always(_workflow_info, _state, _last_result):
+        def predicate_always(
+            edge: WorkflowEdgeInfo, state: Mapping[str, object], result: object
+        ) -> bool:
             return True
 
-        initial_state = dict(req.initial_state or {})
+        initial_state: WorkflowState = dict(req.initial_state or {})
         budget_state = initial_state.get("budget")
         if not isinstance(budget_state, dict):
             budget_state = {}
@@ -500,7 +511,7 @@ class _RunExecutionService(_BaseComponent):
                 initial_state=initial_state,
                 run_id=req.run_id,
             )
-        final_state = self._json_safe(
+        final_state = self._json_object(
             dict(getattr(run_result, "final_state", {}) or {})
         )
         final_state.pop("_deps", None)
@@ -519,11 +530,18 @@ class _RunExecutionService(_BaseComponent):
         from kogwistar.runtime.models import RunFailure, RunSuccess, RunSuspended
         from kogwistar.runtime.runtime import WorkflowRuntime
 
-        def predicate_always(_workflow_info, _state, _last_result):
+        def predicate_always(
+            edge: WorkflowEdgeInfo, state: Mapping[str, object], result: object
+        ) -> bool:
             return True
 
-        step_seq = int(req.client_result.get("step_seq", 0) or 0)
-        initial_state = dict(
+        raw_step_seq = req.client_result.get("step_seq", 0)
+        step_seq = (
+            int(raw_step_seq)
+            if isinstance(raw_step_seq, (int, float, str)) and not isinstance(raw_step_seq, bool)
+            else 0
+        )
+        initial_state: WorkflowState = dict(
             load_checkpoint(
                 conversation_engine=req.conversation_engine,
                 run_id=req.run_id,
@@ -563,26 +581,35 @@ class _RunExecutionService(_BaseComponent):
         runtime_kind = str(
             getattr(req, "runtime_kind", "") or self._owner.default_runtime_kind or "sync"
         ).strip().lower()
-        runtime_kwargs = dict(
-            workflow_engine=req.workflow_engine,
-            conversation_engine=req.conversation_engine,
-            step_resolver=default_resolver,
-            predicate_registry={"always": predicate_always},
-            checkpoint_every_n_steps=1,
-            max_workers=1,
-            cancel_requested=lambda _rid: req.is_cancel_requested(),
-            lane_message_event_sink=RunRegistryLaneMessageEventSink(
-                registry=req.registry,
-                run_id=req.run_id,
-            ),
-        )
         if runtime_kind == "async":
             runtime = AsyncWorkflowRuntime(
-                **runtime_kwargs,
+                workflow_engine=req.workflow_engine,
+                conversation_engine=req.conversation_engine,
+                step_resolver=default_resolver,
+                predicate_registry={"always": predicate_always},
+                checkpoint_every_n_steps=1,
+                max_workers=1,
+                cancel_requested=lambda _rid: req.is_cancel_requested(),
+                lane_message_event_sink=RunRegistryLaneMessageEventSink(
+                    registry=req.registry,
+                    run_id=req.run_id,
+                ),
                 experimental_native_scheduler=True,
             )
         else:
-            runtime = WorkflowRuntime(**runtime_kwargs)
+            runtime = WorkflowRuntime(
+                workflow_engine=req.workflow_engine,
+                conversation_engine=req.conversation_engine,
+                step_resolver=default_resolver,
+                predicate_registry={"always": predicate_always},
+                checkpoint_every_n_steps=1,
+                max_workers=1,
+                cancel_requested=lambda _rid: req.is_cancel_requested(),
+                lane_message_event_sink=RunRegistryLaneMessageEventSink(
+                    registry=req.registry,
+                    run_id=req.run_id,
+                ),
+            )
         kind = str(req.client_result.get("status") or "success")
         model_map = {
             "success": RunSuccess,
@@ -600,7 +627,9 @@ class _RunExecutionService(_BaseComponent):
             conversation_id=req.conversation_id,
             turn_node_id=req.turn_node_id,
         )
-        final_state = self._json_safe(dict(getattr(run_result, "final_state", {}) or {}))
+        final_state = self._json_object(
+            dict(getattr(run_result, "final_state", {}) or {})
+        )
         final_state.pop("_deps", None)
         return {
             "workflow_status": str(getattr(run_result, "status", "succeeded") or "succeeded"),
