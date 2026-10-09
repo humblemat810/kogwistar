@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import cast
 
@@ -18,7 +18,7 @@ class RouteComputation:
 
 def compute_route_next(
     *,
-    edges: list[object],
+    edges: Sequence[object],
     state: Mapping[str, object],
     last_result: object,
     fanout: bool,

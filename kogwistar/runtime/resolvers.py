@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import functools
 import warnings
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from kogwistar.utils.log import bind_log_context
 
@@ -156,7 +156,7 @@ class MappingStepResolver(BaseResolver):
                 import traceback
 
                 return RunFailure(
-                    conversation_node_id=ctx.state_view.get("workflow_node_id"),
+                    conversation_node_id=cast(str | None, ctx.state_view.get("workflow_node_id")),
                     state_update=[("a", {"op_log": str(e)})],
                     errors=[str(e), traceback.format_exc()],
                 )
@@ -358,7 +358,7 @@ class AsyncMappingStepResolver(MappingStepResolver):
                 import traceback
 
                 return RunFailure(
-                    conversation_node_id=ctx.state_view.get("workflow_node_id"),
+                    conversation_node_id=cast(str | None, ctx.state_view.get("workflow_node_id")),
                     state_update=[("a", {"op_log": str(e)})],
                     errors=[str(e), traceback.format_exc()],
                 )
