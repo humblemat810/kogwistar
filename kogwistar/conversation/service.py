@@ -144,7 +144,7 @@ class ConversationService:
         )
         return svc.orchestrator
 
-    def max_node_seq_present(self, conversation_id):
+    def max_node_seq_present(self, conversation_id: str) -> int:
         return self.conversation_engine.meta_sqlite.current_user_seq(conversation_id)
 
     def persist_workflow_cancel_request(
@@ -490,7 +490,9 @@ class ConversationService:
         )
         return str(conv_out), str(node_out)
 
-    def _get_last_seq_node(self, conversation_id, min_seq=None):
+    def _get_last_seq_node(
+        self, conversation_id: str, min_seq: int | None = None
+    ) -> ConversationNode | None:
         return get_last_seq_node(
             self.conversation_engine, conversation_id, min_seq=min_seq
         )
@@ -668,7 +670,7 @@ class ConversationService:
             cache_dir=cache_dir,
         )
 
-    def get_conversation(self, conversation_id):
+    def get_conversation(self, conversation_id: str) -> None:
         _ = conversation_id
         return None
 
@@ -676,7 +678,7 @@ class ConversationService:
         _ = conversation_id
         return "You are a helpful assistant. Answer the user using the conversation and any provided evidence."
 
-    def get_response_model(self, conversation_id) -> type[BaseModel]:
+    def get_response_model(self, conversation_id: str) -> type[BaseModel]:
         _ = conversation_id
         return ConversationAIResponse
 
@@ -692,7 +694,7 @@ class ConversationService:
         include_memory_context: bool = True,
         include_pinned_kg_refs: bool = True,
         ordering_strategy: str | None = None,
-    ):
+    ) -> PromptContext:
         """Assemble a token-budgeted prompt view from conversation context sources.
 
         The view is built from summaries, memory context, pinned KG references, and
@@ -907,7 +909,7 @@ class ConversationService:
             pinned_kg_ref_ids=pinned_kg_ref_ids,
         )
 
-    def make_conversation_span(self, conversation_id):
+    def make_conversation_span(self, conversation_id: str) -> Span:
         return Span.from_dummy_for_conversation(conversation_id)
 
     def persist_context_snapshot(
