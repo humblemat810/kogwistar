@@ -266,14 +266,14 @@ class Adjudicator(IAdjudicator):
                 memory.cache(_invoke_adjudicate_pair_task, ignore=["pair_task"]),
             )
             payload = cached_invoke(
-                pair_task,
+                pair_task=pair_task,
                 question=question,
                 left=left_payload,
                 right=right_payload,
             )
         else:
             payload = _invoke_adjudicate_pair_task(
-                pair_task,
+                pair_task=pair_task,
                 question=question,
                 left=left_payload,
                 right=right_payload,

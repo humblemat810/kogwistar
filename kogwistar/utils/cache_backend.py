@@ -8,6 +8,7 @@ The provider can be selected explicitly with ``KOGWISTAR_CACHE_BACKEND``.
 from __future__ import annotations
 
 import hashlib
+import inspect
 import os
 import pickle
 import sys
@@ -148,11 +149,28 @@ class _DiskCacheMemory:
         function: Callable[P, R] | None = None,
         **kwargs: Any,
     ) -> _FunctionWrapper[P, R] | Callable[[Callable[P, R]], _FunctionWrapper[P, R]]:
-        ignored = tuple(kwargs.get("ignore", ()))
-        memoize = self._cache.memoize(ignore=ignored)
+        requested_ignore = tuple(kwargs.get("ignore", ()))
 
         def decorate(fn: Callable[P, R]) -> _FunctionWrapper[P, R]:
-            return _FunctionWrapper(memoize(fn))
+            # Joblib accepts parameter names for positional arguments. DiskCache
+            # requires their positional indexes, so provide both forms where
+            # possible. Keeping names also preserves keyword-call behavior.
+            ignored: set[str | int] = set(requested_ignore)
+            try:
+                parameters = inspect.signature(fn).parameters.values()
+            except (TypeError, ValueError):
+                parameters = ()
+            positional_index = 0
+            for parameter in parameters:
+                if parameter.kind in (
+                    inspect.Parameter.POSITIONAL_ONLY,
+                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                ):
+                    if parameter.name in ignored:
+                        ignored.add(positional_index)
+                    positional_index += 1
+            memoize = self._cache.memoize(ignore=tuple(ignored))
+            return _FunctionWrapper(cast(Callable[P, R], memoize(fn)))
 
         return decorate(function) if function is not None else decorate
 
