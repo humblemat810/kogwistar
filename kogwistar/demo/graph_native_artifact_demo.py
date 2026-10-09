@@ -9,7 +9,8 @@ from typing import Any, cast
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.models import Grounding, MentionVerification, Node, Span
-from kogwistar.runtime import MappingStepResolver, StepContext, WorkflowRuntime
+from kogwistar.json_types import JsonValue
+from kogwistar.runtime import MappingStepResolver, RunResult, StepContext, WorkflowRuntime
 from kogwistar.runtime.models import RunSuccess, StateUpdate
 
 warnings.filterwarnings(
@@ -24,17 +25,17 @@ warnings.filterwarnings(
 )
 
 
-def _jsonable_copy(value: Any) -> Any:
-    return json.loads(json.dumps(value, default=str))
+def _jsonable_copy(value: object) -> JsonValue:
+    return cast(JsonValue, json.loads(json.dumps(value, default=str)))
 
 
-def _history_event(step: str, **payload: Any) -> dict[str, Any]:
+def _history_event(step: str, **payload: object) -> dict[str, Any]:
     event = {"step": step}
-    event.update(payload)
+    event.update(cast(dict[str, Any], payload))
     return event
 
 
-def _entity_to_dict(entity: Any) -> dict[str, Any]:
+def _entity_to_dict(entity: object) -> dict[str, Any]:
     metadata = dict(getattr(entity, "metadata", {}) or {})
     payload: dict[str, Any] = {
         "id": str(getattr(entity, "id", "")),
@@ -43,16 +44,16 @@ def _entity_to_dict(entity: Any) -> dict[str, Any]:
         "metadata": _jsonable_copy(metadata),
     }
     if hasattr(entity, "source_ids"):
-        payload["source_ids"] = list(entity.source_ids or [])
+        payload["source_ids"] = list(getattr(entity, "source_ids", []) or [])
     if hasattr(entity, "target_ids"):
-        payload["target_ids"] = list(entity.target_ids or [])
+        payload["target_ids"] = list(getattr(entity, "target_ids", []) or [])
     if hasattr(entity, "relation"):
         payload["relation"] = str(getattr(entity, "relation", ""))
     if hasattr(entity, "type"):
         payload["type"] = str(getattr(entity, "type", ""))
     if hasattr(entity, "mentions"):
         mentions = []
-        for grounding in list(entity.mentions or []):
+        for grounding in list(getattr(entity, "mentions", []) or []):
             spans = []
             for span in list(getattr(grounding, "spans", []) or []):
                 spans.append(
@@ -74,7 +75,7 @@ def _entity_to_dict(entity: Any) -> dict[str, Any]:
     return payload
 
 
-def _normalize_text(value: Any) -> str:
+def _normalize_text(value: object) -> str:
     return " ".join(str(value or "").strip().split())
 
 
@@ -355,12 +356,12 @@ class DemoGraphStore:
     """Minimal in-memory store used for the demo workflow graph and traces."""
 
     def __init__(self) -> None:
-        self._nodes: list[Any] = []
-        self._edges: list[Any] = []
+        self._nodes: list[object] = []
+        self._edges: list[object] = []
         self.read = self
         self.write = self
 
-    def add_node(self, node: Any) -> Any:
+    def add_node(self, node: object) -> object:
         node_id = self._entity_id(node)
         for idx, existing in enumerate(self._nodes):
             if self._entity_id(existing) == node_id:
@@ -369,7 +370,7 @@ class DemoGraphStore:
         self._nodes.append(node)
         return node
 
-    def add_edge(self, edge: Any) -> Any:
+    def add_edge(self, edge: object) -> object:
         edge_id = self._entity_id(edge)
         for idx, existing in enumerate(self._edges):
             if self._entity_id(existing) == edge_id:
@@ -379,17 +380,18 @@ class DemoGraphStore:
         return edge
 
     @staticmethod
-    def _metadata(entity: Any) -> dict[str, Any]:
+    def _metadata(entity: object) -> dict[str, Any]:
         metadata = getattr(entity, "metadata", None)
         return metadata if isinstance(metadata, dict) else {}
 
     @staticmethod
-    def _entity_id(entity: Any) -> str:
-        if hasattr(entity, "safe_get_id"):
-            return str(entity.safe_get_id())
+    def _entity_id(entity: object) -> str:
+        safe_get_id = getattr(entity, "safe_get_id", None)
+        if callable(safe_get_id):
+            return str(safe_get_id())
         return str(getattr(entity, "id", ""))
 
-    def _matches(self, entity: Any, where: dict[str, Any] | None) -> bool:
+    def _matches(self, entity: object, where: dict[str, Any] | None) -> bool:
         if where is None:
             return True
         if "$and" in where:
@@ -439,8 +441,8 @@ class DemoGraphStore:
         where: dict[str, Any] | None = None,
         limit: int = 5000,
         ids: Sequence[str] | None = None,
-        **_: Any,
-    ) -> list[Any]:
+        **_: object,
+    ) -> list[object]:
         return self._select(self._nodes, where=where, ids=ids, limit=limit)
 
     def get_edges(
@@ -448,8 +450,8 @@ class DemoGraphStore:
         where: dict[str, Any] | None = None,
         limit: int = 5000,
         ids: Sequence[str] | None = None,
-        **_: Any,
-    ) -> list[Any]:
+        **_: object,
+    ) -> list[object]:
         return self._select(self._edges, where=where, ids=ids, limit=limit)
 
 
@@ -565,15 +567,15 @@ def _collect_run_result(
     framework_name: str,
     step_order: list[str],
     transition_map: dict[str, dict[str, str]],
-    run_result: Any,
-    trace_sink: Any,
+    run_result: RunResult,
+    trace_sink: DemoGraphStore,
 ) -> dict[str, Any]:
     clean_state = {
         key: value
         for key, value in run_result.final_state.items()
         if key not in {"_deps", "_rt_join"}
     }
-    final_state = _jsonable_copy(clean_state)
+    final_state = cast(dict[str, Any], _jsonable_copy(clean_state))
 
     step_execs = trace_sink.get_nodes(
         where={
@@ -734,7 +736,7 @@ class GraphArtifactPipelineFramework:
         )
 
         @resolver.register("ingest")
-        def _ingest(ctx: StepContext):
+        def _ingest(ctx: StepContext) -> RunSuccess:
             raw_notes = _state_list(ctx, "raw_notes")
             deps = _state_deps(ctx)
             graph_store = cast(DemoGraphStore | None, deps.get("graph_store"))
@@ -768,7 +770,7 @@ class GraphArtifactPipelineFramework:
             )
 
         @resolver.register("validate")
-        def _validate(ctx: StepContext):
+        def _validate(ctx: StepContext) -> RunSuccess:
             notes = _state_list(ctx, "ingested_notes")
             errors: list[dict[str, Any]] = []
             seen_ids: set[str] = set()
@@ -806,7 +808,7 @@ class GraphArtifactPipelineFramework:
             return RunSuccess(conversation_node_id=None, state_update=state_update)
 
         @resolver.register("normalize")
-        def _normalize(ctx: StepContext):
+        def _normalize(ctx: StepContext) -> RunSuccess:
             deps = _state_deps(ctx)
             infer_topic = deps.get("infer_topic")
             infer_topic_judgment = deps.get("infer_topic_judgment")
@@ -859,7 +861,7 @@ class GraphArtifactPipelineFramework:
             )
 
         @resolver.register("link")
-        def _link(ctx: StepContext):
+        def _link(ctx: StepContext) -> RunSuccess:
             deps = _state_deps(ctx)
             link_notes = deps.get("link_notes")
             normalized = _state_list(ctx, "normalized_notes")
@@ -879,7 +881,7 @@ class GraphArtifactPipelineFramework:
             )
 
         @resolver.register("commit")
-        def _commit(ctx: StepContext):
+        def _commit(ctx: StepContext) -> RunSuccess:
             nodes = _state_list(ctx, "normalized_notes")
             edges = _state_list(ctx, "draft_edges")
             deps = _state_deps(ctx)
@@ -940,7 +942,7 @@ class GraphArtifactPipelineFramework:
             )
 
         @resolver.register("end")
-        def _end(ctx: StepContext):
+        def _end(ctx: StepContext) -> RunSuccess:
             final_status = str(ctx.state_view.get("final_status") or "blocked")
             event = _history_event("end", final_status=final_status)
             return RunSuccess(
@@ -1115,7 +1117,7 @@ class NoteGraphCuratorAgent:
 
     def run(
         self,
-        framework: Any | None = None,
+        framework: GraphArtifactPipelineFramework | None = None,
         *,
         graph_store: DemoGraphStore | None = None,
         conversation_id: str = "demo-conversation",
@@ -1143,7 +1145,7 @@ def run_graph_native_artifact_demo(
     return agent.run()
 
 
-def _result_json_dict(step_node: Any) -> dict[str, Any]:
+def _result_json_dict(step_node: object) -> dict[str, Any]:
     metadata = dict(getattr(step_node, "metadata", {}) or {})
     raw = metadata.get("result_json")
     if isinstance(raw, dict):
