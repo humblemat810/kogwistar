@@ -75,11 +75,11 @@ class ToolRunner:
     def join_tool_node_to_turn(
         self,
         orchestrator: ConversationOrchestrator,
-        conversation_id,
-        call_node,
-        turn_node_id,
-        prev_turn_meta_summary,
-    ):
+        conversation_id: str,
+        call_node: ConversationNode,
+        turn_node_id: str,
+        prev_turn_meta_summary: MetaFromLastSummary,
+    ) -> None:
         orchestrator.join_tool_node_to_turn(
             conversation_id,
             call_node.safe_get_id(),
