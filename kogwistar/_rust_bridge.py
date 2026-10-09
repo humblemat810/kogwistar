@@ -6,8 +6,47 @@ import os
 import sys
 import uuid
 from importlib import import_module
-from types import ModuleType
-from typing import Any
+from typing import Any, Protocol, TypeVar, cast
+
+from kogwistar.json_types import JsonObject, JsonValue
+
+
+class RustExtensionLike(Protocol):
+    """JSON-string ABI exposed by the optional native extension.
+
+    Keeping this protocol at the dynamic-import boundary gives the Python
+    adapters a checked contract without importing or depending on PyO3 types.
+    """
+
+    def api_health(self, payload: str) -> str: ...
+    def api_authorize(self, payload: str) -> str: ...
+    def api_sse_frame(self, payload: str) -> str: ...
+    def api_mcp_result(self, payload: str) -> str: ...
+    def api_cli_health(self, payload: str) -> str: ...
+    def store_sqlite_json(self, payload: str) -> str: ...
+    def store_postgres_json(self, payload: str) -> str: ...
+    def store_memory_read_json(self, payload: str) -> str: ...
+    def stable_id_json(self, payload: str) -> str: ...
+    def canonical_json(self, payload: str) -> str: ...
+    def evidence_pack_digest_hash(self, payload: str) -> str: ...
+    def metadata_filter_matches(self, payload: str) -> str: ...
+    def short_id_transform(self, payload: str) -> str: ...
+    def apply_state_update(self, payload: str) -> str: ...
+    def workflow_may_reach_join(self, payload: str) -> str: ...
+    def workflow_terminal_reachable(self, payload: str) -> str: ...
+    def runtime_select_route(self, payload: str) -> str: ...
+    def runtime_plan_successors(self, payload: str) -> str: ...
+    def runtime_apply_join_arrival(self, payload: str) -> str: ...
+    def runtime_decide_retry(self, payload: str) -> str: ...
+    def runtime_plan_nested_invocation(self, payload: str) -> str: ...
+    def runtime_decide_dispatch(self, payload: str) -> str: ...
+    def runtime_decide_budget_suspend(self, payload: str) -> str: ...
+    def runtime_scheduler_tick(self, payload: str) -> str: ...
+    def canonical_entity_event(self, payload: str) -> str: ...
+    def replay_entity_events(self, payload: str) -> str: ...
+
+
+_T = TypeVar("_T")
 
 
 class RustExtensionUnavailableError(RuntimeError):
@@ -30,10 +69,10 @@ def _exception_code(exc: BaseException) -> str | None:
 def store_sqlite(
     *,
     path: str | os.PathLike[str],
-    operation: dict[str, Any],
+    operation: JsonObject,
     transaction_id: str | None = None,
     reuse_session: bool = False,
-) -> Any:
+) -> JsonValue:
     """Execute stable Phase-3 SQLite JSON ABI against actual database path.
 
     This is an explicit test/integration bridge. It does not select an authority
@@ -111,9 +150,9 @@ def store_postgres(
     *,
     dsn: str | None = None,
     schema: str,
-    operation: dict[str, Any],
+    operation: JsonObject,
     transaction_id: str | None = None,
-) -> Any:
+) -> JsonValue:
     """Execute Phase-3 PostgreSQL JSON ABI through native Tokio/Postgres store.
 
     This explicit integration bridge does not select an implementation mode or
@@ -213,7 +252,7 @@ def server_implementation_mode() -> str:
     return mode
 
 
-def api_health(*, payload: dict[str, Any], python_value: dict[str, Any]) -> dict[str, Any]:
+def api_health(*, payload: JsonObject, python_value: JsonObject) -> JsonObject:
     """Select Rust health contract while Python transport remains compatible."""
     if server_implementation_mode() == "python":
         return python_value
@@ -225,7 +264,7 @@ def api_health(*, payload: dict[str, Any], python_value: dict[str, Any]) -> dict
     )
     if not isinstance(rust_value, dict):
         raise RuntimeError("native health response returned non-object JSON")
-    return rust_value
+    return cast(JsonObject, rust_value)
 
 
 def api_authorize(*, roles: list[str], required_roles: list[str]) -> bool:
@@ -241,7 +280,9 @@ def api_authorize(*, roles: list[str], required_roles: list[str]) -> bool:
     return bool(value["allowed"])
 
 
-def api_sse_frame(*, event: str, data: Any, event_id: str | None = None) -> str:
+def api_sse_frame(
+    *, event: str, data: JsonValue, event_id: str | None = None
+) -> str:
     extension = _load_extension()
     return str(
         extension.api_sse_frame(
@@ -254,7 +295,7 @@ def api_sse_frame(*, event: str, data: Any, event_id: str | None = None) -> str:
     )
 
 
-def api_mcp_result(*, request_id: Any, result: Any) -> dict[str, Any]:
+def api_mcp_result(*, request_id: JsonValue, result: JsonValue) -> JsonObject:
     extension = _load_extension()
     value = json.loads(
         extension.api_mcp_result(
@@ -267,10 +308,10 @@ def api_mcp_result(*, request_id: Any, result: Any) -> dict[str, Any]:
     )
     if not isinstance(value, dict):
         raise RuntimeError("native MCP result returned non-object JSON")
-    return value
+    return cast(JsonObject, value)
 
 
-def api_cli_health(*, payload: dict[str, Any]) -> str:
+def api_cli_health(*, payload: JsonObject) -> str:
     extension = _load_extension()
     return str(
         extension.api_cli_health(
@@ -279,9 +320,9 @@ def api_cli_health(*, payload: dict[str, Any]) -> str:
     )
 
 
-def _load_extension() -> ModuleType:
+def _load_extension() -> RustExtensionLike:
     try:
-        return import_module("kogwistar._rust")
+        return cast(RustExtensionLike, import_module("kogwistar._rust"))
     except ImportError as exc:
         raise RustExtensionUnavailableError(
             "Rust contract mode requires the kogwistar._rust extension. "
@@ -289,7 +330,9 @@ def _load_extension() -> ModuleType:
         ) from exc
 
 
-def _select(*, operation: str, python_value: Any, rust_value: Any, mode: str) -> Any:
+def _select(
+    *, operation: str, python_value: _T, rust_value: _T, mode: str
+) -> _T:
     if mode == "shadow":
         if rust_value != python_value:
             raise RustParityError(
@@ -300,18 +343,18 @@ def _select(*, operation: str, python_value: Any, rust_value: Any, mode: str) ->
     return rust_value
 
 
-def _store_values_equal(python_value: Any, rust_value: Any) -> bool:
+def _store_values_equal(python_value: JsonValue, rust_value: JsonValue) -> bool:
     """Compare JSON-only store reads without erasing list order or shape."""
     if isinstance(python_value, float) and isinstance(rust_value, float):
         return math.isclose(python_value, rust_value, rel_tol=1e-6, abs_tol=1e-6)
     if type(python_value) is not type(rust_value):
         return False
-    if isinstance(python_value, list):
+    if isinstance(python_value, list) and isinstance(rust_value, list):
         return len(python_value) == len(rust_value) and all(
             _store_values_equal(left, right)
             for left, right in zip(python_value, rust_value, strict=True)
         )
-    if isinstance(python_value, dict):
+    if isinstance(python_value, dict) and isinstance(rust_value, dict):
         return python_value.keys() == rust_value.keys() and all(
             _store_values_equal(python_value[key], rust_value[key]) for key in python_value
         )
@@ -320,9 +363,9 @@ def _store_values_equal(python_value: Any, rust_value: Any) -> bool:
 
 def store_memory_read(
     *,
-    snapshot: dict[str, Any],
-    operation: dict[str, Any],
-    python_value: Any = _MISSING_PYTHON_RESULT,
+    snapshot: JsonObject,
+    operation: JsonObject,
+    python_value: JsonValue | object = _MISSING_PYTHON_RESULT,
     store: str = "graph",
 ) -> Any:
     """Inspect isolated native store built from immutable JSON snapshot.
@@ -340,7 +383,7 @@ def store_memory_read(
     if mode == "python":
         if python_value is _MISSING_PYTHON_RESULT:
             raise RuntimeError("Python store mode requires caller-computed Python result")
-        return python_value
+        return cast(JsonValue, python_value)
     extension = _load_extension()
     rust_value = json.loads(
         extension.store_memory_read_json(
@@ -352,18 +395,19 @@ def store_memory_read(
         )
     )
     if mode == "rust":
-        return rust_value
+        return cast(JsonValue, rust_value)
     if python_value is _MISSING_PYTHON_RESULT:
         raise RuntimeError("Shadow store mode requires caller-computed Python result")
-    if not _store_values_equal(python_value, rust_value):
+    python_result = cast(JsonValue, python_value)
+    if not _store_values_equal(python_result, rust_value):
         raise RustParityError(
             f"Rust parity mismatch for {store}_store_memory_read: "
-            f"python={python_value!r}, rust={rust_value!r}"
+            f"python={python_result!r}, rust={rust_value!r}"
         )
-    return python_value
+    return python_result
 
 
-def metadata_filter_json_contract_compatible(value: Any) -> bool:
+def metadata_filter_json_contract_compatible(value: object) -> bool:
     """Whether a value retains its Python filter semantics through JSON."""
     if value is None or isinstance(value, (str, bool, int)):
         return True
@@ -380,7 +424,7 @@ def metadata_filter_json_contract_compatible(value: Any) -> bool:
 
 
 def contract_stable_id(
-    *, kind: str, parts: tuple[Any, ...], python_value: uuid.UUID
+    *, kind: str, parts: tuple[JsonValue, ...], python_value: uuid.UUID
 ) -> uuid.UUID:
     mode = contract_implementation_mode()
     if mode == "python":
@@ -398,7 +442,7 @@ def contract_stable_id(
     )
 
 
-def contract_canonical_json(*, value: Any, python_value: str) -> str:
+def contract_canonical_json(*, value: JsonValue, python_value: str) -> str:
     mode = contract_implementation_mode()
     if mode == "python":
         return python_value
@@ -414,7 +458,7 @@ def contract_canonical_json(*, value: Any, python_value: str) -> str:
 
 
 def contract_evidence_pack_digest_hash(
-    *, value: dict[str, Any], python_value: str
+    *, value: JsonObject, python_value: str
 ) -> str:
     mode = contract_implementation_mode()
     if mode == "python":
@@ -436,7 +480,7 @@ def contract_evidence_pack_digest_hash(
 
 
 def contract_metadata_filter_matches(
-    *, metadata: dict[str, Any], where: Any, python_value: bool | None = None
+    *, metadata: JsonObject, where: JsonValue, python_value: bool | None = None
 ) -> bool:
     """Run native metadata filtering only after Python oracle has completed.
 
@@ -472,7 +516,9 @@ def json_contract_compatible(value: Any) -> bool:
     return metadata_filter_json_contract_compatible(value)
 
 
-def short_id_transform(*, payload: dict[str, Any], python_value: Any | None = None) -> Any:
+def short_id_transform(
+    *, payload: JsonObject, python_value: JsonValue | None = None
+) -> JsonValue | None:
     """Select native JSON short-ID transform; callers retain persistence ownership."""
     mode = contract_implementation_mode()
     if mode == "python":
@@ -496,8 +542,8 @@ def short_id_transform(*, payload: dict[str, Any], python_value: Any | None = No
 
 
 def runtime_apply_state_update(
-    *, payload: dict[str, Any], python_value: Any | None = None
-) -> Any:
+    *, payload: JsonObject, python_value: JsonValue | None = None
+) -> JsonValue | None:
     """Select native JSON state fold. Python caller owns object mutation."""
     mode = runtime_implementation_mode()
     if mode == "python":
@@ -605,8 +651,8 @@ def runtime_select_route(*, payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def runtime_plan_successors(
-    *, payload: dict[str, Any], python_value: dict[str, Any] | None = None
-) -> dict[str, Any]:
+    *, payload: JsonObject, python_value: JsonObject | None = None
+) -> JsonObject:
     """Plan continuation/fan-out tokens and join obligations in Rust."""
     mode = runtime_implementation_mode()
     if mode == "python":
@@ -626,10 +672,13 @@ def runtime_plan_successors(
     if python_value is None:
         raise RuntimeError("Shadow successor planning requires Python result")
 
-    def normalized(value: dict[str, Any]) -> dict[str, Any]:
-        value = json.loads(json.dumps(value))
-        for token in value.get("tokens", []):
-            if token.get("spawned"):
+    def normalized(value: JsonObject) -> JsonObject:
+        value = cast(JsonObject, json.loads(json.dumps(value)))
+        tokens = value.get("tokens")
+        if not isinstance(tokens, list):
+            return value
+        for token in tokens:
+            if isinstance(token, dict) and token.get("spawned"):
                 token["token_id"] = "<spawned>"
         return value
 
@@ -641,7 +690,7 @@ def runtime_plan_successors(
     return python_value
 
 
-def runtime_apply_join_arrival(*, payload: dict[str, Any]) -> dict[str, Any]:
+def runtime_apply_join_arrival(*, payload: JsonObject) -> JsonObject:
     """Apply one join arrival/release transition in Rust."""
     extension = _load_extension()
     value = json.loads(
@@ -655,8 +704,8 @@ def runtime_apply_join_arrival(*, payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def runtime_decide_retry(
-    *, payload: dict[str, Any], python_value: dict[str, Any]
-) -> dict[str, Any]:
+    *, payload: JsonObject, python_value: JsonObject
+) -> JsonObject:
     """Select pure retry policy without invoking provider callbacks."""
     mode = runtime_implementation_mode()
     if mode == "python":
@@ -678,8 +727,8 @@ def runtime_decide_retry(
 
 
 def runtime_plan_nested_invocation(
-    *, payload: dict[str, Any], python_value: dict[str, Any]
-) -> dict[str, Any]:
+    *, payload: JsonObject, python_value: JsonObject
+) -> JsonObject:
     """Select pure child-run identity and inherited invocation context."""
     mode = runtime_implementation_mode()
     if mode == "python":
@@ -701,8 +750,8 @@ def runtime_plan_nested_invocation(
 
 
 def runtime_decide_dispatch(
-    *, payload: dict[str, Any], python_value: dict[str, Any]
-) -> dict[str, Any]:
+    *, payload: JsonObject, python_value: JsonObject
+) -> JsonObject:
     """Select pure worker-capacity and cancellation dispatch policy."""
     mode = runtime_implementation_mode()
     if mode == "python":
@@ -724,8 +773,8 @@ def runtime_decide_dispatch(
 
 
 def runtime_decide_budget_suspend(
-    *, payload: dict[str, Any], python_value: dict[str, Any]
-) -> dict[str, Any]:
+    *, payload: JsonObject, python_value: JsonObject
+) -> JsonObject:
     """Select durable budget suspension policy after authoritative debits."""
     mode = runtime_implementation_mode()
     if mode == "python":
@@ -747,8 +796,8 @@ def runtime_decide_budget_suspend(
 
 
 def runtime_scheduler_tick(
-    *, payload: dict[str, Any], python_value: dict[str, Any]
-) -> dict[str, Any]:
+    *, payload: JsonObject, python_value: JsonObject
+) -> JsonObject:
     """Select one scheduler control tick; caller only executes returned effects."""
     mode = runtime_implementation_mode()
     if mode == "python":
@@ -769,7 +818,7 @@ def runtime_scheduler_tick(
     )
 
 
-def contract_canonical_entity_event(*, payload: dict[str, Any], python_value: str) -> str:
+def contract_canonical_entity_event(*, payload: JsonObject, python_value: str) -> str:
     """Internal entity-event contract adapter; no second public Python model."""
     mode = contract_implementation_mode()
     if mode == "python":
@@ -788,7 +837,7 @@ def contract_canonical_entity_event(*, payload: dict[str, Any], python_value: st
     )
 
 
-def contract_replay_entity_events(*, payload: dict[str, Any], python_value: str) -> str:
+def contract_replay_entity_events(*, payload: JsonObject, python_value: str) -> str:
     """Internal event replay contract adapter; no event-store ownership change."""
     mode = contract_implementation_mode()
     if mode == "python":
