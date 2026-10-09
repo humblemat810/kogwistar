@@ -6,6 +6,7 @@ import json
 import pathlib
 import re
 from collections.abc import Iterable
+from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any
 
@@ -13,15 +14,20 @@ from ._rust_bridge import (
     RustParityError,
     contract_implementation_mode,
     json_contract_compatible,
-)
-from ._rust_bridge import (
     short_id_transform as _rust_short_id_transform,
 )
 
+
+class NativeTransformError(ValueError):
+    """ValueError carrying an optional machine-readable native error code."""
+
+    code: str | None
+
+    def __init__(self, message: str, *, code: str | None = None) -> None:
+        super().__init__(message)
+        self.code = code
 # Run-id handling (prototype: run_id == raw JWT)
 run_id_ctx: ContextVar[str] = ContextVar("run_id", default="anonymous")
-
-from contextlib import contextmanager
 
 
 def token_to_run_id(jwt_token: str) -> str:
@@ -118,9 +124,10 @@ class ShortIdMapper:
         except ValueError as exc:
             # Preserve legacy public exception class/message; code remains usable
             # for callers that opt into machine-readable native diagnostics.
-            error = ValueError(str(exc))
-            error.code = getattr(exc, "code", None)
-            raise error from None
+            code = getattr(exc, "code", None)
+            raise NativeTransformError(
+                str(exc), code=code if isinstance(code, str) else None
+            ) from None
         self.state = result["state"]
         self._save()
         return result["value"]

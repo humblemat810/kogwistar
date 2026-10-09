@@ -9,7 +9,7 @@ import traceback
 from contextlib import closing
 
 
-def safe_format_exception(exc: Exception, base_path: str = None):
+def safe_format_exception(exc: Exception, base_path: str | None = None) -> str:
     """Format exception with paths relative to project root."""
     if base_path is None:
         base_path = os.getcwd()  # default to current working directory
@@ -86,7 +86,8 @@ class SQLiteHandler(logging.Handler):
             # Ensure the record is formatted to populate all fields
             self.format(record)
             # Format the timestamp using the formatter
-            timestamp = self.formatter.formatTime(record)
+            formatter = self.formatter or logging.Formatter()
+            timestamp = formatter.formatTime(record)
             # with self.lock:
             with sqlite3.connect(self.db_path, timeout=10) as conn:
                 with closing(conn.cursor()) as cursor:
