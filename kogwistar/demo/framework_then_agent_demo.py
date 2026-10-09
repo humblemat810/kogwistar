@@ -5,7 +5,7 @@ import json
 import warnings
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, cast
+from typing import Any, Protocol, cast
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.runtime import MappingStepResolver, StepContext, WorkflowRuntime
@@ -26,6 +26,38 @@ warnings.filterwarnings(
 JsonValue = Any
 
 
+class _DemoRunResult(Protocol):
+    @property
+    def final_state(self) -> Mapping[str, object]: ...
+
+    @property
+    def run_id(self) -> str: ...
+
+    @property
+    def status(self) -> object: ...
+
+
+class _TraceStore(Protocol):
+    def get_nodes(
+        self,
+        where: dict[str, Any] | None = None,
+        limit: int = 5000,
+        ids: Sequence[str] | None = None,
+        **kwargs: object,
+    ) -> list[object]: ...
+
+
+class _WorkflowFramework(Protocol):
+    workflow_id: str
+
+    @property
+    def step_order(self) -> Sequence[str]: ...
+
+    def build_runtime(self) -> tuple[WorkflowRuntime, DemoGraphStore, DemoGraphStore]: ...
+
+    def transition_summary(self) -> dict[str, dict[str, str]]: ...
+
+
 def _state_deps(ctx: StepContext) -> dict[str, Any]:
     value = ctx.state_view.get("_deps")
     return dict(value) if isinstance(value, Mapping) else {}
@@ -41,12 +73,12 @@ def _state_note(ctx: StepContext, key: str = "current_note") -> Mapping[str, Any
     return value if isinstance(value, Mapping) else None
 
 
-def _jsonable_copy(value: Any) -> Any:
+def _jsonable_copy(value: object) -> object:
     return json.loads(json.dumps(value, default=str))
 
 
-def _history_event(step: str, **payload: Any) -> dict[str, Any]:
-    event = {"step": step}
+def _history_event(step: str, **payload: object) -> dict[str, object]:
+    event: dict[str, object] = {"step": step}
     event.update(payload)
     return event
 
@@ -65,15 +97,15 @@ def _collect_run_result(
     framework_name: str,
     step_order: list[str],
     transition_map: dict[str, dict[str, str]],
-    run_result: Any,
-    trace_sink: Any,
+    run_result: _DemoRunResult,
+    trace_sink: _TraceStore,
 ) -> dict[str, Any]:
     clean_state = {
         key: value
         for key, value in run_result.final_state.items()
         if key not in {"_deps", "_rt_join"}
     }
-    final_state = _jsonable_copy(clean_state)
+    final_state = cast(dict[str, Any], _jsonable_copy(clean_state))
 
     step_execs = trace_sink.get_nodes(
         where={
@@ -180,31 +212,32 @@ class DemoGraphStore:
     """Tiny in-memory graph store used for workflow design and runtime traces."""
 
     def __init__(self) -> None:
-        self._nodes: list[Any] = []
-        self._edges: list[Any] = []
+        self._nodes: list[object] = []
+        self._edges: list[object] = []
         self.read = self
         self.write = self
 
-    def add_node(self, node: Any) -> Any:
+    def add_node(self, node: object) -> object:
         self._nodes.append(node)
         return node
 
-    def add_edge(self, edge: Any) -> Any:
+    def add_edge(self, edge: object) -> object:
         self._edges.append(edge)
         return edge
 
     @staticmethod
-    def _metadata(entity: Any) -> dict[str, Any]:
+    def _metadata(entity: object) -> dict[str, Any]:
         metadata = getattr(entity, "metadata", None)
         return metadata if isinstance(metadata, dict) else {}
 
     @staticmethod
-    def _entity_id(entity: Any) -> str:
-        if hasattr(entity, "safe_get_id"):
-            return str(entity.safe_get_id())
+    def _entity_id(entity: object) -> str:
+        getter = getattr(entity, "safe_get_id", None)
+        if callable(getter):
+            return str(getter())
         return str(getattr(entity, "id", ""))
 
-    def _matches(self, entity: Any, where: dict[str, Any] | None) -> bool:
+    def _matches(self, entity: object, where: dict[str, Any] | None) -> bool:
         if where is None:
             return True
         if "$and" in where:
@@ -235,12 +268,12 @@ class DemoGraphStore:
 
     def _select(
         self,
-        entities: list[Any],
+        entities: list[object],
         *,
         where: dict[str, Any] | None = None,
         ids: Sequence[str] | None = None,
         limit: int = 5000,
-    ) -> list[Any]:
+    ) -> list[object]:
         selected = list(entities)
         if ids is not None:
             wanted = {str(item) for item in ids}
@@ -254,8 +287,8 @@ class DemoGraphStore:
         where: dict[str, Any] | None = None,
         limit: int = 5000,
         ids: Sequence[str] | None = None,
-        **_: Any,
-    ) -> list[Any]:
+        **_: object,
+    ) -> list[object]:
         return self._select(self._nodes, where=where, ids=ids, limit=limit)
 
     def get_edges(
@@ -263,8 +296,8 @@ class DemoGraphStore:
         where: dict[str, Any] | None = None,
         limit: int = 5000,
         ids: Sequence[str] | None = None,
-        **_: Any,
-    ) -> list[Any]:
+        **_: object,
+    ) -> list[object]:
         return self._select(self._edges, where=where, ids=ids, limit=limit)
 
 
@@ -418,7 +451,7 @@ class PlanActObserveFramework:
         )
 
         @resolver.register("plan")
-        def _plan(ctx: StepContext):
+        def _plan(ctx: StepContext) -> RunSuccess:
             pending = _state_list(ctx, "pending_notes")
             next_note = dict(pending[0]) if pending else None
             event = _history_event(
@@ -444,7 +477,7 @@ class PlanActObserveFramework:
             )
 
         @resolver.register("approve")
-        def _approve(ctx: StepContext):
+        def _approve(ctx: StepContext) -> RunSuccess:
             deps = _state_deps(ctx)
             note = _state_note(ctx)
             approval_policy = deps.get("approval_policy")
@@ -470,7 +503,7 @@ class PlanActObserveFramework:
             )
 
         @resolver.register("act")
-        def _act(ctx: StepContext):
+        def _act(ctx: StepContext) -> RunSuccess:
             deps = _state_deps(ctx)
             note = _state_note(ctx)
             classify_note = deps.get("classify_note")
@@ -508,7 +541,7 @@ class PlanActObserveFramework:
             )
 
         @resolver.register("observe")
-        def _observe(ctx: StepContext):
+        def _observe(ctx: StepContext) -> RunSuccess:
             pending = _state_list(ctx, "pending_notes")
             event = _history_event("observe", remaining_count=len(pending))
             return RunSuccess(
@@ -519,7 +552,7 @@ class PlanActObserveFramework:
             )
 
         @resolver.register("end")
-        def _end(ctx: StepContext):
+        def _end(ctx: StepContext) -> RunSuccess:
             blocked = bool(ctx.state_view.get("blocked"))
             pending = _state_list(ctx, "pending_notes")
             completed = (not blocked) and len(pending) == 0
@@ -648,7 +681,7 @@ class PlanActObserveNoApprovalFramework(PlanActObserveFramework):
         )
 
         @resolver.register("plan")
-        def _plan(ctx: StepContext):
+        def _plan(ctx: StepContext) -> RunSuccess:
             pending = _state_list(ctx, "pending_notes")
             next_note = dict(pending[0]) if pending else None
             event = _history_event(
@@ -674,7 +707,7 @@ class PlanActObserveNoApprovalFramework(PlanActObserveFramework):
             )
 
         @resolver.register("act")
-        def _act(ctx: StepContext):
+        def _act(ctx: StepContext) -> RunSuccess:
             deps = _state_deps(ctx)
             note = _state_note(ctx)
             classify_note = deps.get("classify_note")
@@ -708,7 +741,7 @@ class PlanActObserveNoApprovalFramework(PlanActObserveFramework):
             )
 
         @resolver.register("observe")
-        def _observe(ctx: StepContext):
+        def _observe(ctx: StepContext) -> RunSuccess:
             pending = _state_list(ctx, "pending_notes")
             event = _history_event("observe", remaining_count=len(pending))
             return RunSuccess(
@@ -717,7 +750,7 @@ class PlanActObserveNoApprovalFramework(PlanActObserveFramework):
             )
 
         @resolver.register("end")
-        def _end(ctx: StepContext):
+        def _end(ctx: StepContext) -> RunSuccess:
             pending = _state_list(ctx, "pending_notes")
             completed = len(pending) == 0
             event = _history_event("end", final_status="completed")
@@ -850,7 +883,7 @@ class BatchClassifyThenApplyFramework:
         )
 
         @resolver.register("collect")
-        def _collect(ctx: StepContext):
+        def _collect(ctx: StepContext) -> RunSuccess:
             notes = [dict(note) for note in adapter.batch_notes()]
             event = _history_event("collect", note_count=len(notes))
             return RunSuccess(
@@ -862,7 +895,7 @@ class BatchClassifyThenApplyFramework:
             )
 
         @resolver.register("classify_batch")
-        def _classify(ctx: StepContext):
+        def _classify(ctx: StepContext) -> RunSuccess:
             notes = _state_list(ctx, "batch_notes")
             plan = adapter.classify_batch(notes)
             event = _history_event("classify_batch", plan_count=len(plan))
@@ -875,7 +908,7 @@ class BatchClassifyThenApplyFramework:
             )
 
         @resolver.register("apply_batch")
-        def _apply(ctx: StepContext):
+        def _apply(ctx: StepContext) -> RunSuccess:
             plan = _state_list(ctx, "classification_plan")
             applied = adapter.apply_batch(plan)
             event = _history_event("apply_batch", applied_count=len(applied))
@@ -897,7 +930,7 @@ class BatchClassifyThenApplyFramework:
             )
 
         @resolver.register("end")
-        def _end(ctx: StepContext):
+        def _end(ctx: StepContext) -> RunSuccess:
             event = _history_event(
                 "end",
                 final_status=str(ctx.state_view.get("final_status") or "completed"),
@@ -1030,7 +1063,7 @@ class MockNotesOrganizerAgent:
             "staged_moves": [],
         }
 
-    def run(self, framework: Any | None = None) -> dict[str, Any]:
+    def run(self, framework: _WorkflowFramework | None = None) -> dict[str, Any]:
         active_framework = self.framework if framework is None else framework
         if active_framework is None:
             raise RuntimeError("demo framework is required")
