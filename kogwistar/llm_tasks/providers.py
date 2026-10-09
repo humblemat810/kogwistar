@@ -10,7 +10,7 @@ import json
 import urllib.error
 import urllib.request
 from collections.abc import Mapping
-from typing import Protocol, Self, TypeVar, runtime_checkable
+from typing import Any, Protocol, Self, TypeVar, cast, runtime_checkable
 
 from kogwistar.json_types import JsonValue
 
@@ -41,10 +41,11 @@ class StructuredOutputRunnable(Protocol[TStructuredModel_co]):
 class SupportsStructuredOutput(Protocol):
     def with_structured_output(
         self,
-        schema: type[TStructuredModel],
-        include_raw: bool = True,
-        **kwargs: object,
-    ) -> StructuredOutputRunnable[TStructuredModel]: ...
+        schema: type[TStructuredModel] | dict[str, Any],
+        *,
+        include_raw: bool = False,
+        **kwargs: Any,
+    ) -> object: ...
 
 
 class StructuredBridgeChatModel:
@@ -169,7 +170,11 @@ class _ProviderChainResponse:
         last_error: Exception | None = None
         for index, (provider, model) in enumerate(self.models):
             try:
-                result = model.with_structured_output(self.schema, include_raw=True).invoke(messages, config=config)
+                runnable = cast(
+                    StructuredOutputRunnable[StructuredModelLike],
+                    model.with_structured_output(self.schema, include_raw=True),
+                )
+                result = runnable.invoke(messages, config=config)
                 if not isinstance(result, dict):
                     raise TypeError(f"{provider} returned an invalid structured result")
                 result = dict(result)

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TypeVar
+from typing import TypeVar, cast
 
 from .llm_tasks.providers import (
     StructuredModelLike,
@@ -29,11 +29,17 @@ def build_structured_output_runnable(
     for attempt_include_raw, method in attempts:
         try:
             if method is None:
-                return model.with_structured_output(
-                    schema, include_raw=attempt_include_raw
+                return cast(
+                    StructuredOutputRunnable[TStructuredModel],
+                    model.with_structured_output(
+                        schema, include_raw=attempt_include_raw
+                    ),
                 )
-            return model.with_structured_output(
-                schema, include_raw=attempt_include_raw, method=method
+            return cast(
+                StructuredOutputRunnable[TStructuredModel],
+                model.with_structured_output(
+                    schema, include_raw=attempt_include_raw, method=method
+                ),
             )
         except (TypeError, ValueError) as exc:
             last_error = exc
