@@ -171,8 +171,8 @@ class AliasBook:
         self, node_ids: list[str], edge_ids: list[str]
     ) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
         """Return only (real_id, alias) pairs that are NEW since last turn."""
-        new_nodes: list[tuple[str, str]] = []
-        new_edges: list[tuple[str, str]] = []
+        new_nodes: list[str] = []
+        new_edges: list[str] = []
         with self._lock:
             new_nodes = [rid for rid in node_ids if rid not in self._node_real_to_alias]
             new_edges = [rid for rid in edge_ids if rid not in self._edge_real_to_alias]

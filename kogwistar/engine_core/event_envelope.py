@@ -6,6 +6,12 @@ from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 
 
+def _as_int(value: object) -> int:
+    if isinstance(value, (int, float, str)):
+        return int(value)
+    raise ValueError(f"expected an integer-compatible value, got {type(value).__name__}")
+
+
 @dataclass(frozen=True, slots=True)
 class EntityEventEnvelope:
     """The immutable, portable embedding of one authoritative event."""
@@ -26,11 +32,11 @@ class EntityEventEnvelope:
     def from_mapping(cls, value: Mapping[str, object]) -> EntityEventEnvelope:
         return cls(
             namespace=str(value["namespace"]),
-            seq=int(value["seq"]),
+            seq=_as_int(value["seq"]),
             event_id=str(value["event_id"]),
             entity_kind=str(value["entity_kind"]),
             entity_id=str(value["entity_id"]),
             op=str(value["op"]),
             payload_json=str(value["payload_json"]),
-            created_at=int(value["created_at"]),
+            created_at=_as_int(value["created_at"]),
         )
