@@ -14,6 +14,7 @@ if TYPE_CHECKING:
 
 
 BatchApply = Callable[[list[object]], dict[str, BaseException | None]]
+MetaCallback = Callable[..., object] | None
 
 
 @dataclass
@@ -160,10 +161,27 @@ class IndexJobWorker:
         return metrics
 
     @staticmethod
-    def _job_value(job: object, name: str):
+    def _job_value(job: object, name: str) -> object:
         if isinstance(job, dict):
             return job.get(name)
         return getattr(job, name, None)
+
+    @staticmethod
+    def _optional_text(value: object) -> str | None:
+        return value if isinstance(value, str) else None
+
+    @staticmethod
+    def _as_int(value: object, default: int) -> int:
+        if isinstance(value, bool):
+            return int(value)
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str):
+            try:
+                return int(value)
+            except ValueError:
+                return default
+        return default
 
     @staticmethod
     def _decode_payload(payload_json: object) -> dict[str, object]:
@@ -184,9 +202,9 @@ class IndexJobWorker:
         batch_results: dict[str, BaseException | None] | None,
         namespace: str,
         entity_cache: dict[tuple[str, str, str], object],
-        mark_done,
-        bump,
-        mark_failed,
+        mark_done: MetaCallback,
+        bump: MetaCallback,
+        mark_failed: MetaCallback,
         metrics: WorkerTickMetrics,
         durations: list[float],
     ) -> None:
@@ -206,8 +224,8 @@ class IndexJobWorker:
                     self._job_value(job, "max_retries")
                 )
 
-                try_rc = int(retry_count or 0)
-                try_mr = int(max_retries or 10)
+                try_rc = self._as_int(retry_count, 0)
+                try_mr = self._as_int(max_retries, 10)
 
                 try:
                     if batch_results is not None:
@@ -224,7 +242,7 @@ class IndexJobWorker:
                             index_kind=str(index_kind),
                             op=str(op),
                             namespace=namespace,
-                            payload_json=payload_json,
+                            payload_json=self._optional_text(payload_json),
                             validated_entity_cache=entity_cache,
                         )
                     if mark_done is not None and job_id:
