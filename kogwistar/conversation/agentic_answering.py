@@ -458,6 +458,7 @@ class AgenticAnsweringAgent:
           - evaluation (optional)
           - projected_pointer_ids
         """
+        cache_root = self.cache_dir or str(joblib_cache_path("agentic_answering"))
         # 1) Fetch conversation state
         from .service import ConversationService
 
@@ -552,7 +553,7 @@ class AgenticAnsweringAgent:
 
             # 5) Materialize evidence pack for answering + citation picking
             mem = Memory(
-                location=os.path.join(self.cache_dir, "_materialize_evidence_pack")
+                location=os.path.join(cache_root, "_materialize_evidence_pack")
             )
             cached_call = cache_pydantic_structured(
                 fn=self._materialize_evidence_pack,
@@ -597,7 +598,7 @@ class AgenticAnsweringAgent:
 
             # 6) Generate answer with claim-level citations (SpanRef indices into evidence_pack)
             mem = Memory(
-                location=os.path.join(self.cache_dir, "_generate_answer_with_citations")
+                location=os.path.join(cache_root, "_generate_answer_with_citations")
             )
             cached_call = cache_pydantic_structured(
                 fn=self._generate_answer_with_citations,
@@ -909,10 +910,11 @@ class AgenticAnsweringAgent:
             run_id=(run_id or f"agentic_answer|{turn_node_id}"),
             cache_dir=cache_dir
         )
-        final_state, rid = run_result.final_state, run_result.run_id
+        final_state = cast(dict[str, Any], run_result.final_state)
+        rid = run_result.run_id
 
         # Update caller's prev_turn_meta_summary in-place.
-        mts = final_state.get("prev_turn_meta_summary") or {}
+        mts = cast(dict[str, Any], final_state.get("prev_turn_meta_summary") or {})
         prev_turn_meta_summary.prev_node_char_distance_from_last_summary = int(
             mts.get(
                 "prev_node_char_distance_from_last_summary",
@@ -929,7 +931,7 @@ class AgenticAnsweringAgent:
             mts.get("tail_turn_index", prev_turn_meta_summary.tail_turn_index)
         )
 
-        out = final_state.get("agentic_answering_result") or {}
+        out = cast(dict[str, Any], final_state.get("agentic_answering_result") or {})
         out["workflow_run_id"] = rid
         out["workflow_id"] = workflow_id
         out["workflow_status"] = getattr(run_result, "status", "succeeded")
@@ -976,15 +978,16 @@ class AgenticAnsweringAgent:
             include=["documents", "metadatas"],
         )
         out: list[dict[str, Any]] = []
-        for node in res:
+        for node in cast(Sequence[Any], res):
             if isinstance(node, str):
                 got = _engine_get_nodes(
                     self.knowledge_engine, ids=[node], include=["documents", "metadatas"]
                 )
-                if not got.get("ids"):
+                got_map = cast(dict[str, Any], got)
+                if not got_map.get("ids"):
                     continue
-                docs = (got.get("documents") or [None])[0]
-                metas = got.get("metadatas") or [{}]
+                docs = (got_map.get("documents") or [None])[0]
+                metas = got_map.get("metadatas") or [{}]
                 meta = dict(metas[0] if metas else {})
                 out.append(
                     {
@@ -1099,7 +1102,7 @@ class AgenticAnsweringAgent:
                 meta = dict(metas[0] if metas else {})
                 text_source = docs if isinstance(docs, str) else ""
             else:
-                node = got[0]
+                node = cast(Sequence[Any], got)[0]
                 meta = dict(getattr(node, "metadata", {}) or {})
                 text_source = str(getattr(node, "summary", "") or "")
 
@@ -1133,9 +1136,13 @@ class AgenticAnsweringAgent:
                 # trust existing structure; keep only excerpt-like fields for LLM
                 norm_mentions = []
                 for mi, mobj in enumerate(mentions):
-                    mobj: Grounding
                     spans = []
-                    for si, sp in enumerate((mobj or {}).get("spans") or []):
+                    mobj_map = (
+                        cast(Mapping[str, Any], mobj)
+                        if isinstance(mobj, Mapping)
+                        else {}
+                    )
+                    for si, sp in enumerate(mobj_map.get("spans") or []):
                         if isinstance(sp, dict):
                             spans.append(
                                 {
@@ -1197,7 +1204,9 @@ class AgenticAnsweringAgent:
                 metas = got.get("metadatas") or [{}]
                 meta = dict(metas[0] if metas else {})
             else:
-                meta = dict(getattr(got[0], "metadata", {}) or {})
+                meta = dict(
+                    getattr(cast(Sequence[Any], got)[0], "metadata", {}) or {}
+                )
             pack["edges"].append(
                 {
                     "id": eid,
@@ -1286,6 +1295,7 @@ class AgenticAnsweringAgent:
                 summ = summ[:240]
             lines.append(f"EDGE {eid} | {rel}: {summ}")
         evidence_text = "\n".join(lines)
+        last_err: Exception | None = None
         for _ in range(int(getattr(agent, "max_retry", 3) or 3)):
             res:AnswerWithCitationsTaskResult = agent.llm_tasks.answer_with_citations(
                 # AnswerWithCitations
@@ -1309,11 +1319,11 @@ class AgenticAnsweringAgent:
                     "Missing parsed output from answer_with_citations task"
                 )
                 continue
-            parsed: BaseM = out_model.model_validate(res.answer_payload)
+            parsed = out_model.model_validate(res.answer_payload)
             return _restore_citation_node_ids(
                 parsed.model_dump(mode="python"), model=out_model, book=alias_book
             )
-        raise Exception(f"retry too many errors parsing: {last_err}")
+        raise Exception(f"retry too many errors parsing: {last_err or 'unknown parsing error'}")
 
     @staticmethod
     def _validate_or_repair_citations(
@@ -1458,7 +1468,7 @@ class AgenticAnsweringAgent:
             "missing_aspects": missing_aspects,
             "notes": "heuristic_evaluation",
         }
-        return out_model.model_validate(payload).model_dump()
+        return out_model.model_validate(payload)
 
     def _ensure_run_anchor(self, *, conversation_id: str, run_id: str) -> str:
         scope = f"conv:{conversation_id}"
@@ -1577,7 +1587,10 @@ class AgenticAnsweringAgent:
             if isinstance(kg, dict):
                 meta = dict((kg.get("metadatas") or [{}])[0] or {})
             else:
-                meta = dict((getattr(kg[0], "metadata", {}) or {}) if kg else {})
+                kg_items = cast(Sequence[Any], kg)
+                meta = dict(
+                    (getattr(kg_items[0], "metadata", {}) or {}) if kg_items else {}
+                )
             snap = {
                 "entity_id": kg_node_id,
                 "label": meta.get("label"),
@@ -1586,8 +1599,9 @@ class AgenticAnsweringAgent:
                 "canonical_entity_id": meta.get("canonical_entity_id"),
             }
             sh = snapshot_hash(snap)
-            node = ConversationNode(
-                **build_reference_node_payload(
+            node_payload = cast(
+                dict[str, Any],
+                build_reference_node_payload(
                     logical_ref=LogicalRef(
                         target_namespace="kg",
                         target_kind="node",
@@ -1607,6 +1621,9 @@ class AgenticAnsweringAgent:
                         "in_conversation_chain": False,
                     },
                 ),
+            )
+            node = ConversationNode(
+                **node_payload,
                 conversation_id=conversation_id,
                 role="system",  # type: ignore
                 turn_index=None,
@@ -1683,7 +1700,7 @@ class AgenticAnsweringAgent:
         if isinstance(eg, dict):
             meta = dict((eg.get("metadatas") or [{}])[0] or {})
         else:
-            meta = dict(getattr(eg[0], "metadata", {}) or {})
+            meta = dict(getattr(cast(Sequence[Any], eg)[0], "metadata", {}) or {})
 
         existing = _engine_get_edges(self.conversation_engine, ids=[peid], include=[])
         if not _has_result_items(existing):
@@ -1710,8 +1727,9 @@ class AgenticAnsweringAgent:
                 for tid in kg_tgt_ids
             ]
 
-            edge = ConversationEdge(
-                **build_reference_edge_payload(
+            edge_payload = cast(
+                dict[str, Any],
+                build_reference_edge_payload(
                     logical_ref=LogicalRef(
                         target_namespace="kg",
                         target_kind="edge",
@@ -1733,6 +1751,9 @@ class AgenticAnsweringAgent:
                         "tail_turn_index": prev_turn_meta_summary.tail_turn_index,
                     },
                 ),
+            )
+            edge = ConversationEdge(
+                **edge_payload,
                 doc_id=f"conv:{conversation_id}",
                 mentions=[Grounding(spans=[provenance_span])],
                 domain_id=None,
@@ -1936,10 +1957,13 @@ class AgenticAnsweringAgent:
             mentions=[Grounding(spans=provenance_span_coerced)],
             domain_id=None,
             canonical_entity_id=None,
-            properties={
-                "entity_type": "conversation_edge",
-                "used_node_ids": used_node_ids,
-            },
+            properties=cast(
+                Any,
+                {
+                    "entity_type": "conversation_edge",
+                    "used_node_ids": used_node_ids,
+                },
+            ),
             embedding=None,
             metadata={
                 "char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary,
