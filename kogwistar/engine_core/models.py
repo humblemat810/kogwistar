@@ -3016,7 +3016,7 @@ class OCRClusterResponse(ModeSlicingMixin, BaseModel):
     )
 
     @model_validator(mode="after")
-    def check_cluster_meaningful_ordering_agreement(self):
+    def check_cluster_meaningful_ordering_agreement(self) -> Self:
         assert bool(self.is_empty_page) ^ (len(self.OCR_text_clusters) > 0), (
             f"is_empty_page value {self.is_empty_page} disagree with OCR_text_clusters len={len(self.OCR_text_clusters)}"
         )
@@ -3056,7 +3056,7 @@ class SplitPageMeta(BaseModel):
     ocr_json_version: str = Field(description="the model does the OCR")
 
     @field_validator("ocr_json_version", mode="before")
-    def version_to_str(cls, v):
+    def version_to_str(cls, v: object) -> str:
         return str(v)
 
 
@@ -3069,13 +3069,13 @@ class SplitPage(OCRClusterResponseBc):
         description="refined processed/ grouped/ merged version of ocr text clusters. ",
     )
 
-    def model_dump(self, *arg, **kwarg):
+    def model_dump(self, *arg: object, **kwarg: object) -> dict[str, object]:
         return self.to_doc()
 
-    def dump_raw(self):
+    def dump_raw(self) -> dict[str, object]:
         return super(SplitPage, self).model_dump(exclude=["refined_version"])
 
-    def dump_supercede_parse(self):
+    def dump_supercede_parse(self) -> dict[str, object]:
         return super(SplitPage, self).model_dump(
             exclude=["refined_version", "metadata"]
         )
@@ -3106,7 +3106,7 @@ class SplitPage(OCRClusterResponseBc):
 
         return self
 
-    def to_doc(self):
+    def to_doc(self) -> dict[str, object]:
         """Model to llm one-way serializer with manual slicing logic, can refactor using sliced view
         with some token saving logic.
         """
