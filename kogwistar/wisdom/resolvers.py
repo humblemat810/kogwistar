@@ -252,6 +252,9 @@ def _dream_evaluate_proposals(ctx):
             and not proposal.candidate_workflow_id
         )
         if should_materialize:
+            builder = approved_workflow_builder
+            if not callable(builder):
+                raise RuntimeError("workflow builder disappeared during proposal evaluation")
             preview = evaluate_wisdom_revision_proposal(
                 proposal,
                 decision=decision.decision,
@@ -261,7 +264,7 @@ def _dream_evaluate_proposals(ctx):
                 lesson_summary=decision.lesson_summary,
                 evidence=evidence,
             )
-            design = approved_workflow_builder(proposal, preview)
+            design = builder(proposal, preview)
             nodes = list(getattr(design, "nodes", []) or [])
             edges = list(getattr(design, "edges", []) or [])
             candidate_workflow_id = str(getattr(design, "workflow_id", None) or candidate_workflow_id or proposal.workflow_id)
