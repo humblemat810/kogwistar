@@ -36,7 +36,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
-from .models import StepRunResult, WorkflowEdge, WorkflowState, get_route_next_names
+from .models import StepRunResult, WorkflowState, get_route_next_names
 from .serialize import JsonValue
 
 if TYPE_CHECKING:
@@ -78,7 +78,7 @@ class WorkflowEdgeInfo:
     multiplicity: str  # "one" | "many"
 
     @staticmethod
-    def from_workflow_edge(e: WorkflowEdge):
+    def from_workflow_edge(e: Edge) -> "WorkflowEdgeInfo":
         src = e.source_ids[0]
         dst = e.target_ids[0]
         md = e.metadata
