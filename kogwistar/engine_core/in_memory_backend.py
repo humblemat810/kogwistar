@@ -31,12 +31,13 @@ The same pattern can be parameterized in pytest fixtures so a test can opt into:
 from __future__ import annotations
 
 import copy
+import inspect
 import json
 import math
-from collections.abc import Sequence
+from collections.abc import Awaitable, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, TypeGuard, cast
 
 from kogwistar.engine_core.embedding_profile import EmbeddingStorageState
 from kogwistar.engine_core.in_memory_meta import InMemoryMetaStore
@@ -49,8 +50,8 @@ from kogwistar.json_types import JsonValue
 JsonObject = dict[str, JsonValue]
 
 
-def _is_operator_dict(value: object) -> bool:
-    return isinstance(value, dict) and any(
+def _is_operator_dict(value: object) -> TypeGuard[dict[str, object]]:
+    return isinstance(value, dict) and all(isinstance(k, str) for k in value) and any(
         isinstance(k, str) and k.startswith("$") for k in value.keys()
     )
 
@@ -61,14 +62,22 @@ def _safe_cmp(left: object, right: object, op: str) -> bool:
             return left == right
         if op == "$ne":
             return left != right
-        if op == "$gt":
-            return left > right
-        if op == "$gte":
-            return left >= right
-        if op == "$lt":
-            return left < right
-        if op == "$lte":
-            return left <= right
+        if op in {"$gt", "$gte", "$lt", "$lte"}:
+            if isinstance(left, (int, float)) and isinstance(right, (int, float)):
+                return {
+                    "$gt": left > right,
+                    "$gte": left >= right,
+                    "$lt": left < right,
+                    "$lte": left <= right,
+                }[op]
+            if isinstance(left, str) and isinstance(right, str):
+                return {
+                    "$gt": left > right,
+                    "$gte": left >= right,
+                    "$lt": left < right,
+                    "$lte": left <= right,
+                }[op]
+            return False
     except Exception:
         return False
     return False
@@ -85,6 +94,20 @@ def _contains_any(left: object, expected: object) -> bool:
 
 
 _MISSING = object()
+
+
+def _where_clauses(value: object) -> list[dict[str, object]]:
+    if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
+        raise TypeError("logical where clauses must be a list of mappings")
+    return cast(list[dict[str, object]], value)
+
+
+def _object_int(value: object, *, default: int = 0) -> int:
+    if value is None:
+        return default
+    if isinstance(value, (bool, int, float, str)):
+        return int(value)
+    raise TypeError("expected an integer-compatible scalar")
 
 
 def _matches_field(value: object, condition: object) -> bool:
@@ -148,12 +171,12 @@ def _matches_where_python(
     # Chroma-style logic keys are explicit; plain field keys are combined with AND.
     for key, condition in where.items():
         if key == "$and":
-            clauses = condition or []
+            clauses = _where_clauses(condition or [])
             if not all(_matches_where_python(metadata, clause) for clause in clauses):
                 return False
             continue
         if key == "$or":
-            clauses = condition or []
+            clauses = _where_clauses(condition or [])
             if not any(_matches_where_python(metadata, clause) for clause in clauses):
                 return False
             continue
@@ -309,8 +332,18 @@ class _InMemoryCollection:
             ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings
         )
 
-    def upsert(self, **kwargs: object) -> None:
-        self.add(**kwargs)
+    def upsert(
+        self,
+        *,
+        ids: Sequence[str],
+        documents: Sequence[str] | None = None,
+        metadatas: Sequence[dict[str, object]] | None = None,
+        embeddings: Sequence[Sequence[float]] | None = None,
+        **_: object,
+    ) -> None:
+        self.add(
+            ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings
+        )
 
     def update(
         self,
@@ -485,6 +518,7 @@ class _InMemoryCollection:
 
 
 class InMemoryBackend:
+    backend_kind = "memory"
     supports_historical_tombstone_query = True
     vector_distance_kind = "distance"
 
@@ -723,12 +757,12 @@ class InMemoryBackend:
     def embed(self, texts: Sequence[str]) -> list[list[float]]:
         ef = getattr(self._engine, "_ef", None)
         if callable(ef):
-            return list(ef(list(texts)))
+            return [list(values) for values in cast(Sequence[Sequence[float]], ef(list(texts)))]
         return [[0.0] for _ in texts]
 
 
-class _InMemoryTwoStageProjectionAdapter:
-    """Volatile two-stage arrangement used only by deterministic tests."""
+class _InMemoryTwoStageProjectionCommon:
+    """Shared state and queue plumbing for sync and async adapters."""
 
     def __init__(self, backend: InMemoryBackend) -> None:
         self.backend = backend
@@ -752,6 +786,10 @@ class _InMemoryTwoStageProjectionAdapter:
         )
 
     enqueue_embedding_job = _enqueue
+
+
+class _InMemoryTwoStageProjectionAdapter(_InMemoryTwoStageProjectionCommon):
+    """Synchronous volatile arrangement used by deterministic tests."""
 
     def add_node(self, node: Any, *, doc_id: str | None = None) -> None:
         if doc_id is not None:
@@ -811,14 +849,35 @@ class _InMemoryTwoStageProjectionAdapter:
         )
 
 
-class AsyncInMemoryTwoStageProjectionAdapter(_InMemoryTwoStageProjectionAdapter):
+class AsyncInMemoryTwoStageProjectionAdapter(_InMemoryTwoStageProjectionCommon):
     """Non-blocking adapter for the volatile in-memory async test path."""
 
     async def add_node(self, node: Any, *, doc_id: str | None = None) -> None:
-        super().add_node(node, doc_id=doc_id)
+        if doc_id is not None:
+            node.doc_id = doc_id
+        doc, meta = self.engine.write.node_doc_and_meta(node)
+        self.backend.node_clear_embeddings(ids=[node.safe_get_id()])
+        self.backend.node_add(
+            ids=[node.safe_get_id()],
+            documents=[doc],
+            metadatas=[meta],
+            embeddings=[None],
+        )
+        self._enqueue(entity_kind="node", entity_id=node.safe_get_id(), op="UPSERT")
 
     async def add_edge(self, edge: Any, *, doc_id: str | None = None) -> None:
-        super().add_edge(edge, doc_id=doc_id)
+        if doc_id is not None:
+            edge.doc_id = doc_id
+        doc = edge.model_dump_json(field_mode="backend", exclude=["embedding"])
+        meta = self.engine.write.enrich_edge_meta(edge)
+        self.backend.edge_clear_embeddings(ids=[edge.safe_get_id()])
+        self.backend.edge_add(
+            ids=[edge.safe_get_id()],
+            documents=[str(doc)],
+            metadatas=[meta],
+            embeddings=[None],
+        )
+        self._enqueue(entity_kind="edge", entity_id=edge.safe_get_id(), op="UPSERT")
 
     async def apply_embedding_job(
         self,
@@ -848,18 +907,18 @@ class AsyncInMemoryTwoStageProjectionAdapter(_InMemoryTwoStageProjectionAdapter)
         provider = getattr(self.engine, "_ef", None)
         if callable(provider):
             embedding_result = provider([str(document)])
-            if hasattr(embedding_result, "__await__"):
-                embedding_result = await embedding_result
-            embedding = list(embedding_result)[0]
+            if inspect.isawaitable(embedding_result):
+                embedding_result = await cast(Awaitable[object], embedding_result)
+            embedding = list(cast(Sequence[Sequence[float]], embedding_result))[0]
         else:
             embedding = self.engine.embed.iterative_defensive_emb(str(document))
-            if hasattr(embedding, "__await__"):
-                embedding = await embedding
+            if inspect.isawaitable(embedding):
+                embedding = await cast(Awaitable[object], embedding)
         getattr(self.backend, f"{entity_kind}_update")(
             ids=[entity_id], embeddings=[embedding]
         )
 
-    async def apply_embedding_jobs_batch(self, jobs: list[Any]) -> dict[str, BaseException | None]:
+    async def apply_embedding_jobs_batch(self, jobs: Sequence[object]) -> dict[str, BaseException | None]:
         """Embed compatible in-memory jobs in one provider call."""
         prepared: list[tuple[str, str, str, str, JsonObject]] = []
         outcomes: dict[str, BaseException | None] = {}
@@ -870,13 +929,14 @@ class AsyncInMemoryTwoStageProjectionAdapter(_InMemoryTwoStageProjectionAdapter)
             entity_kind = str(value("entity_kind") or "")
             entity_id = str(value("entity_id") or "")
             payload_json = value("payload_json")
+            payload_text = payload_json if isinstance(payload_json, str) else None
             try:
                 if str(value("op") or "UPSERT").upper() == "DELETE":
                     await self.apply_embedding_job(
                         entity_kind=entity_kind,
                         entity_id=entity_id,
                         op="DELETE",
-                        payload_json=payload_json,
+                        payload_json=payload_text,
                     )
                     outcomes[job_id] = None
                     continue
@@ -886,11 +946,11 @@ class AsyncInMemoryTwoStageProjectionAdapter(_InMemoryTwoStageProjectionAdapter)
                 if not current.get("ids"):
                     outcomes[job_id] = None
                     continue
-                expected = str(json.loads(payload_json or "{}").get("source_fingerprint", ""))
+                expected = str(json.loads(payload_text or "{}").get("source_fingerprint", ""))
                 actual = self.engine.indexing.canonical_revision_payload(
                     entity_kind=entity_kind, entity_id=entity_id
                 )
-                if expected and expected != str(json.loads(actual).get("source_fingerprint", "")):
+                if expected and expected != str(json.loads(str(actual)).get("source_fingerprint", "")):
                     outcomes[job_id] = None
                     continue
                 prepared.append(
@@ -907,9 +967,9 @@ class AsyncInMemoryTwoStageProjectionAdapter(_InMemoryTwoStageProjectionAdapter)
             if not callable(provider):
                 raise RuntimeError("async in-memory batch requires an embedding provider")
             raw = provider(documents)
-            if hasattr(raw, "__await__"):
-                raw = await raw
-            embeddings = list(raw)
+            if inspect.isawaitable(raw):
+                raw = await cast(Awaitable[object], raw)
+            embeddings = list(cast(Sequence[Sequence[float]], raw))
             if len(embeddings) != len(prepared):
                 raise RuntimeError("embedding provider returned wrong batch length")
         except BaseException as exc:
@@ -1021,8 +1081,10 @@ class _FakeMetaStore:
                 return False
         elif (
             existing is None
-            or int(existing.get("last_authoritative_seq", -1)) != int(expected_last_authoritative_seq)
-            or int(existing.get("last_materialized_seq", -1)) != int(expected_last_materialized_seq)
+            or _object_int(existing.get("last_authoritative_seq"), default=-1)
+            != _object_int(expected_last_authoritative_seq, default=-1)
+            or _object_int(existing.get("last_materialized_seq"), default=-1)
+            != _object_int(expected_last_materialized_seq, default=-1)
         ):
             return False
         self.replace_named_projection(
