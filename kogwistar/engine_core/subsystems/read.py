@@ -714,7 +714,8 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         node_type: type[Node] = Node,
         include: list[str] | None = None,
         max_redirect_hops: int = 16,
-        **kwargs,
+        similarity_threshold: float | None = None,
+        **kwargs: object,
     ) -> list[Node]:
         return [
             node
@@ -728,6 +729,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 node_type=node_type,
                 include=include,
                 max_redirect_hops=max_redirect_hops,
+                similarity_threshold=similarity_threshold,
                 **kwargs,
             )
             for node in (hit.node,)
@@ -746,7 +748,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         include: list[str] | None = None,
         max_redirect_hops: int = 16,
         similarity_threshold: float | None = None,
-        **kwargs,
+        **kwargs: object,
     ) -> list[VectorSearchHit[Node]]:
         """Return as-of nodes together with backend order scores.
 

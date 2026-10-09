@@ -351,6 +351,7 @@ class ReadLike(Protocol):
         node_type: type[GraphNode] = ...,
         include: list[str] | None = None,
         max_redirect_hops: int = 16,
+        similarity_threshold: float | None = None,
         **kwargs: object,
     ) -> Sequence[GraphNode]: ...
 

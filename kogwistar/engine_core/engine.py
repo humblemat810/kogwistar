@@ -761,7 +761,8 @@ class GraphKnowledgeEngine:
         node_type: type[Node] = Node,
         include: list[str] | None = None,
         max_redirect_hops: int = 16,
-        **kwargs,
+        similarity_threshold: float | None = None,
+        **kwargs: object,
     ) -> list[Node]:
         return list(self.read.search_nodes_as_of(
             query=query,
@@ -773,11 +774,38 @@ class GraphKnowledgeEngine:
             node_type=node_type,
             include=include,
             max_redirect_hops=max_redirect_hops,
+            similarity_threshold=similarity_threshold,
             **kwargs,
         ))
 
-    def search_nodes_as_of_scored(self, **kwargs: Any) -> list[VectorSearchHit[Node]]:
-        return self.read.search_nodes_as_of_scored(**kwargs)
+    def search_nodes_as_of_scored(
+        self,
+        *,
+        query: str | None = None,
+        query_embeddings: Sequence[float] | Sequence[Sequence[float]] | None = None,
+        as_of_ts: datetime | str,
+        where: dict[str, JsonValue] | None = None,
+        n_results: int = 20,
+        follow_redirects: bool = True,
+        node_type: type[Node] = Node,
+        include: list[str] | None = None,
+        max_redirect_hops: int = 16,
+        similarity_threshold: float | None = None,
+        **kwargs: object,
+    ) -> list[VectorSearchHit[Node]]:
+        return self.read.search_nodes_as_of_scored(
+            query=query,
+            query_embeddings=query_embeddings,
+            as_of_ts=as_of_ts,
+            where=where,
+            n_results=n_results,
+            follow_redirects=follow_redirects,
+            node_type=node_type,
+            include=include,
+            max_redirect_hops=max_redirect_hops,
+            similarity_threshold=similarity_threshold,
+            **kwargs,
+        )
 
     def query_edges(
         self,

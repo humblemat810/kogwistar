@@ -1464,6 +1464,7 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
         node_type: type[Node] = Node,
         include: list[str] | None = None,
         max_redirect_hops: int = 16,
+        similarity_threshold: float | None = None,
         **kwargs: object,
     ) -> list[Node]:
         return [
@@ -1478,6 +1479,7 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
                 node_type=node_type,
                 include=include,
                 max_redirect_hops=max_redirect_hops,
+                similarity_threshold=similarity_threshold,
                 **kwargs,
             )
             if self._node_visible(node)
