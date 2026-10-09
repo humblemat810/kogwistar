@@ -33,6 +33,23 @@ from .skills import (
 JsonObject = dict[str, JsonValue]
 
 
+def _json_object(value: Mapping[str, object]) -> JsonObject:
+    decoded = json.loads(json.dumps(dict(value), default=str))
+    if not isinstance(decoded, dict):
+        raise TypeError("plugin payload must be a JSON object")
+    return decoded
+
+
+def _optional_text(value: object) -> str | None:
+    return value if isinstance(value, str) else None
+
+
+def _string_values(value: object) -> list[str]:
+    if not isinstance(value, (list, tuple, set, frozenset)):
+        return []
+    return [str(item) for item in value]
+
+
 class McpInvoker(Protocol):
     """Invoke one discovered MCP operation at an explicitly named boundary."""
 
@@ -264,7 +281,7 @@ def materialize_skill_artifact(
         if materializer is not None:
             if materializer.projections is not projection or materializer.catalog is not catalog:
                 raise ValueError("materializer must own supplied projection and catalog stores")
-            guard_updates: list[dict[str, object]] = []
+            guard_updates: list[JsonObject] = []
             if provider_registry is not None and provider_registry._metadata is not None:
                 registration = provider_registration
                 if registration is None:
@@ -370,15 +387,15 @@ class LlmWikiIngestionAdapter:
         self._max_source_bytes = max(1, int(max_source_bytes))
 
     def parse(self, source: Mapping[str, object]) -> SkillGraphArtifact:
-        request = dict(source)
+        request = _json_object(source)
         if self._authorize is None or not self._authorize(request):
             raise PermissionError("LLM-Wiki skill ingestion requires authorization")
         encoded = json.dumps(request, sort_keys=True, default=str).encode("utf-8")
         if len(encoded) > self._max_source_bytes:
             raise ValueError("LLM-Wiki skill source exceeds byte bound")
         artifact = self._parse(request)
-        requested_tenant = request.get("tenant_id")
-        requested_project = request.get("project_id")
+        requested_tenant = _optional_text(request.get("tenant_id"))
+        requested_project = _optional_text(request.get("project_id"))
         validate_skill_artifact(
             artifact,
             tenant_id=requested_tenant,
@@ -462,10 +479,10 @@ class ProjectGlossaryProvider:
         self.provider_id = manifest.provider_id
         self.project_id = manifest.project_id
         self.tenant_id = manifest.tenant_id
-        self._terms = tuple(dict(term) for term in terms)
+        self._terms = tuple(_json_object(term) for term in terms)
 
-    def descriptors(self) -> list[Mapping[str, object]]:
-        result: list[Mapping[str, object]] = []
+    def descriptors(self) -> list[Mapping[str, JsonValue]]:
+        result: list[Mapping[str, JsonValue]] = []
         for term in self._terms:
             item = dict(term)
             item.setdefault("provider_id", self.provider_id)
@@ -483,13 +500,13 @@ class ProjectGlossaryProvider:
         tenant_id: str | None = None,
         project_id: str | None = None,
         limit: int = 20,
-    ) -> list[Mapping[str, object]]:
+    ) -> list[Mapping[str, JsonValue]]:
         if authorize is None:
             raise PermissionError("project glossary search requires ACL callback")
         needle = str(query).strip().casefold()
         if not needle or limit < 1:
             return []
-        results: list[Mapping[str, object]] = []
+        results: list[Mapping[str, JsonValue]] = []
         for term in self.descriptors():
             if tenant_id is not None and term.get("tenant_id") not in (None, tenant_id):
                 continue
@@ -498,7 +515,7 @@ class ProjectGlossaryProvider:
             if not authorize(term):
                 continue
             haystack = " ".join(
-                [str(term.get("term", "")), *(str(item) for item in term.get("aliases", ())), str(term.get("definition", ""))]
+                [str(term.get("term", "")), *_string_values(term.get("aliases", ())), str(term.get("definition", ""))]
             ).casefold()
             if needle in haystack:
                 results.append(term)
@@ -523,7 +540,7 @@ def ingest_project_glossary_to_knowledge(
             "entity_id": str(term.get("id") or f"{provider.provider_id}:{term.get('term', '')}"),
             "kind": "project_glossary_term",
             "term": str(term.get("term", "")),
-            "aliases": [str(value) for value in term.get("aliases", ())],
+            "aliases": _string_values(term.get("aliases", ())),
             "definition": str(term.get("definition", "")),
             "source": term.get("source"),
             "valid_from": term.get("valid_from"),
