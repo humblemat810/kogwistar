@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import inspect
 import json
-from contextlib import asynccontextmanager
-from typing import Any
+from collections.abc import Awaitable, Callable, Sequence
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from typing import Any, cast
 
 from ..utils.embedding_vectors import normalize_embedding_vector
 from .edge_endpoint_rows import edge_endpoint_rows
@@ -50,7 +51,8 @@ class AsyncPostgresTwoStageProjectionAdapter:
         uow = getattr(self.engine, "_async_backend_uow", None)
         transaction = getattr(uow, "transaction", None)
         if callable(transaction):
-            async with transaction():
+            context = cast(AbstractAsyncContextManager[None], transaction())
+            async with context:
                 yield
         else:
             yield
@@ -553,9 +555,7 @@ class AsyncChromaTwoStageProjectionAdapter:
         return removed
 
 
-class AsyncRustPostgresTwoStageProjectionAdapter(
-    RustPostgresTwoStageProjectionAdapter
-):
+class AsyncRustPostgresTwoStageProjectionAdapter:
     """Async facade for Rust authority until the native async ABI is exposed.
 
     Calls execute in worker threads, so the async event loop is not blocked and
@@ -563,9 +563,26 @@ class AsyncRustPostgresTwoStageProjectionAdapter(
     not a claim that the current Python extension has an async ABI.
     """
 
+    def __init__(self, engine: Any, meta: Any) -> None:
+        self.engine = engine
+        self.meta = meta
+        self._sync_adapter = RustPostgresTwoStageProjectionAdapter(engine, meta)
+
+    def _table(self, entity_kind: str) -> str:
+        return self._sync_adapter._table(entity_kind)
+
+    def _namespace(self) -> str:
+        return self._sync_adapter._namespace()
+
+    def enqueue_embedding_job(self, **kwargs: Any) -> None:
+        self._sync_adapter.enqueue_embedding_job(**kwargs)
+
+    def _promote_record(self, **kwargs: Any) -> None:
+        self._sync_adapter._promote_record(**kwargs)
+
     async def add_node(self, node: Any, *, doc_id: str | None = None) -> None:
         import asyncio
-        await asyncio.to_thread(super().add_node, node, doc_id=doc_id)
+        await asyncio.to_thread(self._sync_adapter.add_node, node, doc_id=doc_id)
         await asyncio.to_thread(
             self.enqueue_embedding_job,
             entity_kind="node", entity_id=node.safe_get_id(), op="UPSERT",
@@ -573,7 +590,7 @@ class AsyncRustPostgresTwoStageProjectionAdapter(
 
     async def add_edge(self, edge: Any, *, doc_id: str | None = None) -> None:
         import asyncio
-        await asyncio.to_thread(super().add_edge, edge, doc_id=doc_id)
+        await asyncio.to_thread(self._sync_adapter.add_edge, edge, doc_id=doc_id)
         await asyncio.to_thread(
             self.enqueue_embedding_job,
             entity_kind="edge", entity_id=edge.safe_get_id(), op="UPSERT",
@@ -586,8 +603,11 @@ class AsyncRustPostgresTwoStageProjectionAdapter(
             getattr(provider, "__call__", None)
         )
         if not provider_is_async:
-            await asyncio.to_thread(super().apply_embedding_job, **kwargs)
+            await asyncio.to_thread(self._sync_adapter.apply_embedding_job, **kwargs)
             return
+        if not callable(provider):
+            raise RuntimeError("async Rust two-stage projection requires an embedding provider")
+        async_provider = cast(Callable[[list[str]], Awaitable[Sequence[object]]], provider)
 
         entity_kind = str(kwargs["entity_kind"])
         entity_id = str(kwargs["entity_id"])
@@ -615,7 +635,7 @@ class AsyncRustPostgresTwoStageProjectionAdapter(
         )
         if not records:
             raise RuntimeError("current Rust Stage-1 graph projection is missing")
-        raw = await provider([str(records[0].get("document") or "")])
+        raw = await async_provider([str(records[0].get("document") or "")])
         embedding = list(raw)[0]
         current = await asyncio.to_thread(
             self.engine.indexing.canonical_entity_revision,
@@ -644,12 +664,20 @@ class AsyncRustPostgresTwoStageProjectionAdapter(
             getattr(provider, "__call__", None)
         )
         if not provider_is_async:
-            return await asyncio.to_thread(super().apply_embedding_jobs_batch, jobs)
+            return await asyncio.to_thread(self._sync_adapter.apply_embedding_jobs_batch, jobs)
+        if not callable(provider):
+            raise RuntimeError("async Rust two-stage projection requires an embedding provider")
+        async_provider = cast(Callable[[list[str]], Awaitable[Sequence[object]]], provider)
 
         prepared: list[tuple[str, str, str, dict[str, Any], str]] = []
         outcomes: dict[str, BaseException | None] = {}
         for job in jobs:
-            value = lambda name: job.get(name) if isinstance(job, dict) else getattr(job, name, None)
+            if isinstance(job, dict):
+                def value(name: str) -> object:
+                    return job.get(name)
+            else:
+                def value(name: str) -> object:
+                    return getattr(job, name, None)
             job_id = str(value("job_id") or "")
             kind = str(value("entity_kind") or "")
             entity_id = str(value("entity_id") or "")
@@ -658,7 +686,8 @@ class AsyncRustPostgresTwoStageProjectionAdapter(
                 if op.upper() == "DELETE":
                     outcomes[job_id] = None
                     continue
-                payload_json = value("payload_json")
+                raw_payload = value("payload_json")
+                payload_json = raw_payload if isinstance(raw_payload, str) else None
                 expected = str(json.loads(payload_json or "{}").get("source_fingerprint") or "")
                 current = await asyncio.to_thread(
                     self.engine.indexing.canonical_entity_revision,
@@ -687,7 +716,9 @@ class AsyncRustPostgresTwoStageProjectionAdapter(
         if not prepared:
             return outcomes
         try:
-            raw = await provider([str(item[3].get("document") or "") for item in prepared])
+            raw = await async_provider(
+                [str(item[3].get("document") or "") for item in prepared]
+            )
             embeddings = list(raw)
             if len(embeddings) != len(prepared):
                 raise RuntimeError("embedding provider returned wrong batch length")
