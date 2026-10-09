@@ -10,7 +10,9 @@ import hashlib
 import json
 import math
 import re
-from typing import Annotated, Literal, TypeAlias, TypeAliasType
+from typing import Annotated, Literal, TypeAlias
+
+from typing_extensions import TypeAliasType
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
