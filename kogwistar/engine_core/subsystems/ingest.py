@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 from ...llm_tasks import ExtractGraphTaskRequest
@@ -46,6 +47,8 @@ class IngestSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             offset_repair_scorer=offset_repair_scorer,
         )
         parsed = extracted["parsed"]
+        if not isinstance(parsed, LLMGraphExtraction):
+            parsed = LLMGraphExtraction.model_validate(parsed)
         self._e.persist.preflight_validate(parsed, document.id)
         return self._e.persist.persist_graph_extraction(
             document=document,
@@ -89,9 +92,10 @@ class IngestSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         res["raw"] = raw
 
         if auto_adjudicate:
-            data = run_awaitable_blocking(
+            data_value = run_awaitable_blocking(
                 self._e.backend.node_get(where={"doc_id": doc_id}, include=["documents"])
             )
+            data = dict(data_value) if isinstance(data_value, Mapping) else {}
             buckets = {}
             for ndoc in data.get("documents") or []:
                 n = Node.model_validate_json(ndoc)
@@ -106,7 +110,12 @@ class IngestSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 verdicts, _ = self._e.batch_adjudicate_merges(pairs)  # type: ignore
                 verdicts = verdicts  # help type checker for getattr fallback below
                 for (left, right), out in zip(pairs, verdicts):
-                    verdict: AdjudicationVerdict = getattr(out, "verdict", out)
+                    verdict_value = getattr(out, "verdict", out)
+                    verdict = (
+                        verdict_value
+                        if isinstance(verdict_value, AdjudicationVerdict)
+                        else AdjudicationVerdict.model_validate(verdict_value)
+                    )
                     if verdict.same_entity:
                         self._e.commit_merge(left, right, verdict)
         return res
