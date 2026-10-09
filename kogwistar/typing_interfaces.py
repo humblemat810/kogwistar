@@ -544,8 +544,8 @@ class WriteLike(Protocol):
         entity_kind: str,
         entity_id: str,
         document: str,
-        metadata_patch: dict[str, Any],
-        payload: dict[str, Any],
+        metadata_patch: JsonObject,
+        payload: JsonObject,
     ) -> bool: ...
 
     def uses_rust_postgres_authority(self) -> bool: ...
