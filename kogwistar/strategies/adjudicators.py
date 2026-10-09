@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from os import PathLike
-from typing import Any
+from typing import Any, Callable, cast
 
 from pydantic import BaseModel
 
@@ -160,8 +160,8 @@ class LLMBatchAdjudicatorImpl:
 
         uniq: list[tuple[str, str, Any]] = []
         seen = set()
-        for l, r in pairs:
-            for x in (l, r):
+        for left, right in pairs:
+            for x in (left, right):
                 k = self._kind(x)
                 i = self._id(x)
                 t = (k, i)
@@ -192,9 +192,9 @@ class LLMBatchAdjudicatorImpl:
             compact[aid] = item
 
         pair_payload: list[dict[str, Any]] = []
-        for l, r in pairs:
-            la = alias_for[(self._kind(l), self._id(l))]
-            ra = alias_for[(self._kind(r), self._id(r))]
+        for left, right in pairs:
+            la = alias_for[(self._kind(left), self._id(left))]
+            ra = alias_for[(self._kind(right), self._id(right))]
             pair_payload.append(
                 {
                     "left": compact[la],
@@ -261,8 +261,12 @@ class Adjudicator(IAdjudicator):
 
         if cache_dir is not None:
             memory = Memory(location=str(cache_dir), verbose=0)
-            payload = memory.cache(_invoke_adjudicate_pair_task, ignore=["pair_task"])(
-                pair_task=pair_task,
+            cached_invoke = cast(
+                Callable[..., dict[str, Any]],
+                memory.cache(_invoke_adjudicate_pair_task, ignore=["pair_task"]),
+            )
+            payload = cached_invoke(
+                pair_task,
                 question=question,
                 left=left_payload,
                 right=right_payload,
@@ -454,12 +458,14 @@ class Adjudicator(IAdjudicator):
 
         fixed_results: list[LLMMergeAdjudication] = []
         for (left, right, key_sig), res in zip(unknown_pairs, parsed_items):
-            left_alias = getattr(res, "left_id", None) or res.model_dump().get(
+            left_alias_value = getattr(res, "left_id", None) or res.model_dump().get(
                 "left_id"
             )
-            right_alias = getattr(res, "right_id", None) or res.model_dump().get(
+            right_alias_value = getattr(res, "right_id", None) or res.model_dump().get(
                 "right_id"
             )
+            left_alias = str(left_alias_value or "")
+            right_alias = str(right_alias_value or "")
             l_kind, l_id = inv_alias.get(
                 left_alias, (node_kind(left), str(node_id(left)))
             )
@@ -485,7 +491,7 @@ class Adjudicator(IAdjudicator):
             cache[key_sig] = res
             fixed_results.append(res)
 
-        ordered = [None] * len(pairs)
+        ordered: list[LLMMergeAdjudication | None] = [None] * len(pairs)
         for i, r in known_by_index.items():
             ordered[i] = r
         it = iter(fixed_results)

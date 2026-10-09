@@ -55,8 +55,13 @@ class MergeCandidateProposer(Protocol):
 # ---------- Adjudicator ----------
 @runtime_checkable
 class IPairAdjudicationTrace(Protocol):
+    @property
     def adjudication(self) -> LLMMergeAdjudication | None: ...
+
+    @property
     def raw(self) -> object | None: ...
+
+    @property
     def parsing_error(self) -> str | None: ...
 
 
