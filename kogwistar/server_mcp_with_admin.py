@@ -8,20 +8,27 @@ import json
 import logging
 import os
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
-from typing import Any, cast
+from typing import IO, Any, cast
 
 try:
     from dotenv import load_dotenv
 except ModuleNotFoundError:
-    def load_dotenv(*args: Any, **kwargs: Any) -> bool:
+    def load_dotenv(
+        dotenv_path: str | os.PathLike[str] | None = None,
+        stream: IO[str] | None = None,
+        verbose: bool = False,
+        override: bool = False,
+        interpolate: bool = True,
+        encoding: str | None = "utf-8",
+    ) -> bool:
         return False
 
 from fastapi import APIRouter, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from jose import jwt
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
@@ -163,7 +170,10 @@ def _configure_console_logging() -> None:
 
 def _install_request_logging(app: FastAPI) -> None:
     @app.middleware("http")
-    async def _log_requests(request: Request, call_next):
+    async def _log_requests(
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
         started_at = time.perf_counter()
         status_code = 500
         try:
@@ -216,7 +226,7 @@ except ModuleNotFoundError as exc:
 mcp_app = mcp.http_app(path="/mcp")
 
 @asynccontextmanager
-async def combined_lifespan(app: FastAPI):
+async def combined_lifespan(app: FastAPI) -> AsyncIterator[None]:
     _configure_console_logging()
     if (
         get_session is not None
@@ -334,7 +344,7 @@ class DevTokenInp(BaseModel):
 
     @field_validator("ns", mode="before")
     @classmethod
-    def _normalize_ns(cls, value):
+    def _normalize_ns(cls, value: object) -> object:
         allowed = {item.value for item in NameSpace}
         if value is None or value == "":
             return "docs"
@@ -354,7 +364,7 @@ class DevTokenInp(BaseModel):
 
     @field_validator("capabilities", mode="before")
     @classmethod
-    def _normalize_caps(cls, value):
+    def _normalize_caps(cls, value: object) -> object:
         if value is None or value == "":
             return None
         if isinstance(value, str):
@@ -366,7 +376,7 @@ class DevTokenInp(BaseModel):
         return parts[0] if len(parts) == 1 else parts
 
 @app.post("/auth/dev-token")
-async def dev_token(request: Request):
+async def dev_token(request: Request) -> object:
     inp = DevTokenInp.model_validate((await request.json()))
     if inp.role not in ROLE_ORDER:
         raise HTTPException(400, f"role must be one of {list(ROLE_ORDER)}")
@@ -391,11 +401,11 @@ async def dev_token(request: Request):
     token = jwt.encode(payload, jwt_secret, algorithm=str(jwt_settings.get("alg") or "HS256"))
     return {"token": token}
 
-def _designer_resolver_candidates(service: Any) -> list[Any]:
-    candidates: list[Any] = []
+def _designer_resolver_candidates(service: object) -> list[object]:
+    candidates: list[object] = []
     seen: set[int] = set()
 
-    def _add(value: Any) -> None:
+    def _add(value: object) -> None:
         if value is None:
             return
         ident = id(value)
@@ -540,7 +550,7 @@ def _designer_runtime_capabilities() -> dict[str, Any]:
     }
 
 @app.get("/designer/capabilities")
-def designer_capabilities():
+def designer_capabilities() -> object:
     require_role("ro")
     require_namespace({NameSpace.WORKFLOW})
     require_capability("workflow.design.inspect")
@@ -594,7 +604,7 @@ def designer_capabilities():
 
 
 @app.get("/health")
-def health():
+def health() -> object:
     python_value = {
         "ok": True,
         "backend": storage_settings.backend,
@@ -612,7 +622,7 @@ def health():
 
 # DELETE /admin/doc/{doc_id}  (non-MCP utility)
 @app.delete("/admin/doc/{doc_id}")
-def admin_delete_doc(doc_id: str):
+def admin_delete_doc(doc_id: str) -> object:
     require_role("rw")
     eng = engine.get()
     try:
@@ -625,7 +635,7 @@ def admin_delete_doc(doc_id: str):
             detail=f"Failed to inspect document {doc_id!r} before deletion",
         ) from exc
 
-    def _delete_step(step_name: str, fn) -> None:
+    def _delete_step(step_name: str, fn: Callable[[], object]) -> None:
         try:
             fn()
         except Exception as exc:
@@ -685,7 +695,7 @@ def api_viz_cytoscape(
     mode: str = "reify",
     insertion_method: str | None = None,  # NEW
     graph_type: str = "knowledge",
-):
+) -> object:
     gt = (graph_type or "knowledge").lower()
     if gt == "conversation":
         use_engine = conversation_engine
@@ -707,7 +717,7 @@ def viz_d3_bundle(
     mode: str = "reify",
     insertion_method: str | None = None,
     graph_type: str = "knowledge",  # knowledge|conversation|workflow|wisdom
-):
+) -> object:
     gt = (graph_type or "knowledge").lower()
     if gt == "conversation":
         use_engine = conversation_engine
@@ -749,7 +759,7 @@ def api_viz_d3(
     mode: str = "reify",
     insertion_method: str | None = None,
     graph_type: str | None = None,  # NEW: knowledge|conversation|workflow|wisdom
-):
+) -> object:
     graph_type = (graph_type or "knowledge").lower()
     if graph_type == "conversation":
         use_engine = conversation_engine
@@ -777,7 +787,7 @@ class DocumentGraphValidationResult(BaseModel):
     edge_errors: dict[str, str] = {}
 
 @app.post("/api/document.validate_graph", response_model=DocumentGraphValidationResult)
-async def document_validate_graph(payload: DocumentGraphProposal):
+async def document_validate_graph(payload: DocumentGraphProposal) -> object:
     # inp =await request.json()
     # payload = documentGraphProposal.model_validate(inp['payload'])
     node_errors: dict[str, str] = {}
@@ -859,7 +869,7 @@ class DocumentGraphUpsertOut(BaseModel):
     edges_added: int
 
 @app.post("/api/graph/upsert", response_model=DocumentGraphUpsertOut)
-def api_graph_upsert_llm(inp: GraphUpsertLLMIn):
+def api_graph_upsert_llm(inp: GraphUpsertLLMIn) -> object:
     """
     Upsert a (hyper)graph in one shot:
     - High level api with less control and more defaults
@@ -974,7 +984,9 @@ class DocumentUpsertResult(BaseModel):
     status: str
 
 @app.post("/api/document")
-def document_upsert(inp: DocumentUpsert, response_model=DocumentUpsertResult):
+def document_upsert(
+    inp: DocumentUpsert, response_model: type[BaseModel] = DocumentUpsertResult
+) -> object:
     try:
         eng = engine.get()
         if inp.doc_type == "text":
@@ -1012,7 +1024,7 @@ def document_upsert(inp: DocumentUpsert, response_model=DocumentUpsertResult):
         raise internal_http_error(e)
 
 @app.post("/api/document.upsert_tree", response_model=DocumentGraphUpsertResult)
-def document_upsert_tree(payload: DocumentGraphUpsert):
+def document_upsert_tree(payload: DocumentGraphUpsert) -> object:
     """Persist a newly parsed graph extraction for an existing document.
 
     This endpoint accepts a graph extraction payload that represents nodes and
@@ -1059,7 +1071,7 @@ def viz_cytoscape(
     doc_id: str | None = None,
     mode: str = "reify",
     insertion_method: str | None = None,
-):
+) -> object:
     return templates.TemplateResponse(
         "cytoscape.html",
         {
@@ -1076,7 +1088,7 @@ def viz_d3(
     doc_id: str | None = None,
     mode: str = "reify",
     insertion_method: str | None = None,
-):
+) -> object:
     return templates.TemplateResponse(
         "d3.html",
         {
@@ -1093,7 +1105,7 @@ def viz_go(
     doc_id: str | None = None,
     mode: str = "reify",
     insertion_method: str | None = None,
-):
+) -> object:
     return templates.TemplateResponse(
         "go.html",
         {
@@ -1116,12 +1128,14 @@ class IndexingItem(BaseModel):
     doc_id: str | None
 
 @app.post("/api/add_index_entries")
-def add_index_entries(payload: AddIndexEntriesInput):
+def add_index_entries(payload: AddIndexEntriesInput) -> object:
     engine.get().search_index.upsert_entries(payload.index)
     return {"ok": True}
 
 @app.get("/api/search_index_hybrid")
-def search_index_hybrid(q: str, limit: int = 10, resolve_node: bool = False):
+def search_index_hybrid(
+    q: str, limit: int = 10, resolve_node: bool = False
+) -> object:
     return engine.get().search_index.search_hybrid(
         q=q,
         limit=limit,
