@@ -34,9 +34,10 @@ Conventions:
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Protocol
 
-from .models import StepRunResult, WorkflowState, get_route_next_names
+from .models import get_route_next_names
 from .serialize import JsonValue
 
 if TYPE_CHECKING:
@@ -66,6 +67,24 @@ class WorkflowNodeInfo:
 from ..engine_core.models import Edge, Node
 
 
+class WorkflowEdgeLike(Protocol):
+    """Persisted edge surface required by workflow routing."""
+
+    @property
+    def source_ids(self) -> Sequence[str]: ...
+
+    @property
+    def target_ids(self) -> Sequence[str]: ...
+
+    @property
+    def metadata(self) -> Mapping[str, object]: ...
+
+    @property
+    def label(self) -> str: ...
+
+    def safe_get_id(self) -> str: ...
+
+
 @dataclass(frozen=True)
 class WorkflowEdgeInfo:
     name: str
@@ -78,17 +97,23 @@ class WorkflowEdgeInfo:
     multiplicity: str  # "one" | "many"
 
     @staticmethod
-    def from_workflow_edge(e: Edge) -> "WorkflowEdgeInfo":
+    def from_workflow_edge(e: WorkflowEdgeLike) -> "WorkflowEdgeInfo":
         src = e.source_ids[0]
         dst = e.target_ids[0]
         md = e.metadata
+        predicate_value = md.get("wf_predicate")
+        priority_value = md.get("wf_priority", 100)
         info = WorkflowEdgeInfo(
             name=e.label,
             edge_id=e.safe_get_id(),
             src=str(src),
             dst=str(dst),
-            predicate=md.get("wf_predicate"),
-            priority=int(md.get("wf_priority", 100)),
+            predicate=predicate_value if isinstance(predicate_value, str) else None,
+            priority=(
+                int(priority_value)
+                if isinstance(priority_value, (int, float, str))
+                else 100
+            ),
             is_default=bool(md.get("wf_is_default", False)),
             multiplicity=str(md.get("wf_multiplicity", "one")),
         )
@@ -101,7 +126,7 @@ class Predicate(Protocol):
     def __call__(
         self,
         edge: WorkflowEdgeInfo,
-        state: WorkflowState,
+        state: Mapping[str, object],
         result: object,
     ) -> bool: ...
 
@@ -114,11 +139,14 @@ class CancellationChecker(Protocol):
 
 class BasePredicate:
     def __call__(
-        self, e: WorkflowEdgeInfo, state: WorkflowState, result: StepRunResult
-    ):
+        self,
+        edge: WorkflowEdgeInfo,
+        state: Mapping[str, object],
+        result: object,
+    ) -> bool:
         route_names = get_route_next_names(result)
         if route_names:
-            return e.name in route_names
+            return edge.name in route_names
         else:
             return True  # always true if step does not specify next step names
 

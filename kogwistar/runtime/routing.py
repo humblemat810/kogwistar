@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import cast
 
-from .contract import BasePredicate, Predicate, WorkflowEdgeInfo
+from .contract import BasePredicate, Predicate, WorkflowEdgeInfo, WorkflowEdgeLike
 from .models import get_route_next_names
 
 
@@ -85,7 +86,7 @@ def compute_route_next(
 
     def _edge_info(edge: object) -> WorkflowEdgeInfo:
         try:
-            return WorkflowEdgeInfo.from_workflow_edge(edge)
+            return WorkflowEdgeInfo.from_workflow_edge(cast(WorkflowEdgeLike, edge))
         except Exception:
             src_ids = list(getattr(edge, "source_ids", None) or [""])
             tgt_ids = list(getattr(edge, "target_ids", None) or [""])
@@ -155,7 +156,7 @@ def compute_route_next(
             targets = [str(value) for value in (getattr(edge, "target_ids", None) or [])]
             first_target = targets[0] if targets else ""
             try:
-                priority = int(edge.priority)
+                priority = int(getattr(edge, "priority"))
             except Exception:
                 priority = int(_edge_info(edge).priority)
             route_payload.append(
@@ -164,7 +165,7 @@ def compute_route_next(
                     "target_ids": targets,
                     "aliases": sorted(_edge_aliases(edge, first_target)) if first_target else [],
                     "predicate": (
-                        str(edge.predicate)
+                        str(getattr(edge, "predicate"))
                         if getattr(edge, "predicate", None) is not None
                         else None
                     ),
@@ -197,10 +198,12 @@ def compute_route_next(
             return native_computation
 
         def _recorded_predicate(
-            info: WorkflowEdgeInfo, _state: Mapping[str, object], _result: object
+            edge: WorkflowEdgeInfo,
+            state: Mapping[str, object],
+            result: object,
         ) -> bool:
-            for index, edge in enumerate(edges):
-                if _edge_id(edge) == info.edge_id:
+            for index, candidate in enumerate(edges):
+                if _edge_id(candidate) == edge.edge_id:
                     return predicate_results.get(index, False)
             return False
 
