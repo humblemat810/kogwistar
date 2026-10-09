@@ -100,6 +100,21 @@ def _failure(ctx: StepContext, message: str) -> RunFailure:
 ACLInputValue = ACLInput | ACLRecord | Mapping[str, object]
 
 
+def _json_number(value: object, *, name: str) -> int | float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{name} must be numeric")
+    return value
+
+
+def _json_int(value: object, *, name: str) -> int:
+    number = _json_number(value, name=name)
+    return int(number)
+
+
+def _json_float(value: object, *, name: str) -> float:
+    return float(_json_number(value, name=name))
+
+
 def _trusted_acl_inputs(ctx: StepContext, key: str) -> list[ACLInputValue]:
     """Read ACL descriptors from the runtime authority carrier only.
 
@@ -127,6 +142,10 @@ def _trusted_acl_inputs(ctx: StepContext, key: str) -> list[ACLInputValue]:
         return []
     if isinstance(state_supplied, Mapping) or isinstance(state_supplied, ACLInput):
         state_supplied = [state_supplied]
+    elif not isinstance(state_supplied, Sequence) or isinstance(
+        state_supplied, (str, bytes, bytearray)
+    ):
+        return []
     return [
         ACLInput(
             object_id=str(item.get("object_id") or item.get("id") or "untrusted-state-acl"),
@@ -197,8 +216,12 @@ def register_model_step(
             object_id=output_key,
             generation_id=str(ctx.run_id),
         )
+        budget_hints = ctx.state_view.get("agent_budget_hints")
         model_context: dict[str, JsonValue] = {
-            "budget": cast(JsonValue, dict(ctx.state_view.get("agent_budget_hints") or {}))
+            "budget": cast(
+                JsonValue,
+                dict(budget_hints) if isinstance(budget_hints, Mapping) else {},
+            )
         }
         # ACL derivation is an authorization and audit concern, not prompt
         # content.  Do not expose modes, policies, source IDs, scopes, or
@@ -214,7 +237,10 @@ def register_model_step(
         if isinstance(usage, Mapping):
             try:
                 ledger.debit(
-                    int(usage.get("total_tokens") or usage.get("output_tokens") or 0),
+                    _json_int(
+                        usage.get("total_tokens") or usage.get("output_tokens") or 0,
+                        name="total_tokens",
+                    ),
                     reason=op,
                     run_id=str(ctx.run_id),
                 )
@@ -228,7 +254,7 @@ def register_model_step(
                         run_id=str(ctx.run_id),
                         source="agent",
                         kind="cost",
-                        amount=float(actual_cost),
+                        amount=_json_float(actual_cost, name="total_cost"),
                         unit="total_cost",
                         meta={"reason": op},
                     )
