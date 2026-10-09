@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from kogwistar.engine_core.async_compat import run_awaitable_blocking
 from kogwistar.engine_core.scoped_seq import (
@@ -22,6 +22,14 @@ def infer_conversation_edge_causal_type(relation: str) -> str:
     return CONVERSATION_EDGE_CAUSAL_TYPE_BY_RELATION.get(relation, "reference")
 
 
+def _backend_map(value: object) -> dict[str, Any]:
+    return cast(dict[str, Any], value)
+
+
+def _json_int(value: object, default: int = 0) -> int:
+    return value if type(value) is int else default
+
+
 if TYPE_CHECKING:
     from kogwistar.engine_core.engine import GraphKnowledgeEngine
 
@@ -36,9 +44,9 @@ def where_and(*clauses: dict) -> dict:
 
 
 def edge_endpoints_exists(engine: GraphKnowledgeEngine, *, where: dict) -> bool:
-    res = run_awaitable_blocking(
+    res = _backend_map(run_awaitable_blocking(
         engine.backend.edge_endpoints_get(where=where, include=["metadatas"], limit=1)
-    )
+    ))
     mds = res.get("metadatas") or []
     return bool(mds and mds[0])
 
@@ -46,9 +54,9 @@ def edge_endpoints_exists(engine: GraphKnowledgeEngine, *, where: dict) -> bool:
 def edge_endpoints_first_edge_id(
     engine: GraphKnowledgeEngine, *, where: dict
 ) -> str | None:
-    res = run_awaitable_blocking(
+    res = _backend_map(run_awaitable_blocking(
         engine.backend.edge_endpoints_get(where=where, include=["metadatas"], limit=1)
-    )
+    ))
     mds = res.get("metadatas") or []
     if not mds or not mds[0]:
         return None
@@ -102,7 +110,7 @@ def is_duplicate_next_turn_noop(
     if not existing_eid:
         return False
 
-    got = engine.backend.edge_get(ids=[existing_eid], include=["documents"])
+    got = _backend_map(engine.backend.edge_get(ids=[existing_eid], include=["documents"]))
     docs = got.get("documents") or []
     if not docs:
         return False
@@ -237,7 +245,7 @@ def get_last_seq_node(engine: GraphKnowledgeEngine, conversation_id, min_seq=Non
         min_seq = engine.meta_sqlite.next_user_seq(conversation_id)
     if engine.kg_graph_type != KIND_CHAT:
         raise RuntimeError("chat-only call")
-    got = run_awaitable_blocking(
+    got = _backend_map(run_awaitable_blocking(
         engine.backend.node_get(
             where={
                 "$and": [{"conversation_id": conversation_id}]
@@ -250,13 +258,16 @@ def get_last_seq_node(engine: GraphKnowledgeEngine, conversation_id, min_seq=Non
             # changed a non-empty conversation into an empty one.
             include=["documents", "metadatas"],
         )
-    )
+    ))
     if not got["ids"]:
         return None
-    nodes: list[ConversationNode] = engine.read.nodes_from_single_or_id_query_result(
-        got, node_type=ConversationNode
-    )
-    nodes.sort(key=lambda n: n.metadata.get("seq") or -1)
+    nodes = [
+        cast(ConversationNode, node)
+        for node in engine.read.nodes_from_single_or_id_query_result(
+            got, node_type=ConversationNode
+        )
+    ]
+    nodes.sort(key=lambda n: _json_int(n.metadata.get("seq"), -1))
     return nodes[-1]
 
 
@@ -273,7 +284,7 @@ def get_chat_tail(
 ) -> ConversationNode | None:
     if engine.kg_graph_type != KIND_CHAT:
         raise RuntimeError("chat-only call")
-    got = run_awaitable_blocking(
+    got = _backend_map(run_awaitable_blocking(
         engine.backend.node_get(
             where={
                 "$and": [
@@ -290,12 +301,15 @@ def get_chat_tail(
             # conversation progression depend on an unrelated HNSW read.
             include=["documents", "metadatas"],
         )
-    )
+    ))
     if not got["ids"]:
         return None
-    nodes: list[ConversationNode] = engine.read.nodes_from_single_or_id_query_result(
-        got, node_type=ConversationNode
-    )
+    nodes = [
+        cast(ConversationNode, node)
+        for node in engine.read.nodes_from_single_or_id_query_result(
+            got, node_type=ConversationNode
+        )
+    ]
     nodes2 = [x for x in nodes if x.metadata.get("entity_type") in tail_search_includes]
     if not nodes2:
         return None
