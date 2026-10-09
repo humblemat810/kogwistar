@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from typing import TypeAliasType
+# TypeAliasType is provided by typing_extensions on Python 3.11, including
+# the supported PyPy 3.11 runtime. The stdlib copy only arrived in Python 3.12.
+from typing_extensions import TypeAliasType
 
 JsonScalar = TypeAliasType("JsonScalar", None | bool | int | float | str)
 JsonValue = TypeAliasType(
