@@ -118,7 +118,7 @@ class _SyncResolverAdapter:
         return _as_sync_step_fn(self._resolver(op))
 
 
-class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
+class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
     """Async workflow runtime backed by the native asyncio scheduler."""
 
     def __init__(

@@ -561,7 +561,7 @@ def _make_runtime_edge(
 from threading import Lock
 
 
-class WorkflowRuntime(BaseRuntime):
+class WorkflowRuntime(BaseRuntime[StepResolver]):
     CHECKPOINT_SCHEMA_VERSION = 1
     """
     Core engine for executing graph-based **workflow designs**.

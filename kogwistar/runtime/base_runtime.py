@@ -3,8 +3,8 @@ from __future__ import annotations
 import copy
 import logging
 import warnings
-from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any, TypeAlias
+from collections.abc import Iterable, Mapping
+from typing import TYPE_CHECKING, Any, Generic, TypeAlias, TypeVar
 
 from .._rust_bridge import (
     RustParityError,
@@ -28,12 +28,25 @@ from .routing import RouteComputation, compute_route_next
 
 if TYPE_CHECKING:
     from ..engine_core.engine import GraphKnowledgeEngine
-    from .runtime import StepResolver
 
 
 RuntimePayload: TypeAlias = dict[str, object]
 StateSchema: TypeAlias = dict[str, str]
 RuntimeStateUpdate: TypeAlias = list[tuple[str, dict[str, object]]] | list[StateUpdate]
+ResolverT = TypeVar("ResolverT")
+
+
+def _state_list(state: WorkflowState, key: str) -> list[object]:
+    current = state.setdefault(key, [])
+    if not isinstance(current, list):
+        raise TypeError(f"state key {key!r} must contain a list for an append/extend update")
+    return current
+
+
+def _extend_values(value: object, *, key: str) -> Iterable[object]:
+    if not isinstance(value, Iterable):
+        raise TypeError(f"state key {key!r} requires an iterable for an extend update")
+    return value
 
 
 class RuntimeContractError(RuntimeError):
@@ -172,7 +185,7 @@ def apply_state_update_inplace(
         if update_item[0] == "a":
             append_dict: dict = update_item[1]
             for k, v in append_dict.items():
-                mute_state.setdefault(k, []).append(v)
+                _state_list(mute_state, k).append(v)
         elif update_item[0] == "u":
             update_dict: dict = update_item[1]
             for k, v in update_dict.items():
@@ -180,7 +193,7 @@ def apply_state_update_inplace(
         elif update_item[0] == "e":
             update_dict: dict = update_item[1]
             for k, v in update_dict.items():
-                mute_state.setdefault(k, []).extend(v)
+                _state_list(mute_state, k).extend(_extend_values(v, key=k))
     if update:
         schema = state_schema or {}
         for k, v in update.items():
@@ -189,7 +202,7 @@ def apply_state_update_inplace(
             else:
                 op = "u"
             if op == "a":
-                mute_state.setdefault(k, []).extend(v)
+                _state_list(mute_state, k).extend(_extend_values(v, key=k))
             else:
                 mute_state[k] = v
 
@@ -211,7 +224,7 @@ def checkpointable_state_copy(state: WorkflowState) -> WorkflowState:
     }
 
 
-class BaseRuntime:
+class BaseRuntime(Generic[ResolverT]):
     """Pure shared runtime helpers.
 
     Keep only logic that is scheduler-agnostic and backend-agnostic so sync and
@@ -219,7 +232,7 @@ class BaseRuntime:
     """
 
     workflow_engine: GraphKnowledgeEngine
-    step_resolver: StepResolver
+    step_resolver: ResolverT
     predicate_registry: dict[str, Predicate]
 
     validate_initial_state = staticmethod(validate_initial_state)
@@ -321,7 +334,9 @@ class BaseRuntime:
         invocation: WorkflowInvocationRequest,
     ) -> WorkflowState:
         child_state: WorkflowState = dict(parent_state)  # type: ignore[arg-type]
-        path = [str(item) for item in (parent_state.get("_wf_invocation_path") or [])]
+        raw_path = parent_state.get("_wf_invocation_path")
+        path_values = raw_path if isinstance(raw_path, (list, tuple)) else ()
+        path = [str(item) for item in path_values]
         child_workflow = str(invocation.workflow_id)
         if child_workflow in path:
             raise ValueError(
