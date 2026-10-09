@@ -67,7 +67,8 @@ class AgenticAnsweringWorkflowDesigner(BaseWorkflowDesigner):
         if mode == "backbone":
             from ..engine_core.models import Grounding, Span
 
-            wid = lambda suffix: f"wf:{workflow_id}:{suffix}"
+            def wid(suffix: str) -> str:
+                return f"wf:{workflow_id}:{suffix}"
             sp = Span.from_dummy_for_workflow(workflow_id)
 
             def add_node(
@@ -96,6 +97,10 @@ class AgenticAnsweringWorkflowDesigner(BaseWorkflowDesigner):
                         "wf_fanout": fanout,
                         "wf_version": "v2",
                     },
+                    domain_id=None,
+                    canonical_entity_id=None,
+                    embedding=None,
+                    level_from_root=0,
                 )
                 self.workflow_engine.write.add_node(n)
 
@@ -132,6 +137,9 @@ class AgenticAnsweringWorkflowDesigner(BaseWorkflowDesigner):
                         "wf_is_default": is_default,
                         "wf_multiplicity": multiplicity,
                     },
+                    domain_id=None,
+                    canonical_entity_id=None,
+                    embedding=None,
                 )
                 self.workflow_engine.write.add_edge(e)
 
@@ -256,6 +264,10 @@ class ConversationWorkflowDesigner(BaseWorkflowDesigner):
                         "wf_version": "v2",
                         "wf_join": wf_join,
                     },
+                    domain_id=None,
+                    canonical_entity_id=None,
+                    embedding=None,
+                    level_from_root=0,
                     mentions=[
                         Grounding(spans=[Span.from_dummy_for_workflow(workflow_id)])
                     ],
@@ -298,6 +310,9 @@ class ConversationWorkflowDesigner(BaseWorkflowDesigner):
                     source_edge_ids=[],
                     target_edge_ids=[],
                     metadata=metadata_final,
+                    domain_id=None,
+                    canonical_entity_id=None,
+                    embedding=None,
                     mentions=[
                         Grounding(spans=[Span.from_dummy_for_workflow(workflow_id)])
                     ],
@@ -521,7 +536,7 @@ class ConversationWorkflowDesigner(BaseWorkflowDesigner):
                 pred=None,
                 is_default=True,
             )
-            if allow_branch := False:
+            if False:
                 add_node(
                     node_id=wid("start"),
                     label="Start",
