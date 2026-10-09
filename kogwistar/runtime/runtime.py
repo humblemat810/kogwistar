@@ -6,15 +6,17 @@ import pathlib
 import queue
 import time
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager, nullcontext
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass
 from os import PathLike
+from types import TracebackType
 from typing import (
     TYPE_CHECKING,
     Any,
     Protocol,
+    TypedDict,
     cast,
 )
 
@@ -72,6 +74,32 @@ class LaneMessageEventSinkLike(Protocol):
     """Structural contract for best-effort lifecycle event mirroring."""
 
     def __call__(self, event: dict[str, Json]) -> object: ...
+
+
+class ConversationBackendLike(Protocol):
+    """Minimal backend lookup surface used by terminal-run idempotency checks."""
+
+    def node_get(self, **kwargs: object) -> Mapping[str, object]: ...
+
+    def edge_get(self, **kwargs: object) -> Mapping[str, object]: ...
+
+
+class TraceSpanPayload(TypedDict):
+    """Typed payload used to construct workflow trace evidence spans."""
+
+    collection_page_url: str
+    document_page_url: str
+    doc_id: str
+    insertion_method: str
+    page_number: int
+    start_char: int
+    end_char: int
+    excerpt: str
+    context_before: str
+    context_after: str
+    chunk_id: str | None
+    source_cluster_id: str | None
+    verification: MentionVerification
 
 
 # ------------------------------------------------------------------
@@ -245,7 +273,7 @@ def _compute_may_reach_join_bitsets(
     return selected if selected is not None else python_value
 
 
-def _iter_bits(mask: int):
+def _iter_bits(mask: int) -> Iterator[int]:
     """Yield bit positions (0-based) for an int bitset."""
     # 2's complement tricks to get the first set least significant bit in binary embedding
     while mask:
@@ -281,7 +309,7 @@ def derive_child_authority_context(
     return MappingProxyType(context)
 
 
-def sink_observes_otel(sink: Any) -> bool:
+def sink_observes_otel(sink: object) -> bool:
     """Detect an explicitly supplied OTel sink without importing OTel."""
 
     if sink is None:
@@ -318,7 +346,7 @@ class RunResult:
 
 
 class _StateWriteTxn:
-    def __init__(self, ctx: StepContext):
+    def __init__(self, ctx: StepContext) -> None:
         self._ctx = ctx
 
     def __enter__(self) -> WorkflowState:
@@ -327,7 +355,12 @@ class _StateWriteTxn:
         # self._ctx.publish({"type": "state_write_start", "op": self._ctx.op})
         return self._ctx._state
 
-    def __exit__(self, exc_type, exc, tb) -> None:
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
         # optional:
         # self._ctx.publish({"type": "state_write_end", "op": self._ctx.op, "ok": exc is None})
         self._ctx._state_lock.release()
@@ -491,7 +524,9 @@ def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
-def _make_trace_span(*, conversation_id: str, excerpt: str, doc_id: str) -> Any:
+def _make_trace_span(
+    *, conversation_id: str, excerpt: str, doc_id: str
+) -> TraceSpanPayload:
     # We avoid importing models here to keep the runtime module lightweight.
     # The orchestrator will pass in a ready Span via a hook, OR we can create a minimal span-like dict.
     # In your repo, you already have Span model and Grounding/MentionVerification.
@@ -508,12 +543,12 @@ def _make_trace_span(*, conversation_id: str, excerpt: str, doc_id: str) -> Any:
         "context_after": "",
         "chunk_id": None,
         "source_cluster_id": None,
-        "verification": {
-            "method": "human",
-            "is_verified": True,
-            "score": 1.0,
-            "notes": "workflow trace",
-        },
+        "verification": MentionVerification(
+            method="human",
+            is_verified=True,
+            score=1.0,
+            notes="workflow trace",
+        ),
     }
 
 
@@ -715,7 +750,7 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
             )
 
     @contextmanager
-    def _trace_write_mode(self):
+    def _trace_write_mode(self) -> Iterator[None]:
         eng = self.conversation_engine
         if not self.fast_trace_persistence:
             yield
@@ -727,7 +762,7 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
         finally:
             eng._phase1_enable_index_jobs = prev_idx
 
-    def _maybe_step_uow(self):
+    def _maybe_step_uow(self) -> AbstractContextManager[object]:
         """Open a UoW transaction only when transaction_mode=='step'.
 
         This keeps callsites clean:
@@ -999,7 +1034,7 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
         mute_state: WorkflowState,
         state_update: list[tuple[str, dict[str, Any]]] | list[StateUpdate],
         update: dict | None = None,
-    ):
+    ) -> None:
         apply_state_update_inplace(
             mute_state,
             state_update,
@@ -1017,7 +1052,7 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
         workflow_id: str,
         conversation_id: str,
         turn_node_id: str,
-        cache_dir = None,
+        cache_dir: str | PathLike[str] | None = None,
         _parent_trace_context: TraceContext | None = None,
     ) -> RunResult:
         """
@@ -1199,7 +1234,7 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
             )
             previous_exec_node = fallback_exec_nodes[0] if fallback_exec_nodes else None
 
-        def _extract(items, keep):
+        def _extract(items: list[object], keep: list[object]) -> None:
             nonlocal token_found, mask_to_distribute, parent_token_id
             for item in items:
                 norm = None
@@ -1290,11 +1325,11 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
         _join_pos = {jid: i for i, jid in enumerate(join_node_ids)}
         jo = rt_join.get("join_outstanding", [0 for _ in join_node_ids])
 
-        def _inc(m: int):
+        def _inc(m: int) -> None:
             for bi in _iter_bits(m):
                 jo[bi] += 1
 
-        def _dec(m: int):
+        def _dec(m: int) -> None:
             for bi in _iter_bits(m):
                 jo[bi] = max(0, jo[bi] - 1)
 
@@ -1519,7 +1554,7 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
         workflow_id: str,
         conversation_id: str,
         turn_node_id: str,
-        cache_dir=None,
+        cache_dir: str | PathLike[str] | None = None,
         _parent_trace_context: TraceContext | None = None,
         _parent_authority_context: Mapping[str, Any] | None = None,
     ) -> RunResult:
@@ -1594,7 +1629,7 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
         turn_node_id: str | None = None,  # parent run may trigger another run in a node
         initial_state: WorkflowState,
         run_id: str | None = None,
-        cache_dir = None,
+        cache_dir: str | PathLike[str] | None = None,
         _resume_step_seq: int | None = None,
         _resume_last_exec_node: WorkflowStepExecNode | WorkflowRunNode | None = None,
         _run_metadata: Mapping[str, Any] | None = None,
@@ -1724,7 +1759,7 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
                 return (1 << bi) if bi is not None else 0
 
             def _normalize_join_waiter(
-                item: Any,
+                item: object,
             ) -> tuple[int, str, str | None] | None:
                 if not isinstance(item, (list, tuple)):
                     return None
@@ -1746,7 +1781,7 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
                 state["_rt_join"] = payload
 
             def _normalize_rt_token(
-                item: Any,
+                item: object,
             ) -> tuple[str, int, str, str | None] | None:
                 if not isinstance(item, (list, tuple)):
                     return None
@@ -3421,8 +3456,9 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
                 }
         return req_best
 
-    def _conversation_backend(self) -> Any | None:
-        return getattr(self.conversation_engine, "backend", None)
+    def _conversation_backend(self) -> ConversationBackendLike | None:
+        backend = getattr(self.conversation_engine, "backend", None)
+        return cast(ConversationBackendLike, backend) if backend is not None else None
 
     def _terminal_run_result(
         self, *, conversation_id: str, run_id: str
