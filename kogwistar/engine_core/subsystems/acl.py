@@ -1449,6 +1449,30 @@ class ACLAwareWriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"], WriteLike):
     def delete_edges_by_ids(self, edge_ids: list[str]) -> None:
         self._raw.delete_edges_by_ids(edge_ids)
 
+    def rust_postgres_delete_existing(
+        self, *, entity_kind: str, entity_ids: list[str]
+    ) -> bool:
+        return self._raw.rust_postgres_delete_existing(
+            entity_kind=entity_kind, entity_ids=entity_ids
+        )
+
+    def rust_postgres_replace_existing(
+        self,
+        *,
+        entity_kind: str,
+        entity_id: str,
+        document: str,
+        metadata_patch: dict[str, object],
+        payload: dict[str, object],
+    ) -> bool:
+        return self._raw.rust_postgres_replace_existing(
+            entity_kind=entity_kind,
+            entity_id=entity_id,
+            document=document,
+            metadata_patch=metadata_patch,
+            payload=payload,
+        )
+
     def add_node(self, node: Node, *args: Any, **kwargs: Any) -> None:
         if not self._e.acl.writes_can_share_backend_transaction():
             with self._e.uow():

@@ -4,6 +4,7 @@ from __future__ import annotations
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager
 from typing import (
+    Any,
     TYPE_CHECKING,
     Literal,
     Protocol,
@@ -448,6 +449,20 @@ class WriteLike(Protocol):
     def rebuild_node_refs_for_doc(self, doc_id: str) -> int: ...
     def rebuild_all_node_refs(self) -> int: ...
     def delete_edges_by_ids(self, edge_ids: list[str]) -> None: ...
+
+    def rust_postgres_delete_existing(
+        self, *, entity_kind: str, entity_ids: list[str]
+    ) -> bool: ...
+
+    def rust_postgres_replace_existing(
+        self,
+        *,
+        entity_kind: str,
+        entity_id: str,
+        document: str,
+        metadata_patch: dict[str, Any],
+        payload: dict[str, Any],
+    ) -> bool: ...
 
 
 class ExtractLike(Protocol):

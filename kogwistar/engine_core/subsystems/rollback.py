@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Any, Literal
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from ..async_compat import run_awaitable_blocking
+from ...json_types import JsonObject
 from ..models import Edge, Node
 from ..utils.metadata import json_or_none, strip_none
 from ..utils.refs import extract_doc_ids_from_refs
@@ -11,6 +13,37 @@ from .base import NamespaceProxy
 
 if TYPE_CHECKING:
     from ..engine import GraphKnowledgeEngine
+
+
+def _backend_object(value: object) -> JsonObject:
+    """Narrow an untyped backend response before reading persisted fields."""
+
+    if not isinstance(value, Mapping):
+        return {}
+    return cast(JsonObject, dict(value))
+
+
+def _backend_list(value: object) -> list[object]:
+    return list(value) if isinstance(value, list) else []
+
+
+def _backend_strings(value: object) -> list[str]:
+    return [item for item in _backend_list(value) if isinstance(item, str)]
+
+
+def _backend_objects(value: object) -> list[JsonObject]:
+    return [_backend_object(item) for item in _backend_list(value)]
+
+
+def _redirected_ids(
+    values: object, redirects: Mapping[str, str], removed: set[str]
+) -> list[str]:
+    result: list[str] = []
+    for value in _backend_list(values):
+        if not isinstance(value, str) or value in removed:
+            continue
+        result.append(redirects.get(value, value))
+    return result
 
 
 class RollbackSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
@@ -98,33 +131,50 @@ class RollbackSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
     def _load_nodes(self, node_ids: list[str]) -> list[Node]:
         if not node_ids:
             return []
-        got = run_awaitable_blocking(self._e.backend.node_get(ids=node_ids, include=["documents"]))
+        got = _backend_object(
+            run_awaitable_blocking(
+                self._e.backend.node_get(ids=node_ids, include=["documents"])
+            )
+        )
         out: list[Node] = []
-        for doc in got.get("documents") or []:
+        for doc in _backend_list(got.get("documents")):
             if doc:
-                out.append(Node.model_validate_json(doc))
+                if isinstance(doc, str):
+                    out.append(Node.model_validate_json(doc))
         return out
 
     def _load_edge(self, edge_id: str) -> Edge | None:
-        got = run_awaitable_blocking(self._e.backend.edge_get(ids=[edge_id], include=["documents"]))
-        docs = got.get("documents") or []
+        got = _backend_object(
+            run_awaitable_blocking(
+                self._e.backend.edge_get(ids=[edge_id], include=["documents"])
+            )
+        )
+        docs = _backend_list(got.get("documents"))
         if not docs or not docs[0]:
             return None
-        return Edge.model_validate_json(docs[0])
+        return Edge.model_validate_json(cast(str, docs[0]))
 
     def _edge_ids_for_endpoint(
         self, endpoint_id: str, endpoint_type: Literal["node", "edge"]
     ) -> set[str]:
-        rows = run_awaitable_blocking(self._e.backend.edge_endpoints_get(
-            where={
-                "$and": [{"endpoint_id": endpoint_id}, {"endpoint_type": endpoint_type}]
-            },
-            include=["metadatas"],
-        ))
+        rows = _backend_object(
+            run_awaitable_blocking(
+                self._e.backend.edge_endpoints_get(
+                    where={
+                        "$and": [
+                            {"endpoint_id": endpoint_id},
+                            {"endpoint_type": endpoint_type},
+                        ]
+                    },
+                    include=["metadatas"],
+                )
+            )
+        )
         edge_ids: set[str] = set()
-        for metadata in rows.get("metadatas") or []:
-            if metadata and metadata.get("edge_id"):
-                edge_ids.add(str(metadata["edge_id"]))
+        for metadata in _backend_list(rows.get("metadatas")):
+            metadata_object = _backend_object(metadata)
+            if metadata_object.get("edge_id"):
+                edge_ids.add(str(metadata_object["edge_id"]))
         return edge_ids
 
     def rollback_document(self, document_id: str):
@@ -136,14 +186,18 @@ class RollbackSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         repairs cascade through downstream edge endpoints so rollback converges the
         graph instead of leaving broken references behind.
         """
-        node_rows = run_awaitable_blocking(self._e.backend.node_docs_get(
-            where={"doc_id": document_id}, include=["metadatas"]
-        ))
+        node_rows = _backend_object(
+            run_awaitable_blocking(
+                self._e.backend.node_docs_get(
+                    where={"doc_id": document_id}, include=["metadatas"]
+                )
+            )
+        )
         affected_node_ids = sorted(
             {
                 str(metadata["node_id"])
-                for metadata in (node_rows.get("metadatas") or [])
-                if metadata and metadata.get("node_id")
+                for metadata in _backend_objects(node_rows.get("metadatas"))
+                if metadata.get("node_id")
             }
         )
 
@@ -211,23 +265,19 @@ class RollbackSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             mapped_source_ids = [
                 node_redirects.get(endpoint_id, endpoint_id)
                 for endpoint_id in (edge.source_ids or [])
-                if endpoint_id not in removed_node_ids
+                if endpoint_id is not None and endpoint_id not in removed_node_ids
             ]
             mapped_target_ids = [
                 node_redirects.get(endpoint_id, endpoint_id)
                 for endpoint_id in (edge.target_ids or [])
-                if endpoint_id not in removed_node_ids
+                if endpoint_id is not None and endpoint_id not in removed_node_ids
             ]
-            mapped_source_edge_ids = [
-                edge_redirects.get(endpoint_id, endpoint_id)
-                for endpoint_id in (getattr(edge, "source_edge_ids", []) or [])
-                if endpoint_id not in removed_edge_ids
-            ]
-            mapped_target_edge_ids = [
-                edge_redirects.get(endpoint_id, endpoint_id)
-                for endpoint_id in (getattr(edge, "target_edge_ids", []) or [])
-                if endpoint_id not in removed_edge_ids
-            ]
+            mapped_source_edge_ids = _redirected_ids(
+                getattr(edge, "source_edge_ids", []), edge_redirects, removed_edge_ids
+            )
+            mapped_target_edge_ids = _redirected_ids(
+                getattr(edge, "target_edge_ids", []), edge_redirects, removed_edge_ids
+            )
 
             endpoints_changed = (
                 mapped_source_ids != (edge.source_ids or [])
@@ -300,7 +350,13 @@ class RollbackSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 edge_queue.extend(sorted(downstream))
 
         doc_ids = set(
-            run_awaitable_blocking(self._e.backend.document_get(where={"doc_id": document_id}))["ids"]
+            _backend_strings(
+                _backend_object(
+                    run_awaitable_blocking(
+                        self._e.backend.document_get(where={"doc_id": document_id})
+                    )
+                ).get("ids")
+            )
         )
         if not self._e.write.rust_postgres_delete_existing(
             entity_kind="document", entity_ids=sorted(doc_ids)
@@ -309,7 +365,13 @@ class RollbackSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 self._e.backend.document_delete(where={"doc_id": document_id})
             )
         doc_ids_after = set(
-            run_awaitable_blocking(self._e.backend.document_get(where={"doc_id": document_id}))["ids"]
+            _backend_strings(
+                _backend_object(
+                    run_awaitable_blocking(
+                        self._e.backend.document_get(where={"doc_id": document_id})
+                    )
+                ).get("ids")
+            )
         )
         return {
             "rolled_back_doc_id": document_id,
@@ -415,8 +477,12 @@ class RollbackSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
 
         def _save_node(d: dict):
             nid = d["id"]
-            prior = run_awaitable_blocking(self._e.backend.node_get(ids=[nid], include=["metadatas"]))
-            meta = (prior.get("metadatas") or [None])[0] or {}
+            prior = _backend_object(
+                run_awaitable_blocking(
+                    self._e.backend.node_get(ids=[nid], include=["metadatas"])
+                )
+            )
+            meta = (_backend_objects(prior.get("metadatas")) or [{}])[0]
             refs = d.get("mentions", d.get("references", []))
             meta = {**meta, "mentions": json.dumps(refs, ensure_ascii=False)}
             document = json.dumps(d, ensure_ascii=False)
@@ -440,8 +506,12 @@ class RollbackSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
 
         def _save_edge(d: dict):
             eid = d["id"]
-            prior = run_awaitable_blocking(self._e.backend.edge_get(ids=[eid], include=["metadatas"]))
-            meta = (prior.get("metadatas") or [None])[0] or {}
+            prior = _backend_object(
+                run_awaitable_blocking(
+                    self._e.backend.edge_get(ids=[eid], include=["metadatas"])
+                )
+            )
+            meta = (_backend_objects(prior.get("metadatas")) or [{}])[0]
             refs = d.get("mentions", d.get("references", []))
             meta = {**meta, "references": json.dumps(refs, ensure_ascii=False)}
             document = json.dumps(d, ensure_ascii=False)
@@ -460,42 +530,56 @@ class RollbackSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
 
         node_ids = set()
         try:
-            nd = run_awaitable_blocking(self._e.backend.node_docs_get(
-                where={"doc_id": doc_id}, include=["metadatas"]
-            ))
-            for m in nd.get("metadatas") or []:
-                if m and m.get("node_id"):
-                    node_ids.add(m["node_id"])
-            summary["deleted_node_doc_rows"] = len(nd.get("ids") or [])
+            nd = _backend_object(
+                run_awaitable_blocking(
+                    self._e.backend.node_docs_get(
+                        where={"doc_id": doc_id}, include=["metadatas"]
+                    )
+                )
+            )
+            for m in _backend_list(nd.get("metadatas")):
+                metadata = _backend_object(m)
+                if metadata.get("node_id"):
+                    node_ids.add(str(metadata["node_id"]))
+            summary["deleted_node_doc_rows"] = len(_backend_list(nd.get("ids")))
         except Exception:
             pass
         if not node_ids:
             try:
-                q = run_awaitable_blocking(
-                    self._e.backend.node_get(where={"doc_id": doc_id})
+                q = _backend_object(
+                    run_awaitable_blocking(
+                        self._e.backend.node_get(where={"doc_id": doc_id})
+                    )
                 )
-                for nid in q.get("ids") or []:
+                for nid in _backend_strings(q.get("ids")):
                     node_ids.add(nid)
             except Exception:
                 pass
 
         edge_ids = set()
         try:
-            ee = run_awaitable_blocking(self._e.backend.edge_endpoints_get(
-                where={"doc_id": doc_id}, include=["metadatas"]
-            ))
-            for m in ee.get("metadatas") or []:
-                if m and m.get("edge_id"):
-                    edge_ids.add(m["edge_id"])
-            summary["deleted_edge_endpoints"] = len(ee.get("ids") or [])
+            ee = _backend_object(
+                run_awaitable_blocking(
+                    self._e.backend.edge_endpoints_get(
+                        where={"doc_id": doc_id}, include=["metadatas"]
+                    )
+                )
+            )
+            for m in _backend_list(ee.get("metadatas")):
+                metadata = _backend_object(m)
+                if metadata.get("edge_id"):
+                    edge_ids.add(str(metadata["edge_id"]))
+            summary["deleted_edge_endpoints"] = len(_backend_list(ee.get("ids")))
         except Exception:
             pass
         if not edge_ids:
             try:
-                q = run_awaitable_blocking(
-                    self._e.backend.edge_get(where={"doc_id": doc_id})
+                q = _backend_object(
+                    run_awaitable_blocking(
+                        self._e.backend.edge_get(where={"doc_id": doc_id})
+                    )
                 )
-                for eid in q.get("ids") or []:
+                for eid in _backend_strings(q.get("ids")):
                     edge_ids.add(eid)
             except Exception:
                 pass
@@ -581,20 +665,33 @@ class RollbackSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         return summary
 
     def prune_node_from_edges(self, node_id: str):
-        eps = run_awaitable_blocking(self._e.backend.edge_endpoints_get(
-            where={"$and": [{"endpoint_id": node_id}, {"endpoint_type": "node"}]},
-            include=["documents"],
-        ))
-        if not eps["ids"]:
+        eps = _backend_object(
+            run_awaitable_blocking(
+                self._e.backend.edge_endpoints_get(
+                    where={
+                        "$and": [
+                            {"endpoint_id": node_id},
+                            {"endpoint_type": "node"},
+                        ]
+                    },
+                    include=["documents"],
+                )
+            )
+        )
+        if not _backend_strings(eps.get("ids")):
             return {"deleted_edges": set(), "updated_edges": set()}
-        if eps_doc := eps["documents"]:
+        if eps_doc := _backend_strings(eps.get("documents")):
             pass
         else:
             raise Exception("Document loss")
         edge_ids = list({json.loads(doc)["edge_id"] for doc in eps_doc})
-        edges = run_awaitable_blocking(self._e.backend.edge_get(
-            ids=edge_ids, include=["documents", "metadatas"]
-        ))
+        edges = _backend_object(
+            run_awaitable_blocking(
+                self._e.backend.edge_get(
+                    ids=edge_ids, include=["documents", "metadatas"]
+                )
+            )
+        )
 
         removed_edge_ids: set[str] = set()
         updated_edge_ids: set[str] = set()
@@ -641,12 +738,13 @@ class RollbackSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 self._e.write.index_edge_refs(edge)
 
         for eid, edoc, meta in zip(
-            edges.get("ids") or [],
-            edges.get("documents") or [],
-            edges.get("metadatas") or [],
+            _backend_strings(edges.get("ids")),
+            _backend_strings(edges.get("documents")),
+            _backend_list(edges.get("metadatas")),
         ):
             e = Edge.model_validate_json(edoc)
-            relation = (meta or {}).get("relation") or e.relation
+            metadata = _backend_object(meta)
+            relation = metadata.get("relation") or e.relation
 
             if relation == "same_as":
                 edge_deleted, new_edge = self._e.adjudicate.rebalance_same_as_edge(
@@ -658,7 +756,7 @@ class RollbackSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                     run_awaitable_blocking(self._e.backend.edge_endpoints_delete(where={"edge_id": eid}))
                     removed_edge_ids.add(eid)
                 else:
-                    _replace_base_edge(new_edge, meta)
+                    _replace_base_edge(new_edge, metadata)
                     run_awaitable_blocking(self._e.backend.edge_endpoints_delete(where={"edge_id": eid}))
                     ep_ids, ep_docs, ep_metas = [], [], []
                     for role, node_ids in (
@@ -667,13 +765,15 @@ class RollbackSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                     ):
                         for nid in node_ids:
                             ep_id = f"{eid}::{role}::{nid}"
-                            node_doc = run_awaitable_blocking(self._e.backend.node_get(
-                                ids=[nid], include=["documents"]
-                            ))
-                            if node_doc is None:
-                                raise Exception(f"node_doc for {nid} is lost")
+                            node_doc = _backend_object(
+                                run_awaitable_blocking(
+                                    self._e.backend.node_get(
+                                        ids=[nid], include=["documents"]
+                                    )
+                                )
+                            )
                             per_doc_id = None
-                            if node_doc_doc := node_doc.get("documents"):
+                            if node_doc_doc := _backend_strings(node_doc.get("documents")):
                                 try:
                                     n = Node.model_validate_json(node_doc_doc[0])
                                     per_doc_id = getattr(n, "doc_id", None)
@@ -712,7 +812,7 @@ class RollbackSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 removed_edge_ids.add(eid)
             else:
                 e.source_ids, e.target_ids = new_src, new_tgt
-                _replace_base_edge(e, meta)
+                _replace_base_edge(e, metadata)
                 run_awaitable_blocking(self._e.backend.edge_endpoints_delete(
                     where={"$and": [{"edge_id": eid}, {"node_id": node_id}]}
                 ))
