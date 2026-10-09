@@ -90,6 +90,12 @@ def _json_embeddings(value: object) -> list[JsonValue]:
     return result
 
 
+def _json_float(value: JsonValue, default: float = 0.0) -> float:
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    return default
+
+
 class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
     def __init__(self, engine: GraphKnowledgeEngine) -> None:
         super().__init__(engine)
@@ -212,9 +218,10 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 [normalize_embedding_vector(record.get("embedding")) for record in records]
             )]
         if "distances" in effective_include:
-            result["distances"] = [
-                [float(match.get("distance", 0.0)) for match in matches]
-            ]
+            result["distances"] = cast(
+                JsonValue,
+                [[_json_float(match.get("distance", 0.0)) for match in matches]],
+            )
         return result
 
     def _stage1_fallback_get(

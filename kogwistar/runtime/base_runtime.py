@@ -16,6 +16,7 @@ from .._rust_bridge import (
     runtime_scheduler_tick,
 )
 from ..id_provider import stable_id
+from ..json_types import JsonObject, JsonValue
 from .budget import StateBackedBudgetLedger
 from .contract import Predicate
 from .models import (
@@ -74,14 +75,28 @@ def _native_state_update_payload(
     state_update: RuntimeStateUpdate,
     update: RuntimePayload | None,
     state_schema: StateSchema | None,
-) -> RuntimePayload:
+) -> JsonObject:
     """JSON transport form; state-update pairs are tuples in public Python API."""
     return {
-        "state": copy.deepcopy(state),
-        "state_update": [list(item) for item in state_update],
-        "update": update,
-        "state_schema": state_schema or {},
+        "state": cast(JsonValue, copy.deepcopy(state)),
+        "state_update": cast(JsonValue, [list(item) for item in state_update]),
+        "update": cast(JsonValue, update),
+        "state_schema": cast(JsonValue, state_schema or {}),
     }
+
+
+def _text_result(value: JsonObject, *, fields: tuple[str, ...]) -> dict[str, str]:
+    """Validate a native result whose public contract is a string map."""
+    result: dict[str, str] = {}
+    for field in fields:
+        item = value.get(field)
+        if not isinstance(item, str):
+            raise RuntimeContractError(
+                f"runtime native result field {field!r} must be a string",
+                code="KOGWISTAR_RUNTIME_NATIVE_RESULT_INVALID",
+            )
+        result[field] = item
+    return result
 
 
 def _native_state_update_safe(
@@ -172,12 +187,14 @@ def apply_state_update_inplace(
     json_compatible = json_contract_compatible(native_transport) and _native_state_update_safe(
         mute_state, state_update, update, state_schema
     )
-    native_state: RuntimePayload | None = None
+    native_state: JsonObject | None = None
     if mode != "python" and json_compatible:
         native_payload = _native_state_update_payload(
             mute_state, state_update, update, state_schema
         )
-        native_state = runtime_apply_state_update(payload=native_payload)
+        native_state = cast(
+            JsonObject, runtime_apply_state_update(payload=native_payload)
+        )
 
     for update_item in state_update:
         update_item: tuple[str, dict[str, Any]] | StateUpdate
@@ -388,7 +405,8 @@ class BaseRuntime(Generic[ResolverT]):
             "result_state_key": invocation.result_state_key
             or f"workflow_result::{invocation.workflow_id}",
         }
-        return runtime_plan_nested_invocation(
+        return _text_result(
+            runtime_plan_nested_invocation(
             payload={
                 "parent_run_id": parent_run_id,
                 "workflow_id": invocation.workflow_id,
@@ -400,7 +418,9 @@ class BaseRuntime(Generic[ResolverT]):
                 "parent_turn_node_id": turn_node_id,
                 "turn_node_id": invocation.turn_node_id,
             },
-            python_value=python_value,
+            python_value=cast(JsonObject, python_value),
+            ),
+            fields=("child_run_id", "conversation_id", "turn_node_id", "result_state_key"),
         )
 
     @staticmethod

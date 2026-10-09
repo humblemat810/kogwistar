@@ -8,7 +8,9 @@ import re
 from collections.abc import Iterable
 from contextlib import contextmanager
 from contextvars import ContextVar
-from typing import Any
+from typing import Any, TypedDict, cast
+
+from .json_types import JsonObject, JsonValue
 
 from ._rust_bridge import (
     RustParityError,
@@ -16,6 +18,36 @@ from ._rust_bridge import (
     json_contract_compatible,
     short_id_transform as _rust_short_id_transform,
 )
+
+
+class ShortIdState(TypedDict):
+    """Persisted short-id mapping with a stable JSON shape."""
+
+    next: int
+    l2s: dict[str, str]
+    s2l: dict[str, str]
+
+
+def _decode_state(value: object) -> ShortIdState | None:
+    if not isinstance(value, dict):
+        return None
+    next_value = value.get("next")
+    long_to_short = value.get("l2s")
+    short_to_long = value.get("s2l")
+    if (
+        not isinstance(next_value, int)
+        or isinstance(next_value, bool)
+        or not isinstance(long_to_short, dict)
+        or not isinstance(short_to_long, dict)
+        or not all(isinstance(key, str) and isinstance(item, str) for key, item in long_to_short.items())
+        or not all(isinstance(key, str) and isinstance(item, str) for key, item in short_to_long.items())
+    ):
+        return None
+    return {
+        "next": next_value,
+        "l2s": dict(long_to_short),
+        "s2l": dict(short_to_long),
+    }
 
 
 
@@ -63,7 +95,7 @@ class ShortIdMapper:
         self.run_id = run_id
         self.root = pathlib.Path(root_dir)
         self.root.mkdir(parents=True, exist_ok=True)
-        self.state = self._load()
+        self.state: ShortIdState = self._load()
         self.obj_max_depth: int = 1  # shallow by default (top-level only)
 
     # --- persistence ---
@@ -71,11 +103,13 @@ class ShortIdMapper:
         h = hashlib.sha256(self.run_id.encode("utf-8")).hexdigest()[:32]
         return self.root / f"{h}.json"
 
-    def _load(self) -> dict:
+    def _load(self) -> ShortIdState:
         p = self._file()
         if p.exists():
             try:
-                return json.loads(p.read_text("utf-8"))
+                state = _decode_state(json.loads(p.read_text("utf-8")))
+                if state is not None:
+                    return state
             except Exception:
                 pass
         return {"next": 1, "l2s": {}, "s2l": {}}
@@ -87,13 +121,13 @@ class ShortIdMapper:
         self,
         value: Any,
         direction: str,
-        state: dict | None = None,
+        state: ShortIdState | None = None,
         *,
         primitive: bool = False,
-    ) -> dict:
+    ) -> JsonObject:
         return {
-            "state": self.state if state is None else state,
-            "input": value,
+            "state": cast(JsonValue, self.state if state is None else state),
+            "input": cast(JsonValue, value),
             "direction": direction,
             "depth": self.obj_max_depth - 1,
             "scalar_keys": list(self.SCALAR_ID_KEYS),
@@ -103,7 +137,7 @@ class ShortIdMapper:
 
     def _native_transform(
         self, value: Any, direction: str, *, primitive: bool = False
-    ) -> Any | None:
+    ) -> JsonValue | None:
         """JSON-only native transform. File persistence remains Python-owned."""
         if contract_implementation_mode() != "rust" or not json_contract_compatible(value):
             return None
@@ -122,15 +156,21 @@ class ShortIdMapper:
             if isinstance(code, str):
                 setattr(error, "code", code)
             raise error from None
-        self.state = result["state"]
+        if not isinstance(result, dict):
+            raise ValueError("Native short-id transform returned a non-object result")
+        native_result = cast(JsonObject, result)
+        state = _decode_state(native_result.get("state"))
+        if state is None:
+            raise ValueError("Native short-id transform returned invalid state")
+        self.state = state
         self._save()
-        return result["value"]
+        return native_result.get("value")
 
     def _shadow_compare(
         self,
         value: Any,
         direction: str,
-        before: dict,
+        before: ShortIdState,
         python_value: Any,
         *,
         primitive: bool = False,
@@ -143,7 +183,7 @@ class ShortIdMapper:
             ),
             python_value=None,
         )
-        expected = {"state": self.state, "value": python_value}
+        expected = {"state": self.state, "value": cast(JsonValue, python_value)}
         if native != expected:
             raise RustParityError(
                 "Rust parity mismatch for short_id_transform: "
@@ -184,8 +224,10 @@ class ShortIdMapper:
         # treat ANY other string as a long id in these fields
         native = self._native_transform(in_id, "l2s", primitive=True)
         if native is not None:
+            if not isinstance(native, str):
+                raise ValueError("Native short-id transform returned a non-string id")
             return native
-        before = json.loads(json.dumps(self.state, ensure_ascii=False))
+        before = cast(ShortIdState, json.loads(json.dumps(self.state, ensure_ascii=False)))
         output = self._alloc_short_for(in_id)
         return self._shadow_compare(in_id, "l2s", before, output, primitive=True)
 
@@ -197,8 +239,10 @@ class ShortIdMapper:
             raise ValueError("Only <sid>… is accepted in id fields.")
         native = self._native_transform(in_id, "s2l", primitive=True)
         if native is not None:
+            if not isinstance(native, str):
+                raise ValueError("Native short-id transform returned a non-string id")
             return native
-        before = json.loads(json.dumps(self.state, ensure_ascii=False))
+        before = cast(ShortIdState, json.loads(json.dumps(self.state, ensure_ascii=False)))
         long_id = self.state["s2l"].get(in_id)
         if not long_id:
             raise ValueError(f"Unknown short id '{in_id}' for this run.")

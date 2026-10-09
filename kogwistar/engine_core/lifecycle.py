@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Literal, TypeVar, cast
 
 from ..typing_interfaces import ProjectionBackendLike
+from ..json_types import JsonObject
 from .subsystems.base import NamespaceProxy
 
 if TYPE_CHECKING:
@@ -313,7 +314,7 @@ class LifecycleSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         *,
         entity_kind: str,
         entity_id: str,
-        lifecycle_patch: dict[str, object],
+        lifecycle_patch: JsonObject,
         op: str,
         **kw,
     ) -> bool | None:
@@ -322,7 +323,7 @@ class LifecycleSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         meta = getattr(self._e, "meta_sqlite", None)
         if not isinstance(meta, RustEnginePostgresMetaStore):
             return None
-        payload: dict[str, object] = {"entity_id": entity_id}
+        payload: JsonObject = {"entity_id": entity_id}
         if kw.get("reason") is not None:
             payload["reason"] = kw["reason"]
         if kw.get("deleted_by") is not None:
@@ -376,7 +377,7 @@ class LifecycleSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         *,
         entity_kind: str,
         entity_id: str,
-        lifecycle_patch: dict[str, object],
+        lifecycle_patch: JsonObject,
     ) -> bool:
         from .rust_postgres_session import RustEnginePostgresMetaStore
 

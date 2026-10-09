@@ -45,7 +45,7 @@ from kogwistar.engine_core.storage_backend import (
     NoopUnitOfWork,
     TwoStageProjectionCapability,
 )
-from kogwistar.json_types import JsonValue
+from kogwistar.json_types import JsonObject, JsonValue
 
 JsonObject = dict[str, JsonValue]
 
@@ -207,7 +207,9 @@ def _matches_where(
         metadata
     ) and metadata_filter_json_contract_compatible(where)
     if mode == "rust" and native_compatible:
-        return contract_metadata_filter_matches(metadata=metadata, where=where)
+        return contract_metadata_filter_matches(
+            metadata=cast(JsonObject, metadata), where=cast(JsonValue, where)
+        )
 
     # The native boundary is canonical JSON. Keep legacy support for Python-only
     # values (tuple/set/non-finite float/non-string keys) rather than silently
@@ -216,8 +218,8 @@ def _matches_where(
     if not native_compatible:
         return python_value
     return contract_metadata_filter_matches(
-        metadata=metadata,
-        where=where,
+        metadata=cast(JsonObject, metadata),
+        where=cast(JsonValue, where),
         python_value=python_value,
     )
 

@@ -49,6 +49,7 @@ from .base_runtime import (
 )
 from .contract import CancellationChecker, Predicate
 from .design import validate_workflow_design
+from .native_contracts import join_arrival_result, successor_plan
 from .projections import (
     WORKFLOW_RUNTIME_PROJECTION_SCHEMA_VERSION,
     workflow_checkpoint_latest_projection_namespace,
@@ -2530,7 +2531,7 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
                             runtime_mode = runtime_implementation_mode()
                             native_join = None
                             if runtime_mode in {"shadow", "rust"} and join_idx is not None:
-                                native_join = runtime_apply_join_arrival(
+                                native_join = join_arrival_result(runtime_apply_join_arrival(
                                     payload={
                                         "join_index": int(join_idx),
                                         "join_outstanding": list(_join_outstanding),
@@ -2549,7 +2550,7 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
                                         },
                                         "merge": bool(_join_is_merge[nid]),
                                     }
-                                )
+                                ))
                             if runtime_mode == "rust" and native_join is not None:
                                 _join_outstanding[:] = [
                                     int(value) for value in native_join["join_outstanding"]
@@ -3162,10 +3163,9 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
                         )
                     elif runtime_mode == "rust":
                         native_plan = runtime_plan_successors(payload=successor_payload)
-                        _join_outstanding[:] = [
-                            int(value) for value in native_plan["join_outstanding"]
-                        ]
-                        for planned in native_plan["tokens"]:
+                        native_tokens, native_join_outstanding = successor_plan(native_plan)
+                        _join_outstanding[:] = native_join_outstanding
+                        for planned in native_tokens:
                             nxt = str(planned["node_id"])
                             nxt_mask = int(planned["join_mask"])
                             planned_token_id = str(planned["token_id"])

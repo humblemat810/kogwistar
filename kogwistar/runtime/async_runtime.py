@@ -28,6 +28,7 @@ from .base_runtime import (
 from .contract import CancellationChecker, Predicate
 from .executor import TerminalStatus, WorkflowExecutor
 from .models import RunFailure, StepRunResult, WorkflowState
+from .native_contracts import join_arrival_result, successor_plan
 from .runtime import (
     EventEmitter,
     EventSink,
@@ -1184,6 +1185,7 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
                         ],
                     }
             native_plan = None
+            native_tokens = []
             if runtime_mode == "shadow":
                 oracle_outstanding = list(join_outstanding)
                 oracle_tokens = []
@@ -1219,12 +1221,11 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
                 )
             elif runtime_mode == "rust":
                 native_plan = runtime_plan_successors(payload=successor_payload)
-                join_outstanding[:] = [
-                    int(value) for value in native_plan["join_outstanding"]
-                ]
+                native_tokens, native_join_outstanding = successor_plan(native_plan)
+                join_outstanding[:] = native_join_outstanding
 
             planned_tokens = (
-                native_plan["tokens"]
+                native_tokens
                 if native_plan is not None
                 else [
                     {
@@ -1274,7 +1275,7 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
                     if runtime_mode == "rust" and join_idx is not None:
                         from kogwistar._rust_bridge import runtime_apply_join_arrival
 
-                        native_join = runtime_apply_join_arrival(
+                        native_join = join_arrival_result(runtime_apply_join_arrival(
                             payload={
                                 "join_index": int(join_idx),
                                 "join_outstanding": list(join_outstanding),
@@ -1293,10 +1294,8 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
                                 },
                                 "merge": True,
                             }
-                        )
-                        join_outstanding[:] = [
-                            int(value) for value in native_join["join_outstanding"]
-                        ]
+                        ))
+                        join_outstanding[:] = native_join["join_outstanding"]
                         waiters[:] = [
                             (
                                 int(waiter["join_mask"]),

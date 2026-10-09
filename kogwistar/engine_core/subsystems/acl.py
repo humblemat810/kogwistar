@@ -27,7 +27,7 @@ from ...engine_core.models import (
 )
 from ...engine_core.vector_search import VectorSearchHit
 from ...id_provider import stable_id
-from ...json_types import JsonValue
+from ...json_types import JsonObject, JsonValue
 from ...typing_interfaces import QueryEmbeddingInput, ReadLike, WriteLike
 from .base import NamespaceProxy
 
@@ -1623,8 +1623,8 @@ class ACLAwareWriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"], WriteLike):
         entity_kind: str,
         entity_id: str,
         document: str,
-        metadata_patch: dict[str, object],
-        payload: dict[str, object],
+        metadata_patch: JsonObject,
+        payload: JsonObject,
     ) -> bool:
         return self._raw.rust_postgres_replace_existing(
             entity_kind=entity_kind,
