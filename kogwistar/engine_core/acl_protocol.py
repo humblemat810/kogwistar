@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Protocol, runtime_checkable
 
+from ..acl.graph import ACLDecision, ACLNodeReadDecision
 from .models import Edge, Node
 from .vector_search import VectorSearchHit
 
@@ -18,10 +19,34 @@ from .vector_search import VectorSearchHit
 class ACLPolicyProtocol(Protocol):
     """Minimum engine-owned policy surface required when ACL is enabled."""
 
-    def current_principal_context(self) -> object: ...
-    def decide_acl(self, **kwargs: object) -> object: ...
-    def decide_acl_node_read(self, **kwargs: object) -> object: ...
-    def record_default_acl_for_item(self, item: object, *, grain: str) -> object: ...
+    def current_principal_context(self) -> tuple[str, tuple[str, ...], str | None]: ...
+
+    def decide_acl(
+        self,
+        *,
+        grain: str | None = None,
+        truth_graph: str,
+        entity_id: str,
+        target_item_id: str | None = None,
+        principal_id: str,
+        principal_groups: Sequence[str] = (),
+        security_scope: str | None = None,
+    ) -> ACLDecision: ...
+
+    def decide_acl_node_read(
+        self,
+        *,
+        item_grain: str,
+        truth_graph: str,
+        entity_id: str,
+        target_item_ids: Sequence[str],
+        principal_id: str,
+        grounding_item_ids: Sequence[str] = (),
+        principal_groups: Sequence[str] = (),
+        security_scope: str | None = None,
+    ) -> ACLNodeReadDecision: ...
+
+    def record_default_acl_for_item(self, item: Node | Edge, *, grain: str) -> None: ...
     def writes_can_share_backend_transaction(self) -> bool: ...
 
 
