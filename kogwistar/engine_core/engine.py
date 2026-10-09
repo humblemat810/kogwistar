@@ -175,6 +175,10 @@ except Exception:
 
 PageLike = Union[str, dict[str, Any]]
 NodeOrEdge: TypeAlias = Node | Edge
+ParsedExtraction: TypeAlias = LLMGraphExtraction | PureGraph | GraphExtractionWithIDs
+PersistedGraphObject: TypeAlias = Node | Edge | PureChromaNode | PureChromaEdge
+DocumentContext: TypeAlias = tuple[list[dict[str, Any]], list[dict[str, Any]]]
+PageText: TypeAlias = tuple[int, str]
 
 
 class StorageBackendFactory(Protocol):
@@ -1101,7 +1105,7 @@ class GraphKnowledgeEngine:
 
     def _select_doc_context(
         self, doc_id: str, max_nodes: int = 200, max_edges: int = 400
-    ):
+    ) -> DocumentContext:
         return self.persist.select_doc_context(
             doc_id, max_nodes=max_nodes, max_edges=max_edges
         )
@@ -1111,16 +1115,20 @@ class GraphKnowledgeEngine:
         parsed: LLMGraphExtraction | PureGraph | GraphExtractionWithIDs,
         alias_key: str,
         alias_book: AliasBook | None = None,
-    ):
+    ) -> tuple[set[str], set[str]]:
         return self.persist.preflight_validate(parsed, alias_key, alias_book=alias_book)
 
-    def _assert_endpoints_exist(self, edge: Edge | PureChromaEdge):
+    def _assert_endpoints_exist(self, edge: Edge | PureChromaEdge) -> None:
         return self.persist.assert_endpoints_exist(edge)
 
-    def _build_deps(self, parsed):
+    def _build_deps(
+        self, parsed: ParsedExtraction
+    ) -> tuple[list[str], dict[str, str], dict[str, PersistedGraphObject]]:
         return self.persist.build_deps(parsed)
 
-    def ingest_with_toposort(self, parsed, *, doc_id: str):
+    def ingest_with_toposort(
+        self, parsed: ParsedExtraction, *, doc_id: str
+    ) -> dict[str, object]:
         return self.persist.ingest_with_toposort(parsed, doc_id=doc_id)
 
     def _resolve_llm_ids(
@@ -1132,8 +1140,11 @@ class GraphKnowledgeEngine:
         return self.persist.resolve_llm_ids(doc_id, parsed, alias_book=alias_book)
 
     def _aliasify_for_prompt(
-        self, doc_id: str, ctx_nodes: list[dict], ctx_edges: list[dict]
-    ):
+        self,
+        doc_id: str,
+        ctx_nodes: list[dict[str, Any]],
+        ctx_edges: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str, str]:
         return self.extract.aliasify_for_prompt(doc_id, ctx_nodes, ctx_edges)
 
     def _resolve_extraction_schema_mode(
@@ -1145,10 +1156,14 @@ class GraphKnowledgeEngine:
     def _schema_prompt_rules(self, mode: ResolvedExtractionSchemaMode) -> str:
         return self.extract.schema_prompt_rules(mode)
 
-    def _structured_schema_for_mode(self, mode: ResolvedExtractionSchemaMode):
+    def _structured_schema_for_mode(
+        self, mode: ResolvedExtractionSchemaMode
+    ) -> tuple[type[BaseModel], bool]:
         return self.extract.structured_schema_for_mode(mode)
 
-    def _build_structured_output_for_mode(self, mode: ResolvedExtractionSchemaMode):
+    def _build_structured_output_for_mode(
+        self, mode: ResolvedExtractionSchemaMode
+    ) -> tuple[type[BaseModel], bool]:
         # Back-compat shim: structured-output construction moved into llm task providers.
         return self.extract.structured_schema_for_mode(mode)
 
@@ -1285,9 +1300,7 @@ class GraphKnowledgeEngine:
     def _alias_book(self, key: str) -> AliasBook:
         return self.alias_books.get(key)
 
-    def _coerce_pages(
-        self, content_or_pages
-    ):  # -> list[tuple[int, str]] | list[Any] | Any:
+    def _coerce_pages(self, content_or_pages: object) -> list[PageText]:
         return self.extract.coerce_pages(content_or_pages)
 
     # ----------------------------
