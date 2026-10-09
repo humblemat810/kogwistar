@@ -9,7 +9,7 @@ import math
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Protocol, cast
 from urllib.parse import quote
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -20,6 +20,35 @@ from kogwistar.runtime.checkpointed_projection import ProjectionPayload
 
 _TOKEN_RE = re.compile(r"[\w.-]+", re.UNICODE)
 _LOG = logging.getLogger(__name__)
+
+
+def _json_object(value: object) -> JsonObject:
+    """Narrow a durable JSON value before reading catalog fields from it."""
+
+    if isinstance(value, dict):
+        return cast(JsonObject, value)
+    return {}
+
+
+def _json_object_list(value: object) -> list[JsonObject]:
+    """Return only object records from a persisted JSON list."""
+
+    if not isinstance(value, list):
+        return []
+    return [_json_object(item) for item in value if isinstance(item, dict)]
+
+
+def _json_int(value: object, default: int = 0) -> int:
+    """Read an integer JSON field without trusting an arbitrary persisted value."""
+
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (int, float, str)):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+    return default
 
 class CatalogAcl(Protocol):
     """Authorize one catalog entry for a principal."""
@@ -559,13 +588,19 @@ class DurableCatalogStore(CatalogStore):
         self,
         metadata: NamedProjectionStore,
         *,
+        acl_enabled: bool = True,
+        acl_checker: CatalogAcl | None = None,
+        group_acl_checker: CatalogGroupAcl | None = None,
+        semantic_ranker: CatalogSemanticRanker | None = None,
         tenant_id: str | None,
         project_id: str | None,
-        **kwargs: object,
     ) -> None:
         self.tenant_id = tenant_id
         self.project_id = project_id
         super().__init__(
+            acl_enabled=acl_enabled,
+            acl_checker=acl_checker,
+            group_acl_checker=group_acl_checker,
             metadata=metadata,
             projection_namespace=scoped_projection_namespace(
                 CATALOG_PROJECTION_NAMESPACE,
@@ -574,7 +609,7 @@ class DurableCatalogStore(CatalogStore):
             ),
             tenant_id=tenant_id,
             project_id=project_id,
-            **kwargs,
+            semantic_ranker=semantic_ranker,
         )
         if not callable(getattr(metadata, "list_named_projections", None)):
             raise TypeError("metadata must implement named projection operations")
@@ -587,7 +622,7 @@ class DurableCatalogStore(CatalogStore):
         metadata = self._metadata
         if metadata is None:
             raise RuntimeError("durable catalog metadata is not configured")
-        return metadata
+        return cast(NamedProjectionStore, metadata)
 
     def _matches_store_scope(
         self,
@@ -622,7 +657,7 @@ class DurableCatalogStore(CatalogStore):
         legacy_current: dict[str, CatalogEntry] = {}
         rows = self._durable_metadata.list_named_projections(self._projection_namespace)
         for row in rows:
-            payload = row.get("payload") or {}
+            payload = _json_object(row.get("payload"))
             entry_data = payload.get("entry")
             if isinstance(entry_data, dict):
                 entry = CatalogEntry.model_validate(entry_data)
@@ -631,13 +666,13 @@ class DurableCatalogStore(CatalogStore):
                     revisions.setdefault(logical_id, []).append(entry)
                 else:  # Legacy current/history blob; retain read compatibility.
                     legacy_current[logical_id] = entry
-            history_data = payload.get("history") or []
+            history_data = _json_object_list(payload.get("history"))
             if history_data and not str(row.get("key", "")).startswith("group:"):
                 self._history[str(row["key"])] = [CatalogEntry.model_validate(item) for item in history_data]
             if payload.get("record_kind") == "catalog_current" and row.get(
                 "materialization_status"
             ) != "retired":
-                pointers[str(payload["logical_id"])] = int(payload["current_revision"])
+                pointers[str(payload["logical_id"])] = _json_int(payload["current_revision"])
             group_data = payload.get("group")
             if isinstance(group_data, dict):
                 group = CatalogGroup.model_validate(group_data)
@@ -661,7 +696,9 @@ class DurableCatalogStore(CatalogStore):
     def _cas_values(row: ProjectionPayload | None) -> tuple[int | None, int | None]:
         if row is None:
             return None, None
-        return int(row.get("last_authoritative_seq", 0)), int(row.get("last_materialized_seq", 0))
+        return _json_int(row.get("last_authoritative_seq")), _json_int(
+            row.get("last_materialized_seq")
+        )
 
     def _cas(
         self,
@@ -813,7 +850,7 @@ class DurableCatalogStore(CatalogStore):
                 self._projection_namespace, pointer_key
             )
             if row is not None:
-                payload = dict(row.get("payload") or {})
+                payload = _json_object(row.get("payload"))
                 payload.update(
                     {
                         "record_kind": "catalog_current",
@@ -839,49 +876,113 @@ class DurableCatalogStore(CatalogStore):
                     self._projection_namespace, logical_id
                 )
                 if legacy is not None:
-                    payload = dict(legacy.get("payload") or {})
+                    payload = _json_object(legacy.get("payload"))
                     payload["entry"] = None
-                    revision = int(legacy.get("last_authoritative_seq", 1))
+                    revision = _json_int(legacy.get("last_authoritative_seq"), 1)
                     self._cas(logical_id, payload, legacy, revision)
             self._entries.pop(logical_id, None)
         return removed
 
-    def get(self, logical_id: str, **kwargs: object) -> CatalogEntry | None:
-        if not self._matches_store_scope(
-            tenant_id=kwargs.get("tenant_id"), project_id=kwargs.get("project_id")
-        ):
+    def get(
+        self,
+        logical_id: str,
+        *,
+        principal: str = "system",
+        scope: str | None = None,
+        tenant_id: str | None = None,
+        project_id: str | None = None,
+    ) -> CatalogEntry | None:
+        if not self._matches_store_scope(tenant_id=tenant_id, project_id=project_id):
             return None
         self._refresh()
-        return super().get(logical_id, **kwargs)
+        return super().get(
+            logical_id,
+            principal=principal,
+            scope=scope,
+            tenant_id=tenant_id,
+            project_id=project_id,
+        )
 
-    def history(self, logical_id: str, **kwargs: object) -> tuple[CatalogEntry, ...]:
-        if not self._matches_store_scope(
-            tenant_id=kwargs.get("tenant_id"), project_id=kwargs.get("project_id")
-        ):
+    def history(
+        self,
+        logical_id: str,
+        *,
+        principal: str = "system",
+        scope: str | None = None,
+        tenant_id: str | None = None,
+        project_id: str | None = None,
+    ) -> tuple[CatalogEntry, ...]:
+        if not self._matches_store_scope(tenant_id=tenant_id, project_id=project_id):
             return ()
         self._refresh()
-        return super().history(logical_id, **kwargs)
+        return super().history(
+            logical_id,
+            principal=principal,
+            scope=scope,
+            tenant_id=tenant_id,
+            project_id=project_id,
+        )
 
-    def browse(self, *args: object, **kwargs: object) -> tuple[CatalogEntry, ...]:
-        if not self._matches_store_scope(
-            tenant_id=kwargs.get("tenant_id"), project_id=kwargs.get("project_id")
-        ):
+    def browse(
+        self,
+        group_id: str | None = None,
+        *,
+        principal: str = "system",
+        scope: str | None = None,
+        tenant_id: str | None = None,
+        project_id: str | None = None,
+    ) -> tuple[CatalogEntry, ...]:
+        if not self._matches_store_scope(tenant_id=tenant_id, project_id=project_id):
             return ()
         self._refresh()
-        return super().browse(*args, **kwargs)
+        return super().browse(
+            group_id,
+            principal=principal,
+            scope=scope,
+            tenant_id=tenant_id,
+            project_id=project_id,
+        )
 
-    def search(self, *args: object, **kwargs: object) -> tuple[CatalogSearchResult, ...]:
-        if not self._matches_store_scope(
-            tenant_id=kwargs.get("tenant_id"), project_id=kwargs.get("project_id")
-        ):
+    def search(
+        self,
+        query: str,
+        *,
+        principal: str = "system",
+        scope: str | None = None,
+        tenant_id: str | None = None,
+        project_id: str | None = None,
+        mode: str = "lexical",
+        limit: int = 20,
+    ) -> tuple[CatalogSearchResult, ...]:
+        if not self._matches_store_scope(tenant_id=tenant_id, project_id=project_id):
             return ()
         self._refresh()
-        return super().search(*args, **kwargs)
+        return super().search(
+            query,
+            principal=principal,
+            scope=scope,
+            tenant_id=tenant_id,
+            project_id=project_id,
+            mode=mode,
+            limit=limit,
+        )
 
-    def group_tree(self, *args: object, **kwargs: object) -> tuple[CatalogGroup, ...]:
-        if not self._matches_store_scope(
-            tenant_id=kwargs.get("tenant_id"), project_id=kwargs.get("project_id")
-        ):
+    def group_tree(
+        self,
+        *,
+        root_id: str | None = None,
+        principal: str = "system",
+        scope: str | None = None,
+        tenant_id: str | None = None,
+        project_id: str | None = None,
+    ) -> tuple[CatalogGroup, ...]:
+        if not self._matches_store_scope(tenant_id=tenant_id, project_id=project_id):
             return ()
         self._refresh()
-        return super().group_tree(*args, **kwargs)
+        return super().group_tree(
+            root_id=root_id,
+            principal=principal,
+            scope=scope,
+            tenant_id=tenant_id,
+            project_id=project_id,
+        )
