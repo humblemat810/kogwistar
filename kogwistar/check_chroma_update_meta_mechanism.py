@@ -1,5 +1,5 @@
-import chromadb
-from chromadb.config import Settings
+import chromadb  # pyright: ignore[reportMissingImports]
+from chromadb.config import Settings  # pyright: ignore[reportMissingImports]
 
 # --- Connect to Chroma ---
 client = chromadb.Client(Settings(anonymized_telemetry=False))

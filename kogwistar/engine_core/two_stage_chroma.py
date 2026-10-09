@@ -8,7 +8,8 @@ their revision fingerprint decide whether a promotion is still current.
 from __future__ import annotations
 
 import json
-from typing import Any
+from collections.abc import Iterable, Sequence
+from typing import Any, cast
 
 from .async_compat import run_awaitable_blocking
 from .edge_endpoint_rows import edge_endpoint_rows
@@ -118,7 +119,12 @@ class SQLiteChromaTwoStageProjectionAdapter:
         query = getattr(self._meta(), "query_stage1_node_projections", None)
         if not callable(query):
             raise RuntimeError("Chroma two-stage arrangement lacks Stage-1 query")
-        return list(query(self._namespace(), **kwargs))
+        return list(
+            cast(
+                Iterable[dict[str, Any]],
+                query(self._namespace(), **kwargs),
+            )
+        )
 
     def remove_stage1(self, *, entity_kind: str, entity_id: str, **_: Any) -> None:
         if entity_kind not in {"node", "edge"}:
@@ -293,7 +299,7 @@ class SQLiteChromaTwoStageProjectionAdapter:
             if not callable(provider):
                 raise RuntimeError("embedding provider has no batch interface")
             raw_embeddings = run_awaitable_blocking(provider(documents))
-            embeddings = list(raw_embeddings)
+            embeddings = list(cast(Sequence[list[float]], raw_embeddings))
             if len(embeddings) != len(prepared):
                 raise RuntimeError("embedding provider returned wrong batch length")
         except BaseException:

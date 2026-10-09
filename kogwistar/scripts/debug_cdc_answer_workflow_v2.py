@@ -100,9 +100,10 @@ def _validate_event_shape(ev: dict[str, Any]) -> tuple[bool, str]:
         return False, "missing seq"
     if not isinstance(ev.get("op"), str):
         return False, "op not str"
-    if not isinstance(ev.get("seq"), int):
+    seq_value = ev.get("seq")
+    if not isinstance(seq_value, int):
         try:
-            int(ev.get("seq"))
+            int(str(seq_value))
         except Exception:
             return False, "seq not int-like"
     return True, "ok"
