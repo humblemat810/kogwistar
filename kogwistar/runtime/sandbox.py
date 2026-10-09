@@ -8,7 +8,7 @@ import subprocess
 import threading
 import uuid
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 from kogwistar.runtime.models import (
     RunFailure,
@@ -27,20 +27,20 @@ class SandboxRequest:
     context: dict[str, Any] = field(default_factory=dict)
 
 
-def _coerce_step_result(payload: Any) -> StepRunResult:
+def _coerce_step_result(payload: object) -> StepRunResult:
     if isinstance(payload, (RunSuccess, RunFailure, RunSuspended)):
         return payload
     if isinstance(payload, dict):
         # Support legacy sandbox payloads that omit nullable result fields.
-        payload = dict(payload)
-        payload.setdefault("conversation_node_id", None)
-        payload.setdefault("state_update", [])
-        status = payload.get("status")
+        payload_dict = cast(dict[str, Any], dict(payload))
+        payload_dict.setdefault("conversation_node_id", None)
+        payload_dict.setdefault("state_update", [])
+        status = payload_dict.get("status")
         if status == "failure":
-            return RunFailure(**payload)
+            return RunFailure(**payload_dict)
         if status == "suspended":
-            return RunSuspended(**payload)
-        return RunSuccess(**payload)
+            return RunSuspended(**payload_dict)
+        return RunSuccess(**payload_dict)
     return RunFailure(
         conversation_node_id=None,
         state_update=[],
@@ -65,7 +65,7 @@ class Sandbox(abc.ABC):
 
 class SimplePythonSandbox(Sandbox):
     """A local process-based sandbox using restricted globals."""
-    def __init__(self, timeout=30):
+    def __init__(self, timeout: float = 30) -> None:
         self.timeout = timeout
     def run(
         self, code: str, state: dict[str, Any], context: dict[str, Any]
@@ -120,7 +120,7 @@ class SimplePythonSandbox(Sandbox):
         state: dict[str, Any],
         context: dict[str, Any],
         queue: multiprocessing.Queue,
-    ):
+    ) -> None:
         try:
             # Restricted globals
             safe_globals = {
@@ -461,7 +461,7 @@ class DockerPythonSandbox(Sandbox):
 
 
 class AzureFunctionSandbox(Sandbox):
-    def __init__(self, endpoint: str, key: str | None = None):
+    def __init__(self, endpoint: str, key: str | None = None) -> None:
         self.endpoint = endpoint
         self.key = key
 
@@ -488,7 +488,7 @@ class AzureFunctionSandbox(Sandbox):
 
 
 class LambdaSandbox(Sandbox):
-    def __init__(self, function_name: str, region_name: str | None = None):
+    def __init__(self, function_name: str, region_name: str | None = None) -> None:
         self.function_name = function_name
         self.region_name = region_name
 
@@ -512,7 +512,7 @@ class LambdaSandbox(Sandbox):
 
 
 class CloudFunctionSandbox(Sandbox):
-    def __init__(self, endpoint: str):
+    def __init__(self, endpoint: str) -> None:
         self.endpoint = endpoint
 
     def run(
