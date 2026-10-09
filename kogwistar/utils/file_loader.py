@@ -1,7 +1,13 @@
 import os
 import pathlib
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
+from datetime import datetime
 from json import JSONDecodeError
+from typing import Protocol, cast
+
+
+class _PathPattern(Protocol):
+    def match(self, path: str) -> object: ...
 
 
 def nullable_concat(a: list | None, b: list | None) -> list | None:
@@ -16,20 +22,21 @@ class RawFileLoader:
         env_flist_path: str | None = None,
         allow_file_list: None | list[str] = None,
         allow_file_list_ref: str | None = None,
-        max_num_file=float("inf"),
-        oldest_datetime=None,
-        newest_datetime=None,
+        max_num_file: int | float = float("inf"),
+        oldest_datetime: str | datetime | None = None,
+        newest_datetime: str | datetime | None = None,
         root_folder_name: str | None = None,
         #  in_folder_name :Optional[str] = None,
         walk_root: str | None = None,
         compare_root: str | None = None,
-        include=None,
-        bucket_blob_connection_str=None,
-        file_walker_callback: Callable[[str, int | None], Iterable[tuple[str, str, str]]] | None = None,
-        pattern=None,
-        allow_startwith_relative_paths=False,
-        filtering_callbacks: list[Callable] | None = None,
-    ):
+        include: Iterable[str] | None = None,
+        bucket_blob_connection_str: str | None = None,
+        file_walker_callback: Callable[..., Iterable[tuple[str, list[str], list[str]]]]
+        | None = None,
+        pattern: _PathPattern | None = None,
+        allow_startwith_relative_paths: bool = False,
+        filtering_callbacks: list[Callable[[str], bool]] | None = None,
+    ) -> None:
         """file loader to either backward support for local folder loading behaviour, or cloud bucket/ blob stoages
 
         Args:
@@ -138,8 +145,8 @@ class RawFileLoader:
 
     def check_allowed_relative_path(
         self,
-        paths=None,
-    ):
+        paths: list[str] | None = None,
+    ) -> None:
         # ensure allowed
         allow_file_list = nullable_concat(self.allow_file_list, paths)
         if allow_file_list is None:
@@ -157,13 +164,13 @@ class RawFileLoader:
 
     def __iter__(
         self,
-        leaf_only=False,
-        file_non_exist_ok=False,
-        include=None,
+        leaf_only: bool = False,
+        file_non_exist_ok: bool = False,
+        include: Iterable[str] | None = None,
         allowed_files: list[str] | None = None,
         # allowed_prefixes : Optional[list[str | int]] = None,
         allowed_relative_paths: list[str] | None = None,
-    ):
+    ) -> Iterator[str]:
         """Iterate through availble files
 
         Args:
@@ -187,22 +194,24 @@ class RawFileLoader:
         count = 0
         from datetime import datetime
 
+        time_threshold_dt: datetime | None
         if self.oldest_datetime is not None:
             if type(self.oldest_datetime) is str:
                 time_threshold_dt = datetime.strptime(
                     self.oldest_datetime, "%Y-%m-%d %H:%M"
                 )
             else:
-                time_threshold_dt = self.oldest_datetime
+                time_threshold_dt = cast(datetime, self.oldest_datetime)
         else:
             time_threshold_dt = None
+        time_threshold_upper_dt: datetime | None
         if self.newest_datetime is not None:
             if type(self.newest_datetime) is str:
                 time_threshold_upper_dt = datetime.strptime(
                     self.newest_datetime, "%Y-%m-%d %H:%M"
                 )
             else:
-                time_threshold_upper_dt = self.newest_datetime
+                time_threshold_upper_dt = cast(datetime, self.newest_datetime)
         else:
             time_threshold_upper_dt = None
         nullable_allowed_relative_paths_set = []
@@ -327,12 +336,12 @@ class RawFileLoader:
 
 
 def filter_folder(
-    folder_root=os.path.join("..", "doc_data", "split_pages"),
-    min_page=45,
-    max_page: float = 55,
-    first=10,
-    verbose=True,
-):
+    folder_root: str | os.PathLike[str] = os.path.join("..", "doc_data", "split_pages"),
+    min_page: int = 45,
+    max_page: int | float = 55,
+    first: int | None = 10,
+    verbose: bool = True,
+) -> list[str]:
     folders = []
     for root, dirs, files in os.walk(folder_root):
         if dirs == []:
