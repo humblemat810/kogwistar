@@ -2786,7 +2786,7 @@ class Document(ModeSlicingMixin, BaseModel):
         pass
 
     @classmethod
-    def from_ocr(cls, id: str, ocr_content: dict, type: str):
+    def from_ocr(cls, id: str, ocr_content: dict, type: str) -> "Document":
         def prepare_document_for_llm(doc_dict: dict) -> tuple[dict, dict[str, dict]]:
             # Simple restructure of input format
             filename = list(doc_dict.keys())[0]
