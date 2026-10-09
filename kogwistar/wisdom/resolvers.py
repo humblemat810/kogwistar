@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, replace
-from typing import Any
+from typing import Any, cast
 
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.engine import scoped_namespace
+from kogwistar.engine_core.models import Node
 from kogwistar.policy import DefaultDreamLoopPolicy
 from kogwistar.runtime.models import RunSuccess
 from kogwistar.runtime.resolvers import MappingStepResolver
+from kogwistar.runtime.runtime import StepContext
 from kogwistar.wisdom.dream_loop import (
     DreamLoopEvidence,
     DreamLoopSignal,
@@ -30,7 +34,41 @@ from kogwistar.wisdom.dream_loop import (
 dream_default_resolver = MappingStepResolver()
 
 
-def _deps(ctx) -> dict[str, Any]:
+DreamDependencies = dict[str, object]
+
+
+def _state_payloads(ctx: StepContext, key: str) -> list[Mapping[str, object]]:
+    raw = ctx.state_view.get(key)
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise TypeError(f"{key} must be a list")
+    payloads: list[Mapping[str, object]] = []
+    for item in raw:
+        if not isinstance(item, Mapping):
+            raise TypeError(f"{key} entries must be mappings")
+        payloads.append(cast(Mapping[str, object], item))
+    return payloads
+
+
+def _state_ids(ctx: StepContext, key: str) -> list[str]:
+    raw = ctx.state_view.get(key)
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise TypeError(f"{key} must be a list")
+    return [str(item) for item in raw]
+
+
+def _as_int(value: object, default: int = 0) -> int:
+    if value is None:
+        return default
+    if isinstance(value, (int, float, str)):
+        return int(value)
+    raise TypeError("expected an integer-compatible value")
+
+
+def _deps(ctx: StepContext) -> DreamDependencies:
     deps = ctx.state_view.get("_deps")
     if not isinstance(deps, dict):
         deps = ctx.state_view.get("dream_deps")
@@ -39,28 +77,31 @@ def _deps(ctx) -> dict[str, Any]:
     return deps
 
 
-def _policy(ctx) -> DefaultDreamLoopPolicy:
+def _policy(ctx: StepContext) -> DefaultDreamLoopPolicy:
     deps = _deps(ctx)
     value = ctx.state_view.get("dream_policy") or deps.get("dream_policy")
     if isinstance(value, DefaultDreamLoopPolicy):
         return value
-    if isinstance(value, dict):
-        return DefaultDreamLoopPolicy(**value)
+    if isinstance(value, Mapping):
+        return DefaultDreamLoopPolicy(**dict(value))
     return DefaultDreamLoopPolicy()
 
 
-def _read_source_nodes(ctx) -> list[Any]:
+def _read_source_nodes(ctx: StepContext) -> list[Node]:
     deps = _deps(ctx)
-    source_engine = deps["source_engine"]
+    source_engine = cast(GraphKnowledgeEngine, deps["source_engine"])
     source_namespace = str(
         ctx.state_view.get("source_namespace") or deps.get("source_namespace") or ""
     )
-    source_where = dict(ctx.state_view.get("source_where") or deps.get("source_where") or {})
+    raw_where = ctx.state_view.get("source_where") or deps.get("source_where") or {}
+    if not isinstance(raw_where, Mapping):
+        raise TypeError("source_where must be a mapping")
+    source_where = dict(raw_where)
     with scoped_namespace(source_engine, source_namespace):
         return list(source_engine.read.get_nodes(where=source_where))
 
 
-def _conversation_namespace(ctx) -> str:
+def _conversation_namespace(ctx: StepContext) -> str:
     deps = _deps(ctx)
     return str(
         ctx.state_view.get("dream_conversation_namespace")
@@ -70,12 +111,12 @@ def _conversation_namespace(ctx) -> str:
     )
 
 
-def _wisdom_namespace(ctx) -> str:
+def _wisdom_namespace(ctx: StepContext) -> str:
     deps = _deps(ctx)
     return str(ctx.state_view.get("wisdom_namespace") or deps.get("wisdom_namespace") or "dream:wisdom")
 
 
-def _workflow_namespace(ctx) -> str:
+def _workflow_namespace(ctx: StepContext) -> str:
     deps = _deps(ctx)
     return str(
         ctx.state_view.get("materialized_workflow_namespace")
@@ -85,23 +126,30 @@ def _workflow_namespace(ctx) -> str:
     )
 
 
-def _target_workflow_id(ctx) -> str:
+def _target_workflow_id(ctx: StepContext) -> str:
     deps = _deps(ctx)
     return str(ctx.state_view.get("target_workflow_id") or deps.get("target_workflow_id") or ctx.workflow_id)
 
 
-def _created_at_ms(ctx) -> int:
+def _created_at_ms(ctx: StepContext) -> int:
     deps = _deps(ctx)
     value = ctx.state_view.get("dream_created_at_ms") or deps.get("dream_created_at_ms")
-    return int(value or 0)
+    return _as_int(value)
 
 
-def _proposal_payloads_to_models(payloads: list[Any]) -> list[WisdomRevisionProposal]:
-    return [WisdomRevisionProposal(**dict(item)) for item in payloads]
+def _proposal_payloads_to_models(payloads: Sequence[object]) -> list[WisdomRevisionProposal]:
+    proposals: list[WisdomRevisionProposal] = []
+    for item in payloads:
+        if not isinstance(item, Mapping):
+            raise TypeError("dream proposal payload must be a mapping")
+        proposals.append(
+            WisdomRevisionProposal(**cast(dict[str, Any], dict(item)))
+        )
+    return proposals
 
 
 @dream_default_resolver.register("dream_start")
-def _dream_start(ctx):
+def _dream_start(ctx: StepContext) -> RunSuccess:
     return RunSuccess(
         conversation_node_id=None,
         state_update=[("a", {"op_log": "dream_start"})],
@@ -109,10 +157,10 @@ def _dream_start(ctx):
 
 
 @dream_default_resolver.register("dream_select_signals")
-def _dream_select_signals(ctx):
+def _dream_select_signals(ctx: StepContext) -> RunSuccess:
     policy = _policy(ctx)
     source_nodes = _read_source_nodes(ctx)
-    budget_remaining = int(ctx.state_view.get("dream_budget_remaining") or 0)
+    budget_remaining = _as_int(ctx.state_view.get("dream_budget_remaining"))
     selection = select_dream_loop_signals(
         source_nodes,
         policy=policy,
@@ -140,21 +188,36 @@ def _dream_select_signals(ctx):
 
 
 @dream_default_resolver.register("dream_build_proposals")
-def _dream_build_proposals(ctx):
+def _dream_build_proposals(ctx: StepContext) -> RunSuccess:
     deps = _deps(ctx)
-    selected_payloads = list(ctx.state_view.get("dream_selected_signals") or [])
-    pending_payloads = list(ctx.state_view.get("dream_pending_proposals") or [])
-    selected_signals = [DreamLoopSignal(**dict(item)) for item in selected_payloads]
+    selected_payloads = _state_payloads(ctx, "dream_selected_signals")
+    pending_payloads = _state_payloads(ctx, "dream_pending_proposals")
+    selected_signals = [
+        DreamLoopSignal(**cast(dict[str, Any], dict(item)))
+        for item in selected_payloads
+    ]
     proposals = list(_proposal_payloads_to_models(pending_payloads))
     proposals.extend(
         build_wisdom_revision_proposals_for_signals(
             selected_signals,
             workflow_id=_target_workflow_id(ctx),
             created_at_ms=_created_at_ms(ctx),
-            summary_builder=deps.get("dream_summary_builder"),
-            reasoning_builder=deps.get("dream_reasoning_builder"),
-            suggested_change_builder=deps.get("dream_suggested_change_builder"),
-            confidence_builder=deps.get("dream_confidence_builder"),
+            summary_builder=cast(
+                Callable[[DreamLoopSignal], str] | None,
+                deps.get("dream_summary_builder"),
+            ),
+            reasoning_builder=cast(
+                Callable[[DreamLoopSignal], Sequence[str]] | None,
+                deps.get("dream_reasoning_builder"),
+            ),
+            suggested_change_builder=cast(
+                Callable[[DreamLoopSignal], dict[str, object]] | None,
+                deps.get("dream_suggested_change_builder"),
+            ),
+            confidence_builder=cast(
+                Callable[[DreamLoopSignal], float] | None,
+                deps.get("dream_confidence_builder"),
+            ),
         )
     )
     return RunSuccess(
@@ -167,10 +230,10 @@ def _dream_build_proposals(ctx):
 
 
 @dream_default_resolver.register("dream_persist_reasoning")
-def _dream_persist_reasoning(ctx):
+def _dream_persist_reasoning(ctx: StepContext) -> RunSuccess:
     deps = _deps(ctx)
-    conversation_engine = deps["conversation_engine"]
-    proposals = _proposal_payloads_to_models(list(ctx.state_view.get("dream_proposals") or []))
+    conversation_engine = cast(GraphKnowledgeEngine, deps["conversation_engine"])
+    proposals = _proposal_payloads_to_models(_state_payloads(ctx, "dream_proposals"))
     reasoning_nodes = [_reasoning_node_from_proposal(item) for item in proposals]
     reasoning_node_ids = tuple(
         _persist_nodes(conversation_engine, _conversation_namespace(ctx), reasoning_nodes)
@@ -185,11 +248,11 @@ def _dream_persist_reasoning(ctx):
 
 
 @dream_default_resolver.register("dream_persist_proposals")
-def _dream_persist_proposals(ctx):
+def _dream_persist_proposals(ctx: StepContext) -> RunSuccess:
     deps = _deps(ctx)
-    wisdom_engine = deps["wisdom_engine"]
-    proposals = _proposal_payloads_to_models(list(ctx.state_view.get("dream_proposals") or []))
-    reasoning_node_ids = list(ctx.state_view.get("dream_reasoning_node_ids") or [])
+    wisdom_engine = cast(GraphKnowledgeEngine, deps["wisdom_engine"])
+    proposals = _proposal_payloads_to_models(_state_payloads(ctx, "dream_proposals"))
+    reasoning_node_ids = _state_ids(ctx, "dream_reasoning_node_ids")
     proposal_nodes = [
         _proposal_node_from_proposal(
             item,
@@ -208,16 +271,22 @@ def _dream_persist_proposals(ctx):
 
 
 @dream_default_resolver.register("dream_evaluate_proposals")
-def _dream_evaluate_proposals(ctx):
+def _dream_evaluate_proposals(ctx: StepContext) -> RunSuccess:
     deps = _deps(ctx)
     policy = _policy(ctx)
     source_nodes = _read_source_nodes(ctx)
-    proposals = _proposal_payloads_to_models(list(ctx.state_view.get("dream_proposals") or []))
-    reasoning_node_ids = list(ctx.state_view.get("dream_reasoning_node_ids") or [])
-    wisdom_engine = deps["wisdom_engine"]
-    workflow_engine = deps["workflow_engine"]
-    approval_decider = deps.get("dream_approval_decider")
-    approved_workflow_builder = deps.get("dream_workflow_builder")
+    proposals = _proposal_payloads_to_models(_state_payloads(ctx, "dream_proposals"))
+    reasoning_node_ids = _state_ids(ctx, "dream_reasoning_node_ids")
+    wisdom_engine = cast(GraphKnowledgeEngine, deps["wisdom_engine"])
+    workflow_engine = cast(GraphKnowledgeEngine, deps["workflow_engine"])
+    approval_decider = cast(
+        Callable[[WisdomRevisionProposal, DreamLoopEvidence], object] | None,
+        deps.get("dream_approval_decider"),
+    )
+    approved_workflow_builder = cast(
+        Callable[[WisdomRevisionProposal, ProposalEvaluation], object] | None,
+        deps.get("dream_workflow_builder"),
+    )
 
     evaluations: list[ProposalEvaluation] = []
     evidence_items: list[DreamLoopEvidence] = []
@@ -388,7 +457,7 @@ def _dream_evaluate_proposals(ctx):
 
 
 @dream_default_resolver.register("dream_end")
-def _dream_end(ctx):
+def _dream_end(ctx: StepContext) -> RunSuccess:
     return RunSuccess(
         conversation_node_id=None,
         state_update=[
