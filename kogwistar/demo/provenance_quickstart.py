@@ -60,9 +60,9 @@ class DeterministicLexicalEmbeddingFunction:
         _ = config
         return cls()
 
-    def __call__(self, input: Sequence[str]) -> list[list[float]]:
+    def __call__(self, documents_or_texts: list[str]) -> list[list[float]]:
         vectors: list[list[float]] = []
-        for text in input:
+        for text in documents_or_texts:
             vec = [0.0] * self._dim
             tokens = re.findall(r"[a-z0-9_]+", str(text or "").lower())
             for token in tokens:
@@ -263,6 +263,7 @@ def _seed_conversation_memory(conversation_engine: GraphKnowledgeEngine) -> None
         domain_id=None,
         canonical_entity_id=None,
         embedding=None,
+        level_from_root=0,
     )
     pointer = ConversationNode(
         id="hist-ref-workflow",
@@ -295,6 +296,7 @@ def _seed_conversation_memory(conversation_engine: GraphKnowledgeEngine) -> None
         domain_id=None,
         canonical_entity_id=None,
         embedding=None,
+        level_from_root=0,
     )
     conversation_engine.write.add_node(summary)
     conversation_engine.write.add_node(pointer)
@@ -431,7 +433,7 @@ def run_provenance_quickstart(
         prev_turn_meta_summary: MetaFromLastSummary,
         **_: Any,
     ) -> ConversationAIResponse:
-        _ = conversation_id, prev_turn_meta_summary
+        del conversation_id, prev_turn_meta_summary
         answer_text = (
             "Kogwistar stores the run, evidence pointers, and replayable context "
             f"snapshots as graph data. Question: {question}"
