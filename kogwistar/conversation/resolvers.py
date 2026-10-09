@@ -23,7 +23,7 @@ The orchestrator should populate `_deps` in the workflow initial_state.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NotRequired, TypedDict, cast
 
 from .models import (
     ConversationEdge,
@@ -48,6 +48,45 @@ from ..utils.embedding_vectors import normalize_embedding_vector
 # Best-effort self-inspection for state schema inference
 
 Json = JsonValue
+
+
+class ConversationState(TypedDict):
+    """Known workflow-state fields used by conversation resolvers.
+
+    The runtime state remains an extensible JSON mapping.  This view documents
+    the fields owned by this module without changing the runtime wire format.
+    Opaque provider/dependency results stay behind their existing model types.
+    """
+
+    user_id: str
+    conversation_id: str
+    user_text: str
+    turn_node_id: str
+    embedding: list[float]
+    turn_index: int
+    self_span: Span
+    mem_id: str
+    role: NotRequired[str]
+    turn_id: NotRequired[str]
+    prev_turn_id: NotRequired[str]
+    prev_node_id: NotRequired[str]
+    prev_turn_meta_summary: NotRequired[MetaFromLastSummary | dict[str, JsonValue]]
+    memory_raw: NotRequired[MemoryRetrievalResult]
+    memory: NotRequired[dict[str, JsonValue]]
+    kg_raw: NotRequired[KnowledgeRetrievalResult]
+    kg: NotRequired[dict[str, JsonValue]]
+    answer: NotRequired[dict[str, JsonValue]]
+    evidence_pack_digest: NotRequired[dict[str, JsonValue]]
+    memory_context_text: NotRequired[str]
+    done: NotRequired[bool]
+
+
+def _state(ctx: StepContext) -> ConversationState:
+    """Expose the known conversation fields in the dynamic runtime state."""
+
+    return cast(ConversationState, ctx.state_view)
+
+
 if TYPE_CHECKING:
     from kogwistar.runtime.runtime import StepContext, StepRunResult
 
@@ -158,19 +197,42 @@ def _get_prev_turn_meta_summary_from_state_or_deps(
     deps = _deps(ctx)
     mts = deps.get("prev_turn_meta_summary")
     if mts is not None:
-        return mts
-    d = ctx.state_view.get("prev_turn_meta_summary") or {}
+        return cast(MetaFromLastSummary, mts)
+    d = _state(ctx).get("prev_turn_meta_summary") or {}
 
     values = dict(d) if isinstance(d, dict) else {}
+    def _int_value(value: object) -> int:
+        return value if type(value) is int else 0
+
     return MetaFromLastSummary(
-        prev_node_char_distance_from_last_summary=int(
+        prev_node_char_distance_from_last_summary=_int_value(
             values.get("prev_node_char_distance_from_last_summary", 0)
         ),
-        prev_node_distance_from_last_summary=int(
+        prev_node_distance_from_last_summary=_int_value(
             values.get("prev_node_distance_from_last_summary", 0)
         ),
-        tail_turn_index=int(values.get("tail_turn_index", 0)),
+        tail_turn_index=_int_value(values.get("tail_turn_index", 0)),
     )
+
+
+def _memory_result_from_state(state: ConversationState) -> MemoryRetrievalResult | None:
+    """Rehydrate the persisted JSON mirror at the workflow boundary."""
+
+    payload = state.get("memory")
+    if not isinstance(payload, dict):
+        return None
+    return MemoryRetrievalResult(**cast(dict[str, Any], payload))
+
+
+def _knowledge_result_from_state(
+    state: ConversationState,
+) -> KnowledgeRetrievalResult | None:
+    """Rehydrate the persisted KG JSON mirror at the workflow boundary."""
+
+    payload = state.get("kg")
+    if not isinstance(payload, dict):
+        return None
+    return KnowledgeRetrievalResult(**cast(dict[str, Any], payload))
 
 
 @default_resolver.register("add_user_turn")
@@ -188,7 +250,7 @@ def _add_user_turn(ctx: StepContext) -> StepRunResult:
     """
     deps = _deps(ctx)
     ce = deps["conversation_engine"]
-    sv = ctx.state_view
+    sv = _state(ctx)
 
     user_id = str(sv["user_id"])
     conversation_id = str(sv["conversation_id"])
@@ -334,7 +396,7 @@ def _link_prev_turn(ctx: StepContext) -> StepRunResult:
             "deps['add_link_to_new_turn'] must be callable for link_prev_turn"
         )
 
-    sv = ctx.state_view
+    sv = _state(ctx)
     prev_turn_id = sv.get("prev_turn_id") or sv.get("prev_node_id")
     if not prev_turn_id:
         # nothing to link
@@ -399,7 +461,7 @@ def _link_assistant_turn(ctx: StepContext) -> StepRunResult:
             "deps['add_link_to_new_turn'] must be callable for link_assistant_turn"
         )
 
-    sv = ctx.state_view
+    sv = _state(ctx)
     ans = sv.get("answer") or {}
     response_node_id = None
     if isinstance(ans, dict):
@@ -483,7 +545,7 @@ def _context_snapshot(ctx: StepContext) -> StepRunResult:
     deps = _deps(ctx)
     svc = _chat_service(deps)
     llm_tasks = deps.get("llm_tasks")
-    sv = ctx.state_view
+    sv = _state(ctx)
 
     conversation_id = str(sv["conversation_id"])
     run_id = str(sv.get("run_id") or deps.get("run_id") or f"run_{conversation_id}")
@@ -546,11 +608,11 @@ def _memory_retrieve(ctx: StepContext) -> StepRunResult:
         filtering_callback=deps["filtering_callback"],
     )
     tool_runner: ToolRunner | None = deps.get("tool_runner")
-    prev_turn_meta_summary = deps.get("prev_turn_meta_summary")
-    state_view = ctx.state_view
+    prev_turn_meta_summary = _get_prev_turn_meta_summary_from_state_or_deps(ctx)
+    state_view = _state(ctx)
     if tool_runner is None:
         # Fallback: run directly without tool recording.
-        mem, call_node_id = mem_retriever.retrieve(
+        mem = mem_retriever.retrieve(
             user_id=state_view["user_id"],
             current_conversation_id=state_view["conversation_id"],
             query_embedding=state_view["embedding"],
@@ -558,6 +620,7 @@ def _memory_retrieve(ctx: StepContext) -> StepRunResult:
             context_text="",
             n_results=12,
         )
+        call_node_id = None
     else:
         mem, call_node_id = tool_runner.run_tool(
             conversation_id=state_view["conversation_id"],
@@ -604,23 +667,24 @@ def _kg_retrieve(ctx: StepContext) -> StepRunResult:
         filtering_callback=deps["filtering_callback"],
         max_retrieval_level=max_retrieval_level,
     )
-    state_view = ctx.state_view
+    state_view = _state(ctx)
     mem_raw = state_view.get("memory_raw")
     seed_ids = (
         list(getattr(mem_raw, "seed_kg_node_ids", []) or [])
         if mem_raw is not None
         else []
     )
-    tool_runner: ToolRunner = deps.get("tool_runner")
-    prev_turn_meta_summary = deps.get("prev_turn_meta_summary")
-    state = ctx.state_view
+    tool_runner: ToolRunner | None = deps.get("tool_runner")
+    prev_turn_meta_summary = _get_prev_turn_meta_summary_from_state_or_deps(ctx)
+    state = _state(ctx)
     if tool_runner is None:
-        kg, call_node_id = kg_retriever.retrieve(
+        kg = kg_retriever.retrieve(
             user_text=state_view["user_text"],
             context_text="",
             query_embedding=state_view["embedding"],
             seed_kg_node_ids=seed_ids,
         )
+        call_node_id = None
     else:
         kw_args = {
             "max_retrieval_level": max_retrieval_level,
@@ -664,9 +728,9 @@ def _memory_pin(ctx: StepContext) -> StepRunResult:
 
     from .memory_retriever import MemoryRetriever
 
-    prev_turn_meta_summary = deps.get("prev_turn_meta_summary")
-    state = ctx.state_view
-    mem_rehydrated = MemoryRetrievalResult(**state.get("memory"))
+    prev_turn_meta_summary = _get_prev_turn_meta_summary_from_state_or_deps(ctx)
+    state = _state(ctx)
+    mem_rehydrated = _memory_result_from_state(state)
     mem_retriever = MemoryRetriever(
         conversation_engine=deps["conversation_engine"],
         llm_tasks=deps["llm_tasks"],
@@ -713,10 +777,10 @@ def _kg_pin(ctx: StepContext) -> StepRunResult:
     deps = _deps(ctx)
     with ctx.state_write as state:
         _append_op_log(state, "kg_pin")
-    state = ctx.state_view
+    state = _state(ctx)
     from .knowledge_retriever import KnowledgeRetriever
 
-    prev_turn_meta_summary = deps.get("prev_turn_meta_summary")
+    prev_turn_meta_summary = _get_prev_turn_meta_summary_from_state_or_deps(ctx)
     max_retrieval_level = int(deps.get("max_retrieval_level", 2))
 
     kg_retriever = KnowledgeRetriever(
@@ -727,7 +791,7 @@ def _kg_pin(ctx: StepContext) -> StepRunResult:
         max_retrieval_level=max_retrieval_level,
     )
 
-    kg_rehydrated = KnowledgeRetrievalResult(**state.get("kg"))
+    kg_rehydrated = _knowledge_result_from_state(state)
     pinned_ptrs: list[str] = []
     pinned_edges: list[str] = []
     if kg_rehydrated is not None and getattr(kg_rehydrated, "selected", None):
@@ -775,7 +839,7 @@ def _answer(ctx: StepContext) -> StepRunResult:
     cache_dir = getattr(ctx, "cache_dir", None)
     with ctx.state_write as state:
         _append_op_log(state, "answer")
-    state = ctx.state_view
+    state = _state(ctx)
     mts = _get_prev_turn_meta_summary_from_state_or_deps(ctx)
     answer_only = deps.get("answer_only")
     force_answer_only = bool(deps.get("force_answer_only", False))
@@ -990,7 +1054,7 @@ def _decide_summarize(ctx: StepContext) -> StepRunResult:
     deps = _deps(ctx)
     with ctx.state_write as state:
         _append_op_log(state, "decide_summarize")
-    st = ctx.state_view
+    st = _state(ctx)
     mts = _get_prev_turn_meta_summary_from_state_or_deps(ctx)
 
     summary_char_threshold = int(deps.get("summary_char_threshold", 12000))
@@ -1081,7 +1145,7 @@ def _summarize(ctx: StepContext) -> StepRunResult:
     deps = _deps(ctx)
     with ctx.state_write as state:
         _append_op_log(state, "summarize")
-    state = ctx.state_view
+    state = _state(ctx)
     prev_turn_meta_summary: MetaFromLastSummary = deps.get("prev_turn_meta_summary")
     summarize_batch = deps.get("summarize_batch")
     if not callable(summarize_batch):
@@ -1146,7 +1210,7 @@ def _end(ctx: StepContext) -> StepRunResult:
 @default_resolver.register("aa_prepare")
 def _aa_prepare(ctx: StepContext) -> StepRunResult:
     agent = _aa_agent(ctx)
-    sv = ctx.state_view
+    sv = _state(ctx)
     conversation_id = str(sv["conversation_id"])
 
     # Keep these aligned with agentic_answering.answer() defaults.
@@ -1189,7 +1253,7 @@ def _aa_prepare(ctx: StepContext) -> StepRunResult:
 def _aa_get_view_and_question(ctx: StepContext) -> StepRunResult:
     agent = _aa_agent(ctx)
     deps = _deps(ctx)
-    sv = ctx.state_view
+    sv = _state(ctx)
     conversation_id = str(sv["conversation_id"])
     user_id = sv.get("user_id")
     svc = _chat_service(deps)
@@ -1229,7 +1293,7 @@ def _aa_get_view_and_question(ctx: StepContext) -> StepRunResult:
 @default_resolver.register("aa_retrieve_candidates")
 def _aa_retrieve_candidates(ctx: StepContext) -> StepRunResult:
     agent = _aa_agent(ctx)
-    sv = ctx.state_view
+    sv = _state(ctx)
     question = str(sv.get("question") or "")
     max_candidates = int(sv.get("max_candidates") or agent.config.max_candidates)
 
@@ -1246,7 +1310,7 @@ def _aa_select_used_evidence(ctx: StepContext) -> StepRunResult:
     agent = _aa_agent(ctx)
     deps = _deps(ctx)
     svc = _chat_service(deps)
-    sv = ctx.state_view
+    sv = _state(ctx)
 
     conversation_id = str(sv["conversation_id"])
     run_id = str(sv.get("run_id") or "")
@@ -1339,7 +1403,7 @@ def _aa_select_used_evidence(ctx: StepContext) -> StepRunResult:
 @default_resolver.register("aa_materialize_evidence_pack")
 def _aa_materialize_evidence_pack(ctx: StepContext) -> StepRunResult:
     agent = _aa_agent(ctx)
-    sv = ctx.state_view
+    sv = _state(ctx)
     used_node_ids = list(sv.get("used_node_ids") or [])
     used_edge_ids = list(sv.get("used_edge_ids") or [])
     materialize_depth = str(
@@ -1393,7 +1457,7 @@ def _aa_generate_answer_with_citations(ctx: StepContext) -> StepRunResult:
     agent = _aa_agent(ctx)
     deps = _deps(ctx)
     svc = _chat_service(deps)
-    sv = ctx.state_view
+    sv = _state(ctx)
 
     conversation_id = str(sv["conversation_id"])
     run_id = str(sv.get("run_id") or "")
@@ -1488,7 +1552,7 @@ def _aa_validate_or_repair_citations(ctx: StepContext) -> StepRunResult:
     agent = _aa_agent(ctx)
     deps = _deps(ctx)
     svc = _chat_service(deps)
-    sv = ctx.state_view
+    sv = _state(ctx)
 
     conversation_id = str(sv["conversation_id"])
     run_id = str(sv.get("run_id") or "")
@@ -1584,7 +1648,7 @@ def _aa_evaluate_answer(ctx: StepContext) -> StepRunResult:
     agent = _aa_agent(ctx)
     deps = _deps(ctx)
     svc = _chat_service(deps)
-    sv = ctx.state_view
+    sv = _state(ctx)
 
     conversation_id = str(sv["conversation_id"])
     run_id = str(sv.get("run_id") or "")
@@ -1685,7 +1749,7 @@ def _aa_evaluate_answer(ctx: StepContext) -> StepRunResult:
 @default_resolver.register("aa_project_pointers")
 def _aa_project_pointers(ctx: StepContext) -> StepRunResult:
     agent = _aa_agent(ctx)
-    sv = ctx.state_view
+    sv = _state(ctx)
     conversation_id = str(sv["conversation_id"])
     run_node_id = str(sv.get("run_node_id") or "")
     used_node_ids = list(sv.get("used_node_ids") or [])
@@ -1714,7 +1778,7 @@ def _aa_project_pointers(ctx: StepContext) -> StepRunResult:
 @default_resolver.register("aa_debug_select_top_candidates")
 def _aa_debug_select_top_candidates(ctx: StepContext) -> StepRunResult:
     agent = _aa_agent(ctx)
-    sv = ctx.state_view
+    sv = _state(ctx)
     candidates = list(sv.get("candidates") or [])
     max_used = max(1, min(int(getattr(agent.config, "max_used", 3) or 3), 5))
     selected_candidates = [
@@ -1742,7 +1806,7 @@ def _aa_debug_select_top_candidates(ctx: StepContext) -> StepRunResult:
 
 @default_resolver.register("aa_debug_answer_from_nodes")
 def _aa_debug_answer_from_nodes(ctx: StepContext) -> StepRunResult:
-    sv = ctx.state_view
+    sv = _state(ctx)
     question = str(sv.get("question") or "")
     selected_candidates = list(sv.get("selected_candidates") or [])
     if not selected_candidates:
@@ -1789,7 +1853,7 @@ def _aa_debug_answer_from_nodes(ctx: StepContext) -> StepRunResult:
 
 @default_resolver.register("aa_maybe_iterate")
 def _aa_maybe_iterate(ctx: StepContext) -> StepRunResult:
-    sv = ctx.state_view
+    sv = _state(ctx)
     evaluation = sv.get("evaluation") or {}
     iter_idx = int(sv.get("iter_idx") or 0)
     max_iter = int(sv.get("max_iter") or 1)
@@ -1811,7 +1875,7 @@ def _aa_maybe_iterate(ctx: StepContext) -> StepRunResult:
 def _aa_persist_response(ctx: StepContext) -> StepRunResult:
     agent = _aa_agent(ctx)
     deps = _deps(ctx)
-    sv = ctx.state_view
+    sv = _state(ctx)
 
     conversation_id = str(sv["conversation_id"])
     run_node_id = str(sv.get("run_node_id") or "")
