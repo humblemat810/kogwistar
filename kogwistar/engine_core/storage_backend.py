@@ -149,6 +149,24 @@ class AsyncTwoStageProjectionAdapter(Protocol):
     ) -> None: ...
 
 
+class ProjectionCapabilityBackend(Protocol):
+    """Optional backend surface for deferred projection arrangements.
+
+    These attributes are deliberately not part of ``StorageBackend`` because
+    ordinary backends are not required to implement two-stage persistence.
+    """
+
+    two_stage_projection_capability: TwoStageProjectionCapability
+    two_stage_projection_adapter: TwoStageProjectionAdapter | None
+    async_two_stage_projection_adapter: AsyncTwoStageProjectionAdapter | None
+
+
+def projection_capability_backend(backend: StorageBackend) -> ProjectionCapabilityBackend:
+    """Narrow a backend only at the optional projection capability boundary."""
+
+    return cast(ProjectionCapabilityBackend, backend)
+
+
 def get_async_two_stage_projection_adapter(
     backend: object,
 ) -> AsyncTwoStageProjectionAdapter | None:

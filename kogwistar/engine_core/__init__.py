@@ -67,6 +67,7 @@ from kogwistar.engine_core.service_health import (
 from kogwistar.engine_core.storage_backend import (
     AtomicMutationCapability,
     NoopUnitOfWork,
+    ProjectionCapabilityBackend,
     StorageBackend,
     UnitOfWork,
     get_atomic_mutation_capability,
@@ -166,6 +167,7 @@ __all__ = [
     "PgVectorSchemaMismatchError",
     "PinnedLogicalRef",
     "PostgresUnitOfWork",
+    "ProjectionCapabilityBackend",
     "QueueRecoveryState",
     "ReadSubsystem",
     "RecoveryAction",

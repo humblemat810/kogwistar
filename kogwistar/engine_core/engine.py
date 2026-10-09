@@ -17,6 +17,7 @@ from .chroma_backend import ChromaBackend, ChromaStorageInspector
 from .embedding_profile import (
     EmbeddingProfile,
     EmbeddingProfileRegistry,
+    EmbeddingStorageInspector,
 )
 from .indexing import IndexingSubsystem
 from .jobs import JobQueueSubsystem
@@ -28,6 +29,7 @@ from .storage_backend import (
     AtomicMutationCapability,
     NoopUnitOfWork,
     StorageBackend,
+    projection_capability_backend,
     get_async_two_stage_projection_adapter,
     get_atomic_mutation_capability,
     get_two_stage_projection_adapter,
@@ -243,6 +245,10 @@ def _build_postgres_uow_if_needed(backend: StorageBackend):
             detail="PgVector backend requires optional PostgreSQL dependencies",
         ) from e
     pg_backend = cast(PgVectorBackend, backend)
+    from sqlalchemy.engine import Engine
+
+    if not isinstance(pg_backend.engine, Engine):
+        raise TypeError("synchronous PostgreSQL UoW requires a SQLAlchemy Engine")
     return PostgresUnitOfWork(engine=pg_backend.engine)
 
 
@@ -698,53 +704,14 @@ class GraphKnowledgeEngine:
             "active_only", "redirect", "include_tombstones"
         ] = "active_only",
     ) -> list[Node]:
-        return self.read.get_nodes(
+        return list(self.read.get_nodes(
             ids=ids,
             node_type=node_type,
             include=include,
             where=where,
             limit=limit,
             resolve_mode=resolve_mode,
-        )
-
-    def get_node_acl_checked(
-        self,
-        node_id: str,
-        *,
-        grounding_item_ids: Sequence[str] = (),
-        target_item_ids: Sequence[str] = (),
-        principal_id: str,
-        principal_groups: Sequence[str] = (),
-        security_scope: str | None = None,
-        node_type: type[Node] | None = None,
-        include: None | list[str] = None,
-        resolve_mode: Literal[
-            "active_only", "redirect", "include_tombstones"
-        ] = "active_only",
-    ) -> Node:
-        nodes = self.read.get_nodes(
-            ids=[node_id],
-            node_type=node_type,
-            include=include,
-            resolve_mode=resolve_mode,
-        )
-        if not nodes:
-            raise ValueError(f"no node found for id = {node_id}")
-        decision = self.acl.decide_acl_node_read(
-            item_grain="span",
-            truth_graph=self.kg_graph_type,
-            entity_id=node_id,
-            grounding_item_ids=tuple(grounding_item_ids),
-            target_item_ids=tuple(target_item_ids),
-            principal_id=principal_id,
-            principal_groups=tuple(principal_groups),
-            security_scope=security_scope,
-        )
-        if not decision.visible:
-            raise PermissionError(
-                f"ACL denied node {node_id}: {decision.reason}"
-            )
-        return nodes[0]
+        ))
 
     def query_nodes(
         self,
@@ -784,7 +751,7 @@ class GraphKnowledgeEngine:
         max_redirect_hops: int = 16,
         **kwargs,
     ) -> list[Node]:
-        return self.read.search_nodes_as_of(
+        return list(self.read.search_nodes_as_of(
             query=query,
             query_embeddings=query_embeddings,
             as_of_ts=as_of_ts,
@@ -795,7 +762,7 @@ class GraphKnowledgeEngine:
             include=include,
             max_redirect_hops=max_redirect_hops,
             **kwargs,
-        )
+        ))
 
     def search_nodes_as_of_scored(self, **kwargs: Any) -> list[VectorSearchHit[Node]]:
         return self.read.search_nodes_as_of_scored(**kwargs)
@@ -885,49 +852,14 @@ class GraphKnowledgeEngine:
             "active_only", "redirect", "include_tombstones"
         ] = "active_only",
     ) -> list[Edge]:
-        return self.read.get_edges(
+        return list(self.read.get_edges(
             ids=ids,
             edge_type=edge_type,
             where=where,
             limit=limit,
             include=include,
             resolve_mode=resolve_mode,
-        )
-
-    def get_edge_acl_checked(
-        self,
-        edge_id: str,
-        *,
-        principal_id: str,
-        principal_groups: Sequence[str] = (),
-        security_scope: str | None = None,
-        edge_type: type[Edge] | None = None,
-        include: None | list[str] = None,
-        resolve_mode: Literal[
-            "active_only", "redirect", "include_tombstones"
-        ] = "active_only",
-    ) -> Edge:
-        edges = self.read.get_edges(
-            ids=[edge_id],
-            edge_type=edge_type,
-            include=include,
-            resolve_mode=resolve_mode,
-        )
-        if not edges:
-            raise ValueError(f"no edge found for id = {edge_id}")
-        decision = self.acl.decide_acl(
-            grain="edge",
-            truth_graph=self.kg_graph_type,
-            entity_id=edge_id,
-            principal_id=principal_id,
-            principal_groups=tuple(principal_groups),
-            security_scope=security_scope,
-        )
-        if not decision.visible:
-            raise PermissionError(
-                f"ACL denied edge {edge_id}: {decision.reason}"
-            )
-        return edges[0]
+        ))
 
     def all_nodes_for_doc(self, doc_id: str) -> list[Node]:
         return self.get_nodes(self._nodes_by_doc(doc_id))
@@ -1325,7 +1257,7 @@ class GraphKnowledgeEngine:
         offset_repair_scorer: OffsetRepairScorer | None = None,
         llm_tasks: LLMTaskSet | None = None,
         default_task_provider_config: DefaultTaskProviderConfig | None = None,
-        cache_dir: os.PathLike|str|None = None,
+        cache_dir: os.PathLike[str] | str | None = None,
         acl_enabled: bool = False,
         acl_cache_enabled: bool = True,
         acl_startup_repair_limit: int = 0,
@@ -1444,6 +1376,7 @@ class GraphKnowledgeEngine:
 
         self._embed_one = _embed_one
         embedding_profile_checked = False
+        postgres_authority_mode: str | None = None
         if backend_factory is not None:
             if backend is not None:
                 raise ValueError("Backend factory and backend can only either be specified")
@@ -1464,21 +1397,21 @@ class GraphKnowledgeEngine:
                 )
 
                 if self.backend.__class__.__name__ == "AsyncChromaBackend":
-                    self.backend.two_stage_projection_capability = (
+                    projection_capability_backend(self.backend).two_stage_projection_capability = (
                         async_transient_two_stage_capability(
                             "async SQLite Stage-1 with async Chroma Stage-2"
                         )
                     )
-                    self.backend.async_two_stage_projection_adapter = (
+                    projection_capability_backend(self.backend).async_two_stage_projection_adapter = (
                         AsyncChromaTwoStageProjectionAdapter(self)
                     )
                 elif getattr(self.backend, "_is_async_engine", False):
-                    self.backend.two_stage_projection_capability = (
+                    projection_capability_backend(self.backend).two_stage_projection_capability = (
                         async_transient_two_stage_capability(
                             "async PostgreSQL transient Stage-1 and pgvector Stage-2"
                         )
                     )
-                    self.backend.async_two_stage_projection_adapter = (
+                    projection_capability_backend(self.backend).async_two_stage_projection_adapter = (
                         AsyncPostgresTwoStageProjectionAdapter(self)
                     )
         elif backend is None or (type(backend) is str and backend == "chroma"):
@@ -1590,12 +1523,12 @@ class GraphKnowledgeEngine:
                 )
 
                 if isinstance(self.backend, PgVectorBackend):
-                    self.backend.two_stage_projection_capability = (
+                    projection_capability_backend(self.backend).two_stage_projection_capability = (
                         async_transient_two_stage_capability(
                             "async PostgreSQL transient Stage-1 and pgvector Stage-2"
                         )
                     )
-                    self.backend.async_two_stage_projection_adapter = (
+                    projection_capability_backend(self.backend).async_two_stage_projection_adapter = (
                         AsyncPostgresTwoStageProjectionAdapter(self)
                     )
                 elif self.backend.__class__.__name__ == "AsyncChromaBackend":
@@ -1637,8 +1570,8 @@ class GraphKnowledgeEngine:
             if type(backend) is str:
                 raise Exception("unreacheable")
             else:
-                backend2: PgVectorBackend = backend  # let static checker happy
-            self.backend: StorageBackend = backend
+                backend2: PgVectorBackend = cast(PgVectorBackend, backend)
+            self.backend: StorageBackend = cast(StorageBackend, backend2)
             meta_mode = meta_store_implementation_mode()
             graph_mode = graph_store_implementation_mode()
             postgres_authority_mode = postgres_authority_implementation_mode()
@@ -1671,10 +1604,10 @@ class GraphKnowledgeEngine:
                         rust_postgres_two_stage_capability,
                     )
 
-                    self.backend.two_stage_projection_capability = (
+                    projection_capability_backend(self.backend).two_stage_projection_capability = (
                         rust_postgres_two_stage_capability()
                     )
-                    self.backend.two_stage_projection_adapter = (
+                    projection_capability_backend(self.backend).two_stage_projection_adapter = (
                         RustPostgresTwoStageProjectionAdapter(self, meta_postgre)
                     )
                     if not sync_postgres:
@@ -1682,7 +1615,7 @@ class GraphKnowledgeEngine:
                             AsyncRustPostgresTwoStageProjectionAdapter,
                         )
 
-                        self.backend.async_two_stage_projection_adapter = (
+                        projection_capability_backend(self.backend).async_two_stage_projection_adapter = (
                             AsyncRustPostgresTwoStageProjectionAdapter(self, meta_postgre)
                         )
                 elif not sync_postgres:
@@ -1691,12 +1624,12 @@ class GraphKnowledgeEngine:
                         async_transient_two_stage_capability,
                     )
 
-                    self.backend.two_stage_projection_capability = (
+                    projection_capability_backend(self.backend).two_stage_projection_capability = (
                         async_transient_two_stage_capability(
                             "async PostgreSQL transient Stage-1 and pgvector Stage-2"
                         )
                     )
-                    self.backend.async_two_stage_projection_adapter = (
+                    projection_capability_backend(self.backend).async_two_stage_projection_adapter = (
                         AsyncPostgresTwoStageProjectionAdapter(self)
                     )
                 else:
@@ -1705,10 +1638,10 @@ class GraphKnowledgeEngine:
                         postgres_two_stage_capability,
                     )
 
-                    self.backend.two_stage_projection_capability = (
+                    projection_capability_backend(self.backend).two_stage_projection_capability = (
                         postgres_two_stage_capability()
                     )
-                    self.backend.two_stage_projection_adapter = (
+                    projection_capability_backend(self.backend).two_stage_projection_adapter = (
                         PostgresTwoStageProjectionAdapter(self)
                     )
         else:
@@ -1722,7 +1655,7 @@ class GraphKnowledgeEngine:
                 "Expected None/'chroma' or a PgVectorBackend instance."
             )
         if self.embedding_profile is not None and not embedding_profile_checked:
-            inspector = self.backend
+            inspector = cast(EmbeddingStorageInspector, self.backend)
             if not all(
                 callable(getattr(inspector, name, None))
                 for name in ("embedding_storage_scope", "inspect_embedding_storage")
@@ -1747,9 +1680,7 @@ class GraphKnowledgeEngine:
                 )
 
         # Backend UoW: in Postgres mode this becomes a real SQL transaction.
-        self._backend_uow = _build_postgres_uow_if_needed(
-            getattr(self, "backend", None)
-        )
+        self._backend_uow = _build_postgres_uow_if_needed(self.backend)
         self.atomic_mutation_capability: AtomicMutationCapability = (
             get_atomic_mutation_capability(getattr(self, "backend", None))
         )
@@ -1757,13 +1688,15 @@ class GraphKnowledgeEngine:
         if getattr(getattr(self, "backend", None), "_is_async_engine", False):
             from .postgres_backend import AsyncPostgresUnitOfWork
 
-            self._async_backend_uow = AsyncPostgresUnitOfWork(
-                engine=self.backend.engine
-            )
+            from sqlalchemy.ext.asyncio import AsyncEngine
+
+            async_engine = getattr(self.backend, "engine", None)
+            if not isinstance(async_engine, AsyncEngine):
+                raise TypeError("async PostgreSQL UoW requires an AsyncEngine")
+            self._async_backend_uow = AsyncPostgresUnitOfWork(engine=async_engine)
         if (
             self.persistence_mode == "two_stage"
             and _is_pgvector_backend_instance(getattr(self, "backend", None))
-            and "postgres_authority_mode" in locals()
             and postgres_authority_mode == "rust"
         ):
             # The native adapter writes through this same Rust-owned UoW.
@@ -1823,7 +1756,12 @@ class GraphKnowledgeEngine:
             build_azure_embedding_fn_from_env()
         )
 
-        self.memory = Memory(location=self.cache_dir or os.path.join(".", ".kg_cache"))
+        cache_location = (
+            str(self.cache_dir)
+            if self.cache_dir is not None
+            else os.path.join(".", ".kg_cache")
+        )
+        self.memory = Memory(location=cache_location)
         self._cached_extract_graph_with_llm = self.memory.cache( # engine owned, use engine cache
             self.extract_graph_with_llm, ignore=["self"]
         )
@@ -1876,11 +1814,7 @@ class GraphKnowledgeEngine:
         idx_db_path = ":memory:"
         if persist_directory:
             idx_db_path = str(pathlib.Path(persist_directory) / "index.db")
-        elif (
-            hasattr(self, "_metadata")
-            and hasattr(self.metadata, "conn_str")
-            and self.metadata.conn_str != ":memory:"
-        ):
+        elif getattr(self.metadata, "conn_str", None) not in (None, ":memory:"):
             # PG setup might not have persist_directory in kwargs but might store sqlite locally
             pass  # fall back to memory or consider handling PG specifically if index.db isn't used there
 
@@ -1948,7 +1882,7 @@ class GraphKnowledgeEngine:
         *,
         op: Op,
         entity: EntityRefModel,
-        payload: object,
+        payload: JsonValue,
         run_id: str | None = None,
         step_id: str | None = None,
     ) -> None:
@@ -2010,10 +1944,15 @@ class GraphKnowledgeEngine:
     def _target_from_edge(self, e: Edge) -> AdjudicationTarget:
         return self.adjudicate.target_from_edge(e)
 
-    def check_document_exist(self, document_id: str | list[str]):
-        doc_ids = [document_id] if type(document_id) is str else document_id
+    def check_document_exist(self, document_id: str | list[str]) -> set[str]:
+        doc_ids = [document_id] if isinstance(document_id, str) else list(document_id)
         got = run_awaitable_blocking(self.backend.document_get(ids=doc_ids, include=[]))
-        return set(got["ids"]).union(set(document_id))
+        if not isinstance(got, Mapping):
+            return set(doc_ids)
+        stored_ids = got.get("ids", [])
+        if not isinstance(stored_ids, list):
+            return set(doc_ids)
+        return {value for value in stored_ids if isinstance(value, str)}.union(doc_ids)
 
     def _fetch_document_text(self, document_id: str) -> str:
         return self.extract.fetch_document_text(document_id)
