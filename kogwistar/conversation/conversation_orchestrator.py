@@ -10,15 +10,18 @@ It is intentionally lightweight and uses your existing retrievers/agents.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-from typing import Any, Protocol, cast
+from typing import Any, Callable, Protocol, cast
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.id_provider import stable_id
 from kogwistar.llm_tasks import LLMTaskSet, SummarizeContextTaskRequest
+from kogwistar.json_types import JsonValue
 
 from ..engine_core.models import Grounding, MentionVerification, Role, Span
 from ..utils.embedding_vectors import normalize_embedding_vector
+from ..runtime.contract import Predicate
 from .callbacks import RetrievalFilteringCallback
+from .conversation_context import ContextItem, ContextMessage, PromptContext
 from .conversation_state_contracts import (
     ConversationWorkflowState,
     PrevTurnMetaSummaryModel,
@@ -35,6 +38,7 @@ from .models import (
     MetaFromLastSummary,
 )
 from .policy import get_chat_tail, last_summary_of_node
+from .resolvers import MappingStepResolver, default_resolver
 from .tool_runner import ToolCallIdFactory, ToolRunner
 
 
@@ -103,7 +107,7 @@ def _infer_prev_run_step_seq(
     if tail is None:
         return 0
     try:
-        return int((tail.metadata or {}).get("run_step_seq") or 0)
+        return _json_int((tail.metadata or {}).get("run_step_seq"))
     except Exception:
         return 0
 
@@ -135,12 +139,16 @@ def _estimate_tokens_from_chars(
     sample_n = min(4096, char_count)
     sample = "a" * sample_n
     try:
-        sample_tokens = int(token_estimator(sample))
+        sample_tokens = _json_int(token_estimator(sample))
     except Exception:
         return max(1, (char_count + 3) // 4)
     if sample_tokens <= 0:
         return max(1, (char_count + 3) // 4)
     return max(1, int(round(sample_tokens * (char_count / sample_n))))
+
+
+def _json_int(value: object, default: int = 0) -> int:
+    return value if type(value) is int else default
 
 
 def _get_conversation_tail_compat(
@@ -216,12 +224,6 @@ def get_id_for_conversation_turn_edge(
     )
 
 
-# ---------------------------------------------------------------------------
-# Conversation-specific step resolver
-# ---------------------------------------------------------------------------
-from .resolvers import MappingStepResolver, default_resolver
-
-
 class ConversationStepResolver(MappingStepResolver):
     """Conversation-specific resolver wrapper.
 
@@ -295,11 +297,11 @@ class ConversationOrchestrator:
             workflow_engine=self.workflow_engine,
             predicate_registry={
                 # Dummy predicates to satisfy design-time validation; runtime supplies real logic.
-                "always": lambda st, r: True,
-                "in_conv": lambda st, r: bool(st.get("in_conv", True)),
-                "should_pin_memory": lambda st, r: True,
-                "should_pin_kg": lambda st, r: True,
-                "should_summarize": lambda st, r: True,
+                "always": lambda edge, state, result: True,
+                "in_conv": lambda edge, state, result: bool(state.get("in_conv", True)),
+                "should_pin_memory": lambda edge, state, result: True,
+                "should_pin_kg": lambda edge, state, result: True,
+                "should_summarize": lambda edge, state, result: True,
             },
         )
 
@@ -342,6 +344,10 @@ class ConversationOrchestrator:
         force_answer_only: bool | None = None,
     ) -> AddTurnResult:
 
+        if self.workflow_engine is None:
+            raise RuntimeError("workflow_engine must be provided for add_turn_only_workflow")
+        workflow_engine = self.workflow_engine
+
         prev_node = (
             _get_conversation_tail_compat(self.conversation_engine, conversation_id)
             if in_conv
@@ -355,9 +361,11 @@ class ConversationOrchestrator:
 
         from .designer import ConversationWorkflowDesigner
 
-        predicate_registry = {"always": lambda st, r: True}
+        predicate_registry: dict[str, Predicate] = {
+            "always": lambda edge, state, result: True
+        }
         designer = ConversationWorkflowDesigner(
-            workflow_engine=self.workflow_engine, predicate_registry=predicate_registry
+            workflow_engine=workflow_engine, predicate_registry=predicate_registry
         )
         # Use a deterministic backbone workflow_id derived from caller workflow_id.
         backbone_wid = f"{workflow_id}::backbone"
@@ -399,7 +407,7 @@ class ConversationOrchestrator:
         from ..runtime.runtime import WorkflowRuntime
 
         runtime = WorkflowRuntime(
-            workflow_engine=self.workflow_engine,
+            workflow_engine=workflow_engine,
             conversation_engine=self.conversation_engine,
             step_resolver=ConversationStepResolver(),
             predicate_registry=predicate_registry,
@@ -467,24 +475,20 @@ class ConversationOrchestrator:
                 (prev_node.turn_index + 1) if prev_node.turn_index is not None else 0
             )
 
-            node_last_char_dist = prev_node.metadata.get(
-                "char_distance_from_last_summary"
+            raw_char_dist = prev_node.metadata.get("char_distance_from_last_summary")
+            node_last_char_dist = (
+                _json_int(raw_char_dist) + len(prev_node.summary)
+                if type(raw_char_dist) is int
+                else 0
             )
-            if node_last_char_dist is not None:
-                node_last_char_dist += len(prev_node.summary)
-            else:
-                node_last_char_dist = 0
             prev_turn_meta_summary.prev_node_char_distance_from_last_summary = (
                 node_last_char_dist
             )
 
-            node_last_turn_dist = prev_node.metadata.get(
-                "turn_distance_from_last_summary"
+            raw_turn_dist = prev_node.metadata.get("turn_distance_from_last_summary")
+            node_last_turn_dist = (
+                _json_int(raw_turn_dist) + 1 if type(raw_turn_dist) is int else 0
             )
-            if node_last_turn_dist is not None:
-                node_last_turn_dist += 1
-            else:
-                node_last_turn_dist = 0
             prev_turn_meta_summary.prev_node_distance_from_last_summary = (
                 node_last_turn_dist
             )
@@ -535,9 +539,6 @@ class ConversationOrchestrator:
         """
         if self.workflow_engine is None:
             raise RuntimeError("workflow_engine must be provided for workflow_v2")
-
-        # designer and conversation have their own separate clock
-        designer_clock = ExecClock(run_id=conversation_id, run_step_seq=0)
 
         # ----------------------------
         # 0) Compute prior-summary distances (mirror legacy)
@@ -676,6 +677,7 @@ class ConversationOrchestrator:
             return self._summarize_conversation_batch(
                     conversation_id,
                     current_index,
+                    user_id=user_id,
                     prev_turn_meta_summary=prev_turn_meta_summary,
                     cache_dir = cache_dir
                 )
@@ -755,7 +757,8 @@ class ConversationOrchestrator:
             run_id=f"add_turn|{turn_node_id}",
             cache_dir = cache_dir,
         )
-        final_state, run_id = run_result.final_state, run_result.run_id
+        final_state = cast(dict[str, Any], run_result.final_state)
+        run_id = run_result.run_id
         if str(getattr(run_result, "status", "")) != "succeeded":
             raise RuntimeError(
                 f"Workflow add-turn run failed with status={getattr(run_result, 'status', '')!r}"
@@ -763,28 +766,27 @@ class ConversationOrchestrator:
         # ----------------------------
         # 6) Map final state to legacy AddTurnResult
         # ----------------------------
-        mem = final_state.get("memory") or {}
         kg = final_state.get("kg") or {}
         mem_pin = final_state.get("memory_pin") or {}
         kg_pin = final_state.get("kg_pin") or {}
         answer = final_state.get("answer") or {}
 
         # update prev_turn_meta_summary in-place so callers can chain it
-        mts = final_state.get("prev_turn_meta_summary") or {}
+        mts = cast(dict[str, object], final_state.get("prev_turn_meta_summary") or {})
         prev_turn_meta_summary.prev_node_char_distance_from_last_summary = int(
-            mts.get(
+            _json_int(mts.get(
                 "prev_node_char_distance_from_last_summary",
                 prev_turn_meta_summary.prev_node_char_distance_from_last_summary,
-            )
+            ), prev_turn_meta_summary.prev_node_char_distance_from_last_summary)
         )
         prev_turn_meta_summary.prev_node_distance_from_last_summary = int(
-            mts.get(
+            _json_int(mts.get(
                 "prev_node_distance_from_last_summary",
                 prev_turn_meta_summary.prev_node_distance_from_last_summary,
-            )
+            ), prev_turn_meta_summary.prev_node_distance_from_last_summary)
         )
         prev_turn_meta_summary.tail_turn_index = int(
-            mts.get("tail_turn_index", prev_turn_meta_summary.tail_turn_index)
+            _json_int(mts.get("tail_turn_index"), prev_turn_meta_summary.tail_turn_index)
         )
 
         result = AddTurnResult(
@@ -833,16 +835,21 @@ class ConversationOrchestrator:
 
         # Agentic answering agent (used by workflow op 'answer' when provided).
         try:
-            from .conversation.agentic_answering import AgenticAnsweringAgent
+            from .agentic_answering import AgenticAnsweringAgent
 
-            agent_kwargs = dict(
-                conversation_engine=self.conversation_engine,
-                knowledge_engine=self.ref_knowledge_engine,
-                llm_tasks=self.llm_tasks,
-            )
             if agent_cache_dir is not None:
-                agent_kwargs["cache_dir"] = agent_cache_dir
-            self.agentic_answering_agent = AgenticAnsweringAgent(**agent_kwargs)
+                self.agentic_answering_agent = AgenticAnsweringAgent(
+                    conversation_engine=self.conversation_engine,
+                    knowledge_engine=self.ref_knowledge_engine,
+                    llm_tasks=self.llm_tasks,
+                    cache_dir=agent_cache_dir,
+                )
+            else:
+                self.agentic_answering_agent = AgenticAnsweringAgent(
+                    conversation_engine=self.conversation_engine,
+                    knowledge_engine=self.ref_knowledge_engine,
+                    llm_tasks=self.llm_tasks,
+                )
         except Exception:
             self.agentic_answering_agent = None
 
@@ -948,31 +955,28 @@ class ConversationOrchestrator:
                 (prev_node.turn_index + 1) if prev_node.turn_index is not None else 0
             )
             # prev_turn_meta_summary.prev_node_char_distance_from_last_summary = prev_node.metadata.get("char_distance_from_last_summary") or 0
-            node_last_char_dist = prev_node.metadata.get(
-                "char_distance_from_last_summary"
+            raw_char_dist = prev_node.metadata.get("char_distance_from_last_summary")
+            node_last_char_dist = (
+                _json_int(raw_char_dist) + len(prev_node.summary)
+                if type(raw_char_dist) is int
+                else 0
             )
-            if node_last_char_dist is not None:
-                node_last_char_dist += len(prev_node.summary)
-            else:
-                node_last_char_dist = 0
             prev_turn_meta_summary.prev_node_char_distance_from_last_summary = (
                 node_last_char_dist
             )
             # ======================
-            node_last_turn_dist = prev_node.metadata.get(
-                "turn_distance_from_last_summary"
+            raw_turn_dist = prev_node.metadata.get("turn_distance_from_last_summary")
+            node_last_turn_dist = (
+                _json_int(raw_turn_dist) + 1 if type(raw_turn_dist) is int else 0
             )
-            if node_last_turn_dist is not None:
-                node_last_turn_dist += 1
-            else:
-                node_last_turn_dist = 0
             prev_turn_meta_summary.prev_node_distance_from_last_summary = node_last_turn_dist  # prev_node.metadata.get("turn_distance_from_last_summary") or 0
             # ======================
-            node_tail_turn_index = prev_node.metadata.get("tail_turn_index")
-            if node_tail_turn_index is not None:
-                node_tail_turn_index += 1
-            else:
-                node_tail_turn_index = -1  # start node
+            raw_tail_index = prev_node.metadata.get("tail_turn_index")
+            node_tail_turn_index = (
+                _json_int(raw_tail_index) + 1
+                if type(raw_tail_index) is int
+                else -1
+            )
             prev_turn_meta_summary.tail_turn_index = node_tail_turn_index
         else:
             new_index = 0
@@ -1062,7 +1066,7 @@ class ConversationOrchestrator:
                 [],
                 "conversation_edge",
             )
-            seq_edge = self.add_link_to_new_turn(
+            self.add_link_to_new_turn(
                 seq_edge_id,
                 turn_node,
                 prev_node,
@@ -1234,7 +1238,7 @@ class ConversationOrchestrator:
             turn_index=new_index,
             tool_name="memory_retrieve",
             args=[],
-            kwargs=mem_args,
+            kwargs=cast(dict[str, JsonValue], mem_args),
             handler=mem_retriever.retrieve,
             render_result=lambda r: getattr(r, "reasoning", "")[:800],
             prev_turn_meta_summary=prev_turn_meta_summary,
@@ -1258,7 +1262,7 @@ class ConversationOrchestrator:
             turn_index=new_index,
             tool_name="kg_retrieve",
             args=[],
-            kwargs=kg_args,
+            kwargs=cast(dict[str, JsonValue], kg_args),
             # {
             #     # "max_retrieval_level": max_retrieval_level,
             #     "seed_kg_node_ids": list(getattr(mem, "seed_kg_node_ids", []) or []),
@@ -1314,9 +1318,10 @@ class ConversationOrchestrator:
 
         if response.response_node_id is not None:
             response_turn_node_id = response.response_node_id
-            turn_node: ConversationNode = self.conversation_engine.read.get_nodes(
-                [response.response_node_id]
-            )[0]
+            turn_node = cast(
+                ConversationNode,
+                self.conversation_engine.read.get_nodes([response.response_node_id])[0],
+            )
 
             if prev_node:
                 seq_edge_id = get_id_for_conversation_turn_edge(
@@ -1358,7 +1363,11 @@ class ConversationOrchestrator:
             memory_context_node_id=memory_pin.memory_context_node.id
             if memory_pin
             else None,
-            memory_context_edge_ids=[i.id for i in memory_pin.pinned_edges]
+            memory_context_edge_ids=[
+                edge_id
+                for edge_id in (edge.id for edge in memory_pin.pinned_edges)
+                if edge_id is not None
+            ]
             if memory_pin
             else [],
             prev_turn_meta_summary=prev_turn_meta_summary,
@@ -1385,10 +1394,12 @@ class ConversationOrchestrator:
                 response and bool(getattr(response, "llm_decision_need_summary", False))
             )
         ):
-            added_id = self._summarize_conversation_batch(
+            self._summarize_conversation_batch(
                 conversation_id,
                 new_index,
+                user_id=user_id,
                 prev_turn_meta_summary=prev_turn_meta_summary,
+                cache_dir=cache_dir,
             )
             # prev_turn_meta_summary.tail_turn_index = new_index
             # summary added, user visible in chain node + 1
@@ -1417,11 +1428,12 @@ class ConversationOrchestrator:
         self,
         conversation_id: str,
         current_index: int,
+        *,
+        user_id: str,
+        prev_turn_meta_summary: MetaFromLastSummary,
         batch_size: int = 5,
         in_conv=True,
-        user_id: str = None,
-        prev_turn_meta_summary: MetaFromLastSummary = None,
-        cache_dir = None
+        cache_dir: str | None = None,
     ):
         """Summarize a recent conversation window into a summary turn plus provenance edges.
 
@@ -1451,19 +1463,26 @@ class ConversationOrchestrator:
         all_nodes = self.conversation_engine.read.get_nodes(
             where={"conversation_id": conversation_id}, node_type=ConversationNode
         )
-        batch_ids = []
+        batch_ids: list[str] = []
         batch_text = []
         provenance_spans = []
         if all_nodes is None:
             raise Exception("Unreacheable")
 
-        nodes: list[ConversationNode] = all_nodes
+        nodes = [cast(ConversationNode, node) for node in all_nodes]
 
-        last_summary_node: list[ConversationNode] = last_summary_of_node(
-            self.conversation_engine, prev_node
+        last_summary_node = (
+            [
+                cast(ConversationNode, node)
+                for node in last_summary_of_node(self.conversation_engine, prev_node)
+            ]
+            if prev_node is not None
+            else []
         )
         if last_summary_node:
-            batch_ids.append(last_summary_node[-1].safe_get_id())
+            summary_id = last_summary_node[-1].safe_get_id()
+            if summary_id is not None:
+                batch_ids.append(summary_id)
             batch_text.append(last_summary_node[-1].summary)
         for n in nodes:
             turn_index = getattr(
@@ -1478,13 +1497,19 @@ class ConversationOrchestrator:
                 # d.update(meta)
                 # n = ConversationNode.model_validate(d)
                 if n.metadata.get("entity_type") == "conversation_turn":
-                    batch_ids.append(n.id)
+                    node_id = n.safe_get_id()
+                    if node_id is None:
+                        continue
+                    batch_ids.append(node_id)
                     batch_text.append(f"{n.role}: {n.summary}")
                     # Collect provenance: The turn itself is the source
                     if n.mentions:
                         provenance_spans.extend(n.mentions[0].spans)
                 elif n.type == "reference_pointer":
-                    batch_ids.append(n.id)
+                    node_id = n.safe_get_id()
+                    if node_id is None:
+                        continue
+                    batch_ids.append(node_id)
                     batch_text.append(f"{n.role}: {n.summary}")
                     # Include referenced knowledge node in provenance too (as requested by user)
                     if n.mentions:
@@ -1501,27 +1526,42 @@ class ConversationOrchestrator:
             memory = cache_backend.Memory(cache_dir)
         else:
             memory = self.conversation_engine.memory  # .memory.cache
-        @memory.cache
-        def get_summary(full_text):
+        def get_summary(full_text: str) -> str:
             summary_res = self.llm_tasks.summarize_context(
                 SummarizeContextTaskRequest(full_text=str(full_text or ""))
             )
             return summary_res.text
 
-        # Phase 2B: persist context snapshot BEFORE the LLM call (summary stage).
-        from types import SimpleNamespace
+        cached_get_summary = cast(Callable[[str], str], memory.cache(get_summary))
 
+        # Phase 2B: persist context snapshot BEFORE the LLM call (summary stage).
         char_count = len(str(full_text or ""))
-        view = SimpleNamespace(
-            messages=[
-                {
-                    "role": "system",
-                    "content": "Summarize this conversation segment into a concise memory.",
-                },
-                {"role": "user", "content": str(full_text or "")},
-            ],
-            items=[SimpleNamespace(node_id=nid) for nid in (batch_ids or [])],
-            tokens_used=_estimate_tokens_from_chars(char_count),
+        estimated_tokens = _estimate_tokens_from_chars(char_count)
+        view = PromptContext(
+            conversation_id=conversation_id,
+            purpose="conversation_summary",
+            token_budget=estimated_tokens,
+            tokens_used=estimated_tokens,
+            messages=(
+                ContextMessage(
+                    role="system",
+                    content="Summarize this conversation segment into a concise memory.",
+                    source="system",
+                ),
+                ContextMessage(
+                    role="user", content=str(full_text or ""), source="history_turn"
+                ),
+            ),
+            items=tuple(
+                ContextItem(
+                    kind="tail_turn",
+                    text="",
+                    role="user",
+                    node_id=nid,
+                    token_cost=0,
+                )
+                for nid in batch_ids
+            ),
         )
         clock = ExecClock(
             run_id=f"summary|{conversation_id}",
@@ -1551,7 +1591,7 @@ class ConversationOrchestrator:
             ),
         )
 
-        summary_content = get_summary(full_text)
+        summary_content = cached_get_summary(str(full_text))
         # Dedupe spans for provenance
         unique_spans = []
         seen = set()
@@ -1608,10 +1648,13 @@ class ConversationOrchestrator:
         new_index += 1
 
         # Edges: Summary -> Turns
-        eid = f"summary|{summary_node.id}|batchhash|{stable_id(batch_ids)}"
+        eid = f"summary|{summary_node.id}|batchhash|{stable_id(str(batch_ids))}"
+        summary_node_id = summary_node.safe_get_id()
+        if summary_node_id is None:
+            raise ValueError("summary node must have an id before linking")
         sum_edge = ConversationEdge(
             id=eid,
-            source_ids=[summary_node.id],
+            source_ids=[summary_node_id],
             target_ids=batch_ids,
             relation="summarizes",
             label="summarizes",
@@ -1754,15 +1797,21 @@ class ConversationOrchestrator:
             )
         ]
 
-        agent_kwargs = dict(
-            conversation_engine=self.conversation_engine,
-            knowledge_engine=self.ref_knowledge_engine,
-            llm_tasks=self.llm_tasks,
-            config=AgentConfig(),
-        )
         if cache_dir is not None:
-            agent_kwargs["cache_dir"] = cache_dir
-        agent = AgenticAnsweringAgent(**agent_kwargs)
+            agent = AgenticAnsweringAgent(
+                conversation_engine=self.conversation_engine,
+                knowledge_engine=self.ref_knowledge_engine,
+                llm_tasks=self.llm_tasks,
+                config=AgentConfig(),
+                cache_dir=cache_dir,
+            )
+        else:
+            agent = AgenticAnsweringAgent(
+                conversation_engine=self.conversation_engine,
+                knowledge_engine=self.ref_knowledge_engine,
+                llm_tasks=self.llm_tasks,
+                config=AgentConfig(),
+            )
         out = agent.answer(
             conversation_id=conversation_id,
             prev_turn_meta_summary=prev_turn_meta_summary,

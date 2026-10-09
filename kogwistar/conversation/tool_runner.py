@@ -21,6 +21,7 @@ from fastapi import HTTPException
 
 from ..engine_core.async_compat import run_awaitable_blocking
 from ..engine_core.models import Grounding, MentionVerification, Span
+from ..engine_core.types import ToolCallIdFactory
 from ..json_types import JsonValue
 from ..server.auth_middleware import (
     get_current_capabilities,
@@ -39,12 +40,6 @@ if TYPE_CHECKING:
     from .models import MetaFromLastSummary
 
 T = TypeVar("T", bound=BaseToolResult)
-
-
-class ToolCallIdFactory(Protocol):
-    """Build deterministic IDs for tool-call and tool-result events."""
-
-    def __call__(self, *parts: str) -> str: ...
 
 
 class SubworkflowRunner(Protocol):
