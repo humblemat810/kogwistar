@@ -8,7 +8,7 @@ import socket
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from ..json_types import JsonValue
 from .models import Grounding, Node, Span
@@ -24,6 +24,11 @@ SERVICE_HEALTH_PROJECTION_NAMESPACE = "service_health"
 
 def _now_ms() -> int:
     return int(time.time() * 1000)
+
+
+def _json_object(value: object) -> JsonObject:
+    """Narrow a JSON mapping returned by an untyped metadata backend."""
+    return cast(JsonObject, value) if isinstance(value, dict) else {}
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,7 +106,9 @@ class ServiceHealthRegistry:
             llm_assisted=bool(llm_assisted),
             version=None if version is None else str(version),
             config_metadata=dict(config_metadata or {}),
-            operator_tags=tuple(str(item) for item in (operator_tags or ()) if str(item)),
+            operator_tags=tuple(
+                str(item) for item in (operator_tags or ()) if str(item)
+            ),
             workspace_id=None if workspace_id is None else str(workspace_id),
             heartbeat_ttl_ms=max(1, int(heartbeat_ttl_ms or 1)),
         )
@@ -152,7 +159,7 @@ class ServiceHealthRegistry:
         )
         now = _now_ms()
         chosen_instance = str(instance_id or uuid.uuid4())
-        started = int(started_at_ms or now)
+        started = _optional_int(started_at_ms) or now
         previous_instance = str(payload.get("instance_id") or "")
         payload.update(
             {
@@ -178,7 +185,9 @@ class ServiceHealthRegistry:
         self._store(
             service_id,
             payload,
-            workspace_id=self._coalesce_scope(workspace_id, payload.get("workspace_id")),
+            workspace_id=self._coalesce_scope(
+                workspace_id, payload.get("workspace_id")
+            ),
             namespace=self._coalesce_scope(namespace, payload.get("namespace")),
         )
         return payload
@@ -211,22 +220,31 @@ class ServiceHealthRegistry:
                 "status": status_text,
                 "last_error": None if last_error is None else str(last_error),
                 "host": host or payload.get("host") or _host_name(),
-                "pid": int(pid if pid is not None else payload.get("pid") or os.getpid()),
+                "pid": _optional_int(pid if pid is not None else payload.get("pid"))
+                or os.getpid(),
                 "updated_at_ms": now,
             }
         )
-        if previous_status in {"stale", "degraded", "failed"} and status_text == "healthy":
+        if (
+            previous_status in {"stale", "degraded", "failed"}
+            and status_text == "healthy"
+        ):
             self._append_lifecycle_event(
                 service_id=str(service_id),
                 event_type="service.recovered",
                 payload={"instance_id": str(instance_id), "status": status_text},
             )
-        elif previous_status and previous_status != status_text and status_text in {
-            "stale",
-            "degraded",
-            "failed",
-            "stopped",
-        }:
+        elif (
+            previous_status
+            and previous_status != status_text
+            and status_text
+            in {
+                "stale",
+                "degraded",
+                "failed",
+                "stopped",
+            }
+        ):
             self._append_lifecycle_event(
                 service_id=str(service_id),
                 event_type=f"service.{status_text}",
@@ -244,7 +262,9 @@ class ServiceHealthRegistry:
         self._store(
             service_id,
             payload,
-            workspace_id=self._coalesce_scope(workspace_id, payload.get("workspace_id")),
+            workspace_id=self._coalesce_scope(
+                workspace_id, payload.get("workspace_id")
+            ),
             namespace=self._coalesce_scope(namespace, payload.get("namespace")),
         )
         return payload
@@ -286,7 +306,9 @@ class ServiceHealthRegistry:
         self._store(
             service_id,
             payload,
-            workspace_id=self._coalesce_scope(workspace_id, payload.get("workspace_id")),
+            workspace_id=self._coalesce_scope(
+                workspace_id, payload.get("workspace_id")
+            ),
             namespace=self._coalesce_scope(namespace, payload.get("namespace")),
         )
         return payload
@@ -319,20 +341,28 @@ class ServiceHealthRegistry:
         namespace: str | None = None,
         limit: int = 1000,
     ) -> list[JsonObject]:
-        list_projection = getattr(self.engine.meta_sqlite, "list_named_projections", None)
+        list_projection = getattr(
+            self.engine.meta_sqlite, "list_named_projections", None
+        )
         if not callable(list_projection):
             return []
-        rows = list_projection(SERVICE_HEALTH_PROJECTION_NAMESPACE)
+        rows = cast(list[object], list_projection(SERVICE_HEALTH_PROJECTION_NAMESPACE))
         out: list[JsonObject] = []
-        for row in rows:
-            payload = row.get("payload") if isinstance(row, dict) else None
+        for raw_row in rows:
+            row = _json_object(raw_row)
+            payload = row.get("payload")
             if not isinstance(payload, dict):
                 continue
-            if workspace_id is not None and str(payload.get("workspace_id") or "") != str(workspace_id):
+            payload_object = _json_object(payload)
+            if workspace_id is not None and str(
+                payload_object.get("workspace_id") or ""
+            ) != str(workspace_id):
                 continue
-            if namespace is not None and str(payload.get("namespace") or "") != str(namespace):
+            if namespace is not None and str(
+                payload_object.get("namespace") or ""
+            ) != str(namespace):
                 continue
-            out.append(dict(payload))
+            out.append(payload_object)
         out.sort(key=lambda item: str(item.get("service_id") or ""))
         return out[: max(1, int(limit))]
 
@@ -346,7 +376,7 @@ class ServiceHealthRegistry:
         stale: list[JsonObject] = []
         for payload in self.list_services(workspace_id=workspace_id, limit=10_000):
             last_seen = _optional_int(payload.get("last_seen_ms"))
-            ttl = int(payload.get("heartbeat_ttl_ms", 60_000) or 60_000)
+            ttl = _optional_int(payload.get("heartbeat_ttl_ms")) or 60_000
             if last_seen is not None and now - last_seen > ttl:
                 stale.append(payload)
         return stale
@@ -383,7 +413,9 @@ class ServiceHealthRegistry:
                 event_ts_ms=event_ts_ms,
             )
         for repaired_service_id, payload in rebuilt.items():
-            event_workspace = self._coalesce_scope(workspace_id, payload.get("workspace_id"))
+            event_workspace = self._coalesce_scope(
+                workspace_id, payload.get("workspace_id")
+            )
             event_namespace = self._coalesce_scope(namespace, payload.get("namespace"))
             if workspace_id is not None and event_workspace != str(workspace_id):
                 continue
@@ -484,10 +516,17 @@ class ServiceHealthRegistry:
         latest_seq = 0
         getter = getattr(self.engine.meta_sqlite, "get_latest_entity_event_seq", None)
         if callable(getter):
-            latest_seq = int(getter(namespace=getattr(self.engine, "namespace", "default")) or 0)
+            latest_seq = (
+                _optional_int(
+                    getter(namespace=getattr(self.engine, "namespace", "default"))
+                )
+                or 0
+            )
         projection_key = self._projection_key(
             service_id,
-            workspace_id=self._coalesce_scope(workspace_id, payload.get("workspace_id")),
+            workspace_id=self._coalesce_scope(
+                workspace_id, payload.get("workspace_id")
+            ),
             namespace=self._coalesce_scope(namespace, payload.get("namespace")),
         )
         self.engine.meta_sqlite.replace_named_projection(
@@ -514,6 +553,11 @@ class ServiceHealthRegistry:
             label=f"service_health_event:{event_type}",
             type="entity",
             summary=f"Service health lifecycle event {event_type} for {service_id}",
+            domain_id=None,
+            canonical_entity_id=None,
+            embedding=None,
+            doc_id=None,
+            level_from_root=None,
             mentions=[Grounding(spans=[Span.from_dummy_for_workflow(str(service_id))])],
             properties={"payload_json": text},
             metadata={
@@ -551,18 +595,23 @@ class ServiceHealthRegistry:
         namespace: str | None = None,
     ) -> str | None:
         if workspace_id is not None or namespace is not None:
-            return self._projection_key(service_id, workspace_id=workspace_id, namespace=namespace)
+            return self._projection_key(
+                service_id, workspace_id=workspace_id, namespace=namespace
+            )
         get_projection = getattr(self.engine.meta_sqlite, "get_named_projection", None)
         if callable(get_projection):
-            direct = get_projection(SERVICE_HEALTH_PROJECTION_NAMESPACE, str(service_id))
+            direct = get_projection(
+                SERVICE_HEALTH_PROJECTION_NAMESPACE, str(service_id)
+            )
             if isinstance(direct, dict) and isinstance(direct.get("payload"), dict):
                 return str(service_id)
-        matches = [
-            row.get("key")
-            for row in self._projection_rows()
-            if isinstance(row.get("payload"), dict)
-            and str(row["payload"].get("service_id") or "") == str(service_id)
-        ]
+        matches = []
+        for row in self._projection_rows():
+            payload = row.get("payload")
+            if isinstance(payload, dict) and str(
+                _json_object(payload).get("service_id") or ""
+            ) == str(service_id):
+                matches.append(row.get("key"))
         if len(matches) == 1:
             return str(matches[0])
         if len(matches) > 1:
@@ -583,14 +632,19 @@ class ServiceHealthRegistry:
         if not scoped_workspace and not scoped_namespace:
             return str(service_id)
         if not scoped_namespace:
-            raise KeyError(f"namespace required for scoped service health: {service_id}")
+            raise KeyError(
+                f"namespace required for scoped service health: {service_id}"
+            )
         return f"{scoped_workspace}|{scoped_namespace}|{service_id}"
 
     def _projection_rows(self) -> list[JsonObject]:
-        list_projection = getattr(self.engine.meta_sqlite, "list_named_projections", None)
+        list_projection = getattr(
+            self.engine.meta_sqlite, "list_named_projections", None
+        )
         if not callable(list_projection):
             return []
-        return list_projection(SERVICE_HEALTH_PROJECTION_NAMESPACE)
+        rows = cast(list[object], list_projection(SERVICE_HEALTH_PROJECTION_NAMESPACE))
+        return [_json_object(row) for row in rows]
 
     def _get_projection_payload_by_key(self, key: str) -> JsonObject | None:
         get_projection = getattr(self.engine.meta_sqlite, "get_named_projection", None)
@@ -609,7 +663,7 @@ class ServiceHealthRegistry:
         )
         nodes.sort(
             key=lambda node: (
-                int(node.metadata.get("ts_ms") or 0),
+                _optional_int(node.metadata.get("ts_ms")) or 0,
                 str(node.id),
             )
         )
@@ -617,14 +671,14 @@ class ServiceHealthRegistry:
 
     @staticmethod
     def _event_payload(node: Node) -> JsonObject | None:
-        raw = node.properties.get("payload_json")
+        raw = (node.properties or {}).get("payload_json")
         if not isinstance(raw, str) or not raw:
             return None
         try:
             payload = json.loads(raw)
         except Exception:
             return None
-        return payload if isinstance(payload, dict) else None
+        return _json_object(payload) if isinstance(payload, dict) else None
 
     @staticmethod
     def _apply_event_payload(
@@ -659,35 +713,49 @@ class ServiceHealthRegistry:
             )
             return
         if event_type == "service.error_changed":
-            service_payload["instance_id"] = payload.get("instance_id", service_payload.get("instance_id"))
+            service_payload["instance_id"] = payload.get(
+                "instance_id", service_payload.get("instance_id")
+            )
             service_payload["last_error"] = payload.get("last_error")
             ServiceHealthRegistry._advance_last_seen_ms(service_payload, event_ts_ms)
             return
         if event_type == "service.recovered":
-            service_payload["instance_id"] = payload.get("instance_id", service_payload.get("instance_id"))
+            service_payload["instance_id"] = payload.get(
+                "instance_id", service_payload.get("instance_id")
+            )
             service_payload["status"] = payload.get("status") or "healthy"
             service_payload["last_error"] = None
             ServiceHealthRegistry._advance_last_seen_ms(service_payload, event_ts_ms)
             return
         if event_type == "service.stopped":
-            service_payload["instance_id"] = payload.get("instance_id", service_payload.get("instance_id"))
+            service_payload["instance_id"] = payload.get(
+                "instance_id", service_payload.get("instance_id")
+            )
             service_payload["status"] = payload.get("status") or "stopped"
             service_payload["last_error"] = payload.get("last_error")
             ServiceHealthRegistry._advance_last_seen_ms(service_payload, event_ts_ms)
             return
         if event_type in {"service.stale", "service.failed", "service.degraded"}:
-            service_payload["instance_id"] = payload.get("instance_id", service_payload.get("instance_id"))
-            service_payload["status"] = payload.get("status") or event_type.removeprefix("service.")
+            service_payload["instance_id"] = payload.get(
+                "instance_id", service_payload.get("instance_id")
+            )
+            service_payload["status"] = payload.get(
+                "status"
+            ) or event_type.removeprefix("service.")
             ServiceHealthRegistry._advance_last_seen_ms(service_payload, event_ts_ms)
             return
 
     @staticmethod
-    def _advance_last_seen_ms(service_payload: JsonObject, observed_at_ms: object) -> None:
+    def _advance_last_seen_ms(
+        service_payload: JsonObject, observed_at_ms: object
+    ) -> None:
         observed = _optional_int(observed_at_ms)
         if observed is None:
             return
         current = _optional_int(service_payload.get("last_seen_ms"))
-        service_payload["last_seen_ms"] = observed if current is None else max(current, observed)
+        service_payload["last_seen_ms"] = (
+            observed if current is None else max(current, observed)
+        )
 
     @staticmethod
     def _coalesce_scope(primary: object, fallback: object) -> str | None:
@@ -701,10 +769,18 @@ class ServiceHealthRegistry:
 def _optional_int(value: object) -> int | None:
     if value is None:
         return None
-    try:
+    if isinstance(value, bool):
         return int(value)
-    except Exception:
-        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return None
+    return None
 
 
 def _max_optional_int(*values: object) -> int | None:
