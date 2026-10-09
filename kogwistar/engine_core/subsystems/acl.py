@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from ...acl.graph import (
@@ -27,7 +28,7 @@ from ...engine_core.models import (
 from ...engine_core.vector_search import VectorSearchHit
 from ...id_provider import stable_id
 from ...json_types import JsonValue
-from ...typing_interfaces import ReadLike, WriteLike
+from ...typing_interfaces import QueryEmbeddingInput, ReadLike, WriteLike
 from .base import NamespaceProxy
 
 if TYPE_CHECKING:
@@ -1181,7 +1182,7 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
         super().__init__(engine)
         self._raw = raw_read
 
-    def __getattr__(self, name: str):
+    def __getattr__(self, name: str) -> object:
         return getattr(self._raw, name)
 
     def load_node_map(
@@ -1368,13 +1369,19 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
     def edges_by_doc(self, doc_id: str, where: dict[str, JsonValue] | None = None) -> list[str]:
         return self._raw.edges_by_doc(doc_id, where=where)
 
-    def list_edges_with_ref_filter(self, doc_id: str, where: dict | None = None) -> list[Edge]:
+    def list_edges_with_ref_filter(
+        self, doc_id: str, where: dict[str, JsonValue] | None = None
+    ) -> list[Edge]:
         return self._raw.list_edges_with_ref_filter(doc_id, where=where)
 
-    def nodes_by_doc(self, doc_id: str, *, where: dict | None = None) -> list[str]:
+    def nodes_by_doc(
+        self, doc_id: str, *, where: dict[str, JsonValue] | None = None
+    ) -> list[str]:
         return self._raw.nodes_by_doc(doc_id, where=where)
 
-    def list_nodes_with_ref_filter(self, doc_id: str, *, where: dict | None = None) -> list[Node]:
+    def list_nodes_with_ref_filter(
+        self, doc_id: str, *, where: dict[str, JsonValue] | None = None
+    ) -> list[Node]:
         return self._raw.list_nodes_with_ref_filter(doc_id, where=where)
 
     def ids_with_insertion_method(
@@ -1392,45 +1399,159 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
             doc_id=doc_id,
         )
 
-    def extract_reference_contexts(self, *args: Any, **kwargs: Any) -> list[dict[str, Any]]:
-        return self._raw.extract_reference_contexts(*args, **kwargs)
+    def extract_reference_contexts(
+        self,
+        node_or_id: Node | Edge | str,
+        *,
+        window_chars: int = 120,
+        max_contexts: int | None = None,
+        prefer_label_fallback: bool = True,
+    ) -> list[dict[str, object]]:
+        return self._raw.extract_reference_contexts(
+            node_or_id,
+            window_chars=window_chars,
+            max_contexts=max_contexts,
+            prefer_label_fallback=prefer_label_fallback,
+        )
 
-    def query_nodes(self, *args: Any, **kwargs: Any) -> list[list[Node]]:
-        batches = self._raw.query_nodes(*args, **kwargs)
+    def query_nodes(
+        self,
+        *args: object,
+        query: str | None = None,
+        query_embeddings: QueryEmbeddingInput | None = None,
+        include: list[str] = ["documents", "embeddings", "metadatas"],
+        node_type: type[Node] | None = None,
+        **kwargs: object,
+    ) -> list[list[Node]]:
+        batches = self._raw.query_nodes(
+            *args,
+            query=query,
+            query_embeddings=query_embeddings,
+            include=include,
+            node_type=node_type,
+            **kwargs,
+        )
         return [[node for node in batch if self._node_visible(node)] for batch in batches]
 
-    def query_edges(self, *args: Any, **kwargs: Any) -> list[list[Edge]]:
-        batches = self._raw.query_edges(*args, **kwargs)
+    def query_edges(
+        self,
+        *args: object,
+        query: str | None = None,
+        query_embeddings: QueryEmbeddingInput | None = None,
+        include: list[str] = ["documents", "embeddings", "metadatas"],
+        edge_type: type[Edge] | None = None,
+        **kwargs: object,
+    ) -> list[list[Edge]]:
+        batches = self._raw.query_edges(
+            *args,
+            query=query,
+            query_embeddings=query_embeddings,
+            include=include,
+            edge_type=edge_type,
+            **kwargs,
+        )
         return [[edge for edge in batch if self._edge_visible(edge)] for batch in batches]
 
-    def search_nodes_as_of(self, *args: Any, **kwargs: Any) -> list[Node]:
+    def search_nodes_as_of(
+        self,
+        *,
+        query: str | None = None,
+        query_embeddings: QueryEmbeddingInput | None = None,
+        as_of_ts: datetime | str,
+        where: dict[str, JsonValue] | None = None,
+        n_results: int = 20,
+        follow_redirects: bool = True,
+        node_type: type[Node] = Node,
+        include: list[str] | None = None,
+        max_redirect_hops: int = 16,
+        **kwargs: object,
+    ) -> list[Node]:
         return [
             node
-            for node in self._raw.search_nodes_as_of(*args, **kwargs)
+            for node in self._raw.search_nodes_as_of(
+                query=query,
+                query_embeddings=query_embeddings,
+                as_of_ts=as_of_ts,
+                where=where,
+                n_results=n_results,
+                follow_redirects=follow_redirects,
+                node_type=node_type,
+                include=include,
+                max_redirect_hops=max_redirect_hops,
+                **kwargs,
+            )
             if self._node_visible(node)
         ]
 
-    def search_nodes_as_of_scored(self, *args: Any, **kwargs: Any) -> list[VectorSearchHit[Node]]:
+    def search_nodes_as_of_scored(
+        self,
+        *,
+        query: str | None = None,
+        query_embeddings: QueryEmbeddingInput | None = None,
+        as_of_ts: datetime | str,
+        where: dict[str, JsonValue] | None = None,
+        n_results: int = 20,
+        follow_redirects: bool = True,
+        node_type: type[Node] = Node,
+        include: list[str] | None = None,
+        max_redirect_hops: int = 16,
+        similarity_threshold: float | None = None,
+        **kwargs: object,
+    ) -> list[VectorSearchHit[Node]]:
         return [
             hit
-            for hit in self._raw.search_nodes_as_of_scored(*args, **kwargs)
+            for hit in self._raw.search_nodes_as_of_scored(
+                query=query,
+                query_embeddings=query_embeddings,
+                as_of_ts=as_of_ts,
+                where=where,
+                n_results=n_results,
+                follow_redirects=follow_redirects,
+                node_type=node_type,
+                include=include,
+                max_redirect_hops=max_redirect_hops,
+                similarity_threshold=similarity_threshold,
+                **kwargs,
+            )
             if self._node_visible(hit.node)
         ]
 
-    def nodes_from_single_or_id_query_result(self, *args: Any, **kwargs: Any) -> list[Node]:
-        return self._raw.nodes_from_single_or_id_query_result(*args, **kwargs)
+    def nodes_from_single_or_id_query_result(
+        self,
+        got: Mapping[str, JsonValue],
+        node_type: type[Node] = Node,
+    ) -> list[Node]:
+        return self._raw.nodes_from_single_or_id_query_result(got, node_type=node_type)
 
-    def edges_from_single_or_id_query_result(self, *args: Any, **kwargs: Any) -> list[Edge]:
-        return self._raw.edges_from_single_or_id_query_result(*args, **kwargs)
+    def edges_from_single_or_id_query_result(
+        self,
+        got: Mapping[str, JsonValue],
+        edge_type: type[Edge] = Edge,
+        include: Sequence[str] | None = None,
+    ) -> list[Edge]:
+        return self._raw.edges_from_single_or_id_query_result(
+            got, edge_type=edge_type, include=include
+        )
 
-    def nodes_from_query_result(self, *args: Any, **kwargs: Any) -> list[list[Node]]:
-        return self._raw.nodes_from_query_result(*args, **kwargs)
+    def nodes_from_query_result(
+        self,
+        gots: Mapping[str, JsonValue],
+        node_type: type[Node] = Node,
+    ) -> list[list[Node]]:
+        return self._raw.nodes_from_query_result(gots, node_type=node_type)
 
-    def edges_from_query_result(self, *args: Any, **kwargs: Any) -> list[list[Edge]]:
-        return self._raw.edges_from_query_result(*args, **kwargs)
+    def edges_from_query_result(
+        self,
+        gots: Mapping[str, JsonValue],
+        edge_type: type[Edge] = Edge,
+    ) -> list[list[Edge]]:
+        return self._raw.edges_from_query_result(gots, edge_type=edge_type)
 
-    def where_update_from_resolve_mode(self, *args: Any, **kwargs: Any) -> dict[str, str]:
-        return self._raw.where_update_from_resolve_mode(*args, **kwargs)
+    def where_update_from_resolve_mode(
+        self,
+        resolve_mode: Literal["active_only", "redirect", "include_tombstones"],
+    ) -> dict[str, str]:
+        return self._raw.where_update_from_resolve_mode(resolve_mode)
 
 
 class ACLAwareWriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"], WriteLike):
@@ -1438,7 +1559,7 @@ class ACLAwareWriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"], WriteLike):
         super().__init__(engine)
         self._raw = raw_write
 
-    def __getattr__(self, name: str):
+    def __getattr__(self, name: str) -> object:
         return getattr(self._raw, name)
 
     def add_document(self, document: Document) -> None:
@@ -1516,37 +1637,37 @@ class ACLAwareWriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"], WriteLike):
     def uses_rust_postgres_authority(self) -> bool:
         return self._raw.uses_rust_postgres_authority()
 
-    def add_node(self, node: Node, *args: Any, **kwargs: Any) -> None:
+    def add_node(self, node: Node, doc_id: str | None = None) -> None:
         if not self._e.acl.writes_can_share_backend_transaction():
             with self._e.uow():
                 self._e.acl.append_canonical_write_events_for_item(node, grain="node")
             prev_log = getattr(self._e, "_disable_event_log", False)
             self._e._disable_event_log = True
             try:
-                result = self._raw.add_node(node, *args, **kwargs)
+                result = self._raw.add_node(node, doc_id=doc_id)
                 self._e.acl.record_default_acl_for_item(node, grain="node")
                 return result
             finally:
                 self._e._disable_event_log = prev_log
         with self._e.uow():
-            result = self._raw.add_node(node, *args, **kwargs)
+            result = self._raw.add_node(node, doc_id=doc_id)
             self._e.acl.record_default_acl_for_item(node, grain="node")
             return result
 
-    def add_edge(self, edge: Edge, *args: Any, **kwargs: Any) -> None:
+    def add_edge(self, edge: Edge, doc_id: str | None = None) -> None:
         if not self._e.acl.writes_can_share_backend_transaction():
             with self._e.uow():
                 self._e.acl.append_canonical_write_events_for_item(edge, grain="edge")
             prev_log = getattr(self._e, "_disable_event_log", False)
             self._e._disable_event_log = True
             try:
-                result = self._raw.add_edge(edge, *args, **kwargs)
+                result = self._raw.add_edge(edge, doc_id=doc_id)
                 self._e.acl.record_default_acl_for_item(edge, grain="edge")
                 return result
             finally:
                 self._e._disable_event_log = prev_log
         with self._e.uow():
-            result = self._raw.add_edge(edge, *args, **kwargs)
+            result = self._raw.add_edge(edge, doc_id=doc_id)
             self._e.acl.record_default_acl_for_item(edge, grain="edge")
             return result
 

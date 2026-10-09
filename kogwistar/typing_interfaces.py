@@ -281,6 +281,9 @@ class EmbeddingFunctionLike(Protocol):
     def __call__(self, documents_or_texts: list[str]) -> list[list[float]]: ...
 
 
+QueryEmbeddingInput: TypeAlias = Sequence[float] | Sequence[Sequence[float]]
+
+
 class ReadLike(Protocol):
     def load_node_map(
         self,
@@ -317,8 +320,25 @@ class ReadLike(Protocol):
         include: list[str] | None = None,
         resolve_mode: Literal["active_only", "redirect", "include_tombstones"] = "active_only",
     ) -> Sequence[GraphEdge]: ...
-    def query_nodes(self, *args: Any, **kwargs: Any) -> Sequence[Sequence[GraphNode]]: ...
-    def query_edges(self, *args: Any, **kwargs: Any) -> Sequence[Sequence[GraphEdge]]: ...
+    def query_nodes(
+        self,
+        *args: object,
+        query: str | None = None,
+        query_embeddings: QueryEmbeddingInput | None = None,
+        include: list[str] = ["documents", "embeddings", "metadatas"],
+        node_type: type[GraphNode] | None = None,
+        **kwargs: object,
+    ) -> Sequence[Sequence[GraphNode]]: ...
+
+    def query_edges(
+        self,
+        *args: object,
+        query: str | None = None,
+        query_embeddings: QueryEmbeddingInput | None = None,
+        include: list[str] = ["documents", "embeddings", "metadatas"],
+        edge_type: type[GraphEdge] | None = None,
+        **kwargs: object,
+    ) -> Sequence[Sequence[GraphEdge]]: ...
     def search_nodes_as_of(
         self,
         *,
@@ -331,7 +351,7 @@ class ReadLike(Protocol):
         node_type: type[GraphNode] = ...,
         include: list[str] | None = None,
         max_redirect_hops: int = 16,
-        **kwargs: Any,
+        **kwargs: object,
     ) -> Sequence[GraphNode]: ...
 
     def search_nodes_as_of_scored(
@@ -347,7 +367,7 @@ class ReadLike(Protocol):
         include: list[str] | None = None,
         max_redirect_hops: int = 16,
         similarity_threshold: float | None = None,
-        **kwargs: Any,
+        **kwargs: object,
     ) -> list[VectorSearchHit[GraphNode]]: ...
 
     def get_document(self, doc_id: str) -> EngineDoc: ...
@@ -395,15 +415,15 @@ class ReadLike(Protocol):
     ) -> list[str]: ...
 
     def list_edges_with_ref_filter(
-        self, doc_id: str, where: dict | None = None
+        self, doc_id: str, where: dict[str, JsonValue] | None = None
     ) -> list[GraphEdge]: ...
 
     def nodes_by_doc(
-        self, doc_id: str, *, where: dict | None = None
+        self, doc_id: str, *, where: dict[str, JsonValue] | None = None
     ) -> list[str]: ...
 
     def list_nodes_with_ref_filter(
-        self, doc_id: str, *, where: dict | None = None
+        self, doc_id: str, *, where: dict[str, JsonValue] | None = None
     ) -> list[GraphNode]: ...
 
     def ids_with_insertion_method(
