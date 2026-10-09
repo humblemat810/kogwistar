@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
-from kogwistar.engine_core.models import Grounding, Span
+from kogwistar.engine_core.models import Grounding, Node, Span
 from kogwistar.runtime import MappingStepResolver, WorkflowRuntime
 from kogwistar.runtime.design import load_workflow_design
 from kogwistar.runtime.models import (
@@ -129,7 +129,12 @@ def _build_design_from_rows(
         )
         for item in list(rows.get("edges") or [])
     ]
-    start_node_id = next(node.id for node in nodes if bool(node.metadata.get("wf_start")))
+    start_node_id = next(
+        (node.id for node in nodes if bool(node.metadata.get("wf_start"))),
+        None,
+    )
+    if start_node_id is None:
+        raise ValueError(f"workflow {workflow_id!r} has no start node")
     return WorkflowDesignArtifact(
         workflow_id=workflow_id,
         workflow_version="v_demo",
@@ -484,11 +489,14 @@ def run_nested_workflow_invocation_demo(
             "start_node_id": start.id,
             "node_ids": sorted(nodes.keys()),
             "edge_ids": sorted(
-                edge.id for edges in adj.values() for edge in list(edges or [])
+                edge.id
+                for edges in adj.values()
+                for edge in list(edges or [])
+                if edge.id is not None
             ),
         }
 
-    def _step_execs(run_id_value: str) -> list[Any]:
+    def _step_execs(run_id_value: str) -> list[Node]:
         nodes = conversation_engine.read.get_nodes(
             where={"$and": [{"entity_type": "workflow_step_exec"}, {"run_id": run_id_value}]},
             limit=10_000,
@@ -498,10 +506,17 @@ def run_nested_workflow_invocation_demo(
             key=lambda node: int((getattr(node, "metadata", {}) or {}).get("step_seq", -1)),
         )
 
-    def _workflow_runs(run_id_value: str) -> list[Any]:
-        return conversation_engine.read.get_nodes(
-            where={"$and": [{"entity_type": "workflow_run"}, {"run_id": run_id_value}]},
-            limit=10_000,
+    def _workflow_runs(run_id_value: str) -> list[Node]:
+        return list(
+            conversation_engine.read.get_nodes(
+                where={
+                    "$and": [
+                        {"entity_type": "workflow_run"},
+                        {"run_id": run_id_value},
+                    ]
+                },
+                limit=10_000,
+            )
         )
 
     parent_steps = _step_execs(run_id)
