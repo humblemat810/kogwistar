@@ -13,12 +13,19 @@ from typing import Any, cast
 
 from kogwistar.engine_core.models import Grounding, Span
 from kogwistar.id_provider import new_id_str
+from kogwistar.json_types import JsonObject
 from kogwistar.runtime.models import WorkflowEdge, WorkflowNode
 
 from .chat_service_workflow_history import (
     WorkflowVisibleDelta,
     _WorkflowDesignHistoryMixin,
 )
+from .chat_service_shared import json_safe
+
+
+def _json_object(value: object) -> JsonObject:
+    converted = json_safe(value)
+    return cast(JsonObject, converted) if isinstance(converted, dict) else {}
 
 
 class _WorkflowDesignService(_WorkflowDesignHistoryMixin):
@@ -35,7 +42,7 @@ class _WorkflowDesignService(_WorkflowDesignHistoryMixin):
             raise PermissionError("designer_id must match authenticated subject")
         return resolved_designer
 
-    def workflow_design_history(self, *, workflow_id: str) -> dict[str, Any]:
+    def workflow_design_history(self, *, workflow_id: str) -> JsonObject:
         workflow_id = str(workflow_id or "").strip()
         if not workflow_id:
             raise ValueError("workflow_id is required")
@@ -49,12 +56,12 @@ class _WorkflowDesignService(_WorkflowDesignHistoryMixin):
                 materialize=projection_status == "rust_event_only",
             )
             projection_status = self._workflow_projection_status(workflow_id=workflow_id)
-            result: dict[str, Any] = dict(state)
+            result = _json_object(state)
             if projection_status:
                 result["materialization_status"] = projection_status
             return result
 
-    def refresh_workflow_design_projection(self, *, workflow_id: str) -> dict[str, Any]:
+    def refresh_workflow_design_projection(self, *, workflow_id: str) -> JsonObject:
         workflow_id = str(workflow_id or "").strip()
         if not workflow_id:
             raise ValueError("workflow_id is required")
@@ -73,7 +80,7 @@ class _WorkflowDesignService(_WorkflowDesignHistoryMixin):
             out = self._workflow_finalize_design_state_locked(
                 workflow_id=workflow_id, rebuild=True
             )
-            result: dict[str, Any] = dict(out)
+            result = _json_object(out)
             result["status"] = "ok"
             return result
 
