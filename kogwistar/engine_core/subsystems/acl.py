@@ -1184,6 +1184,46 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
     def __getattr__(self, name: str):
         return getattr(self._raw, name)
 
+    def load_node_map(
+        self,
+        ids: Sequence[str],
+        *,
+        node_type: type[Node] | None = None,
+        include: list[str] | None = None,
+    ) -> dict[str, Node]:
+        """Load only ACL-visible nodes for the typed map contract."""
+
+        nodes = self._raw.load_node_map(
+            ids,
+            node_type=node_type,
+            include=include,
+        )
+        return {
+            node_id: node
+            for node_id, node in nodes.items()
+            if self._node_visible(node)
+        }
+
+    def load_edge_map(
+        self,
+        ids: Sequence[str],
+        *,
+        edge_type: type[Edge] | None = None,
+        include: list[str] | None = None,
+    ) -> dict[str, Edge]:
+        """Load only ACL-visible edges for the typed map contract."""
+
+        edges = self._raw.load_edge_map(
+            ids,
+            edge_type=edge_type,
+            include=include,
+        )
+        return {
+            edge_id: edge
+            for edge_id, edge in edges.items()
+            if self._edge_visible(edge)
+        }
+
     def _node_visible(self, node: Node) -> bool:
         principal_id, groups, security_scope = self._e.acl.current_principal_context()
         grounding_ids, span_ids = self._e.acl.usage_ids_for_item(node)
