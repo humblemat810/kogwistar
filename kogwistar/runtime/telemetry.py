@@ -600,7 +600,7 @@ class BoundLoggerAdapter(logging.LoggerAdapter):
 
     def process(self, msg, kwargs):
         extra = dict(kwargs.get("extra") or {})
-        extra.update(self.extra)  # correlation fields win
+        extra.update(self.extra or {})  # correlation fields win
         kwargs["extra"] = extra
         return msg, kwargs
 

@@ -25,7 +25,12 @@ if TYPE_CHECKING:
         AsyncWorkflowRuntime,
         SyncStepFn,
     )
-    from kogwistar.runtime.budget import BudgetAttribution, BudgetEvent
+    from kogwistar.runtime.budget import (
+        BudgetAttribution,
+        BudgetEvent,
+        budget_event_from_dict,
+        budget_event_to_dict,
+    )
     from kogwistar.runtime.budget_adapters import summarize_budget_events
     from kogwistar.runtime.checkpointed_projection import (
         CheckpointedProjectionStore,

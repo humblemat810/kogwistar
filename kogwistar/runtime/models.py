@@ -221,10 +221,7 @@ StateUpdate: TypeAlias = (
 
 
 def get_route_next_names(result: object) -> list[str]:
-    try:
-        route_names = result._route_next
-    except Exception:
-        route_names = None
+    route_names = getattr(result, "_route_next", None)
     if route_names is None:
         route_names = getattr(result, "next_step_names", None)
     return [str(x) for x in (route_names or [])]
