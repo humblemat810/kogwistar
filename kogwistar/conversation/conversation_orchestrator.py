@@ -354,11 +354,11 @@ class ConversationOrchestrator:
         max_retrieval_level: int = 2,
         summary_char_threshold: int = 12000,
         summary_token_threshold: int | None = None,
-        summary_turn_threshold=5,
+        summary_turn_threshold: int = 5,
         token_estimator: TokenEstimator | None = None,
         in_conv: bool = True,
         prev_turn_meta_summary: MetaFromLastSummary | None = None,
-        add_turn_only=None,
+        add_turn_only: bool | None = None,
         max_workers: int = 4,
         strict_answer_failure: bool = False,
         force_answer_only: bool | None = None,
@@ -486,8 +486,10 @@ class ConversationOrchestrator:
         )
 
     def ensure_prev_turn_meta_summary_new_index(
-        self, prev_node, prev_turn_meta_summary
-    ):
+        self,
+        prev_node: ConversationNode | None,
+        prev_turn_meta_summary: MetaFromLastSummary | None,
+    ) -> tuple[MetaFromLastSummary, int]:
         if prev_turn_meta_summary is None:
             prev_turn_meta_summary = MetaFromLastSummary(0, 0)
         if prev_node is not None:
@@ -513,11 +515,12 @@ class ConversationOrchestrator:
                 node_last_turn_dist
             )
 
-            node_tail_turn_index = prev_node.metadata.get("tail_turn_index")
-            if node_tail_turn_index is not None:
-                node_tail_turn_index += 1
-            else:
-                node_tail_turn_index = -1  # start_node
+            raw_tail_turn_index = prev_node.metadata.get("tail_turn_index")
+            node_tail_turn_index = (
+                _json_int(raw_tail_turn_index) + 1
+                if type(raw_tail_turn_index) is int
+                else -1
+            )  # start_node when no valid persisted index exists
             prev_turn_meta_summary.tail_turn_index = node_tail_turn_index
         else:
             new_index = 0
@@ -541,15 +544,15 @@ class ConversationOrchestrator:
         max_retrieval_level: int = 2,
         summary_char_threshold: int = 12000,
         summary_token_threshold: int | None = None,
-        summary_turn_threshold=5,
+        summary_turn_threshold: int = 5,
         token_estimator: TokenEstimator | None = None,
         in_conv: bool = True,
         prev_turn_meta_summary: MetaFromLastSummary | None = None,
-        add_turn_only=None,
+        add_turn_only: bool | None = None,
         max_workers: int = 4,
         strict_answer_failure: bool = False,
         force_answer_only: bool | None = None,
-        cache_dir = None,
+        cache_dir: str | None = None,
     ) -> AddTurnResult:
         """
         V2 workflow-driven orchestration.
