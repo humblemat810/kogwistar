@@ -21,6 +21,7 @@ from kogwistar.conversation.conversation_context import (
 )
 from kogwistar.conversation.conversation_orchestrator import (
     ConversationOrchestrator,
+    TokenEstimator,
 )
 from kogwistar.conversation.models import (
     AddTurnResult,
@@ -528,8 +529,35 @@ class ConversationService:
             ],
         )
 
-    def add_turn(self, *args, **kwargs):
-        return self.orchestrator.add_conversation_turn(*args, **kwargs)
+    def add_turn(
+        self,
+        user_id: str,
+        conversation_id: str,
+        turn_id: str,
+        mem_id: str,
+        role: str,
+        content: str,
+        ref_knowledge_engine: GraphKnowledgeEngine,
+        filtering_callback: RetrievalFilteringCallback,
+        max_retrieval_level: int = 2,
+        summary_char_threshold: int = 12000,
+        prev_turn_meta_summary: MetaFromLastSummary = MetaFromLastSummary(0, 0),
+        add_turn_only: bool | None = None,
+    ) -> AddTurnResult:
+        return self.add_conversation_turn(
+            user_id=user_id,
+            conversation_id=conversation_id,
+            turn_id=turn_id,
+            mem_id=mem_id,
+            role=role,
+            content=content,
+            ref_knowledge_engine=ref_knowledge_engine,
+            filtering_callback=filtering_callback,
+            max_retrieval_level=max_retrieval_level,
+            summary_char_threshold=summary_char_threshold,
+            prev_turn_meta_summary=prev_turn_meta_summary,
+            add_turn_only=add_turn_only,
+        )
 
     def add_conversation_turn(
         self,
@@ -542,9 +570,9 @@ class ConversationService:
         ref_knowledge_engine: GraphKnowledgeEngine,
         filtering_callback: RetrievalFilteringCallback,
         max_retrieval_level: int = 2,
-        summary_char_threshold=12000,
+        summary_char_threshold: int = 12000,
         prev_turn_meta_summary: MetaFromLastSummary = MetaFromLastSummary(0, 0),
-        add_turn_only=None,
+        add_turn_only: bool | None = None,
     ) -> AddTurnResult:
         if ref_knowledge_engine is not self.knowledge_engine:
             self.knowledge_engine = ref_knowledge_engine
@@ -568,11 +596,69 @@ class ConversationService:
             add_turn_only=add_turn_only,
         )
 
-    def add_turn_workflow_v2(self, *args, **kwargs):
-        return self.orchestrator.add_conversation_turn_workflow_v2(*args, **kwargs)
+    def add_turn_workflow_v2(
+        self,
+        *,
+        run_id: str,
+        user_id: str,
+        conversation_id: str,
+        turn_id: str,
+        mem_id: str,
+        role: Role,
+        content: str,
+        filtering_callback: RetrievalFilteringCallback,
+        workflow_id: str,
+        max_retrieval_level: int = 2,
+        summary_char_threshold: int = 12000,
+        summary_token_threshold: int | None = None,
+        summary_turn_threshold: int = 5,
+        token_estimator: TokenEstimator | None = None,
+        in_conv: bool = True,
+        prev_turn_meta_summary: MetaFromLastSummary | None = None,
+        add_turn_only: bool | None = None,
+        max_workers: int = 4,
+        strict_answer_failure: bool = False,
+        force_answer_only: bool | None = None,
+        cache_dir: str | None = None,
+    ) -> AddTurnResult:
+        return self.orchestrator.add_conversation_turn_workflow_v2(
+            run_id=run_id,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            turn_id=turn_id,
+            mem_id=mem_id,
+            role=role,
+            content=content,
+            filtering_callback=filtering_callback,
+            workflow_id=workflow_id,
+            max_retrieval_level=max_retrieval_level,
+            summary_char_threshold=summary_char_threshold,
+            summary_token_threshold=summary_token_threshold,
+            summary_turn_threshold=summary_turn_threshold,
+            token_estimator=token_estimator,
+            in_conv=in_conv,
+            prev_turn_meta_summary=prev_turn_meta_summary,
+            add_turn_only=add_turn_only,
+            max_workers=max_workers,
+            strict_answer_failure=strict_answer_failure,
+            force_answer_only=force_answer_only,
+            cache_dir=cache_dir,
+        )
 
-    def answer_only(self, *args, **kwargs):
-        return self.orchestrator.answer_only(*args, **kwargs)
+    def answer_only(
+        self,
+        *,
+        conversation_id: str,
+        model_names: list[str] | None = None,
+        prev_turn_meta_summary: MetaFromLastSummary = MetaFromLastSummary(0, 0),
+        cache_dir: str | None = None,
+    ) -> ConversationAIResponse:
+        return self.orchestrator.answer_only(
+            conversation_id=conversation_id,
+            model_names=model_names,
+            prev_turn_meta_summary=prev_turn_meta_summary,
+            cache_dir=cache_dir,
+        )
 
     def get_conversation(self, conversation_id):
         _ = conversation_id
@@ -1081,5 +1167,7 @@ class ConversationService:
                 llm_tasks=self.llm_tasks,
             )
         return self.answer_only(
-            conversation_id=conversation_id, model_names=model_names
+            conversation_id=conversation_id,
+            model_names=model_names,
+            prev_turn_meta_summary=MetaFromLastSummary(0, 0),
         )
