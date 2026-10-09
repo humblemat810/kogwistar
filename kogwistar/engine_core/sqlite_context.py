@@ -5,12 +5,13 @@ import os
 import sys
 import threading
 import uuid
-from collections.abc import Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from functools import wraps
 from pathlib import Path
+from typing import ParamSpec, TypeVar, cast
 from urllib.parse import parse_qs, unquote, urlsplit
 
 
@@ -33,6 +34,8 @@ _registry_lock = threading.RLock()
 _active_implementations: dict[tuple[object, ...], dict[str, int]] = {}
 _active_path_identities: dict[str, tuple[tuple[object, ...] | None, int]] = {}
 _native_session_leases: dict[tuple[str, str], SQLiteDatabaseLease] = {}
+P = ParamSpec("P")
+R = TypeVar("R")
 
 
 def _diagnostic(message: str) -> None:
@@ -121,26 +124,29 @@ def sqlite_execution_for(*engines: object) -> Iterator[None]:
         yield
 
 
-def sqlite_execution_bound(*engine_attributes: str):
-    def decorate(function):
+def sqlite_execution_bound(
+    *engine_attributes: str,
+) -> Callable[[Callable[P, R]], Callable[P, R]]:
+    def decorate(function: Callable[P, R]) -> Callable[P, R]:
         if inspect.iscoroutinefunction(function):
             @wraps(function)
-            async def async_wrapper(self, *args, **kwargs):
+            async def async_wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
                 with sqlite_execution_for(
-                    *(getattr(self, name) for name in engine_attributes)
+                    *(getattr(args[0], name) for name in engine_attributes)
                 ):
-                    return await function(self, *args, **kwargs)
+                    result = function(*args, **kwargs)
+                    return await cast(Awaitable[R], result)
 
-            return async_wrapper
+            return cast(Callable[P, R], async_wrapper)
 
         @wraps(function)
-        def sync_wrapper(self, *args, **kwargs):
+        def sync_wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
             with sqlite_execution_for(
-                *(getattr(self, name) for name in engine_attributes)
+                *(getattr(args[0], name) for name in engine_attributes)
             ):
-                return function(self, *args, **kwargs)
+                return function(*args, **kwargs)
 
-        return sync_wrapper
+        return cast(Callable[P, R], sync_wrapper)
 
     return decorate
 
