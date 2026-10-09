@@ -4,6 +4,12 @@ from __future__ import annotations
 import asyncio
 import os
 import uuid
+from typing import Any, cast
+
+from langchain_mcp_adapters.client import MultiServerMCPClient  # pyright: ignore[reportMissingImports]
+from langchain_mcp_adapters.tools import load_mcp_tools  # pyright: ignore[reportMissingImports]
+from langgraph.checkpoint.memory import InMemorySaver  # pyright: ignore[reportMissingImports]
+from langgraph.prebuilt import create_react_agent  # pyright: ignore[reportMissingImports]
 
 # LLMs
 USE_GEMINI = bool(os.getenv("GOOGLE_API_KEY"))
@@ -19,7 +25,7 @@ if USE_GEMINI:
 else:
     from langchain_openai import AzureChatOpenAI
 
-    llm = AzureChatOpenAI(
+    llm = cast(Any, AzureChatOpenAI)(
         deployment_name=os.getenv("OPENAI_DEPLOYMENT_NAME_GPT4_1"),
         model_name=os.getenv("OPENAI_MODEL_NAME_GPT4_1"),
         azure_endpoint=os.getenv("OPENAI_DEPLOYMENT_ENDPOINT_GPT4_1"),
@@ -31,13 +37,6 @@ else:
         max_tokens=12000,
         openai_api_type="azure",
     )
-
-# LangGraph ReAct agent
-# MCP adapter (agent side)
-from langchain_mcp_adapters.client import MultiServerMCPClient
-from langchain_mcp_adapters.tools import load_mcp_tools
-from langgraph.checkpoint.memory import InMemorySaver
-from langgraph.prebuilt import create_react_agent
 
 # ---------- REQUIRED: point to YOUR server ----------
 # Streamable HTTP (recommended)
@@ -132,7 +131,8 @@ async def run_once(user_question: str):
             }
         }
         # result = await agent.ainvoke({"messages": [{"role": "user", "content": user_question}]}, config=config)
-        events = []
+        events: list[dict[str, Any]] = []
+        event: dict[str, Any] | None = None
         cnt = 0
         async for event in agent.astream_events(
             {
@@ -145,7 +145,9 @@ async def run_once(user_question: str):
         ):
             cnt += 1
             print(event)
-            events.append(event)
+            events.append(cast(dict[str, Any], event))
+        if event is None:
+            raise RuntimeError("MCP agent produced no stream events")
         final_results = event["data"]["output"]["messages"][-1].content
         print(final_results)
         print("\n=== FINAL ANSWER ===\n", final_results)
