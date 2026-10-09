@@ -165,7 +165,23 @@
           "type": "object"
         },
         "name": "document_id_from_file_name",
-        "outputSchema": null,
+        "outputSchema": {
+          "properties": {
+            "id_mapping": {
+              "items": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "id_mapping"
+          ],
+          "type": "object"
+        },
         "title": null
       },
       {

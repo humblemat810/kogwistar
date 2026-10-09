@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import functools
 import os
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable, Sequence
 from typing import (
     Any,
     ClassVar,
@@ -43,6 +43,7 @@ from kogwistar.server.auth_middleware import (
     reset_current_role,
     set_current_role,
 )
+from kogwistar.server.chat_service import ChatRunService
 from kogwistar.server.chat_mcp import (
     build_conversation_mcp,
     build_workflow_mcp,
@@ -96,10 +97,10 @@ def tool_roles(roles: set[Role] | Role) -> Callable[[Callable[P, R]], Callable[P
 
 
 class MCPRoleMiddleware:
-    def __init__(self, app):
+    def __init__(self, app: Callable[[Scope, Receive, Send], Awaitable[None]]) -> None:
         self.app = app
 
-    async def __call__(self, scope: Scope, receive: Receive, send: Send):
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope.get("type") != "http":
             return await self.app(scope, receive, send)
 
@@ -201,7 +202,7 @@ def require_ns(
 mcp = McpRegistry("KnowledgeEngine + MCP + Admin", filter_tools=True)
 
 
-def _server_chat_service():
+def _server_chat_service() -> ChatRunService:
     import kogwistar.server_mcp_with_admin as server
 
     return server.chat_service.get()
@@ -290,8 +291,11 @@ def kg_semantic_seed_then_expand_text(
             if type(doc_ids is str)
             else [shortids.s2l_id(i) for i in doc_ids]
         )
-    out = gq.get().semantic_seed_then_expand_text(
-        text, top_k=top_k, hops=hops, doc_ids=doc_ids_coerced
+    out = cast(
+        dict[str, Any],
+        gq.get().semantic_seed_then_expand_text(
+            text, top_k=top_k, hops=hops, doc_ids=doc_ids_coerced
+        ),
     )
     layers = [
         {
@@ -384,7 +388,7 @@ class DocIdsOut(BaseModel):
 
 @tool_roles({Role.RO, Role.RW})
 @mcp.tool()
-def document_id_from_file_name(file_name: str):
+def document_id_from_file_name(file_name: str) -> DocIdsOut:
     eng = engine.get()
     if type(file_name) is str:
         filenames = [file_name]
@@ -403,7 +407,7 @@ def document_id_from_file_name(file_name: str):
 @tool_roles({Role.RW})
 @require_ns(NameSpace.DOCS)
 @mcp.tool()
-def store_document(inp: DocParseIn):
+def store_document(inp: DocParseIn) -> DocStoreOut:
     require_role("rw")
     eng = engine.get()
     doc = Document(
@@ -439,7 +443,7 @@ def kg_extract(inp: KGExtractIn) -> KGExtractOut:
     memory = Memory(location=location)
 
     @memory.cache()
-    def get_reparsed_extraction(content):
+    def get_reparsed_extraction(content: str) -> LLMGraphExtraction:
         extracted = cast(
             dict[str, Any],
             eng.extract.cached_extract_graph_with_llm(content=content),
@@ -618,7 +622,7 @@ def _norm(s: str | None) -> str:
     return (s or "").strip().lower()
 
 
-def _sigtext(n_or_e: Any) -> str | None:
+def _sigtext(n_or_e: Node | Edge) -> str | None:
     props = getattr(n_or_e, "properties", None) or {}
     st = props.get("signature_text")
     return st if isinstance(st, str) else None
@@ -663,7 +667,7 @@ def kg_crossdoc_adjudicate_anykind(inp: CrossDocAdjIn) -> CrossDocAdjOut:
 
     pairs: list[tuple[Any, Any]] = []
 
-    def _cap_pairing(items: list[tuple[Any, str | None]]):
+    def _cap_pairing(items: Sequence[tuple[Node | Edge, str | None]]) -> None:
         made = 0
         for i in range(len(items)):
             for j in range(i + 1, len(items)):
@@ -742,18 +746,22 @@ def kg_crossdoc_adjudicate_anykind(inp: CrossDocAdjIn) -> CrossDocAdjOut:
         )
 
     eng = engine.get()
+    adjudications: list[object]
+    qkey: str
     if all(isinstance(left, Node) and isinstance(right, Node) for left, right in pairs):
         node_pairs = cast(list[tuple[Node, Node]], pairs)
-        adjudications, qkey = eng.batch_adjudicate_merges(
+        raw_adjudications, raw_qkey = eng.batch_adjudicate_merges(
             node_pairs, question_code=AdjudicationQuestionCode.SAME_ENTITY
         )
+        adjudications = list(cast(Sequence[object], raw_adjudications))
+        qkey = str(raw_qkey)
     else:
         # The batch API is intentionally node-only. Cross-kind pairs use the
         # engine's typed single-pair boundary instead of being cast to nodes.
         adjudications = [eng.adjudicate_merge(left, right) for left, right in pairs]
         qkey = str(AdjudicationQuestionCode.SAME_ENTITY.value)
 
-    def _kind(o: Any) -> Literal["entity", "relationship"]:
+    def _kind(o: Node | Edge) -> Literal["entity", "relationship"]:
         return (
             "relationship"
             if isinstance(o, Edge) or getattr(o, "relation", None)
@@ -983,7 +991,7 @@ class AdjPairsIn(BaseModel):
 @tool_roles({Role.RW})
 @require_ns(NameSpace.DOCS)
 @mcp.tool()
-def commit_merge(inp: CrossDocAdjOut):
+def commit_merge(inp: CrossDocAdjOut) -> None:
     require_role("rw")
     eng = engine.get()
     committed = []
@@ -1046,16 +1054,20 @@ def adjudicate_pairs(inp: AdjPairsIn) -> CrossDocAdjOut:
         right_item = fetch_any(pair_info.right_id, pair_info.right_kind)
         pairs.append((left_item, right_item))
 
+    adjudications: list[object]
+    qkey: str
     if all(isinstance(left, Node) and isinstance(right, Node) for left, right in pairs):
         node_pairs = cast(list[tuple[Node, Node]], pairs)
-        adjudications, qkey = eng.batch_adjudicate_merges(
+        raw_adjudications, raw_qkey = eng.batch_adjudicate_merges(
             node_pairs, question_code=AdjudicationQuestionCode.SAME_ENTITY
         )
+        adjudications = list(cast(Sequence[object], raw_adjudications))
+        qkey = str(raw_qkey)
     else:
         adjudications = [eng.adjudicate_merge(left, right) for left, right in pairs]
         qkey = str(AdjudicationQuestionCode.SAME_ENTITY.value)
 
-    def _kind(o: Any) -> Literal["entity", "relationship"]:
+    def _kind(o: Node | Edge) -> Literal["entity", "relationship"]:
         return (
             "relationship"
             if isinstance(o, Edge) or getattr(o, "relation", None)
@@ -1179,7 +1191,9 @@ def kg_upsert_graph_wisdom(inp: KGUpsertIn) -> GraphUpsertOut:
 @tool_roles({Role.RO, Role.RW})
 @require_ns(NameSpace.WISDOM)
 @mcp.tool(name="wisdom.semantic_seed_then_expand")
-def wisdom_semantic_seed_then_expand(text: str, top_k: int = 10, hops: int = 2):
+def wisdom_semantic_seed_then_expand(
+    text: str, top_k: int = 10, hops: int = 2
+) -> object:
     return wisdom_gq.get().semantic_seed_then_expand_text(text, top_k=top_k, hops=hops)
 
 
