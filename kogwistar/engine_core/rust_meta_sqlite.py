@@ -10,6 +10,7 @@ from typing import Any, NoReturn, Protocol
 
 from kogwistar._rust_bridge import store_sqlite
 from kogwistar.engine_core.engine_sqlite import IndexJobRow, ProjectedLaneMessageSqlRow
+from kogwistar.json_types import JsonObject
 
 from .event_envelope import EntityEventEnvelope
 
@@ -571,18 +572,50 @@ class RustEngineSQLite:
     def clear_workflow_design_deltas(self, *, workflow_id: str) -> None:
         self._call("clear_workflow_design_deltas", workflow_id=workflow_id)
 
-    def create_server_run(self, **values: Any) -> None:
-        self._call("create_server_run", **values)
+    def create_server_run(
+        self,
+        *,
+        run_id: str,
+        conversation_id: str,
+        workflow_id: str,
+        user_id: str | None,
+        user_turn_node_id: str,
+        status: str = "queued",
+    ) -> None:
+        self._call(
+            "create_server_run",
+            run_id=run_id,
+            conversation_id=conversation_id,
+            workflow_id=workflow_id,
+            user_id=user_id,
+            user_turn_node_id=user_turn_node_id,
+            status=status,
+        )
 
-    def get_server_run(self, run_id: str) -> dict[str, Any] | None:
+    def get_server_run(self, run_id: str) -> JsonObject | None:
         return self._call("get_server_run", run_id=run_id)
 
-    def list_server_runs(self, **values: Any) -> list[dict[str, Any]]:
-        return list(self._call("list_server_runs", **values))
+    def list_server_runs(
+        self,
+        *,
+        status: str | None = None,
+        workflow_id: str | None = None,
+        conversation_id: str | None = None,
+        limit: int = 100,
+    ) -> list[JsonObject]:
+        return list(
+            self._call(
+                "list_server_runs",
+                status=status,
+                workflow_id=workflow_id,
+                conversation_id=conversation_id,
+                limit=limit,
+            )
+        )
 
     def list_server_run_events(
         self, run_id: str, *, after_seq: int = 0, limit: int = 500
-    ) -> list[dict[str, Any]]:
+    ) -> list[JsonObject]:
         return list(
             self._call(
                 "list_server_run_events",
@@ -594,7 +627,7 @@ class RustEngineSQLite:
 
     def append_server_run_event(
         self, run_id: str, event_type: str, payload_json: str
-    ) -> dict[str, Any]:
+    ) -> JsonObject:
         return dict(
             self._call(
                 "append_server_run_event",
@@ -604,8 +637,29 @@ class RustEngineSQLite:
             )
         )
 
-    def update_server_run(self, **values: Any) -> None:
-        self._call("update_server_run", **values)
+    def update_server_run(
+        self,
+        *,
+        run_id: str,
+        status: str,
+        assistant_turn_node_id: str | None,
+        result_json: str | None,
+        error_json: str | None,
+        started_at_ms: int | None,
+        finished_at_ms: int | None,
+        cancel_requested: bool | None = None,
+    ) -> None:
+        self._call(
+            "update_server_run",
+            run_id=run_id,
+            status=status,
+            assistant_turn_node_id=assistant_turn_node_id,
+            result_json=result_json,
+            error_json=error_json,
+            started_at_ms=started_at_ms,
+            finished_at_ms=finished_at_ms,
+            cancel_requested=cancel_requested,
+        )
 
     def request_server_run_cancel(self, *, run_id: str) -> None:
         self._call("request_server_run_cancel", run_id=run_id)
