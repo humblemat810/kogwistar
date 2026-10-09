@@ -92,6 +92,17 @@ def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
+def _json_int(value: JsonValue | None, default: int = 0) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (int, float, str)):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+    return default
+
+
 def _default_snapshot_id(*, workspace_id: str, projection_id: str, source_to_seq: int) -> str:
     return str(stable_id("projection_snapshot", workspace_id, projection_id, str(source_to_seq)))
 
@@ -117,12 +128,12 @@ def refresh_checkpointed_named_projection(
 ) -> TSnapshot:
     current_row = store.get_named_projection(namespace, key)
     expected_last_authoritative_seq = (
-        int(current_row["last_authoritative_seq"])
+        _json_int(current_row.get("last_authoritative_seq"))
         if current_row is not None and current_row.get("last_authoritative_seq") is not None
         else None
     )
     expected_last_materialized_seq = (
-        int(current_row["last_materialized_seq"])
+        _json_int(current_row.get("last_materialized_seq"))
         if current_row is not None and current_row.get("last_materialized_seq") is not None
         else None
     )
@@ -192,11 +203,10 @@ def refresh_checkpointed_named_projection(
             seen_event_ids.add(event_id)
             processed_event_ids.append(event_id)
             raw_event_count += 1
-            if hasattr(event, "ts_ms"):
-                ts_value = event.ts_ms
-                if ts_value is not None:
-                    ts_int = int(ts_value)
-                    last_source_event_ts_ms = max(last_source_event_ts_ms or ts_int, ts_int)
+            ts_value = getattr(event, "ts_ms", None)
+            if ts_value is not None:
+                ts_int = _json_int(ts_value)
+                last_source_event_ts_ms = max(last_source_event_ts_ms or ts_int, ts_int)
             apply_event(state, event, _seq)
 
         projected_at_ms = _now_ms()
