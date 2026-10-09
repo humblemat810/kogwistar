@@ -44,7 +44,7 @@ class AsyncNamedProjectionMetadata(Protocol):
     def compare_and_swap_named_projections(self, updates: list[ProjectionUpdate]) -> bool: ...
 
 
-def _int_or_default(value: object, default: int) -> int:
+def _int_or_default(value: object, default: int = 0) -> int:
     if isinstance(value, (str, int, float)):
         return int(value)
     return default
@@ -107,11 +107,11 @@ class AsyncPostgresNamedProjectionStore:
             "namespace": str(row[0]),
             "key": str(row[1]),
             "payload": cls._decode_payload(row[2]),
-            "last_authoritative_seq": int(row[3]),
-            "last_materialized_seq": int(row[4]),
-            "projection_schema_version": int(row[5]),
+            "last_authoritative_seq": _int_or_default(row[3]),
+            "last_materialized_seq": _int_or_default(row[4]),
+            "projection_schema_version": _int_or_default(row[5]),
             "materialization_status": str(row[6]),
-            "updated_at_ms": int(row[7]),
+            "updated_at_ms": _int_or_default(row[7]),
         }
 
     async def get_named_projection(
@@ -228,8 +228,8 @@ class AsyncPostgresNamedProjectionStore:
                     return False
                 elif (
                     current is None
-                    or int(current[0]) != int(expected_a)
-                    or int(current[1]) != int(expected_m)
+                    or _int_or_default(current[0]) != _int_or_default(expected_a)
+                    or _int_or_default(current[1]) != _int_or_default(expected_m)
                 ):
                     return False
             for item in rows:
