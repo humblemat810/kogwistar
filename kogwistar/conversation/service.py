@@ -405,7 +405,9 @@ class ConversationService:
                 eng.write.add_edge(edge)
         return node_id
 
-    def get_last_seq_node(self, conversation_id, buffer=5):
+    def get_last_seq_node(
+        self, conversation_id: str, buffer: int = 5
+    ) -> ConversationNode | None:
         _ = buffer
         return self._get_last_seq_node(conversation_id)
 
@@ -478,7 +480,10 @@ class ConversationService:
         return conv_id, str(node_id)
 
     def create_conversation(
-        self, user_id, conv_id=None, node_id: str | None | uuid.UUID = None
+        self,
+        user_id: str,
+        conv_id: str | None = None,
+        node_id: str | uuid.UUID | None = None,
     ) -> tuple[str, str]:
         conv_out, node_out = self._create_conversation_primitive(
             user_id, conv_id, node_id
@@ -508,8 +513,11 @@ class ConversationService:
             tail_search_includes=tail_search_includes,
         )
 
-    def last_summary_of_node(self, node: ConversationNode):
-        return last_summary_of_node(self.conversation_engine, node)
+    def last_summary_of_node(self, node: ConversationNode) -> list[ConversationNode]:
+        return cast(
+            list[ConversationNode],
+            last_summary_of_node(self.conversation_engine, node),
+        )
 
     def get_conversation_tail(
         self,

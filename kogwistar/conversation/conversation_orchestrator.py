@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Protocol, cast
+from uuid import UUID
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.id_provider import stable_id
@@ -256,7 +257,12 @@ class ConversationOrchestrator:
     - tool-call/tool-result events are recorded in the conversation graph
     """
 
-    def create_conversation(self, *args, **kwargs):
+    def create_conversation(
+        self,
+        user_id: str,
+        conv_id: str | None = None,
+        node_id: str | UUID | None = None,
+    ) -> tuple[str, str]:
         from .service import ConversationService
 
         svc = ConversationService.from_engine(
@@ -264,7 +270,11 @@ class ConversationOrchestrator:
             knowledge_engine=self.ref_knowledge_engine,
             workflow_engine=self.workflow_engine,
         )
-        return svc.create_conversation(*args, **kwargs)
+        return svc.create_conversation(
+            user_id=user_id,
+            conv_id=conv_id,
+            node_id=node_id,
+        )
 
     # ----------------------------
     # Workflow-v2: design + step resolver
