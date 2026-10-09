@@ -4,8 +4,8 @@ import hashlib
 import inspect
 import json
 import uuid
-from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any, cast
+from collections.abc import Mapping, Sequence
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from ...cdc.change_event import EntityRefModel
 from ...json_types import JsonObject
@@ -13,6 +13,7 @@ from ...typing_interfaces import ProjectionBackendLike
 from ...utils.embedding_vectors import normalize_embedding_vector
 from ..async_compat import run_awaitable_blocking
 from ..models import Document, Domain, Edge, Node, PureChromaEdge, PureChromaNode
+from ..storage_backend import AsyncTwoStageProjectionAdapter
 from ..utils.metadata import json_or_none, strip_none
 from ..utils.refs import (
     edge_doc_and_meta as edge_doc_and_meta_util,
@@ -27,6 +28,10 @@ from .base import NamespaceProxy
 
 if TYPE_CHECKING:
     from ..engine import GraphKnowledgeEngine
+    from ..rust_postgres_session import RustEnginePostgresMetaStore
+
+
+_T = TypeVar("_T")
 
 
 def _required_embedding(value: list[float] | None) -> list[float]:
@@ -57,7 +62,7 @@ def _backend_object(value: object) -> dict[str, Any]:
     return {}
 
 
-def _refs_fingerprint(refs) -> str:
+def _refs_fingerprint(refs: Sequence[object] | None) -> str:
     payload = [
         {
             "doc_id": getattr(r, "doc_id", None),
@@ -126,7 +131,13 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
 
         return await self._add_edge_async_single_stage(edge, doc_id=doc_id)
 
-    async def _add_edge_async_two_stage(self, edge, *, doc_id, adapter):
+    async def _add_edge_async_two_stage(
+        self,
+        edge: Edge,
+        *,
+        doc_id: str | None,
+        adapter: AsyncTwoStageProjectionAdapter,
+    ) -> None:
         import asyncio
 
         if doc_id is not None:
@@ -210,8 +221,8 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         await asyncio.to_thread(sync_upsert, **kwargs)
 
     async def _async_backend_call(
-        self, collection_key: str, method: str, **kwargs: Any
-    ) -> Any:
+        self, collection_key: str, method: str, **kwargs: object
+    ) -> object:
         """Call native async backend verbs, with a sync compatibility fallback."""
         import asyncio
         import inspect
@@ -457,7 +468,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 rows.append({key: value for key, value in row.items() if value is not None})
         return rows
 
-    async def _async_post_write(self, *, entity_kind: str, entity: Any) -> None:
+    async def _async_post_write(self, *, entity_kind: str, entity: Node | Edge) -> None:
         """Keep existing derived-index behavior off the event loop."""
         import asyncio
 
@@ -477,11 +488,13 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             await asyncio.to_thread(self._e.reconcile_indexes, max_jobs=50)
             return
         if entity_kind == "node":
-            await self._async_index_node_docs(entity)
-            await self._async_maybe_reindex_node_refs(entity)
+            node = cast(Node, entity)
+            await self._async_index_node_docs(node)
+            await self._async_maybe_reindex_node_refs(node)
         else:
-            await self._async_maybe_reindex_edge_refs(entity)
-            rows = await self._async_fanout_endpoints_rows(entity, None)
+            edge = cast(Edge, entity)
+            await self._async_maybe_reindex_edge_refs(edge)
+            rows = await self._async_fanout_endpoints_rows(edge, None)
             if rows:
                 kwargs = {
                     "ids": [row["id"] for row in rows],
@@ -493,7 +506,9 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 }
                 await self._async_backend_call("edge_endpoints", "upsert", **kwargs)
 
-    async def _add_node_async_single_stage(self, node: Node, *, doc_id: str | None):
+    async def _add_node_async_single_stage(
+        self, node: Node, *, doc_id: str | None
+    ) -> None:
         import asyncio
 
         if doc_id is not None:
@@ -529,7 +544,9 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         )
         return None
 
-    async def _add_edge_async_single_stage(self, edge: Edge, *, doc_id: str | None):
+    async def _add_edge_async_single_stage(
+        self, edge: Edge, *, doc_id: str | None
+    ) -> None:
         import asyncio
 
         if doc_id is not None:
@@ -593,11 +610,15 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 return True
         return False
 
-    def _rust_postgres_meta(self):
+    def _rust_postgres_meta(self) -> RustEnginePostgresMetaStore | None:
         from ..rust_postgres_session import RustEnginePostgresMetaStore
 
         meta = getattr(self._e, "meta_sqlite", None)
-        return meta if isinstance(meta, RustEnginePostgresMetaStore) else None
+        return (
+            cast(RustEnginePostgresMetaStore, meta)
+            if isinstance(meta, RustEnginePostgresMetaStore)
+            else None
+        )
 
     def uses_rust_postgres_authority(self) -> bool:
         return self._rust_postgres_meta() is not None
@@ -822,7 +843,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             pass
         return True
 
-    def enrich_edge_meta(self, edge: Edge):
+    def enrich_edge_meta(self, edge: Edge) -> JsonObject:
         node_endpoint_count = len(edge.source_ids or []) + len(edge.target_ids or [])
         edge_endpoint_count = len(getattr(edge, "source_edge_ids", []) or []) + len(
             getattr(edge, "target_edge_ids", []) or []
@@ -1097,7 +1118,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             payload=_entity_payload(edge),
         )
 
-    def add_pure_node(self, node: PureChromaNode):
+    def add_pure_node(self, node: PureChromaNode) -> None:
         if node.id is None:
             raise ValueError("pure node id must not be None")
         doc, meta = node_doc_and_meta_util(node)
@@ -1137,7 +1158,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 )
             )
 
-    def add_pure_edge(self, edge: PureChromaEdge):
+    def add_pure_edge(self, edge: PureChromaEdge) -> None:
         """Low-level edge add without endpoint fanout or duplicate checks."""
         if edge.id is None:
             raise ValueError("pure edge id must not be None")
@@ -1301,8 +1322,14 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
 
         return doc_ids
 
-    def index_node_refs(self, *args, **kwargs):
-        node = args[0] if args else kwargs["node"]
+    def index_node_refs(
+        self, node: Node | None = None, **kwargs: object
+    ) -> list[str]:
+        if node is None:
+            candidate = kwargs.get("node")
+            if not isinstance(candidate, Node):
+                raise TypeError("index_node_refs requires a Node")
+            node = candidate
         self.delete_node_ref_rows(node.id)
 
         ids, docs, metas = [], [], []
@@ -1339,8 +1366,14 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             ))
         return ids
 
-    def index_edge_refs(self, *args, **kwargs):
-        edge = args[0] if args else kwargs["edge"]
+    def index_edge_refs(
+        self, edge: Edge | None = None, **kwargs: object
+    ) -> list[str]:
+        if edge is None:
+            candidate = kwargs.get("edge")
+            if not isinstance(candidate, Edge):
+                raise TypeError("index_edge_refs requires an Edge")
+            edge = candidate
         self.delete_edge_ref_rows(edge.id)
 
         ids, docs, metas = [], [], []
@@ -1376,7 +1409,9 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             ))
         return ids
 
-    def fanout_endpoints_rows(self, edge: Edge, doc_id: str | None):
+    def fanout_endpoints_rows(
+        self, edge: Edge, doc_id: str | None
+    ) -> list[dict[str, object]]:
         """Build derived edge_endpoints rows from the current edge payload.
 
         Rows inherit doc_id from the explicit argument when available; otherwise the
@@ -1456,22 +1491,34 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
     def edge_doc_and_meta(self, edge: Edge) -> tuple[str, JsonObject]:
         return cast(tuple[str, JsonObject], edge_doc_and_meta_util(edge))
 
-    def strip_none(self, *args, **kwargs):
-        return strip_none(*args, **kwargs)
+    def strip_none(self, d: Mapping[str, _T]) -> dict[str, _T]:
+        return strip_none(d)
 
-    def json_or_none(self, *args, **kwargs):
-        return json_or_none(*args, **kwargs)
+    def json_or_none(self, value: object) -> str | None:
+        return json_or_none(value)
 
-    def delete_edge_ref_rows(self, *args, **kwargs):
-        edge_id = args[0] if args else kwargs["edge_id"]
+    def delete_edge_ref_rows(
+        self, edge_id: str | None = None, **kwargs: object
+    ) -> None:
+        if edge_id is None:
+            value = kwargs.get("edge_id")
+            if not isinstance(value, str):
+                raise TypeError("delete_edge_ref_rows requires an edge_id")
+            edge_id = value
         got = run_awaitable_blocking(self._e.backend.edge_refs_get(where={"edge_id": edge_id}, include=[]))
         ids = _backend_object(got).get("ids") or []
         if ids:
             run_awaitable_blocking(self._e.backend.edge_refs_delete(ids=ids))
         return None
 
-    def delete_node_ref_rows(self, *args, **kwargs):
-        node_id = args[0] if args else kwargs["node_id"]
+    def delete_node_ref_rows(
+        self, node_id: str | None = None, **kwargs: object
+    ) -> None:
+        if node_id is None:
+            value = kwargs.get("node_id")
+            if not isinstance(value, str):
+                raise TypeError("delete_node_ref_rows requires a node_id")
+            node_id = value
         got = run_awaitable_blocking(self._e.backend.node_refs_get(where={"node_id": node_id}, include=[]))
         ids = _backend_object(got).get("ids") or []
         if ids:
@@ -1654,7 +1701,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 total += 1
         return total
 
-    def delete_edges_by_ids(self, edge_ids: list[str]):
+    def delete_edges_by_ids(self, edge_ids: list[str]) -> None:
         if not edge_ids:
             return
         if self._rust_postgres_delete_edges(edge_ids):
