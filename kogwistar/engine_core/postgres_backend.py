@@ -55,6 +55,7 @@ from dataclasses import dataclass
 from typing import Any, cast
 
 import sqlalchemy as sa
+from sqlalchemy import event
 from sqlalchemy.dialects import postgresql as psql
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
@@ -190,7 +191,7 @@ def _install_connection_observability(engine: sa.Engine | AsyncEngine, *, compon
 
     sync_engine = engine.sync_engine if isinstance(engine, AsyncEngine) else engine
 
-    @sa.event.listens_for(sync_engine, "checkout")
+    @event.listens_for(sync_engine, "checkout")
     def _tag_connection(dbapi_connection, connection_record, connection_proxy) -> None:
         del connection_proxy
         label = (
@@ -224,7 +225,7 @@ def _run_coro_sync(coro):
             thread.start()
             thread.join()
             if "error" in box:
-                raise box["error"]
+                raise cast(BaseException, box["error"])
             return box.get("result")
         finally:
             runner.close()
@@ -244,7 +245,7 @@ def _run_coro_sync(coro):
     thread.start()
     thread.join()
     if "error" in box:
-        raise box["error"]
+        raise cast(BaseException, box["error"])
     return box.get("result")
 
 
@@ -1676,8 +1677,7 @@ class PgVectorBackend:
             "distance"
         )
         want_embeddings = "embeddings" in include
-        if want_embeddings:
-            embs_out: list[list[float]] = []
+        embs_out: list[list[list[float]]] = []
         with self._conn() as conn:
             for qv in query_embeddings:
                 cols = [table.c.id, table.c.document, table.c.metadata, distance_expr]
@@ -1750,8 +1750,7 @@ class PgVectorBackend:
             "distance"
         )
         want_embeddings = "embeddings" in include
-        if want_embeddings:
-            embs_out: list[list[float]] = []
+        embs_out: list[list[list[float]]] = []
 
         async with self._async_conn() as conn:
             for qv in query_embeddings:
