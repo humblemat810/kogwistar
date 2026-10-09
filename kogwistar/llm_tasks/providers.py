@@ -70,11 +70,14 @@ class StructuredBridgeChatModel:
 
     def with_structured_output(
         self,
-        schema: type[TStructuredModel],
+        schema: type[TStructuredModel] | dict[str, Any],
+        *,
         include_raw: bool = True,
-        **kwargs: object,
+        **kwargs: Any,
     ) -> _StructuredBridgeResponse:
         _ = include_raw, kwargs
+        if not isinstance(schema, type):
+            raise TypeError("the structured bridge requires a model type schema")
         return _StructuredBridgeResponse(self, schema)
 
     def complete(
@@ -153,11 +156,14 @@ class ProviderChainChatModel:
 
     def with_structured_output(
         self,
-        schema: type[TStructuredModel],
+        schema: type[TStructuredModel] | dict[str, Any],
+        *,
         include_raw: bool = True,
-        **kwargs: object,
+        **kwargs: Any,
     ) -> _ProviderChainResponse:
         _ = include_raw, kwargs
+        if not isinstance(schema, type):
+            raise TypeError("provider chains require a model type schema")
         return _ProviderChainResponse(self.models, schema)
 
 
