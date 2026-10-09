@@ -19,6 +19,7 @@ from typing import (
 )
 
 from kogwistar.engine_core.sqlite_context import sqlite_execution_bound
+from kogwistar.json_types import JsonObject, JsonValue
 
 from .base_runtime import (
     BaseRuntime,
@@ -1214,10 +1215,15 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
                     )
                 runtime_plan_successors(
                     payload=successor_payload,
-                    python_value={
-                        "tokens": oracle_tokens,
-                        "join_outstanding": oracle_outstanding,
-                    },
+                    python_value=cast(
+                        JsonObject,
+                        {
+                            "tokens": cast(JsonValue, oracle_tokens),
+                            "join_outstanding": cast(
+                                JsonValue, oracle_outstanding
+                            ),
+                        },
+                    ),
                 )
             elif runtime_mode == "rust":
                 native_plan = runtime_plan_successors(payload=successor_payload)

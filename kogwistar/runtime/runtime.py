@@ -21,6 +21,7 @@ from typing import (
 from kogwistar.engine_core.models import MentionVerification
 from kogwistar.engine_core.sqlite_context import sqlite_execution_bound
 from kogwistar.id_provider import stable_id
+from kogwistar.json_types import JsonObject
 from kogwistar.runtime.budget import BudgetAttribution, StateBackedBudgetLedger
 from kogwistar.runtime.budget_adapters import adapt_budget_events
 from kogwistar.runtime.models import (
@@ -3156,10 +3157,15 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
                             )
                         runtime_plan_successors(
                             payload=successor_payload,
-                            python_value={
-                                "tokens": oracle_tokens,
-                                "join_outstanding": oracle_outstanding,
-                            },
+                            python_value=cast(
+                                JsonObject,
+                                {
+                                    "tokens": cast(Json, oracle_tokens),
+                                    "join_outstanding": cast(
+                                        Json, oracle_outstanding
+                                    ),
+                                },
+                            ),
                         )
                     elif runtime_mode == "rust":
                         native_plan = runtime_plan_successors(payload=successor_payload)

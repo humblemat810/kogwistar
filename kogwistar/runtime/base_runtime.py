@@ -484,13 +484,16 @@ class BaseRuntime(Generic[ResolverT]):
             ),
         }
         return runtime_scheduler_tick(
-            payload={
-                "pending": payload_pending,
-                "inflight": int(inflight),
-                "max_workers": int(max_workers),
-                "cancelling": bool(cancelling),
-            },
-            python_value=python_value,
+            payload=cast(
+                JsonObject,
+                {
+                    "pending": cast(JsonValue, payload_pending),
+                    "inflight": int(inflight),
+                    "max_workers": int(max_workers),
+                    "cancelling": bool(cancelling),
+                },
+            ),
+            python_value=cast(JsonObject, python_value),
         )
 
     def _apply_workflow_invocation_result(

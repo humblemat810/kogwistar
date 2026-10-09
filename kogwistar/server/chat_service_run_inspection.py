@@ -13,7 +13,7 @@ from collections.abc import Mapping
 from typing import cast
 
 from kogwistar.engine_core.models import Node
-from kogwistar.json_types import JsonObject
+from kogwistar.json_types import JsonObject, JsonValue
 from kogwistar.runtime.projections import (
     workflow_checkpoint_latest_projection_namespace,
 )
@@ -188,7 +188,10 @@ class _RunInspectionService(_BaseComponent):
                 }
             )
             current = str(metadata.get("parent_run_id") or "")
-        return {"run_id": str(run_id), "lineage": lineage}
+        return {
+            "run_id": str(run_id),
+            "lineage": cast(JsonValue, lineage),
+        }
 
     def list_checkpoints(self, run_id: str) -> list[JsonObject]:
         nodes = self._workflow_nodes(entity_type="workflow_checkpoint", run_id=run_id)
