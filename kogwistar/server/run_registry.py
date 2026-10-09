@@ -4,9 +4,22 @@ import json
 import os
 import threading
 import time
-from typing import Any, Protocol
+from collections.abc import Mapping
+from typing import Protocol, TypedDict
 
-from kogwistar.json_types import JsonObject
+from kogwistar.json_types import JsonObject, JsonValue
+
+
+class RunRegistryEventDelegateLike(Protocol):
+    """Optional downstream sink for run-registry trace events."""
+
+    def emit(self, evt: JsonObject) -> None: ...
+
+
+class RunRegistrySnapshot(TypedDict):
+    total_runs: int
+    by_status: dict[str, int]
+    terminal_runs: int
 
 
 class RunRegistryMetaStoreLike(Protocol):
@@ -64,13 +77,28 @@ def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
-def _stable_json(payload: dict[str, Any] | None) -> str:
+def _stable_json(payload: JsonValue | Mapping[str, JsonValue] | None) -> str:
+    if isinstance(payload, Mapping):
+        payload = dict(payload)
     return json.dumps(
         payload or {}, ensure_ascii=False, separators=(",", ":"), sort_keys=True
     )
 
 
-def _debug_log(record: dict[str, Any]) -> None:
+def _stored_int(value: JsonValue | None) -> int | None:
+    """Narrow a persisted JSON scalar before using it as a timestamp."""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(float(str(value)))
+    if isinstance(value, str):
+        return int(str(value))
+    return None
+
+
+def _debug_log(record: JsonObject) -> None:
     log_path = str(os.getenv("KOGWISTAR_RUNTIME_SSE_DEBUG_LOG") or "").strip()
     if not log_path:
         return
@@ -101,7 +129,7 @@ class RunRegistry:
         user_id: str | None,
         user_turn_node_id: str,
         status: str = "queued",
-    ) -> dict[str, Any]:
+    ) -> JsonObject:
         with self._lock:
             self.meta_store.create_server_run(
                 run_id=run_id,
@@ -113,7 +141,7 @@ class RunRegistry:
             )
         return self.get_run(run_id) or {}
 
-    def get_run(self, run_id: str) -> dict[str, Any] | None:
+    def get_run(self, run_id: str) -> JsonObject | None:
         run = self.meta_store.get_server_run(run_id)
         if run is None:
             return None
@@ -122,7 +150,7 @@ class RunRegistry:
 
     def list_events(
         self, run_id: str, *, after_seq: int = 0, limit: int = 500
-    ) -> list[dict[str, Any]]:
+    ) -> list[JsonObject]:
         return list(
             self.meta_store.list_server_run_events(
                 run_id, after_seq=int(after_seq), limit=int(limit)
@@ -130,8 +158,8 @@ class RunRegistry:
         )
 
     def append_event(
-        self, run_id: str, event_type: str, payload: dict[str, Any] | None = None
-    ) -> dict[str, Any]:
+        self, run_id: str, event_type: str, payload: JsonObject | None = None
+    ) -> JsonObject:
         with self._lock:
             record = self.meta_store.append_server_run_event(
                 run_id, event_type, _stable_json(payload)
@@ -155,18 +183,18 @@ class RunRegistry:
         *,
         status: str,
         assistant_turn_node_id: str | None = None,
-        result: dict[str, Any] | None = None,
-        error: dict[str, Any] | None = None,
+        result: Mapping[str, JsonValue] | None = None,
+        error: Mapping[str, JsonValue] | None = None,
         started: bool = False,
         finished: bool = False,
-    ) -> dict[str, Any]:
+    ) -> JsonObject:
         existing = self.get_run(run_id)
         if existing is None:
             raise KeyError(f"Unknown run_id: {run_id}")
 
         now = _now_ms()
-        started_at_ms = existing.get("started_at_ms")
-        finished_at_ms = existing.get("finished_at_ms")
+        started_at_ms = _stored_int(existing.get("started_at_ms"))
+        finished_at_ms = _stored_int(existing.get("finished_at_ms"))
         if started and started_at_ms is None:
             started_at_ms = now
         if finished:
@@ -199,7 +227,7 @@ class RunRegistry:
             )
         return self.get_run(run_id) or {}
 
-    def request_cancel(self, run_id: str) -> dict[str, Any]:
+    def request_cancel(self, run_id: str) -> JsonObject:
         existing = self.get_run(run_id)
         if existing is None:
             raise KeyError(f"Unknown run_id: {run_id}")
@@ -215,7 +243,7 @@ class RunRegistry:
             return False
         return bool(run["cancel_requested"])
 
-    def snapshot(self) -> dict[str, Any]:
+    def snapshot(self) -> RunRegistrySnapshot:
         runs = list(self.meta_store.list_server_runs(limit=10_000))
         counts: dict[str, int] = {}
         for run in runs:
@@ -245,13 +273,17 @@ class RunRegistryTraceBridge:
     }
 
     def __init__(
-        self, *, registry: RunRegistry, run_id: str, delegate: Any | None = None
+        self,
+        *,
+        registry: RunRegistry,
+        run_id: str,
+        delegate: RunRegistryEventDelegateLike | None = None,
     ) -> None:
         self.registry = registry
         self.run_id = run_id
         self.delegate = delegate
 
-    def emit(self, evt: dict[str, Any]) -> None:
+    def emit(self, evt: JsonObject) -> None:
         if self.delegate is not None:
             self.delegate.emit(evt)
 
@@ -268,7 +300,7 @@ class RunRegistryTraceBridge:
             payload = {
                 "stage": stage_name,
                 "workflow_node_id": node_id,
-                "step_seq": int(evt.get("step_seq") or 0),
+                "step_seq": _stored_int(evt.get("step_seq")) or 0,
             }
             self.registry.append_event(self.run_id, "run.stage", payload)
             self.registry.append_event(
@@ -318,10 +350,10 @@ class RunRegistryLaneMessageEventSink:
         self.registry = registry
         self.run_id = str(run_id)
 
-    def __call__(self, event: dict[str, Any]) -> None:
+    def __call__(self, event: JsonObject) -> None:
         self.emit(event)
 
-    def emit(self, event: dict[str, Any]) -> None:
+    def emit(self, event: JsonObject) -> None:
         if str(event.get("run_id") or "") != self.run_id:
             return
         event_type = str(event.get("event_type") or "worker.requested")
@@ -329,7 +361,7 @@ class RunRegistryLaneMessageEventSink:
             event_type = "worker.progress"
         payload = {
             key: value
-            for key, value in dict(event).items()
+            for key, value in event.items()
             if key not in {"event_type"}
         }
         payload.setdefault("run_id", self.run_id)
