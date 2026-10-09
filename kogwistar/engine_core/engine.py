@@ -1276,11 +1276,11 @@ class GraphKnowledgeEngine:
         alias_nodes_str: str,
         alias_edges_str: str,
         instruction_for_node_edge_contents_parsing_inclusion: None | str = None,
-        last_iteration_result: dict | None = None,
+        last_iteration_result: dict[str, Any] | None = None,
         extraction_schema_mode: ExtractionSchemaMode | None = None,
         offset_mismatch_policy: OffsetMismatchPolicy = "exact_fuzzy",
         offset_repair_scorer: OffsetRepairScorer | None = None,
-    ):
+    ) -> tuple[object | None, LLMGraphExtraction | None, str | None]:
         return self.extract.extract_graph_with_llm_aliases(
             content=content,
             alias_nodes_str=alias_nodes_str,
@@ -1436,7 +1436,7 @@ class GraphKnowledgeEngine:
 
         # Keep a 1-string convenience to reuse in cosine checks
         # convenience: single-string embed for verifiers
-        def _embed_one(text: str):
+        def _embed_one(text: str) -> list[float] | None:
             vecs = run_sync_or_awaitable(
                 self._ef([text])
             )  # DefaultEmbeddingFunction is callable(texts: List[str]) -> List[List[float]]
@@ -1837,7 +1837,7 @@ class GraphKnowledgeEngine:
         if embedding_cache_path:
             self.embedding_cache = Memory(location=embedding_cache_path)
 
-            def cached_embed(query, model_name):
+            def cached_embed(query: str, model_name: str) -> Iterable[float]:
 
                 return self._iterative_defensive_emb(query)
 
@@ -2207,21 +2207,21 @@ class GraphKnowledgeEngine:
     # ----------------------------
     # Chroma-style api adders
     # ----------------------------
-    def add_pure_node(self, node: PureChromaNode):
+    def add_pure_node(self, node: PureChromaNode) -> None:
         return self.write.add_pure_node(node)
 
-    def add_pure_edge(self, edge: PureChromaEdge):
+    def add_pure_edge(self, edge: PureChromaEdge) -> None:
         return self.write.add_pure_edge(edge)
 
     # ---- Unit of Work (meta-store transaction boundary) ----
-    def _ensure_uow_ctxvars(self):
+    def _ensure_uow_ctxvars(self) -> None:
 
         if not hasattr(self, "_uow_ctx_conn"):
             self._uow_ctx_conn = contextvars.ContextVar("gke_uow_conn", default=None)
             self._uow_ctx_depth = contextvars.ContextVar("gke_uow_depth", default=0)
 
     @contextmanager
-    def uow(self):
+    def uow(self) -> Iterator[object | None]:
         """Nest-safe Unit of Work for meta-store writes.
 
         This context manager ensures atomic transactions across the primary SQL meta-store
@@ -2258,7 +2258,7 @@ class GraphKnowledgeEngine:
         finally:
             self._uow_ctx_depth.set(0)
 
-    def get_collection_lock(self, collection_name):
+    def get_collection_lock(self, collection_name: str) -> object:
         """Return the lock for a given collection name.
 
         Note: callers should not depend on the raw Chroma collection object; use backend methods instead.
@@ -2271,10 +2271,14 @@ class GraphKnowledgeEngine:
     def add_node(self, node: Node, doc_id: str | None = None) -> None:
         return self.write.add_node(node, doc_id=doc_id)
 
-    def _fanout_endpoints_rows(self, edge: Edge, doc_id: str | None):
-        return self.write.fanout_endpoints_rows(edge, doc_id)
+    def _fanout_endpoints_rows(
+        self, edge: Edge, doc_id: str | None
+    ) -> list[dict[str, Any]]:
+        return cast(
+            list[dict[str, Any]], self.write.fanout_endpoints_rows(edge, doc_id)
+        )
 
-    def enrich_edge_meta(self, edge):
+    def enrich_edge_meta(self, edge: Edge) -> dict[str, Any]:
         return self.write.enrich_edge_meta(edge)
 
     @engine_context
