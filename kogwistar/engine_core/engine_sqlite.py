@@ -27,6 +27,26 @@ _active_sqlite_path: contextvars.ContextVar[Path | None] = contextvars.ContextVa
 )
 
 
+def _json_int(value: JsonValue | None, *, default: int = 0) -> int:
+    if value is None:
+        return default
+    if isinstance(value, (bool, int, float, str)):
+        return int(value)
+    raise TypeError("expected an integer-compatible JSON scalar")
+
+
+def _json_object(value: JsonValue | None) -> JsonObject:
+    if not isinstance(value, dict):
+        return {}
+    return value
+
+
+def _json_object_list(value: JsonValue | None) -> list[JsonObject]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, dict)]
+
+
 def get_active_sqlite_conn() -> sqlite3.Connection | None:
     return _active_sqlite_conn.get()
 
@@ -561,6 +581,7 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
         Create a SQLite connection with sane defaults.
         """
         lease = acquire_sqlite_database(self.db_path, "python")
+        conn: _LeasedSQLiteConnection | None = None
         try:
             conn = sqlite3.connect(
                 self.db_path,
@@ -580,7 +601,7 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
                     pass
             return conn
         except BaseException:
-            if "conn" in locals():
+            if conn is not None:
                 conn.close()
             else:
                 lease.release()
@@ -2098,8 +2119,8 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
                     (
                         payload_json, int(last_authoritative_seq), int(last_materialized_seq),
                         int(projection_schema_version), str(materialization_status), updated_at_ms,
-                        str(namespace), str(key), int(expected_last_authoritative_seq),
-                        int(expected_last_materialized_seq),
+                        str(namespace), str(key), _json_int(expected_last_authoritative_seq, default=-1),
+                        _json_int(expected_last_materialized_seq, default=-1),
                     ),
                 )
         return bool(result.rowcount == 1)
@@ -2121,12 +2142,12 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
                         return False
                 elif (
                     current is None
-                    or int(current[0]) != int(ea)
-                    or int(current[1]) != int(em)
+                    or _json_int(current[0], default=-1) != _json_int(ea, default=-1)
+                    or _json_int(current[1], default=-1) != _json_int(em, default=-1)
                 ):
                     return False
             for item in rows:
-                conn.execute("""INSERT INTO named_projections(namespace,key,payload_json,last_authoritative_seq,last_materialized_seq,projection_schema_version,materialization_status,updated_at_ms) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(namespace,key) DO UPDATE SET payload_json=excluded.payload_json,last_authoritative_seq=excluded.last_authoritative_seq,last_materialized_seq=excluded.last_materialized_seq,projection_schema_version=excluded.projection_schema_version,materialization_status=excluded.materialization_status,updated_at_ms=excluded.updated_at_ms""", (str(item["namespace"]),str(item["key"]),json.dumps(item["payload"],sort_keys=True,separators=(",",":")),int(item.get("last_authoritative_seq",0)),int(item.get("last_materialized_seq",0)),int(item.get("projection_schema_version",1)),str(item.get("materialization_status","ready")),now))
+                conn.execute("""INSERT INTO named_projections(namespace,key,payload_json,last_authoritative_seq,last_materialized_seq,projection_schema_version,materialization_status,updated_at_ms) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(namespace,key) DO UPDATE SET payload_json=excluded.payload_json,last_authoritative_seq=excluded.last_authoritative_seq,last_materialized_seq=excluded.last_materialized_seq,projection_schema_version=excluded.projection_schema_version,materialization_status=excluded.materialization_status,updated_at_ms=excluded.updated_at_ms""", (str(item["namespace"]),str(item["key"]),json.dumps(item["payload"],sort_keys=True,separators=(",",":")),_json_int(item.get("last_authoritative_seq")),_json_int(item.get("last_materialized_seq")),_json_int(item.get("projection_schema_version"), default=1),str(item.get("materialization_status","ready")),now))
         return True
 
     def list_named_projections(self, namespace: str) -> list[JsonObject]:
@@ -2254,41 +2275,41 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
         projection = self.get_named_projection("workflow_design", str(workflow_id))
         if projection is None:
             return None
-        payload = projection.get("payload") or {}
-        versions = payload.get("versions") or []
-        dropped_ranges = payload.get("dropped_ranges") or []
+        payload = _json_object(projection.get("payload"))
+        versions = _json_object_list(payload.get("versions"))
+        dropped_ranges = _json_object_list(payload.get("dropped_ranges"))
         return {
             "workflow_id": str(workflow_id),
-            "current_version": int(payload.get("current_version") or 0),
-            "active_tip_version": int(payload.get("active_tip_version") or 0),
-            "last_authoritative_seq": int(
-                projection.get("last_authoritative_seq") or 0
+            "current_version": _json_int(payload.get("current_version")),
+            "active_tip_version": _json_int(payload.get("active_tip_version")),
+            "last_authoritative_seq": _json_int(projection.get("last_authoritative_seq")),
+            "last_materialized_seq": _json_int(projection.get("last_materialized_seq")),
+            "projection_schema_version": _json_int(
+                projection.get("projection_schema_version"), default=1
             ),
-            "last_materialized_seq": int(projection.get("last_materialized_seq") or 0),
-            "projection_schema_version": int(
-                projection.get("projection_schema_version") or 1
+            "snapshot_schema_version": _json_int(
+                payload.get("snapshot_schema_version"), default=1
             ),
-            "snapshot_schema_version": int(payload.get("snapshot_schema_version") or 1),
             "materialization_status": str(
                 projection.get("materialization_status") or "ready"
             ),
-            "updated_at_ms": int(projection.get("updated_at_ms") or 0),
+            "updated_at_ms": _json_int(projection.get("updated_at_ms")),
             "versions": [
                 {
-                    "version": int(item.get("version") or 0),
-                    "prev_version": int(item.get("prev_version") or 0),
-                    "target_seq": int(item.get("target_seq") or 0),
-                    "created_at_ms": int(item.get("created_at_ms") or 0),
+                    "version": _json_int(item.get("version")),
+                    "prev_version": _json_int(item.get("prev_version")),
+                    "target_seq": _json_int(item.get("target_seq")),
+                    "created_at_ms": _json_int(item.get("created_at_ms")),
                 }
                 for item in versions
                 if isinstance(item, dict)
             ],
             "dropped_ranges": [
                 {
-                    "start_seq": int(item.get("start_seq") or 0),
-                    "end_seq": int(item.get("end_seq") or 0),
-                    "start_version": int(item.get("start_version") or 0),
-                    "end_version": int(item.get("end_version") or 0),
+                    "start_seq": _json_int(item.get("start_seq")),
+                    "end_seq": _json_int(item.get("end_seq")),
+                    "start_version": _json_int(item.get("start_version")),
+                    "end_version": _json_int(item.get("end_version")),
                 }
                 for item in dropped_ranges
                 if isinstance(item, dict)
@@ -2304,24 +2325,24 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
         dropped_ranges: list[JsonObject],
     ) -> None:
         payload = {
-            "current_version": int(head.get("current_version") or 0),
-            "active_tip_version": int(head.get("active_tip_version") or 0),
-            "snapshot_schema_version": int(head.get("snapshot_schema_version") or 1),
+            "current_version": _json_int(head.get("current_version")),
+            "active_tip_version": _json_int(head.get("active_tip_version")),
+            "snapshot_schema_version": _json_int(head.get("snapshot_schema_version"), default=1),
             "versions": [
                 {
-                    "version": int(item.get("version") or 0),
-                    "prev_version": int(item.get("prev_version") or 0),
-                    "target_seq": int(item.get("target_seq") or 0),
-                    "created_at_ms": int(item.get("created_at_ms") or 0),
+                    "version": _json_int(item.get("version")),
+                    "prev_version": _json_int(item.get("prev_version")),
+                    "target_seq": _json_int(item.get("target_seq")),
+                    "created_at_ms": _json_int(item.get("created_at_ms")),
                 }
                 for item in versions
             ],
             "dropped_ranges": [
                 {
-                    "start_seq": int(item.get("start_seq") or 0),
-                    "end_seq": int(item.get("end_seq") or 0),
-                    "start_version": int(item.get("start_version") or 0),
-                    "end_version": int(item.get("end_version") or 0),
+                    "start_seq": _json_int(item.get("start_seq")),
+                    "end_seq": _json_int(item.get("end_seq")),
+                    "start_version": _json_int(item.get("start_version")),
+                    "end_version": _json_int(item.get("end_version")),
                 }
                 for item in dropped_ranges
             ],
@@ -2330,9 +2351,11 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
             "workflow_design",
             str(workflow_id),
             payload,
-            last_authoritative_seq=int(head.get("last_authoritative_seq") or 0),
-            last_materialized_seq=int(head.get("last_materialized_seq") or 0),
-            projection_schema_version=int(head.get("projection_schema_version") or 1),
+            last_authoritative_seq=_json_int(head.get("last_authoritative_seq")),
+            last_materialized_seq=_json_int(head.get("last_materialized_seq")),
+            projection_schema_version=_json_int(
+                head.get("projection_schema_version"), default=1
+            ),
             materialization_status=str(head.get("materialization_status") or "ready"),
         )
 
@@ -2649,7 +2672,7 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
                 """,
                 (run_id, event_type, payload_json, now),
             )
-            seq = int(cur.lastrowid)
+            seq = _json_int(cur.lastrowid)
         return {
             "seq": seq,
             "run_id": run_id,
