@@ -101,7 +101,7 @@ class _BackendCallBridge:
     # )
     # """
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, TypeVar, cast
 
 try:
     from typing import Self, TypeAlias
@@ -195,6 +195,7 @@ if TYPE_CHECKING:
 
 P = ParamSpec("P")
 R = TypeVar("R")
+SelfT = TypeVar("SelfT")
 
 
 def cached(
@@ -440,7 +441,9 @@ from kogwistar.engine_core.embedding_factory import (
 )
 
 
-def engine_context(fn):
+def engine_context(
+    fn: Callable[Concatenate[SelfT, P], R],
+) -> Callable[Concatenate[SelfT, P], R]:
     """
     Decorator for engine boundary methods.
     Automatically binds engine_type and common engine attributes.
@@ -453,7 +456,9 @@ def engine_context(fn):
     """
 
     @wraps(fn)
-    def wrapper(self, *args, **kwargs):
+    def wrapper(
+        self: SelfT, *args: P.args, **kwargs: P.kwargs
+    ) -> R:
         ctx_kwargs = {
             "engine_type": getattr(self, "kg_graph_type", None),
             "engine_id": getattr(self, "engine_id", None),
