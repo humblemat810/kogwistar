@@ -49,10 +49,10 @@ import re
 import sys
 import threading
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Iterator, Sequence
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import Any, TypeVar, cast
 
 import sqlalchemy as sa
 from sqlalchemy import event
@@ -73,6 +73,8 @@ from .storage_backend import (
     TwoStageProjectionAdapter,
     TwoStageProjectionCapability,
 )
+
+_T = TypeVar("_T")
 
 try:
     # pip install pgvector
@@ -148,11 +150,11 @@ def _parse_vector_dimension(type_name: object) -> int | None:
 
 
 class _AwaitableValue:
-    def __init__(self, value: Any):
+    def __init__(self, value: object) -> None:
         self._value = value
 
-    def __await__(self):
-        async def _done():
+    def __await__(self) -> Iterator[Any]:
+        async def _done() -> object:
             return self._value
 
         return _done().__await__()
@@ -168,17 +170,17 @@ class _AwaitableValue:
 
 
 class _AwaitableDict(dict):
-    def __await__(self):
-        async def _done():
+    def __await__(self) -> Iterator[Any]:
+        async def _done() -> _AwaitableDict:
             return self
 
         return _done().__await__()
 
 
-def _awaitable_result(value: Any) -> Any:
+def _awaitable_result(value: _T) -> _T:
     if isinstance(value, dict):
-        return _AwaitableDict(value)
-    return _AwaitableValue(value)
+        return cast(_T, _AwaitableDict(value))
+    return cast(_T, _AwaitableValue(value))
 
 
 _pg_uow_conn: contextvars.ContextVar[Any | None] = contextvars.ContextVar(
@@ -187,7 +189,7 @@ _pg_uow_conn: contextvars.ContextVar[Any | None] = contextvars.ContextVar(
 
 
 @contextmanager
-def _set_active_conn(conn: Any):
+def _set_active_conn(conn: Any) -> Iterator[None]:
     token = _pg_uow_conn.set(conn)
     try:
         yield
@@ -218,14 +220,14 @@ def _install_connection_observability(
             cursor.close()
 
 
-def _run_coro_sync(coro):
+def _run_coro_sync(coro: Awaitable[_T]) -> _T:
     if sys.platform == "win32":
         runner = asyncio.Runner(loop_factory=asyncio.SelectorEventLoop)
         try:
             try:
                 asyncio.get_running_loop()
             except RuntimeError:
-                return runner.run(coro)
+                return runner.run(cast(Coroutine[Any, Any, _T], coro))
             box: dict[str, object] = {}
 
             def _worker() -> None:
@@ -239,13 +241,13 @@ def _run_coro_sync(coro):
             thread.join()
             if "error" in box:
                 raise cast(BaseException, box["error"])
-            return box.get("result")
+            return cast(_T, box.get("result"))
         finally:
             runner.close()
     try:
         asyncio.get_running_loop()
     except RuntimeError:
-        return asyncio.run(coro)
+        return asyncio.run(cast(Coroutine[Any, Any, _T], coro))
     box: dict[str, object] = {}
 
     def _worker() -> None:
@@ -259,7 +261,7 @@ def _run_coro_sync(coro):
     thread.join()
     if "error" in box:
         raise cast(BaseException, box["error"])
-    return box.get("result")
+    return cast(_T, box.get("result"))
 
 
 class PostgresUnitOfWork:
