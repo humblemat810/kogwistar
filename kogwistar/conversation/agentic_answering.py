@@ -45,7 +45,8 @@ from kogwistar.llm_tasks import (
     RepairCitationsTaskRequest,
 )
 from kogwistar.llm_tasks.contracts import AnswerWithCitationsTaskResult
-from kogwistar.runtime.contract import CancellationChecker
+from kogwistar.runtime.contract import CancellationChecker, Predicate
+from kogwistar.runtime.telemetry import EventEmitter
 
 from .models import (
     ConversationEdge,
@@ -371,8 +372,8 @@ class AgenticAnsweringAgent:
         *,
         system_prompt: str,
         question: str,
-        candidates: list[Any],
-    ):
+        candidates: Sequence[dict[str, Any]],
+    ) -> dict[str, Any]:
         # delegate to the real method (LLM call)
         return agent._select_used_evidence(
             system_prompt=system_prompt,
@@ -385,9 +386,9 @@ class AgenticAnsweringAgent:
         *,
         system_prompt: str,
         question: str,
-        candidates: list[Any],
+        candidates: Sequence[dict[str, Any]],
         cache_dir: str | None,
-    ):
+    ) -> EvidenceSelection:
         if not cache_dir:
             return EvidenceSelection.model_validate(
                 self._select_used_evidence(
@@ -422,7 +423,7 @@ class AgenticAnsweringAgent:
         llm_tasks: LLMTaskSet,
         config: AgentConfig | None = None,
         cache_dir: str | None = str(joblib_cache_path("agentic_answering")),
-    ):
+    ) -> None:
         self.conversation_engine = conversation_engine
         self.knowledge_engine = knowledge_engine
         self.llm_tasks = llm_tasks
@@ -442,7 +443,7 @@ class AgenticAnsweringAgent:
         self,
         *,
         conversation_id: str,
-        user_id=None,
+        user_id: str | None = None,
         prev_turn_meta_summary: MetaFromLastSummary,
     ) -> dict[str, Any]:
         """Run bounded agentic answering with evidence selection + optional citation picking.
@@ -799,10 +800,10 @@ class AgenticAnsweringAgent:
         workflow_id: str = "agentic_answering.v2",
         run_id: str | None = None,
         # quick-fix for nested runs: reuse outer trace emitter when available
-        events: Any | None = None,
+        events: EventEmitter | None = None,
         trace: bool = True,
         cancel_requested: CancellationChecker | None = None,
-        cache_dir = None
+        cache_dir: str | None = None,
     ) -> dict[str, Any]:
         """Run agentic answering using the workflow runtime.
 
@@ -815,20 +816,20 @@ class AgenticAnsweringAgent:
         from ..conversation.designer import AgenticAnsweringWorkflowDesigner
 
         def predicate_always(
-            workflow_info: WorkflowEdgeInfo,
-            state: ConversationWorkflowState,
-            last_result: StepRunResult,
-        ):
+            edge: WorkflowEdgeInfo,
+            state: Mapping[str, object],
+            result: object,
+        ) -> bool:
             return True
 
         def aa_should_iterate(
-            workflow_info: WorkflowEdgeInfo,
-            state: ConversationWorkflowState,
-            last_result: StepRunResult,
-        ):
+            edge: WorkflowEdgeInfo,
+            state: Mapping[str, object],
+            result: object,
+        ) -> bool:
             return bool(state.get("should_iterate"))
 
-        predicate_registry = {
+        predicate_registry: dict[str, Predicate] = {
             "always": predicate_always,  # lambda st, r: True,
             "aa_should_iterate": aa_should_iterate,  # lambda st, r: bool(st.get("should_iterate")),
         }
