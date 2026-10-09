@@ -7,6 +7,13 @@ import time
 import uuid
 from contextlib import contextmanager
 
+from ..acl.graph import (
+    ACLDecision,
+    ACLGrain,
+    ACLNodeReadDecision,
+    ACLRecord,
+    ACLUsageDecision,
+)
 from ..acl.graph import ACLGraph
 from ..graph_kinds import normalize_graph_kind
 from ..utils.log import bind_log_context
@@ -1844,38 +1851,206 @@ class GraphKnowledgeEngine:
             if callable(close):
                 close()
 
-    def acl_entity_ids_for_target_item(self, **kwargs):
-        return self.acl.acl_entity_ids_for_target_item(**kwargs)
+    def acl_entity_ids_for_target_item(
+        self,
+        *,
+        truth_graph: str,
+        grain: str,
+        target_item_id: str,
+    ) -> tuple[str, ...]:
+        return self.acl.acl_entity_ids_for_target_item(
+            truth_graph=truth_graph,
+            grain=grain,
+            target_item_id=target_item_id,
+        )
 
-    def record_acl(self, **kwargs):
-        return self.acl.record_acl(**kwargs)
+    def record_acl(
+        self,
+        *,
+        grain: str = "node",
+        truth_graph: str,
+        entity_id: str,
+        target_item_id: str | None = None,
+        version: int,
+        mode: str,
+        created_by: str | None = None,
+        owner_id: str | None = None,
+        security_scope: str | None = None,
+        shared_with_principals: Sequence[str] = (),
+        shared_with_groups: Sequence[str] = (),
+        source_ids: Sequence[str] = (),
+        derivation_type: str | None = None,
+        derivation_audit: dict[str, JsonValue] | None = None,
+        supersedes_version: int | None = None,
+        tombstoned: bool = False,
+    ) -> ACLRecord:
+        return self.acl.record_acl(
+            grain=grain,
+            truth_graph=truth_graph,
+            entity_id=entity_id,
+            target_item_id=target_item_id,
+            version=version,
+            mode=mode,
+            created_by=created_by,
+            owner_id=owner_id,
+            security_scope=security_scope,
+            shared_with_principals=shared_with_principals,
+            shared_with_groups=shared_with_groups,
+            source_ids=source_ids,
+            derivation_type=derivation_type,
+            derivation_audit=derivation_audit,
+            supersedes_version=supersedes_version,
+            tombstoned=tombstoned,
+        )
 
-    def decide_acl(self, **kwargs):
-        return self.acl.decide_acl(**kwargs)
+    def decide_acl(
+        self,
+        *,
+        grain: str | None = None,
+        truth_graph: str,
+        entity_id: str,
+        target_item_id: str | None = None,
+        principal_id: str,
+        principal_groups: Sequence[str] = (),
+        security_scope: str | None = None,
+    ) -> ACLDecision:
+        return self.acl.decide_acl(
+            grain=grain,
+            truth_graph=truth_graph,
+            entity_id=entity_id,
+            target_item_id=target_item_id,
+            principal_id=principal_id,
+            principal_groups=principal_groups,
+            security_scope=security_scope,
+        )
 
-    def decide_acl_usage(self, **kwargs):
-        return self.acl.decide_acl_usage(**kwargs)
+    def decide_acl_usage(
+        self,
+        *,
+        item_grain: str,
+        truth_graph: str,
+        entity_id: str,
+        target_item_id: str,
+        principal_id: str,
+        principal_groups: Sequence[str] = (),
+        security_scope: str | None = None,
+    ) -> ACLUsageDecision:
+        return self.acl.decide_acl_usage(
+            item_grain=item_grain,
+            truth_graph=truth_graph,
+            entity_id=entity_id,
+            target_item_id=target_item_id,
+            principal_id=principal_id,
+            principal_groups=principal_groups,
+            security_scope=security_scope,
+        )
 
-    def decide_acl_node_read(self, **kwargs):
-        return self.acl.decide_acl_node_read(**kwargs)
+    def decide_acl_node_read(
+        self,
+        *,
+        item_grain: str,
+        truth_graph: str,
+        entity_id: str,
+        target_item_ids: Sequence[str],
+        principal_id: str,
+        grounding_item_ids: Sequence[str] = (),
+        principal_groups: Sequence[str] = (),
+        security_scope: str | None = None,
+    ) -> ACLNodeReadDecision:
+        return self.acl.decide_acl_node_read(
+            item_grain=item_grain,
+            truth_graph=truth_graph,
+            entity_id=entity_id,
+            target_item_ids=target_item_ids,
+            principal_id=principal_id,
+            grounding_item_ids=grounding_item_ids,
+            principal_groups=principal_groups,
+            security_scope=security_scope,
+        )
 
-    def get_node_acl_checked(self, *args, **kwargs):
-        return self.acl.get_node_acl_checked(*args, **kwargs)
+    def get_node_acl_checked(
+        self,
+        node_id: str,
+        *,
+        grounding_item_ids: Sequence[str] = (),
+        target_item_ids: Sequence[str] = (),
+        principal_id: str,
+        principal_groups: Sequence[str] = (),
+        security_scope: str | None = None,
+        node_type: type[Node] | None = None,
+        include: list[str] | None = None,
+        resolve_mode: Literal["active_only", "redirect", "include_tombstones"] = "active_only",
+    ) -> Node:
+        return self.acl.get_node_acl_checked(
+            node_id,
+            grounding_item_ids=grounding_item_ids,
+            target_item_ids=target_item_ids,
+            principal_id=principal_id,
+            principal_groups=principal_groups,
+            security_scope=security_scope,
+            node_type=node_type,
+            include=include,
+            resolve_mode=resolve_mode,
+        )
 
-    def get_edge_acl_checked(self, *args, **kwargs):
-        return self.acl.get_edge_acl_checked(*args, **kwargs)
+    def get_edge_acl_checked(
+        self,
+        edge_id: str,
+        *,
+        principal_id: str,
+        principal_groups: Sequence[str] = (),
+        security_scope: str | None = None,
+        edge_type: type[Edge] | None = None,
+        include: list[str] | None = None,
+        resolve_mode: Literal["active_only", "redirect", "include_tombstones"] = "active_only",
+    ) -> Edge:
+        return self.acl.get_edge_acl_checked(
+            edge_id,
+            principal_id=principal_id,
+            principal_groups=principal_groups,
+            security_scope=security_scope,
+            edge_type=edge_type,
+            include=include,
+            resolve_mode=resolve_mode,
+        )
 
-    def rebuild_acl_graph_from_truth(self, **kwargs):
-        return self.acl.rebuild_acl_graph_from_truth(**kwargs)
+    def rebuild_acl_graph_from_truth(
+        self, *, truth_graph: str | None = None
+    ) -> dict[str, Any]:
+        return self.acl.rebuild_acl_graph_from_truth(truth_graph=truth_graph)
 
-    def prefetch_acl_neighborhood(self, **kwargs):
-        return self.acl.prefetch_acl_neighborhood(**kwargs)
+    def prefetch_acl_neighborhood(
+        self,
+        *,
+        truth_graph: str,
+        entity_id: str,
+        item_grain: ACLGrain = "span",
+        grounding_item_ids: Sequence[str] = (),
+        target_item_ids: Sequence[str] = (),
+        max_items: int = 32,
+    ) -> dict[str, tuple[str, ...]]:
+        return self.acl.prefetch_acl_neighborhood(
+            truth_graph=truth_graph,
+            entity_id=entity_id,
+            item_grain=item_grain,
+            grounding_item_ids=grounding_item_ids,
+            target_item_ids=target_item_ids,
+            max_items=max_items,
+        )
 
-    def repair_missing_default_acls(self, **kwargs):
-        return self.acl.repair_missing_default_acls(**kwargs)
+    def repair_missing_default_acls(
+        self, *, truth_graph: str | None = None, limit: int = 10_000
+    ) -> dict[str, Any]:
+        return self.acl.repair_missing_default_acls(
+            truth_graph=truth_graph, limit=limit
+        )
 
-    def repair_acl_records_from_events(self, **kwargs):
-        return self.acl.repair_acl_records_from_events(**kwargs)
+    def repair_acl_records_from_events(
+        self, *, truth_graph: str | None = None, limit: int = 10_000
+    ) -> dict[str, Any]:
+        return self.acl.repair_acl_records_from_events(
+            truth_graph=truth_graph, limit=limit
+        )
 
     def _emit_change(
         self,
