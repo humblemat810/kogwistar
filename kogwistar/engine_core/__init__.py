@@ -1,5 +1,7 @@
 """Engine-core compatibility entrypoints with safe optional imports."""
 
+from typing import TYPE_CHECKING
+
 from kogwistar.engine_core.acl_protocol import (
     ACLAwareReadProtocol,
     ACLAwareWriteProtocol,
@@ -104,6 +106,32 @@ from kogwistar.engine_core.vector_search import (
     similarity_from_distance,
 )
 from kogwistar.typing_interfaces import TokenAwareEmbeddingFunction
+
+if TYPE_CHECKING:
+    from kogwistar.engine_core.chroma_backend import (
+        ChromaBackend,
+        ChromaStorageInspector,
+    )
+    from kogwistar.engine_core.engine_postgres import (
+        EnginePostgresConfig,
+        build_async_postgres_backend,
+        build_postgres_backend,
+    )
+    from kogwistar.engine_core.engine_postgres_meta import (
+        EnginePostgresMetaStore,
+        IndexJob,
+    )
+    from kogwistar.engine_core.in_memory_backend import (
+        InMemoryBackend,
+        build_in_memory_backend,
+    )
+    from kogwistar.engine_core.postgres_backend import (
+        AsyncPostgresUnitOfWork,
+        PgVectorBackend,
+        PgVectorConfig,
+        PgVectorSchemaMismatchError,
+        PostgresUnitOfWork,
+    )
 
 __all__ = [
     "SERVICE_HEALTH_PROJECTION_NAMESPACE",
