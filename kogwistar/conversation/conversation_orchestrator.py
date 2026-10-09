@@ -9,7 +9,7 @@ It is intentionally lightweight and uses your existing retrievers/agents.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Protocol, cast
 from uuid import UUID
@@ -21,7 +21,7 @@ from kogwistar.json_types import JsonValue
 
 from ..engine_core.models import Grounding, MentionVerification, Role, Span
 from ..utils.embedding_vectors import normalize_embedding_vector
-from ..runtime.contract import Predicate
+from ..runtime.contract import Predicate, WorkflowEdgeInfo
 from .callbacks import RetrievalFilteringCallback
 from .conversation_context import ContextItem, ContextMessage, PromptContext
 from .conversation_state_contracts import (
@@ -648,21 +648,34 @@ class ConversationOrchestrator:
         # ----------------------------
         # 3) Predicates (dynamic routing)
         # ----------------------------
-        def always(workflow_info, st, r):
+        def always(
+            edge: WorkflowEdgeInfo, state: Mapping[str, object], result: object
+        ) -> bool:
             return True
 
-        def should_pin_memory(workflow_info, st, r):
-            return bool((st.get("memory") or {}).get("selected")) and bool(
-                (st.get("memory") or {}).get("memory_context_text")
+        def should_pin_memory(
+            edge: WorkflowEdgeInfo, state: Mapping[str, object], result: object
+        ) -> bool:
+            memory = state.get("memory")
+            return isinstance(memory, Mapping) and bool(memory.get("selected")) and bool(
+                memory.get("memory_context_text")
             )
 
-        def should_pin_kg(workflow_info, st, r):
-            return bool((st.get("kg") or {}).get("selected"))
+        def should_pin_kg(
+            edge: WorkflowEdgeInfo, state: Mapping[str, object], result: object
+        ) -> bool:
+            kg = state.get("kg")
+            return isinstance(kg, Mapping) and bool(kg.get("selected"))
 
-        def should_summarize(workflow_info, st, r):
-            return bool(st.get("summary", {}).get("should_summarize", False))
+        def should_summarize(
+            edge: WorkflowEdgeInfo, state: Mapping[str, object], result: object
+        ) -> bool:
+            summary = state.get("summary")
+            return isinstance(summary, Mapping) and bool(
+                summary.get("should_summarize", False)
+            )
 
-        predicate_registry = {
+        predicate_registry: dict[str, Predicate] = {
             "always": always,
             "should_pin_memory": should_pin_memory,
             "should_pin_kg": should_pin_kg,
@@ -696,7 +709,13 @@ class ConversationOrchestrator:
                 bound_answer_only is None
                 or bound_answer_only is not ConversationOrchestrator.answer_only
             )
-        def cacheable_summarize_batch(conversation_id, current_index, *, prev_turn_meta_summary, cache_dir):
+        def cacheable_summarize_batch(
+            conversation_id: str,
+            current_index: int,
+            *,
+            prev_turn_meta_summary: MetaFromLastSummary,
+            cache_dir: str | None,
+        ) -> str | None:
             return self._summarize_conversation_batch(
                     conversation_id,
                     current_index,
@@ -704,7 +723,12 @@ class ConversationOrchestrator:
                     prev_turn_meta_summary=prev_turn_meta_summary,
                     cache_dir = cache_dir
                 )
-        def cacheable_answer_only(*, conversation_id, prev_turn_meta_summary, cache_dir):
+        def cacheable_answer_only(
+            *,
+            conversation_id: str,
+            prev_turn_meta_summary: MetaFromLastSummary,
+            cache_dir: str | None,
+        ) -> ConversationAIResponse:
             return self.answer_only(
                     conversation_id=conversation_id,
                     prev_turn_meta_summary=prev_turn_meta_summary,
@@ -880,15 +904,15 @@ class ConversationOrchestrator:
 
     def add_link_to_new_turn(
         self,
-        edge_id,
-        turn_node,
-        prev_node,
-        conversation_id,
-        span,
+        edge_id: str,
+        turn_node: ConversationNode,
+        prev_node: ConversationNode,
+        conversation_id: str,
+        span: Span,
         prev_turn_meta_summary: MetaFromLastSummary,
         causal_type: str | None = "chain",
         clock: ExecClock | None = None,
-    ):
+    ) -> ConversationEdge:
 
         # eid = stable_id("edge")
 
@@ -908,10 +932,15 @@ class ConversationOrchestrator:
                 attempt_seq=clock.attempt_seq,
             )
 
+        prev_node_id = prev_node.id
+        turn_node_id = turn_node.id
+        if prev_node_id is None or turn_node_id is None:
+            raise ValueError("conversation turn links require persisted node IDs")
+
         seq_edge = ConversationEdge(
             id=edge_id,
-            source_ids=[prev_node.id],
-            target_ids=[turn_node.id],
+            source_ids=[prev_node_id],
+            target_ids=[turn_node_id],
             relation="next_turn",
             label="next_turn",
             type="relationship",
@@ -945,11 +974,11 @@ class ConversationOrchestrator:
         max_retrieval_level: int = 2,
         summary_char_threshold: int = 12000,
         summary_token_threshold: int | None = None,
-        summary_turn_threshold=5,
+        summary_turn_threshold: int = 5,
         token_estimator: TokenEstimator | None = None,
         in_conv: bool = True,
         prev_turn_meta_summary: MetaFromLastSummary | None = None,
-        add_turn_only=None,
+        add_turn_only: bool | None = None,
     ) -> AddTurnResult:
         """Ingest a user/assistant turn and run retrieval+answering policy."""
 
@@ -1149,8 +1178,12 @@ class ConversationOrchestrator:
         return add_turn_result
 
     def join_tool_node_to_turn(
-        self, conversation_id, node_id, turn_node_id, prev_turn_meta_summary
-    ):
+        self,
+        conversation_id: str,
+        node_id: str,
+        turn_node_id: str,
+        prev_turn_meta_summary: MetaFromLastSummary,
+    ) -> None:
         eid = str(stable_id("tool_call_entry", conversation_id, node_id, turn_node_id))
         edge = ConversationEdge(
             id=eid,
@@ -1203,11 +1236,11 @@ class ConversationOrchestrator:
 
     def gen_machine_response_turns(
         self,
-        user_id,
-        conversation_id,
-        turn_node_id,
-        new_index,  # user visible new turn index
-        embedding,
+        user_id: str,
+        conversation_id: str,
+        turn_node_id: str,
+        new_index: int,  # user visible new turn index
+        embedding: list[float] | None,
         content: str,
         filtering_callback: RetrievalFilteringCallback,
         max_retrieval_level: int,
@@ -1220,8 +1253,8 @@ class ConversationOrchestrator:
         summary_turn_threshold: int = 5,
         summary_token_threshold: int | None = None,
         token_estimator: TokenEstimator | None = None,
-        cache_dir = None,
-    ):
+        cache_dir: str | None = None,
+    ) -> AddTurnResult:
         """Run retrieval, pinning, answer generation, and optional summarization for one turn.
 
         The user turn is assumed to already exist. This method orchestrates
@@ -1432,8 +1465,10 @@ class ConversationOrchestrator:
             add_turn_result = replace(add_turn_result, turn_index=new_index)
         return add_turn_result
 
-    def get_chain_nodes(self, user_id, conversation_id):
-        return self.conversation_engine.read.get_nodes(
+    def get_chain_nodes(
+        self, user_id: str | None, conversation_id: str | None
+    ) -> Sequence[ConversationNode]:
+        nodes = self.conversation_engine.read.get_nodes(
             where={
                 "$and": [{"in_ui_chain": True}] + [{"user_id": user_id}]
                 if user_id
@@ -1442,8 +1477,9 @@ class ConversationOrchestrator:
                 else []
             }
         )
+        return [cast(ConversationNode, node) for node in nodes]
 
-    def get_chain_length(self, user_id, conversation_id):
+    def get_chain_length(self, user_id: str | None, conversation_id: str | None) -> int:
         return len(self.get_chain_nodes(user_id, conversation_id))
 
     # @conversation_only
@@ -1455,9 +1491,9 @@ class ConversationOrchestrator:
         user_id: str,
         prev_turn_meta_summary: MetaFromLastSummary,
         batch_size: int = 5,
-        in_conv=True,
+        in_conv: bool = True,
         cache_dir: str | None = None,
-    ):
+    ) -> str | None:
         """Summarize a recent conversation window into a summary turn plus provenance edges.
 
         The batch may prepend the prior summary node, persists a context snapshot
@@ -1793,7 +1829,7 @@ class ConversationOrchestrator:
         conversation_id: str,
         model_names: list[str] | None = None,
         prev_turn_meta_summary: MetaFromLastSummary,
-        cache_dir = None,
+        cache_dir: str | None = None,
     ) -> ConversationAIResponse:
         """Generate an answer from the assembled conversation/KG context.
 
