@@ -28,7 +28,7 @@ JsonPrimitive = TypeAliasType(
 )
 JsonValue = TypeAliasType(
     "JsonValue",
-    JsonPrimitive | list["JsonValue"] | dict[str, "JsonValue"],
+    JsonPrimitive | list["JsonValue"] | dict[str, "JsonValue"],  # pyright: ignore[reportInvalidTypeForm]
 )
 
 DescriptorKind = Literal[
