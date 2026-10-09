@@ -50,19 +50,20 @@ else:
     SQLAlchemyRow = Any
 
 from kogwistar.runtime.models import WorkflowEdge, WorkflowNode
+from kogwistar.json_types import JsonObject
 
 from .chat_service_shared import WorkflowProjectionRebuildingError, _BaseComponent
 
 
 class WorkflowVisibleSnapshot(TypedDict):
-    nodes: list[dict[str, Any]]
-    edges: list[dict[str, Any]]
+    nodes: list[JsonObject]
+    edges: list[JsonObject]
 
 
 class WorkflowVisibleDelta(TypedDict):
-    upsert_nodes: list[dict[str, Any]]
+    upsert_nodes: list[JsonObject]
     delete_node_ids: list[str]
-    upsert_edges: list[dict[str, Any]]
+    upsert_edges: list[JsonObject]
     delete_edge_ids: list[str]
 
 
@@ -132,7 +133,7 @@ class WorkflowProjectionPayload(TypedDict, total=False):
     current_version: int
     active_tip_version: int
     snapshot_schema_version: int
-    versions: list[dict[str, Any]]
+    versions: list[JsonObject]
     dropped_ranges: list[WorkflowDroppedRange]
 
 
@@ -308,7 +309,7 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
         )
         if not callable(iter_events):
             return
-        kwargs: dict[str, Any] = {
+        kwargs: dict[str, object] = {
             "namespace": str(namespace),
             "from_seq": int(from_seq),
         }
@@ -327,7 +328,7 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
                 break
             yield row
 
-    def _parse_event_payload(self, payload_raw: Any) -> dict[str, Any]:
+    def _parse_event_payload(self, payload_raw: object) -> JsonObject:
         """Best-effort parse an event payload into a dictionary.
 
         Payloads may already be decoded dicts or raw JSON strings depending on
@@ -356,7 +357,7 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
         op: str,
         designer_id: str,
         source: str,
-        payload: dict[str, Any] | None = None,
+            payload: JsonObject | None = None,
     ) -> int:
         """Append a designer control-plane event to the workflow namespace.
 
@@ -383,7 +384,7 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
         append = self._workflow_engine().meta_sqlite.append_entity_event
         if not callable(append):
             return 0
-        body = {
+        body: JsonObject = {
             "workflow_id": str(workflow_id),
             "designer_id": str(designer_id),
             "ts_ms": self._now_ms(),
@@ -408,7 +409,7 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
         entity_kind: str,
         entity_id: str,
         op: str,
-        payload: dict[str, Any] | None = None,
+            payload: JsonObject | None = None,
     ) -> int:
         """Append a workflow data-plane entity event to the workflow namespace.
 
@@ -990,26 +991,32 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
             "active_tip_version": _json_int(state.get("active_tip_version")),
             "snapshot_schema_version": self._snapshot_schema_version,
             "versions": [
-                {
-                    "version": _json_int(item.get("version")),
-                    "prev_version": _json_int(item.get("prev_version")),
-                    "target_seq": _json_int(item.get("target_seq")),
-                    "created_at_ms": _json_int(item.get("created_at_ms")),
-                }
+                cast(
+                    JsonObject,
+                    {
+                        "version": _json_int(item.get("version")),
+                        "prev_version": _json_int(item.get("prev_version")),
+                        "target_seq": _json_int(item.get("target_seq")),
+                        "created_at_ms": _json_int(item.get("created_at_ms")),
+                    },
+                )
                 for item in state.get("selected_versions") or []
             ]
             + [
-                {
-                    "version": _json_int(item.get("version")),
-                    "prev_version": _json_int(
-                        (state.get("commits") or {})
-                        .get(_json_int(item.get("version")), {})
-                        .get("prev_version")
-                        or 0
-                    ),
-                    "target_seq": _json_int(item.get("seq")),
-                    "created_at_ms": _json_int(item.get("created_at_ms")),
-                }
+                cast(
+                    JsonObject,
+                    {
+                        "version": _json_int(item.get("version")),
+                        "prev_version": _json_int(
+                            (state.get("commits") or {})
+                            .get(_json_int(item.get("version")), {})
+                            .get("prev_version")
+                            or 0
+                        ),
+                        "target_seq": _json_int(item.get("seq")),
+                        "created_at_ms": _json_int(item.get("created_at_ms")),
+                    },
+                )
                 for item in (state.get("versions") or [])
                 if _json_int(item.get("version"))
                 not in {
