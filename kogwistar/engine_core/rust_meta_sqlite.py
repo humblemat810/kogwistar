@@ -6,13 +6,16 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import fields
 from pathlib import Path
-from typing import Any, NoReturn, Protocol
+from typing import Any, NoReturn, Protocol, TYPE_CHECKING
 
 from kogwistar._rust_bridge import store_sqlite
 from kogwistar.engine_core.engine_sqlite import IndexJobRow, ProjectedLaneMessageSqlRow
-from kogwistar.json_types import JsonObject
+from kogwistar.json_types import JsonObject, JsonValue
 
 from .event_envelope import EntityEventEnvelope
+
+if TYPE_CHECKING:
+    from .engine_sqlite import EngineSQLite
 
 _INDEX_JOB_FIELDS = {field.name for field in fields(IndexJobRow)}
 _LANE_MESSAGE_FIELDS = {field.name for field in fields(ProjectedLaneMessageSqlRow)}
@@ -59,7 +62,7 @@ class RustEngineSQLite:
             f"kogwistar_rust_sqlite_transaction_{id(self)}", default=None
         )
 
-    def _call(self, kind: str, **values: Any) -> Any:
+    def _call(self, kind: str, **values: JsonValue) -> Any:
         return store_sqlite(
             path=self.db_path,
             operation={"kind": kind, **values},
@@ -151,7 +154,7 @@ class RustEngineSQLite:
         if not isinstance(conn, _RustTransactionToken) or conn.value != active:
             raise RustSQLiteConnectionUnavailable("stale Rust SQLite transaction token")
 
-    def enqueue_index_job(self, **values: Any) -> str:
+    def enqueue_index_job(self, **values: JsonValue) -> str:
         return str(self._call("enqueue_index_job", **values))
 
     def claim_index_jobs(
@@ -295,7 +298,7 @@ class RustEngineSQLite:
     def alloc_event_seq(self, namespace: str = "default") -> int:
         return int(self._call("alloc_event_seq", namespace=namespace))
 
-    def append_entity_event(self, **values: Any) -> int:
+    def append_entity_event(self, **values: JsonValue) -> int:
         return int(self._call("raw_append", **values)["seq"])
 
     def append_entity_event_envelope(self, event: EntityEventEnvelope) -> int:
@@ -397,7 +400,7 @@ class RustEngineSQLite:
         return self._call("get_named_projection", namespace=namespace, key=key)
 
     def replace_named_projection(
-        self, namespace: str, key: str, payload: dict[str, Any], **values: Any
+        self, namespace: str, key: str, payload: dict[str, Any], **values: JsonValue
     ) -> None:
         self._call(
             "replace_named_projection",
@@ -408,7 +411,7 @@ class RustEngineSQLite:
         )
 
     def compare_and_swap_named_projection(
-        self, namespace: str, key: str, payload: dict[str, Any], **values: Any
+        self, namespace: str, key: str, payload: dict[str, Any], **values: JsonValue
     ) -> bool:
         return bool(
             self._call(
@@ -452,7 +455,7 @@ class RustEngineSQLite:
         namespace: str,
         node_id: str,
         payload: dict[str, Any],
-        **values: Any,
+        **values: JsonValue,
     ) -> None:
         self._call(
             "replace_stage1_node_projection",
@@ -554,19 +557,19 @@ class RustEngineSQLite:
     def clear_workflow_design_projection(self, *, workflow_id: str) -> None:
         self.clear_named_projection("workflow_design", workflow_id)
 
-    def put_workflow_design_snapshot(self, **values: Any) -> None:
+    def put_workflow_design_snapshot(self, **values: JsonValue) -> None:
         self._call("put_workflow_design_snapshot", **values)
 
-    def get_workflow_design_snapshot(self, **values: Any) -> dict[str, Any] | None:
+    def get_workflow_design_snapshot(self, **values: JsonValue) -> dict[str, Any] | None:
         return self._call("get_workflow_design_snapshot", **values)
 
     def clear_workflow_design_snapshots(self, *, workflow_id: str) -> None:
         self._call("clear_workflow_design_snapshots", workflow_id=workflow_id)
 
-    def put_workflow_design_delta(self, **values: Any) -> None:
+    def put_workflow_design_delta(self, **values: JsonValue) -> None:
         self._call("put_workflow_design_delta", **values)
 
-    def get_workflow_design_delta(self, **values: Any) -> dict[str, Any] | None:
+    def get_workflow_design_delta(self, **values: JsonValue) -> dict[str, Any] | None:
         return self._call("get_workflow_design_delta", **values)
 
     def clear_workflow_design_deltas(self, *, workflow_id: str) -> None:
@@ -664,31 +667,31 @@ class RustEngineSQLite:
     def request_server_run_cancel(self, *, run_id: str) -> None:
         self._call("request_server_run_cancel", run_id=run_id)
 
-    def project_lane_message(self, **values: Any) -> None:
+    def project_lane_message(self, **values: JsonValue) -> None:
         self._call("project_lane_message", **values)
 
-    def update_projected_lane_message_status(self, **values: Any) -> None:
+    def update_projected_lane_message_status(self, **values: JsonValue) -> None:
         self._call("update_projected_lane_message_status", **values)
 
-    def update_projected_lane_message_links(self, **values: Any) -> None:
+    def update_projected_lane_message_links(self, **values: JsonValue) -> None:
         self._call("update_projected_lane_message_links", **values)
 
-    def claim_projected_lane_messages(self, **values: Any) -> list[ProjectedLaneMessageSqlRow]:
+    def claim_projected_lane_messages(self, **values: JsonValue) -> list[ProjectedLaneMessageSqlRow]:
         return [
             _lane_message_row(row)
             for row in self._call("claim_projected_lane_messages", **values)
         ]
 
-    def ack_projected_lane_message(self, **values: Any) -> None:
+    def ack_projected_lane_message(self, **values: JsonValue) -> None:
         self._call("ack_projected_lane_message", **values)
 
-    def requeue_projected_lane_message(self, **values: Any) -> None:
+    def requeue_projected_lane_message(self, **values: JsonValue) -> None:
         self._call("requeue_projected_lane_message", **values)
 
     def clear_projected_lane_messages(self, namespace: str) -> int:
         return int(self._call("clear_projected_lane_messages", namespace=namespace))
 
-    def list_projected_lane_messages(self, **values: Any) -> list[ProjectedLaneMessageSqlRow]:
+    def list_projected_lane_messages(self, **values: JsonValue) -> list[ProjectedLaneMessageSqlRow]:
         return [
             _lane_message_row(row)
             for row in self._call("list_projected_lane_messages", **values)
@@ -697,7 +700,7 @@ class RustEngineSQLite:
 
 def build_sqlite_meta_store(
     persistent_directory: Path, filename: str = "engine.db"
-) -> RustEngineSQLite | Any:
+) -> RustEngineSQLite | EngineSQLite:
     from kogwistar._rust_bridge import meta_store_implementation_mode
     from kogwistar.engine_core.engine_sqlite import EngineSQLite
 
