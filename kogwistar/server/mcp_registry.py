@@ -12,13 +12,17 @@ import json
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Any, get_type_hints
+from typing import Any, ParamSpec, TypeVar, cast, get_type_hints, overload
 
 from mcp import types
 from mcp.server.lowlevel import Server
-from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError, create_model
+from pydantic import BaseModel, ConfigDict, TypeAdapter, create_model
 from starlette.applications import Starlette
 from starlette.routing import Mount
+from starlette.types import Receive, Scope, Send
+
+P = ParamSpec("P")
+R = TypeVar("R")
 
 
 def _inline_refs(value: object, definitions: dict[str, object]) -> object:
@@ -53,16 +57,20 @@ def _input_model(name: str, function: Callable[..., object]) -> type[BaseModel]:
             else parameter.default
         )
         fields[parameter.name] = (annotation, default)
-    return create_model(
+    field_kwargs: Any = fields
+    return cast(
+        type[BaseModel],
+        create_model(
         f"{name.replace('.', '_').replace('-', '_')}Input",
         __config__=ConfigDict(extra="forbid"),
-        **fields,
+        **field_kwargs,
+        ),
     )
 
 
 def _schema_for_model(model: type[BaseModel]) -> dict[str, object]:
     raw = model.model_json_schema()
-    return _inline_refs(raw, raw.get("$defs", {}))
+    return cast(dict[str, object], _inline_refs(raw, raw.get("$defs", {})))
 
 
 def _output_schema(function: Callable[..., object]) -> dict[str, object] | None:
@@ -72,7 +80,7 @@ def _output_schema(function: Callable[..., object]) -> dict[str, object] | None:
     raw = TypeAdapter(annotation).json_schema()
     if not raw:
         return None
-    return _inline_refs(raw, raw.get("$defs", {}))
+    return cast(dict[str, object], _inline_refs(raw, raw.get("$defs", {})))
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,18 +91,6 @@ class _ToolRecord:
     tool: types.Tool
 
 
-class _CompatTool(types.Tool):
-    """Expose historical snake-case schema access on newer MCP SDK models."""
-
-    @property
-    def input_schema(self) -> dict[str, object]:
-        return self.inputSchema
-
-    @property
-    def output_schema(self) -> dict[str, object] | None:
-        return self.outputSchema
-
-
 def _make_tool(
     *,
     name: str,
@@ -102,20 +98,12 @@ def _make_tool(
     input_schema: dict[str, object],
     output_schema: dict[str, object] | None,
 ) -> types.Tool:
-    try:
-        return types.Tool(
-            name=name,
-            description=description,
-            input_schema=input_schema,
-            output_schema=output_schema,
-        )
-    except (TypeError, ValidationError):
-        return _CompatTool(
-            name=name,
-            description=description,
-            inputSchema=input_schema,
-            outputSchema=output_schema,
-        )
+    return types.Tool(
+        name=name,
+        description=description,
+        input_schema=input_schema,
+        output_schema=output_schema,
+    )
 
 
 class McpRegistry:
@@ -134,11 +122,11 @@ class McpRegistry:
         except TypeError:
             self.server = Server(name)
 
-            @self.server.list_tools()
+            @getattr(self.server, "list_tools")()
             async def _list_tools(_request: object) -> types.ListToolsResult:
                 return await self._handle_list_tools(None, _request)
 
-            @self.server.call_tool()
+            @getattr(self.server, "call_tool")()
             async def _call_tool(
                 tool_name: str, arguments: dict[str, object]
             ) -> types.CallToolResult:
@@ -150,20 +138,40 @@ class McpRegistry:
         self._records: dict[str, _ToolRecord] = {}
         self._children: list[McpRegistry] = []
 
+    @overload
     def tool(
         self,
-        function: Callable[..., object] | None = None,
+        function: Callable[P, R],
         *,
         name: str | None = None,
         description: str | None = None,
         structured_output: bool | None = None,
-    ) -> Callable[..., object]:
+    ) -> Callable[P, R]: ...
+
+    @overload
+    def tool(
+        self,
+        function: None = None,
+        *,
+        name: str | None = None,
+        description: str | None = None,
+        structured_output: bool | None = None,
+    ) -> Callable[[Callable[P, R]], Callable[P, R]]: ...
+
+    def tool(
+        self,
+        function: Callable[P, R] | None = None,
+        *,
+        name: str | None = None,
+        description: str | None = None,
+        structured_output: bool | None = None,
+    ) -> Callable[[Callable[P, R]], Callable[P, R]] | Callable[P, R]:
         # Keep the historical decorator contract used by server_mcp.py. The
         # The official SDK receives the explicit schemas from the registry and
         # structured content is emitted by _execute().
         del structured_output
 
-        def register(fn: Callable[..., object]) -> Callable[..., object]:
+        def register(fn: Callable[P, R]) -> Callable[P, R]:
             tool_name = name or getattr(fn, "name", None) or fn.__name__
             input_model = _input_model(tool_name, fn)
             record = _ToolRecord(
@@ -326,9 +334,7 @@ class McpRegistry:
                 finally:
                     manager_holder.pop("manager", None)
 
-        async def scoped_handler(
-            scope: dict[str, object], receive: object, send: object
-        ) -> None:
+        async def scoped_handler(scope: Scope, receive: Receive, send: Send) -> None:
             if scope.get("type") == "http":
                 request_path = str(scope.get("path") or "")
                 if request_path not in {endpoint, endpoint + "/"}:

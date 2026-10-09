@@ -35,14 +35,20 @@ class MergeCandidateProposer(Protocol):
 
     # Batch proposal within a document: same-kind pairs (node↔node & edge↔edge)
     def same_kind_in_doc(
-        self, engine: "EngineLike", doc_id: str, kind: str
+        self,
+        *,
+        engine: "EngineLike",
+        doc_id: str,
+        kind: str = "node",
     ) -> list[tuple[Any, Any]]: ...
 
     # Batch proposal within a document: cross-kind pairs (node↔edge)
     def cross_kind_in_doc(
         self,
+        *,
         engine: "EngineLike",
         doc_id: str,
+        limit_per_bucket: int = 200,
     ) -> list[tuple[Any, Any]]: ...
 
 

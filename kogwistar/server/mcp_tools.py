@@ -9,6 +9,7 @@ from typing import (
     Literal,
     ParamSpec,
     TypeVar,
+    cast,
 )
 
 from fastapi import HTTPException
@@ -48,6 +49,7 @@ from kogwistar.server.chat_mcp import (
     build_workflow_mcp,
 )
 from kogwistar.server.mcp_registry import McpRegistry
+from kogwistar.strategies.proposer import PairKind
 from kogwistar.server.resources import (
     engine,
     gq,
@@ -302,8 +304,8 @@ def kg_semantic_seed_then_expand_text(
     )
 
 
-class DocParseIn(Document["dto"]):
-    id: str | None  # pyright: ignore[reportGeneralTypeIssues, reportIncompatibleVariableOverride]
+class DocParseIn(BaseModel):
+    id: str | None = None
     content: str
     type: str = "text"
 
@@ -319,7 +321,16 @@ class DocParseOut(BaseModel):
 @mcp.tool()
 def doc_parse(inp: DocParseIn) -> DocParseOut:
     require_role("rw")
-    doc = Document(id=inp.id, content=inp.content, type=inp.type)
+    doc = Document(
+        id=inp.id or str(stable_id("document", inp.content)),
+        content=inp.content,
+        type=inp.type,
+        metadata={},
+        domain_id=None,
+        processed=False,
+        embeddings=None,
+        source_map=None,
+    )
     try:
         from langchain_google_genai import ChatGoogleGenerativeAI
     except Exception as e:
@@ -334,12 +345,14 @@ def doc_parse(inp: DocParseIn) -> DocParseOut:
         max_retries=2,
     )
     ingester = PagewiseSummaryIngestor(
-        engine=engine, llm=ingester_llm, cache_dir=str(os.path.join(".", ".llm_cache"))
+        engine=engine.get(),
+        llm=ingester_llm,
+        cache_dir=str(os.path.join(".", ".llm_cache")),
     )
-    res: dict = ingester.ingest_document(document=doc)
+    res: dict[str, Any] = ingester.ingest_document(document=doc)
     return DocParseOut(
-        doc_id=doc.id,
-        chunk_ids=res.get("chunk_ids"),
+        doc_id=str(doc.id),
+        chunk_ids=list(res.get("chunk_ids") or []),
         summary_node_id=res.get("final_node_id"),
     )
 
@@ -375,8 +388,11 @@ def document_id_from_file_name(file_name: str):
         filenames = file_name
     else:
         filenames = []
-    docs = eng.backend.document_get(ids=filenames)
-    to_return = [{"file_name": i, "id": shortids.l2s_id(i)} for i in docs["ids"]]
+    docs = cast(dict[str, Any], eng.backend.document_get(ids=filenames))
+    to_return = [
+        {"file_name": i, "id": shortids.l2s_id(i)}
+        for i in docs.get("ids", [])
+    ]
     return DocIdsOut(id_mapping=to_return)
 
 
@@ -386,7 +402,16 @@ def document_id_from_file_name(file_name: str):
 def store_document(inp: DocParseIn):
     require_role("rw")
     eng = engine.get()
-    doc = Document(id=inp.id, content=inp.content, type=inp.type)
+    doc = Document(
+        id=inp.id or str(stable_id("document", inp.content)),
+        content=inp.content,
+        type=inp.type,
+        metadata={},
+        domain_id=None,
+        processed=False,
+        embeddings=None,
+        source_map=None,
+    )
     eng.write.add_document(doc)
     return DocStoreOut.model_validate({"success": True})
 
@@ -397,7 +422,10 @@ def store_document(inp: DocParseIn):
 def kg_extract(inp: KGExtractIn) -> KGExtractOut:
     require_role("rw")
     eng = engine.get()
-    content = eng.extract.fetch_document_text(inp.id)
+    document_id = str(inp.id or "")
+    if not document_id:
+        raise ValueError("Document id is required")
+    content = eng.extract.fetch_document_text(document_id)
     if not content:
         raise ValueError(f"Document '{inp.id}' not found; run store_document first.")
     from ..utils.cache_backend import Memory
@@ -408,26 +436,43 @@ def kg_extract(inp: KGExtractIn) -> KGExtractOut:
 
     @memory.cache()
     def get_reparsed_extraction(content):
-        extracted = eng.extract.cached_extract_graph_with_llm(content=content)
-        parsed_llm: LLMGraphExtraction[llm] = extracted["parsed"]
+        extracted = cast(
+            dict[str, Any],
+            eng.extract.cached_extract_graph_with_llm(content=content),
+        )
+        parsed_llm: LLMGraphExtraction = extracted["parsed"]
         parsed = LLMGraphExtraction.FromLLMSlice(
             parsed_llm, insertion_method="llm_graph_extraction"
         )
-        eng.persist.preflight_validate(parsed, inp.id)
+        eng.persist.preflight_validate(parsed, document_id)
         return parsed
 
     parsed = get_reparsed_extraction(content)
-    persisted = eng.persist.persist_graph_extraction(
-        document=Document(id=inp.id, content=content, type="text"),
-        parsed=parsed,
-        mode=inp.mode,
+    persisted: dict[str, Any] = cast(
+        dict[str, Any],
+        eng.persist.persist_graph_extraction(
+            document=Document(
+                id=document_id,
+                content=content,
+                type="text",
+                metadata={},
+                domain_id=None,
+                processed=False,
+                embeddings=None,
+                source_map=None,
+            ),
+            parsed=parsed,
+            mode=inp.mode,
+        ),
     )
+    node_ids = [str(item) for item in persisted.get("node_ids", [])]
+    edge_ids = [str(item) for item in persisted.get("edge_ids", [])]
     return KGExtractOut(
-        doc_id=inp.id,
-        node_ids=persisted["node_ids"],
-        edge_ids=persisted["edge_ids"],
-        nodes_added=persisted.get("nodes_added", len(persisted["node_ids"])),
-        edges_added=persisted.get("edges_added", len(persisted["edge_ids"])),
+        doc_id=document_id,
+        node_ids=node_ids,
+        edge_ids=edge_ids,
+        nodes_added=int(persisted.get("nodes_added", len(node_ids)) or 0),
+        edges_added=int(persisted.get("edges_added", len(edge_ids)) or 0),
     )
 
 
@@ -523,7 +568,7 @@ class CrossDocAdjItem(BaseModel):
     right: str
     left_kind: Literal["entity", "relationship"]
     right_kind: Literal["entity", "relationship"]
-    same_entity: bool | None
+    same_entity: bool | None = None
     confidence: float | None = None
     reason: str | None = None
     canonical_id: str | None = None
@@ -543,7 +588,7 @@ def _fetch_nodes(ids: list[str]) -> list[Node]:
     eng = engine.get()
     if hasattr(eng, "get_nodes"):
         return eng.get_nodes(ids)
-    got = eng.backend.node_get(ids=ids, include=["documents"])
+    got = cast(dict[str, Any], eng.backend.node_get(ids=ids, include=["documents"]))
     return [Node.model_validate_json(j) for j in (got.get("documents") or [])]
 
 
@@ -551,11 +596,11 @@ def _fetch_edges(ids: list[str]) -> list[Edge]:
     eng = engine.get()
     if hasattr(eng, "get_edges"):
         return eng.get_edges(ids)
-    got = eng.backend.edge_get(ids=ids, include=["documents"])
+    got = cast(dict[str, Any], eng.backend.edge_get(ids=ids, include=["documents"]))
     return [Edge.model_validate_json(j) for j in (got.get("documents") or [])]
 
 
-def _primary_doc_of(n: Node) -> str | None:
+def _primary_doc_of(n: Node | Edge) -> str | None:
     if getattr(n, "doc_id", None):
         return n.doc_id
     for r in n.mentions or []:
@@ -693,9 +738,16 @@ def kg_crossdoc_adjudicate_anykind(inp: CrossDocAdjIn) -> CrossDocAdjOut:
         )
 
     eng = engine.get()
-    adjudications, qkey = eng.batch_adjudicate_merges(
-        pairs, question_code=AdjudicationQuestionCode.SAME_ENTITY
-    )
+    if all(isinstance(left, Node) and isinstance(right, Node) for left, right in pairs):
+        node_pairs = cast(list[tuple[Node, Node]], pairs)
+        adjudications, qkey = eng.batch_adjudicate_merges(
+            node_pairs, question_code=AdjudicationQuestionCode.SAME_ENTITY
+        )
+    else:
+        # The batch API is intentionally node-only. Cross-kind pairs use the
+        # engine's typed single-pair boundary instead of being cast to nodes.
+        adjudications = [eng.adjudicate_merge(left, right) for left, right in pairs]
+        qkey = str(AdjudicationQuestionCode.SAME_ENTITY.value)
 
     def _kind(o: Any) -> Literal["entity", "relationship"]:
         return (
@@ -708,23 +760,33 @@ def kg_crossdoc_adjudicate_anykind(inp: CrossDocAdjIn) -> CrossDocAdjOut:
     pos = neg = abst = 0
     committed: list[str] = []
     for (left, right), out in zip(pairs, adjudications):
-        verdict: AdjudicationVerdict = getattr(out, "verdict", out)
+        verdict = AdjudicationVerdict.model_validate(
+            getattr(out, "verdict", out)
+        )
         lkind = _kind(left)
         rkind = _kind(right)
         if verdict.same_entity is True:
             pos += 1
             canonical_id = None
             if inp.commit:
-                if lkind == rkind:
+                if isinstance(left, Node) and isinstance(right, Node):
                     canonical_id = eng.commit_merge(left, right, verdict)
                 else:
-                    canonical_id = eng.commit_any_kind(left, right, verdict)
+                    canonical_id = eng.commit_any_kind(
+                        eng.adjudicate.target_from_node(left)
+                        if isinstance(left, Node)
+                        else eng.adjudicate.target_from_edge(left),
+                        eng.adjudicate.target_from_node(right)
+                        if isinstance(right, Node)
+                        else eng.adjudicate.target_from_edge(right),
+                        verdict,
+                    )
                 if canonical_id:
                     committed.append(str(canonical_id))
             results.append(
                 CrossDocAdjItem(
-                    left=left.id,
-                    right=right.id,
+                    left=str(left.id),
+                    right=str(right.id),
                     left_kind=lkind,
                     right_kind=rkind,
                     same_entity=True,
@@ -737,8 +799,8 @@ def kg_crossdoc_adjudicate_anykind(inp: CrossDocAdjIn) -> CrossDocAdjOut:
             neg += 1
             results.append(
                 CrossDocAdjItem(
-                    left=left.id,
-                    right=right.id,
+                    left=str(left.id),
+                    right=str(right.id),
                     left_kind=lkind,
                     right_kind=rkind,
                     same_entity=False,
@@ -750,8 +812,8 @@ def kg_crossdoc_adjudicate_anykind(inp: CrossDocAdjIn) -> CrossDocAdjOut:
             abst += 1
             results.append(
                 CrossDocAdjItem(
-                    left=left.id,
-                    right=right.id,
+                    left=str(left.id),
+                    right=str(right.id),
                     left_kind=lkind,
                     right_kind=rkind,
                     same_entity=None,
@@ -794,7 +856,7 @@ class ProposeVectorIn(BaseModel):
     anchor_doc_id: str | None = None
     cross_doc_only: bool = False
     anchor_only: bool = True
-    where: str | dict | None = None
+    where: str | dict[str, Any] | None = None
 
 
 @tool_roles({Role.RO, Role.RW})
@@ -816,10 +878,10 @@ def propose_vector(inp: ProposeVectorIn) -> ProposeOut:
         max_distance=inp.max_distance,
         min_similarity=inp.min_similarity,
         include_edges=inp.include_edges,
-        where=inp.where,
+        where=inp.where if isinstance(inp.where, dict) else None,
     )
     out = []
-    for _pair_ids, (l, r, _score) in pairs.items():
+    for l, r, _score in pairs.values():
         out.append(
             ProposePair(
                 left_id=getattr(l, "id", ""),
@@ -838,9 +900,9 @@ def _ids_matching_where(
     if not where:
         return set()
     if kind == "node":
-        res = eng.backend.node_get(where=where)
+        res = cast(dict[str, Any], eng.backend.node_get(where=where))
     else:
-        res = eng.backend.edge_get(where=where)
+        res = cast(dict[str, Any], eng.backend.edge_get(where=where))
     return set(res.get("ids") or [])
 
 
@@ -867,7 +929,7 @@ def kg_propose_bruteforce(inp: ProposeBruteForceIn) -> ProposeOut:
     proposer = VectorProposer(eng)
     raw_pairs = proposer.propose_any_kind_any_doc(
         engine=eng,
-        pair_kind=inp.pair_kind,
+        pair_kind=cast(PairKind, inp.pair_kind),
         allowed_docs=inp.allowed_docs,
         anchor_doc_id=inp.anchor_doc_id,
         cross_doc_only=inp.cross_doc_only,
@@ -922,19 +984,36 @@ def commit_merge(inp: CrossDocAdjOut):
     eng = engine.get()
     committed = []
     for pairs in inp.results:
-        left, right = eng.get_nodes(pairs.left)[0], eng.get_nodes(pairs.right)[0]
+        left = (
+            _fetch_nodes([pairs.left])[0]
+            if pairs.left_kind == "entity"
+            else _fetch_edges([pairs.left])[0]
+        )
+        right = (
+            _fetch_nodes([pairs.right])[0]
+            if pairs.right_kind == "entity"
+            else _fetch_edges([pairs.right])[0]
+        )
         lkind, rkind, same_entity = pairs.left_kind, pairs.right_kind, pairs.same_entity
         if same_entity:
             verdict = AdjudicationVerdict(
-                same_entity=pairs.same_entity,
-                confidence=pairs.confidence,
-                reason=pairs.reason,
+                same_entity=bool(pairs.same_entity),
+                confidence=float(pairs.confidence or 0.0),
+                reason=str(pairs.reason or ""),
                 canonical_entity_id=None,
             )
-            if lkind == rkind == "node":
+            if isinstance(left, Node) and isinstance(right, Node):
                 canonical_id = eng.commit_merge(left, right, verdict)
             else:
-                canonical_id = eng.commit_any_kind(left, right, verdict)
+                canonical_id = eng.commit_any_kind(
+                    eng.adjudicate.target_from_node(left)
+                    if isinstance(left, Node)
+                    else eng.adjudicate.target_from_edge(left),
+                    eng.adjudicate.target_from_node(right)
+                    if isinstance(right, Node)
+                    else eng.adjudicate.target_from_edge(right),
+                    verdict,
+                )
             verdict.canonical_entity_id = canonical_id
             if canonical_id:
                 committed.append(str(canonical_id))
@@ -947,23 +1026,30 @@ def adjudicate_pairs(inp: AdjPairsIn) -> CrossDocAdjOut:
     if inp.commit:
         require_role("rw")
     eng = engine.get()
-    pairs: list[tuple[Node | Edge, Node | Edge]] = [None] * len(inp.pairs)  # type: ignore
+    pairs: list[tuple[Node | Edge, Node | Edge]] = []
     for i, pair_info in enumerate(inp.pairs):
 
-        def fetch_any(id, kind):
+        def fetch_any(identifier: str, kind: Literal["node", "edge"]) -> Node | Edge:
             if kind == "node":
-                return _fetch_nodes([id])
-            if kind == "edge":
-                return _fetch_edges([id])
-            return []
+                found = _fetch_nodes([identifier])
+            else:
+                found = _fetch_edges([identifier])
+            if not found:
+                raise ValueError(f"Unknown {kind} id: {identifier}")
+            return found[0]
 
-        l: Node | Edge = fetch_any(pair_info.left_id, pair_info.left_kind)
-        r: Node | Edge = fetch_any(pair_info.right_id, pair_info.right_kind)
-        pairs[i] = (l[0], r[0])
+        l = fetch_any(pair_info.left_id, pair_info.left_kind)
+        r = fetch_any(pair_info.right_id, pair_info.right_kind)
+        pairs.append((l, r))
 
-    adjudications, qkey = eng.batch_adjudicate_merges(
-        pairs, question_code=AdjudicationQuestionCode.SAME_ENTITY
-    )
+    if all(isinstance(left, Node) and isinstance(right, Node) for left, right in pairs):
+        node_pairs = cast(list[tuple[Node, Node]], pairs)
+        adjudications, qkey = eng.batch_adjudicate_merges(
+            node_pairs, question_code=AdjudicationQuestionCode.SAME_ENTITY
+        )
+    else:
+        adjudications = [eng.adjudicate_merge(left, right) for left, right in pairs]
+        qkey = str(AdjudicationQuestionCode.SAME_ENTITY.value)
 
     def _kind(o: Any) -> Literal["entity", "relationship"]:
         return (
@@ -976,23 +1062,33 @@ def adjudicate_pairs(inp: AdjPairsIn) -> CrossDocAdjOut:
     pos = neg = abst = 0
     committed: list[str] = []
     for (left, right), out in zip(pairs, adjudications):
-        verdict: AdjudicationVerdict = getattr(out, "verdict", out)
+        verdict = AdjudicationVerdict.model_validate(
+            getattr(out, "verdict", out)
+        )
         lkind = _kind(left)
         rkind = _kind(right)
         if verdict.same_entity is True:
             pos += 1
             canonical_id = None
             if inp.commit:
-                if lkind == rkind:
+                if isinstance(left, Node) and isinstance(right, Node):
                     canonical_id = eng.commit_merge(left, right, verdict)
                 else:
-                    canonical_id = eng.commit_any_kind(left, right, verdict)
+                    canonical_id = eng.commit_any_kind(
+                        eng.adjudicate.target_from_node(left)
+                        if isinstance(left, Node)
+                        else eng.adjudicate.target_from_edge(left),
+                        eng.adjudicate.target_from_node(right)
+                        if isinstance(right, Node)
+                        else eng.adjudicate.target_from_edge(right),
+                        verdict,
+                    )
                 if canonical_id:
                     committed.append(str(canonical_id))
             results.append(
                 CrossDocAdjItem(
-                    left=left.id,
-                    right=right.id,
+                    left=str(left.id),
+                    right=str(right.id),
                     left_kind=lkind,
                     right_kind=rkind,
                     same_entity=True,
@@ -1005,8 +1101,8 @@ def adjudicate_pairs(inp: AdjPairsIn) -> CrossDocAdjOut:
             neg += 1
             results.append(
                 CrossDocAdjItem(
-                    left=left.id,
-                    right=right.id,
+                    left=str(left.id),
+                    right=str(right.id),
                     left_kind=lkind,
                     right_kind=rkind,
                     same_entity=False,
@@ -1018,8 +1114,8 @@ def adjudicate_pairs(inp: AdjPairsIn) -> CrossDocAdjOut:
             abst += 1
             results.append(
                 CrossDocAdjItem(
-                    left=left.id,
-                    right=right.id,
+                    left=str(left.id),
+                    right=str(right.id),
                     left_kind=lkind,
                     right_kind=rkind,
                     same_entity=None,
