@@ -725,7 +725,7 @@ class GraphKnowledgeEngine:
         ids: Sequence[str] | None = None,
         node_type: type[Node] | None = None,
         include: None | list[str] = None,
-        where=None,
+        where: object = None,
         limit: None | int = 200,
         resolve_mode: Literal[
             "active_only", "redirect", "include_tombstones"
@@ -893,14 +893,14 @@ class GraphKnowledgeEngine:
 
     def _where_update_from_resolve_mode(
         self, resolve_mode: Literal["active_only", "redirect", "include_tombstones"]
-    ):
+    ) -> dict[str, str]:
         return self.read.where_update_from_resolve_mode(resolve_mode)
 
     def get_edges(
         self,
         ids: Sequence[str] | None = None,
         edge_type: type[Edge] | None = None,
-        where=None,
+        where: object = None,
         limit: int | None = 400,
         include: None | list[str] = None,
         resolve_mode: Literal[
@@ -1083,11 +1083,11 @@ class GraphKnowledgeEngine:
         )  # {k: v for k, v in metadata.items() if v is not None}
 
     @staticmethod
-    def _strip_none(d: dict):
+    def _strip_none(d: dict[str, JsonValue | None]) -> dict[str, JsonValue]:
         return _strip_none(d)
 
     @staticmethod
-    def _json_or_none(obj: Any) -> str | None:
+    def _json_or_none(obj: object) -> str | None:
         return json.dumps(obj) if obj is not None else None
 
     def _exists_node(self, rid: str) -> bool:
