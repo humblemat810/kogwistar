@@ -4,10 +4,13 @@ import contextvars
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Any
+from typing import Any, cast
 
 from kogwistar._rust_bridge import store_postgres
-from kogwistar.engine_core.rust_meta_sqlite import RustEngineSQLite
+from kogwistar.engine_core.rust_meta_sqlite import (
+    RustEngineSQLite,
+    _TransactionToken,
+)
 
 
 class RustPostgresConnectionUnavailable(RuntimeError):
@@ -171,13 +174,15 @@ class RustEnginePostgresMetaStore(RustEngineSQLite):
         with self.session.transaction() as token:
             yield token
 
-    def _require_token(self, conn: _RustPostgresTransactionToken) -> None:
-        self.session.require_token(conn)
+    def _require_token(self, conn: _TransactionToken) -> None:
+        if not isinstance(conn, _RustPostgresTransactionToken):
+            raise RustPostgresConnectionUnavailable("invalid Rust PostgreSQL transaction token")
+        self.session.require_token(cast(_RustPostgresTransactionToken, conn))
 
     def next_scoped_seq(self, scope_id: str) -> int:
         return self.next_user_seq(scope_id)
 
-    def next_global_seq_conn(self, conn: _RustPostgresTransactionToken) -> int:
+    def next_global_seq_conn(self, conn: _TransactionToken) -> int:
         self._require_token(conn)
         return self.next_global_seq()
 
@@ -188,13 +193,13 @@ class RustEnginePostgresMetaStore(RustEngineSQLite):
         self.set_user_seq(scope_id, value)
 
     def next_user_seq_conn(
-        self, conn: _RustPostgresTransactionToken, user_id: str
+        self, conn: _TransactionToken, user_id: str
     ) -> int:
         self._require_token(conn)
         return self.next_user_seq(user_id)
 
     def set_user_seq_conn(
-        self, conn: _RustPostgresTransactionToken, user_id: str, value: int
+        self, conn: _TransactionToken, user_id: str, value: int
     ) -> None:
         self._require_token(conn)
         self.set_user_seq(user_id, value)

@@ -6,7 +6,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import fields
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from kogwistar._rust_bridge import store_sqlite
 from kogwistar.engine_core.engine_sqlite import IndexJobRow, ProjectedLaneMessageSqlRow
@@ -29,6 +29,10 @@ def _lane_message_row(value: dict[str, Any]) -> ProjectedLaneMessageSqlRow:
 
 class RustSQLiteConnectionUnavailable(RuntimeError):
     """Raised when Rust authority code asks for a raw Python SQLite writer."""
+
+
+class _TransactionToken(Protocol):
+    value: str
 
 
 class _RustTransactionToken:
@@ -77,7 +81,7 @@ class RustEngineSQLite:
         )
 
     @contextmanager
-    def transaction(self, *, immediate: bool = True) -> Iterator[_RustTransactionToken]:
+    def transaction(self, *, immediate: bool = True) -> Iterator[_TransactionToken]:
         from .sqlite_context import sqlite_execution_context
 
         del immediate
@@ -106,7 +110,7 @@ class RustEngineSQLite:
     def next_global_seq(self) -> int:
         return int(self._call("next_global_seq"))
 
-    def next_global_seq_conn(self, conn: _RustTransactionToken) -> int:
+    def next_global_seq_conn(self, conn: _TransactionToken) -> int:
         self._require_token(conn)
         return self.next_global_seq()
 
@@ -119,7 +123,7 @@ class RustEngineSQLite:
     def next_scoped_seq(self, scope_id: str) -> int:
         return int(self._call("next_scoped_seq", scope_id=scope_id))
 
-    def next_user_seq_conn(self, conn: _RustTransactionToken, user_id: str) -> int:
+    def next_user_seq_conn(self, conn: _TransactionToken, user_id: str) -> int:
         self._require_token(conn)
         return self.next_user_seq(user_id)
 
@@ -136,12 +140,12 @@ class RustEngineSQLite:
         self._call("set_scoped_seq", scope_id=scope_id, value=int(value))
 
     def set_user_seq_conn(
-        self, conn: _RustTransactionToken, user_id: str, value: int
+        self, conn: _TransactionToken, user_id: str, value: int
     ) -> None:
         self._require_token(conn)
         self.set_user_seq(user_id, value)
 
-    def _require_token(self, conn: _RustTransactionToken) -> None:
+    def _require_token(self, conn: _TransactionToken) -> None:
         active = self._transaction_id.get()
         if not isinstance(conn, _RustTransactionToken) or conn.value != active:
             raise RustSQLiteConnectionUnavailable("stale Rust SQLite transaction token")
