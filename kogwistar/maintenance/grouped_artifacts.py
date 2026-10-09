@@ -1,27 +1,31 @@
-from __future__ import annotations
-
 """Grouped replacement-artifact helpers for maintenance flows."""
 
-from collections.abc import Callable
-from typing import Any
+from __future__ import annotations
 
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.models import Node
 from kogwistar.maintenance.artifacts import (
     write_versioned_artifact,
 )
-from kogwistar.maintenance.contracts import BeforeWrite
+from kogwistar.maintenance.contracts import (
+    BeforeWrite,
+    GroupKeyForNode,
+    GroupedArtifactNodeBuilder,
+    MatchWhereForGroup,
+)
 from kogwistar.maintenance.models import GroupedArtifactWriteResult
 
 
 def write_grouped_versioned_artifacts(
-    source_engine: Any,
+    source_engine: GraphKnowledgeEngine,
     *,
-    target_engine: Any,
+    target_engine: GraphKnowledgeEngine,
     source_namespace: str,
     target_namespace: str,
-    source_where: dict[str, Any],
-    group_key_for_node: Callable[[Any], str],
-    build_node_for_group: Callable[[str, list[Any], list[Any], int], Any],
-    match_where_for_group: Callable[[str], dict[str, Any]],
+    source_where: dict[str, object],
+    group_key_for_node: GroupKeyForNode,
+    build_node_for_group: GroupedArtifactNodeBuilder,
+    match_where_for_group: MatchWhereForGroup,
     replace_existing: bool = True,
     before_write: BeforeWrite[str] | None = None,
 ) -> list[GroupedArtifactWriteResult]:
@@ -29,9 +33,11 @@ def write_grouped_versioned_artifacts(
     from kogwistar.engine_core.engine import scoped_namespace
 
     with scoped_namespace(source_engine, source_namespace):
-        source_nodes = list(source_engine.read.get_nodes(where=source_where))
+        source_nodes: list[Node] = list(
+            source_engine.read.get_nodes(where=source_where)
+        )
 
-    grouped: dict[str, list[Any]] = {}
+    grouped: dict[str, list[Node]] = {}
     for node in source_nodes:
         grouped.setdefault(str(group_key_for_node(node)), []).append(node)
 
