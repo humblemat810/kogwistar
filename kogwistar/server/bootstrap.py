@@ -4,17 +4,19 @@ import importlib
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Literal, cast
 
 from kogwistar.engine_core.async_compat import (
     run_awaitable_blocking,
 )
 from kogwistar.engine_core.chroma_backend import ChromaBackend
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
-from kogwistar.typing_interfaces import SqlAlchemyEngineLike
+from kogwistar.engine_core.storage_backend import StorageBackend
+from kogwistar.typing_interfaces import EmbeddingFunctionLike, SqlAlchemyEngineLike
 
 if TYPE_CHECKING:
-    pass
+    from sqlalchemy.engine import Engine
 
 GraphType = Literal["knowledge", "conversation", "workflow", "wisdom"]
 BackendKind = Literal["chroma", "pg"]
@@ -34,7 +36,7 @@ def _normalize_backend_name(raw_backend: str | None) -> BackendKind:
         raise RuntimeError(
             f"Unsupported GKE_BACKEND={value!r}; expected 'chroma' or 'pg'."
         )
-    return normalized
+    return cast(BackendKind, normalized)
 
 
 def _derive_index_dir_from_knowledge_dir(knowledge_dir: str) -> str:
@@ -45,7 +47,9 @@ def _derive_index_dir_from_knowledge_dir(knowledge_dir: str) -> str:
     return str(path.parent / "index" / leaf)
 
 
-def _import_callable_from_env(env_name: str):
+def _import_callable_from_env(
+    env_name: str,
+) -> Callable[[], EmbeddingFunctionLike] | None:
     raw = str(os.getenv(env_name) or "").strip()
     if not raw:
         return None
@@ -58,7 +62,7 @@ def _import_callable_from_env(env_name: str):
     target = getattr(module, attr_name, None)
     if not callable(target):
         raise RuntimeError(f"{env_name} target is not callable: {raw}")
-    return target
+    return cast(Callable[[], EmbeddingFunctionLike], target)
 
 
 @dataclass(frozen=True)
@@ -207,7 +211,7 @@ def build_sqlalchemy_engine(settings: ServerStorageSettings) -> SqlAlchemyEngine
         )
     import sqlalchemy as sa
 
-    return sa.create_engine(settings.pg_url, future=True)
+    return cast(SqlAlchemyEngineLike, sa.create_engine(settings.pg_url, future=True))
 
 
 def build_graph_engine(
@@ -220,7 +224,9 @@ def build_graph_engine(
     embedding_factory = _import_callable_from_env(
         "KOGWISTAR_TEST_EMBEDDING_FUNCTION_IMPORT"
     )
-    embedding_function = embedding_factory() if embedding_factory else None
+    embedding_function: EmbeddingFunctionLike | None = (
+        embedding_factory() if embedding_factory else None
+    )
     if settings.backend == "chroma":
         if settings.chroma_async:
             if not settings.chroma_host or settings.chroma_port is None:
@@ -228,7 +234,7 @@ def build_graph_engine(
                     "GKE_BACKEND=chroma with GKE_CHROMA_ASYNC=1 requires "
                     "GKE_CHROMA_HOST and GKE_CHROMA_PORT."
                 )
-            import chromadb
+            import chromadb  # pyright: ignore[reportMissingImports]
 
             client = run_awaitable_blocking(
                 chromadb.AsyncHttpClient(
@@ -332,7 +338,7 @@ def build_graph_engine(
             persist_directory=persist_directory,
             kg_graph_type=graph_type,
             embedding_function=embedding_function,
-            backend=backend,
+            backend=cast(StorageBackend, backend),
         )
 
     if sa_engine is None:
@@ -340,7 +346,7 @@ def build_graph_engine(
     from kogwistar.engine_core.postgres_backend import PgVectorBackend
 
     backend = PgVectorBackend(
-        engine=sa_engine,
+        engine=cast("Engine", sa_engine),
         embedding_dim=settings.embedding_dim,
         schema=settings.schema_for(graph_type),
     )
@@ -348,5 +354,5 @@ def build_graph_engine(
         persist_directory=persist_directory,
         kg_graph_type=graph_type,
         embedding_function=embedding_function,
-        backend=backend,
+        backend=cast(StorageBackend, backend),
     )
