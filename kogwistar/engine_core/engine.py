@@ -112,7 +112,7 @@ import json
 import math
 import os
 import warnings
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from datetime import datetime
 from functools import wraps
 from typing import (
@@ -479,18 +479,18 @@ def engine_context(
 class _NamespacedEngineProxy:
     """Copy-on-Write namespace view over a ``GraphKnowledgeEngine``."""
 
-    def __init__(self, real_engine: Any, namespace: str) -> None:
+    def __init__(self, real_engine: GraphKnowledgeEngine, namespace: str) -> None:
         object.__setattr__(self, "_real", real_engine)
         object.__setattr__(self, "_ns", namespace)
 
-    def __getattribute__(self, name: str) -> Any:
+    def __getattribute__(self, name: str) -> object:
         if name in ("_real", "_ns"):
             return object.__getattribute__(self, name)
         if name == "namespace":
             return object.__getattribute__(self, "_ns")
         return getattr(object.__getattribute__(self, "_real"), name)
 
-    def __setattr__(self, name: str, value: Any) -> None:
+    def __setattr__(self, name: str, value: object) -> None:
         if name == "namespace":
             object.__setattr__(self, "_ns", value)
         elif name in ("_real", "_ns"):
@@ -503,7 +503,7 @@ _ENGINE_NS_LOCKS: dict[int, threading.RLock] = {}
 _ENGINE_NS_LOCKS_META = threading.Lock()
 
 
-def _get_engine_ns_lock(engine: Any) -> threading.RLock:
+def _get_engine_ns_lock(engine: GraphKnowledgeEngine) -> threading.RLock:
     eid = id(engine)
     with _ENGINE_NS_LOCKS_META:
         if eid not in _ENGINE_NS_LOCKS:
@@ -525,10 +525,10 @@ _SUBSYSTEMS_WITH_E = (
 
 
 @contextmanager
-def scoped_namespace(engine: GraphKnowledgeEngine, namespace: str):
+def scoped_namespace(engine: GraphKnowledgeEngine, namespace: str) -> Iterator[None]:
     """Temporarily scope a graph engine to a namespace without mutating it."""
     proxy = _NamespacedEngineProxy(engine, namespace)
-    rebindings: list[tuple[Any, str, Any]] = []
+    rebindings: list[tuple[object, str, object]] = []
     for sub_name in _SUBSYSTEMS_WITH_E:
         sub = getattr(engine, sub_name, None)
         if sub is not None and hasattr(sub, "_e"):
