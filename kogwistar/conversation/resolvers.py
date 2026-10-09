@@ -122,6 +122,8 @@ def _as_evidence_pack(value: object) -> dict[str, Any]:
 if TYPE_CHECKING:
     from kogwistar.runtime.runtime import StepContext, StepRunResult
 
+    from .agentic_answering import AgenticAnsweringAgent
+    from .service import ConversationService
     from .tool_runner import ToolRunner
 
     RawStepFn = Callable[[StepContext], Json | StepRunResult]
@@ -164,7 +166,7 @@ def _append_op_log(state: object, entry: str) -> None:
         state["op_log"] = [entry]
 
 
-def _chat_service(deps: dict[str, Any]):
+def _chat_service(deps: dict[str, Any]) -> ConversationService:
     from .service import ConversationService
 
     ce = deps["conversation_engine"]
@@ -173,7 +175,7 @@ def _chat_service(deps: dict[str, Any]):
     return ConversationService.from_engine(ce, knowledge_engine=ke, workflow_engine=we)
 
 
-def _aa_agent(ctx: StepContext):
+def _aa_agent(ctx: StepContext) -> AgenticAnsweringAgent:
     deps = _deps(ctx)
     agent: AgenticAnsweringAgent | None = deps.get("agent")
     if agent is None:
