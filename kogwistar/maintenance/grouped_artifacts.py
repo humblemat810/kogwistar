@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.models import Node
 from kogwistar.maintenance.artifacts import (
@@ -22,7 +24,7 @@ def write_grouped_versioned_artifacts(
     target_engine: GraphKnowledgeEngine,
     source_namespace: str,
     target_namespace: str,
-    source_where: dict[str, object],
+    source_where: Mapping[str, object],
     group_key_for_node: GroupKeyForNode,
     build_node_for_group: GroupedArtifactNodeBuilder,
     match_where_for_group: MatchWhereForGroup,
@@ -34,7 +36,7 @@ def write_grouped_versioned_artifacts(
 
     with scoped_namespace(source_engine, source_namespace):
         source_nodes: list[Node] = list(
-            source_engine.read.get_nodes(where=source_where)
+            source_engine.read.get_nodes(where=dict(source_where))
         )
 
     grouped: dict[str, list[Node]] = {}

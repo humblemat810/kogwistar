@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.maintenance.contracts import BeforeWrite
 from kogwistar.maintenance.contracts import (
@@ -21,7 +23,7 @@ def run_grouped_maintenance_template(
     target_engine: GraphKnowledgeEngine,
     source_namespace: str,
     target_namespace: str,
-    source_where: dict[str, object],
+    source_where: Mapping[str, object],
     group_key_for_node: GroupKeyForNode,
     build_node_for_group: GroupedArtifactNodeBuilder,
     match_where_for_group: MatchWhereForGroup,
