@@ -12,7 +12,8 @@ import uuid
 from collections.abc import Iterator, Mapping
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
-from typing import Any, cast
+from types import TracebackType
+from typing import Any, Literal, cast
 
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
@@ -74,7 +75,7 @@ def _run_coro_blocking(coro):
 
 
 class _BufferedMappings:
-    def __init__(self, rows: list[object]):
+    def __init__(self, rows: list[object]) -> None:
         self._rows = rows
 
     def all(self) -> list[dict[str, object]]:
@@ -90,7 +91,7 @@ class _BufferedMappings:
 
 
 class _BufferedResult:
-    def __init__(self, rows: list[object], rowcount: int | None = None):
+    def __init__(self, rows: list[object], rowcount: int | None = None) -> None:
         self._rows = rows
         self.rowcount: int = rowcount if rowcount is not None else len(rows)
 
@@ -108,7 +109,7 @@ class _BufferedResult:
 
 
 class _AsyncConnectionAdapter:
-    def __init__(self, conn: AsyncConnection, runner: asyncio.Runner):
+    def __init__(self, conn: AsyncConnection, runner: asyncio.Runner) -> None:
         self._conn = conn
         self._runner = runner
 
@@ -135,17 +136,22 @@ class _AsyncConnectionAdapter:
 
 
 class _AsyncNestedTransaction:
-    def __init__(self, adapter: _AsyncConnectionAdapter):
+    def __init__(self, adapter: _AsyncConnectionAdapter) -> None:
         self.adapter = adapter
         self.transaction = None
 
-    def __enter__(self):
+    def __enter__(self) -> _AsyncNestedTransaction:
         self.transaction = self.adapter._runner.run(
             self.adapter._conn.begin_nested().start()
         )
         return self
 
-    def __exit__(self, exc_type, exc, tb):
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> Literal[False]:
         if self.transaction is None:
             return False
         operation = (
@@ -543,7 +549,9 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                 yield cast(SqlAlchemyConnectionLike, conn)
 
     @contextmanager
-    def _queue_transaction(self, *, job_id: str, namespace: str):
+    def _queue_transaction(
+        self, *, job_id: str, namespace: str
+    ) -> Iterator[SqlAlchemyConnectionLike]:
         """Run queue metadata in a savepoint-aware transaction with diagnostics."""
         try:
             with self.transaction() as conn:
@@ -1609,7 +1617,7 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
         from_seq: int = 1,
         to_seq: int | None = None,
         batch_size: int = 500,
-    ):
+    ) -> Iterator[object]:
         # PostgreSQL streams the selected range from one transaction.  Keep
         # the common projection-store signature even though this backend does
         # not need client-side paging for the current iterator.
