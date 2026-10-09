@@ -84,7 +84,7 @@ class _ConstantTestEmbeddingFunction(EmbeddingFunctionLike):
     def name() -> str:
         return "constant_test"
 
-    def __init__(self, dim: int = 8):
+    def __init__(self, dim: int = 8) -> None:
         self.dim = max(1, int(dim))
 
     def __call__(self, documents_or_texts: Sequence[str]) -> Embeddings:
@@ -108,7 +108,7 @@ class OllamaEmbeddingFunction(EmbeddingFunctionLike):
     def name() -> str:
         return "ollama"
 
-    def __init__(self, model_name: str = "all-minilm:l6-v2"):
+    def __init__(self, model_name: str = "all-minilm:l6-v2") -> None:
         self.model_name = model_name
 
     def __call__(self, documents_or_texts: Sequence[str]) -> Embeddings:
@@ -133,7 +133,7 @@ class OpenAIEmbeddingFunction(EmbeddingFunctionLike):
 
     def __init__(
         self, model_name: str = "text-embedding-3-small", api_key: str | None = None
-    ):
+    ) -> None:
         self.model_name = model_name
         self.api_key = api_key or os.getenv("OPENAI_API_KEY")
         if not self.api_key:
@@ -165,7 +165,7 @@ class AzureEmbeddingFunction(EmbeddingFunctionLike):
         api_key: str | None = None,
         endpoint: str | None = None,
         api_version: str = "2024-02-01",
-    ):
+    ) -> None:
         self.model_name = model_name
         self.api_key = api_key or os.getenv("AZURE_OPENAI_API_KEY")
         self.endpoint = endpoint or os.getenv("AZURE_OPENAI_ENDPOINT")
@@ -199,7 +199,7 @@ class GoogleEmbeddingFunction(EmbeddingFunctionLike):
 
     def __init__(
         self, model_name: str = "text-embedding-004", api_key: str | None = None
-    ):
+    ) -> None:
         self.model_name = model_name
         self.api_key = api_key or os.getenv("GOOGLE_API_KEY")
         if not self.api_key:
