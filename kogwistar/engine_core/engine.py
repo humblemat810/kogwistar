@@ -139,6 +139,7 @@ from ..llm_tasks import (
     build_default_llm_tasks,
     validate_llm_task_set,
 )
+from ..strategies.types import IAdjudicator, MergeCandidateProposer, MergePolicy, Verifier
 from ..typing_interfaces import EmbeddingFunctionLike, ReadLike, WriteLike
 from ..utils.cache_backend import Memory
 from .models import (
@@ -1312,10 +1313,10 @@ class GraphKnowledgeEngine:
         persist_directory: str | None = None,
         embedding_function: EmbeddingFunctionLike | None = None,
         embedding_cache_path: str | None = None,
-        proposer=None,  # callable(pairs) -> List[LLMMergeAdjudication]
-        adjudicator=None,  # callable(left: Node, right: Node) -> AdjudicationVerdict
-        merge_policy=None,  # callable(left, right, verdict) -> str (canonical_id)
-        verifier=None,  # callable(extracted, full_text, ref, **kw) -> ReferenceSession
+        proposer: MergeCandidateProposer | None = None,
+        adjudicator: IAdjudicator | None = None,
+        merge_policy: MergePolicy | None = None,
+        verifier: Verifier | None = None,
         kg_graph_type: EngineType = "knowledge",
         debug_dir: pathlib.Path | None = None,
         backend: str | StorageBackend | None = None,
@@ -1332,7 +1333,7 @@ class GraphKnowledgeEngine:
         persistence_mode: str = "single_stage",
         embedding_profile: EmbeddingProfile | None = None,
         embedding_profile_mode: str = "enforce",
-    ):
+    ) -> None:
         """
         embedding_function: callable(texts: List[str]) -> List[List[float]].
           If None, defaults to SentenceTransformerEmbeddingFunction with model:
@@ -2705,14 +2706,17 @@ class GraphKnowledgeEngine:
                 engine=self, doc_id=scope_doc_id, limit_per_bucket=limit_per_bucket
             )
         else:
-            pairs = self.proposer.propose_any_kind_any_doc(
-                engine=self,
-                pair_kind="node_edge",
-                allowed_docs=allowed_docs,
-                anchor_doc_id=anchor_doc_id,
-                cross_doc_only=cross_doc_only,
-                anchor_only=anchor_only,
-                limit_per_bucket=limit_per_bucket,
+            pairs = cast(
+                list[tuple[Node, Edge]],
+                self.proposer.propose_any_kind_any_doc(
+                    engine=self,
+                    pair_kind="node_edge",
+                    allowed_docs=allowed_docs,
+                    anchor_doc_id=anchor_doc_id,
+                    cross_doc_only=cross_doc_only,
+                    anchor_only=anchor_only,
+                    limit_per_bucket=limit_per_bucket,
+                ),
             )
 
         return [

@@ -1,9 +1,6 @@
 from os import PathLike
-from typing import (
-    Any,
-    Protocol,
-    runtime_checkable,
-)
+from collections.abc import Sequence
+from typing import Any, Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel
 
@@ -50,6 +47,46 @@ class MergeCandidateProposer(Protocol):
         doc_id: str,
         limit_per_bucket: int = 200,
     ) -> list[tuple[Any, Any]]: ...
+
+    def propose_any_kind_any_doc(
+        self,
+        *,
+        engine: "EngineLike",
+        pair_kind: Literal[
+            "node_node",
+            "edge_edge",
+            "node_edge",
+            "any_any",
+            "any_node",
+            "any_edge",
+            "node_any",
+            "edge_any",
+        ],
+        allowed_docs: list[str] | None = None,
+        anchor_doc_id: str | None = None,
+        cross_doc_only: bool = False,
+        anchor_only: bool = True,
+        limit_per_bucket: int | None = None,
+    ) -> list[tuple[Node | Edge, Node | Edge]]: ...
+
+    def generate_merge_candidates(
+        self,
+        engine: "EngineLike",
+        new_node: Node | Edge | str | Sequence[Node | Edge | str] | None,
+        new_edge: Node | Edge | str | Sequence[Node | Edge | str] | None = None,
+        top_k: int = 10,
+        *,
+        allowed_docs: list[str] | None = None,
+        anchor_doc_id: str | None = None,
+        cross_doc_only: bool = False,
+        anchor_only: bool = True,
+        score_mode: Literal["distance", "similarity"] = "distance",
+        max_distance: float = 0.25,
+        min_similarity: float = 0.85,
+        include_nodes: bool = True,
+        include_edges: bool = True,
+        where: dict[str, Any] | None = None,
+    ) -> dict[tuple[str, str], tuple[Node | Edge, Node | Edge, float]]: ...
 
 
 # ---------- Adjudicator ----------
@@ -108,6 +145,21 @@ class BatchAdjudicator(Protocol):
 # ---------- Merge policy ----------
 @runtime_checkable
 class MergePolicy(Protocol):
+    def commit_merge(
+        self,
+        left: Node,
+        right: Node,
+        verdict: AdjudicationVerdict,
+        method: str = "unspecified",
+    ) -> str: ...
+
+    def commit_any_kind(
+        self,
+        node_or_edge_l: AdjudicationTarget,
+        node_or_edge_r: AdjudicationTarget,
+        verdict: AdjudicationVerdict,
+    ) -> str: ...
+
     def commit_merge_target(
         self,
         left: AdjudicationTarget,
