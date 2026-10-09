@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, TypeVar, cast
 
 from ..conversation.models import ConversationEdge, ConversationNode
@@ -36,7 +36,9 @@ def _object_id(value: object) -> str | None:
     return str(identifier) if identifier else None
 
 
-def _render_d3_from_raw(nodes, edges, mode: str = "reify") -> dict:
+def _render_d3_from_raw(
+    nodes: Sequence[object], edges: Sequence[object], mode: str = "reify"
+) -> dict[str, object]:
     node_map = {
         identifier: n
         for n in nodes
@@ -130,7 +132,7 @@ def _load_node_map(
     engine: GraphKnowledgeEngine,
     ids: list[str],
     node_type: type[Node] | None = None,
-    include=["documents", "metadatas", "embeddings"],
+    include: Sequence[str] | None = None,
 ) -> dict[str, Node]:
     """Robustly load Node models by ids."""
     from ..engine_core.models import Node
@@ -143,12 +145,18 @@ def _load_node_map(
         node_type = WorkflowNode
     else:
         node_type = Node
+    if include is None:
+        include = ("documents", "metadatas", "embeddings")
     if not ids:
         return {}
     try:
         return engine.read.load_node_map(ids, node_type=node_type)
     except Exception:
-        nodes = engine.read.get_nodes(ids=ids, node_type=node_type, include=include)
+        nodes = engine.read.get_nodes(
+            ids=ids,
+            node_type=node_type,
+            include=None if include is None else list(include),
+        )
         out = {identifier: n for n in nodes if (identifier := _object_id(n)) is not None}
         # for rid, doc in zip(got.get("ids") or [], got.get("documents") or []):
         #     try:
@@ -162,7 +170,7 @@ def _load_edge_map(
     engine: GraphKnowledgeEngine,
     ids: list[str],
     edge_type: type[Edge] | None = None,
-    include=["documents", "metadatas", "embeddings"],
+    include: Sequence[str] | None = None,
 ) -> dict[str, Edge]:
     """Robustly load Edge models by ids."""
 
@@ -176,17 +184,25 @@ def _load_edge_map(
         edge_type = WorkflowEdge
     else:
         edge_type = Edge
+    if include is None:
+        include = ("documents", "metadatas", "embeddings")
     if not ids:
         return {}
     try:
         return engine.read.load_edge_map(ids, edge_type=edge_type)
     except Exception:
-        edges = engine.read.get_edges(ids=ids, edge_type=edge_type, include=include)
+        edges = engine.read.get_edges(
+            ids=ids,
+            edge_type=edge_type,
+            include=None if include is None else list(include),
+        )
         out = {identifier: n for n in edges if (identifier := _object_id(n)) is not None}
         return out
 
 
-def _ids_by_doc(engine, doc_id: str | None) -> tuple[list[str], list[str]]:
+def _ids_by_doc(
+    engine: GraphKnowledgeEngine, doc_id: str | None
+) -> tuple[list[str], list[str]]:
     """Find ids scoped to a doc (fallback-safe)."""
     def _scan_all(
         kind: str,
@@ -300,7 +316,7 @@ def _ids_by_doc(engine, doc_id: str | None) -> tuple[list[str], list[str]]:
 
 
 def _filter_by_insertion_method(
-    engine,
+    engine: GraphKnowledgeEngine,
     ids: list[str],
     kind: str,  # "node" | "edge"
     insertion_method: str | None,
@@ -397,7 +413,7 @@ def _filter_by_insertion_method(
 
 
 def _collect_ids(
-    engine,
+    engine: GraphKnowledgeEngine,
     doc_id: str | None,
     insertion_method: str | None,
 ) -> tuple[list[str], list[str]]:
@@ -413,7 +429,7 @@ def _collect_ids(
 
 
 def to_d3_force(
-    engine,
+    engine: object,
     doc_id: str | None = None,
     mode: str = "reify",  # "reify" | "classic"
     insertion_method: str | None = None,
@@ -547,10 +563,10 @@ def to_d3_force(
 
 
 def to_sigma_hypergraph(
-    engine,
+    engine: object,
     doc_id: str | None = None,
     insertion_method: str | None = None,
-) -> dict:
+    ) -> dict[str, object]:
     """Return the lossless raw hypergraph contract used by the Sigma viewer.
 
     Unlike a D3 force projection, this payload keeps hyperedges as first-class
@@ -558,14 +574,17 @@ def to_sigma_hypergraph(
     projections of this raw model.
     """
 
-    engine_obj = cast(GraphKnowledgeEngine, engine)
+    engine_obj = cast("GraphKnowledgeEngine", engine)
     node_ids, edge_ids = _collect_ids(engine_obj, doc_id, insertion_method)
     node_map = _load_node_map(engine_obj, node_ids)
     edge_map = _load_edge_map(engine_obj, edge_ids)
 
-    def _dump(value) -> dict:
-        if hasattr(value, "model_dump"):
-            return value.model_dump(exclude={"embedding"})
+    def _dump(value: object) -> dict[str, object]:
+        model_dump = getattr(value, "model_dump", None)
+        if callable(model_dump):
+            dumped = model_dump(exclude={"embedding"})
+            if isinstance(dumped, Mapping):
+                return {str(key): item for key, item in dumped.items()}
         if isinstance(value, dict):
             return dict(value)
         raise TypeError(f"unsupported visualization value: {type(value)!r}")
@@ -609,7 +628,7 @@ def to_sigma_hypergraph(
 
 
 def to_cytoscape(
-    engine,
+    engine: object,
     doc_id: str | None = None,
     mode: str = "reify",  # "reify" | "classic"
     insertion_method: str | None = None,
@@ -627,13 +646,13 @@ def to_cytoscape(
     if not hasattr(engine, "kg_graph_type") and isinstance(engine, list) and isinstance(doc_id, list):
         d3 = _render_d3_from_raw(engine, doc_id, mode=mode)
         elements = []
-        for node in d3["nodes"]:
+        for node in _safe_iter(d3.get("nodes")):
             elements.append({"data": node})
-        for link in d3["links"]:
+        for link in _safe_iter(d3.get("links")):
             elements.append({"data": link})
         return {"elements": elements, "mode": mode, "doc_id": None}
 
-    engine_obj = cast(GraphKnowledgeEngine, engine)
+    engine_obj = cast("GraphKnowledgeEngine", engine)
     node_ids, edge_ids = _collect_ids(engine_obj, doc_id, insertion_method)
     node_map = _load_node_map(engine_obj, node_ids)
     edge_map = _load_edge_map(engine_obj, edge_ids)

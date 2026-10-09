@@ -39,8 +39,8 @@ class EntityRefModel(BaseModel):
     kg_graph_type: str
     url: str | None
 
-    def model_dump_entity_ref(self, *arg, **kwarg):
-        return cast(EntityRef, super().model_dump(*arg, **kwarg))
+    def model_dump_entity_ref(self, *args: object, **kwargs: object) -> EntityRef:
+        return cast(EntityRef, super().model_dump(*args, **kwargs))
 
 
 # ---- Change event -----------------------------------------------------

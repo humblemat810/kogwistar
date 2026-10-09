@@ -76,7 +76,7 @@ class FastAPIChangeSink:
 
     def __init__(
         self, endpoint: str, *, max_queue: int = 5000, name: str = "fastapi sink"
-    ):
+    ) -> None:
         self.endpoint = endpoint.rstrip("/")
         # The queue also carries the private stop sentinel used by ``close``.
         self.q: queue.Queue[object] = queue.Queue(maxsize=max_queue)

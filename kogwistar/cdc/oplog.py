@@ -10,7 +10,7 @@ from .change_event import ChangeEvent
 
 
 class OplogWriter:
-    def __init__(self, path: Path, *, fsync: bool = False):
+    def __init__(self, path: Path, *, fsync: bool = False) -> None:
         self.path = path
         self.fsync = fsync
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -30,7 +30,7 @@ class OplogWriter:
 
 
 class OplogReader:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path) -> None:
         self.path = path
 
     def iter_since(
