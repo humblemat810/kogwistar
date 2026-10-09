@@ -14,7 +14,7 @@ import threading
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
-from typing import Protocol, cast, runtime_checkable
+from typing import ClassVar, Protocol, cast, runtime_checkable
 
 from kogwistar.conversation.models import ConversationNode, MetaFromLastSummary
 from kogwistar.conversation.service import ConversationService
@@ -155,22 +155,23 @@ def workflow_namespace(workflow_id: str) -> str:
 
 @runtime_checkable
 class ChatRunServiceOwner(Protocol):
-    _DESIGN_CONTROL_KIND: str
-    _CTRL_UNDO_APPLIED: str
-    _CTRL_REDO_APPLIED: str
-    _CTRL_BRANCH_DROPPED: str
-    _CTRL_MUTATION_COMMITTED: str
-    _PROJECTION_SCHEMA_VERSION: int
-    _SNAPSHOT_SCHEMA_VERSION: int
-    _DELTA_SCHEMA_VERSION: int
-    _SNAPSHOT_INTERVAL: int
+    _DESIGN_CONTROL_KIND: ClassVar[str]
+    _CTRL_UNDO_APPLIED: ClassVar[str]
+    _CTRL_REDO_APPLIED: ClassVar[str]
+    _CTRL_BRANCH_DROPPED: ClassVar[str]
+    _CTRL_MUTATION_COMMITTED: ClassVar[str]
+    _PROJECTION_SCHEMA_VERSION: ClassVar[int]
+    _SNAPSHOT_SCHEMA_VERSION: ClassVar[int]
+    _DELTA_SCHEMA_VERSION: ClassVar[int]
+    _SNAPSHOT_INTERVAL: ClassVar[int]
 
     run_registry: RunRegistry
     answer_runner: Callable[[AnswerRunRequest], JsonObject]
     runtime_runner: Callable[[RuntimeRunRequest], JsonObject]
     resume_runner: Callable[[RuntimeResumeRequest], JsonObject]
     default_runtime_kind: str
-    scheduler: RunSchedulerLike
+    @property
+    def scheduler(self) -> RunSchedulerLike: ...
     _workflow_history_lock: threading.Lock
 
     def _knowledge_engine(self) -> GraphKnowledgeEngine: ...

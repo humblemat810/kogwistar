@@ -13,7 +13,7 @@ import contextlib
 import json
 import threading
 from collections.abc import Callable
-from typing import Any
+from typing import Any, ClassVar, cast
 
 from kogwistar.conversation.models import ConversationNode
 from kogwistar.conversation.service import ConversationService
@@ -56,18 +56,30 @@ from .service_daemon import ServiceSupervisor
 JsonObject = dict[str, JsonValue]
 
 
+def _records(value: object) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [dict(item) for item in value if isinstance(item, dict)]
+
+
+def _mapping(value: object) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    return dict(value)
+
+
 class ChatRunService:
     """Facade that composes workflow design, conversation, run execution, and replay collaborators."""
 
-    _DESIGN_CONTROL_KIND = "design_control"
-    _CTRL_UNDO_APPLIED = "UNDO_APPLIED"
-    _CTRL_REDO_APPLIED = "REDO_APPLIED"
-    _CTRL_BRANCH_DROPPED = "BRANCH_DROPPED"
-    _CTRL_MUTATION_COMMITTED = "MUTATION_COMMITTED"
-    _PROJECTION_SCHEMA_VERSION = 1
-    _SNAPSHOT_SCHEMA_VERSION = 1
-    _DELTA_SCHEMA_VERSION = 1
-    _SNAPSHOT_INTERVAL = 50
+    _DESIGN_CONTROL_KIND: ClassVar[str] = "design_control"
+    _CTRL_UNDO_APPLIED: ClassVar[str] = "UNDO_APPLIED"
+    _CTRL_REDO_APPLIED: ClassVar[str] = "REDO_APPLIED"
+    _CTRL_BRANCH_DROPPED: ClassVar[str] = "BRANCH_DROPPED"
+    _CTRL_MUTATION_COMMITTED: ClassVar[str] = "MUTATION_COMMITTED"
+    _PROJECTION_SCHEMA_VERSION: ClassVar[int] = 1
+    _SNAPSHOT_SCHEMA_VERSION: ClassVar[int] = 1
+    _DELTA_SCHEMA_VERSION: ClassVar[int] = 1
+    _SNAPSHOT_INTERVAL: ClassVar[int] = 50
 
     def __init__(
         self,
@@ -110,6 +122,7 @@ class ChatRunService:
         self.runtime_runner = (
             runtime_runner or self._run_execution._default_runtime_runner
         )
+        self.resume_runner = self._run_execution._default_resume_runner
         self.service_supervisor.bootstrap()
 
     def _knowledge_engine(self) -> GraphKnowledgeEngine:
@@ -247,8 +260,11 @@ class ChatRunService:
         )
 
     def _workflow_capture_visible_snapshot(self, *, workflow_id: str) -> dict[str, Any]:
-        return self._workflow_design._workflow_capture_visible_snapshot(
-            workflow_id=workflow_id
+        return cast(
+            dict[str, Any],
+            self._workflow_design._workflow_capture_visible_snapshot(
+                workflow_id=workflow_id
+            ),
         )
 
     def workflow_design_history(self, *, workflow_id: str) -> dict[str, Any]:
@@ -672,7 +688,7 @@ class ChatRunService:
                 "execution_namespace": scope["execution_namespace"],
             },
             "security_scope": scope["security_scope"],
-            "storage_security_mapping": mapping,
+            "storage_security_mapping": cast(JsonValue, mapping),
             "can_access_public": can_access_security_scope("public", shared=True),
         }
 
@@ -966,13 +982,15 @@ class ChatRunService:
         )
         meta_store = self._execution_meta_store()
         list_runs = getattr(meta_store, "list_server_runs", None)
-        runs = []
+        runs: list[dict[str, Any]] = []
         if callable(list_runs):
-            runs = list_runs(
-                status=status,
-                workflow_id=workflow_id,
-                conversation_id=conversation_id,
-                limit=limit,
+            runs = _records(
+                list_runs(
+                    status=status,
+                    workflow_id=workflow_id,
+                    conversation_id=conversation_id,
+                    limit=limit,
+                )
             )
         out: list[dict[str, Any]] = []
         scope = self._scope_snapshot()
@@ -981,7 +999,7 @@ class ChatRunService:
             events = []
             list_events = getattr(meta_store, "list_server_run_events", None)
             if callable(list_events):
-                events = list_events(run_id, after_seq=0, limit=50)
+                events = _records(list_events(run_id, after_seq=0, limit=50))
             last_event = events[-1] if events else None
             status_val = str(run.get("status") or "")
             out.append(
@@ -1013,7 +1031,7 @@ class ChatRunService:
             if workflow_id and str(service.get("target_ref") or "") != str(workflow_id):
                 continue
             if conversation_id:
-                target_cfg = dict(service.get("target_config") or {})
+                target_cfg = _mapping(service.get("target_config"))
                 if str(target_cfg.get("conversation_id") or "") != str(conversation_id):
                     continue
             service_status = str(service.get("lifecycle_status") or "")
@@ -1027,7 +1045,7 @@ class ChatRunService:
                     "workflow_id": service.get("target_ref")
                     if str(service.get("target_kind") or "") == "workflow"
                     else None,
-                    "conversation_id": dict(service.get("target_config") or {}).get(
+                    "conversation_id": _mapping(service.get("target_config")).get(
                         "conversation_id"
                     ),
                     "user_id": None,
@@ -1084,10 +1102,13 @@ class ChatRunService:
         list_fn = getattr(meta_store, "list_projected_lane_messages", None)
         if not callable(list_fn):
             return []
-        rows = list_fn(
-            namespace=self._scope_snapshot()["storage_namespace"],
-            inbox_id=inbox_id,
-            status=status,
+        rows = cast(
+            list[Any],
+            list_fn(
+                namespace=self._scope_snapshot()["storage_namespace"],
+                inbox_id=inbox_id,
+                status=status,
+            ),
         )
         visible_rows = []
         for row in rows:
@@ -1183,7 +1204,9 @@ class ChatRunService:
         if not callable(list_fn) or not callable(update_fn):
             return {"repaired_message_ids": []}
         scope = self._scope_snapshot()["storage_namespace"]
-        rows = list_fn(namespace=scope, inbox_id=inbox_id, status="claimed")
+        rows = cast(
+            list[Any], list_fn(namespace=scope, inbox_id=inbox_id, status="claimed")
+        )
         repaired: list[str] = []
         now = now_ms()
         for row in rows:
@@ -1238,7 +1261,9 @@ class ChatRunService:
         if not callable(list_fn):
             return {"total": 0, "by_status": {}, "by_inbox": {}, "failed": []}
         scope = self._scope_snapshot()["storage_namespace"]
-        rows = list_fn(namespace=scope, inbox_id=inbox_id, status=None)
+        rows = cast(
+            list[Any], list_fn(namespace=scope, inbox_id=inbox_id, status=None)
+        )
         by_status: dict[str, int] = {}
         by_inbox: dict[str, int] = {}
         failed: list[dict[str, Any]] = []
@@ -1346,7 +1371,9 @@ class ChatRunService:
         list_events = getattr(meta_store, "list_server_run_events", None)
         if not callable(list_events):
             return []
-        return list_events(str(run_id), after_seq=int(after_seq), limit=int(limit))
+        return _records(
+            list_events(str(run_id), after_seq=int(after_seq), limit=int(limit))
+        )
 
     def list_scheduler_timeline(
         self, *, run_id: str | None = None, limit: int = 200
@@ -1448,13 +1475,16 @@ class ChatRunService:
         if conversation_id:
             engine = self._conversation_engine()
             list_fn = getattr(getattr(engine, "meta_sqlite", None), "list_projected_lane_messages", None)
-            projected_rows = []
+            projected_rows: list[Any] = []
             if callable(list_fn):
                 projected_rows = [
                     row
-                    for row in list_fn(
-                        namespace=self._scope_snapshot()["storage_namespace"],
-                        limit=int(limit),
+                    for row in cast(
+                        list[Any],
+                        list_fn(
+                            namespace=self._scope_snapshot()["storage_namespace"],
+                            limit=int(limit),
+                        ),
                     )
                     if str(getattr(row, "conversation_id", "") or "") == str(conversation_id)
                 ]
