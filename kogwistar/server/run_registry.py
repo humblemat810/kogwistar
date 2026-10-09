@@ -4,7 +4,60 @@ import json
 import os
 import threading
 import time
-from typing import Any
+from typing import Any, Protocol
+
+from kogwistar.json_types import JsonObject
+
+
+class RunRegistryMetaStoreLike(Protocol):
+    """Minimal durable metadata surface required by ``RunRegistry``."""
+
+    def ensure_initialized(self) -> None: ...
+
+    def create_server_run(
+        self,
+        *,
+        run_id: str,
+        conversation_id: str,
+        workflow_id: str,
+        user_id: str | None,
+        user_turn_node_id: str,
+        status: str = "queued",
+    ) -> None: ...
+
+    def get_server_run(self, run_id: str) -> JsonObject | None: ...
+
+    def list_server_runs(
+        self,
+        *,
+        status: str | None = None,
+        workflow_id: str | None = None,
+        conversation_id: str | None = None,
+        limit: int = 100,
+    ) -> list[JsonObject]: ...
+
+    def list_server_run_events(
+        self, run_id: str, *, after_seq: int = 0, limit: int = 500
+    ) -> list[JsonObject]: ...
+
+    def append_server_run_event(
+        self, run_id: str, event_type: str, payload_json: str
+    ) -> JsonObject: ...
+
+    def update_server_run(
+        self,
+        *,
+        run_id: str,
+        status: str,
+        assistant_turn_node_id: str | None,
+        result_json: str | None,
+        error_json: str | None,
+        started_at_ms: int | None,
+        finished_at_ms: int | None,
+        cancel_requested: bool | None = None,
+    ) -> None: ...
+
+    def request_server_run_cancel(self, *, run_id: str) -> None: ...
 
 
 def _now_ms() -> int:
@@ -32,7 +85,7 @@ def _debug_log(record: dict[str, Any]) -> None:
 class RunRegistry:
     TERMINAL_STATUSES = {"succeeded", "failed", "cancelled"}
 
-    def __init__(self, meta_store: Any) -> None:
+    def __init__(self, meta_store: RunRegistryMetaStoreLike) -> None:
         self.meta_store = meta_store
         self._lock = threading.Lock()
         ensure_initialized = getattr(self.meta_store, "ensure_initialized", None)
