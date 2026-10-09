@@ -10,7 +10,7 @@ import threading
 import time
 import uuid
 from collections.abc import Iterator, Mapping
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -18,7 +18,7 @@ import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from ..messaging.models import ProjectedLaneMessageRow
-from ..typing_interfaces import SqlAlchemyConnectionLike
+from ..typing_interfaces import SqlAlchemyConnectionLike, SqlAlchemyResultLike
 from .event_envelope import EntityEventEnvelope
 from .meta_lane_messages import LaneMessageMetaStoreMixin
 from .postgres_backend import _set_active_conn, get_active_conn
@@ -29,6 +29,20 @@ _SCHEMA_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 # hash so independent processes and releases use the same lock.
 POSTGRES_BOOTSTRAP_ADVISORY_LOCK_KEY = 748219503
 logger = logging.getLogger(__name__)
+
+
+def _int_or_default(value: object, default: int = 0) -> int:
+    """Normalize opaque SQL-driver scalar values at one boundary."""
+    if value is None or isinstance(value, bool):
+        return default
+    if isinstance(value, int):
+        return value
+    if isinstance(value, (float, str)):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+    return default
 
 
 def _run_coro_blocking(coro):
@@ -70,11 +84,15 @@ class _BufferedMappings:
             mappings.append(dict(value) if isinstance(value, Mapping) else {})
         return mappings
 
+    def first(self) -> dict[str, object] | None:
+        rows = self.all()
+        return rows[0] if rows else None
+
 
 class _BufferedResult:
     def __init__(self, rows: list[object], rowcount: int | None = None):
         self._rows = rows
-        self.rowcount = rowcount if rowcount is not None else len(rows)
+        self.rowcount: int = rowcount if rowcount is not None else len(rows)
 
     def __iter__(self) -> Iterator[object]:
         return iter(self._rows)
@@ -100,7 +118,7 @@ class _AsyncConnectionAdapter:
     async def invoke_async(self, fn):
         return await self._conn.run_sync(fn)
 
-    def execute(self, statement, params=None):
+    def execute(self, statement: object, params: object = None) -> SqlAlchemyResultLike:
         def _execute(sync_conn):
             result = (
                 sync_conn.execute(statement)
@@ -110,7 +128,7 @@ class _AsyncConnectionAdapter:
             rows = result.fetchall() if result.returns_rows else []
             return _BufferedResult(rows, getattr(result, "rowcount", None))
 
-        return self.invoke_sync(_execute)
+        return cast(SqlAlchemyResultLike, self.invoke_sync(_execute))
 
     def begin_nested(self):
         return _AsyncNestedTransaction(self)
@@ -475,27 +493,27 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
     # Transaction helpers
     # ----------------------------
     @contextmanager
-    def transaction(self) -> Iterator[sa.Connection | _AsyncConnectionAdapter]:
+    def transaction(self) -> Iterator[SqlAlchemyConnectionLike]:
         existing = get_active_conn()
         if existing is not None:
             if isinstance(existing, _AsyncConnectionAdapter):
                 with existing.begin_nested():
-                    yield existing
+                    yield cast(SqlAlchemyConnectionLike, existing)
             elif isinstance(existing, AsyncConnection):
                 runner = _make_runner()
                 try:
                     adapter = _AsyncConnectionAdapter(existing, runner)
                     with adapter.begin_nested():
-                        yield adapter
+                        yield cast(SqlAlchemyConnectionLike, adapter)
                 finally:
                     runner.close()
             else:
                 nested = getattr(existing, "begin_nested", None)
                 if callable(nested):
-                    with nested():
-                        yield existing
+                    with cast(AbstractContextManager[object], nested()):
+                        yield cast(SqlAlchemyConnectionLike, existing)
                 else:  # pragma: no cover - defensive adapter compatibility
-                    yield existing
+                    yield cast(SqlAlchemyConnectionLike, existing)
             return
 
         if self._is_async_engine:
@@ -508,7 +526,7 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
             adapter = _AsyncConnectionAdapter(conn, runner)
             try:
                 with _set_active_conn(adapter):
-                    yield adapter
+                    yield cast(SqlAlchemyConnectionLike, adapter)
             except BaseException:
                 _run_coro_blocking(txn.rollback())
                 raise
@@ -522,7 +540,7 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
         sync_engine = cast(sa.Engine, self.engine)
         with sync_engine.begin() as conn:
             with _set_active_conn(conn):
-                yield conn
+                yield cast(SqlAlchemyConnectionLike, conn)
 
     @contextmanager
     def _queue_transaction(self, *, job_id: str, namespace: str):
@@ -802,8 +820,8 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                         if r.get("next_run_at") is not None
                         else None
                     ),
-                    max_retries=int(r.get("max_retries") or 10),
-                    retry_count=int(r.get("retry_count") or 0),
+                    max_retries=_int_or_default(r.get("max_retries"), 10),
+                    retry_count=_int_or_default(r.get("retry_count")),
                     last_error=(
                         str(r.get("last_error"))
                         if r.get("last_error") is not None
@@ -815,7 +833,7 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                         else None
                     ),
                     claim_token=(str(r.get("claim_token")) if r.get("claim_token") is not None else None),
-                    claim_attempts=int(r.get("claim_attempts") or 0),
+                    claim_attempts=_int_or_default(r.get("claim_attempts")),
                     accepted_result_json=(str(r.get("accepted_result_json")) if r.get("accepted_result_json") is not None else None),
                     accepted_result_sha256=(str(r.get("accepted_result_sha256")) if r.get("accepted_result_sha256") is not None else None),
                     accepted_at=(str(r.get("accepted_at")) if r.get("accepted_at") is not None else None),
@@ -1066,8 +1084,8 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                         if r.get("next_run_at") is not None
                         else None
                     ),
-                    max_retries=int(r.get("max_retries") or 10),
-                    retry_count=int(r.get("retry_count") or 0),
+                    max_retries=_int_or_default(r.get("max_retries"), 10),
+                    retry_count=_int_or_default(r.get("retry_count")),
                     last_error=(
                         str(r.get("last_error"))
                         if r.get("last_error") is not None
@@ -1271,13 +1289,13 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                 sender_id=str(r.get("sender_id")),
                 msg_type=str(r.get("msg_type")),
                 status=str(r.get("status")),
-                seq=int(r.get("seq") or 0),
-                conversation_seq=int(r.get("conversation_seq") or 0),
+                seq=_int_or_default(r.get("seq")),
+                conversation_seq=_int_or_default(r.get("conversation_seq")),
                 claimed_by=(str(r.get("claimed_by")) if r.get("claimed_by") is not None else None),
                 lease_until=None,
-                retry_count=int(r.get("retry_count") or 0),
-                created_at=int(r.get("created_at") or 0),
-                available_at=int(r.get("available_at") or 0),
+                retry_count=_int_or_default(r.get("retry_count")),
+                created_at=_int_or_default(r.get("created_at")),
+                available_at=_int_or_default(r.get("available_at")),
                 run_id=(str(r.get("run_id")) if r.get("run_id") is not None else None),
                 step_id=(str(r.get("step_id")) if r.get("step_id") is not None else None),
                 correlation_id=(str(r.get("correlation_id")) if r.get("correlation_id") is not None else None),
@@ -1441,13 +1459,13 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                 sender_id=str(r.get("sender_id")),
                 msg_type=str(r.get("msg_type")),
                 status=str(r.get("status")),
-                seq=int(r.get("seq") or 0),
-                conversation_seq=int(r.get("conversation_seq") or 0),
+                seq=_int_or_default(r.get("seq")),
+                conversation_seq=_int_or_default(r.get("conversation_seq")),
                 claimed_by=(str(r.get("claimed_by")) if r.get("claimed_by") is not None else None),
                 lease_until=None,
-                retry_count=int(r.get("retry_count") or 0),
-                created_at=int(r.get("created_at") or 0),
-                available_at=int(r.get("available_at") or 0),
+                retry_count=_int_or_default(r.get("retry_count")),
+                created_at=_int_or_default(r.get("created_at")),
+                available_at=_int_or_default(r.get("available_at")),
                 run_id=(str(r.get("run_id")) if r.get("run_id") is not None else None),
                 step_id=(str(r.get("step_id")) if r.get("step_id") is not None else None),
                 correlation_id=(str(r.get("correlation_id")) if r.get("correlation_id") is not None else None),
@@ -1669,7 +1687,7 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                 if actual != event:
                     raise ValueError(f"event_id {event.event_id!r} conflicts with stored event")
                 return actual.seq
-            latest = int(conn.execute(sa.text(
+            latest = _int_or_default(conn.execute(sa.text(
                 f"SELECT COALESCE(MAX(seq), 0) FROM {schema}.entity_events WHERE namespace=:ns"
             ), {"ns": event.namespace}).scalar_one())
             if event.seq != latest + 1:
@@ -1887,8 +1905,8 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                 )
             else:
                 params.update(
-                    expected_last_authoritative_seq=int(expected_last_authoritative_seq),
-                    expected_last_materialized_seq=int(expected_last_materialized_seq),
+                    expected_last_authoritative_seq=_int_or_default(expected_last_authoritative_seq),
+                    expected_last_materialized_seq=_int_or_default(expected_last_materialized_seq),
                 )
                 result = conn.execute(
                     sa.text(
@@ -1939,7 +1957,7 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                 if expected_a is None and expected_m is None:
                     if current is not None:
                         return False
-                elif current is None or int(current[0]) != int(expected_a) or int(current[1]) != int(expected_m):
+                elif current is None or _int_or_default(current[0]) != _int_or_default(expected_a) or _int_or_default(current[1]) != _int_or_default(expected_m):
                     return False
             for item in rows:
                 params = {"namespace": str(item["namespace"]), "key": str(item["key"]), "payload_json": json.dumps(item["payload"], sort_keys=True, separators=(",", ":")), "a": int(item.get("last_authoritative_seq", 0)), "m": int(item.get("last_materialized_seq", 0)), "v": int(item.get("projection_schema_version", 1)), "status": str(item.get("materialization_status", "ready")), "now": now}
