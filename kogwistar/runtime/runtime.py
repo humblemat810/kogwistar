@@ -402,7 +402,7 @@ class StepContext:
         self.log = bind_logger(logging.getLogger("workflow.resolver"), self.trace_ctx)
 
     @property
-    def state_view(self) -> Mapping[str, Json]:
+    def state_view(self) -> Mapping[str, object]:
         return MappingProxyType(self._state)
 
     @property
@@ -665,10 +665,10 @@ class WorkflowRuntime(BaseRuntime):
             else:
                 self.sink = None
                 if getattr(workflow_engine, "persist_directory", None) is not None:
-                    db_path = str(
-                        pathlib.Path(workflow_engine.persist_directory)
-                        / "wf_trace.sqlite"
-                    )
+                    persist_directory = workflow_engine.persist_directory
+                    if persist_directory is None:
+                        raise RuntimeError("trace persistence directory disappeared")
+                    db_path = str(pathlib.Path(persist_directory) / "wf_trace.sqlite")
                     # Share a single sink per db_path in this process to reduce SQLite contention.
                     self.sink = _get_shared_sqlite_sink(db_path, drop_when_full=True)
             if otel_enabled:
@@ -1088,17 +1088,33 @@ class WorkflowRuntime(BaseRuntime):
             if candidate.has_valid_w3c_ids:
                 resume_trace_context = candidate
 
+        lifecycle_run_id = str(run_id)
+        lifecycle_conversation_id = str(conversation_id)
+        lifecycle_turn_node_id = str(turn_node_id)
+
         def _resume_lifecycle_trace_context(
-            *, token_id: str, step_seq: int, node_id: str, attempt: int = 1
+            *,
+            token_id: str,
+            step_seq: int,
+            node_id: str,
+            attempt: int = 1,
+            run_id: str | None = None,
+            conversation_id: str | None = None,
+            turn_node_id: str | None = None,
         ) -> TraceContext:
+            effective_run_id = str(run_id or lifecycle_run_id)
+            effective_conversation_id = str(
+                conversation_id or lifecycle_conversation_id
+            )
+            effective_turn_node_id = str(turn_node_id or lifecycle_turn_node_id)
             base = resume_trace_context or TraceContext(
-                run_id=str(run_id),
+                run_id=effective_run_id,
                 token_id=str(token_id),
                 step_seq=int(step_seq),
                 node_id=str(node_id),
                 attempt=int(attempt),
-                conversation_id=str(conversation_id),
-                turn_node_id=str(turn_node_id),
+                conversation_id=effective_conversation_id,
+                turn_node_id=effective_turn_node_id,
             )
             return base.child_span(
                 token_id=str(token_id),
@@ -1155,7 +1171,8 @@ class WorkflowRuntime(BaseRuntime):
             next_nodes, route_decision = self._route_next(
                 edges, initial_state, client_result, wn.fanout, nodes
             )
-        rt_join = initial_state.get("_rt_join", {})
+        rt_join_value = initial_state.get("_rt_join", {})
+        rt_join = rt_join_value if isinstance(rt_join_value, dict) else {}
         pending = rt_join.get("pending", [])
         suspended = rt_join.get("suspended", [])
 
@@ -1342,7 +1359,10 @@ class WorkflowRuntime(BaseRuntime):
             token_id=suspended_token_id,
             parent_token_id=parent_token_id,
             join_mask=mask_to_distribute,
-            last_exec_node=previous_exec_node,
+            last_exec_node=cast(
+                WorkflowStepExecNode | WorkflowRunNode | None,
+                previous_exec_node,
+            ),
         )
         if (step_seq_current % self.checkpoint_every_n_steps) == 0:
             self._persist_checkpoint(
@@ -1385,7 +1405,7 @@ class WorkflowRuntime(BaseRuntime):
                             conversation_id=str(conversation_id),
                             turn_node_id=str(turn_node_id),
                         ),
-                        payload=client_result.resume_payload,
+                        payload=getattr(client_result, "resume_payload"),
                     )
                 except Exception:
                     pass
@@ -1400,7 +1420,7 @@ class WorkflowRuntime(BaseRuntime):
             return self.run(
                 workflow_id=workflow_id,
                 conversation_id=conversation_id,
-                turn_node_id=turn_node_id,
+                turn_node_id=str(turn_node_id or ""),
                 initial_state=initial_state,
                 run_id=run_id,
                 cache_dir=cache_dir,
@@ -1883,22 +1903,34 @@ class WorkflowRuntime(BaseRuntime):
                 )
             )
 
+            self_run_id = str(run_id)
+            self_conversation_id = str(conversation_id)
+            self_turn_node_id = str(turn_node_id)
+
             def _lifecycle_trace_context(
-                *, token_id: str, step_seq: int, node_id: str, attempt: int = 1
+                *,
+                token_id: str,
+                step_seq: int,
+                node_id: str,
+                attempt: int = 1,
+                run_id: str | None = None,
+                conversation_id: str | None = None,
+                turn_node_id: str | None = None,
             ) -> TraceContext:
                 """Keep lifecycle events in this run's trace across all choke points."""
+                effective_run_id = str(run_id or self_run_id)
+                effective_conversation_id = str(
+                    conversation_id or self_conversation_id
+                )
+                effective_turn_node_id = str(turn_node_id or self_turn_node_id)
                 base = run_trace_context or TraceContext(
-                    run_id=str(run_id),
-                    token_id=str(run_id),
+                    run_id=effective_run_id,
+                    token_id=effective_run_id,
                     step_seq=0,
                     node_id=str(getattr(start, "id", "start")),
                     attempt=1,
-                    conversation_id=str(conversation_id)
-                    if conversation_id is not None
-                    else None,
-                    turn_node_id=str(turn_node_id)
-                    if turn_node_id is not None
-                    else None,
+                    conversation_id=effective_conversation_id,
+                    turn_node_id=effective_turn_node_id,
                 )
                 return base.child_span(
                     token_id=str(token_id),
@@ -1912,7 +1944,7 @@ class WorkflowRuntime(BaseRuntime):
                 conversation_id=conversation_id,
                 workflow_id=workflow_id,
                 run_id=run_id,
-                turn_node_id=turn_node_id,
+                turn_node_id=str(turn_node_id or ""),
                 status="running",
                 run_metadata=_run_metadata,
                 trace_context=run_trace_context,
@@ -2855,7 +2887,7 @@ class WorkflowRuntime(BaseRuntime):
                     # persist step exec trace node (same transaction as state update when possible)
                     with self._maybe_step_uow():
                         last_exec_node = self._persist_step_exec(
-                            conversation_id=conversation_id,
+                            conversation_id=str(conversation_id or ""),
                             workflow_id=workflow_id,
                             run_id=run_id,
                             step_seq=step_seq,
@@ -2888,7 +2920,7 @@ class WorkflowRuntime(BaseRuntime):
                         if (step_seq_current % self.checkpoint_every_n_steps) == 0:
                             with self._maybe_step_uow():
                                 self._persist_checkpoint(
-                                    conversation_id=conversation_id,
+                                    conversation_id=str(conversation_id or ""),
                                     workflow_id=workflow_id,
                                     run_id=run_id,
                                     step_seq=step_seq_current,
@@ -2932,7 +2964,7 @@ class WorkflowRuntime(BaseRuntime):
                                         step_seq=int(step_seq_current),
                                         node_id=str(node_id),
                                     ),
-                                    payload=run_result.resume_payload,
+                                     payload=getattr(run_result, "resume_payload"),
                                 )
                             except Exception:
                                 pass
@@ -3043,7 +3075,7 @@ class WorkflowRuntime(BaseRuntime):
                         if (step_seq_current % self.checkpoint_every_n_steps) == 0:
                             with self._maybe_step_uow():
                                 self._persist_checkpoint(
-                                    conversation_id=conversation_id,
+                                    conversation_id=str(conversation_id or ""),
                                     workflow_id=workflow_id,
                                     run_id=run_id,
                                     step_seq=step_seq_current,
@@ -3324,7 +3356,7 @@ class WorkflowRuntime(BaseRuntime):
         self, *, where: dict, limit: int = 1000
     ) -> list[Any]:
         try:
-            return self.conversation_engine.read.get_nodes(where=where, limit=limit)
+            return list(self.conversation_engine.read.get_nodes(where=where, limit=limit))
         except Exception as exc:
             msg = str(exc)
             if "Nothing found on disk" in msg or "hnsw segment reader" in msg:
@@ -3474,7 +3506,9 @@ class WorkflowRuntime(BaseRuntime):
                 workflow_checkpoint_latest_projection_namespace(conversation_id),
                 str(run_id),
             )
-            payload = dict((row or {}).get("payload") or {}) if row else {}
+            row_map = row if isinstance(row, Mapping) else {}
+            payload_value = row_map.get("payload")
+            payload = dict(payload_value) if isinstance(payload_value, Mapping) else {}
             node_id = str(payload.get("node_id") or "")
             if node_id:
                 nodes = self.conversation_engine.read.get_nodes(ids=[node_id], limit=1)
@@ -3515,14 +3549,16 @@ class WorkflowRuntime(BaseRuntime):
         latest = getattr(meta, "get_latest_entity_event_seq", None)
         if callable(latest):
             try:
-                latest_seq = int(
-                    latest(
-                        namespace=str(
-                            getattr(self.conversation_engine, "namespace", "default")
-                            or "default"
-                        )
+                latest_value = latest(
+                    namespace=str(
+                        getattr(self.conversation_engine, "namespace", "default")
+                        or "default"
                     )
-                    or 0
+                )
+                latest_seq = (
+                    int(latest_value)
+                    if isinstance(latest_value, (int, float, str))
+                    else 0
                 )
             except Exception:
                 latest_seq = 0
