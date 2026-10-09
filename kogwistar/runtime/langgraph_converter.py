@@ -8,22 +8,62 @@ Send/Command plus blob-state bookkeeping.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, MutableMapping, Sequence
+from collections.abc import Callable, Mapping, MutableMapping, Sequence
 from dataclasses import dataclass
-from typing import Annotated, Any, Literal, NamedTuple, cast
+from typing import Annotated, Literal, NamedTuple, Protocol, cast
 
 from typing_extensions import TypedDict
 
 from kogwistar.runtime import design as wf_design
 from kogwistar.runtime.contract import BasePredicate, WorkflowEdgeInfo
+from kogwistar.runtime.models import WorkflowEdge, WorkflowNode
 from kogwistar.runtime.routing import compute_route_next
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
+
+
+class _CompiledStateGraph(Protocol):
+    def add_node(self, *args: object, **kwargs: object) -> None: ...
+
+    def add_edge(self, *args: object, **kwargs: object) -> None: ...
+
+    def add_conditional_edges(self, *args: object, **kwargs: object) -> None: ...
+
+    def compile(self) -> object: ...
+
 
 class _LangGraphImports(NamedTuple):
-    state_graph: Any
+    state_graph: Callable[..., _CompiledStateGraph]
     start: str
     end: str
-    command: Any
-    send: Any
+    command: Callable[..., object]
+    send: Callable[..., object]
+
+
+StepCallable = Callable[..., object]
+StepResolver = Callable[[str], StepCallable]
+
+
+class StepResolverProtocol(Protocol):
+    def resolve(self, operation: str) -> StepCallable: ...
+
+
+class _StateDescriber(Protocol):
+    def describe_state(self) -> Mapping[str, str]: ...
+
+
+StepResolverLike = StepResolver | StepResolverProtocol
+
+
+def _resolve_step(resolver: StepResolverLike, operation: str) -> StepCallable:
+    if hasattr(resolver, "resolve"):
+        return cast(StepResolverProtocol, resolver).resolve(operation)
+    return cast(StepResolver, resolver)(operation)
+
+
+def _describe_state(resolver: StepResolverLike) -> Mapping[str, str]:
+    if hasattr(resolver, "describe_state"):
+        return cast(_StateDescriber, resolver).describe_state()
+    return {}
 
 
 def _import_langgraph() -> _LangGraphImports:
@@ -44,7 +84,7 @@ def _import_langgraph() -> _LangGraphImports:
     )
 
 
-StateUpdate = tuple[str, dict[str, Any]]  # ('u'|'a'|'e', {k: v})
+StateUpdate = tuple[str, dict[str, object]]  # ('u'|'a'|'e', {k: v})
 
 
 @dataclass(frozen=True)
@@ -83,16 +123,18 @@ class LGConverterOptions:
 
 
 def _apply_state_update(
-    mute_state: MutableMapping[str, Any], state_update: Sequence[StateUpdate]
+    mute_state: MutableMapping[str, object], state_update: Sequence[StateUpdate]
 ) -> None:
     """Match WorkflowRuntime.apply_state_update semantics."""
     for kind, payload in state_update:
         if kind == "a":
             for k, v in payload.items():
-                mute_state.setdefault(k, []).append(v)
+                cast(list[object], mute_state.setdefault(k, [])).append(v)
         elif kind == "e":
             for k, v in payload.items():
-                mute_state.setdefault(k, []).extend(v)
+                cast(list[object], mute_state.setdefault(k, [])).extend(
+                    cast(Sequence[object], v)
+                )
         elif kind == "u":
             for k, v in payload.items():
                 mute_state[k] = v
@@ -107,11 +149,11 @@ def _concat_updates(
 
 
 def _delta_to_updates(
-    delta: Mapping[str, Any], schema: Mapping[str, str] | None
+    delta: Mapping[str, object], schema: Mapping[str, str] | None
 ) -> list[StateUpdate]:
     """Convert a native update dict into ('u'/'a'/'e') updates using schema."""
     sch = dict(schema or {})
-    buckets: dict[str, dict[str, Any]] = {"u": {}, "a": {}, "e": {}}
+    buckets: dict[str, dict[str, object]] = {"u": {}, "a": {}, "e": {}}
     for k, v in delta.items():
         mode = sch.get(str(k), "u")
         if mode not in buckets:
@@ -126,24 +168,29 @@ def _delta_to_updates(
 
 def _resolve_start_nodes_and_adj(
     *,
-    workflow_engine: Any,
+    workflow_engine: GraphKnowledgeEngine,
     workflow_id: str,
-) -> tuple[Any, dict[str, Any], dict[str, list[Any]], dict[str, list[Any]]]:
+) -> tuple[
+    WorkflowNode,
+    dict[str, WorkflowNode],
+    dict[str, list[WorkflowEdge]],
+    dict[str, list[WorkflowEdge]],
+]:
     return wf_design.load_workflow_design(
         workflow_engine=workflow_engine, workflow_id=workflow_id
     )
 
 
-def _export_node_metadata(node: Any) -> dict[str, Any]:
+def _export_node_metadata(node: WorkflowNode) -> dict[str, object]:
     """Copy design metadata into LangGraph node metadata without sharing state."""
     return dict(getattr(node, "metadata", {}) or {})
 
 
 def _route_next(
     *,
-    edges: list[Any],
-    state: Mapping[str, Any],
-    last_result: Any,
+    edges: Sequence[WorkflowEdge],
+    state: Mapping[str, object],
+    last_result: object,
     fanout: bool,
     predicate_registry: dict[str, BasePredicate],
 ) -> list[str]:
@@ -171,7 +218,7 @@ class LangGraphImportUnsupportedError(NotImplementedError):
     """Raised because arbitrary compiled LangGraph callables are not lossless."""
 
 
-def from_langgraph(graph: Any, *, workflow_id: str) -> Any:
+def from_langgraph(graph: object, *, workflow_id: str) -> object:
     """Reject reverse import until a declarative, lossless contract exists."""
     del graph
     raise LangGraphImportUnsupportedError(
@@ -180,7 +227,14 @@ def from_langgraph(graph: Any, *, workflow_id: str) -> Any:
     )
 
 
-def _invoke_step(*, resolver: Any, fn: Any, op: str, node_id: str, state: Any) -> Any:
+def _invoke_step(
+    *,
+    resolver: StepResolverLike,
+    fn: StepCallable,
+    op: str,
+    node_id: str,
+    state: Mapping[str, object],
+) -> object:
     """Invoke production resolvers with StepContext while retaining test doubles."""
     if resolver.__class__.__name__ == "MappingStepResolver":
         from kogwistar.runtime.runtime import StepContext
@@ -195,7 +249,7 @@ def _invoke_step(*, resolver: Any, fn: Any, op: str, node_id: str, state: Any) -
                 attempt=1,
                 step_seq=0,
                 cache_dir=None,
-                state=dict(state.get("__blob__", state) or {}),
+                state=dict(cast(Mapping[str, object], state.get("__blob__", state)) or {}),
                 authority_context={"effective_capabilities": ()},
             )
         )
@@ -208,7 +262,9 @@ def _invoke_step(*, resolver: Any, fn: Any, op: str, node_id: str, state: Any) -
 # ----------------------------
 
 
-def _blob_reducer(left: dict | None, right: dict | None) -> dict:
+def _blob_reducer(
+    left: dict[str, object] | None, right: dict[str, object] | None
+) -> dict[str, object]:
     """Reducer for '__blob__' field.
 
     Nodes emit updates as: {'__ops__': [('u'|'a'|'e', {...}), ...]}
@@ -216,7 +272,7 @@ def _blob_reducer(left: dict | None, right: dict | None) -> dict:
 
     If 'right' doesn't contain '__ops__', it is treated as a plain dict overwrite (last-write-wins).
     """
-    base: dict = dict(left or {})
+    base: dict[str, object] = dict(left or {})
     if not right:
         return base
     if isinstance(right, dict) and "__ops__" in right:
@@ -231,7 +287,7 @@ def _blob_reducer(left: dict | None, right: dict | None) -> dict:
 
 
 class LGBlobState(TypedDict, total=False):
-    __blob__: Annotated[dict, _blob_reducer]
+    __blob__: Annotated[dict[str, object], _blob_reducer]
 
 
 # ----------------------------
@@ -241,17 +297,17 @@ class LGBlobState(TypedDict, total=False):
 
 class LGApplyState(TypedDict, total=False):
     __updates__: Annotated[list[StateUpdate], _concat_updates]
-    __goto__: Any
+    __goto__: object
 
 
 def to_langgraph(
     *,
-    workflow_engine: Any,
+    workflow_engine: GraphKnowledgeEngine,
     workflow_id: str,
-    step_resolver: Any,
+    step_resolver: StepResolverLike,
     predicate_registry: dict[str, BasePredicate],
     options: LGConverterOptions | None = None,
-):
+) -> object:
     """Compile one workflow into LangGraph using a diagram-first or semantics-first mapping.
 
     visual/blob_state favors a clean graph and best-effort routing, intentionally
@@ -271,20 +327,16 @@ def to_langgraph(
     start, nodes, adj, rev_adj = _resolve_start_nodes_and_adj(
         workflow_engine=workflow_engine, workflow_id=workflow_id
     )
-    schema = (
-        step_resolver.describe_state()
-        if hasattr(step_resolver, "describe_state")
-        else {}
-    )
+    schema = _describe_state(step_resolver)
 
     if opt.mode == "apply_node":
         # --- legacy implementation (kept for compatibility) ---
         sg = StateGraph(LGApplyState)
 
-        def apply_node(state: LGApplyState) -> Any:
+        def apply_node(state: LGApplyState) -> object:
             pending = state.get(opt.updates_key, []) or []
             if pending:
-                _apply_state_update(cast(MutableMapping[str, Any], state), pending)
+                _apply_state_update(cast(MutableMapping[str, object], state), pending)
             state[opt.updates_key] = []
             goto = state.pop("__goto__", None) or END
             return Command(goto=goto)
@@ -293,22 +345,19 @@ def to_langgraph(
 
         for node_id, node in nodes.items():
             op = node.op
-            fn = (
-                step_resolver.resolve(op)
-                if hasattr(step_resolver, "resolve")
-                else step_resolver(op)
-            )
+            fn = _resolve_step(step_resolver, op)
 
-            def make_step(nid: str, node_obj: Any, fn_, op_name: str):
-                def step_node(state: LGApplyState) -> Any:
+            def make_step(
+                nid: str, node_obj: WorkflowNode, fn_: StepCallable, op_name: str
+            ) -> Callable[[LGApplyState], object]:
+                def step_node(state: LGApplyState) -> object:
                     out = _invoke_step(resolver=step_resolver, fn=fn_, op=op_name, node_id=nid, state=state)
                     updates: list[StateUpdate]
                     if isinstance(out, dict):
                         updates = _delta_to_updates(out, schema)
 
                         class _R:  # minimal proxy for BasePredicate
-                            def __init__(self):
-                                self.next_step_names = []
+                            next_step_names: list[str] = []
 
                         result_obj = _R()
                     else:
@@ -365,8 +414,8 @@ def to_langgraph(
     if opt.execution == "visual":
         sg = StateGraph(LGBlobState)
 
-        def _init_blob(state: dict) -> dict:
-            blob = dict(state.get(opt.blob_key) or {})
+        def _init_blob(state: dict[str, object]) -> dict[str, object]:
+            blob = dict(cast(Mapping[str, object], state.get(opt.blob_key) or {}))
             return {opt.blob_key: blob}
 
         sg.add_node("__init_blob__", _init_blob)
@@ -374,7 +423,7 @@ def to_langgraph(
         sg.add_edge("__init_blob__", start.id)
 
         # Helper: whether a node should be treated as fanout in visual mode.
-        def _is_visual_fanout(nid: str, node_obj: Any) -> bool:
+        def _is_visual_fanout(nid: str, node_obj: WorkflowNode) -> bool:
             if bool(getattr(node_obj, "fanout", False)):
                 return True
             for e in list(adj.get(nid, []) or []):
@@ -386,23 +435,22 @@ def to_langgraph(
         # Add step nodes
         for node_id, node in nodes.items():
             op = node.op
-            fn = (
-                step_resolver.resolve(op)
-                if hasattr(step_resolver, "resolve")
-                else step_resolver(op)
-            )
+            fn = _resolve_step(step_resolver, op)
 
-            def make_step_update(nid: str, node_obj: Any, fn_, op_name: str):
-                def step_node(state: LGBlobState) -> dict:
-                    blob = cast(dict, state.get(opt.blob_key) or {})
+            def make_step_update(
+                nid: str, node_obj: WorkflowNode, fn_: StepCallable, op_name: str
+            ) -> Callable[[LGBlobState], dict[str, object]]:
+                def step_node(state: LGBlobState) -> dict[str, object]:
+                    blob = cast(
+                        dict[str, object], state.get(opt.blob_key) or {}
+                    )
                     out = _invoke_step(resolver=step_resolver, fn=fn_, op=op_name, node_id=nid, state=blob)
 
                     if isinstance(out, dict):
                         updates = _delta_to_updates(out, schema)
 
                         class _R:
-                            def __init__(self):
-                                self.next_step_names = []
+                            next_step_names: list[str] = []
 
                         result_obj = _R()
                     else:
@@ -443,7 +491,9 @@ def to_langgraph(
                     sg.add_edge(src, info.dst)
             else:
                 # Router returns a single destination (exclusive choice).
-                def make_visual_router(nid: str, node_obj: Any, edges: list[Any]):
+                def make_visual_router(
+                    nid: str, node_obj: WorkflowNode, edges: list[WorkflowEdge]
+                ) -> tuple[Callable[[LGBlobState], str], dict[str, str]]:
                     possible = {
                         WorkflowEdgeInfo.from_workflow_edge(e).dst for e in edges
                     }
@@ -453,13 +503,18 @@ def to_langgraph(
                         path_map[END] = END
 
                     class _LastResultProxy:
-                        def __init__(self, next_step_names: list[str]):
+                        def __init__(self, next_step_names: list[str]) -> None:
                             self.next_step_names = next_step_names
 
-                    def router(state: LGBlobState):
-                        blob = cast(dict, state.get(opt.blob_key) or {})
+                    def router(state: LGBlobState) -> str:
+                        blob = cast(
+                            dict[str, object], state.get(opt.blob_key) or {}
+                        )
                         proxy = _LastResultProxy(
-                            list(blob.get("__next_step_names__", []) or [])
+                            cast(
+                                list[str],
+                                blob.get("__next_step_names__", []) or [],
+                            )
                         )
                         nxt = _route_next(
                             edges=edges,
@@ -503,7 +558,7 @@ def to_langgraph(
     def _make_token_id(parent: str, idx: int) -> str:
         return f"{parent}.{idx}"
 
-    def _needs_send_payload(nid: str, node_obj: Any) -> bool:
+    def _needs_send_payload(nid: str, node_obj: WorkflowNode) -> bool:
         """Return True if this node must route using Send/Command (fanout semantics).
 
         We use Send-mode if:
@@ -543,18 +598,18 @@ def to_langgraph(
 
     for node_id, node in nodes.items():
         op = node.op
-        fn = (
-            step_resolver.resolve(op)
-            if hasattr(step_resolver, "resolve")
-            else step_resolver(op)
-        )
+        fn = _resolve_step(step_resolver, op)
         use_send = _needs_send_payload(node_id, node)
 
         if use_send:
             # --- Fanout-capable node: routing via Command(goto=Send/...) to preserve token semantics ---
-            def make_step_send(nid: str, node_obj: Any, fn_, op_name: str):
-                def step_node(state: LGBlobState) -> Any:
-                    blob = cast(dict, state.get(opt.blob_key) or {})
+            def make_step_send(
+                nid: str, node_obj: WorkflowNode, fn_: StepCallable, op_name: str
+            ) -> Callable[[LGBlobState], object]:
+                def step_node(state: LGBlobState) -> object:
+                    blob = cast(
+                        dict[str, object], state.get(opt.blob_key) or {}
+                    )
                     token_id = cast(str, blob.get("__token_id__", "root"))
 
                     md = getattr(node_obj, "metadata", {}) or {}
@@ -580,8 +635,7 @@ def to_langgraph(
                         updates = _delta_to_updates(out, schema)
 
                         class _R:
-                            def __init__(self):
-                                self.next_step_names = []
+                            next_step_names: list[str] = []
 
                         result_obj = _R()
                     else:
@@ -627,7 +681,7 @@ def to_langgraph(
                     elif len(next_nodes) == 1:
                         goto = next_nodes[0]
                     else:
-                        sends: list[Any] = []
+                        sends: list[object] = []
                         for i, n in enumerate(next_nodes):
                             child_tid = _make_token_id(token_id, i)
                             # put token id into blob via ops, not as a top-level key
@@ -655,17 +709,20 @@ def to_langgraph(
             continue
 
         # --- Exclusive-choice node: routing via conditional edges (nice diagram + correct semantics) ---
-        def make_step_update(nid: str, node_obj: Any, fn_, op_name: str):
-            def step_node(state: LGBlobState) -> dict:
-                blob = cast(dict, state.get(opt.blob_key) or {})
+        def make_step_update(
+            nid: str, node_obj: WorkflowNode, fn_: StepCallable, op_name: str
+        ) -> Callable[[LGBlobState], dict[str, object]]:
+            def step_node(state: LGBlobState) -> dict[str, object]:
+                blob = cast(
+                    dict[str, object], state.get(opt.blob_key) or {}
+                )
                 out = _invoke_step(resolver=step_resolver, fn=fn_, op=op_name, node_id=nid, state=blob)
 
                 if isinstance(out, dict):
                     updates = _delta_to_updates(out, schema)
 
                     class _R:
-                        def __init__(self):
-                            self.next_step_names = []
+                        next_step_names: list[str] = []
 
                     result_obj = _R()
                 else:
@@ -692,7 +749,9 @@ def to_langgraph(
         )
 
         # Conditional router that recomputes next node(s) using the updated blob state.
-        def make_send_router(nid: str, node_obj: Any):
+        def make_send_router(
+            nid: str, node_obj: WorkflowNode
+        ) -> tuple[Callable[[LGBlobState], str | list[str]], dict[str, str]]:
             edges = list(adj.get(nid, []))
 
             # Precompute possible destinations for the path_map (helps with diagram)
@@ -709,13 +768,15 @@ def to_langgraph(
                 path_map[END] = END
 
             class _LastResultProxy:
-                def __init__(self, next_step_names: list[str]):
+                def __init__(self, next_step_names: list[str]) -> None:
                     self.next_step_names = next_step_names
 
-            def router(state: LGBlobState):
-                blob = cast(dict, state.get(opt.blob_key) or {})
+            def router(state: LGBlobState) -> str | list[str]:
+                blob = cast(
+                    dict[str, object], state.get(opt.blob_key) or {}
+                )
                 proxy = _LastResultProxy(
-                    list(blob.get("__next_step_names__", []) or [])
+                    cast(list[str], blob.get("__next_step_names__", []) or [])
                 )
 
                 next_nodes = _route_next(
@@ -743,8 +804,8 @@ def to_langgraph(
 
     # Blob init: ensure '__blob__' exists and carries a root token_id.
     # If caller doesn't provide __blob__, start with {'__token_id__': 'root'}.
-    def _init_blob(state: dict) -> dict:
-        blob = dict(state.get(opt.blob_key) or {})
+    def _init_blob(state: dict[str, object]) -> dict[str, object]:
+        blob = dict(cast(Mapping[str, object], state.get(opt.blob_key) or {}))
         blob.setdefault("__token_id__", "root")
         return {opt.blob_key: blob}
 
