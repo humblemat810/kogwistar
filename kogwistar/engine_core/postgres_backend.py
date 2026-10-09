@@ -65,7 +65,12 @@ from ..utils.embedding_vectors import (
 )
 from .async_compat import run_awaitable_blocking
 from .embedding_profile import EmbeddingProfileError, EmbeddingStorageState
-from .storage_backend import AtomicMutationCapability
+from .storage_backend import (
+    AsyncTwoStageProjectionAdapter,
+    AtomicMutationCapability,
+    TwoStageProjectionAdapter,
+    TwoStageProjectionCapability,
+)
 
 try:
     # pip install pgvector
@@ -683,6 +688,9 @@ class PgVectorBackend:
         mode="atomic",
         reason="PostgreSQL backend joins the engine SQL transaction",
     )
+    two_stage_projection_capability: TwoStageProjectionCapability
+    two_stage_projection_adapter: TwoStageProjectionAdapter | None
+    async_two_stage_projection_adapter: AsyncTwoStageProjectionAdapter | None
 
     @staticmethod
     def _normalize_distance(distance: str) -> str:

@@ -6,7 +6,12 @@ from typing import Protocol
 
 from .async_compat import run_awaitable_blocking
 from .embedding_profile import EmbeddingStorageState
-from .storage_backend import AtomicMutationCapability
+from .storage_backend import (
+    AsyncTwoStageProjectionAdapter,
+    AtomicMutationCapability,
+    TwoStageProjectionAdapter,
+    TwoStageProjectionCapability,
+)
 
 _VECTOR_COLLECTION_NAMES = (
     "nodes_index",
@@ -185,6 +190,9 @@ class ChromaBackend:
         mode="eventual",
         reason="Chroma writes are durable but do not provide multi-operation rollback",
     )
+    two_stage_projection_capability: TwoStageProjectionCapability
+    two_stage_projection_adapter: TwoStageProjectionAdapter | None
+    async_two_stage_projection_adapter: AsyncTwoStageProjectionAdapter | None
     vector_distance_kind = "distance"
 
     def __init__(

@@ -14,7 +14,16 @@ from ...acl.graph import (
 )
 from ...acl.models import ACLEdge, ACLNode
 from ...cdc.change_event import EntityRefModel
-from ...engine_core.models import Document, Edge, Grounding, Node, Span
+from ...engine_core.models import (
+    Document,
+    Domain,
+    Edge,
+    Grounding,
+    Node,
+    PureChromaEdge,
+    PureChromaNode,
+    Span,
+)
 from ...engine_core.vector_search import VectorSearchHit
 from ...id_provider import stable_id
 from ...json_types import JsonValue
@@ -1316,6 +1325,33 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
     def edge_ids_by_doc(self, doc_id: str, insertion_method: str | None = None) -> list[str]:
         return self._raw.edge_ids_by_doc(doc_id, insertion_method=insertion_method)
 
+    def edges_by_doc(self, doc_id: str, where: dict[str, JsonValue] | None = None) -> list[str]:
+        return self._raw.edges_by_doc(doc_id, where=where)
+
+    def list_edges_with_ref_filter(self, doc_id: str, where: dict | None = None) -> list[Edge]:
+        return self._raw.list_edges_with_ref_filter(doc_id, where=where)
+
+    def nodes_by_doc(self, doc_id: str, *, where: dict | None = None) -> list[str]:
+        return self._raw.nodes_by_doc(doc_id, where=where)
+
+    def list_nodes_with_ref_filter(self, doc_id: str, *, where: dict | None = None) -> list[Node]:
+        return self._raw.list_nodes_with_ref_filter(doc_id, where=where)
+
+    def ids_with_insertion_method(
+        self,
+        *,
+        kind: str,
+        insertion_method: str,
+        ids: Sequence[str] | None = None,
+        doc_id: str | None = None,
+    ) -> list[str]:
+        return self._raw.ids_with_insertion_method(
+            kind=kind,
+            insertion_method=insertion_method,
+            ids=ids,
+            doc_id=doc_id,
+        )
+
     def extract_reference_contexts(self, *args: Any, **kwargs: Any) -> list[dict[str, Any]]:
         return self._raw.extract_reference_contexts(*args, **kwargs)
 
@@ -1367,6 +1403,51 @@ class ACLAwareWriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"], WriteLike):
 
     def add_document(self, document: Document) -> None:
         self._raw.add_document(document)
+
+    async def add_node_async(self, node: Node, doc_id: str | None = None) -> None:
+        await self._raw.add_node_async(node, doc_id=doc_id)
+
+    async def add_edge_async(self, edge: Edge, doc_id: str | None = None) -> None:
+        await self._raw.add_edge_async(edge, doc_id=doc_id)
+
+    def add_pure_node(self, node: PureChromaNode) -> None:
+        self._raw.add_pure_node(node)
+
+    def add_pure_edge(self, edge: PureChromaEdge) -> None:
+        self._raw.add_pure_edge(edge)
+
+    def add_domain(self, domain: Domain) -> None:
+        self._raw.add_domain(domain)
+
+    def enrich_edge_meta(self, edge: Edge) -> dict[str, object]:
+        return self._raw.enrich_edge_meta(edge)
+
+    def fanout_endpoints_rows(self, edge: Edge, doc_id: str | None) -> object:
+        return self._raw.fanout_endpoints_rows(edge, doc_id)
+
+    def maybe_reindex_edge_refs(self, edge: Edge, *, force: bool = False) -> None:
+        self._raw.maybe_reindex_edge_refs(edge, force=force)
+
+    def maybe_reindex_node_refs(self, node: Node, *, force: bool = False) -> None:
+        self._raw.maybe_reindex_node_refs(node, force=force)
+
+    def prune_node_refs_for_doc(self, node_id: str, doc_id: str) -> bool:
+        return self._raw.prune_node_refs_for_doc(node_id, doc_id)
+
+    def rebuild_edge_refs_for_doc(self, doc_id: str) -> int:
+        return self._raw.rebuild_edge_refs_for_doc(doc_id)
+
+    def rebuild_all_edge_refs(self) -> int:
+        return self._raw.rebuild_all_edge_refs()
+
+    def rebuild_node_refs_for_doc(self, doc_id: str) -> int:
+        return self._raw.rebuild_node_refs_for_doc(doc_id)
+
+    def rebuild_all_node_refs(self) -> int:
+        return self._raw.rebuild_all_node_refs()
+
+    def delete_edges_by_ids(self, edge_ids: list[str]) -> None:
+        self._raw.delete_edges_by_ids(edge_ids)
 
     def add_node(self, node: Node, *args: Any, **kwargs: Any) -> None:
         if not self._e.acl.writes_can_share_backend_transaction():
