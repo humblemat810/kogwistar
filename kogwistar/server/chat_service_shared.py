@@ -12,7 +12,7 @@ import contextlib
 import json
 import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from typing import ClassVar, Protocol, cast, runtime_checkable
 
@@ -25,6 +25,7 @@ from kogwistar.server.auth_middleware import claims_ctx
 from .run_registry import RunRegistry
 
 JsonObject = dict[str, JsonValue]
+PublishPayload = Mapping[str, object] | JsonObject | None
 
 
 class RunCancelledError(RuntimeError):
@@ -197,7 +198,7 @@ class ChatRunServiceOwner(Protocol):
     def list_steps(self, run_id: str) -> list[JsonObject]: ...
 
     def _publish(
-        self, run_id: str, event_type: str, payload: JsonObject | None = None
+        self, run_id: str, event_type: str, payload: PublishPayload = None
     ) -> JsonObject: ...
 
     @contextlib.contextmanager
@@ -291,7 +292,7 @@ class _BaseComponent:
         return self._owner.list_steps(run_id)
 
     def _publish(
-        self, run_id: str, event_type: str, payload: JsonObject | None = None
+        self, run_id: str, event_type: str, payload: PublishPayload = None
     ) -> JsonObject:
         return self._owner._publish(run_id, event_type, payload)
 

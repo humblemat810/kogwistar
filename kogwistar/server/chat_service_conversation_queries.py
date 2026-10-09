@@ -11,6 +11,10 @@ from .chat_service_shared import _BaseComponent
 class _ConversationQueryService(_BaseComponent):
     """Owns conversation creation and transcript/query helpers."""
 
+    @staticmethod
+    def _json_int(value: JsonValue) -> int:
+        return int(value) if isinstance(value, (int, float, str)) else 0
+
     def create_conversation(
         self,
         *,
@@ -81,7 +85,12 @@ class _ConversationQueryService(_BaseComponent):
                         "turn_count": len(self.list_transcript(str(conv_id))),
                     }
                 )
-        results.sort(key=lambda x: x["turn_count"], reverse=True)
+        results.sort(
+            key=lambda item: (
+                self._json_int(item.get("turn_count"))
+            ),
+            reverse=True,
+        )
         return results
 
     def get_conversation(self, conversation_id: str) -> dict[str, JsonValue]:
@@ -116,7 +125,7 @@ class _ConversationQueryService(_BaseComponent):
             if entity_type not in {"conversation_turn", "assistant_turn"}:
                 continue
             turn_index = getattr(node, "turn_index", None)
-            if turn_index is None:
+            if not isinstance(turn_index, (int, float, str)):
                 continue
             turns.append(
                 {
@@ -127,7 +136,12 @@ class _ConversationQueryService(_BaseComponent):
                     "entity_type": entity_type,
                 }
             )
-        turns.sort(key=lambda item: (int(item["turn_index"]), str(item["node_id"])))
+        turns.sort(
+            key=lambda item: (
+                self._json_int(item.get("turn_index")),
+                str(item.get("node_id") or ""),
+            )
+        )
         return turns
 
     def latest_snapshot(

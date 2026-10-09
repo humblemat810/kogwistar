@@ -43,6 +43,7 @@ from .chat_service_shared import (
     RunCancelledError,
     RuntimeResumeRequest,
     RuntimeRunRequest,
+    PublishPayload,
     WorkflowProjectionRebuildingError,
     json_safe,
     now_ms,
@@ -221,9 +222,14 @@ class ChatRunService:
         return self.capability_snapshot()
 
     def _publish(
-        self, run_id: str, event_type: str, payload: JsonObject | None = None
+        self, run_id: str, event_type: str, payload: PublishPayload = None
     ) -> JsonObject:
-        return self.run_registry.append_event(run_id, event_type, payload)
+        safe = self._json_safe(payload or {})
+        return self.run_registry.append_event(
+            run_id,
+            event_type,
+            cast(JsonObject, safe) if isinstance(safe, dict) else {},
+        )
 
     @staticmethod
     def _json_safe(value: object) -> JsonValue:
