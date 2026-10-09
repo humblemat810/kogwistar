@@ -11,15 +11,14 @@ import traceback
 from contextvars import ContextVar
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable, cast
 
 try:
-    from dotenv import load_dotenv
+    from dotenv import load_dotenv as _load_dotenv  # pyright: ignore[reportAssignmentType]
 except ModuleNotFoundError:
 
-    def load_dotenv(*args, **kwargs):
+    def _load_dotenv(*args: object, **kwargs: object) -> bool:
         return False
-
 
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse
@@ -27,6 +26,8 @@ from jose import JWTError, jwt
 from starlette.types import Receive, Scope, Send
 
 from kogwistar.shortids import run_id_scope
+
+load_dotenv: Callable[..., bool] = cast(Callable[..., bool], cast(object, _load_dotenv))
 
 if TYPE_CHECKING:
     pass

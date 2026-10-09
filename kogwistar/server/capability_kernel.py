@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from time import time
+from typing import cast
 
 from fastapi import HTTPException
 
@@ -144,29 +145,36 @@ class CapabilityKernel:
         raise HTTPException(status_code=403, detail=detail)
 
     def snapshot(self) -> dict[str, JsonValue]:
-        return {
-            "specs": [
+        specs: list[JsonValue] = [
+            cast(
+                JsonValue,
                 {
                     "name": spec.name,
                     "description": spec.description,
                     "action_kind": spec.action_kind,
                     "parent": spec.parent,
-                }
-                for spec in self.list_specs()
-            ],
-            "approvals": [
+                },
+            )
+            for spec in self.list_specs()
+        ]
+        approvals: list[JsonValue] = [
+            cast(
+                JsonValue,
                 {
                     "subject": subject,
                     "action": action,
                     "capabilities": sorted(caps),
-                }
-                for (subject, action), caps in sorted(self.approvals.items())
-            ],
-            "revoked": [
-                {"subject": subject, "capabilities": sorted(caps)}
-                for subject, caps in sorted(self.revoked.items())
-            ],
-            "audit_log": [
+                },
+            )
+            for (subject, action), caps in sorted(self.approvals.items())
+        ]
+        revoked: list[JsonValue] = [
+            cast(JsonValue, {"subject": subject, "capabilities": sorted(caps)})
+            for subject, caps in sorted(self.revoked.items())
+        ]
+        audit_log: list[JsonValue] = [
+            cast(
+                JsonValue,
                 {
                     "ts_ms": d.ts_ms,
                     "subject": d.subject,
@@ -176,9 +184,15 @@ class CapabilityKernel:
                     "outcome": d.outcome,
                     "reason": d.reason,
                     "parent_capabilities": list(d.parent_capabilities),
-                }
-                for d in self.audit_log
-            ],
+                },
+            )
+            for d in self.audit_log
+        ]
+        return {
+            "specs": specs,
+            "approvals": approvals,
+            "revoked": revoked,
+            "audit_log": audit_log,
         }
 
 
