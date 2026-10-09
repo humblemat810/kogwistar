@@ -26,6 +26,8 @@ import httpx
 from kogwistar.id_provider import stable_id
 from kogwistar.json_types import JsonValue
 
+from .contract import Predicate
+
 JsonObject = dict[str, JsonValue]
 
 if TYPE_CHECKING:
@@ -46,12 +48,15 @@ class RustDependencyProvider(Protocol):
     def __call__(self, work: Mapping[str, JsonValue]) -> Mapping[str, JsonValue]: ...
 
 
-class RustPredicate(Protocol):
-    def __call__(self, edge: object, state: Mapping[str, JsonValue], result: Any) -> bool: ...
+RustPredicate = Predicate
 
 
 class RustWorkerExecutor(Protocol):
     def __call__(self, work: JsonObject) -> Mapping[str, JsonValue]: ...
+
+
+class AsyncRustWorkerExecutor(Protocol):
+    async def __call__(self, work: JsonObject) -> Mapping[str, JsonValue]: ...
 
 
 class RustWorkerError(RuntimeError):
@@ -878,7 +883,7 @@ class AsyncRustRuntimeWorker:
         base_url: str,
         worker_id: str,
         journal_path: str | os.PathLike[str],
-        execute: RustWorkerExecutor,
+        execute: AsyncRustWorkerExecutor,
         headers: Mapping[str, str] | None = None,
         timeout: float = 30.0,
         client: httpx.AsyncClient | None = None,
@@ -1010,6 +1015,7 @@ class AsyncRustRuntimeWorker:
 
 __all__ = [
     "AmbiguousWorkerExecution",
+    "AsyncRustWorkerExecutor",
     "AsyncRustRuntimeWorker",
     "AsyncRustStepResolverAdapter",
     "RustRuntimeWorker",
