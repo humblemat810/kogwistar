@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 from kogwistar.llm_tasks import LLMTaskSet
 
+from ..engine_core.engine import GraphKnowledgeEngine
 from ..engine_core.models import Span
 from .callbacks import RetrievalFilteringCallback
 from .knowledge_retriever import KnowledgeRetriever
@@ -51,8 +52,8 @@ class RetrievalOrchestrator:
     def __init__(
         self,
         *,
-        conversation_engine,
-        ref_knowledge_engine,
+        conversation_engine: GraphKnowledgeEngine,
+        ref_knowledge_engine: GraphKnowledgeEngine,
         llm_tasks: LLMTaskSet,
         memory_filtering_callback: RetrievalFilteringCallback,
         knowledge_filtering_callback: RetrievalFilteringCallback,

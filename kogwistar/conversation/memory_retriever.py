@@ -27,7 +27,7 @@ def _normalize_visibility_mode(value: object) -> str:
     return "shared" if vis == "shared" else "private"
 
 
-def is_node_memory_context(node: ConversationNode):
+def is_node_memory_context(node: ConversationNode) -> bool:
     # example node:
     # ConversationNode(
     #         id=mem_node_id,
@@ -103,7 +103,7 @@ class MemoryRetriever:
     def __init__(
         self,
         *,
-        conversation_engine,
+        conversation_engine: GraphKnowledgeEngine,
         llm_tasks: LLMTaskSet,
         filtering_callback: RetrievalFilteringCallback,
         summarize_callback: MemorySummarizeCallback | None = None,
@@ -153,7 +153,7 @@ class MemoryRetriever:
             list(cast(list[ConversationEdge], edge_batches[0])) if edge_batches else []
         )
 
-        def _rank(m: Node | Edge):
+        def _rank(m: Node | Edge) -> int:
             t = m.type or m.metadata.get("entity_type") or ""
             return 0 if t in self.prefer_types else 1
 
