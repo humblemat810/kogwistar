@@ -10,12 +10,8 @@ ocr_json_version = "0.1"
 import base64
 import json
 import time
-from typing import (
-    TYPE_CHECKING,
-    Literal,
-    TypeAlias,
-    cast,
-)
+from collections.abc import Sequence
+from typing import Literal, Protocol, TypeAlias, cast
 
 from pydantic import (
     BaseModel,
@@ -35,11 +31,16 @@ from kogwistar.engine_core.models import (
     SplitPage,
     TextCluster,
 )
+from kogwistar.llm_tasks.providers import SupportsStructuredOutput
 
 from .llm_structured_output import build_structured_output_runnable
 
-if TYPE_CHECKING:
-    from langchain_core.language_models import BaseChatModel
+class _StructuredStep(Protocol):
+    def invoke(self, messages: object, config: object | None = None) -> object: ...
+
+
+class _StructuredChainWithSteps(Protocol):
+    steps: Sequence[_StructuredStep]
 
 _OCR_OPTIONAL_DEPENDENCY_MESSAGE = (
     "OCR helpers require optional dependency group 'ingestion-gemini'. "
@@ -104,7 +105,6 @@ def regen_doc(folder_path, use_raw=False):
             pages.append(get_page_json(folder_path, pn))
             split_pages.append(regen_page(pages[-1], use_raw=use_raw))
         except Exception:
-            folder_path, pn
             print(f"error at page {pn}")
             print(f"in file {folder_path}")
             logger.error(f"error at page {pn}")
@@ -296,19 +296,21 @@ def get_first_round_response(
     usage_metadata,
 ):
 
-    chain = build_structured_output_runnable(llm, RawOCRResponse, include_raw=True)
+    chain = cast(
+        _StructuredChainWithSteps,
+        build_structured_output_runnable(llm, RawOCRResponse, include_raw=True),
+    )
     before_parse = chain.steps[0]
     after_parse = chain.steps[1]
     raw_response = before_parse.invoke(messages, config={"callbacks": [cb]})
 
     if hasattr(raw_response, "usage_metadata"):
-        usage_metadata.append(raw_response.usage_metadata)
+        usage_metadata.append(getattr(raw_response, "usage_metadata"))
     else:
         usage_metadata.append(None)
-    response_with_raw: dict[str, RawOCRResponse] = after_parse.invoke(raw_response)
+    response_with_raw = cast(dict[str, object], after_parse.invoke(raw_response))
     response: RawOCRResponse | OCRClusterResponse | None
-    response1: RawOCRResponse | None = response_with_raw.get("parsed")
-    raw = response_with_raw.get("raw")
+    response1 = cast(RawOCRResponse | None, response_with_raw.get("parsed"))
     parsing_error = response_with_raw.get("parsing_error")
     if response1 is not None:
         response = RawOCRResponse_to_OCRClusterResponse(response1)
@@ -345,7 +347,6 @@ def get_first_round_response(
         raw_ocr_response = cast(RawOCRResponse, response_with_raw.get("parsed"))
         if raw_ocr_response is not None:
             response = RawOCRResponse_to_OCRClusterResponse(raw_ocr_response)
-        raw = response_with_raw.get("raw")
         parsing_error = response_with_raw.get("parsing_error")
     return response
 
@@ -400,7 +401,6 @@ def validate_response(
         try:
             sp.to_doc()
             response_dict.update(response_dict_local)
-            ok = True
         except Exception as e:
             logger.error(
                 f"Generated json fail to reproduce doc, file name = {image_file_path}, {model_name=}"
@@ -484,7 +484,6 @@ def final_resort(
     max_v = ""
     for k, v in draft_responses.items():
         if len(v) > len(max_v):
-            max_k = (k,)
             max_v = v
     earlier_partial_ocr = (
         draft_responses.get("gemini-2.5-pro")
@@ -502,7 +501,9 @@ def final_resort(
 
     ocr_meta_response: OCRMetaResponse | None = cast(
         OCRMetaResponse | None,
-        build_structured_output_runnable(llm, OCRMetaResponse, include_raw=True).invoke(messages[:2]),
+        build_structured_output_runnable(
+            cast(SupportsStructuredOutput, llm), OCRMetaResponse, include_raw=True
+        ).invoke(messages[:2]),
     )
     if ocr_meta_response is None:
         raise Exception(
@@ -518,7 +519,11 @@ def final_resort(
     try:
         response2: RawOCRResponseMetaless | None = cast(
             RawOCRResponseMetaless | None,
-            build_structured_output_runnable(llm, RawOCRResponseMetaless, include_raw=True).invoke(
+            build_structured_output_runnable(
+                cast(SupportsStructuredOutput, llm),
+                RawOCRResponseMetaless,
+                include_raw=True,
+            ).invoke(
                 messages[:2] + metadata
             ),
         )
@@ -533,7 +538,11 @@ def final_resort(
         try:
             response3: TextBoxResponse | None = cast(
                 TextBoxResponse | None,
-                build_structured_output_runnable(llm, TextBoxResponse, include_raw=True).invoke(messages[:2]),
+                build_structured_output_runnable(
+                    cast(SupportsStructuredOutput, llm),
+                    TextBoxResponse,
+                    include_raw=True,
+                ).invoke(messages[:2]),
             )
             if response3 is None:
                 has_error = True
@@ -598,7 +607,6 @@ def final_resort(
                     sp = SplitPage(**response_dict)
                 try:
                     sp.to_doc()
-                    ok = True
                 except Exception:
                     raise Exception(
                         "Validation error response_dict cannot be validate into SplitPage"
@@ -690,7 +698,10 @@ def refine_image_response(
             )
 
             refined = refine_table_ocr(
-                response_dict, llm=llm, cb=cb, error_messages=error_messages
+                response_dict,
+                llm=cast(SupportsStructuredOutput, llm),
+                cb=cb,
+                error_messages=error_messages,
             )
             ok2 = True
         except Exception as e:
@@ -827,7 +838,7 @@ def ocr_single_image(
                         img_message,
                         usage_metadata,
                     )
-                    sp = validate_response(
+                    validate_response(
                         response,
                         response_dict,
                         image_file_path,
@@ -880,7 +891,12 @@ def ocr_single_image(
 OCRRefineResponse: TypeAlias = OCRClusterResponse[DtoField]
 
 
-def refine_table_ocr(response_dict, llm: BaseChatModel, cb, error_messages):
+def refine_table_ocr(
+    response_dict,
+    llm: SupportsStructuredOutput,
+    cb,
+    error_messages,
+):
     if response_dict.get("refined_version"):
         return False
     else:
@@ -907,7 +923,6 @@ def refine_table_ocr(response_dict, llm: BaseChatModel, cb, error_messages):
     for i in range(max_attempt):
         try:
             oc_refined_result: OCRRefineResponse
-            raw: str
             parsing_error: Exception
 
             temp: dict = cast(
@@ -916,7 +931,7 @@ def refine_table_ocr(response_dict, llm: BaseChatModel, cb, error_messages):
                     llm, OCRRefineResponse, include_raw=True
                 ).invoke(messages, config={"callbacks": [cb]}),
             )
-            (raw, oc_refined_result, parsing_error) = (
+            (_raw, oc_refined_result, parsing_error) = (
                 temp["raw"],
                 temp["parsed"],
                 temp["parsing_error"],
