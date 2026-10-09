@@ -5,10 +5,12 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from os import PathLike
-from typing import Any, Callable, cast
+from collections.abc import Mapping
+from typing import Callable, cast
 
 from pydantic import BaseModel
 
+from ..json_types import JsonObject, JsonValue
 from ..engine_core.models import (
     QUESTION_DESC,
     QUESTION_KEY,
@@ -18,9 +20,16 @@ from ..engine_core.models import (
     LLMMergeAdjudication,
     Node,
 )
-from ..llm_tasks import AdjudicateBatchTaskRequest, AdjudicatePairTaskRequest
+from ..llm_tasks import (
+    AdjudicateBatchTaskRequest,
+    AdjudicatePairTaskRequest,
+)
+from ..llm_tasks.contracts import AdjudicatePairTask
 from ..utils.cache_backend import Memory
 from .types import EngineLike, IAdjudicator
+
+Payload = JsonObject
+Signature = tuple[tuple[str, str], tuple[str, str], str]
 
 
 @dataclass(frozen=True)
@@ -30,8 +39,15 @@ class PairAdjudicationTrace:
     parsing_error: str | None
 
 
-def _normalize_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    return json.loads(json.dumps(payload, sort_keys=True, default=str))
+def _normalize_payload(payload: Payload) -> Payload:
+    return cast(Payload, json.loads(json.dumps(payload, sort_keys=True, default=str)))
+
+
+def _as_payload(value: object) -> Payload:
+    normalized = json.loads(json.dumps(value, sort_keys=True, default=str))
+    if isinstance(normalized, dict):
+        return cast(Payload, normalized)
+    return {"value": cast(JsonValue, normalized)}
 
 
 def _cacheable_raw(raw: object | None) -> object | None:
@@ -43,12 +59,12 @@ def _cacheable_raw(raw: object | None) -> object | None:
 
 
 def _invoke_adjudicate_pair_task(
-    pair_task,
+    pair_task: AdjudicatePairTask,
     *,
     question: str,
-    left: dict[str, Any],
-    right: dict[str, Any],
-) -> dict[str, Any]:
+    left: Payload,
+    right: Payload,
+) -> Payload:
     result = pair_task(
         AdjudicatePairTaskRequest(
             question=question,
@@ -57,39 +73,35 @@ def _invoke_adjudicate_pair_task(
         )
     )
     verdict_payload = result.verdict_payload
-    return {
+    return cast(Payload, {
         "verdict_payload": dict(verdict_payload)
         if verdict_payload is not None
         else None,
         "raw": _cacheable_raw(result.raw),
         "parsing_error": result.parsing_error,
-    }
+    })
 
 
 class LLMPairAdjudicatorImpl:
     """Inline pair adjudicator using typed llm task contracts."""
 
-    def __init__(self, engine: EngineLike):
+    def __init__(self, engine: EngineLike) -> None:
         self.e = engine
 
     def adjudicate_pair(
         self,
-        left: Any,
-        right: Any,
+        left: object,
+        right: object,
         *,
         question: str = "same_entity",
     ) -> LLMMergeAdjudication:
-        payload_left = getattr(left, "model_dump", lambda: left)()
-        payload_right = getattr(right, "model_dump", lambda: right)()
+        payload_left = _as_payload(getattr(left, "model_dump", lambda: left)())
+        payload_right = _as_payload(getattr(right, "model_dump", lambda: right)())
         result = self.e.llm_tasks.adjudicate_pair(
             AdjudicatePairTaskRequest(
                 question=question,
-                left=payload_left
-                if isinstance(payload_left, dict)
-                else {"value": payload_left},
-                right=payload_right
-                if isinstance(payload_right, dict)
-                else {"value": payload_right},
+                left=payload_left,
+                right=payload_right,
             )
         )
         if result.verdict_payload is None:
@@ -102,18 +114,18 @@ class LLMPairAdjudicatorImpl:
 class LLMBatchAdjudicatorImpl:
     """Inline batch adjudicator (cross-kind aware)."""
 
-    def __init__(self, engine: EngineLike):
+    def __init__(self, engine: EngineLike) -> None:
         self.e = engine
 
     @staticmethod
-    def _kind(x: Any) -> str:
+    def _kind(x: object) -> str:
         return (
             getattr(x, "type", None)
             or getattr(x, "__class__", type("X", (), {})).__name__
         )
 
     @staticmethod
-    def _id(x: Any) -> str:
+    def _id(x: object) -> str:
         return (
             getattr(x, "id", None)
             or getattr(x, "model_dump", lambda: {})().get("id")
@@ -121,17 +133,17 @@ class LLMBatchAdjudicatorImpl:
         )
 
     @staticmethod
-    def _compact(x: Any) -> dict[str, Any]:
+    def _compact(x: object) -> Payload:
         d = getattr(x, "model_dump", lambda: x)()
         if not isinstance(d, dict):
             return {"kind": LLMBatchAdjudicatorImpl._kind(x)}
-        out: dict[str, Any] = {
+        out: Payload = {
             "kind": d.get("type") or LLMBatchAdjudicatorImpl._kind(x),
             "type": d.get("type"),
             "name": d.get("label") or d.get("name") or d.get("title"),
             "summary": d.get("summary"),
         }
-        attrs: dict[str, Any] = {}
+        attrs: Payload = {}
         for k in ("relation", "date", "country", "ticker", "role"):
             if d.get(k) is not None:
                 attrs[k] = d[k]
@@ -148,7 +160,7 @@ class LLMBatchAdjudicatorImpl:
 
     def adjudicate_batch(
         self,
-        pairs: list[tuple[Any, Any]],
+        pairs: list[tuple[object, object]],
         *,
         question_code: int,
     ) -> tuple[list[LLMMergeAdjudication], str]:
@@ -158,7 +170,7 @@ class LLMBatchAdjudicatorImpl:
         qcode = AdjudicationQuestionCode(question_code)
         qkey = QUESTION_KEY[qcode]
 
-        uniq: list[tuple[str, str, Any]] = []
+        uniq: list[tuple[str, str, object]] = []
         seen = set()
         for left, right in pairs:
             for x in (left, right):
@@ -184,14 +196,14 @@ class LLMBatchAdjudicatorImpl:
             for code in AdjudicationQuestionCode
         ]
 
-        compact: dict[str, dict[str, Any]] = {}
+        compact: dict[str, Payload] = {}
         for k, i, x in uniq:
             aid = alias_for[(k, i)]
             item = self._compact(x)
             item["id"] = aid
             compact[aid] = item
 
-        pair_payload: list[dict[str, Any]] = []
+        pair_payload: list[Payload] = []
         for left, right in pairs:
             la = alias_for[(self._kind(left), self._id(left))]
             ra = alias_for[(self._kind(right), self._id(right))]
@@ -229,7 +241,7 @@ class LLMBatchAdjudicatorImpl:
 
 
 class Adjudicator(IAdjudicator):
-    def __init__(self, engine: EngineLike):
+    def __init__(self, engine: EngineLike) -> None:
         self.e = engine
 
     def adjudicate_pair_trace(
@@ -262,7 +274,7 @@ class Adjudicator(IAdjudicator):
         if cache_dir is not None:
             memory = Memory(location=str(cache_dir), verbose=0)
             cached_invoke = cast(
-                Callable[..., dict[str, Any]],
+                Callable[..., Payload],
                 memory.cache(_invoke_adjudicate_pair_task, ignore=["pair_task"]),
             )
             payload = cached_invoke(
@@ -281,7 +293,10 @@ class Adjudicator(IAdjudicator):
 
         verdict_payload = payload.get("verdict_payload")
         adjudication: LLMMergeAdjudication | None
-        parsing_error = payload.get("parsing_error")
+        raw_parsing_error = payload.get("parsing_error")
+        parsing_error = (
+            raw_parsing_error if isinstance(raw_parsing_error, str) else None
+        )
         if verdict_payload is None:
             adjudication = None
         else:
@@ -301,7 +316,7 @@ class Adjudicator(IAdjudicator):
         left: AdjudicationTarget,
         right: AdjudicationTarget,
         question: str,
-    ) -> dict[Any, Any] | BaseModel:
+    ) -> dict[object, object] | BaseModel:
         trace = self.adjudicate_pair_trace(left, right, question)
         if trace.adjudication is None:
             raise ValueError(
@@ -311,7 +326,7 @@ class Adjudicator(IAdjudicator):
 
     def adjudicate_merge(
         self, left_node: Node | Edge, right_node: Node | Edge
-    ) -> dict[Any, Any] | BaseModel:
+    ) -> dict[object, object] | BaseModel:
         left = (
             self.e.adjudicate.target_from_node(left_node)
             if isinstance(left_node, Node)
@@ -329,7 +344,7 @@ class Adjudicator(IAdjudicator):
         self,
         pairs: list[tuple[Node, Node]],
         question_code: AdjudicationQuestionCode = AdjudicationQuestionCode.SAME_ENTITY,
-    ):
+    ) -> list[LLMMergeAdjudication] | tuple[list[LLMMergeAdjudication | None], str]:
         """Batch same-kind merge adjudications with local signature deduplication.
 
         Pairs that share the same normalized node signature and question reuse one
@@ -343,32 +358,34 @@ class Adjudicator(IAdjudicator):
         qcode = AdjudicationQuestionCode(question_code)
         qkey = QUESTION_KEY[qcode]
 
-        def node_id(n: Node):
-            return getattr(n, "id", None) or n.model_dump().get("id")
+        def node_id(n: Node) -> str:
+            value = getattr(n, "id", None) or n.model_dump().get("id")
+            return str(value) if value is not None else ""
 
-        def node_kind(n: Node):
-            return (
+        def node_kind(n: Node) -> str:
+            value = (
                 getattr(n, "kind", None)
                 or n.model_dump().get("kind")
                 or getattr(n, "type", None)
                 or n.model_dump().get("type")
                 or n.__class__.__name__
             )
+            return str(value)
 
-        def normalized_signature(left, right):
+        def normalized_signature(left: Node, right: Node) -> Signature:
             lid, rid = node_id(left), node_id(right)
             lkind, rkind = node_kind(left), node_kind(right)
             a, b = (lkind, str(lid)), (rkind, str(rid))
             key_pair = (a, b) if a <= b else (b, a)
             return key_pair + (qkey,)
 
-        def compact_payload(n: Node):
+        def compact_payload(n: Node) -> Payload:
             d = n.model_dump()
-            out: dict[str, Any] = {}
+            out: Payload = {}
             out["kind"] = node_kind(n)
             out["type"] = d.get("type")
             out["name"] = d.get("name") or d.get("label") or d.get("title")
-            attrs: dict[str, Any] = {}
+            attrs: Payload = {}
             for k in ("dob", "country", "ticker", "date", "role", "source"):
                 if k in d and d[k] is not None:
                     attrs[k] = d[k]
@@ -378,10 +395,10 @@ class Adjudicator(IAdjudicator):
                 out["signature"] = d["signature"]
             return out
 
-        cache: dict[tuple[Any, ...], LLMMergeAdjudication] = {}
+        cache: dict[Signature, LLMMergeAdjudication] = {}
         known_by_index: dict[int, LLMMergeAdjudication] = {}
         unknown_indices: list[int] = []
-        unknown_pairs: list[tuple[Node, Node, tuple[Any, ...]]] = []
+        unknown_pairs: list[tuple[Node, Node, Signature]] = []
 
         for idx, (left, right) in enumerate(pairs):
             k = normalized_signature(left, right)
@@ -417,7 +434,7 @@ class Adjudicator(IAdjudicator):
             for code in AdjudicationQuestionCode
         ]
 
-        def _fmt(ctx):
+        def _fmt(ctx: Mapping[str, object]) -> str:
             meta = (
                 f"[doc={ctx['doc_id']} p{ctx.get('start_page')}-{ctx.get('end_page')}]"
                 if ctx.get("doc_id")
@@ -425,7 +442,7 @@ class Adjudicator(IAdjudicator):
             )
             return f"{meta} ...{(ctx['context'] or ctx['mention'] or '')}..."
 
-        adjudication_inputs: list[dict[str, Any]] = []
+        adjudication_inputs: list[Payload] = []
         for left, right, _ in unknown_pairs:
             l_key = (node_kind(left), str(node_id(left)))
             r_key = (node_kind(right), str(node_id(right)))
