@@ -36,7 +36,7 @@ def capture_auth_claims(principal_id: str | None = None) -> JsonObject | None:
     """Capture request identity before work crosses a background-thread boundary."""
     claims = claims_ctx.get()
     if isinstance(claims, dict):
-        return dict(claims)
+        return cast(JsonObject, dict(claims))
     principal = str(principal_id or "").strip()
     return {"agent_id": principal} if principal else None
 

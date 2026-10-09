@@ -15,6 +15,7 @@ import argparse
 import asyncio
 import json
 import re
+from typing import Any, cast
 
 import httpx
 from langchain_mcp_adapters.client import (  # pyright: ignore[reportMissingImports]
@@ -117,7 +118,7 @@ async def main():
         }
     }
 
-    client = MultiServerMCPClient(SERVERS)
+    client = MultiServerMCPClient(cast(Any, SERVERS))
 
     # Create the context manager and ENTER it to get a real MCP session
     ctxs = [client.session(s) for s in SERVERS]

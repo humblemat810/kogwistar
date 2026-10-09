@@ -741,9 +741,9 @@ def viz_d3_bundle(
     }
 
     return templates.TemplateResponse(
-        "d3.html",
-        {
-            "request": request,
+        request=request,
+        name="d3.html",
+        context={
             "doc_id": doc_id,
             "mode": mode,
             "insertion_method": insertion_method,
@@ -1073,9 +1073,9 @@ def viz_cytoscape(
     insertion_method: str | None = None,
 ) -> object:
     return templates.TemplateResponse(
-        "cytoscape.html",
-        {
-            "request": request,
+        request=request,
+        name="cytoscape.html",
+        context={
             "doc_id": doc_id,
             "mode": mode,
             "insertion_method": insertion_method,
@@ -1090,9 +1090,9 @@ def viz_d3(
     insertion_method: str | None = None,
 ) -> object:
     return templates.TemplateResponse(
-        "d3.html",
-        {
-            "request": request,
+        request=request,
+        name="d3.html",
+        context={
             "doc_id": doc_id,
             "mode": mode,
             "insertion_method": insertion_method,
@@ -1107,9 +1107,9 @@ def viz_go(
     insertion_method: str | None = None,
 ) -> object:
     return templates.TemplateResponse(
-        "go.html",
-        {
-            "request": request,
+        request=request,
+        name="go.html",
+        context={
             "doc_id": doc_id,
             "mode": mode,
             "insertion_method": insertion_method,

@@ -19,7 +19,12 @@ new_metadata = {"version": 2, "reviewed": True}
 
 # --- Fetch current metadata for the doc ---
 current = collection.get(ids=["doc1"], include=["metadatas"])
-current_meta = current["metadatas"][0] or {}
+metadatas = current.get("metadatas")
+current_meta = (
+    metadatas[0]
+    if isinstance(metadatas, list) and metadatas
+    else {}
+) or {}
 
 # --- Decide if replacement or true update ---
 if set(new_metadata.items()) <= set(current_meta.items()):
@@ -35,5 +40,8 @@ else:
 # --- Verify ---
 print(
     "Final metadata:",
-    collection.get(ids=["doc1"], include=["metadatas"])["metadatas"][0],
+    (
+        collection.get(ids=["doc1"], include=["metadatas"]).get("metadatas")
+        or [{}]
+    )[0],
 )

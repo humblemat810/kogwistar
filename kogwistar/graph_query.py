@@ -795,12 +795,10 @@ class GraphQuery:
         """Seed by a TEXT query using the collection's default embedding function, then expand K hops.
         This avoids any custom embedding pipeline and uses the underlying vector store's default embeddings.
         """
-        _where: dict[str, Any] | None = (
-            {"doc_id": doc_ids} if type(doc_ids) is str else None
+        _where: dict[str, Any] = (
+            {"doc_id": doc_ids} if type(doc_ids) is str else {}
         )
         if type(doc_ids) is list:
-            if _where is None:
-                _where = {}
             _where["doc_id"] = {"$in": doc_ids}
         if where:
             if _where.get("and"):

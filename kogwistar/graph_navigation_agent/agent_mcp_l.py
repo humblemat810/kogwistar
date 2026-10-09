@@ -77,7 +77,7 @@ EXPECTED_TOOLS = {
 
 
 async def build_agent():
-    client = MultiServerMCPClient(SERVERS)
+    client = MultiServerMCPClient(cast(Any, SERVERS))
 
     # Open sessions to all configured servers
     ctxs = [client.session(s) for s in SERVERS]
@@ -123,7 +123,7 @@ async def build_agent():
 async def run_once(user_question: str):
     agent, cleanup = await build_agent()
     try:
-        config = {
+        config: dict[str, Any] = {
             "configurable": {
                 "run_name": "graph_qa",
                 "run_id": str(uuid.uuid4()),
@@ -131,8 +131,8 @@ async def run_once(user_question: str):
             }
         }
         # result = await agent.ainvoke({"messages": [{"role": "user", "content": user_question}]}, config=config)
-        events: list[dict[str, Any]] = []
-        event: dict[str, Any] | None = None
+        events: list[Any] = []
+        event: Any = None
         cnt = 0
         async for event in agent.astream_events(
             {
@@ -141,11 +141,11 @@ async def run_once(user_question: str):
                     "content": user_question,  # "Use Chroma to  LangChain and scrape langchain.com"
                 }
             },
-            config=config,
+            config=cast(Any, config),
         ):
             cnt += 1
             print(event)
-            events.append(cast(dict[str, Any], event))
+            events.append(event)
         if event is None:
             raise RuntimeError("MCP agent produced no stream events")
         final_results = event["data"]["output"]["messages"][-1].content

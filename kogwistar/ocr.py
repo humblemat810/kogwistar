@@ -806,7 +806,7 @@ def ocr_single_image(
     ok = False
     i_model = 0
     usage_metadata = []
-    from utils.langchain import get_gemini_callback_cost
+    from kogwistar.utils.langchain import get_gemini_callback_cost
 
     response_dict: dict = {}
     image_file_path: str = os.path.join(folder, file_name, page_file_name)

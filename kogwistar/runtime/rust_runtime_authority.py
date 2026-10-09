@@ -28,7 +28,7 @@ from .rust_worker import (
 
 if TYPE_CHECKING:
     from .async_runtime import AsyncWorkflowRuntime
-    from .models import WorkflowEdge, WorkflowNode
+    from .models import StepRunResult, WorkflowEdge, WorkflowNode
     from .runtime import RunResult, WorkflowRuntime
 
 
@@ -276,7 +276,7 @@ class RustRuntimeAuthority:
         *,
         workflow_id: str,
         suspended_node_id: str,
-        client_result: RunResult,
+        client_result: RunResult | StepRunResult,
         state: Mapping[str, Any],
     ) -> dict[str, Any]:
         from .base_runtime import apply_state_update_inplace
@@ -484,7 +484,7 @@ class RustRuntimeAuthority:
         run_id: str,
         suspended_node_id: str,
         suspended_token_id: str,
-        client_result: RunResult,
+        client_result: RunResult | StepRunResult,
         workflow_id: str,
         conversation_id: str,
         turn_node_id: str | None,

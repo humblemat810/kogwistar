@@ -582,7 +582,7 @@ class ACLSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         target_item_id: str | None = None,
     ) -> tuple[ACLRecord, ...]:
         # Canonical ACL read path. Used by ACLGraph cache miss and by repair/rebuild.
-        where_terms: list[dict[str, object]] = [
+        where_terms: list[JsonObject] = [
             {"entity_type": "acl_record"},
             {"acl_truth_graph": truth_graph},
         ]
@@ -592,7 +592,7 @@ class ACLSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             where_terms.append({"acl_target_grain": grain})
         nodes = self._e.raw_read.get_nodes(
             node_type=Node,
-            where={"$and": where_terms},
+            where=cast(JsonObject, {"$and": where_terms}),
             limit=400,
         )
         records: list[ACLRecord] = []

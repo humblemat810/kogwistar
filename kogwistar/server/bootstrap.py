@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Literal, cast
 from kogwistar.engine_core.async_compat import (
     run_awaitable_blocking,
 )
-from kogwistar.engine_core.chroma_backend import ChromaBackend
+from kogwistar.engine_core.chroma_backend import ChromaBackend, ChromaCollection
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.storage_backend import StorageBackend
 from kogwistar.typing_interfaces import EmbeddingFunctionLike, SqlAlchemyEngineLike
@@ -245,7 +245,10 @@ def build_graph_engine(
             from kogwistar.engine_core.chroma_backend import AsyncChromaBackend
 
             def _make_backend(_engine: GraphKnowledgeEngine) -> ChromaBackend:
-                collections = {
+                # AsyncHttpClient returns async collection objects.  The async
+                # backend deliberately stores them behind the sync facade's
+                # collection slots and awaits them only through async_call().
+                collections = cast(dict[str, ChromaCollection], {
                     "node_index": run_awaitable_blocking(
                         client.get_or_create_collection(
                             name="nodes_index",
@@ -294,7 +297,7 @@ def build_graph_engine(
                     "edge_refs": run_awaitable_blocking(
                         client.get_or_create_collection(name="edge_refs")
                     ),
-                }
+                })
                 return AsyncChromaBackend(
                     node_index_collection=collections["node_index"],
                     node_collection=collections["node"],

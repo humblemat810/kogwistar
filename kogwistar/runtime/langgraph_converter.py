@@ -21,18 +21,18 @@ from kogwistar.runtime.routing import compute_route_next
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 
 
-class _CompiledStateGraph(Protocol):
-    def add_node(self, *args: object, **kwargs: object) -> None: ...
+class _StateGraph(Protocol):
+    def add_node(self, *args: object, **kwargs: object) -> object: ...
 
-    def add_edge(self, *args: object, **kwargs: object) -> None: ...
+    def add_edge(self, *args: object, **kwargs: object) -> object: ...
 
-    def add_conditional_edges(self, *args: object, **kwargs: object) -> None: ...
+    def add_conditional_edges(self, *args: object, **kwargs: object) -> object: ...
 
     def compile(self) -> object: ...
 
 
 class _LangGraphImports(NamedTuple):
-    state_graph: Callable[..., _CompiledStateGraph]
+    state_graph: Callable[..., _StateGraph]
     start: str
     end: str
     command: Callable[..., object]
@@ -76,7 +76,7 @@ def _import_langgraph() -> _LangGraphImports:
             "Install with: pip install 'kogwistar[langgraph]'"
         ) from e
     return _LangGraphImports(
-        state_graph=StateGraph,
+        state_graph=cast(Callable[..., _StateGraph], StateGraph),
         start=START,
         end=END,
         command=Command,
