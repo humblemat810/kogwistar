@@ -33,7 +33,14 @@ if TYPE_CHECKING:
         Edge as GraphEdge,
     )
     from .engine_core.models import (
+        Domain as GraphDomain,
+    )
+    from .engine_core.models import (
         Node as GraphNode,
+    )
+    from .engine_core.models import (
+        PureChromaEdge,
+        PureChromaNode,
     )
     from .engine_core.storage_backend import StorageBackend
     from .engine_core.vector_search import VectorSearchHit
@@ -313,6 +320,31 @@ class ReadLike(Protocol):
         insertion_method: str | None = None,
     ) -> list[str]: ...
 
+    def edges_by_doc(
+        self, doc_id: str, where: dict[str, JsonValue] | None = None
+    ) -> list[str]: ...
+
+    def list_edges_with_ref_filter(
+        self, doc_id: str, where: dict | None = None
+    ) -> list[GraphEdge]: ...
+
+    def nodes_by_doc(
+        self, doc_id: str, *, where: dict | None = None
+    ) -> list[str]: ...
+
+    def list_nodes_with_ref_filter(
+        self, doc_id: str, *, where: dict | None = None
+    ) -> list[GraphNode]: ...
+
+    def ids_with_insertion_method(
+        self,
+        *,
+        kind: str,
+        insertion_method: str,
+        ids: Sequence[str] | None = None,
+        doc_id: str | None = None,
+    ) -> list[str]: ...
+
     def extract_reference_contexts(
         self,
         node_or_id: GraphNode | GraphEdge | str,
@@ -372,6 +404,22 @@ class WriteLike(Protocol):
     def add_node(self, node: GraphNode, doc_id: str | None = None) -> None: ...
     def add_edge(self, edge: GraphEdge, doc_id: str | None = None) -> None: ...
 
+    async def add_node_async(
+        self, node: GraphNode, doc_id: str | None = None
+    ) -> None: ...
+
+    async def add_edge_async(
+        self, edge: GraphEdge, doc_id: str | None = None
+    ) -> None: ...
+
+    def add_pure_node(self, node: PureChromaNode) -> None: ...
+    def add_pure_edge(self, edge: PureChromaEdge) -> None: ...
+    def add_domain(self, domain: GraphDomain) -> None: ...
+    def enrich_edge_meta(self, edge: GraphEdge) -> dict[str, object]: ...
+    def fanout_endpoints_rows(
+        self, edge: GraphEdge, doc_id: str | None
+    ) -> object: ...
+
     def node_doc_and_meta(self, node: GraphNode) -> tuple[str, dict[str, JsonValue]]: ...
     def edge_doc_and_meta(self, edge: GraphEdge) -> tuple[str, dict[str, JsonValue]]: ...
 
@@ -384,6 +432,21 @@ class WriteLike(Protocol):
 
     def delete_edge_ref_rows(self, edge_id: str) -> None: ...
     def delete_node_ref_rows(self, node_id: str) -> None: ...
+
+    def maybe_reindex_edge_refs(
+        self, edge: GraphEdge, *, force: bool = False
+    ) -> None: ...
+
+    def maybe_reindex_node_refs(
+        self, node: GraphNode, *, force: bool = False
+    ) -> None: ...
+
+    def prune_node_refs_for_doc(self, node_id: str, doc_id: str) -> bool: ...
+    def rebuild_edge_refs_for_doc(self, doc_id: str) -> int: ...
+    def rebuild_all_edge_refs(self) -> int: ...
+    def rebuild_node_refs_for_doc(self, doc_id: str) -> int: ...
+    def rebuild_all_node_refs(self) -> int: ...
+    def delete_edges_by_ids(self, edge_ids: list[str]) -> None: ...
 
 
 class ExtractLike(Protocol):
