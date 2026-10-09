@@ -1119,7 +1119,7 @@ class ACLSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         principal_id: str,
         principal_groups: Sequence[str] = (),
         security_scope: str | None = None,
-        node_type=None,
+        node_type: type[Node] | None = None,
         include: None | list[str] = None,
         resolve_mode: Literal["active_only", "redirect", "include_tombstones"] = "active_only",
     ) -> Node:
@@ -1152,10 +1152,10 @@ class ACLSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         principal_id: str,
         principal_groups: Sequence[str] = (),
         security_scope: str | None = None,
-        edge_type=None,
+        edge_type: type[Edge] | None = None,
         include: None | list[str] = None,
         resolve_mode: Literal["active_only", "redirect", "include_tombstones"] = "active_only",
-    ) -> Any:
+    ) -> Edge:
         edges = self._e.raw_read.get_edges(
             ids=[edge_id],
             edge_type=edge_type,
@@ -1339,26 +1339,76 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
                     return False
         return True
 
-    def get_nodes(self, *args: Any, **kwargs: Any) -> list[Node]:
-        return [node for node in self._raw.get_nodes(*args, **kwargs) if self._node_visible(node)]
+    def get_nodes(
+        self,
+        ids: Sequence[str] | None = None,
+        node_type: type[Node] | None = None,
+        include: list[str] | None = None,
+        where: object = None,
+        limit: int | None = 200,
+        resolve_mode: Literal["active_only", "redirect", "include_tombstones"] = "active_only",
+    ) -> list[Node]:
+        nodes = self._raw.get_nodes(
+            ids=ids,
+            node_type=node_type,
+            include=include,
+            where=where,
+            limit=limit,
+            resolve_mode=resolve_mode,
+        )
+        return [node for node in nodes if self._node_visible(node)]
 
-    def get_edges(self, *args: Any, **kwargs: Any) -> list[Edge]:
-        return [edge for edge in self._raw.get_edges(*args, **kwargs) if self._edge_visible(edge)]
+    def get_edges(
+        self,
+        ids: Sequence[str] | None = None,
+        edge_type: type[Edge] | None = None,
+        where: object = None,
+        limit: int | None = 400,
+        include: list[str] | None = None,
+        resolve_mode: Literal["active_only", "redirect", "include_tombstones"] = "active_only",
+    ) -> list[Edge]:
+        edges = self._raw.get_edges(
+            ids=ids,
+            edge_type=edge_type,
+            where=where,
+            limit=limit,
+            include=include,
+            resolve_mode=resolve_mode,
+        )
+        return [edge for edge in edges if self._edge_visible(edge)]
 
-    def get_document(self, doc_id: str) -> Any:
+    def get_document(self, doc_id: str) -> Document:
         return self._raw.get_document(doc_id)
 
-    def node_exists(self, *args: Any, **kwargs: Any) -> bool:
-        return bool(self._raw.node_exists(*args, **kwargs))
+    def node_exists(
+        self,
+        ids: Sequence[str] | None = None,
+        where: dict[str, JsonValue] | None = None,
+    ) -> bool:
+        return bool(self._raw.node_exists(ids=ids, where=where))
 
-    def edge_exists(self, *args: Any, **kwargs: Any) -> bool:
-        return bool(self._raw.edge_exists(*args, **kwargs))
+    def edge_exists(
+        self,
+        ids: Sequence[str] | None = None,
+        where: dict[str, JsonValue] | None = None,
+    ) -> bool:
+        return bool(self._raw.edge_exists(ids=ids, where=where))
 
-    def get_node_metadatas(self, *args: Any, **kwargs: Any) -> list[dict[str, Any]]:
-        return self._raw.get_node_metadatas(*args, **kwargs)
+    def get_node_metadatas(
+        self,
+        ids: Sequence[str] | None = None,
+        where: dict[str, JsonValue] | None = None,
+        limit: int | None = 200,
+    ) -> list[dict[str, JsonValue]]:
+        return self._raw.get_node_metadatas(ids=ids, where=where, limit=limit)
 
-    def get_edge_metadatas(self, *args: Any, **kwargs: Any) -> list[dict[str, Any]]:
-        return self._raw.get_edge_metadatas(*args, **kwargs)
+    def get_edge_metadatas(
+        self,
+        ids: Sequence[str] | None = None,
+        where: dict[str, JsonValue] | None = None,
+        limit: int | None = 400,
+    ) -> list[dict[str, JsonValue]]:
+        return self._raw.get_edge_metadatas(ids=ids, where=where, limit=limit)
 
     def node_ids_by_doc(self, doc_id: str, insertion_method: str | None = None) -> list[str]:
         return self._raw.node_ids_by_doc(doc_id, insertion_method=insertion_method)
@@ -1682,7 +1732,7 @@ class ACLAwareWriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"], WriteLike):
     def strip_none(self, data: dict[str, Any]) -> dict[str, Any]:
         return self._raw.strip_none(data)
 
-    def json_or_none(self, value: Any) -> str | None:
+    def json_or_none(self, value: object) -> str | None:
         return self._raw.json_or_none(value)
 
     def index_node_docs(self, node: Node) -> list[str]:
