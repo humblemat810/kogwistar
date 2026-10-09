@@ -16,7 +16,7 @@ from fastapi import HTTPException
 from pydantic import BaseModel, Field
 from starlette.types import Receive, Scope, Send
 
-from kogwistar import shortids
+from .. import shortids
 from kogwistar.engine_core.models import (
     AdjudicationQuestionCode,
     AdjudicationVerdict,

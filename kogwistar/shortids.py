@@ -18,14 +18,7 @@ from ._rust_bridge import (
 )
 
 
-class NativeTransformError(ValueError):
-    """ValueError carrying an optional machine-readable native error code."""
 
-    code: str | None
-
-    def __init__(self, message: str, *, code: str | None = None) -> None:
-        super().__init__(message)
-        self.code = code
 # Run-id handling (prototype: run_id == raw JWT)
 run_id_ctx: ContextVar[str] = ContextVar("run_id", default="anonymous")
 
@@ -124,10 +117,11 @@ class ShortIdMapper:
         except ValueError as exc:
             # Preserve legacy public exception class/message; code remains usable
             # for callers that opt into machine-readable native diagnostics.
+            error = ValueError(str(exc))
             code = getattr(exc, "code", None)
-            raise NativeTransformError(
-                str(exc), code=code if isinstance(code, str) else None
-            ) from None
+            if isinstance(code, str):
+                setattr(error, "code", code)
+            raise error from None
         self.state = result["state"]
         self._save()
         return result["value"]

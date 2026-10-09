@@ -4,7 +4,7 @@ import copy
 import logging
 import warnings
 from collections.abc import Iterable, Mapping
-from typing import TYPE_CHECKING, Any, Generic, TypeAlias, TypeVar
+from typing import TYPE_CHECKING, Any, Generic, TypeAlias, TypeVar, cast
 
 from .._rust_bridge import (
     RustParityError,
@@ -37,10 +37,9 @@ ResolverT = TypeVar("ResolverT")
 
 
 def _state_list(state: WorkflowState, key: str) -> list[object]:
-    current = state.setdefault(key, [])
-    if not isinstance(current, list):
-        raise TypeError(f"state key {key!r} must contain a list for an append/extend update")
-    return current
+    # Preserve the established public behavior: a non-list existing value is
+    # allowed to fail at the list operation with AttributeError.
+    return cast(list[object], state.setdefault(key, []))
 
 
 def _extend_values(value: object, *, key: str) -> Iterable[object]:

@@ -432,7 +432,7 @@ def to_d3_force(
     if not hasattr(engine, "kg_graph_type") and isinstance(engine, list) and isinstance(doc_id, list):
         return _render_d3_from_raw(engine, doc_id, mode=mode)
 
-    engine_obj = cast(GraphKnowledgeEngine, engine)
+    engine_obj = cast("GraphKnowledgeEngine", engine)
     node_ids, edge_ids = _collect_ids(engine_obj, doc_id, insertion_method)
     node_map = _load_node_map(engine_obj, node_ids)
     edge_map = _load_edge_map(engine_obj, edge_ids)

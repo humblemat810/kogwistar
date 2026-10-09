@@ -125,6 +125,44 @@
           "title": "GroundingBackendSlice",
           "type": "object"
         },
+        "JsonScalar": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "JsonValue": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/JsonScalar"
+            },
+            {
+              "items": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "array"
+            },
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            }
+          ]
+        },
         "LegacyLocator": {
           "additionalProperties": false,
           "description": "Read-only compatibility wrapper for historical locator payloads.",
@@ -136,7 +174,9 @@
               "type": "string"
             },
             "payload": {
-              "additionalProperties": true,
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
               "title": "Payload",
               "type": "object"
             }
@@ -838,6 +878,44 @@
     },
     "Grounding": {
       "$defs": {
+        "JsonScalar": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "JsonValue": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/JsonScalar"
+            },
+            {
+              "items": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "array"
+            },
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            }
+          ]
+        },
         "LegacyLocator": {
           "additionalProperties": false,
           "description": "Read-only compatibility wrapper for historical locator payloads.",
@@ -849,7 +927,9 @@
               "type": "string"
             },
             "payload": {
-              "additionalProperties": true,
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
               "title": "Payload",
               "type": "object"
             }
@@ -1344,6 +1424,44 @@
           "title": "GroundingBackendSlice",
           "type": "object"
         },
+        "JsonScalar": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "JsonValue": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/JsonScalar"
+            },
+            {
+              "items": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "array"
+            },
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            }
+          ]
+        },
         "LegacyLocator": {
           "additionalProperties": false,
           "description": "Read-only compatibility wrapper for historical locator payloads.",
@@ -1355,7 +1473,9 @@
               "type": "string"
             },
             "payload": {
-              "additionalProperties": true,
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
               "title": "Payload",
               "type": "object"
             }
@@ -2190,6 +2310,44 @@
           "title": "GroundingBackendSlice",
           "type": "object"
         },
+        "JsonScalar": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "JsonValue": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/JsonScalar"
+            },
+            {
+              "items": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "array"
+            },
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            }
+          ]
+        },
         "LegacyLocator": {
           "additionalProperties": false,
           "description": "Read-only compatibility wrapper for historical locator payloads.",
@@ -2201,7 +2359,9 @@
               "type": "string"
             },
             "payload": {
-              "additionalProperties": true,
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
               "title": "Payload",
               "type": "object"
             }
@@ -2922,6 +3082,44 @@
           "title": "GroundingBackendSlice",
           "type": "object"
         },
+        "JsonScalar": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "JsonValue": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/JsonScalar"
+            },
+            {
+              "items": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "array"
+            },
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            }
+          ]
+        },
         "LegacyLocator": {
           "additionalProperties": false,
           "description": "Read-only compatibility wrapper for historical locator payloads.",
@@ -2933,7 +3131,9 @@
               "type": "string"
             },
             "payload": {
-              "additionalProperties": true,
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
               "title": "Payload",
               "type": "object"
             }
@@ -3716,6 +3916,44 @@
           "title": "Grounding",
           "type": "object"
         },
+        "JsonScalar": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "JsonValue": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/JsonScalar"
+            },
+            {
+              "items": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "array"
+            },
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            }
+          ]
+        },
         "LegacyLocator": {
           "additionalProperties": false,
           "description": "Read-only compatibility wrapper for historical locator payloads.",
@@ -3727,7 +3965,9 @@
               "type": "string"
             },
             "payload": {
-              "additionalProperties": true,
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
               "title": "Payload",
               "type": "object"
             }
@@ -4444,6 +4684,44 @@
     },
     "Grounding": {
       "$defs": {
+        "JsonScalar": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "JsonValue": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/JsonScalar"
+            },
+            {
+              "items": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "array"
+            },
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            }
+          ]
+        },
         "LegacyLocator": {
           "additionalProperties": false,
           "description": "Read-only compatibility wrapper for historical locator payloads.",
@@ -4455,7 +4733,9 @@
               "type": "string"
             },
             "payload": {
-              "additionalProperties": true,
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
               "title": "Payload",
               "type": "object"
             }
@@ -4964,6 +5244,44 @@
           "title": "Grounding",
           "type": "object"
         },
+        "JsonScalar": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "JsonValue": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/JsonScalar"
+            },
+            {
+              "items": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "array"
+            },
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            }
+          ]
+        },
         "LegacyLocator": {
           "additionalProperties": false,
           "description": "Read-only compatibility wrapper for historical locator payloads.",
@@ -4975,7 +5293,9 @@
               "type": "string"
             },
             "payload": {
-              "additionalProperties": true,
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
               "title": "Payload",
               "type": "object"
             }
@@ -5778,6 +6098,44 @@
           "title": "Grounding",
           "type": "object"
         },
+        "JsonScalar": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "JsonValue": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/JsonScalar"
+            },
+            {
+              "items": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "array"
+            },
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            }
+          ]
+        },
         "LegacyLocator": {
           "additionalProperties": false,
           "description": "Read-only compatibility wrapper for historical locator payloads.",
@@ -5789,7 +6147,9 @@
               "type": "string"
             },
             "payload": {
-              "additionalProperties": true,
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
               "title": "Payload",
               "type": "object"
             }
@@ -7305,6 +7665,44 @@
           "title": "Grounding",
           "type": "object"
         },
+        "JsonScalar": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "JsonValue": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/JsonScalar"
+            },
+            {
+              "items": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "array"
+            },
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            }
+          ]
+        },
         "LegacyLocator": {
           "additionalProperties": false,
           "description": "Read-only compatibility wrapper for historical locator payloads.",
@@ -7316,7 +7714,9 @@
               "type": "string"
             },
             "payload": {
-              "additionalProperties": true,
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
               "title": "Payload",
               "type": "object"
             }
@@ -8784,6 +9184,44 @@
           "title": "Grounding",
           "type": "object"
         },
+        "JsonScalar": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "JsonValue": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/JsonScalar"
+            },
+            {
+              "items": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "array"
+            },
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            }
+          ]
+        },
         "LegacyLocator": {
           "additionalProperties": false,
           "description": "Read-only compatibility wrapper for historical locator payloads.",
@@ -8795,7 +9233,9 @@
               "type": "string"
             },
             "payload": {
-              "additionalProperties": true,
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
               "title": "Payload",
               "type": "object"
             }
@@ -9531,6 +9971,44 @@
           "title": "Grounding",
           "type": "object"
         },
+        "JsonScalar": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "JsonValue": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/JsonScalar"
+            },
+            {
+              "items": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "array"
+            },
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            }
+          ]
+        },
         "LegacyLocator": {
           "additionalProperties": false,
           "description": "Read-only compatibility wrapper for historical locator payloads.",
@@ -9542,7 +10020,9 @@
               "type": "string"
             },
             "payload": {
-              "additionalProperties": true,
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
               "title": "Payload",
               "type": "object"
             }
@@ -10291,6 +10771,44 @@
           "title": "GroundingDtoSlice",
           "type": "object"
         },
+        "JsonScalar": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "JsonValue": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/JsonScalar"
+            },
+            {
+              "items": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "array"
+            },
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            }
+          ]
+        },
         "LegacyLocator": {
           "additionalProperties": false,
           "description": "Read-only compatibility wrapper for historical locator payloads.",
@@ -10302,7 +10820,9 @@
               "type": "string"
             },
             "payload": {
-              "additionalProperties": true,
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
               "title": "Payload",
               "type": "object"
             }
@@ -10928,6 +11448,44 @@
     },
     "Grounding": {
       "$defs": {
+        "JsonScalar": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "JsonValue": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/JsonScalar"
+            },
+            {
+              "items": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "array"
+            },
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            }
+          ]
+        },
         "LegacyLocator": {
           "additionalProperties": false,
           "description": "Read-only compatibility wrapper for historical locator payloads.",
@@ -10939,7 +11497,9 @@
               "type": "string"
             },
             "payload": {
-              "additionalProperties": true,
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
               "title": "Payload",
               "type": "object"
             }
@@ -11358,6 +11918,44 @@
           "title": "GroundingDtoSlice",
           "type": "object"
         },
+        "JsonScalar": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "JsonValue": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/JsonScalar"
+            },
+            {
+              "items": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "array"
+            },
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            }
+          ]
+        },
         "LegacyLocator": {
           "additionalProperties": false,
           "description": "Read-only compatibility wrapper for historical locator payloads.",
@@ -11369,7 +11967,9 @@
               "type": "string"
             },
             "payload": {
-              "additionalProperties": true,
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
               "title": "Payload",
               "type": "object"
             }
@@ -12050,6 +12650,44 @@
           "title": "GroundingDtoSlice",
           "type": "object"
         },
+        "JsonScalar": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "JsonValue": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/JsonScalar"
+            },
+            {
+              "items": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "array"
+            },
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            }
+          ]
+        },
         "LegacyLocator": {
           "additionalProperties": false,
           "description": "Read-only compatibility wrapper for historical locator payloads.",
@@ -12061,7 +12699,9 @@
               "type": "string"
             },
             "payload": {
-              "additionalProperties": true,
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
               "title": "Payload",
               "type": "object"
             }
@@ -12706,6 +13346,44 @@
           "title": "GroundingDtoSlice",
           "type": "object"
         },
+        "JsonScalar": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "JsonValue": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/JsonScalar"
+            },
+            {
+              "items": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "array"
+            },
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            }
+          ]
+        },
         "LegacyLocator": {
           "additionalProperties": false,
           "description": "Read-only compatibility wrapper for historical locator payloads.",
@@ -12717,7 +13395,9 @@
               "type": "string"
             },
             "payload": {
-              "additionalProperties": true,
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
               "title": "Payload",
               "type": "object"
             }
@@ -13326,6 +14006,44 @@
           "title": "GroundingFrontendSlice",
           "type": "object"
         },
+        "JsonScalar": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "JsonValue": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/JsonScalar"
+            },
+            {
+              "items": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "array"
+            },
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            }
+          ]
+        },
         "LegacyLocator": {
           "additionalProperties": false,
           "description": "Read-only compatibility wrapper for historical locator payloads.",
@@ -13337,7 +14055,9 @@
               "type": "string"
             },
             "payload": {
-              "additionalProperties": true,
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
               "title": "Payload",
               "type": "object"
             }
@@ -13963,6 +14683,44 @@
     },
     "Grounding": {
       "$defs": {
+        "JsonScalar": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "JsonValue": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/JsonScalar"
+            },
+            {
+              "items": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "array"
+            },
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            }
+          ]
+        },
         "LegacyLocator": {
           "additionalProperties": false,
           "description": "Read-only compatibility wrapper for historical locator payloads.",
@@ -13974,7 +14732,9 @@
               "type": "string"
             },
             "payload": {
-              "additionalProperties": true,
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
               "title": "Payload",
               "type": "object"
             }
@@ -14393,6 +15153,44 @@
           "title": "GroundingFrontendSlice",
           "type": "object"
         },
+        "JsonScalar": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "JsonValue": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/JsonScalar"
+            },
+            {
+              "items": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "array"
+            },
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            }
+          ]
+        },
         "LegacyLocator": {
           "additionalProperties": false,
           "description": "Read-only compatibility wrapper for historical locator payloads.",
@@ -14404,7 +15202,9 @@
               "type": "string"
             },
             "payload": {
-              "additionalProperties": true,
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
               "title": "Payload",
               "type": "object"
             }
@@ -15085,6 +15885,44 @@
           "title": "GroundingFrontendSlice",
           "type": "object"
         },
+        "JsonScalar": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "JsonValue": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/JsonScalar"
+            },
+            {
+              "items": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "array"
+            },
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            }
+          ]
+        },
         "LegacyLocator": {
           "additionalProperties": false,
           "description": "Read-only compatibility wrapper for historical locator payloads.",
@@ -15096,7 +15934,9 @@
               "type": "string"
             },
             "payload": {
-              "additionalProperties": true,
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
               "title": "Payload",
               "type": "object"
             }
@@ -15741,6 +16581,44 @@
           "title": "GroundingFrontendSlice",
           "type": "object"
         },
+        "JsonScalar": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "JsonValue": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/JsonScalar"
+            },
+            {
+              "items": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "array"
+            },
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            }
+          ]
+        },
         "LegacyLocator": {
           "additionalProperties": false,
           "description": "Read-only compatibility wrapper for historical locator payloads.",
@@ -15752,7 +16630,9 @@
               "type": "string"
             },
             "payload": {
-              "additionalProperties": true,
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
               "title": "Payload",
               "type": "object"
             }
