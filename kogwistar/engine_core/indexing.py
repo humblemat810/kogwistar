@@ -15,6 +15,8 @@ from .models import Edge, Grounding, Node, Span
 if TYPE_CHECKING:
     # Avoid runtime import cycles; we only need this for typing.
     from .engine import GraphKnowledgeEngine
+    from ..workers.async_index_job_worker import AsyncIndexJobWorker
+    from ..workers.index_job_worker import IndexJobWorker
 
 
 def _is_tombstoned(meta: dict | None) -> bool:
@@ -485,7 +487,7 @@ class IndexingSubsystem:
         lease_seconds: int = 60,
         max_jobs_per_tick: int = 200,
         namespace: str | None = None,
-    ):
+    ) -> IndexJobWorker:
         # local import to avoid subsystem importing workers at module import time if you want
         from ..workers.index_job_worker import IndexJobWorker
 
@@ -506,7 +508,7 @@ class IndexingSubsystem:
         lease_seconds: int = 60,
         max_jobs_per_tick: int = 200,
         namespace: str | None = None,
-    ):
+    ) -> AsyncIndexJobWorker:
         """Build async worker without converting async projection calls to sync."""
         from ..workers.async_index_job_worker import AsyncIndexJobWorker
 
