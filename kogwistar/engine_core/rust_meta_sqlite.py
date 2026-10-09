@@ -6,7 +6,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import fields
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, NoReturn, Protocol
 
 from kogwistar._rust_bridge import store_sqlite
 from kogwistar.engine_core.engine_sqlite import IndexJobRow, ProjectedLaneMessageSqlRow
@@ -39,7 +39,7 @@ class _RustTransactionToken:
     def __init__(self, value: str) -> None:
         self.value = value
 
-    def execute(self, *args: Any, **kwargs: Any) -> Any:
+    def execute(self, *args: object, **kwargs: object) -> NoReturn:
         raise RustSQLiteConnectionUnavailable(
             "raw SQL is unavailable while KOGWISTAR_IMPL_META_STORE=rust; "
             "use a meta-store capability method"
