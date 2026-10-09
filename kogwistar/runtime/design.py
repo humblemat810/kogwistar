@@ -15,7 +15,7 @@ from typing import cast
 from kogwistar.engine_core.models import Edge as GraphEdge
 from kogwistar.engine_core.models import Node as GraphNode
 from kogwistar.runtime.models import WorkflowEdge
-from kogwistar.typing_interfaces import ReadLike
+from kogwistar.typing_interfaces import ReadLike, StrategyEngineLike
 
 from .contract import Predicate
 from .models import WorkflowNode
@@ -435,7 +435,7 @@ class BaseWorkflowDesigner:
     def __init__(
         self,
         *,
-        workflow_engine: object,
+        workflow_engine: StrategyEngineLike,
         predicate_registry: dict[str, Predicate],
         resolver: BaseResolver | None = None,
     ) -> None:

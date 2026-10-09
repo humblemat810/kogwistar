@@ -113,7 +113,7 @@ class ExtractSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ExtractLike):
 
     def structured_schema_for_mode(
         self, mode: ResolvedExtractionSchemaMode
-    ) -> tuple[object, bool]:
+    ) -> tuple[type[BaseModel], bool]:
         if mode == "full":
             return LLMGraphExtraction["llm"], False
         if mode == "lean":

@@ -1,6 +1,6 @@
 import hashlib
 import uuid
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from pathlib import Path
 from typing import Protocol
 
@@ -48,6 +48,10 @@ class ChromaClient(Protocol):
     def list_collections(self) -> Sequence[object]: ...
 
     def get_collection(self, *, name: str) -> ChromaCollection: ...
+
+    def get_or_create_collection(
+        self, name: str, **kwargs: object
+    ) -> ChromaCollection: ...
 
 
 def _chroma_scope(persist_directory: str | None) -> str:
@@ -145,11 +149,11 @@ def _chroma_safe_kwargs(kwargs: dict[str, object]) -> dict[str, object]:
 
 
 class _AwaitableValue:
-    def __init__(self, value: object):
+    def __init__(self, value: object) -> None:
         self._value = value
 
-    def __await__(self):
-        async def _done():
+    def __await__(self) -> Iterator[object]:
+        async def _done() -> object:
             return self._value
 
         return _done().__await__()
@@ -165,8 +169,8 @@ class _AwaitableValue:
 
 
 class _AwaitableDict(dict):
-    def __await__(self):
-        async def _done():
+    def __await__(self) -> Iterator[object]:
+        async def _done() -> object:
             return self
 
         return _done().__await__()
@@ -208,7 +212,7 @@ class ChromaBackend:
         node_refs_collection: ChromaCollection,
         edge_refs_collection: ChromaCollection,
         persist_directory: str | None = None,
-    ):
+    ) -> None:
         self._collections: dict[str, ChromaCollection] = {
             "node_index": node_index_collection,
             "node": node_collection,

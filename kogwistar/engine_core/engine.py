@@ -20,7 +20,7 @@ from ..utils.log import bind_log_context
 from ..workers.index_job_worker import IndexJobWorker
 from .acl_protocol import require_acl_protocols
 from .async_compat import run_awaitable_blocking, run_sync_or_awaitable
-from .chroma_backend import ChromaBackend, ChromaStorageInspector
+from .chroma_backend import ChromaBackend, ChromaClient, ChromaStorageInspector
 from .embedding_profile import (
     EmbeddingProfile,
     EmbeddingProfileRegistry,
@@ -152,7 +152,9 @@ from .models import (
     Edge,
     GraphExtractionWithIDs,
     Grounding,
+    LLMEdge,
     LLMGraphExtraction,
+    LLMNode,
     Node,
     PureChromaEdge,
     PureChromaNode,
@@ -177,7 +179,9 @@ except Exception:
 PageLike = Union[str, dict[str, Any]]
 NodeOrEdge: TypeAlias = Node | Edge
 ParsedExtraction: TypeAlias = LLMGraphExtraction | PureGraph | GraphExtractionWithIDs
-PersistedGraphObject: TypeAlias = Node | Edge | PureChromaNode | PureChromaEdge
+PersistedGraphObject: TypeAlias = (
+    Node | Edge | LLMNode | LLMEdge | PureChromaNode | PureChromaEdge
+)
 DocumentContext: TypeAlias = tuple[list[dict[str, Any]], list[dict[str, Any]]]
 PageText: TypeAlias = tuple[int, str]
 
@@ -222,7 +226,9 @@ def _optional_dependency_error(*, extra: str, detail: str) -> RuntimeError:
     )
 
 
-def _import_chroma_client() -> tuple[type[Any], type[Any]]:
+def _import_chroma_client() -> tuple[
+    Callable[..., ChromaClient], Callable[..., object]
+]:
     try:
         from chromadb import Client  # type: ignore
         from chromadb.config import Settings  # type: ignore
@@ -231,7 +237,9 @@ def _import_chroma_client() -> tuple[type[Any], type[Any]]:
             extra="chroma",
             detail="Chroma backend requires the 'chromadb' package",
         ) from e
-    return Client, Settings
+    return cast(Callable[..., ChromaClient], Client), cast(
+        Callable[..., object], Settings
+    )
 
 
 def _is_pgvector_backend_instance(backend: object) -> bool:
@@ -1862,7 +1870,10 @@ class GraphKnowledgeEngine:
         self.extract = ExtractSubsystem(self)
         self.acl = ACLSubsystem(self)
         if self.acl_enabled:
-            self.read = cast(ReadLike, ACLAwareReadSubsystem(self, self.raw_read))
+            self.read = cast(
+                ReadLike,
+                ACLAwareReadSubsystem(self, cast(ReadLike, self.raw_read)),
+            )
             self.write = cast(
                 WriteLike,
                 ACLAwareWriteSubsystem(self, cast(WriteLike, self.raw_write)),

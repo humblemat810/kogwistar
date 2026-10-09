@@ -14,12 +14,15 @@ from ..models import (
     GraphExtractionWithIDs,
     Grounding,
     LLMGraphExtraction,
+    LLMEdge,
+    LLMNode,
     Node,
     PureChromaEdge,
     PureChromaNode,
     PureGraph,
     Span,
 )
+from ...json_types import JsonObject
 from ..utils.aliasing import AliasBook, _is_alias, _is_new_edge, _is_new_node, _is_uuid
 from .base import NamespaceProxy
 
@@ -300,10 +303,16 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
 
     def build_deps(
         self, parsed: LLMGraphExtraction | PureGraph | GraphExtractionWithIDs
-    ) -> tuple[list[str], dict[str, str], dict[str, BaseModel]]:
+    ) -> tuple[
+        list[str],
+        dict[str, str],
+        dict[str, Node | Edge | LLMNode | LLMEdge | PureChromaNode | PureChromaEdge],
+    ]:
         ts = TopologicalSorter()
         id2kind: dict[str, str] = {}
-        id2obj: dict[str, BaseModel] = {}
+        id2obj: dict[
+            str, Node | Edge | LLMNode | LLMEdge | PureChromaNode | PureChromaEdge
+        ] = {}
 
         for n in parsed.nodes or []:
             rid = n.id or str(uuid.uuid4())
@@ -513,7 +522,7 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
 
     def select_doc_context(
         self, doc_id: str, max_nodes: int = 200, max_edges: int = 400
-    ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    ) -> tuple[list[JsonObject], list[JsonObject]]:
         nodes = _backend_mapping(run_awaitable_blocking(self._e.backend.node_get(
             where={"doc_id": doc_id}, include=["documents"]
         )))
@@ -521,32 +530,30 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             where={"doc_id": doc_id}, include=["documents"]
         )))
 
-        node_items: list[dict[str, object]] = []
+        node_items: list[JsonObject] = []
         for i, (nid, ndoc) in enumerate(
             zip(nodes.get("ids", []) or [], nodes.get("documents", []) or [])
         ):
             if i >= max_nodes:
                 break
             n = Node.model_validate_json(ndoc)
-            node_items.append(
-                {"id": nid, "label": n.label, "type": n.type, "summary": n.summary}
-            )
+            node_items.append(cast(JsonObject, {
+                "id": nid, "label": n.label, "type": n.type, "summary": n.summary
+            }))
 
-        edge_items: list[dict[str, object]] = []
+        edge_items: list[JsonObject] = []
         for i, (eid, edoc) in enumerate(
             zip(edges.get("ids", []) or [], edges.get("documents", []) or [])
         ):
             if i >= max_edges:
                 break
             e = Edge.model_validate_json(edoc)
-            edge_items.append(
-                {
+            edge_items.append(cast(JsonObject, {
                     "id": eid,
                     "relation": e.relation,
                     "source_ids": e.source_ids or [],
                     "target_ids": e.target_ids or [],
-                }
-            )
+                }))
 
         return node_items, edge_items
 
