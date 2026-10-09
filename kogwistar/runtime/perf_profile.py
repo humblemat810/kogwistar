@@ -6,11 +6,12 @@ import sys
 import threading
 import time
 import uuid
+from collections.abc import Mapping
 from collections import defaultdict
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.in_memory_backend import build_in_memory_backend
@@ -22,6 +23,7 @@ from kogwistar.engine_core.models import (
     Span,
 )
 from kogwistar.engine_core.postgres_backend import PgVectorBackend
+from kogwistar.engine_core.storage_backend import StorageBackend
 from kogwistar.json_types import JsonValue
 from kogwistar.runtime.models import RunSuccess, WorkflowEdge, WorkflowNode
 from kogwistar.runtime.resolvers import MappingStepResolver
@@ -30,14 +32,19 @@ from kogwistar.runtime.runtime import WorkflowRuntime
 JsonObject = dict[str, JsonValue]
 
 
+def _as_mapping(value: object) -> Mapping[str, object]:
+    """Narrow decoded report values before reading nested benchmark fields."""
+    return value if isinstance(value, Mapping) else {}
+
+
 class _ProfileEmbeddingFunction:
     @staticmethod
     def name() -> str:
         return "profile-fake-3d"
 
-    def __call__(self, input: list[str]) -> list[list[float]]:
+    def __call__(self, documents_or_texts: list[str]) -> list[list[float]]:
         vectors: list[list[float]] = []
-        for text in input:
+        for text in documents_or_texts:
             base = float((len(str(text)) % 7) + 1)
             vectors.append([base, base + 1.0, base + 2.0])
         return vectors
@@ -345,7 +352,9 @@ def _build_profile_engine(
         if hasattr(backend, "ensure_schema"):
             backend.ensure_schema()
         return GraphKnowledgeEngine(
-            backend=backend,
+            # The engine recognizes PgVectorBackend as a specialized backend and
+            # stores it behind the legacy storage protocol at runtime.
+            backend=cast(StorageBackend, backend),
             kg_graph_type=graph_type,
             embedding_function=_ProfileEmbeddingFunction(),
         )
@@ -382,7 +391,7 @@ def _profile_one_scenario(
     runtime = WorkflowRuntime(
         workflow_engine=workflow_engine,
         conversation_engine=conversation_engine,
-        step_resolver=lambda _op: (lambda _ctx: RunSuccess(conversation_node_id=None, state_update=[])),
+        step_resolver=lambda op: (lambda ctx: RunSuccess(conversation_node_id=None, state_update=[])),
         predicate_registry={},
         checkpoint_every_n_steps=1,
         fast_trace_persistence=fast_trace_persistence,
@@ -493,13 +502,13 @@ def _profile_one_scenario(
             last_exec_node = step_exec
 
     total_ms = round((time.perf_counter() - scenario_started) * 1000.0, 3)
-    return {
+    return cast(JsonObject, {
         "fast_trace_persistence": bool(fast_trace_persistence),
         "iterations": int(iterations),
         "scenario_total_ms": total_ms,
         "method_timings": recorder.to_dict(),
         "monitoring_timings": monitor.to_dict() if include_monitoring else {},
-    }
+    })
 
 
 def _seed_simple_resolver_workflow(
@@ -513,8 +522,8 @@ def _seed_simple_resolver_workflow(
     kg_node_b = _mk_node(f"{batch_id}-kg-node-b", doc_id=f"{batch_id}-kg-doc-b")
     kg_edge = _mk_edge(
         f"{batch_id}-kg-edge",
-        src=kg_node_a.id,
-        tgt=kg_node_b.id,
+        src=cast(str, kg_node_a.id),
+        tgt=cast(str, kg_node_b.id),
         doc_id=f"{batch_id}-kg-doc-edge",
     )
     knowledge_engine.write.add_node(kg_node_a)
@@ -573,9 +582,9 @@ def _seed_simple_resolver_workflow(
         workflow_engine.write.add_edge(edge)
 
     return {
-        "kg_node_a": kg_node_a.id,
-        "kg_node_b": kg_node_b.id,
-        "kg_edge": kg_edge.id,
+        "kg_node_a": cast(str, kg_node_a.id),
+        "kg_node_b": cast(str, kg_node_b.id),
+        "kg_edge": cast(str, kg_edge.id),
         "start_node_id": start_id,
     }
 
@@ -758,7 +767,7 @@ def _profile_simple_resolver_workflow_scenario(
             )
 
     total_ms = round((time.perf_counter() - scenario_started) * 1000.0, 3)
-    return {
+    return cast(JsonObject, {
         "fast_trace_persistence": bool(fast_trace_persistence),
         "iterations": int(iterations),
         "use_validation_cache": bool(use_validation_cache),
@@ -766,7 +775,7 @@ def _profile_simple_resolver_workflow_scenario(
         "seed_total_ms": round(seed_total_s * 1000.0, 3),
         "method_timings": recorder.to_dict(),
         "monitoring_timings": monitor.to_dict() if include_monitoring else {},
-    }
+    })
 
 
 def _seed_index_job_batch(
@@ -822,7 +831,7 @@ def _seed_index_job_batch(
             job_id=f"{batch_id}-{entity_kind}-{index_kind}",
             namespace=namespace,
             entity_kind=entity_kind,
-            entity_id=entity_id,
+            entity_id=cast(str, entity_id),
             index_kind=index_kind,
             op=op,
         )
@@ -960,7 +969,7 @@ def _profile_job_loop_scenario(
             raise ValueError(f"unknown profile mode: {mode!r}")
 
     total_ms = round(loop_total_s * 1000.0, 3)
-    return {
+    return cast(JsonObject, {
         "mode": str(mode),
         "iterations": int(iterations),
         "use_validation_cache": bool(use_validation_cache),
@@ -969,7 +978,7 @@ def _profile_job_loop_scenario(
         "method_timings": outer.to_dict(),
         "internal_timings": inner.to_dict(),
         "monitoring_timings": monitor.to_dict() if include_monitoring else {},
-    }
+    })
 
 
 def _profile_job_worker_parallel_scenario(
@@ -1143,7 +1152,7 @@ def _profile_job_worker_parallel_scenario(
         raise AssertionError(f"worker errors: {worker_errors!r}")
 
     wall_total_s = seed_total_s + drain_total_s
-    return {
+    return cast(JsonObject, {
         "mode": "worker_parallel",
         "worker_count": int(worker_count),
         "iterations": int(iterations),
@@ -1154,7 +1163,7 @@ def _profile_job_worker_parallel_scenario(
         "method_timings": outer.to_dict(),
         "internal_timings": inner.to_dict(),
         "monitoring_timings": monitor.to_dict() if include_monitoring else {},
-    }
+    })
 
 
 def profile_in_memory_index_job_worker_parallel(
@@ -1175,7 +1184,7 @@ def profile_in_memory_index_job_worker_parallel(
     )
     root.mkdir(parents=True, exist_ok=True)
 
-    return {
+    return cast(JsonObject, {
         "python": sys.version,
         "sys_monitoring_available": bool(hasattr(sys, "monitoring")),
         "output_root": str(root),
@@ -1192,7 +1201,7 @@ def profile_in_memory_index_job_worker_parallel(
                 pg_schema=pg_schema,
             )
         },
-    }
+    })
 
 
 def profile_in_memory_index_job_breakdown(
@@ -1244,13 +1253,13 @@ def profile_in_memory_index_job_breakdown(
             pg_schema=pg_schema,
         ),
     }
-    return {
+    return cast(JsonObject, {
         "python": sys.version,
         "sys_monitoring_available": bool(hasattr(sys, "monitoring")),
         "output_root": str(root),
         "iterations": int(iterations),
         "scenarios": scenarios,
-    }
+    })
 
 
 def profile_simple_resolver_workflow_mode(
@@ -1275,7 +1284,7 @@ def profile_simple_resolver_workflow_mode(
     )
     root.mkdir(parents=True, exist_ok=True)
 
-    return {
+    return cast(JsonObject, {
         "python": sys.version,
         "sys_monitoring_available": bool(hasattr(sys, "monitoring")),
         "output_root": str(root),
@@ -1292,7 +1301,7 @@ def profile_simple_resolver_workflow_mode(
                 pg_schema=pg_schema,
             )
         },
-    }
+    })
 
 
 def profile_simple_resolver_workflow(
@@ -1337,13 +1346,13 @@ def profile_simple_resolver_workflow(
             pg_schema=pg_schema,
         ),
     }
-    return {
+    return cast(JsonObject, {
         "python": sys.version,
         "sys_monitoring_available": bool(hasattr(sys, "monitoring")),
         "output_root": str(root),
         "iterations": int(iterations),
         "scenarios": scenarios,
-    }
+    })
 
 
 def profile_in_memory_checkpoint_write_mode(
@@ -1427,47 +1436,51 @@ def profile_in_memory_checkpoint_write(
             sa_engine=sa_engine,
             pg_schema=pg_schema,
         )
-    return {
+    return cast(JsonObject, {
         "python": sys.version,
         "sys_monitoring_available": bool(hasattr(sys, "monitoring")),
         "output_root": str(root),
         "iterations": int(iterations),
         "scenarios": scenarios,
-    }
+    })
 
 
-def format_profile_report(report: JsonObject) -> str:
+def format_profile_report(report: Mapping[str, object]) -> str:
     lines = [
         f"Python: {report.get('python')}",
         f"Output root: {report.get('output_root')}",
         f"Iterations: {report.get('iterations')}",
     ]
-    for scenario_name, scenario in (report.get("scenarios") or {}).items():
+    for scenario_name, raw_scenario in _as_mapping(report.get("scenarios")).items():
+        scenario = _as_mapping(raw_scenario)
         lines.append("")
         lines.append(f"[{scenario_name}] total={scenario.get('scenario_total_ms')} ms")
         if scenario.get("seed_total_ms") is not None:
             lines.append(f"Seed/setup={scenario.get('seed_total_ms')} ms")
         lines.append("Top method timings:")
-        method_timings = scenario.get("method_timings") or {}
-        for name, stats in list(method_timings.items())[:12]:
+        method_timings = _as_mapping(scenario.get("method_timings"))
+        for name, raw_stats in list(method_timings.items())[:12]:
+            stats = _as_mapping(raw_stats)
             lines.append(
                 "  "
                 + f"{name}: total={stats.get('total_ms')} ms "
                 + f"avg={stats.get('avg_ms')} ms count={stats.get('count')}"
             )
-        monitoring_timings = scenario.get("monitoring_timings") or {}
+        monitoring_timings = _as_mapping(scenario.get("monitoring_timings"))
         if monitoring_timings:
             lines.append("Top sys.monitoring timings:")
-            for name, stats in list(monitoring_timings.items())[:12]:
+            for name, raw_stats in list(monitoring_timings.items())[:12]:
+                stats = _as_mapping(raw_stats)
                 lines.append(
                     "  "
                     + f"{name}: total={stats.get('total_ms')} ms "
                     + f"avg={stats.get('avg_ms')} ms count={stats.get('count')}"
                 )
-        internal_timings = scenario.get("internal_timings") or {}
+        internal_timings = _as_mapping(scenario.get("internal_timings"))
         if internal_timings:
             lines.append("Top internal timings:")
-            for name, stats in list(internal_timings.items())[:12]:
+            for name, raw_stats in list(internal_timings.items())[:12]:
+                stats = _as_mapping(raw_stats)
                 lines.append(
                     "  "
                     + f"{name}: total={stats.get('total_ms')} ms "
