@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import pathlib
 import sqlite3
+from collections.abc import Mapping
 from contextlib import closing
 from typing import TYPE_CHECKING, Any
 
@@ -18,6 +19,13 @@ from .storage_sqlite import ensure_index_tables
 
 if TYPE_CHECKING:
     from ..engine import GraphKnowledgeEngine
+
+
+def _result_mapping(value: object) -> dict[str, Any]:
+    """Normalize backend result payloads at the storage boundary."""
+    if isinstance(value, Mapping):
+        return dict(value)
+    return {}
 
 
 class SearchIndexService(NamespaceProxy["GraphKnowledgeEngine"]):
@@ -151,12 +159,11 @@ class SearchIndexService(NamespaceProxy["GraphKnowledgeEngine"]):
             )
             fts_rows = cur.fetchall()
 
-            vector_results = (
+            vector_results = _result_mapping(
                 self._e.backend.node_index_query(
                     query_texts=[q],
                     n_results=limit,
                 )
-                or {}
             )
 
             fts_norm = self._normalize_fts_rows(fts_rows)
@@ -297,12 +304,11 @@ class SearchIndexService(NamespaceProxy["GraphKnowledgeEngine"]):
                 seen.add(nid)
                 unique_node_ids.append(nid)
 
-        res = (
+        res = _result_mapping(
             self._e.backend.node_get(
                 ids=unique_node_ids,
                 include=["documents", "metadatas"],
             )
-            or {}
         )
 
         rows_by_node_id: dict[str, dict[str, Any]] = {}
