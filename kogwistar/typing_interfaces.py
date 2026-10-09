@@ -298,10 +298,6 @@ class ReadLike(Protocol):
         include: list[str] | None = None,
     ) -> dict[str, GraphEdge]: ...
 
-    def node_ids_by_doc(self, doc_id: str | None) -> list[str]: ...
-
-    def edge_ids_by_doc(self, doc_id: str | None) -> list[str]: ...
-
     def get_nodes(
         self,
         ids: Sequence[str] | None = None,
