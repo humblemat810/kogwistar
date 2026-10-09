@@ -52,7 +52,7 @@ import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Iterator, Sequence
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
-from typing import Any, TypeVar, cast
+from typing import Any, Protocol, TypeVar, cast
 
 import sqlalchemy as sa
 from sqlalchemy import event
@@ -87,7 +87,18 @@ else:
 
 
 Json = dict[str, JsonValue]
-JsonCallable = Callable[[], Any]
+class _CursorLike(Protocol):
+    def execute(self, statement: str, parameters: tuple[str, ...]) -> object: ...
+
+    def close(self) -> None: ...
+
+
+class _DbapiConnectionLike(Protocol):
+    def cursor(self) -> _CursorLike: ...
+
+
+class _ConnectionRecordLike(Protocol):
+    info: dict[str, object]
 
 
 def _require_json_object(value: JsonValue, *, name: str) -> Json:
@@ -153,13 +164,13 @@ class _AwaitableValue:
     def __init__(self, value: object) -> None:
         self._value = value
 
-    def __await__(self) -> Iterator[Any]:
+    def __await__(self) -> Iterator[object]:
         async def _done() -> object:
             return self._value
 
         return _done().__await__()
 
-    def __getattr__(self, name: str) -> Any:
+    def __getattr__(self, name: str) -> object:
         return getattr(self._value, name)
 
     def __bool__(self) -> bool:
@@ -170,7 +181,7 @@ class _AwaitableValue:
 
 
 class _AwaitableDict(dict):
-    def __await__(self) -> Iterator[Any]:
+    def __await__(self) -> Iterator[object]:
         async def _done() -> _AwaitableDict:
             return self
 
@@ -183,13 +194,13 @@ def _awaitable_result(value: _T) -> _T:
     return cast(_T, _AwaitableValue(value))
 
 
-_pg_uow_conn: contextvars.ContextVar[Any | None] = contextvars.ContextVar(
+_pg_uow_conn: contextvars.ContextVar[object | None] = contextvars.ContextVar(
     "gke_pg_uow_conn", default=None
 )
 
 
 @contextmanager
-def _set_active_conn(conn: Any) -> Iterator[None]:
+def _set_active_conn(conn: object) -> Iterator[None]:
     token = _pg_uow_conn.set(conn)
     try:
         yield
@@ -197,7 +208,7 @@ def _set_active_conn(conn: Any) -> Iterator[None]:
         _pg_uow_conn.reset(token)
 
 
-def get_active_conn() -> Any | None:
+def get_active_conn() -> object | None:
     return _pg_uow_conn.get()
 
 
@@ -209,7 +220,11 @@ def _install_connection_observability(
     sync_engine = engine.sync_engine if isinstance(engine, AsyncEngine) else engine
 
     @event.listens_for(sync_engine, "checkout")
-    def _tag_connection(dbapi_connection, connection_record, connection_proxy) -> None:
+    def _tag_connection(
+        dbapi_connection: _DbapiConnectionLike,
+        connection_record: _ConnectionRecordLike,
+        connection_proxy: object,
+    ) -> None:
         del connection_proxy
         label = (f"kogwistar:{component}:p{os.getpid()}:t{threading.get_ident()}")[:63]
         connection_record.info["kogwistar_application_name"] = label
@@ -377,7 +392,7 @@ class PgCollectionFacade:
         self._t = table
         self._s = spec
 
-    def _call_async(self, fn: JsonCallable) -> Any:
+    def _call_async(self, fn: Callable[[], _T]) -> _T:
         """Preserve the facade's historical sync/async return convention."""
         return fn()
 
@@ -392,7 +407,7 @@ class PgCollectionFacade:
         if self._s.ignore_embeddings:
             embeddings = None
         if self._b._is_async_engine:
-            return self._call_async(
+            return cast(None, self._call_async(
                 lambda: self._b._upsert_async(
                     self._t,
                     ids=ids,
@@ -400,7 +415,7 @@ class PgCollectionFacade:
                     metadatas=metadatas,
                     embeddings=embeddings,
                 )
-            )
+            ))
         return _awaitable_result(
             self._b._upsert(
                 self._t,
@@ -433,11 +448,11 @@ class PgCollectionFacade:
     ) -> dict[str, JsonValue]:
         include = include or ["documents", "metadatas"]
         if self._b._is_async_engine:
-            return self._call_async(
+            return cast(dict[str, JsonValue], self._call_async(
                 lambda: self._b._get_flat_async(
                     self._t, ids=ids, where=where, include=include, limit=limit
                 )
-            )
+            ))
         return _awaitable_result(
             self._b._get_flat(
                 self._t, ids=ids, where=where, include=include, limit=limit
@@ -448,9 +463,9 @@ class PgCollectionFacade:
         self, *, ids: Sequence[str] | None = None, where: Json | None = None
     ) -> None:
         if self._b._is_async_engine:
-            return self._call_async(
+            return cast(None, self._call_async(
                 lambda: self._b._delete_async(self._t, ids=ids, where=where)
-            )
+            ))
         return _awaitable_result(self._b._delete(self._t, ids=ids, where=where))
 
     def query(
@@ -466,7 +481,7 @@ class PgCollectionFacade:
             if query_embeddings is None:
                 raise ValueError("query_embeddings is required for vector collections")
             if self._b._is_async_engine:
-                return self._call_async(
+                return cast(dict[str, JsonValue], self._call_async(
                     lambda: self._b._query_vector_async(
                         self._t,
                         query_embeddings=query_embeddings,
@@ -474,7 +489,7 @@ class PgCollectionFacade:
                         where=where,
                         include=include,
                     )
-                )
+                ))
             return _awaitable_result(
                 self._b._query_vector(
                     self._t,
@@ -487,11 +502,11 @@ class PgCollectionFacade:
 
         include = include or ["documents", "metadatas"]
         if self._b._is_async_engine:
-            return self._call_async(
+            return cast(dict[str, JsonValue], self._call_async(
                 lambda: self._b._query_nonvector_async(
                     self._t, where=where, n_results=n_results, include=include
                 )
-            )
+            ))
         return _awaitable_result(
             self._b._query_nonvector(
                 self._t, where=where, n_results=n_results, include=include
@@ -515,7 +530,7 @@ class PgCollectionFacade:
         if self._s.ignore_embeddings:
             embeddings = None
         if self._b._is_async_engine:
-            return self._call_async(
+            return cast(None, self._call_async(
                 lambda: self._b._update_doc_meta_embedding_merge_async(
                     self._t,
                     ids=ids,
@@ -523,7 +538,7 @@ class PgCollectionFacade:
                     metadatas=metadatas,
                     embeddings=embeddings,
                 )
-            )
+            ))
         return _awaitable_result(
             self._b._update_doc_meta_embedding_merge(
                 self._t,
@@ -550,7 +565,7 @@ def _json_text(metadata_col: sa.ColumnElement, key: str) -> sa.ColumnElement:
 def _json_typed(
     metadata_col: sa.ColumnElement,
     key: str,
-    rhs: Any,
+    rhs: object,
     *,
     numeric_keys: set[str],
 ) -> sa.ColumnElement:
@@ -1138,7 +1153,7 @@ class PgVectorBackend:
         """
         active = get_active_conn()
         if active is not None:
-            yield active
+            yield cast(Connection, active)
             return
         with cast(Engine, self.engine).begin() as conn:
             yield conn
@@ -1471,33 +1486,35 @@ class PgVectorBackend:
         async with cast(AsyncEngine, self.engine).begin() as conn:
             await conn.run_sync(self._ensure_schema_sync)
 
-    async def _run_in_async_txn(self, fn):
+    async def _run_in_async_txn(self, fn: Callable[[], _T]) -> _T:
         active = get_active_conn()
         invoke_async = getattr(active, "invoke_async", None)
         if callable(invoke_async):
 
-            def _call(sync_conn):
+            def _call(sync_conn: object) -> _T:
                 token = _pg_uow_conn.set(sync_conn)
                 try:
                     return fn()
                 finally:
                     _pg_uow_conn.reset(token)
 
-            return await cast(Callable[[Callable[[Any], Any]], Awaitable[Any]], invoke_async)(_call)
+            return await cast(
+                Callable[[Callable[[object], _T]], Awaitable[_T]], invoke_async
+            )(_call)
         invoke_sync = getattr(active, "invoke_sync", None)
         if callable(invoke_sync):
 
-            def _call(sync_conn):
+            def _call(sync_conn: object) -> _T:
                 token = _pg_uow_conn.set(sync_conn)
                 try:
                     return fn()
                 finally:
                     _pg_uow_conn.reset(token)
 
-            return invoke_sync(_call)
+            return cast(Callable[[Callable[[object], _T]], _T], invoke_sync)(_call)
         if isinstance(active, AsyncConnection):
 
-            def _call(sync_conn):
+            def _call(sync_conn: object) -> _T:
                 token = _pg_uow_conn.set(sync_conn)
                 try:
                     return fn()
@@ -1508,7 +1525,7 @@ class PgVectorBackend:
 
         async with cast(AsyncEngine, self.engine).begin() as conn:
 
-            def _call(sync_conn):
+            def _call(sync_conn: object) -> _T:
                 token = _pg_uow_conn.set(sync_conn)
                 try:
                     return fn()
@@ -1717,13 +1734,33 @@ class PgVectorBackend:
         async with self._async_conn() as conn:
             await conn.execute(stmt)
 
-    async def async_node_upsert(self, **kwargs: Any) -> None:
+    async def async_node_upsert(
+        self,
+        *,
+        ids: Sequence[str],
+        documents: Sequence[str],
+        metadatas: Sequence[Json],
+        embeddings: Sequence[Sequence[float]] | None = None,
+    ) -> None:
         """Public async semantic write used by single-stage admission."""
-        await self._upsert_async(self.nodes, **kwargs)
+        await self._upsert_async(
+            self.nodes, ids=ids, documents=documents,
+            metadatas=metadatas, embeddings=embeddings,
+        )
 
-    async def async_edge_upsert(self, **kwargs: Any) -> None:
+    async def async_edge_upsert(
+        self,
+        *,
+        ids: Sequence[str],
+        documents: Sequence[str],
+        metadatas: Sequence[Json],
+        embeddings: Sequence[Sequence[float]] | None = None,
+    ) -> None:
         """Public async semantic write used by single-stage admission."""
-        await self._upsert_async(self.edges, **kwargs)
+        await self._upsert_async(
+            self.edges, ids=ids, documents=documents,
+            metadatas=metadatas, embeddings=embeddings,
+        )
 
     def _query_vector(
         self,
@@ -2134,10 +2171,10 @@ class PgVectorBackend:
         async SQL work to completion here and wrap the value so both styles work.
         """
 
-        def _bind(name: str):
+        def _bind(name: str) -> None:
             original = getattr(self, name)
 
-            def _sync_wrapper(*args, **kwargs):
+            def _sync_wrapper(*args: object, **kwargs: object) -> object:
                 if get_active_conn() is not None:
                     return original(*args, **kwargs)
                 return _awaitable_result(_run_coro_sync(original(*args, **kwargs)))
@@ -2441,7 +2478,7 @@ class PgVectorBackend:
         where: Json | None = None,
         include: list[str] | None = None,
         limit: int = 200,
-    ) -> dict[str, Any]:
+    ) -> dict[str, JsonValue]:
         return self._domains_c.get(ids=ids, where=where, include=include, limit=limit)
 
     def domain_delete(
@@ -2456,7 +2493,7 @@ class PgVectorBackend:
         n_results: int = 10,
         where: Json | None = None,
         include: list[str] | None = None,
-    ) -> dict[str, Any]:
+    ) -> dict[str, JsonValue]:
         return self._domains_c.query(
             query_embeddings=query_embeddings,
             n_results=n_results,
@@ -2486,7 +2523,7 @@ class PgVectorBackend:
         ids: Sequence[str],
         documents: Sequence[str],
         metadatas: Sequence[Json],
-        embeddings: Any = None,
+        embeddings: Sequence[Sequence[float]] | None = None,
     ) -> None:
         return self._edge_endpoints_c.add(
             ids=ids, documents=documents, metadatas=metadatas, embeddings=None
@@ -2498,7 +2535,7 @@ class PgVectorBackend:
         ids: Sequence[str],
         documents: Sequence[str],
         metadatas: Sequence[Json],
-        embeddings: Any = None,
+        embeddings: Sequence[Sequence[float]] | None = None,
     ) -> None:
         return self._edge_endpoints_c.upsert(
             ids=ids, documents=documents, metadatas=metadatas, embeddings=None
@@ -2511,7 +2548,7 @@ class PgVectorBackend:
         where: Json | None = None,
         include: list[str] | None = None,
         limit: int = 200,
-    ) -> dict[str, Any]:
+    ) -> dict[str, JsonValue]:
         return self._edge_endpoints_c.get(
             ids=ids, where=where, include=include, limit=limit
         )
@@ -2519,11 +2556,11 @@ class PgVectorBackend:
     def edge_endpoints_query(
         self,
         *,
-        query_embeddings: Any = None,
+        query_embeddings: Sequence[Sequence[float]] | None = None,
         n_results: int = 10,
         where: Json | None = None,
         include: list[str] | None = None,
-    ) -> dict[str, Any]:
+    ) -> dict[str, JsonValue]:
         return self._edge_endpoints_c.query(
             query_embeddings=None, n_results=n_results, where=where, include=include
         )
@@ -2555,7 +2592,7 @@ class PgVectorBackend:
         ids: Sequence[str],
         documents: Sequence[str],
         metadatas: Sequence[Json],
-        embeddings: Any = None,
+        embeddings: Sequence[Sequence[float]] | None = None,
     ) -> None:
         return self._edge_refs_c.add(
             ids=ids, documents=documents, metadatas=metadatas, embeddings=None
@@ -2567,7 +2604,7 @@ class PgVectorBackend:
         ids: Sequence[str],
         documents: Sequence[str],
         metadatas: Sequence[Json],
-        embeddings: Any = None,
+        embeddings: Sequence[Sequence[float]] | None = None,
     ) -> None:
         return self._edge_refs_c.upsert(
             ids=ids, documents=documents, metadatas=metadatas, embeddings=None
@@ -2580,17 +2617,17 @@ class PgVectorBackend:
         where: Json | None = None,
         include: list[str] | None = None,
         limit: int = 200,
-    ) -> dict[str, Any]:
+    ) -> dict[str, JsonValue]:
         return self._edge_refs_c.get(ids=ids, where=where, include=include, limit=limit)
 
     def edge_refs_query(
         self,
         *,
-        query_embeddings: Any = None,
+        query_embeddings: Sequence[Sequence[float]] | None = None,
         n_results: int = 10,
         where: Json | None = None,
         include: list[str] | None = None,
-    ) -> dict[str, Any]:
+    ) -> dict[str, JsonValue]:
         return self._edge_refs_c.query(
             query_embeddings=None, n_results=n_results, where=where, include=include
         )
@@ -2622,7 +2659,7 @@ class PgVectorBackend:
         ids: Sequence[str],
         documents: Sequence[str],
         metadatas: Sequence[Json],
-        embeddings: Any = None,
+        embeddings: Sequence[Sequence[float]] | None = None,
     ) -> None:
         return self._node_docs_c.add(
             ids=ids, documents=documents, metadatas=metadatas, embeddings=None
@@ -2634,7 +2671,7 @@ class PgVectorBackend:
         ids: Sequence[str],
         documents: Sequence[str],
         metadatas: Sequence[Json],
-        embeddings: Any = None,
+        embeddings: Sequence[Sequence[float]] | None = None,
     ) -> None:
         return self._node_docs_c.upsert(
             ids=ids, documents=documents, metadatas=metadatas, embeddings=None
@@ -2647,17 +2684,17 @@ class PgVectorBackend:
         where: Json | None = None,
         include: list[str] | None = None,
         limit: int = 200,
-    ) -> dict[str, Any]:
+    ) -> dict[str, JsonValue]:
         return self._node_docs_c.get(ids=ids, where=where, include=include, limit=limit)
 
     def node_docs_query(
         self,
         *,
-        query_embeddings: Any = None,
+        query_embeddings: Sequence[Sequence[float]] | None = None,
         n_results: int = 10,
         where: Json | None = None,
         include: list[str] | None = None,
-    ) -> dict[str, Any]:
+    ) -> dict[str, JsonValue]:
         return self._node_docs_c.query(
             query_embeddings=None, n_results=n_results, where=where, include=include
         )
@@ -2689,7 +2726,7 @@ class PgVectorBackend:
         ids: Sequence[str],
         documents: Sequence[str],
         metadatas: Sequence[Json],
-        embeddings: Any = None,
+        embeddings: Sequence[Sequence[float]] | None = None,
     ) -> None:
         return self._node_refs_c.add(
             ids=ids, documents=documents, metadatas=metadatas, embeddings=None
@@ -2701,7 +2738,7 @@ class PgVectorBackend:
         ids: Sequence[str],
         documents: Sequence[str],
         metadatas: Sequence[Json],
-        embeddings: Any = None,
+        embeddings: Sequence[Sequence[float]] | None = None,
     ) -> None:
         return self._node_refs_c.upsert(
             ids=ids, documents=documents, metadatas=metadatas, embeddings=None
@@ -2714,17 +2751,17 @@ class PgVectorBackend:
         where: Json | None = None,
         include: list[str] | None = None,
         limit: int = 200,
-    ) -> dict[str, Any]:
+    ) -> dict[str, JsonValue]:
         return self._node_refs_c.get(ids=ids, where=where, include=include, limit=limit)
 
     def node_refs_query(
         self,
         *,
-        query_embeddings: Any = None,
+        query_embeddings: Sequence[Sequence[float]] | None = None,
         n_results: int = 10,
         where: Json | None = None,
         include: list[str] | None = None,
-    ) -> dict[str, Any]:
+    ) -> dict[str, JsonValue]:
         return self._node_refs_c.query(
             query_embeddings=None, n_results=n_results, where=where, include=include
         )
