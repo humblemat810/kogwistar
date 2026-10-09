@@ -9,6 +9,7 @@ It is intentionally lightweight and uses your existing retrievers/agents.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Protocol, cast
 from uuid import UUID
@@ -154,14 +155,16 @@ def _json_int(value: object, default: int = 0) -> int:
 
 def _get_conversation_tail_compat(
     conversation_engine: GraphKnowledgeEngine, conversation_id: str
-):
+) -> ConversationNode | None:
     try:
         return get_chat_tail(conversation_engine, conversation_id=conversation_id)
     except Exception:
         return None
 
 
-def _iterative_emb_compat(engine: GraphKnowledgeEngine, text: str):
+def _iterative_emb_compat(
+    engine: GraphKnowledgeEngine, text: str
+) -> list[float] | None:
     embed_ns = getattr(engine, "embed", None)
     if embed_ns is not None and hasattr(embed_ns, "iterative_defensive_emb"):
         return normalize_embedding_vector(
@@ -181,8 +184,15 @@ def _iterative_emb_compat(engine: GraphKnowledgeEngine, text: str):
 
 
 def get_id_for_conversation_turn(
-    id_kind, user_id, conversation_id, content, new_index, role, entity_type, in_conv
-):
+    id_kind: str,
+    user_id: str,
+    conversation_id: str,
+    content: str,
+    new_index: str | int | None,
+    role: str,
+    entity_type: str,
+    in_conv: str | bool,
+) -> str:
     return str(
         stable_id(
             id_kind,
@@ -198,17 +208,17 @@ def get_id_for_conversation_turn(
 
 
 def get_id_for_conversation_turn_edge(
-    id_kind,
-    user_id,
-    conversation_id,
-    content,
-    new_index,
-    source_ids,
-    target_ids,
-    source_edge_ids,
-    target_edge_ids,
-    entity_type,
-):
+    id_kind: str,
+    user_id: str,
+    conversation_id: str,
+    content: str,
+    new_index: str | int | None,
+    source_ids: Sequence[str | None],
+    target_ids: Sequence[str | None],
+    source_edge_ids: Sequence[str | None],
+    target_edge_ids: Sequence[str | None],
+    entity_type: str,
+) -> str:
     return str(
         stable_id(
             id_kind,
