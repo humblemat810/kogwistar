@@ -422,7 +422,7 @@ def create_runtime_router(
             raise _as_http_error(exc)
 
     @router.get("/services/{service_id}")
-    def get_service(service_id: str):
+    def get_service_endpoint(service_id: str):
         require_role("ro")
         require_namespace(runtime_namespaces)
         try:
@@ -485,35 +485,6 @@ def create_runtime_router(
                     service_id, limit=limit
                 ),
             }
-        except Exception as exc:  # noqa: BLE001
-            raise _as_http_error(exc)
-
-    @router.post("/services/{service_id}/repair")
-    def repair_service_projection(service_id: str):
-        require_role("rw")
-        require_namespace(runtime_namespaces)
-        try:
-            return get_service_r().repair_service_projection(service_id)
-        except Exception as exc:  # noqa: BLE001
-            raise _as_http_error(exc)
-
-    @router.post("/services/repair")
-    def repair_service_projections(limit: int = 10_000):
-        require_role("rw")
-        require_namespace(runtime_namespaces)
-        try:
-            return get_service_r().repair_service_projections(limit=limit)
-        except Exception as exc:  # noqa: BLE001
-            raise _as_http_error(exc)
-
-    @router.post("/messages/repair-orphans")
-    def repair_orphaned_claimed_messages(inbox_id: str | None = None, limit: int = 100):
-        require_role("rw")
-        require_namespace(runtime_namespaces)
-        try:
-            return get_service_r().repair_orphaned_claimed_messages(
-                inbox_id=inbox_id, limit=limit
-            )
         except Exception as exc:  # noqa: BLE001
             raise _as_http_error(exc)
 
