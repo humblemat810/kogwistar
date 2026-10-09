@@ -1627,7 +1627,7 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
         from_seq: int = 1,
         to_seq: int | None = None,
         batch_size: int = 500,
-    ) -> Iterator[object]:
+    ) -> Iterator[tuple[int, str, str, str, str]]:
         # PostgreSQL streams the selected range from one transaction.  Keep
         # the common projection-store signature even though this backend does
         # not need client-side paging for the current iterator.
@@ -1654,7 +1654,14 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                     """),
                     {"ns": namespace, "from_seq": int(from_seq), "to_seq": int(to_seq)},
                 )
-            yield from rows
+            for row in rows:
+                yield (
+                    int(row[0]),
+                    str(row[1]),
+                    str(row[2]),
+                    str(row[3]),
+                    str(row[4]),
+                )
 
     def iter_entity_event_envelopes(
         self,
