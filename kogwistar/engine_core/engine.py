@@ -1181,7 +1181,7 @@ class GraphKnowledgeEngine:
         return ExtractSubsystem._find_all_exact_occurrences(content, excerpt)
 
     @staticmethod
-    def _coerce_offset_score(raw_score: Any) -> float:
+    def _coerce_offset_score(raw_score: object) -> float:
         return ExtractSubsystem._coerce_offset_score(raw_score)
 
     def _default_offset_repair_scorer(self, candidate: str, excerpt: str) -> float:
@@ -1258,7 +1258,7 @@ class GraphKnowledgeEngine:
         self,
         *,
         mode: ResolvedExtractionSchemaMode,
-        parsed: Any,
+        parsed: object,
         content: str,
         offset_mismatch_policy: OffsetMismatchPolicy = "exact_fuzzy",
         offset_repair_scorer: OffsetRepairScorer | None = None,
@@ -1867,7 +1867,10 @@ class GraphKnowledgeEngine:
         self.acl = ACLSubsystem(self)
         if self.acl_enabled:
             self.read = cast(ReadLike, ACLAwareReadSubsystem(self, self.raw_read))
-            self.write = cast(WriteLike, ACLAwareWriteSubsystem(self, self.raw_write))
+            self.write = cast(
+                WriteLike,
+                ACLAwareWriteSubsystem(self, cast(WriteLike, self.raw_write)),
+            )
             require_acl_protocols(policy=self.acl, read=self.read, write=self.write)
         self.persist = PersistSubsystem(self)
         self.rollback = RollbackSubsystem(self)
@@ -1893,7 +1896,7 @@ class GraphKnowledgeEngine:
     def __enter__(self) -> Self:
         return self
 
-    def __exit__(self, exc_type, exc, tb) -> None:
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
         self.close()
 
     def close(self) -> None:
@@ -2172,7 +2175,9 @@ class GraphKnowledgeEngine:
     ) -> Grounding:
         return self.extract.dealias_one_grounding(grounding, real_doc_id)
 
-    def _dealias_span(self, mentions: list[Grounding] | None, real_doc_id: str):
+    def _dealias_span(
+        self, mentions: list[Grounding] | None, real_doc_id: str
+    ) -> list[Grounding] | None:
         return self.extract.dealias_span(mentions, real_doc_id)
 
     def _target_from_node(self, n: Node) -> AdjudicationTarget:
@@ -2331,10 +2336,10 @@ class GraphKnowledgeEngine:
     ) -> list[Edge]:
         return self.read.list_edges_with_ref_filter(doc_id, where=where)
 
-    def nodes_by_ids(self, node_ids):
+    def nodes_by_ids(self, node_ids: Sequence[str]) -> object:
         return run_awaitable_blocking(self.backend.node_get(ids=node_ids))
 
-    def edges_by_ids(self, edge_ids):
+    def edges_by_ids(self, edge_ids: Sequence[str]) -> object:
         return run_awaitable_blocking(self.backend.edge_get(ids=edge_ids))
 
     def nodes_by_doc(self, doc_id: str, *, where: dict | None = None) -> list[str]:
@@ -2355,18 +2360,18 @@ class GraphKnowledgeEngine:
     # helpers for rollback
     # ----------------------------
 
-    def _delete_edges_by_ids(self, edge_ids: list[str]):
+    def _delete_edges_by_ids(self, edge_ids: list[str]) -> object:
         return self.write.delete_edges_by_ids(edge_ids)
 
     # ----------------------------
     # Vector queries
     # ----------------------------
-    def vector_search_nodes(self, embedding: list[float], top_k: int = 5):
+    def vector_search_nodes(self, embedding: list[float], top_k: int = 5) -> object:
         return run_awaitable_blocking(
             self.backend.node_query(query_embeddings=[embedding], n_results=top_k)
         )
 
-    def vector_search_edges(self, embedding: list[float], top_k: int = 5):
+    def vector_search_edges(self, embedding: list[float], top_k: int = 5) -> object:
         return run_awaitable_blocking(
             self.backend.edge_query(query_embeddings=[embedding], n_results=top_k)
         )
@@ -2408,17 +2413,17 @@ class GraphKnowledgeEngine:
         *,
         content: str,
         doc_type: str,
-        alias_nodes_str="[Empty]",
-        alias_edges_str="[Empty]",
-        with_parsed=True,
+        alias_nodes_str: str = "[Empty]",
+        alias_edges_str: str = "[Empty]",
+        with_parsed: bool = True,
         instruction_for_node_edge_contents_parsing_inclusion: None | str = None,
-        validate=True,
+        validate: bool = True,
         autofix: bool | str = True,
-        last_iteration_result=None,
+        last_iteration_result: dict[str, Any] | None = None,
         extraction_schema_mode: ExtractionSchemaMode | None = None,
         offset_mismatch_policy: OffsetMismatchPolicy = "exact_fuzzy",
         offset_repair_scorer: OffsetRepairScorer | None = None,
-    ):
+    ) -> dict[str, object]:
         return self.extract.extract_graph_with_llm(
             content=content,
             doc_type=doc_type,
@@ -2434,7 +2439,7 @@ class GraphKnowledgeEngine:
             offset_repair_scorer=offset_repair_scorer,
         )
 
-    def get_document(self, doc_id: str):
+    def get_document(self, doc_id: str) -> Document:
         return self.read.get_document(doc_id)
 
     def get_span_validator_of_doc_type(
@@ -2475,12 +2480,12 @@ class GraphKnowledgeEngine:
         document: Document,
         *,
         mode: str = "append",
-        instruction_for_node_edge_contents_parsing_inclusion=None,
-        raw_with_parsed=None,
+        instruction_for_node_edge_contents_parsing_inclusion: str | None = None,
+        raw_with_parsed: object | None = None,
         extraction_schema_mode: ExtractionSchemaMode | None = None,
         offset_mismatch_policy: OffsetMismatchPolicy = "exact_fuzzy",
         offset_repair_scorer: OffsetRepairScorer | None = None,
-    ):
+    ) -> object:
         return self.ingest.ingest_document_with_llm(
             document,
             mode=mode,
@@ -2505,7 +2510,7 @@ class GraphKnowledgeEngine:
         extraction_schema_mode: ExtractionSchemaMode | None = None,
         offset_mismatch_policy: OffsetMismatchPolicy = "exact_fuzzy",
         offset_repair_scorer: OffsetRepairScorer | None = None,
-    ):
+    ) -> object:
         return self.ingest.ingest_text_with_llm(
             doc_id=doc_id,
             content=content,
@@ -2515,13 +2520,13 @@ class GraphKnowledgeEngine:
             offset_repair_scorer=offset_repair_scorer,
         )
 
-    def prune_node_from_edges(self, node_id: str):
+    def prune_node_from_edges(self, node_id: str) -> object:
         return self.rollback.prune_node_from_edges(node_id)
 
-    def rollback_document(self, document_id: str):
+    def rollback_document(self, document_id: str) -> object:
         return self.rollback.rollback_document(document_id)
 
-    def rollback_many_documents(self, document_ids: list[str]):
+    def rollback_many_documents(self, document_ids: list[str]) -> object:
         return self.rollback.rollback_many_documents(document_ids)
 
     # ----------------------------
@@ -2541,7 +2546,7 @@ class GraphKnowledgeEngine:
 
     def add_edge_with_endpoint_docs(
         self, edge: Edge, endpoint_doc_ids: dict[str, str | None]
-    ):
+    ) -> None:
         # Add the main edge row (neutral doc_id)
         doc = edge.model_dump_json(field_mode="backend")
         self.backend.edge_add(
@@ -2647,6 +2652,9 @@ class GraphKnowledgeEngine:
         anchor_doc_id: str | None = None,
         cross_doc_only: bool = False,
         anchor_only: bool = True,
+    ) -> (
+        dict[tuple[str, str], tuple[Node | Edge, Node | Edge, float]]
+        | list[tuple[Node | Edge, Node | Edge]]
     ):
         """
         Back-compat:
@@ -2738,7 +2746,7 @@ class GraphKnowledgeEngine:
         anchor_doc_id: str | None = None,
         cross_doc_only: bool = False,
         anchor_only: bool = True,
-    ):
+    ) -> dict[tuple[str, str], tuple[Node | Edge, Node | Edge, float]]:
         out = self.proposer.generate_merge_candidates(
             engine=self,
             new_node=new_node,
@@ -2753,7 +2761,7 @@ class GraphKnowledgeEngine:
 
     def adjudicate_pair(
         self, left: AdjudicationTarget, right: AdjudicationTarget, question: str
-    ):
+    ) -> dict[object, object] | BaseModel:
         """deligate to adjudicator to decide if any nodes/ edges meaning the same"""
         return self.adjudicator.adjudicate_pair(left, right, question)
 
@@ -2763,8 +2771,8 @@ class GraphKnowledgeEngine:
         right: AdjudicationTarget,
         question: str,
         *,
-        cache_dir=None,
-    ):
+        cache_dir: str | os.PathLike[str] | None = None,
+    ) -> object:
         """Return the validated adjudication result plus raw/parsing diagnostics."""
         return self.adjudicator.adjudicate_pair_trace(
             left, right, question, cache_dir=cache_dir
@@ -2781,7 +2789,7 @@ class GraphKnowledgeEngine:
         self,
         pairs: list[tuple[Node, Node]],
         question_code: AdjudicationQuestionCode = AdjudicationQuestionCode.SAME_ENTITY,
-    ):
+    ) -> list[object] | tuple[list[object], str] | tuple[list[None], str]:
         if not pairs:
             return []
         return self.adjudicator.batch_adjudicate_merges(pairs, question_code)
@@ -2796,7 +2804,7 @@ class GraphKnowledgeEngine:
         extraction_schema_mode: ExtractionSchemaMode | None = None,
         offset_mismatch_policy: OffsetMismatchPolicy = "exact_fuzzy",
         offset_repair_scorer: OffsetRepairScorer | None = None,
-    ):
+    ) -> object:
         return self.ingest.add_page(
             document_id=document_id,
             page_text=page_text,
@@ -2896,7 +2904,7 @@ class GraphKnowledgeEngine:
         )
         return to_return
 
-    def _iterative_defensive_emb(self, emb_text0):
+    def _iterative_defensive_emb(self, emb_text0: str) -> list[float]:
         return self.embed.iterative_defensive_emb_internal(emb_text0)
 
 
@@ -2946,13 +2954,15 @@ def _install_legacy_shims() -> None:
 
         def _make_shim(
             *,
-            original_method: Callable[..., Any],
+            original_method: Callable[..., object],
             old_name: str,
             ns_name: str,
             ns_method: str,
-        ):
+        ) -> Callable[..., object]:
             @wraps(original_method)
-            def _shim(self, *args, **kwargs):
+            def _shim(
+                self: GraphKnowledgeEngine, *args: object, **kwargs: object
+            ) -> object:
                 warnings.warn(
                     (
                         f"GraphKnowledgeEngine.{old_name} is deprecated; "
