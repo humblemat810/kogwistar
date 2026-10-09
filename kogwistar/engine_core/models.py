@@ -1,4 +1,5 @@
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 if True:
@@ -241,13 +242,13 @@ class Span(ModeSlicingMixin, BaseModel):
 
     @field_validator("excerpt", "context_before", "context_after", mode="before")
     @classmethod
-    def _none_text_to_empty(cls, value):
+    def _none_text_to_empty(cls, value: object) -> object:
         if value is None:
             return ""
         return value
 
     @staticmethod
-    def from_dummy_for_workflow(doc_id="_wf:_dummy"):
+    def from_dummy_for_workflow(doc_id: str = "_wf:_dummy") -> "Span":
         if doc_id.startswith("_wf:"):
             pass
         else:
@@ -272,7 +273,7 @@ class Span(ModeSlicingMixin, BaseModel):
         return dummy_span
 
     @staticmethod
-    def from_dummy_for_conversation(doc_id="_conv:_dummy"):
+    def from_dummy_for_conversation(doc_id: str = "_conv:_dummy") -> "Span":
         if doc_id.startswith("_conv:"):
             pass
         else:
@@ -297,7 +298,7 @@ class Span(ModeSlicingMixin, BaseModel):
         return dummy_span
 
     @staticmethod
-    def from_dummy_for_document():
+    def from_dummy_for_document() -> "Span":
         dummy_span = Span(
             collection_page_url=f"document_collection/{Document.from_dummy().id}",
             document_page_url=f"document_collection/{Document.from_dummy().id}",
@@ -320,7 +321,7 @@ class Span(ModeSlicingMixin, BaseModel):
         )
         return dummy_span
 
-    def fix_chunk_start_end_char(self, source_map: dict[str, "Chunk"]):
+    def fix_chunk_start_end_char(self, source_map: Mapping[str, "Chunk"]) -> None:
         if self.chunk_id is None:
             raise Exception("only for chunnked span")
         chunk = source_map.get(self.chunk_id)
@@ -342,7 +343,7 @@ class Span(ModeSlicingMixin, BaseModel):
             self.start_char = chunk_start_char
             self.end_char = min(self.start_char + own_len, chunk_length)
 
-    def pop_chunk(self, source_map):
+    def pop_chunk(self, source_map: Mapping[str, "Chunk"]) -> "Chunk":
         # pop chunk information and switch to global indexing
         self.fix_chunk_start_end_char(source_map)
         if self.chunk_id is not None:
@@ -356,14 +357,18 @@ class Span(ModeSlicingMixin, BaseModel):
         else:
             raise AttributeError("chunk_id is None")
 
-    def from_llm_span(self, span: "Span['llm']", source_map) -> "Span":
+    def from_llm_span(
+        self, span: "Span['llm']", source_map: Mapping[str, "Chunk"]
+    ) -> "Span":
         if type(span) is not type(Span["llm"]):
             raise TypeError(f"span is not of type {type(Span['llm'])}")
         sp2 = span.model_copy(deep=True)
         sp2.pop_chunk(source_map)
         return Span.model_validate(sp2.model_dump())
 
-    def llm_to_unsliced(self: "Span['llm']", source_map):
+    def llm_to_unsliced(
+        self: "Span['llm']", source_map: Mapping[str, "Chunk"]
+    ) -> "Span":
         # makesure chunk id is converted to global id for text case, need source map to resolve
         if type(self) is Span["llm"]:
             _ = self.pop_chunk(source_map)
@@ -373,7 +378,7 @@ class Span(ModeSlicingMixin, BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def missing_fields(cls, data, info: ValidationInfo):
+    def missing_fields(cls, data: object, info: ValidationInfo) -> object:
 
         # data_dump = data.model_dump()
         if type(data) is dict:
@@ -383,7 +388,7 @@ class Span(ModeSlicingMixin, BaseModel):
         return data
 
     @model_validator(mode="after")
-    def _check_span_consistency(self):
+    def _check_span_consistency(self) -> Self:
         # if self.end_page < self.start_page:
         #     raise ValueError("end_page must be >= start_page")
         if (self.end_char <= self.start_char) and not self.end_char == -1:
@@ -428,9 +433,6 @@ class Domain(IdPolicyMixin, BaseModel):
 # -------------------------
 # Core graph entities
 # -------------------------
-from collections.abc import Mapping
-
-
 class GraphEntityBase(ModeSlicingMixin, BaseModel):
     label: str = Field(..., description="Human-readable label for the node or edge")
     type: Literal["entity", "relationship", "reference_pointer"] = Field(
