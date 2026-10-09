@@ -1400,8 +1400,6 @@ class GraphKnowledgeEngine:
         )
         # to do- refractor via composition. protocol template in strategies.py, strategies helper in ./strategies/
         # strategies now are function objects
-        from kogwistar.strategies import IAdjudicator
-
         from ..strategies import (
             Adjudicator,
             DefaultVerifier,
@@ -1411,8 +1409,6 @@ class GraphKnowledgeEngine:
         )
 
         # from .strategies.adjudicators import LLMPairAdjudicatorImpl, LLMBatchAdjudicatorImpl
-        from ..strategies.types import Verifier
-
         self.proposer = proposer or VectorProposer(self)
         self.adjudicator: IAdjudicator = adjudicator or Adjudicator(self)
         self.verifier: Verifier = verifier or DefaultVerifier(
