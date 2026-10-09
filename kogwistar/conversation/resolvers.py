@@ -23,7 +23,7 @@ The orchestrator should populate `_deps` in the workflow initial_state.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, NotRequired, TypedDict, cast
+from typing import TYPE_CHECKING, NotRequired, Protocol, TypedDict, cast
 
 from .models import (
     ConversationEdge,
@@ -31,6 +31,7 @@ from .models import (
     KnowledgeRetrievalResult,
     MemoryRetrievalResult,
     MetaFromLastSummary,
+    RetrievalResult,
 )
 
 if TYPE_CHECKING:
@@ -48,6 +49,14 @@ from ..utils.embedding_vectors import normalize_embedding_vector
 # Best-effort self-inspection for state schema inference
 
 Json = JsonValue
+
+
+class ContextSnapshotCostReader(Protocol):
+    """Optional engine capability used by summary policy."""
+
+    def latest_context_snapshot_cost(
+        self, *, conversation_id: str, stage: str
+    ) -> object | None: ...
 
 
 class ConversationState(TypedDict):
@@ -79,12 +88,35 @@ class ConversationState(TypedDict):
     evidence_pack_digest: NotRequired[dict[str, JsonValue]]
     memory_context_text: NotRequired[str]
     done: NotRequired[bool]
+    _rt: NotRequired[dict[str, object]]
 
 
 def _state(ctx: StepContext) -> ConversationState:
     """Expose the known conversation fields in the dynamic runtime state."""
 
     return cast(ConversationState, ctx.state_view)
+
+
+def _set_runtime_state(ctx: StepContext, key: str, value: object) -> None:
+    """Store a non-checkpointed resolver value in the runtime-only bucket."""
+
+    with ctx.state_write as raw_state:
+        state = cast(MutableMapping[str, object], raw_state)
+        runtime_state = state.get("_rt")
+        if not isinstance(runtime_state, dict):
+            runtime_state = {}
+            state["_rt"] = runtime_state
+        runtime_state[key] = value
+
+
+def _coerce_int(value: object, default: int = 0) -> int:
+    return value if type(value) is int else default
+
+
+def _as_evidence_pack(value: object) -> dict[str, Any]:
+    """Narrow the opaque runtime evidence payload before provider calls."""
+
+    return cast(dict[str, Any], value) if isinstance(value, dict) else {}
 
 
 if TYPE_CHECKING:
@@ -629,21 +661,23 @@ def _memory_retrieve(ctx: StepContext) -> StepRunResult:
             turn_index=state_view["turn_index"],
             tool_name="memory_retrieve",
             args=[],  # {"n_results": getattr(mem_retriever, "n_results", 12)},
-            kwargs=dict(
+            kwargs=cast(dict[str, JsonValue], dict(
                 user_id=state_view["user_id"],
                 current_conversation_id=state_view["conversation_id"],
                 query_embedding=state_view["embedding"],
                 user_text=state_view["user_text"],
                 context_text="",
                 n_results=12,
-            ),
+            )),
             handler=mem_retriever.retrieve,
             render_result=lambda r: getattr(r, "reasoning", "")[:800],
             prev_turn_meta_summary=prev_turn_meta_summary,
         )
 
     memj = to_jsonable(mem)
-    state_update: list[StateUpdate] = [("u", {"memory": memj})]
+    state_update: list[StateUpdate] = cast(
+        list[StateUpdate], [("u", {"memory": memj})]
+    )
     result = RunSuccess(conversation_node_id=call_node_id, state_update=state_update)
     return result
 
@@ -704,10 +738,7 @@ def _kg_retrieve(ctx: StepContext) -> StepRunResult:
             turn_node_id=state["turn_node_id"],
             turn_index=state["turn_index"],
             tool_name="kg_retrieve",
-            args={
-                "max_retrieval_level": max_retrieval_level,
-                "seed_kg_node_ids": seed_ids,
-            },
+            args=[],
             kwargs=kw_args,
             handler=kg_retriever.retrieve,
             render_result=lambda r: getattr(r, "reasoning", "")[:800],
@@ -715,7 +746,7 @@ def _kg_retrieve(ctx: StepContext) -> StepRunResult:
         )
     # ctx.state["kg_raw"] = kg
     kgj = to_jsonable(kg)
-    state_update = [("u", {"kg": kgj})]
+    state_update: list[StateUpdate] = cast(list[StateUpdate], [("u", {"kg": kgj})])
     return RunSuccess(conversation_node_id=call_node_id, state_update=state_update)
 
 
@@ -738,10 +769,12 @@ def _memory_pin(ctx: StepContext) -> StepRunResult:
     )
 
     out = None
-    if (
-        mem_rehydrated is not None
-        and getattr(mem_rehydrated, "selected", None)
-        and getattr(mem_rehydrated, "memory_context_text", None)
+    selected_memory = mem_rehydrated.selected if mem_rehydrated else None
+    memory_context_text = (
+        mem_rehydrated.memory_context_text if mem_rehydrated else None
+    )
+    if isinstance(selected_memory, RetrievalResult) and isinstance(
+        memory_context_text, str
     ):
         out = mem_retriever.pin_selected(
             user_id=state["user_id"],
@@ -750,8 +783,8 @@ def _memory_pin(ctx: StepContext) -> StepRunResult:
             mem_id=state["mem_id"],
             turn_index=state["turn_index"],
             self_span=state["self_span"],
-            selected_memory=mem_rehydrated.selected,
-            memory_context_text=mem_rehydrated.memory_context_text,
+            selected_memory=selected_memory,
+            memory_context_text=memory_context_text,
             prev_turn_meta_summary=prev_turn_meta_summary,
         )
 
@@ -767,7 +800,9 @@ def _memory_pin(ctx: StepContext) -> StepRunResult:
         else [],
     }
     # ctx.state["memory_pin"] = outj
-    state_update = [("u", {"memory_pin": outj})]
+    state_update: list[StateUpdate] = cast(
+        list[StateUpdate], [("u", {"memory_pin": outj})]
+    )
     return RunSuccess(conversation_node_id=None, state_update=state_update)
 
 
@@ -794,11 +829,8 @@ def _kg_pin(ctx: StepContext) -> StepRunResult:
     kg_rehydrated = _knowledge_result_from_state(state)
     pinned_ptrs: list[str] = []
     pinned_edges: list[str] = []
-    if kg_rehydrated is not None and getattr(kg_rehydrated, "selected", None):
-        from .models import FilteringResult
-
-        # todo change model into pydantic if possible
-        selected = FilteringResult(**kg_rehydrated.selected)
+    if kg_rehydrated is not None and kg_rehydrated.selected is not None:
+        selected = kg_rehydrated.selected
         pinned_ptrs, pinned_edges = kg_retriever.pin_selected(
             user_id=state["user_id"],
             conversation_id=state["conversation_id"],
@@ -813,7 +845,9 @@ def _kg_pin(ctx: StepContext) -> StepRunResult:
         "pinned_pointer_node_ids": list(pinned_ptrs),
         "pinned_edge_ids": list(pinned_edges),
     }
-    state_update = [("u", {"kg_pin": outj})]
+    state_update: list[StateUpdate] = cast(
+        list[StateUpdate], [("u", {"kg_pin": outj})]
+    )
     # ctx.state["kg_pin"] = outj
     return RunSuccess(conversation_node_id=None, state_update=state_update)
 
@@ -1069,12 +1103,16 @@ def _decide_summarize(ctx: StepContext) -> StepRunResult:
 
     # 1) Snapshot-first
     snap_cost = None
-    from kogwistar.engine_core.engine import GraphKnowledgeEngine
-
-    ce: GraphKnowledgeEngine = deps.get("conversation_engine")
-    if ce is not None and hasattr(ce, "latest_context_snapshot_cost"):
+    ce = deps.get("conversation_engine")
+    snapshot_reader = (
+        cast(ContextSnapshotCostReader, ce)
+        if ce is not None
+        and callable(getattr(ce, "latest_context_snapshot_cost", None))
+        else None
+    )
+    if snapshot_reader is not None:
         try:
-            snap_cost = ce.latest_context_snapshot_cost(
+            snap_cost = snapshot_reader.latest_context_snapshot_cost(
                 conversation_id=st["conversation_id"], stage=stage
             )
         except Exception:
@@ -1108,7 +1146,7 @@ def _decide_summarize(ctx: StepContext) -> StepRunResult:
                 # best-effort token estimate
                 if callable(token_estimator):
                     tok = (
-                        int(token_estimator("a" * min(4096, char_dist)))
+                        _coerce_int(token_estimator("a" * min(4096, char_dist)))
                         if char_dist > 0
                         else 0
                     )
@@ -1146,17 +1184,17 @@ def _summarize(ctx: StepContext) -> StepRunResult:
     with ctx.state_write as state:
         _append_op_log(state, "summarize")
     state = _state(ctx)
-    prev_turn_meta_summary: MetaFromLastSummary = deps.get("prev_turn_meta_summary")
+    prev_turn_meta_summary = _get_prev_turn_meta_summary_from_state_or_deps(ctx)
     summarize_batch = deps.get("summarize_batch")
     if not callable(summarize_batch):
         raise RuntimeError("deps['summarize_batch'] must be callable")
     cache_dir = ctx.cache_dir
-    added_id = summarize_batch(
+    added_id = str(summarize_batch(
         state["conversation_id"],
         int(state["turn_index"]) + 1,
         prev_turn_meta_summary=prev_turn_meta_summary,
         cache_dir=cache_dir
-    )
+    ))
 
     # Legacy resets after summarization.
     try:
@@ -1280,8 +1318,7 @@ def _aa_get_view_and_question(ctx: StepContext) -> StepRunResult:
         )
 
     # Store view runtime-only (may not be jsonable).
-    with ctx.state_write as state:
-        state.setdefault("_rt", {})["view"] = view
+    _set_runtime_state(ctx, "view", view)
 
     state_update: list[StateUpdate] = [
         ("u", {"system_prompt": system_prompt, "question": question}),
@@ -1327,8 +1364,7 @@ def _aa_select_used_evidence(ctx: StepContext) -> StepRunResult:
         view = svc.get_conversation_view(
             conversation_id=conversation_id, purpose="answer"
         )
-        with ctx.state_write as state:
-            state.setdefault("_rt", {})["view"] = view
+        _set_runtime_state(ctx, "view", view)
 
     if (agent.config.evidence_selector or "llm").lower() == "bm25":
         selection = agent._select_used_evidence_bm25(
@@ -1415,7 +1451,7 @@ def _aa_materialize_evidence_pack(ctx: StepContext) -> StepRunResult:
     from .models import EvidencePackDigest
 
     mem = Memory(
-        location=os.path.join(agent.cache_dir, "_materialize_evidence_pack")
+        location=os.path.join(str(agent.cache_dir or "."), "_materialize_evidence_pack")
     )
     cached_call = cache_pydantic_structured(
         fn=agent._materialize_evidence_pack,
@@ -1442,8 +1478,7 @@ def _aa_materialize_evidence_pack(ctx: StepContext) -> StepRunResult:
         evidence_pack_hash=str(evidence_pack_hash),
     ).model_dump(mode="python")
 
-    with ctx.state_write as state:
-        state.setdefault("_rt", {})["evidence_pack"] = evidence_pack
+    _set_runtime_state(ctx, "evidence_pack", evidence_pack)
 
     state_update: list[StateUpdate] = [
         ("u", {"evidence_pack_digest": evidence_digest}),
@@ -1473,8 +1508,8 @@ def _aa_generate_answer_with_citations(ctx: StepContext) -> StepRunResult:
     if evidence_pack is None:
         re = agent.rehydrate_evidence_pack_from_digest(digest=evidence_digest or {})
         evidence_pack = re.get("evidence_pack")
-        with ctx.state_write as state:
-            state.setdefault("_rt", {})["evidence_pack"] = evidence_pack
+        _set_runtime_state(ctx, "evidence_pack", evidence_pack)
+    evidence_pack = _as_evidence_pack(evidence_pack)
 
     # Pull view for snapshots.
     view = (sv.get("_rt") or {}).get("view")
@@ -1482,14 +1517,15 @@ def _aa_generate_answer_with_citations(ctx: StepContext) -> StepRunResult:
         view = svc.get_conversation_view(
             conversation_id=conversation_id, purpose="answer"
         )
-        with ctx.state_write as state:
-            state.setdefault("_rt", {})["view"] = view
+        _set_runtime_state(ctx, "view", view)
 
     from ..utils.cache_backend import Memory
     from ..utils.pydanic_model_consumer_wrapper import cache_pydantic_structured
 
     mem = Memory(
-        location=os.path.join(agent.cache_dir, "_generate_answer_with_citations")
+        location=os.path.join(
+            str(agent.cache_dir or "."), "_generate_answer_with_citations"
+        )
     )
     cached_call = cache_pydantic_structured(
         fn=agent._generate_answer_with_citations,
@@ -1498,7 +1534,7 @@ def _aa_generate_answer_with_citations(ctx: StepContext) -> StepRunResult:
         ignore=["agent"],
     )
 
-    prev_turn_meta_summary = deps.get("prev_turn_meta_summary")
+    prev_turn_meta_summary = _get_prev_turn_meta_summary_from_state_or_deps(ctx)
     agent._persist_context_snapshot(
         conversation_id=conversation_id,
         run_id=run_id,
@@ -1569,22 +1605,23 @@ def _aa_validate_or_repair_citations(ctx: StepContext) -> StepRunResult:
     if evidence_pack is None:
         re = agent.rehydrate_evidence_pack_from_digest(digest=evidence_digest or {})
         evidence_pack = re.get("evidence_pack")
-        with ctx.state_write as state:
-            state.setdefault("_rt", {})["evidence_pack"] = evidence_pack
+        _set_runtime_state(ctx, "evidence_pack", evidence_pack)
+    evidence_pack = _as_evidence_pack(evidence_pack)
 
     view = (sv.get("_rt") or {}).get("view")
     if view is None:
         view = svc.get_conversation_view(
             conversation_id=conversation_id, purpose="answer"
         )
-        with ctx.state_write as state:
-            state.setdefault("_rt", {})["view"] = view
+        _set_runtime_state(ctx, "view", view)
 
     from ..utils.cache_backend import Memory
     from ..utils.pydanic_model_consumer_wrapper import cache_pydantic_structured
 
     mem = Memory(
-        location=os.path.join(agent.cache_dir, "_generate_answer_with_citations")
+        location=os.path.join(
+            str(agent.cache_dir or "."), "_generate_answer_with_citations"
+        )
     )
     cached_call = cache_pydantic_structured(
         fn=agent._validate_or_repair_citations,
@@ -1665,18 +1702,17 @@ def _aa_evaluate_answer(ctx: StepContext) -> StepRunResult:
     if evidence_pack is None:
         re = agent.rehydrate_evidence_pack_from_digest(digest=evidence_digest or {})
         evidence_pack = re.get("evidence_pack")
-        with ctx.state_write as state:
-            state.setdefault("_rt", {})["evidence_pack"] = evidence_pack
+        _set_runtime_state(ctx, "evidence_pack", evidence_pack)
+    evidence_pack = _as_evidence_pack(evidence_pack)
 
     view = (sv.get("_rt") or {}).get("view")
     if view is None:
         view = svc.get_conversation_view(
             conversation_id=conversation_id, purpose="answer"
         )
-        with ctx.state_write as state:
-            state.setdefault("_rt", {})["view"] = view
+        _set_runtime_state(ctx, "view", view)
 
-    prev_turn_meta_summary = deps.get("prev_turn_meta_summary")
+    prev_turn_meta_summary = _get_prev_turn_meta_summary_from_state_or_deps(ctx)
     agent._persist_context_snapshot(
         conversation_id=conversation_id,
         run_id=run_id,
@@ -1874,7 +1910,6 @@ def _aa_maybe_iterate(ctx: StepContext) -> StepRunResult:
 @default_resolver.register("aa_persist_response")
 def _aa_persist_response(ctx: StepContext) -> StepRunResult:
     agent = _aa_agent(ctx)
-    deps = _deps(ctx)
     sv = _state(ctx)
 
     conversation_id = str(sv["conversation_id"])
@@ -1884,7 +1919,7 @@ def _aa_persist_response(ctx: StepContext) -> StepRunResult:
     answer = sv.get("answer") or {}
     evaluation = sv.get("evaluation") or {}
 
-    prev_turn_meta_summary = deps.get("prev_turn_meta_summary")
+    prev_turn_meta_summary = _get_prev_turn_meta_summary_from_state_or_deps(ctx)
     tail_turn_index = int(getattr(prev_turn_meta_summary, "tail_turn_index", 0) or 0)
 
     assistant_text = str(answer.get("text") or "")

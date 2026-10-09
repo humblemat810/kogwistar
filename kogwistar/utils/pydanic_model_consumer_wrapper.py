@@ -20,8 +20,6 @@ def _stable_json(obj: Any) -> str:
     )
 
 
-from typing import ParamSpec, TypeVar
-
 P = ParamSpec("P")
 R = TypeVar("R")
 TNode = TypeVar("TNode", bound=BaseModel)
@@ -42,6 +40,15 @@ def cache_pydantic_structured(
     memory: Memory,
     model: type[BaseM],
     fn: Callable[P, BaseM],
+    ignore: list[str] | None = None,
+    dump_exclude: set[str] | None = None,
+) -> Callable[P, BaseM]: ...
+@overload
+def cache_pydantic_structured(
+    *,
+    memory: Memory,
+    model: type[BaseM],
+    fn: Callable[P, Any],
     ignore: list[str] | None = None,
     dump_exclude: set[str] | None = None,
 ) -> Callable[P, BaseM]: ...
@@ -262,7 +269,13 @@ if __name__ == "__main__":
             ignore=["agent"],
         )
 
-        out4 = cached_entry_v2(agent=agent, question="hi", candidates=candidates)
+        out4 = cached_entry_v2(
+            agent=agent,
+            question="hi",
+            candidates=candidates,
+            out_schema=FakeSelectionV2.model_json_schema,
+            out_model=FakeSelectionV2,
+        )
         print("out4 (v2):", out4)
         print("agent.calls after schema change:", agent.calls)
         assert agent.calls == 3  # schema hash forces miss
