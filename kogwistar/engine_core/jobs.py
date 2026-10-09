@@ -215,14 +215,14 @@ class JobQueueSubsystem:
             for row in list_jobs(namespace=namespace, status=status, limit=limit)
         ]
 
-    def coerce(self, row: Any) -> JobQueueItem:
+    def coerce(self, row: object) -> JobQueueItem:
         """Normalize a raw metastore row or return an existing job item."""
         if isinstance(row, JobQueueItem):
             return row
         return self._from_row(row)
 
-    def _from_row(self, row: Any) -> JobQueueItem:
-        def field(name: str, default: Any = None) -> Any:
+    def _from_row(self, row: object) -> JobQueueItem:
+        def field(name: str, default: object = None) -> object:
             if isinstance(row, dict):
                 return row.get(name, default)
             return getattr(row, name, default)
@@ -236,17 +236,17 @@ class JobQueueSubsystem:
             job_kind=str(field("index_kind", "")),
             op=str(field("op", "")),
             payload=payload,
-            retry_count=int(field("retry_count", 0) or 0),
-            max_retries=int(field("max_retries", 10) or 10),
+            retry_count=self._as_int(field("retry_count", 0), default=0),
+            max_retries=self._as_int(field("max_retries", 10), default=10),
             last_error=(None if field("last_error") is None else str(field("last_error"))),
             claim_token=(None if field("claim_token") is None else str(field("claim_token"))),
-            claim_attempts=int(field("claim_attempts", 0) or 0),
+            claim_attempts=self._as_int(field("claim_attempts", 0), default=0),
             accepted_result_json=(None if field("accepted_result_json") is None else str(field("accepted_result_json"))),
             accepted_result_sha256=(None if field("accepted_result_sha256") is None else str(field("accepted_result_sha256"))),
         )
 
     @staticmethod
-    def _decode_payload(payload_json: Any) -> dict[str, Any]:
+    def _decode_payload(payload_json: object) -> dict[str, Any]:
         if isinstance(payload_json, dict):
             return dict(payload_json)
         if isinstance(payload_json, str) and payload_json:
@@ -256,3 +256,12 @@ class JobQueueSubsystem:
                 return {}
             return decoded if isinstance(decoded, dict) else {}
         return {}
+
+    @staticmethod
+    def _as_int(value: object, *, default: int) -> int:
+        if not isinstance(value, (bool, int, float, str)):
+            return default
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
