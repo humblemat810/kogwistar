@@ -265,7 +265,7 @@ class BaseDocValidator:
         # TO-DO fix logic start
         # 1) Validate existing coordinates quickly
         doc = _get_doc(doc_id, doc, engine)
-        text = doc.content
+        text = str(doc.content or "")
         origin = max(0, span.start_char)
         excerpt = span.excerpt or ""
         # --- preserve the LLM-provided evidence for scoring + audit ---

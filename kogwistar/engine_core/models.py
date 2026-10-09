@@ -2826,9 +2826,9 @@ class Document(ModeSlicingMixin, BaseModel):
     def get_chunk(self, chunk: Chunk) -> str:
         return self.content[chunk.start_char : chunk.end_char]
 
-    def __str__(self):
+    def __str__(self) -> str:
         if self.type == "text":
-            return self.content
+            return str(self.content)
         elif self.type == "text_chunked":
             return self.chunked_text
         else:
