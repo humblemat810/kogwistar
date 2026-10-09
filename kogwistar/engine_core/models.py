@@ -1151,13 +1151,13 @@ class FlattenedGrounding(ModeSlicingMixin, BaseModel):
 
     @field_validator("span_ids")
     @classmethod
-    def _normalize_span_ids(cls, span_ids: list[str] | None):
+    def _normalize_span_ids(cls, span_ids: list[str] | None) -> list[str]:
         if span_ids is None:
             return []
         return span_ids
 
     @model_validator(mode="after")
-    def _require_evidence_ids(self):
+    def _require_evidence_ids(self) -> Self:
         if not self.span_ids and not self.multimodal_span_ids:
             raise ValueError("At least one text or multimodal span id is required")
         return self
@@ -1217,7 +1217,9 @@ class FlattenedLLMNode(LLMMixin, GraphEntityBase):
 
     @field_validator("mentions")
     @classmethod
-    def _require_non_empty_groundings(cls, mentions: list[FlattenedGrounding]):
+    def _require_non_empty_groundings(
+        cls, mentions: list[FlattenedGrounding]
+    ) -> list[FlattenedGrounding]:
         if not mentions:
             raise ValueError("At least one grounding is required")
         return mentions
@@ -1291,7 +1293,9 @@ class FlattenedLLMEdge(LLMMixin, EdgeMixin, GraphEntityBase):
 
     @field_validator("mentions")
     @classmethod
-    def _require_non_empty_groundings(cls, mentions: list[FlattenedGrounding]):
+    def _require_non_empty_groundings(
+        cls, mentions: list[FlattenedGrounding]
+    ) -> list[FlattenedGrounding]:
         if not mentions:
             raise ValueError("At least one grounding is required")
         return mentions
