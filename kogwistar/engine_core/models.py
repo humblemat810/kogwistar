@@ -407,7 +407,9 @@ class Span(ModeSlicingMixin, BaseModel):
 # Domain
 # -------------------------
 class Domain(IdPolicyMixin, BaseModel):
-    id: str = Field(..., description="Unique identifier for the domain")
+    id: str | None = Field(  # pyright: ignore[reportGeneralTypeIssues]
+        ..., description="Unique identifier for the domain"
+    )
     name: str = Field(..., description="Name of the domain")
     description: str | None = Field(
         None, description="Optional description of the domain"
@@ -960,13 +962,13 @@ class GroundginMandatoryExcerpt(Span):
 class LLMNodeExtraction(LLMNode):
     "extracted node information"
 
-    mentions: Annotated[
+    mentions: Annotated[  # pyright: ignore[reportIncompatibleVariableOverride]
         list[GroundginMandatoryExcerpt],
         FrontendField(),
         BackendField(),
         DtoField(),
         LLMField(),
-    ] = Field(
+    ] = Field(  # pyright: ignore[reportIncompatibleVariableOverride]
         min_length=1, description="One or more locatable mentions supporting this entity"
     )  # type: ignore
 
@@ -974,13 +976,13 @@ class LLMNodeExtraction(LLMNode):
 class LLMEdgeExtraction(LLMEdge):
     "extracted edge information"
 
-    mentions: Annotated[
+    mentions: Annotated[  # pyright: ignore[reportIncompatibleVariableOverride]
         list[GroundginMandatoryExcerpt],
         FrontendField(),
         BackendField(),
         DtoField(),
         LLMField(),
-    ] = Field(
+    ] = Field(  # pyright: ignore[reportIncompatibleVariableOverride]
         min_length=1, description="One or more locatable mentions supporting this entity"
     )  # type: ignore
 

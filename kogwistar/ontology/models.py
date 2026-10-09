@@ -23,7 +23,9 @@ _QUALIFIED_IDENTIFIER = re.compile(
 _SEMVER = re.compile(r"^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
-JsonPrimitive: TypeAlias = str | int | float | bool | None
+JsonPrimitive = TypeAliasType(
+    "JsonPrimitive", str | int | float | bool | None
+)
 JsonValue = TypeAliasType(
     "JsonValue",
     JsonPrimitive | list["JsonValue"] | dict[str, "JsonValue"],

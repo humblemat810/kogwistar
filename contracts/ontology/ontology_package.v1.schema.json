@@ -1,6 +1,6 @@
 {
   "$defs": {
-    "JsonValue": {
+    "JsonPrimitive": {
       "anyOf": [
         {
           "type": "string"
@@ -15,6 +15,16 @@
           "type": "boolean"
         },
         {
+          "type": "null"
+        }
+      ]
+    },
+    "JsonValue": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/JsonPrimitive"
+        },
+        {
           "items": {
             "$ref": "#/$defs/JsonValue"
           },
@@ -25,9 +35,6 @@
             "$ref": "#/$defs/JsonValue"
           },
           "type": "object"
-        },
-        {
-          "type": "null"
         }
       ]
     },
