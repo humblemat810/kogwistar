@@ -462,7 +462,8 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
             self._run_bootstrap(cast(SqlAlchemyConnectionLike, conn))
 
     async def _ensure_initialized_async(self) -> None:
-        async with self.engine.begin() as conn:
+        async_engine = cast(AsyncEngine, self.engine)
+        async with async_engine.begin() as conn:
             await conn.execute(
                 sa.text("SELECT pg_advisory_xact_lock(:lock_key)"),
                 {"lock_key": POSTGRES_BOOTSTRAP_ADVISORY_LOCK_KEY},
@@ -499,8 +500,9 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
 
         if self._is_async_engine:
             runner = _make_runner()
-            conn_ctx = self.engine.connect()
-            conn = _run_coro_blocking(conn_ctx.__aenter__())
+            async_engine = cast(AsyncEngine, self.engine)
+            conn_ctx = async_engine.connect()
+            conn = cast(AsyncConnection, _run_coro_blocking(conn_ctx.__aenter__()))
             txn = conn.begin()
             _run_coro_blocking(txn.start())
             adapter = _AsyncConnectionAdapter(conn, runner)
@@ -517,7 +519,8 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                 runner.close()
             return
 
-        with self.engine.begin() as conn:
+        sync_engine = cast(sa.Engine, self.engine)
+        with sync_engine.begin() as conn:
             with _set_active_conn(conn):
                 yield conn
 
