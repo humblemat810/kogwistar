@@ -186,6 +186,8 @@ if TYPE_CHECKING:
     from .engine_postgres_meta import EnginePostgresMetaStore
     from .engine_sqlite import EngineSQLite
     from .postgres_backend import PgVectorBackend
+    from .rust_meta_sqlite import RustEngineSQLite
+    from .rust_postgres_session import RustEnginePostgresMetaStore
 
     T = TypeVar("T", Node, Edge)
     # TT= TypeVar("TT", Type[Node], Type[Edge])
@@ -575,7 +577,9 @@ class GraphKnowledgeEngine:
     """
 
     @property
-    def metadata(self):
+    def metadata(
+        self,
+    ) -> "EngineSQLite | EnginePostgresMetaStore | RustEngineSQLite | RustEnginePostgresMetaStore":
         """Return the engine's metadata store under its backend-neutral name.
 
         ``meta_sqlite`` is retained as a compatibility alias because existing
@@ -585,16 +589,24 @@ class GraphKnowledgeEngine:
         return self._metadata
 
     @metadata.setter
-    def metadata(self, value) -> None:
+    def metadata(
+        self,
+        value: "EngineSQLite | EnginePostgresMetaStore | RustEngineSQLite | RustEnginePostgresMetaStore",
+    ) -> None:
         self._metadata = value
 
     @property
-    def meta_sqlite(self):
+    def meta_sqlite(
+        self,
+    ) -> "EngineSQLite | EnginePostgresMetaStore | RustEngineSQLite | RustEnginePostgresMetaStore":
         """Deprecated compatibility alias for :attr:`metadata`."""
         return self.metadata
 
     @meta_sqlite.setter
-    def meta_sqlite(self, value) -> None:
+    def meta_sqlite(
+        self,
+        value: "EngineSQLite | EnginePostgresMetaStore | RustEngineSQLite | RustEnginePostgresMetaStore",
+    ) -> None:
         self.metadata = value
 
     # --------------------
@@ -618,17 +630,17 @@ class GraphKnowledgeEngine:
             resolve_mode=resolve_mode,
         )
 
-    def tombstone_node(self, node_id: str, **kw) -> bool:
+    def tombstone_node(self, node_id: str, **kw: object) -> bool:
         return self.lifecycle.tombstone_node(node_id, **kw)
 
-    def redirect_node(self, from_id: str, to_id: str, **kw) -> bool:
+    def redirect_node(self, from_id: str, to_id: str, **kw: object) -> bool:
         return self.lifecycle.redirect_node(from_id, to_id, **kw)
 
     @engine_context
-    def tombstone_edge(self, edge_id: str, **kw) -> bool:
+    def tombstone_edge(self, edge_id: str, **kw: object) -> bool:
         return self.lifecycle.tombstone_edge(edge_id, **kw)
 
-    def redirect_edge(self, from_id: str, to_id: str, **kw) -> bool:
+    def redirect_edge(self, from_id: str, to_id: str, **kw: object) -> bool:
         return self.lifecycle.redirect_edge(from_id, to_id, **kw)
 
     def node_ids_by_doc(self, doc_id: str) -> list[str]:
@@ -640,11 +652,11 @@ class GraphKnowledgeEngine:
         return self._edge_ids_by_doc(doc_id)
 
     @property
-    def embedding_function(self):
+    def embedding_function(self) -> EmbeddingFunctionLike:
         return self._ef
 
     @embedding_function.setter
-    def embedding_function(self, val):
+    def embedding_function(self, val: EmbeddingFunctionLike) -> None:
         self._ef = val
 
     def _infer_doc_id_from_ref(self, ref: Span) -> str | None:
@@ -1393,7 +1405,7 @@ class GraphKnowledgeEngine:
             self, VerifierConfig(use_embeddings=False)
         )
         self.merge_policy = merge_policy or PreferExistingCanonical(self)
-        self._metadata: EngineSQLite | EnginePostgresMetaStore
+        self._metadata: EngineSQLite | EnginePostgresMetaStore | RustEngineSQLite | RustEnginePostgresMetaStore
 
         self.alias_books = AliasBookStore()
         self.pre_add_node_hooks: list[NodePreAddHook] = []
