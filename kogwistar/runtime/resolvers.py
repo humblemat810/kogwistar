@@ -1,11 +1,3 @@
-from __future__ import annotations
-
-import functools
-import warnings
-from typing import TYPE_CHECKING, cast
-
-from kogwistar.utils.log import bind_log_context
-
 """Workflow step resolvers.
 
 This module provides a registry-based step resolver that can be used by
@@ -29,14 +21,20 @@ Handlers are expected to retrieve dependencies from `ctx.state["_deps"]`, e.g.:
 The orchestrator should populate `_deps` in the workflow initial_state.
 """
 
-# Best-effort self-inspection for state schema inference
-import ast
-import inspect
-from collections.abc import Callable, Mapping
-from dataclasses import dataclass
-from typing import Any, Protocol
+from __future__ import annotations
 
+import ast
+import functools
+import inspect
+import warnings
+from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Protocol, cast
+
+from kogwistar.runtime.models import RunFailure, RunSuccess, RunSuspended, StepRunResult
+from kogwistar.runtime.sandbox import SandboxRequest
 from kogwistar.runtime.serialize import JsonValue
+from kogwistar.utils.log import bind_log_context
 
 Json = JsonValue
 if TYPE_CHECKING:
@@ -48,11 +46,6 @@ class RawStepFn(Protocol):
     """Callable contract for one runtime workflow step."""
 
     def __call__(self, context: StepContext, /) -> Json | StepRunResult: ...
-
-from kogwistar.runtime.models import RunFailure, RunSuccess, RunSuspended, StepRunResult
-from kogwistar.runtime.sandbox import SandboxRequest
-
-# Import your real RunResult types from kogwistar.runtime/models
 
 
 
@@ -93,7 +86,7 @@ class MappingStepResolver(BaseResolver):
         # The sandbox to use
         self._sandbox: Sandbox | None = None
 
-    def set_sandbox(self, sandbox: Sandbox):
+    def set_sandbox(self, sandbox: Sandbox) -> None:
         self._sandbox = sandbox
 
     def close_sandbox_run(self, run_id: str) -> None:
@@ -109,15 +102,17 @@ class MappingStepResolver(BaseResolver):
     ) -> Callable[[RawStepFn], RawStepFn]:
         def _decorator(fn: RawStepFn) -> RawStepFn:
             @functools.wraps(fn)
-            def wrapped_fun(*arg, **kwarg):
-                ctx: StepContext = arg[0]
+            def wrapped_fun(
+                ctx: StepContext, /, *args: object, **kwargs: object
+            ) -> Json | StepRunResult:
                 with bind_log_context(
                     op=op,
                     conversation_id=ctx.conversation_id,
                     workflow_run_id=f"{ctx.workflow_id}--{ctx.run_id}",
                     step_id=ctx.workflow_node_id,
                 ):
-                    return fn(*arg, **kwarg)
+                    handler = cast(Callable[..., Json | StepRunResult], fn)
+                    return handler(ctx, *args, **kwargs)
 
             self.handlers[op] = fn  # wrapped_fun
             if is_nested:
@@ -189,7 +184,7 @@ class MappingStepResolver(BaseResolver):
         return self._sandbox.run(req.code, sandbox_state, sandbox_context)
 
     @staticmethod
-    def _coerce_sandbox_request(out: Any) -> SandboxRequest | None:
+    def _coerce_sandbox_request(out: object) -> SandboxRequest | None:
         if isinstance(out, SandboxRequest):
             return out
         if isinstance(out, str):
@@ -330,7 +325,9 @@ class AsyncMappingStepResolver(MappingStepResolver):
       itself chooses to spawn threads.
     """
 
-    def resolve_async(self, op: str):
+    def resolve_async(
+        self, op: str
+    ) -> Callable[[StepContext], Awaitable[StepRunResult]]:
         raw = self.handlers.get(op) or self.default
         if raw is None:
             raise KeyError(f"No step handler registered for op={op!r}")
