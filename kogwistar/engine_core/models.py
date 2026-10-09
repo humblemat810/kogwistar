@@ -2140,12 +2140,14 @@ class LLMGraphExtraction(ModeSlicingMixin, BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def inject_context_on_children_before(cls, data: dict, info: ValidationInfo):
+    def inject_context_on_children_before(
+        cls, data: object, info: ValidationInfo
+    ) -> object:
         _ = info.context or {}
         return data
 
     @model_validator(mode="after")
-    def inject_context_on_children_after(self, info: ValidationInfo):
+    def inject_context_on_children_after(self, info: ValidationInfo) -> Self:
         _ = info.context or {}
         return self
 
@@ -2180,7 +2182,7 @@ class LLMGraphExtraction(ModeSlicingMixin, BaseModel):
     def from_llm_in_payload(
         cls,
         sliced: "LLMGraphExtraction['llm_in'] | dict | BaseModel",
-        insertion_method,
+        insertion_method: str | None,
         *,
         doc_id: str | None = None,
         content: str | None = None,
@@ -2283,7 +2285,7 @@ class LLMGraphExtraction(ModeSlicingMixin, BaseModel):
     def from_normal_llm(
         cls,
         sliced: "LLMGraphExtraction['llm'] | LLMGraphExtraction['llm_in'] | dict | BaseModel",
-        insertion_method,
+        insertion_method: str | None,
         *,
         doc_id: str | None = None,
         content: str | None = None,
@@ -2338,7 +2340,7 @@ class LLMGraphExtraction(ModeSlicingMixin, BaseModel):
     def from_flattened_llm(
         cls,
         sliced: "FlattenedLLMGraphExtraction | AssocFlattenedLLMGraphExtraction | AssocFlattenedLLMGraphExtraction['llm_in'] | dict | BaseModel",
-        insertion_method,
+        insertion_method: str | None,
         *,
         doc_id: str | None = None,
         content: str | None = None,
@@ -2538,7 +2540,7 @@ class LLMGraphExtraction(ModeSlicingMixin, BaseModel):
     def FromLLMSlice(
         cls,
         sliced: "LLMGraphExtraction['llm'] | LLMGraphExtraction['llm_in'] | FlattenedLLMGraphExtraction | AssocFlattenedLLMGraphExtraction['llm_in'] | dict | BaseModel",
-        insertion_method,
+        insertion_method: str | None,
         *,
         doc_id: str | None = None,
         content: str | None = None,
