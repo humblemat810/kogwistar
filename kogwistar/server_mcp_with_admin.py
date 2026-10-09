@@ -8,14 +8,15 @@ import json
 import logging
 import os
 import time
+from collections.abc import Callable, Mapping
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, cast
 
 try:
     from dotenv import load_dotenv
 except ModuleNotFoundError:
-    def load_dotenv(*args, **kwargs):
+    def load_dotenv(*args: Any, **kwargs: Any) -> bool:
         return False
 
 from fastapi import APIRouter, FastAPI, HTTPException, Request
@@ -93,6 +94,14 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 request_logger = logging.getLogger("kogwistar.request")
+
+
+def _string_list(value: object) -> list[str]:
+    return [str(item) for item in value] if isinstance(value, list) else []
+
+
+def _int_value(value: object) -> int:
+    return int(value) if isinstance(value, (int, float)) else 0
 
 
 def _ensure_windows_selector_event_loop_policy() -> None:
@@ -264,7 +273,7 @@ async def combined_lifespan(app: FastAPI):
                     if config.allowed
                 }
 
-    async with mcp_app.lifespan(app):
+    async with cast(Any, mcp_app).lifespan(app):
         yield
 
 app = FastAPI(title="KnowledgeEngine + MCP + Admin", lifespan=combined_lifespan)
@@ -288,7 +297,7 @@ app.include_router(
     create_chat_router(
         get_service=lambda: chat_service.get(),
         require_role=require_role,
-        require_namespace=require_namespace,
+        require_namespace=cast(Callable[[object], None], require_namespace),
         conversation_namespace=NameSpace.CONVERSATION.value,
         workflow_namespaces={NameSpace.CONVERSATION.value, NameSpace.WORKFLOW.value},
         get_user_id=get_current_user_id,
@@ -298,7 +307,7 @@ app.include_router(
     create_runtime_router(
         get_service=lambda: chat_service.get(),
         require_role=require_role,
-        require_namespace=require_namespace,
+        require_namespace=cast(Callable[[object], None], require_namespace),
         require_workflow_access=require_workflow_access,
         runtime_namespaces={NameSpace.WORKFLOW.value},
         get_subject=get_current_subject,
@@ -309,7 +318,7 @@ app.include_router(
     create_syscall_router(
         get_service=lambda: chat_service.get(),
         require_role=require_role,
-        require_namespace=require_namespace,
+        require_namespace=cast(Callable[[object], None], require_namespace),
         conversation_namespace=NameSpace.CONVERSATION.value,
         workflow_namespaces={NameSpace.CONVERSATION.value, NameSpace.WORKFLOW.value},
         get_user_id=get_current_user_id,
@@ -498,8 +507,10 @@ def _designer_runtime_capabilities() -> dict[str, Any]:
         try:
             describe_state = getattr(resolver, "describe_state", None)
             if callable(describe_state):
+                state = describe_state()
+                state_mapping = state if isinstance(state, Mapping) else {}
                 state_schema.update(
-                    {str(k): str(v) for k, v in (describe_state() or {}).items()}
+                    {str(k): str(v) for k, v in state_mapping.items()}
                 )
         except (AttributeError, TypeError, ValueError) as exc:
             logger.warning(
@@ -882,7 +893,7 @@ def api_graph_upsert_llm(inp: GraphUpsertLLMIn):
             eng.write.add_document(
                 Document(
                     id=inp.doc_id,
-                    content=inp.content,
+                    content=inp.content or "",
                     type=inp.doc_type,
                     metadata={},  # if you want
                     embeddings=None,  # REQUIRED by Pydantic because Field(...)
@@ -917,7 +928,7 @@ def api_graph_upsert_llm(inp: GraphUpsertLLMIn):
         )
 
     # 4) Persist using your first-class persistence path (allocates nn:/ne:, topo-sorts, enforces endpoints)
-    persisted = eng.persist.persist_graph_extraction(
+    persisted = cast(Mapping[str, object], eng.persist.persist_graph_extraction(
         document=Document(
             id=inp.doc_id,
             content=inp.content or eng.extract.fetch_document_text(inp.doc_id) or "",
@@ -930,14 +941,14 @@ def api_graph_upsert_llm(inp: GraphUpsertLLMIn):
         ),
         parsed=parsed,
         mode="append",
-    )
+    ))
 
     return DocumentGraphUpsertOut(
-        document_id=persisted["document_id"],
-        node_ids=persisted["node_ids"],
-        edge_ids=persisted["edge_ids"],
-        nodes_added=persisted["nodes_added"],
-        edges_added=persisted["edges_added"],
+        document_id=str(persisted.get("document_id") or inp.doc_id),
+        node_ids=_string_list(persisted.get("node_ids")),
+        edge_ids=_string_list(persisted.get("edge_ids")),
+        nodes_added=_int_value(persisted.get("nodes_added")),
+        edges_added=_int_value(persisted.get("edges_added")),
     )
 
 class DocumentGraphUpsert(BaseModel):
@@ -1042,32 +1053,6 @@ def document_upsert_tree(payload: DocumentGraphUpsert):
         inserted_edges=len(payload.edges),
         engine_result=res,
     )
-class KGUpsertIn(BaseModel):
-    """
-    Strict LLM-conformant upsert:
-    - nodes / edges must follow LLM* models (including REQUIRED references with spans).
-    - endpoints may use 'nn:*' / 'ne:*' temp ids that resolve in-batch.
-    - references may use document alias token ::DOC:: in URLs; we’ll de-alias to doc_id.
-    """
-
-    content: str | None = Field(
-        None, description="If provided and doc is new, store this as document content"
-    )
-    insertion_method: str = Field(
-        "api_upsert", description="Provenance tag copied into each ReferenceSession"
-    )
-    nodes: list[dict[str, Any]] = Field(
-        default_factory=list, description="PureNode-shaped dicts"
-    )
-    edges: list[dict[str, Any]] = Field(
-        default_factory=list, description="PureEdge-shaped dicts"
-    )
-class GraphUpsertOut(BaseModel):
-    node_ids: list[str]
-    edge_ids: list[str]
-    nodes_added: int
-    edges_added: int
-
 @app.get("/viz/cytoscape", response_class=HTMLResponse)
 def viz_cytoscape(
     request: Request,
