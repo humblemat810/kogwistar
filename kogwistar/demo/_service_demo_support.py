@@ -12,8 +12,8 @@ from tests._helpers.fake_backend import build_fake_backend
 
 
 class FakeEmbeddingFunction:
-    def __call__(self, input):  # noqa: A002
-        return [[0.0, 0.0, 0.0] for _ in input]
+    def __call__(self, documents_or_texts: list[str]) -> list[list[float]]:
+        return [[0.0, 0.0, 0.0] for _ in documents_or_texts]
 
 
 @contextmanager

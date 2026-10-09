@@ -5,7 +5,7 @@ import pathlib
 import threading
 import uuid
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, MutableMapping
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.in_memory_backend import build_in_memory_backend
@@ -62,9 +62,9 @@ class FakeTokenWindow:
 
 
 class _TinyEmbeddingFunction:
-    def __call__(self, texts: list[str]) -> list[list[float]]:
+    def __call__(self, documents_or_texts: list[str]) -> list[list[float]]:
         out: list[list[float]] = []
-        for text in texts:
+        for text in documents_or_texts:
             seed = sum(ord(ch) for ch in str(text))
             out.append([(seed % 13) / 13.0, (seed % 17) / 17.0, (seed % 19) / 19.0])
         return out
@@ -143,9 +143,16 @@ def _add_edge(engine: GraphKnowledgeEngine, wf_id: str, src: str, dst: str) -> N
             domain_id=None,
             canonical_entity_id=None,
             embedding=None,
-            level_from_root=0,
         )
     )
+
+
+def _append_op_log(state: MutableMapping[str, object], value: str) -> None:
+    log = state.get("op_log")
+    if not isinstance(log, list):
+        log = []
+        state["op_log"] = log
+    log.append(value)
 
 
 def _build_branch_workflow(engine: GraphKnowledgeEngine) -> None:
@@ -211,7 +218,7 @@ def run_budget_branch_pin_demo() -> dict[str, Any]:
         if not gate.consume(2):
             raise AssertionError("heavy branch should have enough tokens at step 1")
         with ctx.state_write as state:
-            state.setdefault("op_log", []).append("heavy_1")
+            _append_op_log(state, "heavy_1")
         _record("heavy.1.finished")
         order.append("heavy_1")
         heavy_ready.set()
@@ -236,7 +243,7 @@ def run_budget_branch_pin_demo() -> dict[str, Any]:
                 },
             )
         with ctx.state_write as state:
-            state.setdefault("op_log", []).append("heavy_2")
+            _append_op_log(state, "heavy_2")
         _record("heavy.2.finished")
         order.append("heavy_2")
         heavy_done.set()
@@ -244,7 +251,7 @@ def run_budget_branch_pin_demo() -> dict[str, Any]:
 
     def _light(ctx: StepContext):
         with ctx.state_write as state:
-            state.setdefault("op_log", []).append("light")
+            _append_op_log(state, "light")
         _record("light.finished")
         order.append("light")
         light_done.set()
@@ -252,7 +259,7 @@ def run_budget_branch_pin_demo() -> dict[str, Any]:
 
     def _join(ctx: StepContext):
         with ctx.state_write as state:
-            state.setdefault("op_log", []).append("join")
+            _append_op_log(state, "join")
         _record("join.finished")
         return RunSuccess(conversation_node_id=None, state_update=[("u", {"joined": True})])
 
