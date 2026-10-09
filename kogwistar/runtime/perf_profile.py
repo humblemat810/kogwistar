@@ -6,7 +6,7 @@ import sys
 import threading
 import time
 import uuid
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from collections import defaultdict
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
@@ -25,9 +25,10 @@ from kogwistar.engine_core.models import (
 from kogwistar.engine_core.postgres_backend import PgVectorBackend
 from kogwistar.engine_core.storage_backend import StorageBackend
 from kogwistar.json_types import JsonValue
+from kogwistar.typing_interfaces import SqlAlchemyEngineLike
 from kogwistar.runtime.models import RunSuccess, WorkflowEdge, WorkflowNode
 from kogwistar.runtime.resolvers import MappingStepResolver
-from kogwistar.runtime.runtime import WorkflowRuntime
+from kogwistar.runtime.runtime import StepContext, WorkflowRuntime
 
 JsonObject = dict[str, JsonValue]
 
@@ -35,6 +36,12 @@ JsonObject = dict[str, JsonValue]
 def _as_mapping(value: object) -> Mapping[str, object]:
     """Narrow decoded report values before reading nested benchmark fields."""
     return value if isinstance(value, Mapping) else {}
+
+
+def _context_dependencies(ctx: StepContext) -> dict[str, object]:
+    """Narrow injected workflow dependencies at the benchmark boundary."""
+
+    return dict(_as_mapping(ctx.state_view.get("_deps")))
 
 
 class _ProfileEmbeddingFunction:
@@ -204,7 +211,9 @@ class TimingRecorder:
             self._stats[str(label)].add(float(elapsed_s))
 
     @contextmanager
-    def wrap_method(self, obj: Any, attr: str, *, label: str | None = None):
+    def wrap_method(
+        self, obj: object, attr: str, *, label: str | None = None
+    ) -> Iterator[bool]:
         if obj is None or not hasattr(obj, attr):
             yield False
             return
@@ -216,7 +225,7 @@ class TimingRecorder:
         recorder = self
         timing_label = str(label or attr)
 
-        def _wrapped(*args, **kwargs):
+        def _wrapped(*args: object, **kwargs: object) -> object:
             started = time.perf_counter()
             try:
                 return original(*args, **kwargs)
@@ -251,7 +260,7 @@ class SysMonitoringWallProfiler:
         self._tls = threading.local()
         self._enabled = False
 
-    def _tracked(self, code: Any) -> bool:
+    def _tracked(self, code: object) -> bool:
         filename = str(getattr(code, "co_filename", "") or "").replace("\\", "/")
         qualname = str(getattr(code, "co_qualname", "") or getattr(code, "co_name", ""))
         if self.include_files and not any(part in filename for part in self.include_files):
@@ -267,11 +276,11 @@ class SysMonitoringWallProfiler:
             self._tls.stack = stack
         return stack
 
-    def _on_start(self, code: Any, *args: Any) -> None:
+    def _on_start(self, code: object, *args: object) -> None:
         qualname = str(getattr(code, "co_qualname", "") or getattr(code, "co_name", ""))
         self._stack().append((qualname, time.perf_counter(), self._tracked(code)))
 
-    def _on_stop(self, code: Any, *args: Any) -> None:
+    def _on_stop(self, code: object, *args: object) -> None:
         stack = self._stack()
         if not stack:
             return
@@ -325,7 +334,7 @@ def _build_profile_engine(
     *,
     graph_type: str,
     backend_kind: str,
-    sa_engine: Any | None = None,
+    sa_engine: SqlAlchemyEngineLike | None = None,
     pg_schema: str | None = None,
 ) -> GraphKnowledgeEngine:
     if backend_kind == "fake":
@@ -345,7 +354,7 @@ def _build_profile_engine(
         if sa_engine is None or pg_schema is None:
             raise ValueError("pg backend requires sa_engine and pg_schema")
         backend = PgVectorBackend(
-            engine=sa_engine,
+            engine=cast(Any, sa_engine),
             embedding_dim=3,
             schema=pg_schema,
         )
@@ -369,7 +378,7 @@ def _profile_one_scenario(
     fast_trace_persistence: bool,
     include_monitoring: bool,
     use_validation_cache: bool,
-    sa_engine: Any | None = None,
+    sa_engine: SqlAlchemyEngineLike | None = None,
     pg_schema: str | None = None,
 ) -> JsonObject:
     workflow_engine = _build_profile_engine(
@@ -597,7 +606,7 @@ def _profile_simple_resolver_workflow_scenario(
     fast_trace_persistence: bool,
     include_monitoring: bool,
     use_validation_cache: bool,
-    sa_engine: Any | None = None,
+    sa_engine: SqlAlchemyEngineLike | None = None,
     pg_schema: str | None = None,
 ) -> JsonObject:
     workflow_engine = _build_profile_engine(
@@ -660,13 +669,13 @@ def _profile_simple_resolver_workflow_scenario(
     resolver = MappingStepResolver()
 
     @resolver.register("start")
-    def _start(_ctx):
+    def _start(_ctx: StepContext) -> RunSuccess:
         return RunSuccess(conversation_node_id=None, state_update=[])
 
     @resolver.register("retrieve_kg")
-    def _retrieve(ctx):
-        deps = dict(ctx.state_view.get("_deps") or {})
-        kg = deps["knowledge_engine"]
+    def _retrieve(ctx: StepContext) -> RunSuccess:
+        deps = _context_dependencies(ctx)
+        kg = cast(GraphKnowledgeEngine, deps["knowledge_engine"])
         nodes = kg.read.get_nodes(ids=[seeded["kg_node_a"], seeded["kg_node_b"]])
         labels = [str(getattr(n, "label", "")) for n in (nodes or [])]
         return RunSuccess(
@@ -677,13 +686,26 @@ def _profile_simple_resolver_workflow_scenario(
         )
 
     @resolver.register("write_turn")
-    def _write_turn(ctx):
-        deps = dict(ctx.state_view.get("_deps") or {})
-        conv = deps["conversation_engine"]
+    def _write_turn(ctx: StepContext) -> RunSuccess:
+        deps = _context_dependencies(ctx)
+        conv = cast(GraphKnowledgeEngine, deps["conversation_engine"])
         conv_id = str(ctx.conversation_id)
         run_id = str(ctx.run_id)
-        hit_count = int(ctx.state_view.get("kg_hit_count") or 0)
+        raw_hit_count = ctx.state_view.get("kg_hit_count")
+        hit_count = (
+            int(raw_hit_count)
+            if isinstance(raw_hit_count, (int, float, str))
+            else 0
+        )
         content = f"resolver wrote with {hit_count} kg hits"
+        raw_turn_index = ctx.state_view.get("turn_index")
+        turn_index = (
+            int(cast(str | int | float, raw_turn_index))
+            if isinstance(raw_turn_index, (int, float, str))
+            else 0
+        )
+        raw_kg_hits = ctx.state_view.get("kg_hits")
+        kg_hits = raw_kg_hits if isinstance(raw_kg_hits, list) else []
         node = Node(
             id=f"perf-conv-node|{run_id}|{ctx.step_seq}",
             label="Perf conversation node",
@@ -695,7 +717,7 @@ def _profile_simple_resolver_workflow_scenario(
                 "entity_type": "conversation_turn",
                 "conversation_id": conv_id,
                 "in_conversation_chain": True,
-                "turn_index": int(ctx.state_view.get("turn_index") or 0),
+                "turn_index": turn_index,
                 "role": "assistant",
                 "level_from_root": 0,
             },
@@ -703,7 +725,12 @@ def _profile_simple_resolver_workflow_scenario(
             level_from_root=0,
             domain_id=None,
             canonical_entity_id=None,
-            properties={"kg_hits": list(ctx.state_view.get("kg_hits") or [])},
+            properties={
+                "kg_hits": [
+                    str(item)
+                    for item in kg_hits
+                ]
+            },
         )
         conv.write.add_node(node)
         return RunSuccess(
@@ -712,7 +739,7 @@ def _profile_simple_resolver_workflow_scenario(
         )
 
     @resolver.register("finish")
-    def _finish(_ctx):
+    def _finish(_ctx: StepContext) -> RunSuccess:
         return RunSuccess(conversation_node_id=None, state_update=[])
 
     runtime = WorkflowRuntime(
@@ -847,7 +874,7 @@ def _profile_job_loop_scenario(
     iterations: int,
     include_monitoring: bool,
     use_validation_cache: bool,
-    sa_engine: Any | None = None,
+    sa_engine: SqlAlchemyEngineLike | None = None,
     pg_schema: str | None = None,
 ) -> JsonObject:
     conversation_engine = _build_profile_engine(
@@ -989,7 +1016,7 @@ def _profile_job_worker_parallel_scenario(
     worker_count: int,
     include_monitoring: bool,
     use_validation_cache: bool,
-    sa_engine: Any | None = None,
+    sa_engine: SqlAlchemyEngineLike | None = None,
     pg_schema: str | None = None,
 ) -> JsonObject:
     from ..workers.index_job_worker import IndexJobWorker
@@ -1174,7 +1201,7 @@ def profile_in_memory_index_job_worker_parallel(
     worker_count: int = 1,
     include_monitoring: bool = False,
     use_validation_cache: bool = True,
-    sa_engine: Any | None = None,
+    sa_engine: SqlAlchemyEngineLike | None = None,
     pg_schema: str | None = None,
 ) -> JsonObject:
     root = (
@@ -1211,7 +1238,7 @@ def profile_in_memory_index_job_breakdown(
     iterations: int = 1,
     include_monitoring: bool = False,
     use_validation_cache: bool = True,
-    sa_engine: Any | None = None,
+    sa_engine: SqlAlchemyEngineLike | None = None,
     pg_schema: str | None = None,
 ) -> JsonObject:
     root = (
@@ -1270,7 +1297,7 @@ def profile_simple_resolver_workflow_mode(
     fast_trace_persistence: bool,
     include_monitoring: bool = False,
     use_validation_cache: bool = True,
-    sa_engine: Any | None = None,
+    sa_engine: SqlAlchemyEngineLike | None = None,
     pg_schema: str | None = None,
 ) -> JsonObject:
     root = (
@@ -1310,7 +1337,7 @@ def profile_simple_resolver_workflow(
     backend_kind: str = "fake",
     iterations: int = 3,
     include_monitoring: bool = False,
-    sa_engine: Any | None = None,
+    sa_engine: SqlAlchemyEngineLike | None = None,
     pg_schema: str | None = None,
 ) -> JsonObject:
     root = (
@@ -1363,7 +1390,7 @@ def profile_in_memory_checkpoint_write_mode(
     fast_trace_persistence: bool,
     include_monitoring: bool = False,
     use_validation_cache: bool = True,
-    sa_engine: Any | None = None,
+    sa_engine: SqlAlchemyEngineLike | None = None,
     pg_schema: str | None = None,
 ) -> JsonObject:
     root = (
@@ -1403,7 +1430,7 @@ def profile_in_memory_checkpoint_write(
     compare_fast_path: bool = True,
     include_monitoring: bool = False,
     use_validation_cache: bool = True,
-    sa_engine: Any | None = None,
+    sa_engine: SqlAlchemyEngineLike | None = None,
     pg_schema: str | None = None,
     ) -> JsonObject:
     root = (
