@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -8,8 +9,21 @@ from fastapi.responses import RedirectResponse
 
 from .oidc import OIDCClient
 from .service import AuthService
+from kogwistar.json_types import JsonValue
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
+
+
+def _required_string(claims: Mapping[str, JsonValue], name: str) -> str:
+    value = claims.get(name)
+    if not isinstance(value, str) or not value:
+        raise HTTPException(status_code=401, detail=f"OIDC claim {name!r} is invalid")
+    return value
+
+
+def _optional_string(claims: Mapping[str, JsonValue], name: str) -> str | None:
+    value = claims.get(name)
+    return value if isinstance(value, str) else None
 
 
 def get_auth_service(request: Request) -> AuthService:
@@ -188,7 +202,7 @@ async def callback(
 
     tokens = await oidc.exchange_code(code, stored_verifier)
     id_token = tokens.get("id_token")
-    if not id_token:
+    if not isinstance(id_token, str) or not id_token:
         raise HTTPException(status_code=400, detail="Missing id_token")
 
     try:
@@ -196,15 +210,19 @@ async def callback(
     except ValueError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
 
-    userinfo = await oidc.get_userinfo(tokens["access_token"])
-    if userinfo.get("sub") != id_claims["sub"]:
+    access_token = tokens.get("access_token")
+    if not isinstance(access_token, str) or not access_token:
+        raise HTTPException(status_code=400, detail="Missing access_token")
+    userinfo = await oidc.get_userinfo(access_token)
+    subject = _required_string(id_claims, "sub")
+    if userinfo.get("sub") != subject:
         raise HTTPException(
             status_code=401,
             detail="userinfo subject does not match validated id_token subject",
         )
 
-    id_email = id_claims.get("email")
-    userinfo_email = userinfo.get("email")
+    id_email = _optional_string(id_claims, "email")
+    userinfo_email = _optional_string(userinfo, "email")
     if id_email and userinfo_email and id_email != userinfo_email:
         raise HTTPException(
             status_code=401,
@@ -213,11 +231,15 @@ async def callback(
     email = id_email or userinfo_email
     if not email:
         raise HTTPException(status_code=400, detail="OIDC identity missing email")
-    display_name = id_claims.get("name") or userinfo.get("name")
+    display_name = _optional_string(id_claims, "name") or _optional_string(
+        userinfo, "name"
+    )
+
+    issuer = _optional_string(id_claims, "iss") or oidc.discovery_url
 
     user_id = auth_service.resolve_user_from_external(
-        issuer=id_claims.get("iss") or oidc.discovery_url,
-        subject=id_claims["sub"],
+        issuer=issuer,
+        subject=subject,
         email=email,
         display_name=display_name,
     )

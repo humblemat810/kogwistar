@@ -142,7 +142,7 @@ class OIDCClient:
                 signing_key,
                 algorithms=[alg],
                 audience=self.client_id,
-                issuer=self.issuer or self._config.get("issuer"),
+                issuer=self.issuer or self._config_string("issuer"),
                 leeway=self.clock_skew_seconds,
                 options={"require": ["exp", "iat", "iss", "aud", "sub"]},
             )

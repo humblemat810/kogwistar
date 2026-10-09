@@ -85,20 +85,26 @@ class AuthService:
         if isinstance(final_ns, str) and "," in final_ns:
             final_ns = [x.strip() for x in final_ns.split(",")]
         elif not isinstance(final_ns, str):
-            final_ns = list(final_ns)
+            final_ns = [str(value) for value in final_ns]
 
         final_caps: AuthScope | None = capabilities
         if isinstance(final_caps, str) and "," in final_caps:
             final_caps = [x.strip() for x in final_caps.split(",")]
         elif final_caps is not None and not isinstance(final_caps, str):
-            final_caps = list(final_caps)
+            final_caps = [str(value) for value in final_caps]
 
         payload: dict[str, JsonValue | None] = {
             "sub": user.email,
             "user_id": user.user_id,
             "role": final_role,
-            "ns": final_ns,
-            "capabilities": final_caps,
+            "ns": None if final_ns is None else [str(value) for value in final_ns]
+            if not isinstance(final_ns, str)
+            else final_ns,
+            "capabilities": None
+            if final_caps is None
+            else [str(value) for value in final_caps]
+            if not isinstance(final_caps, str)
+            else final_caps,
             "iat": int(time.time()),
             "exp": int((datetime.now(timezone.utc) + timedelta(hours=4)).timestamp()),
             "iss": self.jwt_iss or "local",
