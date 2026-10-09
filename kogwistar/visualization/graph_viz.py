@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, TypeVar
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, TypeVar, cast
 
 from ..conversation.models import ConversationEdge, ConversationNode
 from ..runtime.models import WorkflowEdge, WorkflowNode
@@ -18,13 +19,34 @@ if TYPE_CHECKING:
     T = TypeVar("T", bound=Node | Edge)
 
 
-def _safe_iter(x):
+def _safe_iter(x: object) -> list[object]:
     return x if isinstance(x, list) and x else []
 
 
+def _object_mapping(value: object) -> Mapping[str, object]:
+    return cast(Mapping[str, object], value) if isinstance(value, Mapping) else {}
+
+
+def _string_list(value: object) -> list[str]:
+    return [str(item) for item in value] if isinstance(value, list) else []
+
+
+def _object_id(value: object) -> str | None:
+    identifier = getattr(value, "id", None)
+    return str(identifier) if identifier else None
+
+
 def _render_d3_from_raw(nodes, edges, mode: str = "reify") -> dict:
-    node_map = {getattr(n, "id", None): n for n in nodes if getattr(n, "id", None)}
-    edge_map = {getattr(e, "id", None): e for e in edges if getattr(e, "id", None)}
+    node_map = {
+        identifier: n
+        for n in nodes
+        if (identifier := _object_id(n)) is not None
+    }
+    edge_map = {
+        identifier: e
+        for e in edges
+        if (identifier := _object_id(e)) is not None
+    }
 
     out_nodes: dict[str, dict] = {}
     links: list[dict] = []
@@ -127,7 +149,7 @@ def _load_node_map(
         return engine.read.load_node_map(ids, node_type=node_type)
     except Exception:
         nodes = engine.read.get_nodes(ids=ids, node_type=node_type, include=include)
-        out = {n.id: n for n in nodes}
+        out = {identifier: n for n in nodes if (identifier := _object_id(n)) is not None}
         # for rid, doc in zip(got.get("ids") or [], got.get("documents") or []):
         #     try:
         #         out[rid] = node_type.model_validate_json(doc)
@@ -160,24 +182,31 @@ def _load_edge_map(
         return engine.read.load_edge_map(ids, edge_type=edge_type)
     except Exception:
         edges = engine.read.get_edges(ids=ids, edge_type=edge_type, include=include)
-        out = {n.id: n for n in edges}
+        out = {identifier: n for n in edges if (identifier := _object_id(n)) is not None}
         return out
 
 
 def _ids_by_doc(engine, doc_id: str | None) -> tuple[list[str], list[str]]:
     """Find ids scoped to a doc (fallback-safe)."""
-    def _scan_all(kind: str) -> tuple[list[str], list[dict], list[str]]:
+    def _scan_all(
+        kind: str,
+    ) -> tuple[list[str], list[str], list[Mapping[str, object]]]:
         getter = getattr(engine.backend, f"{kind}_get", None)
         if not callable(getter):
             return [], [], []
-        got = getter(include=["documents", "metadatas"])
+        got = _object_mapping(getter(include=["documents", "metadatas"]))
         return (
-            got.get("ids") or [],
-            got.get("documents") or [],
-            got.get("metadatas") or [],
+            _string_list(got.get("ids")),
+            [str(item) for item in _safe_iter(got.get("documents"))],
+            [
+                _object_mapping(item)
+                for item in _safe_iter(got.get("metadatas"))
+            ],
         )
 
-    def _match_doc_id(doc: str | None, meta: dict | None) -> bool:
+    def _match_doc_id(
+        doc: str | None, meta: Mapping[str, object] | None
+    ) -> bool:
         if not doc_id:
             return True
         if meta and meta.get("doc_id") == doc_id:
@@ -191,18 +220,19 @@ def _ids_by_doc(engine, doc_id: str | None) -> tuple[list[str], list[str]]:
                 obj = json.loads(doc)
             except Exception:
                 return False
-            if obj.get("doc_id") == doc_id:
+            obj_mapping = _object_mapping(obj)
+            if obj_mapping.get("doc_id") == doc_id:
                 return True
-            md = obj.get("metadata")
-            if isinstance(md, dict) and md.get("doc_id") == doc_id:
+            md = obj_mapping.get("metadata")
+            if isinstance(md, Mapping) and md.get("doc_id") == doc_id:
                 return True
         return False
 
     if not doc_id:
         # whole-graph fallback (cheap)
-        n = engine.backend.node_get()
-        e = engine.backend.edge_get()
-        return (n.get("ids") or []), (e.get("ids") or [])
+        n = _object_mapping(engine.backend.node_get())
+        e = _object_mapping(engine.backend.edge_get())
+        return _string_list(n.get("ids")), _string_list(e.get("ids"))
     # Prefer engine helpers if present
     try:
         node_ids = engine.read.node_ids_by_doc(doc_id)
@@ -210,14 +240,17 @@ def _ids_by_doc(engine, doc_id: str | None) -> tuple[list[str], list[str]]:
         node_ids = []
     if not node_ids:
         try:
-            rows = engine.backend.node_docs_get(
+            rows = _object_mapping(engine.backend.node_docs_get(
                 where={"doc_id": doc_id}, include=["metadatas"]
-            )
+            ))
             node_ids = list(
                 {
-                    (m or {}).get("node_id")
-                    for m in (rows.get("metadatas") or [])
-                    if m and m.get("node_id")
+                    str(metadata["node_id"])
+                    for metadata in (
+                        _object_mapping(item)
+                        for item in _safe_iter(rows.get("metadatas"))
+                    )
+                    if metadata.get("node_id")
                 }
             )
         except Exception:
@@ -238,14 +271,17 @@ def _ids_by_doc(engine, doc_id: str | None) -> tuple[list[str], list[str]]:
         edge_ids = []
     if not edge_ids:
         try:
-            eps = engine.backend.edge_endpoints_get(
+            eps = _object_mapping(engine.backend.edge_endpoints_get(
                 where={"doc_id": doc_id}, include=["metadatas"]
-            )
+            ))
             edge_ids = list(
                 {
-                    (m or {}).get("edge_id")
-                    for m in (eps.get("metadatas") or [])
-                    if m and m.get("edge_id")
+                    str(metadata["edge_id"])
+                    for metadata in (
+                        _object_mapping(item)
+                        for item in _safe_iter(eps.get("metadatas"))
+                    )
+                    if metadata.get("edge_id")
                 }
             )
         except Exception:
@@ -304,9 +340,14 @@ def _filter_by_insertion_method(
         getter = getattr(store_owner, f"{kind}_get", None)
         store = getattr(store_owner, f"{kind}_collection", None)
         if callable(getter):
-            got = getter(ids=ids, include=["documents", "metadatas"])
+            got = _object_mapping(
+                getter(ids=ids, include=["documents", "metadatas"])
+            )
             keep = []
-            for rid, doc in zip(got.get("ids") or [], got.get("documents") or []):
+            for rid, doc in zip(
+                _string_list(got.get("ids")),
+                [str(item) for item in _safe_iter(got.get("documents"))],
+            ):
                 obj = json.loads(doc)
                 refs = _extract_refs(obj)
                 ok = False
@@ -391,9 +432,10 @@ def to_d3_force(
     if not hasattr(engine, "kg_graph_type") and isinstance(engine, list) and isinstance(doc_id, list):
         return _render_d3_from_raw(engine, doc_id, mode=mode)
 
-    node_ids, edge_ids = _collect_ids(engine, doc_id, insertion_method)
-    node_map = _load_node_map(engine, node_ids)
-    edge_map = _load_edge_map(engine, edge_ids)
+    engine_obj = cast(GraphKnowledgeEngine, engine)
+    node_ids, edge_ids = _collect_ids(engine_obj, doc_id, insertion_method)
+    node_map = _load_node_map(engine_obj, node_ids)
+    edge_map = _load_edge_map(engine_obj, edge_ids)
 
     nodes: dict[str, dict] = {}
     links: list[dict] = []
@@ -516,9 +558,10 @@ def to_sigma_hypergraph(
     projections of this raw model.
     """
 
-    node_ids, edge_ids = _collect_ids(engine, doc_id, insertion_method)
-    node_map = _load_node_map(engine, node_ids)
-    edge_map = _load_edge_map(engine, edge_ids)
+    engine_obj = cast(GraphKnowledgeEngine, engine)
+    node_ids, edge_ids = _collect_ids(engine_obj, doc_id, insertion_method)
+    node_map = _load_node_map(engine_obj, node_ids)
+    edge_map = _load_edge_map(engine_obj, edge_ids)
 
     def _dump(value) -> dict:
         if hasattr(value, "model_dump"):
@@ -590,9 +633,10 @@ def to_cytoscape(
             elements.append({"data": link})
         return {"elements": elements, "mode": mode, "doc_id": None}
 
-    node_ids, edge_ids = _collect_ids(engine, doc_id, insertion_method)
-    node_map = _load_node_map(engine, node_ids)
-    edge_map = _load_edge_map(engine, edge_ids)
+    engine_obj = cast(GraphKnowledgeEngine, engine)
+    node_ids, edge_ids = _collect_ids(engine_obj, doc_id, insertion_method)
+    node_map = _load_node_map(engine_obj, node_ids)
+    edge_map = _load_edge_map(engine_obj, edge_ids)
 
     elements: list[dict] = []
 

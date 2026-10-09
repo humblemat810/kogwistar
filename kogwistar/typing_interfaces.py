@@ -282,6 +282,26 @@ class EmbeddingFunctionLike(Protocol):
 
 
 class ReadLike(Protocol):
+    def load_node_map(
+        self,
+        ids: Sequence[str],
+        *,
+        node_type: type[GraphNode] | None = None,
+        include: list[str] | None = None,
+    ) -> dict[str, GraphNode]: ...
+
+    def load_edge_map(
+        self,
+        ids: Sequence[str],
+        *,
+        edge_type: type[GraphEdge] | None = None,
+        include: list[str] | None = None,
+    ) -> dict[str, GraphEdge]: ...
+
+    def node_ids_by_doc(self, doc_id: str | None) -> list[str]: ...
+
+    def edge_ids_by_doc(self, doc_id: str | None) -> list[str]: ...
+
     def get_nodes(
         self,
         ids: Sequence[str] | None = None,
