@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 
 from ..async_compat import run_awaitable_blocking
 from ...json_types import JsonObject
-from ..models import Edge, Node
+from ..models import Edge, Grounding, Node
 from ..utils.metadata import json_or_none, strip_none
 from ..utils.refs import extract_doc_ids_from_refs
 from .base import NamespaceProxy
@@ -50,8 +50,10 @@ class RollbackSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
     def __init__(self, engine: GraphKnowledgeEngine) -> None:
         super().__init__(engine)
 
-    def _filter_mentions_for_document(self, mentions, document_id: str):
-        kept = []
+    def _filter_mentions_for_document(
+        self, mentions: list[Grounding] | None, document_id: str
+    ) -> tuple[list[Grounding], bool]:
+        kept: list[Grounding] = []
         changed = False
         for grounding in mentions or []:
             copied = grounding.model_copy(deep=True)
@@ -69,7 +71,7 @@ class RollbackSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 changed = True
         return kept, changed
 
-    def _replacement_doc_id(self, mentions) -> str | None:
+    def _replacement_doc_id(self, mentions: list[Grounding] | None) -> str | None:
         doc_ids = extract_doc_ids_from_refs(mentions or [])
         if len(doc_ids) == 1:
             return doc_ids[0]
@@ -97,9 +99,11 @@ class RollbackSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         run_awaitable_blocking(self._e.backend.edge_endpoints_delete(where={"edge_id": edge_id}))
         run_awaitable_blocking(self._e.backend.edge_refs_delete(where={"edge_id": edge_id}))
 
-    def _replacement_node(self, node: Node, mentions) -> Node:
+    def _replacement_node(
+        self, node: Node, mentions: list[Grounding] | None
+    ) -> Node:
         payload = node.model_dump(field_mode="backend", exclude={"id", "embedding"})
-        payload["mentions"] = list(mentions)
+        payload["mentions"] = list(mentions or [])
         payload["doc_id"] = self._replacement_doc_id(mentions)
         payload["metadata"] = self._clean_metadata_for_replacement(node.metadata)
         replacement = Node.model_validate(payload)
@@ -110,14 +114,14 @@ class RollbackSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         self,
         edge: Edge,
         *,
-        mentions,
+        mentions: list[Grounding] | None,
         source_ids: list[str],
         target_ids: list[str],
         source_edge_ids: list[str],
         target_edge_ids: list[str],
     ) -> Edge:
         payload = edge.model_dump(field_mode="backend", exclude={"id", "embedding"})
-        payload["mentions"] = list(mentions)
+        payload["mentions"] = list(mentions or [])
         payload["source_ids"] = list(source_ids)
         payload["target_ids"] = list(target_ids)
         payload["source_edge_ids"] = list(source_edge_ids)
@@ -177,7 +181,7 @@ class RollbackSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 edge_ids.add(str(metadata_object["edge_id"]))
         return edge_ids
 
-    def rollback_document(self, document_id: str):
+    def rollback_document(self, document_id: str) -> dict[str, object]:
         """Remove one document's contribution while preserving surviving evidence.
 
         Nodes and edges that still have mentions or valid endpoints are rewritten as
@@ -395,7 +399,7 @@ class RollbackSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         self,
         doc_id: str,
         extraction_method: Literal["llm_graph_extraction", "document_ingestion"],
-    ) -> dict:
+    ) -> dict[str, object]:
         """Undo one extraction method's refs without deleting the whole document.
 
         This pass edits raw node and edge reference payloads plus join indexes in
@@ -416,7 +420,7 @@ class RollbackSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             "deleted_edge_endpoints": 0,
         }
 
-        def _load_many(kind: str, ids):
+        def _load_many(kind: str, ids: set[str]) -> dict[str, dict[str, Any]]:
             if not ids:
                 return {}
             get_fn = getattr(self._e.backend, f"{kind}_get")
@@ -440,7 +444,9 @@ class RollbackSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                     out[ids_out[i]] = d
             return out
 
-        def _filter_reference_payload(d: dict) -> tuple[str, list, int]:
+        def _filter_reference_payload(
+            d: dict[str, Any],
+        ) -> tuple[str, list[Any], int]:
             key = "mentions" if "mentions" in d else "references"
             refs = d.get(key) or []
             kept: list = []
@@ -475,7 +481,7 @@ class RollbackSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                     kept.append(ref)
             return key, kept, removed
 
-        def _save_node(d: dict):
+        def _save_node(d: dict[str, Any]) -> None:
             nid = d["id"]
             prior = _backend_object(
                 run_awaitable_blocking(
@@ -504,7 +510,7 @@ class RollbackSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 except Exception:
                     pass
 
-        def _save_edge(d: dict):
+        def _save_edge(d: dict[str, Any]) -> None:
             eid = d["id"]
             prior = _backend_object(
                 run_awaitable_blocking(
@@ -664,7 +670,7 @@ class RollbackSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
 
         return summary
 
-    def prune_node_from_edges(self, node_id: str):
+    def prune_node_from_edges(self, node_id: str) -> dict[str, set[str]]:
         eps = _backend_object(
             run_awaitable_blocking(
                 self._e.backend.edge_endpoints_get(
@@ -823,7 +829,7 @@ class RollbackSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             "updated_edges": updated_edge_ids - removed_edge_ids,
         }
 
-    def rollback_many_documents(self, document_ids: list[str]):
+    def rollback_many_documents(self, document_ids: list[str]) -> dict[str, int]:
         totals = {
             "deleted_nodes": 0,
             "deleted_edges": 0,
@@ -833,13 +839,13 @@ class RollbackSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         for did in document_ids:
             res = self.rollback_document(did)
             totals["deleted_docs"] += 1
-            totals["deleted_nodes"] += len(res["deleted_node_ids"])
-            totals["deleted_edges"] += len(res["deleted_edge_ids"])
-            totals["updated_edges"] += res["updated_edges"]
+            totals["deleted_nodes"] += len(cast(list[object], res["deleted_node_ids"]))
+            totals["deleted_edges"] += len(cast(list[object], res["deleted_edge_ids"]))
+            totals["updated_edges"] += cast(int, res["updated_edges"])
         return totals
 
-    def delete_edges_by_ids(self, *args, **kwargs):
-        return self._e.write.delete_edges_by_ids(*args, **kwargs)
+    def delete_edges_by_ids(self, edge_ids: list[str]) -> None:
+        self._e.write.delete_edges_by_ids(edge_ids)
 
-    def prune_node_refs_for_doc(self, *args, **kwargs):
-        return self._e.write.prune_node_refs_for_doc(*args, **kwargs)
+    def prune_node_refs_for_doc(self, node_id: str, doc_id: str) -> bool:
+        return self._e.write.prune_node_refs_for_doc(node_id, doc_id)
