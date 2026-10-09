@@ -6,7 +6,7 @@ import ipaddress
 import json
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Protocol, cast
 from urllib.parse import urlsplit
 
 from ...json_types import JsonValue
@@ -274,7 +274,11 @@ class A2AAdapter:
         if len(body_bytes) > self._max_push_body_bytes:
             raise ValueError("A2A push payload exceeds configured bound")
         delivery_id = f"a2a:{task_id}:{int(event_seq)}"
-        headers = dict(self._sign_callback(delivery_id, body_bytes))
+        sign_callback = self._sign_callback
+        enqueue_delivery = self._enqueue_delivery
+        if sign_callback is None or enqueue_delivery is None:
+            raise RuntimeError("A2A push requires durable enqueue and callback signing")
+        headers = dict(sign_callback(delivery_id, body_bytes))
         if not headers:
             raise PermissionError("A2A callback signer returned no authentication headers")
         delivery = A2APushDelivery(
@@ -300,7 +304,7 @@ class A2AAdapter:
             "retry_backoff_seconds": delivery.retry_backoff_seconds,
         }
         try:
-            result = dict(self._enqueue_delivery(queue_payload))
+            result = dict(enqueue_delivery(queue_payload))
         except Exception as exc:
             if self._audit_delivery is not None:
                 self._audit_delivery(
@@ -351,14 +355,26 @@ class A2AAdapter:
 
     @staticmethod
     def _task(task_id: str, context_id: str, payload: Mapping[str, JsonValue]) -> A2ATask:
+        raw_result = payload.get("result")
+        result = (
+            cast(Mapping[str, JsonValue], raw_result)
+            if isinstance(raw_result, Mapping)
+            else None
+        )
+        raw_evidence_refs = payload.get("evidence_refs")
+        evidence_refs = (
+            tuple(str(item) for item in raw_evidence_refs)
+            if isinstance(raw_evidence_refs, list)
+            else ()
+        )
         return A2ATask(
             task_id=task_id,
             context_id=context_id,
             run_id=str(payload["run_id"]),
             status=str(payload.get("status", "queued")),
-            result=payload.get("result"),
+            result=result,
             input_required=bool(payload.get("input_required", False)),
-            evidence_refs=tuple(str(item) for item in payload.get("evidence_refs", ())),
+            evidence_refs=evidence_refs,
         )
 
 
