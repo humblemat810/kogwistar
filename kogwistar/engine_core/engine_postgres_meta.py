@@ -9,15 +9,17 @@ import sys
 import threading
 import time
 import uuid
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from types import TracebackType
-from typing import Any, Literal, cast
+from typing import Any, Coroutine, Literal, cast
 
 import sqlalchemy as sa
+from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
+from ..json_types import JsonValue
 from ..messaging.models import ProjectedLaneMessageRow
 from ..typing_interfaces import SqlAlchemyConnectionLike, SqlAlchemyResultLike
 from .event_envelope import EntityEventEnvelope
@@ -46,7 +48,7 @@ def _int_or_default(value: object, default: int = 0) -> int:
     return default
 
 
-def _run_coro_blocking(coro):
+def _run_coro_blocking(coro: Coroutine[Any, Any, object]) -> object:
     try:
         asyncio.get_running_loop()
     except RuntimeError:
@@ -58,7 +60,7 @@ def _run_coro_blocking(coro):
                 runner.close()
         return asyncio.run(coro)
 
-    box: dict[str, Any] = {}
+    box: dict[str, object] = {}
 
     def _worker() -> None:
         try:
@@ -70,7 +72,7 @@ def _run_coro_blocking(coro):
     thread.start()
     thread.join()
     if "error" in box:
-        raise box["error"]
+        raise cast(BaseException, box["error"])
     return box.get("result")
 
 
@@ -113,25 +115,33 @@ class _AsyncConnectionAdapter:
         self._conn = conn
         self._runner = runner
 
-    def invoke_sync(self, fn):
+    def invoke_sync(self, fn: Callable[[Connection], object]) -> object:
         return _run_coro_blocking(self._conn.run_sync(fn))
 
-    async def invoke_async(self, fn):
+    async def invoke_async(self, fn: Callable[[Connection], object]) -> object:
         return await self._conn.run_sync(fn)
 
     def execute(self, statement: object, params: object = None) -> SqlAlchemyResultLike:
-        def _execute(sync_conn):
+        def _execute(sync_conn: Connection) -> SqlAlchemyResultLike:
+            typed_conn = cast(SqlAlchemyConnectionLike, sync_conn)
             result = (
-                sync_conn.execute(statement)
+                typed_conn.execute(statement)
                 if params is None
-                else sync_conn.execute(statement, params)
+                else typed_conn.execute(statement, params)
             )
-            rows = result.fetchall() if result.returns_rows else []
-            return _BufferedResult(rows, getattr(result, "rowcount", None))
+            rows = (
+                cast(list[object], list(result.fetchall()))
+                if bool(getattr(result, "returns_rows", False))
+                else []
+            )
+            return cast(
+                SqlAlchemyResultLike,
+                _BufferedResult(rows, getattr(result, "rowcount", None)),
+            )
 
         return cast(SqlAlchemyResultLike, self.invoke_sync(_execute))
 
-    def begin_nested(self):
+    def begin_nested(self) -> _AsyncNestedTransaction:
         return _AsyncNestedTransaction(self)
 
 
@@ -1772,7 +1782,7 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
         return int(row[0]) if row else 0
 
     @staticmethod
-    def _decode_named_projection_payload(raw_payload: Any) -> dict[str, Any]:
+    def _decode_named_projection_payload(raw_payload: object) -> dict[str, Any]:
         payload = json.loads(str(raw_payload)) if raw_payload is not None else {}
         if not isinstance(payload, dict):
             raise ValueError("named projection payload must deserialize to a dict")
@@ -2299,10 +2309,10 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
             )
 
     @staticmethod
-    def _decode_run_json(raw: Any) -> Any:
+    def _decode_run_json(raw: object) -> JsonValue | None:
         if raw in (None, ""):
             return None
-        return json.loads(str(raw))
+        return cast(JsonValue, json.loads(str(raw)))
 
     def create_server_run(
         self,
