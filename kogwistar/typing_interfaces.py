@@ -139,6 +139,7 @@ class ProjectionBackendLike(Protocol):
     nodes: NamedCollectionLike
     edges: NamedCollectionLike
     documents: NamedCollectionLike
+    domains: NamedCollectionLike
     embedding_dim: int
     distance: str
 
