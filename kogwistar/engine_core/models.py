@@ -1,5 +1,5 @@
 import logging
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 
 if True:
@@ -460,42 +460,42 @@ class Grounding(ModeSlicingMixin, BaseModel):
         list[MultimodalSpan], FrontendField(), BackendField(), DtoField()
     ] = Field(default_factory=list)
 
-    def __init__(self, spans=None, /, **data):
+    def __init__(
+        self, spans: Span | list[Span] | None = None, /, **data: object
+    ) -> None:
         if spans is not None and "spans" not in data:
             data["spans"] = spans
         super().__init__(**data)
 
-    def validate_span(self, span: Span):
+    def validate_span(self, span: Span) -> None:
 
         pass
 
     @field_validator("spans")
-    def spans_validate(cls, spans: Span | list[Span]):
+    def spans_validate(cls, spans: Span | list[Span] | None) -> list[Span]:
         if spans is None:
             return []
-        if type(spans) is Span:
-            spans = [spans]
-        elif type(spans) is list:
-            spans = spans
-        return spans
+        if isinstance(spans, Span):
+            return [spans]
+        return list(spans)
 
     @model_validator(mode="after")
-    def _require_evidence(self):
+    def _require_evidence(self) -> Self:
         if not self.spans and not self.multimodal_spans:
             raise ValueError("At least one text or multimodal span is required")
         return self
 
-    def validate_from_source(self):
+    def validate_from_source(self) -> None:
         for sp in self.spans:
             self.validate_span(sp)
         pass
 
-    def iter_evidence(self):
+    def iter_evidence(self) -> Iterator[Span | MultimodalSpan]:
         yield from self.spans
         yield from self.multimodal_spans
 
 
-def _coerce_mentions_payload(mentions):
+def _coerce_mentions_payload(mentions: object) -> object:
     if isinstance(mentions, str):
         return mentions
     if isinstance(mentions, (Grounding, Span, dict)):
@@ -535,7 +535,7 @@ class GraphEntityExtractionBase(GraphEntityBase):
 
     @field_validator("mentions", mode="before")
     @classmethod
-    def _coerce_mentions(cls, mentions):
+    def _coerce_mentions(cls, mentions: object) -> object:
         return _coerce_mentions_payload(mentions)
 
     # NEED-FIX
@@ -543,7 +543,7 @@ class GraphEntityExtractionBase(GraphEntityBase):
     @classmethod
     def _require_non_empty_groundings(
         cls, mentions: list[Grounding], info: ValidationInfo
-    ):
+    ) -> list[Grounding]:
 
         if not mentions:
             raise ValueError("At least one grounding is required")
@@ -551,13 +551,13 @@ class GraphEntityExtractionBase(GraphEntityBase):
             g.validate_from_source()
         return mentions
 
-    def to_type(self, type: type):
+    def to_type(self, type: type) -> "GraphEntityRefBase":
         if type is GraphEntityRefBase:
             return self.coerce_to_db()
         else:
             raise (ValueError("unrecognised type"))
 
-    def coerce_to_db(self):
+    def coerce_to_db(self) -> "GraphEntityRefBase":
         # works for single extraction, shield the inner db embedding
         # convert the groundings -> mentions List[Grounding]
         temp = self.model_dump()
@@ -578,22 +578,24 @@ class GraphEntityRefBase(GraphEntityBase):
 
     @field_validator("mentions", mode="before")
     @classmethod
-    def _coerce_mentions(cls, mentions):
+    def _coerce_mentions(cls, mentions: object) -> object:
         return _coerce_mentions_payload(mentions)
 
-    def iter_span(self):
+    def iter_span(self) -> Iterator[Span]:
         for g in self.mentions:
             for sp in g.spans:
                 yield sp
 
-    def iter_evidence(self):
+    def iter_evidence(self) -> Iterator[Span | MultimodalSpan]:
         for g in self.mentions:
             yield from g.iter_evidence()
 
     # NEED-FIX
     @field_validator("mentions")
     @classmethod
-    def _require_non_empty_refs(cls, mentions: list[Grounding], info: ValidationInfo):
+    def _require_non_empty_refs(
+        cls, mentions: list[Grounding], info: ValidationInfo
+    ) -> list[Grounding]:
         try:
             if not mentions:
                 raise ValueError("At least one mentions is required")
@@ -605,8 +607,8 @@ class GraphEntityRefBase(GraphEntityBase):
 
     @model_validator(mode="before")
     @classmethod
-    def end_char_minus_1_to_ending_index(cls, data):
-        def check_and_update_span_inplace(span):
+    def end_char_minus_1_to_ending_index(cls, data: object) -> object:
+        def check_and_update_span_inplace(span: object) -> None:
             if type(span) is Span:
                 if span.end_char == -1:
                     span.end_char += len(span.excerpt)
@@ -616,16 +618,19 @@ class GraphEntityRefBase(GraphEntityBase):
                 if span.get("end_char") == -1:
                     span["end_char"] += len(span["excerpt"])
 
+        if not isinstance(data, dict):
+            return data
         try:
             mentions: list[Grounding]
-            data["mentions"] = _coerce_mentions_payload(data.get("mentions"))
-            if type(data["mentions"]) is str:
+            normalized_mentions = _coerce_mentions_payload(data.get("mentions"))
+            data["mentions"] = normalized_mentions
+            if isinstance(normalized_mentions, str):
                 mentions = [
-                    Grounding.model_validate(i) for i in json.loads(data["mentions"])
+                    Grounding.model_validate(i) for i in json.loads(normalized_mentions)
                 ]
+            elif isinstance(normalized_mentions, list):
+                mentions = cast(list[Grounding], normalized_mentions)
             else:
-                mentions = data["mentions"]
-            if type(mentions) is not list:
                 raise TypeError("mentions should be a list of groundings")
             for mention in mentions:
                 if type(mention) is Grounding:
@@ -633,8 +638,9 @@ class GraphEntityRefBase(GraphEntityBase):
                         check_and_update_span_inplace(span)
                 else:
                     try:
-                        mention_dict: dict = cast(dict, mention)
-                        for span in mention_dict.get("spans") or []:
+                        mention_dict: dict[str, object] = cast(dict[str, object], mention)
+                        spans = cast(list[object], mention_dict.get("spans") or [])
+                        for span in spans:
                             check_and_update_span_inplace(span)
                     except Exception as _e:
                         raise
