@@ -7,6 +7,7 @@ from typing import Literal, Protocol, cast
 
 from pydantic import BaseModel
 
+from ..json_types import JsonObject
 from ..llm_structured_output import build_structured_output_runnable
 from .contracts import (
     AdjudicateBatchTaskRequest,
@@ -27,6 +28,7 @@ from .contracts import (
     SummarizeContextTaskResult,
 )
 from .errors import ProviderDependencyError
+from .providers import SupportsStructuredOutput
 
 ProviderName = Literal["gemini", "openai", "ollama"] # add your own
 
@@ -119,7 +121,7 @@ class _LangChainRunner(_Runner):
 
         prompt = cast(_PromptLike, ChatPromptTemplate.from_messages(list(messages)))
         structured = build_structured_output_runnable(
-            self._model,
+            cast(SupportsStructuredOutput, self._model),
             schema,
             include_raw=True,
             prefer_json_schema=prefer_json_schema,
@@ -182,9 +184,7 @@ def _build_runner(provider: ProviderName, config: DefaultTaskProviderConfig) -> 
 
     if provider == "ollama":
         try:
-            from langchain_ollama import (
-                ChatOllama,  # type: ignore[reportMissingImports]
-            )
+            from langchain_ollama import ChatOllama  # type: ignore[reportMissingImports]
         except Exception:
             return _MissingRunner(_missing_provider_message(provider))
         return _LangChainRunner(
@@ -214,14 +214,14 @@ def _build_runner(provider: ProviderName, config: DefaultTaskProviderConfig) -> 
     )
 
 
-def _payload(parsed: object | None) -> Mapping[str, object] | None:
+def _payload(parsed: object | None) -> JsonObject | None:
     if parsed is None:
         return None
     if isinstance(parsed, BaseModel):
-        dumped = parsed.model_dump(mode="python")
-        return dumped if isinstance(dumped, dict) else {"value": dumped}
+        dumped = parsed.model_dump(mode="json")
+        return cast(JsonObject, dumped) if isinstance(dumped, dict) else {"value": dumped}
     if isinstance(parsed, Mapping):
-        return dict(parsed)
+        return cast(JsonObject, dict(parsed))
     return None
 
 
@@ -380,7 +380,7 @@ def _build_task_set_from_runner_getter(
         )
 
         payload = _payload(parsed) or {}
-        verdict_payloads: list[Mapping[str, object]] = []
+        verdict_payloads: list[JsonObject] = []
         items = payload.get("items")
         if isinstance(items, list):
             verdict_payloads = [dict(x) for x in items if isinstance(x, Mapping)]
