@@ -22,13 +22,13 @@ def _alias_candidate_text(text: object, aliases: dict[str, str]) -> str:
 
 def candiate_filtering_callback(
     llm_tasks: LLMTaskSet,
-    conversation_content,
-    cand_node_list_str,
-    cand_edge_list_str,
+    conversation_content: str,
+    cand_node_list_str: str,
+    cand_edge_list_str: str,
     candidate_node_ids: list[str],
     candidate_edge_ids: list[str],
-    context_text,
-):
+    context_text: str,
+) -> tuple[FilteringResult, str]:
     book = AliasBook.deterministic(candidate_node_ids, candidate_edge_ids)
     node_aliases = {item: book.alias_for_node(item) for item in candidate_node_ids}
     edge_aliases = {item: book.alias_for_edge(item) for item in candidate_edge_ids}

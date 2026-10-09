@@ -39,8 +39,8 @@ class KnowledgeRetriever:
     def __init__(
         self,
         *,
-        conversation_engine,
-        ref_knowledge_engine,
+        conversation_engine: GraphKnowledgeEngine,
+        ref_knowledge_engine: GraphKnowledgeEngine,
         llm_tasks: LLMTaskSet,
         filtering_callback: RetrievalFilteringCallback,
         max_retrieval_level: int = 2,
@@ -58,7 +58,7 @@ class KnowledgeRetriever:
         self.deep_seed_limit = deep_seed_limit
 
     def _shallow_query(
-        self, *, query_embedding: list[float], max_retrieval_level
+        self, *, query_embedding: list[float], max_retrieval_level: int
     ) -> RetrievalResult:
         node_batches = self.ref_knowledge_engine.read.query_nodes(
             query_embeddings=[query_embedding],
@@ -91,7 +91,11 @@ class KnowledgeRetriever:
         # return (rows.get("ids") or [[]])[0] or []
 
     def _deep_seeded_semantic(
-        self, *, user_text: str, seed_kg_node_ids: list[str], max_retrieval_level=2
+        self,
+        *,
+        user_text: str,
+        seed_kg_node_ids: list[str],
+        max_retrieval_level: int = 2,
     ) -> RetrievalResult:
         seed_ids = seed_kg_node_ids[: self.deep_seed_limit]
         # out: List[str] = []
