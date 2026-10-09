@@ -16,6 +16,7 @@ from typing import (
 )
 
 from ..id_provider import new_id_str, stable_id
+from ..json_types import JsonValue
 
 try:
     from typing import Self, TypeAlias
@@ -687,10 +688,10 @@ class ChromaMixin(BaseModel):
     doc_id: str | None = Field(
         None, description="Document ID from which this entity was extracted"
     )
-    metadata: dict[str, object] = Field(default_factory=dict, description="metadata")
+    metadata: dict[str, JsonValue] = Field(default_factory=dict, description="metadata")
 
     @field_validator("metadata")
-    def check_metadata(cls, v: dict[str, object]) -> dict[str, object]:
+    def check_metadata(cls, v: dict[str, JsonValue]) -> dict[str, JsonValue]:
         BaseNodeMetadata.model_validate(v)
         return v
 

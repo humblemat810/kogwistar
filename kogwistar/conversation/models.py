@@ -22,7 +22,6 @@ from kogwistar.json_types import JsonValue
 # Public compatibility re-export used by agentic_answering at runtime.
 from kogwistar.provenance import EvidencePackDigest as EvidencePackDigest  # noqa: F401
 
-
 def _metadata_int(value: JsonValue | None, default: int = 0) -> int:
     """Coerce a scalar metadata value without accepting structured JSON."""
 
@@ -59,7 +58,7 @@ class MetaFromLastSummary:
     tail_turn_index: int = 0  # works more like a node seq number
 
     # Back-compat shim: parts of the workflow/test stack treat this like a Pydantic model.
-    def model_dump(self, *_args, **_kwargs) -> dict[str, int]:
+    def model_dump(self, *_args: object, **_kwargs: object) -> dict[str, int]:
         return asdict(self)
 
 
@@ -294,7 +293,9 @@ class ConversationEdge(Edge):
     Inherits provenance features from `Edge`.
     """
 
-    metadata: dict[str, JsonValue]  # ConversationEdgeMetadata
+    metadata: dict[str, JsonValue] = Field(
+        default_factory=dict, description="conversation edge metadata"
+    )
     id_kind: ClassVar[str] = "conversation.edge"
     # id_policy: ClassVar[Literal["event", "canonical"]] = "canonical"
     # id_kind: ClassVar[str] = "model"  # override per subclass if you want stable separation
@@ -315,7 +316,7 @@ class ConversationEdge(Edge):
         )
 
     @field_validator("metadata")
-    def check_fields(cls, v):
+    def check_fields(cls, v: dict[str, JsonValue]) -> dict[str, JsonValue]:
         # convertible to ConversationNodeMetadata but never materialize the conversion. just a checker model
         try:
             ConversationEdgeMetadata.model_validate(v)
@@ -378,10 +379,12 @@ class ConversationNode(ConversationRoleMixin, Node):
     #     self.node_id = stable_id(self.id_kind, *key)
     #     return self
 
-    metadata: dict[str, JsonValue]  # ConversationNodeMetadata
+    metadata: dict[str, JsonValue] = Field(
+        default_factory=dict, description="conversation node metadata"
+    )
 
     @field_validator("metadata")
-    def check_fields(cls, v):
+    def check_fields(cls, v: dict[str, JsonValue]) -> dict[str, JsonValue]:
         # convertible to ConversationNodeMetadata but never materialize the conversion. just a checker model
         try:
             ConversationNodeMetadata.model_validate(v)
@@ -389,10 +392,12 @@ class ConversationNode(ConversationRoleMixin, Node):
             raise
         return v
 
-    def get_incoming_turn_edge(self, engine) -> "ConversationEdge | None":
+    def get_incoming_turn_edge(
+        self, engine: object
+    ) -> "ConversationEdge | None":
         from kogwistar.engine_core.engine import GraphKnowledgeEngine
 
-        engine2: GraphKnowledgeEngine = engine
+        engine2: GraphKnowledgeEngine = cast(GraphKnowledgeEngine, engine)
         edges = engine2.query_edges(
             where={"relation": "next_turn", "target_id": self.id}
         )
@@ -461,7 +466,7 @@ class KnowledgeRetrievalResult(BaseToolResult):
     selected: FilteringResult | None
     reasoning: str
 
-    def get_filtered_candidate(self):
+    def get_filtered_candidate(self) -> RetrievalResult:
         if self.selected:
             set_node_ids = set(self.selected.node_ids)
             set_edge_ids = set(self.selected.node_ids)
