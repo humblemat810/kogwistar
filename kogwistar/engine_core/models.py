@@ -1378,7 +1378,9 @@ class FlattenedLLMGraphExtraction(ModeSlicingMixin, BaseModel):
 
     @field_validator("spans")
     @classmethod
-    def _validate_unique_span_ids(cls, spans: list[FlattenedSpan]):
+    def _validate_unique_span_ids(
+        cls, spans: list[FlattenedSpan]
+    ) -> list[FlattenedSpan]:
         seen: set[str] = set()
         for sp in spans:
             if sp.id in seen:
@@ -1390,7 +1392,7 @@ class FlattenedLLMGraphExtraction(ModeSlicingMixin, BaseModel):
     @classmethod
     def _validate_unique_multimodal_span_ids(
         cls, spans: list[FlattenedMultimodalSpan]
-    ):
+    ) -> list[FlattenedMultimodalSpan]:
         seen: set[str] = set()
         for span in spans:
             if span.id in seen:
@@ -1399,7 +1401,7 @@ class FlattenedLLMGraphExtraction(ModeSlicingMixin, BaseModel):
         return spans
 
     @model_validator(mode="after")
-    def _validate_references(self):
+    def _validate_references(self) -> Self:
         span_ids = {sp.id for sp in self.spans}
         multimodal_span_ids = {sp.id for sp in self.multimodal_spans}
         referenced: set[str] = set()
@@ -1686,7 +1688,9 @@ class AssocFlattenedLLMGraphExtraction(ModeSlicingMixin, BaseModel):
 
     @field_validator("spans")
     @classmethod
-    def _validate_unique_span_ids(cls, spans: list[FlattenedSpan]):
+    def _validate_unique_span_ids(
+        cls, spans: list[FlattenedSpan]
+    ) -> list[FlattenedSpan]:
         seen: set[str] = set()
         for sp in spans:
             if sp.id in seen:
@@ -1698,7 +1702,7 @@ class AssocFlattenedLLMGraphExtraction(ModeSlicingMixin, BaseModel):
     @classmethod
     def _validate_unique_multimodal_span_ids(
         cls, spans: list[FlattenedMultimodalSpan]
-    ):
+    ) -> list[FlattenedMultimodalSpan]:
         seen: set[str] = set()
         for span in spans:
             if span.id in seen:
@@ -1710,7 +1714,7 @@ class AssocFlattenedLLMGraphExtraction(ModeSlicingMixin, BaseModel):
     @classmethod
     def _validate_unique_grounding_ids(
         cls, groundings: list[AssocFlattenedGroundingRow]
-    ):
+    ) -> list[AssocFlattenedGroundingRow]:
         seen: set[str] = set()
         for g in groundings:
             if g.id in seen:
@@ -1719,7 +1723,7 @@ class AssocFlattenedLLMGraphExtraction(ModeSlicingMixin, BaseModel):
         return groundings
 
     @model_validator(mode="after")
-    def _validate_references(self):
+    def _validate_references(self) -> Self:
         span_ids = {sp.id for sp in self.spans}
         multimodal_span_ids = {sp.id for sp in self.multimodal_spans}
         grounding_ids = {g.id for g in self.groundings}
