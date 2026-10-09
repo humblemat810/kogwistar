@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Literal, Self, TypeAlias
+from typing import Literal, Self, TypeAlias, cast
 
 from kogwistar.json_types import JsonValue
 from kogwistar.typing_interfaces import EngineLike
@@ -113,9 +113,11 @@ class ContextOrderingStrategy(Protocol):
 
     def pre_pack(self, items: list[ContextItem]) -> list[ContextItem]:
         """Return the iteration order used for packing/budgeting."""
+        ...
 
     def post_pack(self, kept: list[ContextItem]) -> list[ContextItem]:
         """Return final order fed into the renderer."""
+        ...
 
 
 class OrderingRegistry:
@@ -644,11 +646,14 @@ class ContextSources:
             limit=20000,
         )
         by_id: dict[str, ConversationNode] = {}
-        meta_by_id: dict[str, dict] = {}
+        meta_by_id: dict[str, dict[str, JsonValue]] = {}
         for node in nodes:
             node_id = str(node.safe_get_id())
-            by_id[node_id] = node
-            meta_by_id[node_id] = dict(getattr(node, "metadata", {}) or {})
+            by_id[node_id] = cast(ConversationNode, node)
+            metadata = getattr(node, "metadata", {}) or {}
+            meta_by_id[node_id] = (
+                dict(metadata) if isinstance(metadata, dict) else {}
+            )
         return by_id, meta_by_id
 
     # -------------------------
@@ -661,12 +666,17 @@ class ContextSources:
         metas: Iterable[JsonValue],
     ) -> tuple[dict[str, ConversationNode], dict[str, dict]]:
         by_id: dict[str, ConversationNode] = {}
-        meta_by_id: dict[str, dict] = {}
+        meta_by_id: dict[str, dict[str, JsonValue]] = {}
 
         for nid, doc, meta in zip(ids, docs, metas):
             base = self._safe_json_dict(doc)
+            existing_meta = base.get("metadata")
+            merged_meta: dict[str, JsonValue] = (
+                dict(existing_meta) if isinstance(existing_meta, dict) else {}
+            )
             if isinstance(meta, dict):
-                base["metadata"] = {**(base.get("metadata") or {}), **meta}
+                merged_meta.update(meta)
+            base["metadata"] = merged_meta
 
             n = self._safe_validate_conversation_node(base)
             if n is None:
@@ -674,7 +684,7 @@ class ContextSources:
 
             sid = str(nid)
             by_id[sid] = n
-            meta_by_id[sid] = base.get("metadata") or {}
+            meta_by_id[sid] = merged_meta
         return by_id, meta_by_id
 
     def _safe_json_dict(self, doc: object) -> dict[str, JsonValue]:
@@ -962,21 +972,39 @@ class EngineConversationStore:
             include=["metadatas", "documents", "ids"],  # or whatever your wrapper uses
         )
 
+        if not isinstance(res, Mapping):
+            return []
+        ids = res.get("ids")
+        metadatas = res.get("metadatas")
+        documents = res.get("documents")
+        if not isinstance(ids, list) or not isinstance(metadatas, list):
+            return []
+        docs = documents if isinstance(documents, list) else [None] * len(ids)
+
         # 2) materialize + sort
         turns: list[ConversationNode] = []
         for nid, meta, doc in zip(
-            res["ids"], res["metadatas"], res.get("documents", [None] * len(res["ids"]))
+            ids, metadatas, docs
         ):
             # You might store content in doc, or in summary/properties.
             # If your storage puts text in `documents`, use doc.
             # Otherwise, parse from meta/properties as you do elsewhere.
-            node = ConversationNode(
-                id=nid,
-                metadata=meta,
-                # other required fields for Node/GraphEntityRefBase if needed…
-                # If ConversationNode requires label/type/summary/mentions, you may need to pull those too.
-            )
-            turns.append(node)
+            if not isinstance(nid, str) or not isinstance(meta, dict):
+                continue
+            payload: dict[str, JsonValue] = {}
+            if isinstance(doc, str):
+                try:
+                    decoded = json.loads(doc)
+                except json.JSONDecodeError:
+                    decoded = None
+                if isinstance(decoded, dict):
+                    payload.update(decoded)
+            payload["id"] = nid
+            payload["metadata"] = meta
+            try:
+                turns.append(ConversationNode.model_validate(payload))
+            except Exception:
+                continue
 
         turns.sort(key=lambda n: n.turn_index or 0)
 

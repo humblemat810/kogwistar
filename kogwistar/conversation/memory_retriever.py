@@ -138,7 +138,9 @@ class MemoryRetriever:
             include=["metadatas", "documents", "embeddings"],
             node_type=ConversationNode,
         )
-        memory_nodes = node_batches[0] if node_batches else []
+        memory_nodes: list[ConversationNode] = (
+            list(cast(list[ConversationNode], node_batches[0])) if node_batches else []
+        )
         where = {"user_id": user_id}
         edge_batches = self.conversation_engine.read.query_edges(
             query_embeddings=[query_embedding],
@@ -147,7 +149,9 @@ class MemoryRetriever:
             include=["metadatas", "documents", "embeddings"],
             edge_type=ConversationEdge,
         )
-        memory_edges = edge_batches[0] if edge_batches else []
+        memory_edges: list[ConversationEdge] = (
+            list(cast(list[ConversationEdge], edge_batches[0])) if edge_batches else []
+        )
 
         def _rank(m: Node | Edge):
             t = m.type or m.metadata.get("entity_type") or ""
@@ -155,7 +159,9 @@ class MemoryRetriever:
 
         memory_nodes.sort(key=lambda x: _rank(x))
         memory_edges.sort(key=lambda x: _rank(x))
-        candidates = RetrievalResult(memory_nodes, memory_edges)
+        candidates = RetrievalResult(
+            cast(list[Node], memory_nodes), cast(list[Edge], memory_edges)
+        )
         # # Optional type preference reorder (soft heuristic, no filtering)
         # if candidate_ids and candidate_metas:
         #     zipped = list(zip(candidate_ids, candidate_docs, candidate_metas))
@@ -187,8 +193,8 @@ class MemoryRetriever:
                 user_text,
                 cand_node_list_str,
                 cand_edge_list_str,
-                [i.id for i in candidates.nodes],
-                [i.id for i in candidates.edges],
+                [node_id for i in candidates.nodes if (node_id := i.safe_get_id())],
+                [edge_id for i in candidates.edges if (edge_id := i.safe_get_id())],
                 context_text,
             )
 
@@ -209,12 +215,14 @@ class MemoryRetriever:
         non_kg_node_ids: list[str] = []
         non_kg_edge_ids: list[str] = []
         conv_nodes: list[ConversationNode] = []
-        conv_edges: list[ConversationNode] = []
+        conv_edges: list[ConversationEdge] = []
         if selected:
             for n in selected.nodes:
                 if n.type != "reference_pointer":
-                    non_kg_node_ids.append(n.safe_get_id())
-                    conv_nodes.append(n)
+                    node_id = n.safe_get_id()
+                    if node_id is not None:
+                        non_kg_node_ids.append(node_id)
+                    conv_nodes.append(cast(ConversationNode, n))
                     continue
                 rid = (n.properties or {}).get("refers_to_id")
                 selected_ids.append(n.safe_get_id())
@@ -222,11 +230,15 @@ class MemoryRetriever:
                     seed_kg_ids.append(rid)
             for n in selected.edges:
                 if n.type != "reference_pointer":
-                    non_kg_edge_ids.append(n.safe_get_id())
-                    conv_edges.append(n)
+                    edge_id = n.safe_get_id()
+                    if edge_id is not None:
+                        non_kg_edge_ids.append(edge_id)
+                    conv_edges.append(cast(ConversationEdge, n))
                     continue
                 rid = (n.properties or {}).get("refers_to_id")
-                selected_ids.append(n.id)
+                edge_id = n.safe_get_id()
+                if edge_id is not None:
+                    selected_ids.append(edge_id)
                 if isinstance(rid, str) and rid:
                     seed_kg_ids.append(rid)
 

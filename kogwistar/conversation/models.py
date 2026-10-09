@@ -1,6 +1,6 @@
 import json
 from dataclasses import asdict, dataclass, field
-from typing import ClassVar, Literal, Self
+from typing import ClassVar, Literal, Self, cast
 
 from pydantic import (
     BaseModel,
@@ -21,6 +21,16 @@ from kogwistar.json_types import JsonValue
 
 # Public compatibility re-export used by agentic_answering at runtime.
 from kogwistar.provenance import EvidencePackDigest as EvidencePackDigest  # noqa: F401
+
+
+def _metadata_int(value: JsonValue | None, default: int = 0) -> int:
+    """Coerce a scalar metadata value without accepting structured JSON."""
+
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (int, float, str)):
+        return int(value or default)
+    return default
 
 # --- Phase 1: chat-edge intent classification (causality) ---
 
@@ -103,11 +113,11 @@ class ContextSnapshotMetadata(BaseModel):
         cost_val = data.pop("cost", None)
         if isinstance(cost_val, dict):
             cost = ContextCost(
-                char_count=int(cost_val.get("char_count", 0) or 0),
+                char_count=_metadata_int(cost_val.get("char_count")),
                 token_count=(
                     None
                     if cost_val.get("token_count", None) is None
-                    else int(cost_val["token_count"])
+                    else _metadata_int(cost_val.get("token_count"))
                 ),
             )
         else:
@@ -117,7 +127,7 @@ class ContextSnapshotMetadata(BaseModel):
         data.pop("cost.char_count", None)
         data.pop("cost.token_count", None)
 
-        obj = cls(**data, cost=cost)
+        obj = cls.model_validate({**data, "cost": cost})
         return obj
 
     @model_validator(mode="before")
@@ -156,7 +166,7 @@ class AddTurnResult:
     memory_context_node_id: str | None = None
     memory_context_edge_ids: list[str] = field(default_factory=list)
     prev_turn_meta_summary: MetaFromLastSummary = field(
-        default_factory=MetaFromLastSummary
+        default_factory=lambda: MetaFromLastSummary(0, 0)
     )
 
 
@@ -284,7 +294,7 @@ class ConversationEdge(Edge):
     Inherits provenance features from `Edge`.
     """
 
-    metadata: dict  # ConversationNodeMetadata
+    metadata: dict[str, JsonValue]  # ConversationEdgeMetadata
     id_kind: ClassVar[str] = "conversation.edge"
     # id_policy: ClassVar[Literal["event", "canonical"]] = "canonical"
     # id_kind: ClassVar[str] = "model"  # override per subclass if you want stable separation
@@ -368,7 +378,7 @@ class ConversationNode(ConversationRoleMixin, Node):
     #     self.node_id = stable_id(self.id_kind, *key)
     #     return self
 
-    metadata: dict  # ConversationNodeMetadata
+    metadata: dict[str, JsonValue]  # ConversationNodeMetadata
 
     @field_validator("metadata")
     def check_fields(cls, v):
@@ -387,7 +397,7 @@ class ConversationNode(ConversationRoleMixin, Node):
             where={"relation": "next_turn", "target_id": self.id}
         )
         assert len(edges) <= 1
-        return edges[0] if edges else None
+        return cast(ConversationEdge, edges[0]) if edges else None
 
     def get_extra_update(self) -> dict:
         try:
