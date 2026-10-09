@@ -5,7 +5,8 @@ import json
 import time
 import uuid
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from collections.abc import Iterable, Mapping
+from typing import TYPE_CHECKING, Any, cast
 
 from .async_compat import run_awaitable_blocking
 from .canonical_events import CanonicalEntityRevision, read_canonical_entity_revision
@@ -19,6 +20,18 @@ if TYPE_CHECKING:
 def _is_tombstoned(meta: dict | None) -> bool:
     meta = meta or {}
     return str(meta.get("lifecycle_status") or "active") == "tombstoned"
+
+
+def _backend_object(value: object) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+    return {str(key): item for key, item in value.items()}
+
+
+def _backend_rows(value: object) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [_backend_object(item) for item in value if isinstance(item, Mapping)]
 
 
 def _extract_doc_ids_from_refs(refs: list[Span] | list[Grounding]) -> list[str]:
@@ -103,8 +116,10 @@ class IndexingSubsystem:
         else:
             raise ValueError(f"unsupported entity kind for index work: {entity_kind!r}")
 
-        got = run_awaitable_blocking(
-            getter(ids=[entity_id], include=["documents", "metadatas"])
+        got = _backend_object(
+            run_awaitable_blocking(
+                getter(ids=[entity_id], include=["documents", "metadatas"])
+            )
         )
         ids = got.get("ids") or []
         documents = got.get("documents") or []
@@ -149,8 +164,12 @@ class IndexingSubsystem:
         iter_events = getattr(self.engine.meta_sqlite, "iter_entity_events", None)
         if not callable(iter_events):
             raise RuntimeError("canonical event store does not support iter_entity_events")
+        events = cast(
+            Iterable[tuple[int, str, str, str, str]],
+            iter_events(namespace=selected_namespace, from_seq=1),
+        )
         return read_canonical_entity_revision(
-            events=iter_events(namespace=selected_namespace, from_seq=1),
+            events=events,
             namespace=selected_namespace,
             entity_kind=entity_kind,
             entity_id=entity_id,
@@ -252,7 +271,8 @@ class IndexingSubsystem:
             return 0
         ns = self.engine.namespace if namespace is None else str(namespace)
         latest: dict[tuple[str, str], Any] = {}
-        for event in iter_events(namespace=ns, from_seq=1):
+        events = cast(Iterable[Any], iter_events(namespace=ns, from_seq=1))
+        for event in events:
             if isinstance(event, dict):
                 entity_kind = str(event.get("entity_kind") or "")
                 entity_id = str(event.get("entity_id") or "")
@@ -284,8 +304,10 @@ class IndexingSubsystem:
                 entity_kind=entity_kind, entity_id=entity_id
             )
             getter = getattr(self.engine.backend, f"{entity_kind}_get")
-            current = run_awaitable_blocking(
-                getter(ids=[entity_id], include=["embeddings", "metadatas"])
+            current = _backend_object(
+                run_awaitable_blocking(
+                    getter(ids=[entity_id], include=["embeddings", "metadatas"])
+                )
             )
             raw_embeddings = current.get("embeddings")
             raw_metadatas = current.get("metadatas")
@@ -318,7 +340,10 @@ class IndexingSubsystem:
                 ready = False
             if not needs_delete and ready:
                 continue
-            jobs = list_jobs(namespace=ns, entity_kind=entity_kind, entity_id=entity_id)
+            jobs = cast(
+                Iterable[Any],
+                list_jobs(namespace=ns, entity_kind=entity_kind, entity_id=entity_id),
+            )
             current_job_exists = any(
                 str(getattr(job, "index_kind", "") or "") == "node_embedding"
                 and str(getattr(job, "payload_json", "") or "") == revision_payload
@@ -362,7 +387,10 @@ class IndexingSubsystem:
 
         ns = self.engine.namespace if namespace is None else namespace
         claim_started = time.perf_counter()
-        jobs = claim(limit=max_jobs, lease_seconds=lease_seconds, namespace=ns)
+        jobs = cast(
+            Iterable[Any],
+            claim(limit=max_jobs, lease_seconds=lease_seconds, namespace=ns),
+        )
         self._profile_step("reconcile.claim_index_jobs", claim_started)
 
         applied = 0
@@ -582,8 +610,8 @@ class IndexingSubsystem:
                 return obj.model_copy(deep=True)
             return obj
 
-        def _backend_call(fn, *args, **kwargs):
-            return run_awaitable_blocking(fn(*args, **kwargs))
+        def _backend_call(fn: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:
+            return _backend_object(run_awaitable_blocking(fn(*args, **kwargs)))
 
         def _actual_payload() -> list[Any]:
             if entity_kind == "node":
@@ -1047,7 +1075,9 @@ class IndexingSubsystem:
                 _emit("apply.edge_endpoints.tombstone_check", started)
 
                 started = time.perf_counter()
-                rows = self.engine.write.fanout_endpoints_rows(e, doc_id)
+                rows = _backend_rows(
+                    self.engine.write.fanout_endpoints_rows(e, doc_id)
+                )
                 _emit("apply.edge_endpoints.fanout_rows", started)
                 if not rows:
                     raise Exception("endpoints not found")
