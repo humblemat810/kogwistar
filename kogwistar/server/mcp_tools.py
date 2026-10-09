@@ -881,13 +881,13 @@ def propose_vector(inp: ProposeVectorIn) -> ProposeOut:
         where=inp.where if isinstance(inp.where, dict) else None,
     )
     out = []
-    for l, r, _score in pairs.values():
+    for left_item, right_item, _score in pairs.values():
         out.append(
             ProposePair(
-                left_id=getattr(l, "id", ""),
-                left_kind="edge" if isinstance(l, Edge) else "node",
-                right_id=getattr(r, "id", ""),
-                right_kind="edge" if isinstance(r, Edge) else "node",
+                left_id=getattr(left_item, "id", ""),
+                left_kind="edge" if isinstance(left_item, Edge) else "node",
+                right_id=getattr(right_item, "id", ""),
+                right_kind="edge" if isinstance(right_item, Edge) else "node",
             )
         )
     return ProposeOut(pairs=out)
@@ -939,12 +939,12 @@ def kg_propose_bruteforce(inp: ProposeBruteForceIn) -> ProposeOut:
     if not inp.where:
         out = [
             ProposePair(
-                left_id=getattr(l, "id", ""),
-                left_kind="edge" if isinstance(l, Edge) else "node",
-                right_id=getattr(r, "id", ""),
-                right_kind="edge" if isinstance(r, Edge) else "node",
+                left_id=getattr(left_item, "id", ""),
+                left_kind="edge" if isinstance(left_item, Edge) else "node",
+                right_id=getattr(right_item, "id", ""),
+                right_kind="edge" if isinstance(right_item, Edge) else "node",
             )
-            for (l, r) in raw_pairs
+            for (left_item, right_item) in raw_pairs
         ]
         return ProposeOut(pairs=out)
 
@@ -957,15 +957,15 @@ def kg_propose_bruteforce(inp: ProposeBruteForceIn) -> ProposeOut:
         return (not node_ok) or (obj.id in node_ok)
 
     filtered = []
-    for l, r in raw_pairs:
-        if not (_passes_where(l) and _passes_where(r)):
+    for left_item, right_item in raw_pairs:
+        if not (_passes_where(left_item) and _passes_where(right_item)):
             continue
         filtered.append(
             ProposePair(
-                left_id=getattr(l, "id", ""),
-                left_kind="edge" if isinstance(l, Edge) else "node",
-                right_id=getattr(r, "id", ""),
-                right_kind="edge" if isinstance(r, Edge) else "node",
+                left_id=getattr(left_item, "id", ""),
+                left_kind="edge" if isinstance(left_item, Edge) else "node",
+                right_id=getattr(right_item, "id", ""),
+                right_kind="edge" if isinstance(right_item, Edge) else "node",
             )
         )
     return ProposeOut(pairs=filtered)
@@ -1038,9 +1038,9 @@ def adjudicate_pairs(inp: AdjPairsIn) -> CrossDocAdjOut:
                 raise ValueError(f"Unknown {kind} id: {identifier}")
             return found[0]
 
-        l = fetch_any(pair_info.left_id, pair_info.left_kind)
-        r = fetch_any(pair_info.right_id, pair_info.right_kind)
-        pairs.append((l, r))
+        left_item = fetch_any(pair_info.left_id, pair_info.left_kind)
+        right_item = fetch_any(pair_info.right_id, pair_info.right_kind)
+        pairs.append((left_item, right_item))
 
     if all(isinstance(left, Node) and isinstance(right, Node) for left, right in pairs):
         node_pairs = cast(list[tuple[Node, Node]], pairs)
