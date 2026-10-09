@@ -49,7 +49,7 @@ import re
 import sys
 import threading
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Sequence
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from typing import Any, cast
@@ -57,7 +57,7 @@ from typing import Any, cast
 import sqlalchemy as sa
 from sqlalchemy import event
 from sqlalchemy.dialects import postgresql as psql
-from sqlalchemy.engine import Engine
+from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from ..json_types import JsonValue
@@ -268,11 +268,11 @@ class PostgresUnitOfWork:
     PgVectorBackend methods will *join* the active connection if one is set.
     """
 
-    def __init__(self, *, engine: sa.Engine):
+    def __init__(self, *, engine: sa.Engine) -> None:
         self._engine = engine
 
     @contextmanager
-    def transaction(self):
+    def transaction(self) -> Iterator[None]:
         existing = get_active_conn()
         if existing is not None:
             # Join outer transaction
@@ -287,7 +287,7 @@ class PostgresUnitOfWork:
 class AsyncPostgresUnitOfWork:
     """Async transaction wrapper for async SQLAlchemy Postgres engines."""
 
-    def __init__(self, *, engine: AsyncEngine):
+    def __init__(self, *, engine: AsyncEngine) -> None:
         self._engine = engine
 
     @asynccontextmanager
@@ -368,7 +368,9 @@ class CollectionSpec:
 class PgCollectionFacade:
     """Small, precise adapter that implements the repeated Chroma-shaped verbs."""
 
-    def __init__(self, backend: PgVectorBackend, table: sa.Table, spec: CollectionSpec):
+    def __init__(
+        self, backend: PgVectorBackend, table: sa.Table, spec: CollectionSpec
+    ) -> None:
         self._b = backend
         self._t = table
         self._s = spec
@@ -780,7 +782,7 @@ class PgVectorBackend:
         node_docs_table: str = "gke_node_docs",
         node_refs_table: str = "gke_node_refs",
         numeric_keys: set[str] | None = None,
-    ):
+    ) -> None:
         if Vector is None:  # pragma: no cover
             raise RuntimeError(
                 "pgvector is not installed. Install with `pip install pgvector` to use PgVectorBackend."
@@ -1126,7 +1128,7 @@ class PgVectorBackend:
     # ----------------------------
 
     @contextmanager
-    def _conn(self):
+    def _conn(self) -> Iterator[Connection]:
         """Yield an active SQLAlchemy connection.
 
         If the runtime/engine opened a PostgresUnitOfWork transaction, backend
@@ -1140,7 +1142,7 @@ class PgVectorBackend:
             yield conn
 
     @asynccontextmanager
-    async def _async_conn(self):
+    async def _async_conn(self) -> AsyncIterator[AsyncConnection]:
         """Yield active async connection without falling back to sync bridge."""
         active = get_active_conn()
         if isinstance(active, AsyncConnection):
