@@ -1,5 +1,5 @@
 import logging
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 
 if True:
@@ -666,10 +666,6 @@ class EdgeMixin(ModeSlicingMixin, BaseModel):
 # -------------------------
 # Storage-facing mixin (embedding OPTIONAL)
 # -------------------------
-
-from collections.abc import Sequence
-
-
 class BaseNodeMetadata(BaseModel):
     """
     Excample fields
@@ -691,10 +687,10 @@ class ChromaMixin(BaseModel):
     doc_id: str | None = Field(
         None, description="Document ID from which this entity was extracted"
     )
-    metadata: dict = Field({}, description="metadata")
+    metadata: dict[str, object] = Field(default_factory=dict, description="metadata")
 
     @field_validator("metadata")
-    def check_metadata(cls, v):
+    def check_metadata(cls, v: dict[str, object]) -> dict[str, object]:
         BaseNodeMetadata.model_validate(v)
         return v
 
@@ -741,7 +737,7 @@ class DocNode(DocNodeMixin, GraphEntityRefBase):  # type: ignore
 
 class PureChromaNode(ChromaMixin, GraphEntityBase):
     # base node without reference enforced
-    def get_extra_update(self):
+    def get_extra_update(self) -> dict[str, object]:
         return {}
 
 
@@ -757,7 +753,7 @@ class PureGraph(ModeSlicingMixin, BaseModel):
 
 class ChromaValidateSourceMixin(BaseModel):
     # provide methods to validate model reference/ source from chromadb
-    def validate_from_source(self, source):
+    def validate_from_source(self, source: object) -> None:
         pass
 
 
@@ -793,7 +789,7 @@ class LevelAwareMixin(BaseModel):
 
 class TombstoneMixin(BaseModel):
     @field_validator("metadata", check_fields=False)
-    def check_tombstone_fields(cls, v):
+    def check_tombstone_fields(cls, v: dict[str, object]) -> dict[str, object]:
         if "lifecycle_status" not in v:
             v["lifecycle_status"] = "active"
         else:
@@ -825,10 +821,10 @@ class Node(
     # Node with ref session enforced and level awareness
     id_kind: ClassVar[str] = "kg.node"
 
-    def safe_get_id(self):
+    def safe_get_id(self) -> str:
         return cast(str, self.id)
 
-    def get_extra_update(self):
+    def get_extra_update(self) -> dict[str, object]:
         return {}
 
     # id_policy: ClassVar[Literal["event", "canonical"]] = "canonical"
@@ -870,10 +866,10 @@ class Edge(
     # Edge with ref session enforced
     id_kind: ClassVar[str] = "kg.edge"
 
-    def safe_get_id(self):
+    def safe_get_id(self) -> str:
         return cast(str, self.id)
 
-    def get_extra_update(self):
+    def get_extra_update(self) -> dict[str, object]:
         return {}
 
     # id_policy: ClassVar[Literal["event", "canonical"]] = "canonical"
