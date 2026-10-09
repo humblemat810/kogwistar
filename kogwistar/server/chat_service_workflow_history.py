@@ -42,17 +42,18 @@ import logging
 import uuid
 from collections import deque
 from collections.abc import Generator
-from typing import TYPE_CHECKING, Any, NotRequired, TypedDict, cast
-
-if TYPE_CHECKING:
-    from sqlalchemy import Row as SQLAlchemyRow
-else:
-    SQLAlchemyRow = Any
+from typing import NotRequired, Protocol, TypedDict, cast
 
 from kogwistar.runtime.models import WorkflowEdge, WorkflowNode
 from kogwistar.json_types import JsonObject
 
 from .chat_service_shared import WorkflowProjectionRebuildingError, _BaseComponent
+
+
+class EntityEventRow(Protocol):
+    """Minimal row surface consumed by the event-history replay path."""
+
+    def __getitem__(self, index: int, /) -> object: ...
 
 
 class WorkflowVisibleSnapshot(TypedDict):
@@ -304,7 +305,7 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
             bounds derived from version metadata.
         """
         iter_events = cast(
-            Generator[SQLAlchemyRow, Any, None],
+            Generator[EntityEventRow, object, None],
             getattr(self._workflow_engine().meta_sqlite, "iter_entity_events", None),
         )
         if not callable(iter_events):
