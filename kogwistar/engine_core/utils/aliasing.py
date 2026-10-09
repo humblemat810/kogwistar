@@ -20,7 +20,10 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from threading import RLock
-from typing import Literal
+from collections.abc import Mapping, Sequence
+from typing import Literal, cast
+
+from ..models import GraphExtractionWithIDs
 
 ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 _UUID_RE = re.compile(r"^[0-9a-fA-F\-]{36}$")
@@ -196,7 +199,9 @@ class AliasBookStore:
             return self.books[key]
 
 
-def build_aliases(node_ids, edge_ids):
+def build_aliases(
+    node_ids: Sequence[str], edge_ids: Sequence[str]
+) -> tuple[dict[str, str], dict[str, str]]:
     node_aliases = {rid: f"N{i}" for i, rid in enumerate(node_ids, start=1)}
     edge_aliases = {rid: f"E{i}" for i, rid in enumerate(edge_ids, start=1)}
     alias_for_real = {**node_aliases, **edge_aliases}
@@ -204,15 +209,19 @@ def build_aliases(node_ids, edge_ids):
     return alias_for_real, real_for_alias
 
 
-def aliasify_graph(nodes, edges, alias_for_real):
+def aliasify_graph(
+    nodes: Sequence[Mapping[str, object]],
+    edges: Sequence[Mapping[str, object]],
+    alias_for_real: Mapping[str, str],
+) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
     """Return shallow copies with ids replaced by aliases for prompt."""
 
-    def a(rid):
+    def a(rid: str) -> str:
         return alias_for_real.get(rid, rid)
 
     aliased_nodes = [
         {
-            "id": a(n["id"]),
+            "id": a(cast(str, n["id"])),
             "label": n["label"],
             "type": n["type"],
             "summary": n.get("summary", ""),
@@ -221,20 +230,27 @@ def aliasify_graph(nodes, edges, alias_for_real):
     ]
     aliased_edges = [
         {
-            "id": a(e["id"]),
+            "id": a(cast(str, e["id"])),
             "relation": e["relation"],
-            "source_ids": [a(s) for s in e.get("source_ids", [])],
-            "target_ids": [a(t) for t in e.get("target_ids", [])],
+            "source_ids": [
+                a(str(s)) for s in cast(Sequence[object], e.get("source_ids", []))
+            ],
+            "target_ids": [
+                a(str(t)) for t in cast(Sequence[object], e.get("target_ids", []))
+            ],
         }
         for e in edges
     ]
     return aliased_nodes, aliased_edges
 
 
-def de_alias_ids(llm_result, real_for_alias):
+def de_alias_ids(
+    llm_result: GraphExtractionWithIDs,
+    real_for_alias: Mapping[str, str],
+) -> GraphExtractionWithIDs:
     """Translate LLM aliases back to real IDs, rejecting unknown aliases."""
 
-    def r(a):
+    def r(a: str) -> str:
         if not a:
             raise ValueError("ID references must not be empty")
         if _is_alias(a) and a not in real_for_alias:
