@@ -1,4 +1,4 @@
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from logging import Logger
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
@@ -14,13 +14,13 @@ else:
     except ModuleNotFoundError:  # pragma: no cover - optional dependency
 
         class BaseCallbackHandler:
-            def on_llm_start(self, *args: Any, **kwargs: Any) -> None:
+            def on_llm_start(self, *args: object, **kwargs: object) -> None:
                 _ = (args, kwargs)
 
-            def on_llm_end(self, *args: Any, **kwargs: Any) -> None:
+            def on_llm_end(self, *args: object, **kwargs: object) -> None:
                 _ = (args, kwargs)
 
-            def on_llm_error(self, *args: Any, **kwargs: Any) -> None:
+            def on_llm_error(self, *args: object, **kwargs: object) -> None:
                 _ = (args, kwargs)
 
         class ChatGeneration:
@@ -144,7 +144,7 @@ import time
 class GeminiCostCallbackHandler(BaseCallbackHandler):
     """A custom callback handler to track Gemini API costs."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.total_input_tokens = 0
         self.total_output_tokens = 0
@@ -177,7 +177,7 @@ class GeminiCostCallbackHandler(BaseCallbackHandler):
             **kwargs,
         )
 
-    def on_llm_end(self, response: LLMResult, **kwargs: Any) -> None:
+    def on_llm_end(self, response: LLMResult, **kwargs: object) -> None:
         """Called at the end of an LLM call."""
         self.run_end_time = time.time()
         for generation in response.generations:
@@ -249,7 +249,7 @@ from contextlib import contextmanager
 
 
 @contextmanager
-def get_gemini_callback_cost():
+def get_gemini_callback_cost() -> Iterator[GeminiCostCallbackHandler]:
     """A context manager to track Gemini API costs for a block of code."""
     # Create an instance of the handler
     """_summary_
@@ -353,7 +353,14 @@ class PromptCostTokenLogger(BaseCallbackHandler):
             response, run_id=run_id, parent_run_id=parent_run_id, **kwargs
         )
 
-    def on_llm_error(self, error, *, run_id, parent_run_id=None, **kwargs):
+    def on_llm_error(
+        self,
+        error: object,
+        *,
+        run_id: object,
+        parent_run_id: object | None = None,
+        **kwargs: object,
+    ) -> None:
 
         cast(Any, super()).on_llm_error(
             error, run_id=run_id, parent_run_id=parent_run_id, **kwargs
@@ -361,7 +368,12 @@ class PromptCostTokenLogger(BaseCallbackHandler):
 
 
 class PromptTokenCounter(BaseCallbackHandler):
-    def on_llm_start(self, serialized: dict, prompts: list[str], **kwargs):
+    def on_llm_start(
+        self,
+        serialized: dict[str, object],
+        prompts: Sequence[str],
+        **kwargs: object,
+    ) -> None:
         for prompt in prompts:
             token_count = self.count_tokens(prompt)
             print(f"Prompt: {prompt}")
