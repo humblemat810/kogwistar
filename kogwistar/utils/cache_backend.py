@@ -14,17 +14,18 @@ import sys
 from collections.abc import Callable
 from functools import wraps
 from pathlib import Path
-from typing import Any, Literal, ParamSpec, Protocol, TypeVar, overload
+from typing import Any, Generic, Literal, ParamSpec, Protocol, TypeVar, cast, overload
 
 P = ParamSpec("P")
 R = TypeVar("R")
+R_co = TypeVar("R_co", covariant=True)
 CacheBackend = Literal["auto", "joblib", "diskcache", "none"]
 
 
-class CachedCallable(Protocol[P, R]):
+class CachedCallable(Protocol[P, R_co]):
     """Callable returned by a cache provider for a typed function."""
 
-    def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R: ...
+    def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R_co: ...
 
     def clear(self, *args: object, **kwargs: object) -> None: ...
 
@@ -56,18 +57,14 @@ class CacheProvider(Protocol):
 class MemoryLike(CacheProvider, Protocol):
     """Common cache surface used by Kogwistar call sites."""
 
-    # This named protocol preserves the historical public type name while
-    # making provider implementations interchangeable and generic.
-    def cache(
-        self, function: Callable[P, R] | None = None, **kwargs: Any
-    ) -> CachedCallable[P, R] | Callable[[Callable[P, R]], CachedCallable[P, R]]: ...
+    """Named compatibility protocol for historical cache consumers."""
 
 
 class CacheBackendUnavailable(RuntimeError):
     """Raised when an explicitly requested optional cache provider is absent."""
 
 
-class _FunctionWrapper:
+class _FunctionWrapper(Generic[P, R]):
     def __init__(self, function: Callable[P, R]) -> None:
         self._function = function
         wraps(function)(self)
@@ -103,19 +100,21 @@ class _NoCacheMemory:
         return None
 
     @overload
-    def cache(self, function: Callable[P, R], **kwargs: Any) -> _FunctionWrapper: ...
+    def cache(
+        self, function: Callable[P, R], **kwargs: Any
+    ) -> _FunctionWrapper[P, R]: ...
 
     @overload
-    def cache(self, function: None = None, **kwargs: Any) -> Callable[
-        [Callable[P, R]], _FunctionWrapper
-    ]: ...
+    def cache(
+        self, function: None = None, **kwargs: Any
+    ) -> Callable[[Callable[P, R]], _FunctionWrapper[P, R]]: ...
 
     def cache(
         self,
         function: Callable[P, R] | None = None,
         **_: Any,
-    ) -> _FunctionWrapper | Callable[[Callable[P, R]], _FunctionWrapper]:
-        def decorate(fn: Callable[P, R]) -> _FunctionWrapper:
+    ) -> _FunctionWrapper[P, R] | Callable[[Callable[P, R]], _FunctionWrapper[P, R]]:
+        def decorate(fn: Callable[P, R]) -> _FunctionWrapper[P, R]:
             return _FunctionWrapper(fn)
 
         return decorate(function) if function is not None else decorate
@@ -123,7 +122,7 @@ class _NoCacheMemory:
 
 class _DiskCacheMemory:
     def __init__(self, location: str | Path, **_: Any) -> None:
-        from diskcache import Cache
+        from diskcache import Cache  # type: ignore[import-not-found]
 
         self.location = location
         self._cache = Cache(str(location))
@@ -135,22 +134,24 @@ class _DiskCacheMemory:
         self._cache.close()
 
     @overload
-    def cache(self, function: Callable[P, R], **kwargs: Any) -> _FunctionWrapper: ...
+    def cache(
+        self, function: Callable[P, R], **kwargs: Any
+    ) -> _FunctionWrapper[P, R]: ...
 
     @overload
-    def cache(self, function: None = None, **kwargs: Any) -> Callable[
-        [Callable[P, R]], _FunctionWrapper
-    ]: ...
+    def cache(
+        self, function: None = None, **kwargs: Any
+    ) -> Callable[[Callable[P, R]], _FunctionWrapper[P, R]]: ...
 
     def cache(
         self,
         function: Callable[P, R] | None = None,
         **kwargs: Any,
-    ) -> _FunctionWrapper | Callable[[Callable[P, R]], _FunctionWrapper]:
+    ) -> _FunctionWrapper[P, R] | Callable[[Callable[P, R]], _FunctionWrapper[P, R]]:
         ignored = tuple(kwargs.get("ignore", ()))
         memoize = self._cache.memoize(ignore=ignored)
 
-        def decorate(fn: Callable[P, R]) -> _FunctionWrapper:
+        def decorate(fn: Callable[P, R]) -> _FunctionWrapper[P, R]:
             return _FunctionWrapper(memoize(fn))
 
         return decorate(function) if function is not None else decorate
@@ -185,10 +186,11 @@ class CacheMemory:
         requested = _requested_backend(backend)
         selected = _selected_backend(requested)
         self.location = location
+        self._delegate: CacheProvider
 
         if selected == "none" or location is None:
             self.backend = "none"
-            self._delegate: CacheProvider = _NoCacheMemory(location, **kwargs)
+            self._delegate = _NoCacheMemory(location, **kwargs)
             return
 
         try:
@@ -197,7 +199,9 @@ class CacheMemory:
             else:
                 from joblib import Memory as JoblibMemory
 
-                self._delegate = JoblibMemory(location=location, **kwargs)
+                self._delegate = cast(
+                    CacheProvider, JoblibMemory(location=location, **kwargs)
+                )
         except (ImportError, AttributeError) as exc:
             if requested != "auto":
                 raise CacheBackendUnavailable(
