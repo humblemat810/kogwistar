@@ -15,8 +15,8 @@ if TYPE_CHECKING:
     from .engine_core.engine import GraphKnowledgeEngine
 
 
-GraphRow: TypeAlias = dict[str, Any]
-GraphPayload: TypeAlias = dict[str, Any]
+GraphRow: TypeAlias = dict[str, Any]  # noqa: UP040    pypy3.11
+GraphPayload: TypeAlias = dict[str, Any]  # noqa: UP040    pypy3.11
 
 
 def _as_graph_row(value: object) -> GraphRow:
@@ -416,28 +416,27 @@ class GraphQuery:
     def _endpoint_rows(self, where: dict, *, edge_id: str | None = None) -> list[dict]:
         """Return backend endpoint rows plus matching transient Stage-1 rows."""
         rows: list[GraphRow] = []
-        try:
-            reader = getattr(self.e, "read", None)
-            endpoint_get = getattr(reader, "get_edge_endpoints", None)
-            if callable(endpoint_get):
-                got = _as_graph_payload(
-                    endpoint_get(where=where, include=["documents"])
-                )
-            elif reader is not None:
-                got = {"documents": []}
-            else:
-                got = _as_graph_payload(
-                    self.e.backend.edge_endpoints_get(
-                        where=where, include=["documents"]
-                    )
-                )
-            rows.extend(
-                json.loads(document)
-                for document in (got.get("documents") or [])
-                if document
+        
+        reader = getattr(self.e, "read", None)
+        endpoint_get = getattr(reader, "get_edge_endpoints", None)
+        if callable(endpoint_get):
+            got = _as_graph_payload(
+                endpoint_get(where=where, include=["documents"])
             )
-        except Exception:
-            pass
+        elif reader is not None:
+            got = {"documents": []}
+        else:
+            got = _as_graph_payload(
+                self.e.backend.edge_endpoints_get(
+                    where=where, include=["documents"]
+                )
+            )
+        rows.extend(
+            json.loads(document)
+            for document in (got.get("documents") or [])
+            if document
+        )
+
 
         def matches(row: dict) -> bool:
             clauses = where.get("$and", [where]) if isinstance(where, dict) else []
@@ -804,18 +803,17 @@ class GraphQuery:
                 _where = {}
             _where["doc_id"] = {"$in": doc_ids}
         if where:
-            if _where:
-                if _where.get("and"):
-                    if type(_where["and"]) is list:
-                        _where_and: list = _where["and"]
-                        _where_and.append(where)
-                    else:
-                        raise SyntaxError(
-                            "vector backend syntax error: where invalid syntax"
-                        )
-                    # _where['and'].append()
+            if _where.get("and"):
+                if type(_where["and"]) is list:
+                    _where_and: list = _where["and"]
+                    _where_and.append(where)
                 else:
-                    _where = {"$and": [where, _where]}
+                    raise SyntaxError(
+                        "vector backend syntax error: where invalid syntax"
+                    )
+                # _where['and'].append()
+            else:
+                _where = {"$and": [where, _where]}
         query_reader = getattr(getattr(self.e, "read", None), "query_nodes", None)
         hits = (
             query_reader(query=query_text, n_results=top_k, where=_where)

@@ -5,8 +5,8 @@ from collections.abc import Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager
 from datetime import datetime
 from typing import (
-    Any,
     TYPE_CHECKING,
+    Any,
     Literal,
     Protocol,
     TypeAlias,
@@ -27,22 +27,20 @@ if TYPE_CHECKING:
     )
     from .engine_core.models import (
         AdjudicationVerdict,
+        PureChromaEdge,
+        PureChromaNode,
     )
     from .engine_core.models import (
         Document as EngineDoc,
     )
     from .engine_core.models import (
-        Edge as GraphEdge,
-    )
-    from .engine_core.models import (
         Domain as GraphDomain,
     )
     from .engine_core.models import (
-        Node as GraphNode,
+        Edge as GraphEdge,
     )
     from .engine_core.models import (
-        PureChromaEdge,
-        PureChromaNode,
+        Node as GraphNode,
     )
     from .engine_core.storage_backend import StorageBackend
     from .engine_core.vector_search import VectorSearchHit
