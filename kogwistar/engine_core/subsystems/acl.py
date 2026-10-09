@@ -1473,6 +1473,9 @@ class ACLAwareWriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"], WriteLike):
             payload=payload,
         )
 
+    def uses_rust_postgres_authority(self) -> bool:
+        return self._raw.uses_rust_postgres_authority()
+
     def add_node(self, node: Node, *args: Any, **kwargs: Any) -> None:
         if not self._e.acl.writes_can_share_backend_transaction():
             with self._e.uow():

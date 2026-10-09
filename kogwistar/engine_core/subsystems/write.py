@@ -8,6 +8,7 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, cast
 
 from ...cdc.change_event import EntityRefModel
+from ...json_types import JsonObject
 from ...typing_interfaces import ProjectionBackendLike
 from ...utils.embedding_vectors import normalize_embedding_vector
 from ..async_compat import run_awaitable_blocking
@@ -1447,11 +1448,11 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
 
         return [{k: v for k, v in r.items() if v is not None} for r in rows]
 
-    def node_doc_and_meta(self, *args, **kwargs):
-        return node_doc_and_meta_util(*args, **kwargs)
+    def node_doc_and_meta(self, node: Node) -> tuple[str, JsonObject]:
+        return cast(tuple[str, JsonObject], node_doc_and_meta_util(node))
 
-    def edge_doc_and_meta(self, *args, **kwargs):
-        return edge_doc_and_meta_util(*args, **kwargs)
+    def edge_doc_and_meta(self, edge: Edge) -> tuple[str, JsonObject]:
+        return cast(tuple[str, JsonObject], edge_doc_and_meta_util(edge))
 
     def strip_none(self, *args, **kwargs):
         return strip_none(*args, **kwargs)

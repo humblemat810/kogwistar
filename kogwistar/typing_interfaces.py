@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager
+from datetime import datetime
 from typing import (
     Any,
     TYPE_CHECKING,
@@ -18,7 +19,7 @@ try:
 except ImportError:  # pragma: no cover - py<3.10 compatibility
     from typing import TypeAlias
 
-from .json_types import JsonValue
+from .json_types import JsonObject, JsonValue
 
 if TYPE_CHECKING:
     from .engine_core.models import (
@@ -272,14 +273,56 @@ class EmbeddingFunctionLike(Protocol):
 
 
 class ReadLike(Protocol):
-    def get_nodes(self, *args: object, **kwargs: object) -> Sequence[GraphNode]: ...
-    def get_edges(self, *args: object, **kwargs: object) -> Sequence[GraphEdge]: ...
-    def query_nodes(self, *args: object, **kwargs: object) -> Sequence[Sequence[GraphNode]]: ...
-    def query_edges(self, *args: object, **kwargs: object) -> Sequence[Sequence[GraphEdge]]: ...
-    def search_nodes_as_of(self, *args: object, **kwargs: object) -> Sequence[GraphNode]: ...
+    def get_nodes(
+        self,
+        ids: Sequence[str] | None = None,
+        node_type: type[GraphNode] | None = None,
+        include: list[str] | None = None,
+        where: object = None,
+        limit: int | None = 200,
+        resolve_mode: Literal["active_only", "redirect", "include_tombstones"] = "active_only",
+    ) -> Sequence[GraphNode]: ...
+
+    def get_edges(
+        self,
+        ids: Sequence[str] | None = None,
+        edge_type: type[GraphEdge] | None = None,
+        where: object = None,
+        limit: int | None = 400,
+        include: list[str] | None = None,
+        resolve_mode: Literal["active_only", "redirect", "include_tombstones"] = "active_only",
+    ) -> Sequence[GraphEdge]: ...
+    def query_nodes(self, *args: Any, **kwargs: Any) -> Sequence[Sequence[GraphNode]]: ...
+    def query_edges(self, *args: Any, **kwargs: Any) -> Sequence[Sequence[GraphEdge]]: ...
+    def search_nodes_as_of(
+        self,
+        *,
+        query: str | None = None,
+        query_embeddings: Sequence[float] | Sequence[Sequence[float]] | None = None,
+        as_of_ts: datetime | str,
+        where: dict[str, JsonValue] | None = None,
+        n_results: int = 20,
+        follow_redirects: bool = True,
+        node_type: type[GraphNode] = ...,
+        include: list[str] | None = None,
+        max_redirect_hops: int = 16,
+        **kwargs: Any,
+    ) -> Sequence[GraphNode]: ...
 
     def search_nodes_as_of_scored(
-        self, *args: object, **kwargs: object
+        self,
+        *,
+        query: str | None = None,
+        query_embeddings: Sequence[float] | Sequence[Sequence[float]] | None = None,
+        as_of_ts: datetime | str,
+        where: dict[str, JsonValue] | None = None,
+        n_results: int = 20,
+        follow_redirects: bool = True,
+        node_type: type[GraphNode] = ...,
+        include: list[str] | None = None,
+        max_redirect_hops: int = 16,
+        similarity_threshold: float | None = None,
+        **kwargs: Any,
     ) -> list[VectorSearchHit[GraphNode]]: ...
 
     def get_document(self, doc_id: str) -> EngineDoc: ...
@@ -354,34 +397,30 @@ class ReadLike(Protocol):
         window_chars: int = 120,
         max_contexts: int | None = None,
         prefer_label_fallback: bool = True,
-    ) -> list[dict[str, JsonValue]]: ...
+    ) -> list[dict[str, object]]: ...
 
     def nodes_from_single_or_id_query_result(
         self,
         got: Mapping[str, JsonValue],
-        *,
         node_type: type[GraphNode] = ...,
     ) -> list[GraphNode]: ...
 
     def edges_from_single_or_id_query_result(
         self,
         got: Mapping[str, JsonValue],
-        *,
         edge_type: type[GraphEdge] = ...,
         include: Sequence[str] | None = None,
     ) -> list[GraphEdge]: ...
 
     def nodes_from_query_result(
         self,
-        got: Mapping[str, JsonValue],
-        *,
+        gots: Mapping[str, JsonValue],
         node_type: type[GraphNode] = ...,
     ) -> list[list[GraphNode]]: ...
 
     def edges_from_query_result(
         self,
-        got: Mapping[str, JsonValue],
-        *,
+        gots: Mapping[str, JsonValue],
         edge_type: type[GraphEdge] = ...,
     ) -> list[list[GraphEdge]]: ...
 
@@ -422,8 +461,8 @@ class WriteLike(Protocol):
         self, edge: GraphEdge, doc_id: str | None
     ) -> object: ...
 
-    def node_doc_and_meta(self, node: GraphNode) -> tuple[str, dict[str, JsonValue]]: ...
-    def edge_doc_and_meta(self, edge: GraphEdge) -> tuple[str, dict[str, JsonValue]]: ...
+    def node_doc_and_meta(self, node: GraphNode) -> tuple[str, JsonObject]: ...
+    def edge_doc_and_meta(self, edge: GraphEdge) -> tuple[str, JsonObject]: ...
 
     def strip_none(self, data: dict[str, JsonValue]) -> dict[str, JsonValue]: ...
     def json_or_none(self, value: object) -> str | None: ...
