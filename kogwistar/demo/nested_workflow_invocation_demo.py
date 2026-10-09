@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import json
 import shutil
-from collections.abc import Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.models import Grounding, Node, Span
-from kogwistar.runtime import MappingStepResolver, WorkflowRuntime
+from kogwistar.runtime import MappingStepResolver, StepContext, WorkflowRuntime
 from kogwistar.runtime.design import load_workflow_design
 from kogwistar.runtime.models import (
     RunSuccess,
@@ -22,7 +22,7 @@ from kogwistar.runtime.models import (
 class _DemoEmbeddingFunction:
     _name = "nested-workflow-demo-embedding-v1"
 
-    def name(self):
+    def name(self) -> str:
         return self._name
 
     def __call__(self, input: Sequence[str]) -> list[list[float]]:
@@ -195,7 +195,7 @@ def _persist_design(
 def _build_engines(
     *,
     data_dir: Path,
-    backend_factory: Any | None = None,
+    backend_factory: Callable[..., object] | None = None,
 ) -> tuple[GraphKnowledgeEngine, GraphKnowledgeEngine]:
     embedding = _DemoEmbeddingFunction()
     kwargs: dict[str, Any] = {
@@ -220,7 +220,7 @@ def run_nested_workflow_invocation_demo(
     *,
     data_dir: str | Path | None = None,
     reset_data: bool = True,
-    backend_factory: Any | None = None,
+    backend_factory: Callable[..., object] | None = None,
     workflow_engine: GraphKnowledgeEngine | None = None,
     conversation_engine: GraphKnowledgeEngine | None = None,
 ) -> dict[str, Any]:
@@ -362,7 +362,7 @@ def run_nested_workflow_invocation_demo(
     resolver = MappingStepResolver()
 
     @resolver.register("start")
-    def _start(ctx):
+    def _start(ctx: StepContext) -> RunSuccess:
         return RunSuccess(
             conversation_node_id=None,
             state_update=[
@@ -380,7 +380,7 @@ def run_nested_workflow_invocation_demo(
         )
 
     @resolver.register("invoke_predesigned")
-    def _invoke_predesigned(ctx):
+    def _invoke_predesigned(ctx: StepContext) -> RunSuccess:
         return RunSuccess(
             conversation_node_id=None,
             state_update=[("u", {"predesigned_requested": True})],
@@ -394,8 +394,16 @@ def run_nested_workflow_invocation_demo(
         )
 
     @resolver.register("invoke_dynamic")
-    def _invoke_dynamic(ctx):
-        planner_payload = dict(ctx.state_view.get("planner_payload") or {})
+    def _invoke_dynamic(ctx: StepContext) -> RunSuccess:
+        planner_payload = cast(
+            dict[str, Any],
+            dict(
+                cast(
+                    Mapping[str, object],
+                    ctx.state_view.get("planner_payload") or {},
+                )
+            ),
+        )
         return RunSuccess(
             conversation_node_id=None,
             state_update=[
@@ -420,7 +428,7 @@ def run_nested_workflow_invocation_demo(
         )
 
     @resolver.register("predesigned_body")
-    def _predesigned_body(ctx):
+    def _predesigned_body(ctx: StepContext) -> RunSuccess:
         return RunSuccess(
             conversation_node_id=None,
             state_update=[
@@ -435,8 +443,16 @@ def run_nested_workflow_invocation_demo(
         )
 
     @resolver.register("dynamic_materialize")
-    def _dynamic_materialize(ctx):
-        planner_payload = dict(ctx.state_view.get("planner_payload") or {})
+    def _dynamic_materialize(ctx: StepContext) -> RunSuccess:
+        planner_payload = cast(
+            dict[str, Any],
+            dict(
+                cast(
+                    Mapping[str, object],
+                    ctx.state_view.get("planner_payload") or {},
+                )
+            ),
+        )
         return RunSuccess(
             conversation_node_id=None,
             state_update=[
@@ -454,7 +470,7 @@ def run_nested_workflow_invocation_demo(
         )
 
     @resolver.register("end")
-    def _end(ctx):
+    def _end(ctx: StepContext) -> RunSuccess:
         return RunSuccess(
             conversation_node_id=None,
             state_update=[("u", {"completed": True})],
