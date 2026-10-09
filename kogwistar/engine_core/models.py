@@ -767,12 +767,17 @@ class LevelAwareMixin(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def sync_level_from_root(cls, data: Any, info: ValidationInfo) -> Any:
+    def sync_level_from_root(cls, data: object, info: ValidationInfo) -> object:
         if isinstance(data, dict):
-            metadata = data.get("metadata", {}) or {}
+            payload = cast(dict[str, object], data)
+            metadata = payload.get("metadata", {}) or {}
             # Pull from metadata if not explicitly set in data
-            if "level_from_root" not in data and "level_from_root" in metadata:
-                data["level_from_root"] = metadata["level_from_root"]
+            if (
+                "level_from_root" not in payload
+                and isinstance(metadata, dict)
+                and "level_from_root" in metadata
+            ):
+                payload["level_from_root"] = metadata["level_from_root"]
         return data
 
     @model_validator(mode="after")
