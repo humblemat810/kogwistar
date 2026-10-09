@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Hashable
 from typing import Any, ParamSpec, Protocol, TypeVar
 
 from kogwistar.server.mcp_registry import McpRegistry
+
+from .chat_service import ChatRunService
 
 _P = ParamSpec("_P")
 _R = TypeVar("_R")
@@ -20,17 +22,17 @@ class ToolDecorator(Protocol):
 class RoleDecoratorFactory(Protocol):
     """Create a decorator that applies role or namespace metadata."""
 
-    def __call__(self, values: Any, /) -> ToolDecorator: ...
+    def __call__(self, values: object, /) -> ToolDecorator: ...
 
 
 def build_conversation_mcp(
     *,
-    get_service: Callable[[], Any],
+    get_service: Callable[[], ChatRunService],
     tool_roles: RoleDecoratorFactory,
     require_ns: RoleDecoratorFactory,
-    role_ro: Any,
-    role_rw: Any,
-    ns_conversation: Any,
+    role_ro: Hashable,
+    role_rw: Hashable,
+    ns_conversation: Hashable,
 ) -> McpRegistry:
     mcp = McpRegistry("Conversation MCP")
 
@@ -90,12 +92,12 @@ def build_conversation_mcp(
 
 def build_workflow_mcp(
     *,
-    get_service: Callable[[], Any],
+    get_service: Callable[[], ChatRunService],
     tool_roles: RoleDecoratorFactory,
     require_ns: RoleDecoratorFactory,
-    role_ro: Any,
-    role_rw: Any,
-    ns_workflow: Any,
+    role_ro: Hashable,
+    role_rw: Hashable,
+    ns_workflow: Hashable,
     get_subject: Callable[[], str | None] | None = None,
     get_user_id: Callable[[], str | None] | None = None,
     require_workflow_access: Callable[[str, str], None] | None = None,
