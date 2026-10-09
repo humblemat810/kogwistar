@@ -63,7 +63,7 @@ def where_and(*clauses: Mapping[str, JsonValue]) -> JsonObject:
         return {}
     if len(flat) == 1:
         return cast(JsonObject, flat[0])
-    return {"$and": flat}
+    return {"$and": cast(JsonValue, [dict(clause) for clause in flat])}
 
 
 def edge_endpoints_exists(

@@ -9,6 +9,7 @@ helpers without owning run execution itself.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from typing import Any
 
 from kogwistar.runtime.projections import (
@@ -81,7 +82,9 @@ class _RunInspectionService(_BaseComponent):
                 workflow_checkpoint_latest_projection_namespace(namespace),
                 str(run_id),
             )
-            payload = dict((row or {}).get("payload") or {}) if row else {}
+            row_map = row if isinstance(row, Mapping) else {}
+            raw_payload = row_map.get("payload")
+            payload = dict(raw_payload) if isinstance(raw_payload, Mapping) else {}
             node_id = str(payload.get("node_id") or "")
             if node_id:
                 nodes = self._conversation_engine().read.get_nodes(ids=[node_id], limit=1)

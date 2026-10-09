@@ -5,7 +5,7 @@ import os
 import pathlib
 from collections.abc import Callable
 from threading import Lock
-from typing import TYPE_CHECKING, Any, Generic, TypeVar
+from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast
 
 from fastapi.templating import Jinja2Templates
 
@@ -72,7 +72,7 @@ class _LazyResource(Generic[T]):
 
 
 def _build_pg_sqlalchemy_engine() -> Engine:
-    return build_sqlalchemy_engine(storage_settings)
+    return cast(Engine, build_sqlalchemy_engine(storage_settings))
 
 
 def _shared_sqlalchemy_engine() -> Engine | None:
