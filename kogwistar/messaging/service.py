@@ -3,13 +3,15 @@ from __future__ import annotations
 import json
 import time
 import uuid
-from contextlib import nullcontext
+from contextlib import AbstractContextManager, nullcontext
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING
+from collections.abc import Iterable
+from typing import TYPE_CHECKING, NotRequired, Protocol, TypedDict, cast
 
 from kogwistar.acl import current_acl_context
 from kogwistar.engine_core.engine import scoped_namespace
 from kogwistar.engine_core.models import Edge, Grounding, Node, Span
+from kogwistar.engine_core.utils.refs import default_verification
 from kogwistar.id_provider import stable_id
 from kogwistar.server.auth_middleware import (
     can_access_security_scope,
@@ -25,8 +27,45 @@ from .models import (
     ProjectedLaneMessageRow,
 )
 
+
+class LaneProjectionRecord(TypedDict):
+    order: int
+    message_id: str
+    namespace: str
+    purpose: str
+    inbox_id: str
+    conversation_id: str
+    recipient_id: str
+    sender_id: str
+    msg_type: str
+    status: str
+    created_at: int
+    available_at: int
+    run_id: str | None
+    step_id: str | None
+    correlation_id: str | None
+    payload_json: str | None
+    error_json: str | None
+    _fallback_sort: NotRequired[tuple[str, str]]
+
 if TYPE_CHECKING:
     from kogwistar.engine_core.engine import GraphKnowledgeEngine
+
+
+class LaneMessageMetaStoreLike(Protocol):
+    """Typed boundary for the lane-message methods on metadata stores."""
+
+    def _lane_message_get_row(self, *, message_id: str) -> ProjectedLaneMessageRow | None: ...
+
+    def ack_projected_lane_message(self, **kwargs: object) -> None: ...
+    def claim_projected_lane_messages(self, **kwargs: object) -> list[ProjectedLaneMessageRow]: ...
+    def clear_projected_lane_messages(self, namespace: str) -> int: ...
+    def dead_letter_projected_lane_message(self, **kwargs: object) -> None: ...
+    def iter_entity_events(self, **kwargs: object) -> Iterable[tuple[object, ...]]: ...
+    def list_projected_lane_messages(self, **kwargs: object) -> list[ProjectedLaneMessageRow]: ...
+    def project_lane_message(self, **kwargs: object) -> None: ...
+    def requeue_projected_lane_message(self, **kwargs: object) -> None: ...
+    def update_projected_lane_message_status(self, **kwargs: object) -> None: ...
 
 
 def _now_epoch() -> int:
@@ -53,6 +92,7 @@ def _message_span(conversation_id: str, *, insertion_method: str, excerpt: str) 
                 context_after="",
                 chunk_id=None,
                 source_cluster_id=None,
+                verification=default_verification("lane message evidence"),
             )
         ]
     )
@@ -85,6 +125,25 @@ def _compact_json(value: object) -> str | None:
     if isinstance(value, str):
         return value
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
+def _optional_text(value: object) -> str | None:
+    return None if value is None else str(value)
+
+
+def _json_int(value: object, default: int = 0) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (int, float, str)):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+    return default
+
+
+def _object_list(value: object) -> list[object]:
+    return list(value) if isinstance(value, list) else []
 
 
 def _coerce_lane_datetime(value: datetime | float | str | None) -> datetime | None:
@@ -121,7 +180,7 @@ def _lane_record_from_payload(
     namespace: str,
     entity_id: str | None,
     order: int,
-) -> dict[str, object] | None:
+) -> LaneProjectionRecord | None:
     metadata = payload.get("metadata")
     if not isinstance(metadata, dict):
         return None
@@ -157,9 +216,9 @@ def _lane_record_from_payload(
         "status": str(metadata.get("status") or "pending"),
         "created_at": int(order),
         "available_at": int(order),
-        "run_id": metadata.get("run_id"),
-        "step_id": metadata.get("step_id"),
-        "correlation_id": metadata.get("correlation_id"),
+        "run_id": _optional_text(metadata.get("run_id")),
+        "step_id": _optional_text(metadata.get("step_id")),
+        "correlation_id": _optional_text(metadata.get("correlation_id")),
         "payload_json": payload_json,
         "error_json": error_json,
     }
@@ -168,6 +227,9 @@ def _lane_record_from_payload(
 class LaneMessagingService:
     def __init__(self, engine: GraphKnowledgeEngine) -> None:
         self.engine = engine
+
+    def _meta_store(self) -> LaneMessageMetaStoreLike:
+        return cast(LaneMessageMetaStoreLike, self.engine.meta_sqlite)
 
     def send_message(
         self,
@@ -276,7 +338,10 @@ class LaneMessagingService:
         unit_of_work = getattr(self.engine, "unit_of_work", None) or getattr(
             self.engine, "uow", None
         )
-        uow_context = unit_of_work() if callable(unit_of_work) else nullcontext()
+        uow_context = cast(
+            AbstractContextManager[object],
+            unit_of_work() if callable(unit_of_work) else nullcontext(),
+        )
         with uow_context, scoped_namespace(self.engine, namespace):
             anchor_nodes = self._ensure_anchor_nodes(
                 conversation_id=conversation_id,
@@ -303,6 +368,12 @@ class LaneMessagingService:
                 label=f"lane_message:{msg_type}",
                 type="entity",
                 summary=f"Lane message {msg_type} from {sender_id} to {recipient_id}",
+                domain_id=None,
+                canonical_entity_id=None,
+                properties={},
+                embedding=None,
+                doc_id=message_id,
+                level_from_root=0,
                 mentions=[_message_span(conversation_id, insertion_method="lane_message", excerpt=msg_type)],
                 metadata={
                     "artifact_kind": "lane_message",
@@ -346,28 +417,28 @@ class LaneMessagingService:
                 )
 
             self._add_semantic_edge(
-                edge_id=str(stable_id("lane_message_edge", message_id, "in_conversation", anchor_nodes["conversation"].id)),
+                edge_id=str(stable_id("lane_message_edge", message_id, "in_conversation", str(anchor_nodes["conversation"].id))),
                 source_id=message_id,
                 target_id=str(anchor_nodes["conversation"].id),
                 relation="in_conversation",
                 conversation_id=conversation_id,
             )
             self._add_semantic_edge(
-                edge_id=str(stable_id("lane_message_edge", message_id, "in_inbox", anchor_nodes["inbox"].id)),
+                edge_id=str(stable_id("lane_message_edge", message_id, "in_inbox", str(anchor_nodes["inbox"].id))),
                 source_id=message_id,
                 target_id=str(anchor_nodes["inbox"].id),
                 relation="in_inbox",
                 conversation_id=conversation_id,
             )
             self._add_semantic_edge(
-                edge_id=str(stable_id("lane_message_edge", message_id, "sent_by", anchor_nodes["sender"].id)),
+                edge_id=str(stable_id("lane_message_edge", message_id, "sent_by", str(anchor_nodes["sender"].id))),
                 source_id=message_id,
                 target_id=str(anchor_nodes["sender"].id),
                 relation="sent_by",
                 conversation_id=conversation_id,
             )
             self._add_semantic_edge(
-                edge_id=str(stable_id("lane_message_edge", message_id, "sent_to", anchor_nodes["recipient"].id)),
+                edge_id=str(stable_id("lane_message_edge", message_id, "sent_to", str(anchor_nodes["recipient"].id))),
                 source_id=message_id,
                 target_id=str(anchor_nodes["recipient"].id),
                 relation="sent_to",
@@ -407,9 +478,7 @@ class LaneMessagingService:
                         conversation_id=conversation_id,
                     )
 
-            project = getattr(self.engine.meta_sqlite, "project_lane_message", None)
-            if callable(project):
-                project(
+            self._meta_store().project_lane_message(
                     message_id=message_id,
                     namespace=namespace,
                     purpose=effective_purpose,
@@ -454,24 +523,27 @@ class LaneMessagingService:
         unit_of_work = getattr(self.engine, "unit_of_work", None) or getattr(
             self.engine, "uow", None
         )
-        uow_context = unit_of_work() if callable(unit_of_work) else nullcontext()
+        uow_context = cast(
+            AbstractContextManager[object],
+            unit_of_work() if callable(unit_of_work) else nullcontext(),
+        )
         with uow_context, scoped_namespace(self.engine, namespace):
             try:
-                current = self.engine.backend.node_get(
+                current = cast(dict[str, object], self.engine.backend.node_get(
                     ids=[message_id],
                     include=["documents", "metadatas", "embeddings"],
-                )
+                ))
             except Exception:
-                current = self.engine.backend.node_get(
+                current = cast(dict[str, object], self.engine.backend.node_get(
                     ids=[message_id],
                     include=["documents", "metadatas"],
-                )
-            docs = current.get("documents") or []
-            if not docs or not docs[0]:
+                ))
+            docs = _object_list(current.get("documents"))
+            if not docs or not isinstance(docs[0], str) or not docs[0]:
                 return
             node = Node.model_validate_json(docs[0])
-            metadatas = current.get("metadatas") or []
-            existing_metadata = metadatas[0] if metadatas else {}
+            metadatas = _object_list(current.get("metadatas"))
+            existing_metadata = metadatas[0] if metadatas and isinstance(metadatas[0], dict) else {}
             node.metadata = dict(existing_metadata or node.metadata or {})
             node.metadata["status"] = str(status)
             node.metadata["updated_at"] = now_iso
@@ -485,7 +557,7 @@ class LaneMessagingService:
                 node.metadata["completed_at"] = now_iso
 
             doc, meta = self.engine.write.node_doc_and_meta(node)
-            embeddings = current.get("embeddings")
+            embeddings = _object_list(current.get("embeddings"))
             embedding = None
             if embeddings is not None and len(embeddings) >= 1:
                 embedding = embeddings[0]
@@ -506,9 +578,7 @@ class LaneMessagingService:
                 payload=payload if isinstance(payload, dict) else {},
             )
 
-        update = getattr(self.engine.meta_sqlite, "update_projected_lane_message_status", None)
-        if callable(update):
-            update(
+        self._meta_store().update_projected_lane_message_status(
                 message_id=message_id,
                 status=str(status),
                 error_json=(
@@ -530,9 +600,7 @@ class LaneMessagingService:
         msg_type: str | None = None,
         recipient_id: str | None = None,
     ) -> list[ProjectedLaneMessageRow]:
-        claim = getattr(self.engine.meta_sqlite, "claim_projected_lane_messages", None)
-        if not callable(claim):
-            return []
+        claim = self._meta_store().claim_projected_lane_messages
         claims = claims_ctx.get() or {}
         namespace = str(
             claims.get("storage_ns")
@@ -572,9 +640,7 @@ class LaneMessagingService:
         return claim(**claim_kwargs)
 
     def ack(self, *, message_id: str, claimed_by: str) -> None:
-        ack = getattr(self.engine.meta_sqlite, "ack_projected_lane_message", None)
-        if callable(ack):
-            ack(message_id=message_id, claimed_by=claimed_by)
+        self._meta_store().ack_projected_lane_message(message_id=message_id, claimed_by=claimed_by)
 
     def requeue(
         self,
@@ -584,9 +650,7 @@ class LaneMessagingService:
         error: dict[str, object] | None = None,
         delay_seconds: int = 0,
     ) -> None:
-        requeue = getattr(self.engine.meta_sqlite, "requeue_projected_lane_message", None)
-        if callable(requeue):
-            requeue(
+        self._meta_store().requeue_projected_lane_message(
                 message_id=message_id,
                 claimed_by=claimed_by,
                 error_json=(
@@ -604,9 +668,7 @@ class LaneMessagingService:
         claimed_by: str,
         error: dict[str, object] | None = None,
     ) -> None:
-        dead_letter = getattr(self.engine.meta_sqlite, "dead_letter_projected_lane_message", None)
-        if callable(dead_letter):
-            dead_letter(
+        self._meta_store().dead_letter_projected_lane_message(
                 message_id=message_id,
                 claimed_by=claimed_by,
                 error_json=(
@@ -636,9 +698,7 @@ class LaneMessagingService:
         limit: int = 1000,
         newest_first: bool = False,
     ) -> list[ProjectedLaneMessageRow]:
-        list_fn = getattr(self.engine.meta_sqlite, "list_projected_lane_messages", None)
-        if not callable(list_fn):
-            return []
+        list_fn = self._meta_store().list_projected_lane_messages
         claims = claims_ctx.get() or {}
         namespace = str(
             claims.get("storage_ns")
@@ -759,7 +819,7 @@ class LaneMessagingService:
         records = self._lane_projection_records_from_events(target_namespace)
         if not records:
             records = self._lane_projection_records_from_graph(target_namespace)
-        meta = self.engine.meta_sqlite
+        meta = self._meta_store()
         if rebuild:
             clear = getattr(meta, "clear_projected_lane_messages", None)
             if not callable(clear):
@@ -809,19 +869,15 @@ class LaneMessagingService:
         )
 
     def _list_projected_rows_for_repair(self, namespace: str) -> list[ProjectedLaneMessageRow]:
-        list_fn = getattr(self.engine.meta_sqlite, "list_projected_lane_messages", None)
-        if not callable(list_fn):
-            return []
+        list_fn = self._meta_store().list_projected_lane_messages
         try:
             return list_fn(namespace=str(namespace), limit=100_000)
         except TypeError:
             return list_fn(namespace=str(namespace))
 
-    def _lane_projection_records_from_events(self, namespace: str) -> list[dict[str, object]]:
-        iter_events = getattr(self.engine.meta_sqlite, "iter_entity_events", None)
-        if not callable(iter_events):
-            return []
-        records_by_id: dict[str, dict[str, object]] = {}
+    def _lane_projection_records_from_events(self, namespace: str) -> list[LaneProjectionRecord]:
+        iter_events = self._meta_store().iter_entity_events
+        records_by_id: dict[str, LaneProjectionRecord] = {}
         try:
             events = iter_events(namespace=str(namespace), from_seq=1)
             for event in events:
@@ -833,7 +889,7 @@ class LaneMessagingService:
                     payload,
                     namespace=str(namespace),
                     entity_id=str(entity_id),
-                    order=int(seq),
+                    order=_json_int(seq),
                 )
                 if record is None:
                     continue
@@ -845,7 +901,7 @@ class LaneMessagingService:
                 records_by_id[str(record["message_id"])] = record
         except Exception:
             return []
-        refreshed: list[dict[str, object]] = []
+        refreshed: list[LaneProjectionRecord] = []
         for record in records_by_id.values():
             current = self._lane_projection_record_from_node(
                 message_id=str(record["message_id"]),
@@ -855,10 +911,10 @@ class LaneMessagingService:
             refreshed.append(current or record)
         return sorted(refreshed, key=lambda item: (int(item["order"]), str(item["message_id"])))
 
-    def _lane_projection_records_from_graph(self, namespace: str) -> list[dict[str, object]]:
+    def _lane_projection_records_from_graph(self, namespace: str) -> list[LaneProjectionRecord]:
         with scoped_namespace(self.engine, namespace):
             nodes = self.engine.read.get_nodes(where={"artifact_kind": "lane_message"}, limit=100_000)
-        records: list[dict[str, object]] = []
+        records: list[LaneProjectionRecord] = []
         for index, node in enumerate(nodes, start=1):
             payload = node.model_dump(field_mode="backend", exclude={"embedding"})
             metadata = dict(getattr(node, "metadata", {}) or {})
@@ -889,7 +945,7 @@ class LaneMessagingService:
         message_id: str,
         namespace: str,
         order: int,
-    ) -> dict[str, object] | None:
+    ) -> LaneProjectionRecord | None:
         nodes = self.engine.read.get_nodes(ids=[str(message_id)])
         if not nodes:
             return None
@@ -999,8 +1055,8 @@ class LaneMessagingService:
         message_id = str(getattr(node, "id", "") or "")
         if not message_id:
             return
-        get_row = getattr(self.engine.meta_sqlite, "_lane_message_get_row", None)
-        if callable(get_row) and get_row(message_id=message_id) is not None:
+        get_row = self._meta_store()._lane_message_get_row
+        if get_row(message_id=message_id) is not None:
             return
         record = self._lane_projection_record_from_node(
             message_id=message_id,
@@ -1009,9 +1065,7 @@ class LaneMessagingService:
         )
         if record is None:
             return
-        project = getattr(self.engine.meta_sqlite, "project_lane_message", None)
-        if not callable(project):
-            return
+        project = self._meta_store().project_lane_message
         project(
             message_id=message_id,
             namespace=str(namespace),
@@ -1072,6 +1126,12 @@ class LaneMessagingService:
                 label=f"lane_conversation:{conversation_id}",
                 type="entity",
                 summary=f"Lane-messaging conversation anchor for {conversation_id}",
+                domain_id=None,
+                canonical_entity_id=None,
+                properties={},
+                embedding=None,
+                doc_id=str(stable_id("lane_message_conversation", conversation_id)),
+                level_from_root=0,
                 mentions=[_message_span(conversation_id, insertion_method="lane_anchor", excerpt=conversation_id)],
                 metadata={
                     "artifact_kind": "lane_conversation",
@@ -1085,6 +1145,12 @@ class LaneMessagingService:
                 label=f"lane_inbox:{inbox_id}",
                 type="entity",
                 summary=f"Lane inbox anchor for {inbox_id}",
+                domain_id=None,
+                canonical_entity_id=None,
+                properties={},
+                embedding=None,
+                doc_id=str(stable_id("lane_message_inbox", inbox_id)),
+                level_from_root=0,
                 mentions=[_message_span(conversation_id, insertion_method="lane_anchor", excerpt=inbox_id)],
                 metadata={
                     "artifact_kind": "lane_inbox",
@@ -1098,6 +1164,12 @@ class LaneMessagingService:
                 label=f"lane_anchor:{sender_id}",
                 type="entity",
                 summary=f"Lane sender anchor for {sender_id}",
+                domain_id=None,
+                canonical_entity_id=None,
+                properties={},
+                embedding=None,
+                doc_id=self._anchor_node_id(sender_id),
+                level_from_root=0,
                 mentions=[_message_span(conversation_id, insertion_method="lane_anchor", excerpt=sender_id)],
                 metadata={
                     "artifact_kind": "lane_anchor",
@@ -1111,6 +1183,12 @@ class LaneMessagingService:
                 label=f"lane_anchor:{recipient_id}",
                 type="entity",
                 summary=f"Lane recipient anchor for {recipient_id}",
+                domain_id=None,
+                canonical_entity_id=None,
+                properties={},
+                embedding=None,
+                doc_id=self._anchor_node_id(recipient_id),
+                level_from_root=0,
                 mentions=[_message_span(conversation_id, insertion_method="lane_anchor", excerpt=recipient_id)],
                 metadata={
                     "artifact_kind": "lane_anchor",
@@ -1146,6 +1224,11 @@ class LaneMessagingService:
             label=f"lane_message_edge:{relation}",
             type="relationship",
             summary=f"Lane message semantic edge {relation}",
+            domain_id=None,
+            canonical_entity_id=None,
+            properties={},
+            embedding=None,
+            doc_id=edge_id,
             mentions=[_message_span(conversation_id, insertion_method="lane_message_edge", excerpt=relation)],
             metadata={
                 "artifact_kind": "lane_message_edge",
