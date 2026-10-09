@@ -36,6 +36,7 @@ from .storage_backend import (
     AtomicMutationCapability,
     NoopUnitOfWork,
     StorageBackend,
+    UnitOfWork,
     projection_capability_backend,
     get_async_two_stage_projection_adapter,
     get_atomic_mutation_capability,
@@ -71,15 +72,15 @@ from .vector_search import VectorSearchHit
 
 
 class _BackendCallBridge:
-    def __init__(self, backend):
+    def __init__(self, backend: StorageBackend) -> None:
         self._backend = backend
 
-    def __getattr__(self, name: str):
+    def __getattr__(self, name: str) -> object:
         attr = getattr(self._backend, name)
         if not callable(attr):
             return attr
 
-        def _call(*args, **kwargs):
+        def _call(*args: object, **kwargs: object) -> object:
             return run_awaitable_blocking(attr(*args, **kwargs))
 
         return _call
@@ -214,7 +215,7 @@ def _optional_dependency_error(*, extra: str, detail: str) -> RuntimeError:
     )
 
 
-def _import_chroma_client():
+def _import_chroma_client() -> tuple[type[Any], type[Any]]:
     try:
         from chromadb import Client  # type: ignore
         from chromadb.config import Settings  # type: ignore
@@ -235,7 +236,7 @@ def _is_pgvector_backend_instance(backend: object) -> bool:
     return isinstance(backend, PgVectorBackend)
 
 
-def _build_postgres_uow_if_needed(backend: StorageBackend):
+def _build_postgres_uow_if_needed(backend: StorageBackend) -> UnitOfWork:
     if not _is_pgvector_backend_instance(backend):
         return NoopUnitOfWork()
     if getattr(backend, "_is_async_engine", False):
@@ -260,7 +261,7 @@ def _build_postgres_uow_if_needed(backend: StorageBackend):
     return PostgresUnitOfWork(engine=pg_backend.engine)
 
 
-def _safe_json_dict(doc: Any) -> dict:
+def _safe_json_dict(doc: object) -> dict[str, JsonValue]:
     if isinstance(doc, dict):
         return doc
     if not isinstance(doc, str):
@@ -272,17 +273,19 @@ def _safe_json_dict(doc: Any) -> dict:
         return {}
 
 
-def _merge_meta(base_meta: dict | None, patch: dict) -> dict:
+def _merge_meta(
+    base_meta: dict[str, JsonValue] | None, patch: dict[str, JsonValue]
+) -> dict[str, JsonValue]:
     base_meta = base_meta or {}
     # flat merge
     return {**base_meta, **patch}
 
 
-def _strip_none(d: dict) -> dict:
+def _strip_none(d: dict[str, JsonValue | None]) -> dict[str, JsonValue]:
     return {k: v for k, v in d.items() if v is not None}
 
 
-def _json_or_none(v):
+def _json_or_none(v: object) -> str | None:
     return None if v is None else json.dumps(v)
 
 
