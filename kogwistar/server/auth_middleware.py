@@ -11,7 +11,7 @@ import traceback
 from contextvars import ContextVar
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Awaitable, Callable, cast
+from typing import TYPE_CHECKING, Callable, cast
 
 try:
     from dotenv import load_dotenv as _load_dotenv  # pyright: ignore[reportAssignmentType]
