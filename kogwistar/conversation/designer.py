@@ -1,4 +1,5 @@
 from ..engine_core.models import Grounding, Span
+from ..json_types import JsonValue
 from ..runtime.design import BaseWorkflowDesigner
 from ..runtime.models import WorkflowEdge, WorkflowNode
 from .agentic_answering_design import (
@@ -79,7 +80,7 @@ class AgenticAnsweringWorkflowDesigner(BaseWorkflowDesigner):
                 start: bool = False,
                 terminal: bool = False,
                 fanout: bool = False,
-            ):
+            ) -> None:
                 n = WorkflowNode(
                     id=node_id,
                     label=label,
@@ -109,12 +110,12 @@ class AgenticAnsweringWorkflowDesigner(BaseWorkflowDesigner):
                 edge_id: str,
                 src: str,
                 dst: str,
-                relation,
+                relation: str,
                 pred: str | None,
                 priority: int = 100,
                 is_default: bool = False,
                 multiplicity: str = "one",
-            ):
+            ) -> None:
                 e = WorkflowEdge(
                     id=edge_id,
                     label="wf_next",
@@ -217,7 +218,7 @@ class ConversationWorkflowDesigner(BaseWorkflowDesigner):
             # Lazy import to avoid circular deps for model classes.
             from ..runtime.models import WorkflowEdge
 
-            def wf_node_id(workflow_id, suffix):
+            def wf_node_id(workflow_id: str, suffix: str) -> str:
                 return f"wf:{workflow_id}:{suffix}"
 
             import functools
@@ -232,9 +233,9 @@ class ConversationWorkflowDesigner(BaseWorkflowDesigner):
                 start: bool = False,
                 terminal: bool = False,
                 fanout: bool = False,
-                metadata=None,
-                wf_join=False,
-            ):
+                metadata: dict[str, JsonValue] | None = None,
+                wf_join: bool = False,
+            ) -> None:
                 if metadata is None:
                     metadata = {}
                 metadata_final = {
@@ -283,8 +284,8 @@ class ConversationWorkflowDesigner(BaseWorkflowDesigner):
                 priority: int = 100,
                 is_default: bool = False,
                 multiplicity: str = "one",
-                metadata=None,
-            ):
+                metadata: dict[str, JsonValue] | None = None,
+            ) -> None:
                 if metadata is None:
                     metadata = {}
                 metadata_final = {
@@ -750,7 +751,7 @@ class ConversationWorkflowDesigner(BaseWorkflowDesigner):
             workflow_id=workflow_id, mode="backbone", include_context_snapshot=False
         )
 
-    def _print_to_do(self):
+    def _print_to_do(self) -> None:
         print("""_summary_
         to dos
         1. if multiple node target is another node, the add edge should have an arg to say target change to wait join
