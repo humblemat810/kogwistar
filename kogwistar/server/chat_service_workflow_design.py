@@ -98,7 +98,7 @@ class _WorkflowDesignService(_WorkflowDesignHistoryMixin):
         metadata: dict[str, Any] | None = None,
         actor_sub: str | None = None,
         source: str = "rest",
-    ) -> dict[str, Any]:
+    ) -> JsonObject:
         workflow_id = str(workflow_id or "").strip()
         if not workflow_id:
             raise ValueError("workflow_id is required")
@@ -217,7 +217,7 @@ class _WorkflowDesignService(_WorkflowDesignHistoryMixin):
         metadata: dict[str, Any] | None = None,
         actor_sub: str | None = None,
         source: str = "rest",
-    ) -> dict[str, Any]:
+    ) -> JsonObject:
         workflow_id = str(workflow_id or "").strip()
         if not workflow_id:
             raise ValueError("workflow_id is required")
@@ -332,7 +332,7 @@ class _WorkflowDesignService(_WorkflowDesignHistoryMixin):
         designer_id: str,
         actor_sub: str | None = None,
         source: str = "rest",
-    ) -> dict[str, Any]:
+    ) -> JsonObject:
         workflow_id = str(workflow_id or "").strip()
         node_id = str(node_id or "").strip()
         if not workflow_id:
@@ -432,7 +432,7 @@ class _WorkflowDesignService(_WorkflowDesignHistoryMixin):
         designer_id: str,
         actor_sub: str | None = None,
         source: str = "rest",
-    ) -> dict[str, Any]:
+    ) -> JsonObject:
         workflow_id = str(workflow_id or "").strip()
         edge_id = str(edge_id or "").strip()
         if not workflow_id:
@@ -530,7 +530,7 @@ class _WorkflowDesignService(_WorkflowDesignHistoryMixin):
         designer_id: str,
         actor_sub: str | None = None,
         source: str = "rest",
-    ) -> dict[str, Any]:
+    ) -> JsonObject:
         workflow_id = str(workflow_id or "").strip()
         if not workflow_id:
             raise ValueError("workflow_id is required")
@@ -547,7 +547,7 @@ class _WorkflowDesignService(_WorkflowDesignHistoryMixin):
                 self._store_workflow_projection(
                     workflow_id=workflow_id, state=state, materialization_status="ready"
                 )
-                result: dict[str, Any] = dict(state)
+                result: JsonObject = _json_object(state)
                 result["status"] = "noop"
                 return result
             selected_versions = list(state.get("selected_versions") or [])
@@ -620,7 +620,7 @@ class _WorkflowDesignService(_WorkflowDesignHistoryMixin):
                 workflow_id=workflow_id, state=out, materialization_status="ready"
             )
             self._workflow_store_snapshot_if_needed(workflow_id=workflow_id, state=out)
-            result = dict(out)
+            result = _json_object(out)
             result["status"] = "ok"
             return result
 
@@ -631,7 +631,7 @@ class _WorkflowDesignService(_WorkflowDesignHistoryMixin):
         designer_id: str,
         actor_sub: str | None = None,
         source: str = "rest",
-    ) -> dict[str, Any]:
+    ) -> JsonObject:
         workflow_id = str(workflow_id or "").strip()
         if not workflow_id:
             raise ValueError("workflow_id is required")
@@ -655,7 +655,7 @@ class _WorkflowDesignService(_WorkflowDesignHistoryMixin):
                 self._store_workflow_projection(
                     workflow_id=workflow_id, state=state, materialization_status="ready"
                 )
-                result: dict[str, Any] = dict(state)
+                result: JsonObject = _json_object(state)
                 result["status"] = "noop"
                 return result
             target_entry = active_versions[current_index + 1]
@@ -702,7 +702,7 @@ class _WorkflowDesignService(_WorkflowDesignHistoryMixin):
                 workflow_id=workflow_id, state=out, materialization_status="ready"
             )
             self._workflow_store_snapshot_if_needed(workflow_id=workflow_id, state=out)
-            result = dict(out)
+            result = _json_object(out)
             result["status"] = "ok"
             return result
 
