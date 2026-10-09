@@ -295,7 +295,7 @@ def _node_doc_and_meta(n: Node | PureChromaNode) -> tuple[str, dict]:
     """Return (documents_string, metadata_dict) for Chroma. helper when inserting to backend db,"""
     """Extract and flatten certain fields that can be searched via collection """
     doc = n.model_dump_json(field_mode="backend", exclude=["embedding", "metadata"])
-    meta = n.metadata  # user custom metadata will be overwritten by system metadata
+    meta = cast(dict[str, JsonValue], n.metadata)  # user metadata is flattened below
     meta.update(
         {
             "doc_id": getattr(n, "doc_id", None),
@@ -307,7 +307,7 @@ def _node_doc_and_meta(n: Node | PureChromaNode) -> tuple[str, dict]:
             "properties": _json_or_none(getattr(n, "properties", None)),
         }
     )
-    meta.update(n.get_extra_update())
+    meta.update(cast(dict[str, JsonValue], n.get_extra_update()))
 
     mentions = getattr(n, "mentions", None)
     if mentions is not None:

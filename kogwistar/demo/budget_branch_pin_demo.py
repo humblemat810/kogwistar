@@ -5,15 +5,17 @@ import pathlib
 import threading
 import uuid
 from dataclasses import dataclass
-from typing import Any, MutableMapping
+from typing import Any, MutableMapping, cast
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.json_types import JsonValue
 from kogwistar.engine_core.in_memory_backend import build_in_memory_backend
 from kogwistar.engine_core.models import Grounding, MentionVerification, Span
 from kogwistar.runtime.budget import RateBudgetWindow
 from kogwistar.runtime.models import (
     RunSuccess,
     RunSuspended,
+    StepRunResult,
     WorkflowEdge,
     WorkflowNode,
 )
@@ -190,7 +192,7 @@ def _latest_checkpoint_state(conv_engine: GraphKnowledgeEngine, run_id: str) -> 
     state_json = latest.metadata.get("state_json", {})
     if isinstance(state_json, str):
         state_json = json.loads(state_json)
-    return dict(state_json or {})
+    return cast(dict[str, Any], state_json) if isinstance(state_json, dict) else {}
 
 
 def run_budget_branch_pin_demo() -> dict[str, Any]:
@@ -203,7 +205,7 @@ def run_budget_branch_pin_demo() -> dict[str, Any]:
     light_done = threading.Event()
     heavy_done = threading.Event()
 
-    def _record(event: str, **extra: Any) -> None:
+    def _record(event: str, **extra: JsonValue) -> None:
         with lock:
             timeline.append(
                 {
@@ -214,7 +216,7 @@ def run_budget_branch_pin_demo() -> dict[str, Any]:
                 }
             )
 
-    def _heavy_1(ctx: StepContext):
+    def _heavy_1(ctx: StepContext) -> StepRunResult:
         if not gate.consume(2):
             raise AssertionError("heavy branch should have enough tokens at step 1")
         with ctx.state_write as state:
@@ -224,7 +226,7 @@ def run_budget_branch_pin_demo() -> dict[str, Any]:
         heavy_ready.set()
         return RunSuccess(conversation_node_id=None, state_update=[("u", {"heavy_1": True})])
 
-    def _heavy_2(ctx: StepContext):
+    def _heavy_2(ctx: StepContext) -> StepRunResult:
         _record("heavy.2.started")
         if not gate.consume(1):
             _record("heavy.2.paused")
@@ -249,7 +251,7 @@ def run_budget_branch_pin_demo() -> dict[str, Any]:
         heavy_done.set()
         return RunSuccess(conversation_node_id=None, state_update=[("u", {"heavy_2": True})])
 
-    def _light(ctx: StepContext):
+    def _light(ctx: StepContext) -> StepRunResult:
         with ctx.state_write as state:
             _append_op_log(state, "light")
         _record("light.finished")
@@ -257,7 +259,7 @@ def run_budget_branch_pin_demo() -> dict[str, Any]:
         light_done.set()
         return RunSuccess(conversation_node_id=None, state_update=[("u", {"light": True})])
 
-    def _join(ctx: StepContext):
+    def _join(ctx: StepContext) -> StepRunResult:
         with ctx.state_write as state:
             _append_op_log(state, "join")
         _record("join.finished")

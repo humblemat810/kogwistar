@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from typing import ClassVar, Literal
+from typing import ClassVar, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from ..engine_core.models import Edge, Node
+from ..json_types import JsonValue
 
 ACLGrainLiteral = Literal["document", "grounding", "span", "node", "edge", "artifact"]
 ACLEdgeTypeLiteral = Literal["acl_supersedes", "acl_targets_truth", "acl_covers_usage"]
@@ -40,20 +41,24 @@ class ACLEdgeMetadata(BaseModel):
 
 
 class ACLNode(Node):
-    metadata: dict
+    metadata: dict[str, JsonValue] = Field(default_factory=dict)
     id_kind: ClassVar[str] = "acl.node"
 
     @field_validator("metadata")
     @classmethod
-    def check_acl_node_metadata(cls, value: dict) -> dict:
-        return ACLNodeMetadata.model_validate(value).model_dump()
+    def check_acl_node_metadata(
+        cls, value: dict[str, JsonValue]
+    ) -> dict[str, JsonValue]:
+        return cast(dict[str, JsonValue], ACLNodeMetadata.model_validate(value).model_dump())
 
 
 class ACLEdge(Edge):
-    metadata: dict
+    metadata: dict[str, JsonValue] = Field(default_factory=dict)
     id_kind: ClassVar[str] = "acl.edge"
 
     @field_validator("metadata")
     @classmethod
-    def check_acl_edge_metadata(cls, value: dict) -> dict:
-        return ACLEdgeMetadata.model_validate(value).model_dump()
+    def check_acl_edge_metadata(
+        cls, value: dict[str, JsonValue]
+    ) -> dict[str, JsonValue]:
+        return cast(dict[str, JsonValue], ACLEdgeMetadata.model_validate(value).model_dump())

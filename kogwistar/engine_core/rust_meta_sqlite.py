@@ -6,7 +6,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import fields
 from pathlib import Path
-from typing import Any, NoReturn, Protocol, TYPE_CHECKING
+from typing import Any, NoReturn, Protocol, TYPE_CHECKING, cast
 
 from kogwistar._rust_bridge import store_sqlite
 from kogwistar.engine_core.engine_sqlite import IndexJobRow, ProjectedLaneMessageSqlRow
@@ -424,10 +424,16 @@ class RustEngineSQLite:
         )
 
     def compare_and_swap_named_projections(
-        self, updates: list[dict[str, Any]]
+        self, updates: list[JsonObject]
     ) -> bool:
         """Atomically CAS several named projections in one Rust transaction."""
-        return bool(self._call("compare_and_swap_named_projections", updates=updates))
+        updates_payload: JsonValue = cast(JsonValue, updates)
+        return bool(
+            self._call(
+                "compare_and_swap_named_projections",
+                updates=updates_payload,
+            )
+        )
 
     def list_named_projections(self, namespace: str) -> list[dict[str, Any]]:
         return list(self._call("list_named_projections", namespace=namespace))

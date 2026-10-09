@@ -6,13 +6,13 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Protocol, TypeAlias, cast
 
 from ..models import Grounding, MentionVerification, Span
+from ...json_types import JsonObject, JsonValue
 from .metadata import json_or_none, strip_none
 
 if TYPE_CHECKING:
     from ..models import Edge, Node, PureChromaEdge, PureChromaNode
 
 
-JsonObject: TypeAlias = dict[str, object]
 RefPayload: TypeAlias = JsonObject
 
 
@@ -184,7 +184,7 @@ def node_doc_and_meta(n: Node | PureChromaNode) -> tuple[str, JsonObject]:
             "properties": json_or_none(getattr(n, "properties", None)),
         }
     )
-    meta.update(n.get_extra_update())
+    meta.update(cast(dict[str, JsonValue], n.get_extra_update()))
 
     mentions = getattr(n, "mentions", None)
     if mentions is not None:

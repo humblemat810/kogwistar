@@ -531,7 +531,7 @@ def _make_runtime_edge(
     run_id: str | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> WorkflowRuntimeEdge:
-    edge_metadata = {
+    edge_metadata: dict[str, JsonValue] = {
         "entity_type": "conversation_edge",
         "relation": relation,
         "conversation_id": conversation_id,

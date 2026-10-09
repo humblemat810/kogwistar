@@ -238,12 +238,13 @@ def build_workflow_from_engine(
                 f"workflow edge endpoints not workflow nodes: {src!r} -> {dst!r}"
             )
 
+        predicate_value = md.get("wf_predicate")
         we = WFEdge(
             edge_id=e.id,
             workflow_id=str(md.get("workflow_id") or workflow_id),
             src=str(src),
             dst=str(dst),
-            predicate=md.get("wf_predicate"),
+            predicate=predicate_value if isinstance(predicate_value, str) else None,
             priority=int(md.get("wf_priority", 100)),
             is_default=bool(md.get("wf_is_default", False)),
             multiplicity=str(md.get("wf_multiplicity", "one")),
@@ -321,8 +322,9 @@ def load_workflow_design(
         adj[src].append(e)
         rev_adj[dst].append(e)
 
-    def get_node_priority(n: WorkflowEdge):
-        return n.metadata["wf_priority"]
+    def get_node_priority(n: WorkflowEdge) -> int:
+        value = n.metadata.get("wf_priority")
+        return int(value) if isinstance(value, (int, float, str)) else 100
 
     for src in adj:
         adj[src].sort(key=get_node_priority)
@@ -371,9 +373,8 @@ def validate_workflow_design(
     # predicate resolution
     for edges in adj.values():
         for e in edges:
-            pred: str | None = e.metadata.get(
-                "wf_predicate", e.metadata.get("predicate")
-            )
+            pred_value = e.metadata.get("wf_predicate", e.metadata.get("predicate"))
+            pred = pred_value if isinstance(pred_value, str) else None
             if pred is not None and pred not in predicate_registry:
                 raise ValueError(f"Unknown predicate {pred!r} on workflow edge {e.id}")
 

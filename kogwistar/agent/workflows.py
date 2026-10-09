@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Literal
 
 from kogwistar.engine_core.models import Grounding, Span
+from kogwistar.json_types import JsonObject
 from kogwistar.runtime.models import WorkflowDesignArtifact, WorkflowEdge, WorkflowNode
 
 AgentWorkflowMode = Literal["normal", "plan", "goal"]
@@ -28,9 +29,9 @@ def _node(
     label: str,
     start: bool = False,
     terminal: bool = False,
-    metadata: dict[str, object] | None = None,
+    metadata: JsonObject | None = None,
 ) -> WorkflowNode:
-    node_metadata: dict[str, object] = {
+    node_metadata: JsonObject = {
         "entity_type": "workflow_node",
         "workflow_id": workflow_id,
         "wf_op": op,
@@ -121,7 +122,7 @@ def build_normal_workflow(
     execute_op: str = "agent.execute",
     control_op: str | None = None,
     ack_op: str | None = None,
-    control_metadata: dict[str, object] | None = None,
+    control_metadata: JsonObject | None = None,
 ) -> WorkflowDesignArtifact:
     """Build a one-pass ordinary workflow."""
 
@@ -203,7 +204,7 @@ def build_plan_workflow(
     execute_op: str = "agent.execute",
     control_op: str | None = None,
     ack_op: str | None = None,
-    control_metadata: dict[str, object] | None = None,
+    control_metadata: JsonObject | None = None,
 ) -> WorkflowDesignArtifact:
     """Build a plan/approve/execute graph; approval remains ordinary routing."""
 
@@ -299,7 +300,7 @@ def build_goal_workflow(
     act_op: str = "agent.act",
     control_op: str | None = None,
     ack_op: str | None = None,
-    control_metadata: dict[str, object] | None = None,
+    control_metadata: JsonObject | None = None,
     satisfied_predicate: str = "goal_satisfied",
     continue_predicate: str = "goal_not_satisfied",
 ) -> WorkflowDesignArtifact:
@@ -396,13 +397,17 @@ def without_agent_mode_metadata(
 def graph_signature(design: WorkflowDesignArtifact) -> tuple[tuple[str, ...], tuple[tuple[str, str, str | None], ...]]:
     """Return topology/op signature for metadata-removal equivalence tests."""
 
+    def edge_predicate(edge: WorkflowEdge) -> str | None:
+        value = edge.metadata.get("wf_predicate")
+        return value if isinstance(value, str) else None
+
     nodes = tuple(sorted(f"{node.safe_get_id()}:{node.op}:{node.terminal}" for node in design.nodes))
     edges = tuple(
         sorted(
             (
                 str(edge.source_ids[0]),
                 str(edge.target_ids[0]),
-                edge.metadata.get("wf_predicate"),
+                edge_predicate(edge),
             )
             for edge in design.edges
         )

@@ -33,6 +33,7 @@ from .models import (
     MetaFromLastSummary,
     RetrievalResult,
 )
+from .conversation_context import PromptContext
 
 if TYPE_CHECKING:
     from kogwistar.runtime.models import StateUpdate
@@ -1361,7 +1362,7 @@ def _aa_select_used_evidence(ctx: StepContext) -> StepRunResult:
     candidates = list(sv.get("candidates") or [])
 
     # Pull view for snapshots.
-    view = (sv.get("_rt") or {}).get("view")
+    view = cast(PromptContext | None, (sv.get("_rt") or {}).get("view"))
     if view is None:
         view = svc.get_conversation_view(
             conversation_id=conversation_id, purpose="answer"
@@ -1514,7 +1515,7 @@ def _aa_generate_answer_with_citations(ctx: StepContext) -> StepRunResult:
     evidence_pack = _as_evidence_pack(evidence_pack)
 
     # Pull view for snapshots.
-    view = (sv.get("_rt") or {}).get("view")
+    view = cast(PromptContext | None, (sv.get("_rt") or {}).get("view"))
     if view is None:
         view = svc.get_conversation_view(
             conversation_id=conversation_id, purpose="answer"
@@ -1610,7 +1611,7 @@ def _aa_validate_or_repair_citations(ctx: StepContext) -> StepRunResult:
         _set_runtime_state(ctx, "evidence_pack", evidence_pack)
     evidence_pack = _as_evidence_pack(evidence_pack)
 
-    view = (sv.get("_rt") or {}).get("view")
+    view = cast(PromptContext | None, (sv.get("_rt") or {}).get("view"))
     if view is None:
         view = svc.get_conversation_view(
             conversation_id=conversation_id, purpose="answer"
@@ -1707,7 +1708,7 @@ def _aa_evaluate_answer(ctx: StepContext) -> StepRunResult:
         _set_runtime_state(ctx, "evidence_pack", evidence_pack)
     evidence_pack = _as_evidence_pack(evidence_pack)
 
-    view = (sv.get("_rt") or {}).get("view")
+    view = cast(PromptContext | None, (sv.get("_rt") or {}).get("view"))
     if view is None:
         view = svc.get_conversation_view(
             conversation_id=conversation_id, purpose="answer"
