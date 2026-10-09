@@ -367,7 +367,7 @@ def store_memory_read(
     operation: JsonObject,
     python_value: JsonValue | object = _MISSING_PYTHON_RESULT,
     store: str = "graph",
-) -> Any:
+) -> JsonValue:
     """Inspect isolated native store built from immutable JSON snapshot.
 
     Caller owns Python read and passes its already-computed result for shadow
@@ -511,7 +511,7 @@ def contract_metadata_filter_matches(
     )
 
 
-def json_contract_compatible(value: Any) -> bool:
+def json_contract_compatible(value: object) -> bool:
     """Whether a value can cross this Phase-1 JSON-only native boundary."""
     return metadata_filter_json_contract_compatible(value)
 
