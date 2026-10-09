@@ -26,6 +26,13 @@ if TYPE_CHECKING:
     from ..engine import GraphKnowledgeEngine
 
 
+def _backend_mapping(value: object) -> dict[str, Any]:
+    """Narrow optional backend responses before consuming JSON-like fields."""
+    if not isinstance(value, Mapping):
+        return {}
+    return dict(value)
+
+
 class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
     def __init__(self, engine: GraphKnowledgeEngine) -> None:
         super().__init__(engine)
@@ -141,8 +148,10 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         missing_nodes, missing_edges = set(), set()
         if need_nodes:
             got = set(
-                run_awaitable_blocking(
-                    self._e.backend.node_get(ids=list(need_nodes))
+                _backend_mapping(
+                    run_awaitable_blocking(
+                        self._e.backend.node_get(ids=list(need_nodes))
+                    )
                 ).get("ids")
                 or []
             )
@@ -150,8 +159,10 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             missing_nodes = need_nodes - got
         if need_edges:
             got = set(
-                run_awaitable_blocking(
-                    self._e.backend.edge_get(ids=list(need_edges))
+                _backend_mapping(
+                    run_awaitable_blocking(
+                        self._e.backend.edge_get(ids=list(need_edges))
+                    )
                 ).get("ids")
                 or []
             )
@@ -367,8 +378,10 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         need_nodes = set((edge.source_ids or []) + (edge.target_ids or []))
         if need_nodes:
             got = set(
-                run_awaitable_blocking(
-                    self._e.backend.node_get(ids=list(need_nodes))
+                _backend_mapping(
+                    run_awaitable_blocking(
+                        self._e.backend.node_get(ids=list(need_nodes))
+                    )
                 ).get("ids")
                 or []
             )
@@ -384,9 +397,9 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             ids = getattr(edge, attr, None) or []
             if ids:
                 got = set(
-                    run_awaitable_blocking(self._e.backend.edge_get(ids=ids)).get(
-                        "ids"
-                    )
+                    _backend_mapping(
+                        run_awaitable_blocking(self._e.backend.edge_get(ids=ids))
+                    ).get("ids")
                     or []
                 )
                 if got != set(ids):
@@ -469,11 +482,11 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 )
 
     def exists_node(self, rid: str) -> bool:
-        g = run_awaitable_blocking(self._e.backend.node_get(ids=[rid]))
+        g = _backend_mapping(run_awaitable_blocking(self._e.backend.node_get(ids=[rid])))
         return (g.get("ids") or [None])[0] == rid
 
     def exists_edge(self, rid: str) -> bool:
-        g = run_awaitable_blocking(self._e.backend.edge_get(ids=[rid]))
+        g = _backend_mapping(run_awaitable_blocking(self._e.backend.edge_get(ids=[rid])))
         return (g.get("ids") or [None])[0] == rid
 
     def exists_any(self, rid: str) -> bool:
@@ -485,12 +498,12 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
     def select_doc_context(
         self, doc_id: str, max_nodes: int = 200, max_edges: int = 400
     ):
-        nodes = run_awaitable_blocking(self._e.backend.node_get(
+        nodes = _backend_mapping(run_awaitable_blocking(self._e.backend.node_get(
             where={"doc_id": doc_id}, include=["documents"]
-        ))
-        edges = run_awaitable_blocking(self._e.backend.edge_get(
+        )))
+        edges = _backend_mapping(run_awaitable_blocking(self._e.backend.edge_get(
             where={"doc_id": doc_id}, include=["documents"]
-        ))
+        )))
 
         node_items = []
         for i, (nid, ndoc) in enumerate(
@@ -537,7 +550,9 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             if kind == "node":
                 ln: Node = obj
                 if mode == "skip-if-exists":
-                    got = run_awaitable_blocking(self._e.backend.node_get(ids=[ln.id]))
+                    got = _backend_mapping(
+                        run_awaitable_blocking(self._e.backend.node_get(ids=[ln.id]))
+                    )
                     if got.get("ids"):
                         node_ids.append(ln.id)
                         continue
@@ -561,7 +576,9 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             elif kind == "edge":
                 le: Edge = obj
                 if mode == "skip-if-exists":
-                    got = run_awaitable_blocking(self._e.backend.edge_get(ids=[le.id]))
+                    got = _backend_mapping(
+                        run_awaitable_blocking(self._e.backend.edge_get(ids=[le.id]))
+                    )
                     if got.get("ids"):
                         edge_ids.append(le.id)
                         continue
@@ -627,7 +644,9 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 )
                 ln.mentions = self.dealias_span(ln.mentions, document.id)
                 if mode == "skip-if-exists":
-                    got = run_awaitable_blocking(self._e.backend.node_get(ids=[ln.id]))
+                    got = _backend_mapping(
+                        run_awaitable_blocking(self._e.backend.node_get(ids=[ln.id]))
+                    )
                     if got.get("ids"):
                         node_ids.append(ln.id)
                         continue
@@ -661,7 +680,9 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 )
                 le.mentions = self.dealias_span(le.mentions, document.id)
                 if mode == "skip-if-exists":
-                    got = run_awaitable_blocking(self._e.backend.edge_get(ids=[le.id]))
+                    got = _backend_mapping(
+                        run_awaitable_blocking(self._e.backend.edge_get(ids=[le.id]))
+                    )
                     if got.get("ids"):
                         edge_ids.append(le.id)
                         continue
@@ -729,7 +750,9 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                                 f"Incorrect span occur in grounding {str(g)} span {str(sp)}"
                             )
                 if mode == "skip-if-exists":
-                    got = run_awaitable_blocking(self._e.backend.node_get(ids=[ln.id]))
+                    got = _backend_mapping(
+                        run_awaitable_blocking(self._e.backend.node_get(ids=[ln.id]))
+                    )
                     if got.get("ids"):
                         node_ids.append(ln.id)
                         continue
@@ -756,7 +779,9 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                                 f"Incorrect span occur in grounding {str(g)} span {str(sp)}"
                             )
                 if mode == "skip-if-exists":
-                    got = run_awaitable_blocking(self._e.backend.edge_get(ids=[le.id]))
+                    got = _backend_mapping(
+                        run_awaitable_blocking(self._e.backend.edge_get(ids=[le.id]))
+                    )
                     if got.get("ids"):
                         edge_ids.append(le.id)
                         continue
@@ -788,9 +813,11 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 ln: Node = obj
                 if self.exists_node(rid):
                     if ln.mentions:
-                        prior = run_awaitable_blocking(self._e.backend.node_get(
-                            ids=[rid], include=["documents", "metadatas"]
-                        ))
+                        prior = _backend_mapping(
+                            run_awaitable_blocking(self._e.backend.node_get(
+                                ids=[rid], include=["documents", "metadatas"]
+                            ))
+                        )
                         prior_meta = (prior.get("metadatas") or [None])[0] or {}
                         prior_mentions = cast(str, prior_meta.get("mentions"))
                         mentions, merged_json = self._merge_groundings(
@@ -835,9 +862,11 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 le: Edge = obj
                 if self.exists_edge(rid):
                     if le.mentions:
-                        prior = run_awaitable_blocking(self._e.backend.edge_get(
-                            ids=[rid], include=["documents", "metadatas"]
-                        ))
+                        prior = _backend_mapping(
+                            run_awaitable_blocking(self._e.backend.edge_get(
+                                ids=[rid], include=["documents", "metadatas"]
+                            ))
+                        )
                         prior_meta = (prior.get("metadatas") or [None])[0] or {}
                         prior_mentions = cast(str, prior_meta.get("references"))
                         mentions, merged_json = self._merge_groundings(
