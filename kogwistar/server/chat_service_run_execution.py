@@ -5,7 +5,7 @@ import logging
 import pathlib
 import threading
 from collections.abc import Mapping
-from typing import Any, cast
+from typing import cast
 
 from kogwistar.cdc.sqlite_sink import _get_shared_sqlite_sink
 from kogwistar.conversation.agentic_answering import AgenticAnsweringAgent
@@ -42,7 +42,7 @@ class _RunExecutionService(_BaseComponent):
         user_id: str | None,
         text: str,
         workflow_id: str = "agentic_answering.v2",
-    ) -> dict[str, Any]:
+    ) -> JsonObject:
         text = str(text or "").strip()
         if not text:
             raise ValueError("text must be non-empty")
@@ -224,7 +224,7 @@ class _RunExecutionService(_BaseComponent):
                 req.run_id, status="failed", error=err, finished=True
             )
 
-    def _default_answer_runner(self, req: AnswerRunRequest) -> dict[str, Any]:
+    def _default_answer_runner(self, req: AnswerRunRequest) -> JsonObject:
         trace_db_path = (
             pathlib.Path(str(getattr(req.workflow_engine, "persist_directory", ".")))
             / "wf_trace.sqlite"
@@ -256,14 +256,14 @@ class _RunExecutionService(_BaseComponent):
         *,
         workflow_id: str,
         conversation_id: str,
-        initial_state: dict[str, Any] | None = None,
+        initial_state: JsonObject | None = None,
         turn_node_id: str | None = None,
         user_id: str | None = None,
         priority_class: str = "foreground",
         token_budget: int | None = None,
         time_budget_ms: int | None = None,
         runtime_kind: str | None = None,
-    ) -> dict[str, Any]:
+    ) -> JsonObject:
         workflow_id = str(workflow_id or "").strip()
         if not workflow_id:
             raise ValueError("workflow_id is required")
@@ -422,7 +422,7 @@ class _RunExecutionService(_BaseComponent):
                 req.run_id, status="failed", error=err, finished=True
             )
 
-    def _default_runtime_runner(self, req: RuntimeRunRequest) -> dict[str, Any]:
+    def _default_runtime_runner(self, req: RuntimeRunRequest) -> JsonObject:
         from kogwistar.conversation.resolvers import default_resolver
         from kogwistar.runtime.async_runtime import AsyncWorkflowRuntime
         from kogwistar.runtime.budget import StateBackedBudgetLedger
@@ -523,7 +523,7 @@ class _RunExecutionService(_BaseComponent):
             "budget": final_state.get("budget", budget_state),
         }
 
-    def _default_resume_runner(self, req: RuntimeResumeRequest) -> dict[str, Any]:
+    def _default_resume_runner(self, req: RuntimeResumeRequest) -> JsonObject:
         from kogwistar.conversation.resolvers import default_resolver
         from kogwistar.runtime.async_runtime import AsyncWorkflowRuntime
         from kogwistar.runtime.budget import StateBackedBudgetLedger
@@ -637,7 +637,7 @@ class _RunExecutionService(_BaseComponent):
             "budget": final_state.get("budget", budget_state),
         }
 
-    def get_run(self, run_id: str) -> dict[str, Any]:
+    def get_run(self, run_id: str) -> JsonObject:
         run = self.run_registry.get_run(run_id)
         if run is None:
             raise KeyError(f"Unknown run_id: {run_id}")
@@ -645,14 +645,14 @@ class _RunExecutionService(_BaseComponent):
 
     def list_run_events(
         self, run_id: str, *, after_seq: int = 0, limit: int = 500
-    ) -> list[dict[str, Any]]:
+    ) -> list[JsonObject]:
         if self.run_registry.get_run(run_id) is None:
             raise KeyError(f"Unknown run_id: {run_id}")
         return self.run_registry.list_events(
             run_id, after_seq=after_seq, limit=limit
         )
 
-    def cancel_run(self, run_id: str) -> dict[str, Any]:
+    def cancel_run(self, run_id: str) -> JsonObject:
         run = self.run_registry.get_run(run_id)
         if run is None:
             raise KeyError(f"Unknown run_id: {run_id}")
