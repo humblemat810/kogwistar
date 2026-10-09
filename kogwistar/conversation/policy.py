@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Protocol, cast
+from typing import TYPE_CHECKING, cast
 
 from kogwistar.engine_core.async_compat import run_awaitable_blocking
 from kogwistar.engine_core.scoped_seq import (
@@ -22,13 +22,6 @@ from .models import (
 
 def infer_conversation_edge_causal_type(relation: str) -> str:
     return CONVERSATION_EDGE_CAUSAL_TYPE_BY_RELATION.get(relation, "reference")
-
-
-class _ConversationSubjectLike(Protocol):
-    """Minimum shape needed by conversation sequence policy hooks."""
-
-    conversation_id: object
-    metadata: Mapping[str, object]
 
 
 def _backend_map(value: object) -> JsonObject:
@@ -236,12 +229,14 @@ def validate_edge_add(engine: GraphKnowledgeEngine, edge: ConversationEdge) -> N
 
 
 def _conversation_scope_id(
-    engine: GraphKnowledgeEngine, subject: _ConversationSubjectLike
+    engine: GraphKnowledgeEngine, subject: object
 ) -> str | None:
     _ = engine
     conv_id = getattr(subject, "conversation_id", None)
     if conv_id is None:
-        conv_id = (getattr(subject, "metadata", {}) or {}).get("conversation_id")
+        metadata = getattr(subject, "metadata", {})
+        if isinstance(metadata, Mapping):
+            conv_id = metadata.get("conversation_id")
     if conv_id is None:
         return None
     return str(conv_id)

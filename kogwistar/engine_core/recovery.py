@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
     from kogwistar.engine_core.engine import GraphKnowledgeEngine
@@ -20,7 +20,7 @@ TERMINAL_RUN_STATUSES = {"succeeded", "failed", "cancelled", "completed"}
 TERMINAL_CHECKPOINT_STATUSES = {"succeeded", "failed", "cancelled", "completed"}
 
 
-def _row_mapping(value: Any) -> dict[str, Any]:
+def _row_mapping(value: object) -> dict[str, Any]:
     """Normalize metadata rows from dict- and row-shaped backends."""
     return dict(value) if isinstance(value, Mapping) else {}
 
@@ -30,7 +30,7 @@ class ResumePolicy:
     auto_resume: bool = False
     only_restartable: bool = True
     require_resume_marker: bool = True
-    resume_runner: Callable[[CheckpointRecoveryState], Any] | None = None
+    resume_runner: Callable[[CheckpointRecoveryState], object] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -199,7 +199,6 @@ class RecoverySubsystem:
             workspace_id=workspace_id,
             namespaces=normalized,
         )
-        registry = getattr(self.engine, "service_health", None)
         repaired = self.repair_lane_projections(list(normalized))
         report = self._build_report(
             workspace_id=workspace_id,
@@ -261,8 +260,8 @@ class RecoverySubsystem:
                         entity_id=str(self._field(row, "entity_id", "")),
                         job_kind=str(self._field(row, "index_kind", "")),
                         status=status,
-                        retry_count=int(self._field(row, "retry_count", 0) or 0),
-                        max_retries=int(self._field(row, "max_retries", 0) or 0),
+                        retry_count=self._optional_int(self._field(row, "retry_count", 0)) or 0,
+                        max_retries=self._optional_int(self._field(row, "max_retries", 0)) or 0,
                         lease_until=lease_until,
                         next_run_at=self._optional_int(self._field(row, "next_run_at")),
                         expired_lease=status == "DOING"
@@ -292,7 +291,7 @@ class RecoverySubsystem:
                         conversation_id=str(self._field(row, "conversation_id", "")),
                         msg_type=str(self._field(row, "msg_type", "")),
                         status=status,
-                        retry_count=int(self._field(row, "retry_count", 0) or 0),
+                        retry_count=self._optional_int(self._field(row, "retry_count", 0)) or 0,
                         claimed_by=self._optional_str(self._field(row, "claimed_by")),
                         lease_until=lease_until,
                         expired_lease=status == "claimed"
@@ -604,7 +603,7 @@ class RecoverySubsystem:
         self,
         *,
         namespace: str,
-        node: Any,
+        node: object,
         terminal_run_ids: set[str] | None = None,
     ) -> CheckpointRecoveryState:
         md = dict(getattr(node, "metadata", {}) or {})
@@ -981,14 +980,16 @@ class RecoverySubsystem:
         return tuple(out)
 
     @staticmethod
-    def _field(row: Any, name: str, default: Any = None) -> Any:
+    def _field(row: object, name: str, default: object = None) -> object:
         if isinstance(row, dict):
             return row.get(name, default)
         return getattr(row, name, default)
 
     @staticmethod
-    def _optional_int(value: Any) -> int | None:
+    def _optional_int(value: object) -> int | None:
         if value is None:
+            return None
+        if not isinstance(value, (bool, int, float, str)):
             return None
         try:
             return int(value)
@@ -996,19 +997,16 @@ class RecoverySubsystem:
             return None
 
     @staticmethod
-    def _optional_str(value: Any) -> str | None:
+    def _optional_str(value: object) -> str | None:
         if value is None:
             return None
         text = str(value)
         return text if text else None
 
     @staticmethod
-    def _step_seq(node: Any) -> int:
+    def _step_seq(node: object) -> int:
         md = dict(getattr(node, "metadata", {}) or {})
-        try:
-            return int(md.get("step_seq", -1))
-        except Exception:
-            return -1
+        return RecoverySubsystem._optional_int(md.get("step_seq", -1)) or -1
 
     @staticmethod
     def _is_recoverable_checkpoint_lookup_error(exc: Exception) -> bool:
@@ -1022,7 +1020,7 @@ class RecoverySubsystem:
         return False
 
     @staticmethod
-    def _replace(report: RecoveryReport, **changes: Any) -> RecoveryReport:
+    def _replace(report: RecoveryReport, **changes: object) -> RecoveryReport:
         data = {
             "workspace_id": report.workspace_id,
             "namespaces": report.namespaces,
@@ -1039,7 +1037,7 @@ class RecoverySubsystem:
             "resume_policy": report.resume_policy,
         }
         data.update(changes)
-        return RecoveryReport(**data)
+        return RecoveryReport(**cast(dict[str, Any], data))
 
 
 __all__ = [
