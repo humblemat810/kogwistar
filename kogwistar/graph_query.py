@@ -5,7 +5,7 @@ import asyncio
 import inspect
 import json
 from collections import deque
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING, Any, TypeAlias, cast
 
 from .engine_core.async_compat import run_awaitable_blocking
@@ -51,10 +51,15 @@ class GraphQuery:
     """
 
     # ---- construction ----
-    def __init__(self, engine: GraphKnowledgeEngine):
+    def __init__(self, engine: GraphKnowledgeEngine) -> None:
         self.e = engine
 
-    def _read_nodes(self, *, ids=None, where=None) -> list[Node]:
+    def _read_nodes(
+        self,
+        *,
+        ids: Iterable[str] | None = None,
+        where: Mapping[str, Any] | None = None,
+    ) -> list[Node]:
         """Read nodes through the engine facade, including staged rows."""
         reader = getattr(self.e, "read", None)
         if reader is not None and callable(getattr(reader, "get_nodes", None)):
@@ -91,7 +96,12 @@ class GraphQuery:
             Node.model_validate_json(doc) for doc in (got.get("documents") or []) if doc
         ]
 
-    def _read_edges(self, *, ids=None, where=None) -> list[Edge]:
+    def _read_edges(
+        self,
+        *,
+        ids: Iterable[str] | None = None,
+        where: Mapping[str, Any] | None = None,
+    ) -> list[Edge]:
         """Read edges through the engine facade, including staged rows."""
         reader = getattr(self.e, "read", None)
         if reader is not None and callable(getattr(reader, "get_edges", None)):
@@ -314,7 +324,7 @@ class GraphQuery:
         return rows
 
     async def _async_collection_call(
-        self, collection_key: str, method: str, **kwargs
+        self, collection_key: str, method: str, **kwargs: object
     ) -> GraphPayload | None:
         """Call native async backend verbs without forcing a sync bridge."""
         backend = getattr(self.e, "backend", None)
@@ -532,7 +542,7 @@ class GraphQuery:
         *,
         direction: str = "both",
         doc_id: str | None = None,
-        allow_jump_edge=True,
+        allow_jump_edge: bool = True,
     ) -> dict[str, set[str]]:
         """
         For a node-id: neighbors are incident edges and opposite endpoint nodes.
@@ -589,7 +599,7 @@ class GraphQuery:
         k: int = 2,
         *,
         doc_id: str | None = None,
-        allow_jump_edge=False,
+        allow_jump_edge: bool = False,
     ) -> list[dict[str, set[str]]]:
         visited: set[str] = set()
         frontier: set[str] = set(start_ids)
@@ -755,7 +765,7 @@ class GraphQuery:
     # ---- semantic seed ----
     def semantic_seed_then_expand(
         self, query_embedding: list[float], *, top_k: int = 5, hops: int = 1
-    ):
+    ) -> dict[str, object]:
         query_reader = getattr(getattr(self.e, "read", None), "query_nodes", None)
         hits = (
             query_reader(query_embeddings=[query_embedding], n_results=top_k)
@@ -780,9 +790,9 @@ class GraphQuery:
         *,
         top_k: int = 5,
         hops: int = 1,
-        doc_ids=None,
-        where=None,
-    ):
+        doc_ids: str | list[str] | None = None,
+        where: Mapping[str, Any] | None = None,
+    ) -> dict[str, object]:
         """Seed by a TEXT query using the collection's default embedding function, then expand K hops.
         This avoids any custom embedding pipeline and uses the underlying vector store's default embeddings.
         """
