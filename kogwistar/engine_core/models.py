@@ -2740,29 +2740,36 @@ class Document(ModeSlicingMixin, BaseModel):
     )
 
     @staticmethod
-    def from_text(text: str, **kwarg):
-        return Document(content=text, type="text", metadata={}, **kwarg)
+    def from_text(text: str, **kwarg: object) -> "Document":
+        payload: dict[str, object] = {
+            "content": text,
+            "type": "text",
+            "metadata": {},
+            **kwarg,
+        }
+        return Document.model_validate(payload)
 
     @staticmethod
-    def from_dummy(text: str = "", **kwarg):
-        return Document(
-            id="_dummy",
-            content=text,
-            type="text",
-            metadata={},
-            embeddings=None,
-            source_map=None,
+    def from_dummy(text: str = "", **kwarg: object) -> "Document":
+        payload: dict[str, object] = {
+            "id": "_dummy",
+            "content": text,
+            "type": "text",
+            "metadata": {},
+            "embeddings": None,
+            "source_map": None,
             **kwarg,
-        )
+        }
+        return Document.model_validate(payload)
 
-    def validate_text_span(self, span: Span):
+    def validate_text_span(self, span: Span) -> None:
         if span.chunk_id is not None:
             raise Exception(
                 f"text span should not have chunk ID, found chunk_id={span.chunk_id}"
             )
         pass
 
-    def validate_text_chunked_span(self, span: Span):
+    def validate_text_chunked_span(self, span: Span) -> None:
         if self.source_map is None:
             raise Exception("Source map should be available when span is checked")
         span.fix_chunk_start_end_char(
@@ -2770,7 +2777,7 @@ class Document(ModeSlicingMixin, BaseModel):
         )  # check if chunk id really in span
         pass
 
-    def validate_span(self, span: Span):
+    def validate_span(self, span: Span) -> None:
         if self.type == "text":
             self.validate_text_span(span)
         elif self.type == "text_chunked":
@@ -2815,12 +2822,12 @@ class Document(ModeSlicingMixin, BaseModel):
         )
 
     # helper for workflow  long doc -> chunked doc -> llm -> result span unchunked (chunk doc need not but can persist)
-    def to_text_chunked(self):
+    def to_text_chunked(self) -> None:
         # convert simple text doc with long text content to text_chunked
         self.type = "text_chunked"
         self.update_source_map()
 
-    def update_source_map(self):
+    def update_source_map(self) -> None:
         source_map: dict[str, Any] = {}
         from ..splitter import split_doc_deterministic
 
@@ -2831,7 +2838,7 @@ class Document(ModeSlicingMixin, BaseModel):
         self.source_map = source_map
 
     @property
-    def chunked_text(self):
+    def chunked_text(self) -> str:
         if self.source_map is None:
             self.update_source_map()
         if self.source_map is None:
