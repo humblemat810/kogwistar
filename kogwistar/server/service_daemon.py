@@ -5,12 +5,15 @@ import time
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import BaseModel, Field
 
 from kogwistar.engine_core.models import Grounding, JsonPrimitive, Node, Span
 from kogwistar.json_types import JsonValue
+
+if TYPE_CHECKING:
+    from kogwistar.engine_core.engine import GraphKnowledgeEngine
 
 SERVICE_PROJECTION_NAMESPACE = "service_registry"
 SERVICE_TRIGGER_TYPES = {
@@ -134,8 +137,8 @@ class ServiceProjectionRow(BaseModel):
 
 @dataclass
 class ServiceSupervisor:
-    get_workflow_engine: Callable[[], Any]
-    get_conversation_engine: Callable[[], Any]
+    get_workflow_engine: Callable[[], GraphKnowledgeEngine]
+    get_conversation_engine: Callable[[], GraphKnowledgeEngine]
     run_registry: Any
     spawn_workflow_run: Callable[..., dict[str, Any]]
     scope_snapshot: Callable[[], dict[str, str]]
@@ -820,7 +823,11 @@ class ServiceSupervisor:
     def _ensure_all_projections(self) -> None:
         meta = self._workflow_engine().meta_sqlite
         existing = {
-            str((row.get("payload") or {}).get("service_id") or row.get("key") or "")
+            str(
+                _json_object(_json_object(row).get("payload")).get("service_id")
+                or _json_object(row).get("key")
+                or ""
+            )
             for row in meta.list_named_projections(SERVICE_PROJECTION_NAMESPACE)
         }
         for service_id in self._all_service_ids():
@@ -950,8 +957,8 @@ class ServiceSupervisor:
             return None
         return _json_object(projection.get("payload"))
 
-    def _workflow_engine(self) -> Any:
+    def _workflow_engine(self) -> GraphKnowledgeEngine:
         return self.get_workflow_engine()
 
-    def _conversation_engine(self) -> Any:
+    def _conversation_engine(self) -> GraphKnowledgeEngine:
         return self.get_conversation_engine()

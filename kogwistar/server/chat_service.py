@@ -12,7 +12,7 @@ import asyncio
 import contextlib
 import json
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from typing import Any, ClassVar, cast
 
 from kogwistar.conversation.models import ConversationNode
@@ -50,7 +50,7 @@ from .chat_service_shared import (
     workflow_namespace,
 )
 from .chat_service_workflow_design import _WorkflowDesignService
-from .run_registry import RunRegistry
+from .run_registry import RunRegistry, RunRegistryMetaStoreLike
 from .run_scheduler import RunScheduler
 from .service_daemon import ServiceSupervisor
 
@@ -244,7 +244,9 @@ class ChatRunService:
         return workflow_namespace(workflow_id)
 
     @contextlib.contextmanager
-    def _workflow_namespace_scope(self, workflow_id: str):
+    def _workflow_namespace_scope(
+        self, workflow_id: str
+    ) -> Iterator[GraphKnowledgeEngine]:
         eng = self._workflow_engine()
         prev_ns = str(getattr(eng, "namespace", "default") or "default")
         target_ns = self._workflow_namespace(workflow_id)
@@ -841,12 +843,12 @@ class ChatRunService:
         )
         return self._workflow_design.workflow_catalog_ops()
 
-    def _execution_meta_store(self) -> Any:
+    def _execution_meta_store(self) -> RunRegistryMetaStoreLike:
         conversation_engine = self._conversation_engine()
         meta_store = getattr(conversation_engine, "meta_sqlite", None)
         if meta_store is None:
             raise AttributeError("conversation_engine does not expose meta_sqlite")
-        return meta_store
+        return cast(RunRegistryMetaStoreLike, meta_store)
 
     @staticmethod
     def _scope_snapshot() -> dict[str, str]:
