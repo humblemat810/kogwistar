@@ -4,9 +4,7 @@ import dataclasses
 import hashlib
 import json
 from collections.abc import Mapping
-from typing import Any
-
-from ..json_types import JsonValue
+from ..json_types import JsonObject, JsonValue
 
 try:
     from pydantic import BaseModel  # type: ignore
@@ -26,7 +24,7 @@ def stable_json_dumps(obj: JsonValue) -> str:
     return contract_canonical_json(value=obj, python_value=python_value)
 
 
-def _ref_obj(obj: Any) -> dict:
+def _ref_obj(obj: object) -> JsonObject:
     rep = repr(obj).encode("utf-8")
     h = hashlib.sha256(rep).hexdigest()
     return {"_ref_type": "repr_sha256", "sha256": h, "repr": repr(obj)[:2000]}

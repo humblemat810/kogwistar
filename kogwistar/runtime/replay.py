@@ -3,12 +3,33 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from ..typing_interfaces import EngineLike
 from .runtime import apply_state_update_inplace
 
 State = dict[str, Any]
 
 
-def load_checkpoint(*, conversation_engine: Any, run_id: str, step_seq: int) -> State:
+def _int_value(value: object, default: int = 0) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (int, float, str)):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+    return default
+
+
+def _load_json_text(value: object) -> State:
+    if not isinstance(value, str):
+        raise ValueError("checkpoint JSON payload must be a string")
+    loaded = json.loads(value)
+    if not isinstance(loaded, dict):
+        raise ValueError("checkpoint JSON payload must be an object")
+    return loaded
+
+
+def load_checkpoint(*, conversation_engine: EngineLike, run_id: str, step_seq: int) -> State:
     """
     Load a workflow checkpoint state snapshot from conversation_engine.
     """
@@ -19,12 +40,12 @@ def load_checkpoint(*, conversation_engine: Any, run_id: str, step_seq: int) -> 
     md = metadatas[0] or {}
     if md.get("entity_type") != "workflow_checkpoint":
         raise ValueError("Node is not a workflow_checkpoint")
-    schema_version = int(md.get("checkpoint_schema_version") or 0)
+    schema_version = _int_value(md.get("checkpoint_schema_version"))
     if schema_version not in {0, 1}:
         raise ValueError(
             f"Cannot load checkpoint {ckpt_id}: incompatible checkpoint_schema_version={schema_version}"
         )
-    return json.loads(md["state_json"])
+    return _load_json_text(md.get("state_json"))
 
 
 def _apply_state_update(state: State, state_update: list[Any]) -> None:
@@ -39,22 +60,22 @@ def _apply_state_update(state: State, state_update: list[Any]) -> None:
     apply_state_update_inplace(state, state_update, None)
 
 
-def replay_to(*, conversation_engine: Any, run_id: str, target_step_seq: int) -> State:
+def replay_to(*, conversation_engine: EngineLike, run_id: str, target_step_seq: int) -> State:
     """
     Reconstruct state by:
       - finding the nearest checkpoint <= target_step_seq
       - applying persisted step exec state_updates after that checkpoint up to target_step_seq
     """
-    effective_target = int(target_step_seq)
+    effective_target = _int_value(target_step_seq)
     cancelled = conversation_engine.read.get_nodes(
         where={"$and": [{"entity_type": "workflow_cancelled"}, {"run_id": run_id}]},
         limit=10_000,
     )
     if cancelled:
         accepted = [
-            int((n.metadata or {}).get("accepted_step_seq", -1))
+            _int_value((n.metadata or {}).get("accepted_step_seq"), -1)
             for n in cancelled
-            if int((n.metadata or {}).get("accepted_step_seq", -1)) >= 0
+            if _int_value((n.metadata or {}).get("accepted_step_seq"), -1) >= 0
         ]
         if accepted:
             effective_target = min(effective_target, min(accepted))
@@ -67,7 +88,7 @@ def replay_to(*, conversation_engine: Any, run_id: str, target_step_seq: int) ->
     best = None
     best_seq = -1
     for n in ckpts:
-        seq = int((n.metadata or {}).get("step_seq", -1))
+        seq = _int_value((n.metadata or {}).get("step_seq"), -1)
         if seq <= effective_target and seq > best_seq:
             best = n
             best_seq = seq
@@ -75,23 +96,23 @@ def replay_to(*, conversation_engine: Any, run_id: str, target_step_seq: int) ->
         raise ValueError(f"No checkpoint <= {effective_target} for run_id={run_id}")
 
     best_md = best.metadata or {}
-    schema_version = int(best_md.get("checkpoint_schema_version") or 0)
+    schema_version = _int_value(best_md.get("checkpoint_schema_version"))
     if schema_version not in {0, 1}:
         raise ValueError(
             f"Cannot replay run {run_id}: incompatible checkpoint_schema_version={schema_version}"
         )
-    state: State = json.loads(best_md["state_json"])
+    state = _load_json_text(best_md.get("state_json"))
 
     steps = conversation_engine.read.get_nodes(
         where={"$and": [{"entity_type": "workflow_step_exec"}, {"run_id": run_id}]},
         limit=200000,
     )
     steps_sorted = sorted(
-        steps, key=lambda n: int((n.metadata or {}).get("step_seq", 0))
+        steps, key=lambda n: _int_value((n.metadata or {}).get("step_seq"))
     )
 
     for n in steps_sorted:
-        seq = int((n.metadata or {}).get("step_seq", 0))
+        seq = _int_value((n.metadata or {}).get("step_seq"))
         if seq <= best_seq:
             continue
         if seq > effective_target:
@@ -102,7 +123,7 @@ def replay_to(*, conversation_engine: Any, run_id: str, target_step_seq: int) ->
         if not raw:
             continue
 
-        res = json.loads(raw)  # this is RunSuccess/RunFailure model_dump() JSON
+        res = _load_json_text(raw)  # this is RunSuccess/RunFailure model_dump() JSON
         state_update = res.get("state_update") or []
 
         # Apply the same reducer as runtime
