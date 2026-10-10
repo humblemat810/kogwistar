@@ -15,43 +15,22 @@ import argparse
 import asyncio
 import json
 import re
-from collections.abc import Sequence
 from typing import Any, Protocol, cast
 
 import httpx
-from langchain_mcp_adapters.client import (  # pyright: ignore[reportMissingImports]
-    MultiServerMCPClient,
-)
+from mcp import types as mcp_types
 
 # ---------- helpers ----------
 
 
-class _McpTool(Protocol):
-    name: str
-    input_schema: dict[str, Any]
-    outputSchema: dict[str, Any] | None
-
-
-class _McpToolList(Protocol):
-    tools: Sequence[_McpTool]
-
-
-class _McpContentBlock(Protocol):
-    type: str
-    json: dict[str, Any] | None
-    text: str
-
-
-class _McpCallResult(Protocol):
-    content: Sequence[_McpContentBlock]
-
-
 class _McpSession(Protocol):
-    async def list_tools(self) -> _McpToolList: ...
+    async def list_tools(
+        self, *, params: mcp_types.PaginatedRequestParams | None = None
+    ) -> mcp_types.ListToolsResult: ...
 
     async def call_tool(
         self, name: str, *, arguments: dict[str, Any]
-    ) -> _McpCallResult: ...
+    ) -> mcp_types.CallToolResult: ...
 
 
 def _base_from_mcp(url: str) -> str:
@@ -80,7 +59,7 @@ async def _find_tool(session: _McpSession, name: str) -> dict[str, Any] | None:
             return {
                 "name": t.name,
                 "input_schema": t.input_schema,
-                "output_schema": t.outputSchema,
+                "output_schema": t.output_schema,
             }
     return None
 
@@ -89,18 +68,27 @@ async def _call_tool_json(
     session: _McpSession, name: str, args: dict[str, Any]
 ) -> dict[str, Any]:
     res = await session.call_tool(name, arguments=args)
-    block = res.content[0]
-    json_payload = block.json
-    if block.type == "json" and json_payload is not None:
-        return json_payload
-    # normalize text results so the CLI never crashes
-    return {"text": block.text}
+    if isinstance(res.structured_content, dict):
+        return res.structured_content
+    for block in res.content:
+        if isinstance(block, mcp_types.TextContent):
+            try:
+                decoded = json.loads(block.text)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(decoded, dict):
+                return decoded
+    # Normalize non-JSON results so the CLI never crashes.
+    text_blocks = [block.text for block in res.content if isinstance(block, mcp_types.TextContent)]
+    return {"text": "\n".join(text_blocks)}
 
 
 # ---------- main ----------
 
 
 async def main() -> None:
+    from langchain_mcp_adapters.client import MultiServerMCPClient
+
     ap = argparse.ArgumentParser()
     ap.add_argument(
         "--url",
