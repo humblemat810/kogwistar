@@ -15,7 +15,8 @@ import argparse
 import asyncio
 import json
 import re
-from typing import Any, cast
+from collections.abc import Sequence
+from typing import Any, Protocol, cast
 
 import httpx
 from langchain_mcp_adapters.client import (  # pyright: ignore[reportMissingImports]
@@ -25,12 +26,40 @@ from langchain_mcp_adapters.client import (  # pyright: ignore[reportMissingImpo
 # ---------- helpers ----------
 
 
+class _McpTool(Protocol):
+    name: str
+    input_schema: dict[str, Any]
+    outputSchema: dict[str, Any] | None
+
+
+class _McpToolList(Protocol):
+    tools: Sequence[_McpTool]
+
+
+class _McpContentBlock(Protocol):
+    type: str
+    json: dict[str, Any] | None
+    text: str
+
+
+class _McpCallResult(Protocol):
+    content: Sequence[_McpContentBlock]
+
+
+class _McpSession(Protocol):
+    async def list_tools(self) -> _McpToolList: ...
+
+    async def call_tool(
+        self, name: str, *, arguments: dict[str, Any]
+    ) -> _McpCallResult: ...
+
+
 def _base_from_mcp(url: str) -> str:
     # strip trailing /mcp or /mcp/
     return re.sub(r"/mcp/?$", "", url)
 
 
-def _needs_inp_wrapper(input_schema: dict | None) -> bool:
+def _needs_inp_wrapper(input_schema: dict[str, Any] | None) -> bool:
     if not input_schema:
         return False
     props = input_schema.get("properties") or {}
@@ -38,11 +67,13 @@ def _needs_inp_wrapper(input_schema: dict | None) -> bool:
     return "inp" in props and (props["inp"].get("type") in (None, "object"))
 
 
-def _wrap_if_needed(input_schema: dict | None, payload: dict) -> dict:
+def _wrap_if_needed(
+    input_schema: dict[str, Any] | None, payload: dict[str, Any]
+) -> dict[str, Any]:
     return {"inp": payload} if _needs_inp_wrapper(input_schema) else payload
 
 
-async def _find_tool(session, name: str) -> dict | None:
+async def _find_tool(session: _McpSession, name: str) -> dict[str, Any] | None:
     tools = await session.list_tools()
     for t in tools.tools:
         if t.name == name:
@@ -54,22 +85,22 @@ async def _find_tool(session, name: str) -> dict | None:
     return None
 
 
-async def _call_tool_json(session, name: str, args: dict) -> dict:
+async def _call_tool_json(
+    session: _McpSession, name: str, args: dict[str, Any]
+) -> dict[str, Any]:
     res = await session.call_tool(name, arguments=args)
     block = res.content[0]
-    if (
-        getattr(block, "type", None) == "json"
-        and getattr(block, "json", None) is not None
-    ):
-        return block.json
+    json_payload = block.json
+    if block.type == "json" and json_payload is not None:
+        return json_payload
     # normalize text results so the CLI never crashes
-    return {"text": getattr(block, "text", "")}
+    return {"text": block.text}
 
 
 # ---------- main ----------
 
 
-async def main():
+async def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument(
         "--url",
