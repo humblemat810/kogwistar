@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Protocol
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine, scoped_namespace
@@ -32,7 +32,7 @@ def write_execution_wisdom_artifacts(
     target_engine: GraphKnowledgeEngine,
     source_namespace: str,
     target_namespace: str,
-    source_where: dict[str, object],
+    source_where: Mapping[str, object],
     build_node_for_pattern: _PatternNodeBuilder,
     match_where_for_pattern: Callable[[ExecutionFailurePattern], dict[str, object]],
     min_failure_signals: int = 2,
