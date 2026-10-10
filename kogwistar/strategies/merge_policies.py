@@ -37,7 +37,7 @@ def adjundication_span(
     left: Node,
     right: Node,
     adjundication_method: str,
-):
+) -> Span:
     if not verdict.same_entity:
         raise ValueError("only created when the result is positive verdict")
     self_span = Span(
@@ -64,7 +64,7 @@ def adjundication_span(
 
 
 class PreferExistingCanonical(MergePolicy):
-    def __init__(self, engine: EngineLike):
+    def __init__(self, engine: EngineLike) -> None:
         self.e: EngineLike = engine
 
     def commit_merge(
@@ -72,7 +72,7 @@ class PreferExistingCanonical(MergePolicy):
         left: Node,
         right: Node,
         verdict: AdjudicationVerdict,
-        method="unspecified",
+        method: str = "unspecified",
     ) -> str:
         """
         Apply a positive adjudication by assigning/propagating a canonical_entity_id
@@ -91,7 +91,7 @@ class PreferExistingCanonical(MergePolicy):
         left.canonical_entity_id = canonical_id
         right.canonical_entity_id = canonical_id
 
-        def _persist_node(n: Node):
+        def _persist_node(n: Node) -> None:
             prior = _backend_object(
                 self.e.backend.node_get(ids=[_required_id(n.id)], include=["metadatas"])
             )
@@ -381,20 +381,22 @@ class PreferExistingCanonical(MergePolicy):
         self.e.write.index_edge_refs(same_as_meta)
         return canonical_id
 
-    def merge(self, left, right, verdict: AdjudicationVerdict) -> str:
-        if hasattr(left, "kind"):
-            if left.kind == right.kind:
-                return self.e.commit_merge_target(left, right, verdict)
+    def merge(
+        self,
+        left: Node | Edge | AdjudicationTarget,
+        right: Node | Edge | AdjudicationTarget,
+        verdict: AdjudicationVerdict,
+    ) -> str:
+        if isinstance(left, AdjudicationTarget) and isinstance(
+            right, AdjudicationTarget
+        ):
             return self.e.commit_merge_target(left, right, verdict)
-
-        if left.__class__.__name__ == right.__class__.__name__:
+        if isinstance(left, Node) and isinstance(right, Node):
             return self.e.commit_merge(left, right, verdict, "merge_policy")
-        return self.e.commit_merge_target(
-            self.e.adjudicate.target_from_node(left)
-            if left.__class__.__name__ == "Node"
-            else self.e.adjudicate.target_from_edge(left),
-            self.e.adjudicate.target_from_node(right)
-            if right.__class__.__name__ == "Node"
-            else self.e.adjudicate.target_from_edge(right),
-            verdict,
-        )
+        if isinstance(left, Edge) and isinstance(right, Edge):
+            return self.e.commit_merge_target(
+                self.e.adjudicate.target_from_edge(left),
+                self.e.adjudicate.target_from_edge(right),
+                verdict,
+            )
+        raise ValueError("Cannot merge mixed target representations")
