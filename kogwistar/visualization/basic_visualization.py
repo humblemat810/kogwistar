@@ -1,5 +1,6 @@
 import json
 from collections.abc import Iterable, Mapping
+from typing import cast
 
 from ..engine_core.engine import GraphKnowledgeEngine
 from ..engine_core.models import Edge, Node
@@ -46,7 +47,7 @@ def _fmt_span_short(r: dict) -> str:
 
 
 class Visualizer:
-    def __init__(self, engine: GraphKnowledgeEngine):
+    def __init__(self, engine: GraphKnowledgeEngine) -> None:
         self.e = engine
         pass
 
@@ -116,12 +117,13 @@ class Visualizer:
                 }
             except Exception:
                 # metadata fallback (source/target ids may be stored as JSON strings)
-                def parse_ids(k):
+                def parse_ids(k: str) -> list[str]:
                     v = metadata.get(k)
                     try:
-                        return json.loads(v) if isinstance(v, str) else (v or [])
+                        raw = json.loads(v) if isinstance(v, str) else v
+                        return _as_strings(raw)
                     except Exception:
-                        return v or []
+                        return []
 
                 out[eid] = {
                     "label": metadata.get("label") or "(edge)",
@@ -240,8 +242,10 @@ class Visualizer:
                 metadata = _as_metadata(meta)
 
                 # resolve endpoint labels
-                def resolve_list(ids, kind_hint: str):
-                    items = []
+                def resolve_list(
+                    ids: Iterable[str], kind_hint: str
+                ) -> list[dict[str, str]]:
+                    items: list[dict[str, str]] = []
                     for rid in ids:
                         if rid in node_map:
                             items.append(
@@ -301,12 +305,18 @@ class Visualizer:
 
         return {"nodes": node_out, "edges": edge_out}
 
-    def pretty_print_graph(self, **kwargs) -> str:
+    def pretty_print_graph(self, **kwargs: object) -> str:
         """
         Thin wrapper over resolve_readable() that renders a compact text block.
         kwargs are passed to resolve_readable (node_ids, edge_ids, by_doc_id, include_refs).
         """
-        data = self.resolve_readable(**kwargs)
+        typed_kwargs = cast(dict[str, object], kwargs)
+        data = self.resolve_readable(
+            node_ids=cast(Iterable[str] | None, typed_kwargs.get("node_ids")),
+            edge_ids=cast(Iterable[str] | None, typed_kwargs.get("edge_ids")),
+            by_doc_id=cast(str | None, typed_kwargs.get("by_doc_id")),
+            include_refs=bool(typed_kwargs.get("include_refs", False)),
+        )
         lines = []
         if data["nodes"]:
             lines.append("Nodes:")
@@ -324,8 +334,10 @@ class Visualizer:
             lines.append("Edges:")
             for e in data["edges"]:
 
-                def fmt_endpoints(items):
-                    return ", ".join([f"{i['label']}({i['id'][:8]})" for i in items])
+                def fmt_endpoints(items: Iterable[Mapping[str, object]]) -> str:
+                    return ", ".join(
+                        f"{i.get('label', '')}({str(i.get('id', ''))[:8]})" for i in items
+                    )
 
                 src = fmt_endpoints(e.get("sources", []))
                 tgt = fmt_endpoints(e.get("targets", []))
