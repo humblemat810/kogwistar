@@ -41,7 +41,7 @@ import json
 import logging
 import uuid
 from collections import deque
-from collections.abc import Generator
+from collections.abc import Callable, Generator, Mapping
 from typing import NotRequired, Protocol, TypedDict, cast
 
 from kogwistar.runtime.models import WorkflowEdge, WorkflowNode
@@ -54,6 +54,15 @@ class EntityEventRow(Protocol):
     """Minimal row surface consumed by the event-history replay path."""
 
     def __getitem__(self, index: int, /) -> object: ...
+
+
+class _WorkflowMetaStore(Protocol):
+    """Metadata operations used directly by workflow-history helpers."""
+
+    get_named_projection: Callable[..., JsonObject | None]
+    get_workflow_design_delta: Callable[..., Mapping[str, object] | None]
+    get_workflow_design_snapshot: Callable[..., Mapping[str, object] | None]
+    get_latest_entity_event_seq: Callable[..., int]
 
 
 class WorkflowVisibleSnapshot(TypedDict):
@@ -279,7 +288,7 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
 
     def _iter_entity_events(
         self, *, namespace: str, from_seq: int = 1, to_seq: int | None = None
-    ):
+    ) -> Generator[EntityEventRow, None, None]:
         """Iterate append-only entity events for a namespace.
 
         The underlying metadata store may expose slightly different iterator
@@ -447,11 +456,13 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
             )
         )
 
-    def _workflow_meta_store(self):
+    def _workflow_meta_store(self) -> _WorkflowMetaStore:
         """Return the workflow metadata store backing design history state."""
-        return self._workflow_engine().meta_sqlite
+        return cast(_WorkflowMetaStore, self._workflow_engine().meta_sqlite)
 
-    def _workflow_projection(self, *, workflow_id: str):
+    def _workflow_projection(
+        self, *, workflow_id: str
+    ) -> WorkflowProjectionRow | None:
         """Load the persisted workflow design projection metadata.
 
         This reads projection head/version metadata from the meta store, not the
@@ -747,7 +758,7 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
                 continue
             payload = self._parse_event_payload(payload_raw)
             item: WorkflowControlTimelineItem = {
-                "seq": int(seq),
+                "seq": _json_int(seq),
                 "op": str(op),
                 "designer_id": str(payload.get("designer_id") or ""),
                 "ts_ms": _json_int(payload.get("ts_ms")),
@@ -864,7 +875,7 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
         for seq, entity_kind, _entity_id, op, payload_raw in self._iter_entity_events(
             namespace=namespace, from_seq=1
         ):
-            latest_seq = max(latest_seq, int(seq))
+            latest_seq = max(latest_seq, _json_int(seq))
             if str(entity_kind) != self._design_control_kind:
                 continue
             payload = self._parse_event_payload(payload_raw)
@@ -1088,12 +1099,12 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
         """
         getter = self._workflow_meta_store().get_latest_entity_event_seq
         if callable(getter) and int(from_seq) <= 1:
-            return int(getter(namespace=namespace))
+            return _json_int(getter(namespace=namespace))
         last = 0
         for seq, _ek, _eid, _op, _payload in self._iter_entity_events(
             namespace=namespace, from_seq=max(1, int(from_seq))
         ):
-            last = int(seq)
+            last = _json_int(seq)
         return last
 
     def _workflow_collect_visible_entity_ids(
@@ -1169,7 +1180,7 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
                 to_seq=int(to_seq),
             ):
                 if self._workflow_seq_in_dropped_ranges(
-                    int(seq), list(dropped_ranges or [])
+                    _json_int(seq), list(dropped_ranges or [])
                 ):
                     continue
                 entity_kind_s = str(entity_kind)
