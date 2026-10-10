@@ -42,7 +42,7 @@ def capture_auth_claims(principal_id: str | None = None) -> JsonObject | None:
 
 
 @contextlib.contextmanager
-def bind_auth_claims(claims: JsonObject | None):
+def bind_auth_claims(claims: JsonObject | None) -> Iterator[None]:
     """Bind captured identity only for the lifetime of one background run."""
     token = claims_ctx.set(dict(claims) if isinstance(claims, dict) else None)
     try:

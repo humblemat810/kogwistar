@@ -128,10 +128,10 @@ class DefaultVerifier(Verifier):
             return None
         return float(num / den)
 
-    def _embed_one(self, text: str):
+    def _embed_one(self, text: str) -> list[float]:
         return self.e.embed.iterative_defensive_emb(text)
 
-    def __init__(self, engine: EngineLike, config: VerifierConfig | None = None):
+    def __init__(self, engine: EngineLike, config: VerifierConfig | None = None) -> None:
         self.e: EngineLike = engine
         self.cfg = config or VerifierConfig()
 
