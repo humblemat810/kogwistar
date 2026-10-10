@@ -9,10 +9,13 @@ sys.path.insert(0, str(pathlib.Path(__file__).parent.parent.parent))
 import argparse
 import json
 from pathlib import Path
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Literal
 
 from jinja2 import Environment
 from markupsafe import Markup
+
+from kogwistar.json_types import JsonObject, JsonValue
 
 if TYPE_CHECKING:
     from kogwistar.engine_core.engine import (
@@ -34,12 +37,14 @@ def build_engine(*, persist_dir: Path, graph_type: _GRAPH_TYPE) -> GraphKnowledg
     )
 
 
-def _tojson(value) -> Markup:
+def _tojson(value: JsonValue) -> Markup:
     # Deterministic JSON for embedding into <script>.
     return Markup(json.dumps(value, ensure_ascii=False))
 
 
-def _render_template_html(template_html: str, *, context: dict) -> str:
+def _render_template_html(
+    template_html: str, *, context: Mapping[str, JsonValue]
+) -> str:
     # Offline rendering: no server required.
     env = Environment(autoescape=False)
     env.filters["tojson"] = _tojson
@@ -203,9 +208,9 @@ def dump_paired_bundles(
     insertion_method: str | None = None,
     # Live CDC (optional)
     cdc_ws_url: str | None = None,
-    embed_empty=False,
+    embed_empty: bool = False,
     viewer: Literal["d3", "sigma"] = "d3",
-) -> dict:
+) -> JsonObject:
 
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -268,7 +273,9 @@ def dump_paired_bundles(
     return bundle_meta
 
 
-def _engine_graph_type(engine, fallback: str | None = None):
+def _engine_graph_type(
+    engine: GraphKnowledgeEngine | None, fallback: str | None = None
+) -> str | None:
     graph_type = getattr(engine, "kg_graph_type", None)
     return graph_type if graph_type is not None else fallback
 
