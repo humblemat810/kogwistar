@@ -23,6 +23,7 @@ from kogwistar.json_types import JsonObject, JsonValue
 
 from .base_runtime import (
     BaseRuntime,
+    _ChildRunResult,
     apply_state_update_inplace,
     validate_initial_state,
 )
@@ -281,7 +282,7 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
         *,
         state: WorkflowState,
         invocation: WorkflowInvocationRequest,
-        child_result: RunResult,
+        child_result: _ChildRunResult,
     ) -> None:
         super()._apply_workflow_invocation_result(
             state=state,
@@ -505,7 +506,7 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
         result: StepRunResult,
         predicate_registry: dict[str, Predicate],
         *,
-        nodes: dict[str, WorkflowNode] | None = None,
+        nodes: Mapping[str, WorkflowNode] | None = None,
     ) -> list[WorkflowEdge]:
         if not edges:
             return []

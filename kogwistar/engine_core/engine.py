@@ -643,17 +643,17 @@ class GraphKnowledgeEngine:
             resolve_mode=resolve_mode,
         )
 
-    def tombstone_node(self, node_id: str, **kw: object) -> bool:
+    def tombstone_node(self, node_id: str, **kw: JsonValue) -> bool:
         return self.lifecycle.tombstone_node(node_id, **kw)
 
-    def redirect_node(self, from_id: str, to_id: str, **kw: object) -> bool:
+    def redirect_node(self, from_id: str, to_id: str, **kw: JsonValue) -> bool:
         return self.lifecycle.redirect_node(from_id, to_id, **kw)
 
     @engine_context
-    def tombstone_edge(self, edge_id: str, **kw: object) -> bool:
+    def tombstone_edge(self, edge_id: str, **kw: JsonValue) -> bool:
         return self.lifecycle.tombstone_edge(edge_id, **kw)
 
-    def redirect_edge(self, from_id: str, to_id: str, **kw: object) -> bool:
+    def redirect_edge(self, from_id: str, to_id: str, **kw: JsonValue) -> bool:
         return self.lifecycle.redirect_edge(from_id, to_id, **kw)
 
     def node_ids_by_doc(self, doc_id: str) -> list[str]:
@@ -1674,6 +1674,8 @@ class GraphKnowledgeEngine:
                 if postgres_authority_mode == "rust":
                     from .two_stage_rust_postgres import (
                         RustPostgresTwoStageProjectionAdapter,
+                        _RustProjectionEngine,
+                        _RustProjectionMeta,
                         rust_postgres_two_stage_capability,
                     )
 
@@ -1681,7 +1683,10 @@ class GraphKnowledgeEngine:
                         rust_postgres_two_stage_capability()
                     )
                     projection_capability_backend(self.backend).two_stage_projection_adapter = (
-                        RustPostgresTwoStageProjectionAdapter(self, meta_postgre)
+                        RustPostgresTwoStageProjectionAdapter(
+                            cast(_RustProjectionEngine, self),
+                            cast(_RustProjectionMeta, meta_postgre),
+                        )
                     )
                     if not sync_postgres:
                         from .two_stage_async import (

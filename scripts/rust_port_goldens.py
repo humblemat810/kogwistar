@@ -2,12 +2,18 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
-from pydantic import TypeAdapter
-from pydantic_extension.model_slicing import use_mode
+# When invoked as ``python scripts/rust_port_goldens.py``, Python puts the
+# scripts directory ahead of the checkout root.  Prefer the local source tree
+# so the generated contract cannot silently come from an installed Kogwistar.
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from pydantic import TypeAdapter
+from kogwistar.json_types import JsonValue
 from kogwistar.engine_core.models import Document, Edge, Grounding, Node, Span
 from kogwistar.runtime.models import (
     RunFailure,
@@ -37,6 +43,14 @@ MODEL_TYPES = {
 
 
 def _model_schemas() -> dict[str, Any]:
+    # Resolve recursive annotations before creating mode slices.  Without this
+    # explicit rebuild, schema output depends on which test modules happened to
+    # import the models first in the current process.
+    for model in MODEL_TYPES.values():
+        rebuild = getattr(model, "model_rebuild", None)
+        if callable(rebuild):
+            rebuild(force=True)
+
     schemas: dict[str, Any] = {
         "default": {
             name: (
@@ -48,13 +62,11 @@ def _model_schemas() -> dict[str, Any]:
         }
     }
     for mode in ("backend", "dto", "frontend", "llm", "llm_in"):
-        context = use_mode(mode)
-        with context:
-            schemas[mode] = {
-                name: model.model_json_schema()
-                for name, model in sorted(MODEL_TYPES.items())
-                if hasattr(model, "modes") and mode in model.modes()
-            }
+        schemas[mode] = {
+            name: model.slice_for(mode).model_json_schema()
+            for name, model in sorted(MODEL_TYPES.items())
+            if hasattr(model, "modes") and mode in model.modes()
+        }
     return schemas
 
 
@@ -390,7 +402,7 @@ def golden_payloads(*, include_openapi: bool = True) -> dict[str, Any]:
     return payloads
 
 
-def _encoded(value: Any) -> str:
+def _encoded(value: JsonValue) -> str:
     return json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
 
 

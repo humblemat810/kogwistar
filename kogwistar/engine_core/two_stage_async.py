@@ -8,11 +8,16 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequenc
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from typing import TYPE_CHECKING, Protocol, cast
 
+from ..json_types import JsonObject
 from ..utils.embedding_vectors import normalize_embedding_vector
 from .edge_endpoint_rows import edge_endpoint_rows
 from .models import Edge, Node
 from .storage_backend import TwoStageProjectionCapability
-from .two_stage_rust_postgres import RustPostgresTwoStageProjectionAdapter
+from .two_stage_rust_postgres import (
+    RustPostgresTwoStageProjectionAdapter,
+    _RustProjectionEngine,
+    _RustProjectionMeta,
+)
 
 if TYPE_CHECKING:
     from ..typing_interfaces import WriteLike
@@ -711,7 +716,10 @@ class AsyncRustPostgresTwoStageProjectionAdapter:
     def __init__(self, engine: object, meta: object) -> None:
         self.engine = cast(_TwoStageEngineLike, engine)
         self.meta = cast(_MetaStoreLike, meta)
-        self._sync_adapter = RustPostgresTwoStageProjectionAdapter(engine, meta)
+        self._sync_adapter = RustPostgresTwoStageProjectionAdapter(
+            cast(_RustProjectionEngine, engine),
+            cast(_RustProjectionMeta, meta),
+        )
 
     def _table(self, entity_kind: str) -> str:
         return self._sync_adapter._table(entity_kind)
@@ -732,7 +740,9 @@ class AsyncRustPostgresTwoStageProjectionAdapter:
     ) -> None:
         self._sync_adapter._promote_record(
             entity_kind=entity_kind, entity_id=entity_id,
-            record=record, embedding=embedding, expected=expected,
+            record=cast(JsonObject, record),
+            embedding=list(embedding),
+            expected=expected,
         )
 
     async def add_node(self, node: Node, *, doc_id: str | None = None) -> None:

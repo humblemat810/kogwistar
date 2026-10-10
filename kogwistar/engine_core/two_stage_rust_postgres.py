@@ -222,12 +222,12 @@ class RustPostgresTwoStageProjectionAdapter:
             workspace_id=metadata.get("workspace_id"),
             graph_space=metadata.get("graph_space"),
             table=self._table(entity_kind),
-            record={
+            record=cast(JsonValue, {
                 "id": entity_id,
                 "document": document,
                 "metadata": metadata,
                 "embedding": normalize_embedding_vector(embedding, allow_none=False),
-            },
+            }),
             embedding_dim=int(self.engine.backend.embedding_dim),
         )
 

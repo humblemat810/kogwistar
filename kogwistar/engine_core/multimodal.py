@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -176,7 +175,7 @@ class LegacyLocator(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     kind: Literal["legacy"] = "legacy"
-    payload: Mapping[str, JsonValue]
+    payload: dict[str, JsonValue]
 
 
 Locator = Annotated[

@@ -47,6 +47,7 @@ from kogwistar.utils.log import bind_log_context
 from ..engine_core.async_compat import run_awaitable_blocking
 from .base_runtime import (
     BaseRuntime,
+    _ChildRunResult,
     apply_state_update_inplace,
     validate_initial_state,
 )
@@ -989,7 +990,7 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
         *,
         state: WorkflowState,
         invocation: WorkflowInvocationRequest,
-        child_result: RunResult,
+        child_result: _ChildRunResult,
     ) -> None:
         super()._apply_workflow_invocation_result(
             state=state,
@@ -3356,7 +3357,7 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
         state: WorkflowState,
         last_result: StepRunResult,
         fanout: bool,
-        nodes: dict[str, WorkflowNode] | None = None,
+        nodes: Mapping[str, WorkflowNode] | None = None,
     ) -> tuple[list[str], RouteDecision]:
         """
         Waterfall routing:

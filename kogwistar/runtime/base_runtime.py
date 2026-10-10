@@ -315,7 +315,7 @@ class BaseRuntime(Generic[ResolverT]):
         last_result: object,
         fanout: bool,
         predicate_registry: dict[str, Predicate],
-        nodes: dict[str, object] | None = None,
+        nodes: Mapping[str, object] | None = None,
         sort_edges: bool = False,
     ) -> RouteComputation:
         route_edges = list(edges)

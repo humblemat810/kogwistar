@@ -9,11 +9,11 @@ import sys
 import threading
 import time
 import uuid
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from types import TracebackType
-from typing import Any, Coroutine, Literal, cast
+from typing import Any, Coroutine, Literal, TypeVar, cast
 
 import sqlalchemy as sa
 from sqlalchemy.engine import Connection
@@ -32,6 +32,7 @@ _SCHEMA_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 # hash so independent processes and releases use the same lock.
 POSTGRES_BOOTSTRAP_ADVISORY_LOCK_KEY = 748219503
 logger = logging.getLogger(__name__)
+T = TypeVar("T")
 
 
 def _int_or_default(value: object, default: int = 0) -> int:
@@ -48,7 +49,7 @@ def _int_or_default(value: object, default: int = 0) -> int:
     return default
 
 
-def _run_coro_blocking(coro: Coroutine[Any, Any, object]) -> object:
+def _run_coro_blocking(coro: Coroutine[Any, Any, T]) -> T:
     try:
         asyncio.get_running_loop()
     except RuntimeError:
@@ -73,7 +74,7 @@ def _run_coro_blocking(coro: Coroutine[Any, Any, object]) -> object:
     thread.join()
     if "error" in box:
         raise cast(BaseException, box["error"])
-    return box.get("result")
+    return cast(T, box.get("result"))
 
 
 class _BufferedMappings:
@@ -100,8 +101,11 @@ class _BufferedResult:
     def __iter__(self) -> Iterator[object]:
         return iter(self._rows)
 
-    def fetchone(self) -> object | None:
-        return self._rows[0] if self._rows else None
+    def fetchone(self) -> Sequence[Any] | None:
+        return cast(Sequence[Any], self._rows[0]) if self._rows else None
+
+    def first(self) -> Sequence[Any] | None:
+        return self.fetchone()
 
     def fetchall(self) -> list[object]:
         return list(self._rows)
@@ -596,6 +600,8 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                 row = conn.execute(
                     sa.text(f"UPDATE {gt} SET value = value + 1 RETURNING value")
                 ).fetchone()
+            if row is None:
+                raise RuntimeError("failed to allocate global sequence")
             return int(row[0])
 
     def current_global_seq(self) -> int:
@@ -622,6 +628,8 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                 ),
                 {"user_id": user_id},
             ).fetchone()
+            if row is None:
+                raise RuntimeError("failed to allocate user sequence")
             return int(row[0])
 
     def next_scoped_seq(self, scope_id: str) -> int:
@@ -2507,6 +2515,8 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                     "created_at_ms": now_ms,
                 },
             ).fetchone()
+            if row is None:
+                raise RuntimeError("failed to append server run event")
             seq = int(row[0])
         return {
             "seq": seq,
