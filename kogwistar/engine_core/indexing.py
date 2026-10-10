@@ -5,8 +5,8 @@ import json
 import time
 import uuid
 from dataclasses import dataclass
-from collections.abc import Iterable, Mapping
-from typing import TYPE_CHECKING, Any, cast
+from collections.abc import Callable, Iterable, Mapping
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from .async_compat import run_awaitable_blocking
 from .canonical_events import CanonicalEntityRevision, read_canonical_entity_revision
@@ -17,6 +17,9 @@ if TYPE_CHECKING:
     from .engine import GraphKnowledgeEngine
     from ..workers.async_index_job_worker import AsyncIndexJobWorker
     from ..workers.index_job_worker import IndexJobWorker
+
+
+EntityT = TypeVar("EntityT")
 
 
 def _is_tombstoned(meta: dict | None) -> bool:
@@ -531,7 +534,7 @@ class IndexingSubsystem:
         op: str,
         namespace: str,
         payload_json: str | None = None,
-        validated_entity_cache: dict[tuple[str, str, str], Any] | None = None,
+        validated_entity_cache: dict[tuple[str, str, str], object] | None = None,
     ) -> None:
         """
         Bring one derived index projection into sync with the authoritative entity.
@@ -579,7 +582,7 @@ class IndexingSubsystem:
                 key=lambda row: json.dumps(row, sort_keys=True, separators=(",", ":")),
             )
 
-        def _as_dict(meta: Any) -> dict[str, Any]:
+        def _as_dict(meta: object) -> dict[str, Any]:
             return meta if isinstance(meta, dict) else {}
 
         def _drop_none_values(row: dict[str, Any]) -> dict[str, Any]:
@@ -592,27 +595,31 @@ class IndexingSubsystem:
             *,
             raw_json: str,
             cache_key: tuple[str, str, str],
-            parser: Any,
+            parser: Callable[[str], EntityT],
             timing_label: str,
-        ) -> Any:
+        ) -> EntityT:
             cache = validated_entity_cache
             if isinstance(cache, dict):
                 cached = cache.get(cache_key)
                 if cached is not None:
-                    if hasattr(cached, "model_copy"):
-                        return cached.model_copy(deep=True)
-                    return cached
+                    copy_method = getattr(cached, "model_copy", None)
+                    if callable(copy_method):
+                        return cast(EntityT, copy_method(deep=True))
+                    return cast(EntityT, cached)
 
             started = time.perf_counter()
             obj = parser(raw_json)
             _emit(timing_label, started)
             if isinstance(cache, dict):
-                cache[cache_key] = obj
-            if hasattr(obj, "model_copy"):
-                return obj.model_copy(deep=True)
+                cache[cache_key] = cast(object, obj)
+            copy_method = getattr(obj, "model_copy", None)
+            if callable(copy_method):
+                return cast(EntityT, copy_method(deep=True))
             return obj
 
-        def _backend_call(fn: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        def _backend_call(
+            fn: Callable[..., object], *args: object, **kwargs: object
+        ) -> dict[str, Any]:
             return _backend_object(run_awaitable_blocking(fn(*args, **kwargs)))
 
         def _actual_payload() -> list[Any]:
