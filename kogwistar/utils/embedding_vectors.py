@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
-from typing import Any
+from collections.abc import Iterable, Sequence
+from typing import cast
 
 try:
     import numpy as np
@@ -9,7 +9,7 @@ except Exception:  # pragma: no cover - optional dependency
     np = None  # type: ignore[assignment]
 
 
-def _is_numeric_scalar(value: Any) -> bool:
+def _is_numeric_scalar(value: object) -> bool:
     if isinstance(value, bool):
         return False
     if isinstance(value, (int, float)):
@@ -19,7 +19,15 @@ def _is_numeric_scalar(value: Any) -> bool:
     return False
 
 
-def normalize_embedding_vector(raw: Any, *, allow_none: bool = True) -> list[float] | None:
+def _as_float(value: object) -> float:
+    if not _is_numeric_scalar(value):
+        raise TypeError("embedding value must be numeric")
+    return float(cast(int | float, value))
+
+
+def normalize_embedding_vector(
+    raw: object, *, allow_none: bool = True
+) -> list[float] | None:
     """Normalize one embedding vector to plain `list[float]`.
 
     Accepts Python sequences, numpy arrays, pgvector-ish values that expose
@@ -30,25 +38,26 @@ def normalize_embedding_vector(raw: Any, *, allow_none: bool = True) -> list[flo
             return None
         raise ValueError("embedding vector is None")
 
-    if hasattr(raw, "tolist"):
-        raw = raw.tolist()
+    to_list = getattr(raw, "tolist", None)
+    if callable(to_list):
+        raw = to_list()
 
     if isinstance(raw, (str, bytes, bytearray)):
         raise TypeError(f"embedding vector must be numeric, got {type(raw)!r}")
 
     if not isinstance(raw, Sequence):
-        raw = list(raw)
+        raw = list(cast(Iterable[object], raw))
 
     values = list(raw)
     if not values:
         return []
     if any(not _is_numeric_scalar(v) for v in values):
         raise TypeError("embedding vector must be a flat numeric sequence")
-    return [float(v) for v in values]
+    return [_as_float(v) for v in values]
 
 
 def normalize_embedding_rows(
-    raw: Any, *, allow_empty: bool = True, allow_none_rows: bool = False
+    raw: object, *, allow_empty: bool = True, allow_none_rows: bool = False
 ) -> list[list[float] | None]:
     """Normalize one-or-many embeddings to `list[list[float] | None]`.
 
@@ -63,14 +72,15 @@ def normalize_embedding_rows(
             return []
         raise ValueError("embedding rows are None")
 
-    if hasattr(raw, "tolist"):
-        raw = raw.tolist()
+    to_list = getattr(raw, "tolist", None)
+    if callable(to_list):
+        raw = to_list()
 
     if isinstance(raw, (str, bytes, bytearray)):
         raise TypeError(f"embedding rows must be numeric, got {type(raw)!r}")
 
     if not isinstance(raw, Sequence):
-        raw = list(raw)
+        raw = list(cast(Iterable[object], raw))
 
     rows = list(raw)
     if not rows:
