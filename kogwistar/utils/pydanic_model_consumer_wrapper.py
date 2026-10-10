@@ -14,7 +14,7 @@ P = ParamSpec("P")
 M = TypeVar("M")
 
 
-def _stable_json(obj: Any) -> str:
+def _stable_json(obj: object) -> str:
     return json.dumps(
         obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str
     )
@@ -164,7 +164,7 @@ if __name__ == "__main__":
     # Fake agent (no LLM involved)
     # ----------------------------
     class FakeAgent:
-        def __init__(self):
+        def __init__(self) -> None:
             self.calls = 0
 
         def _select_used_evidence(
@@ -183,7 +183,7 @@ if __name__ == "__main__":
             agent: FakeAgent,
             question: str,
             candidates: list[dict],
-            out_schema,
+            out_schema: object,
             out_model: type[BaseM],
         ) -> BaseM:
             return agent._select_used_evidence(
