@@ -236,7 +236,7 @@ __all__ = [
 ]
 
 
-def __getattr__(name: str):
+def __getattr__(name: str) -> object:
     if name in {"ChromaBackend", "ChromaStorageInspector"}:
         from kogwistar.engine_core.chroma_backend import (
             ChromaBackend,

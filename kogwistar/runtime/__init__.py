@@ -213,7 +213,7 @@ _SUBMODULE_EXPORTS = {
 }
 
 
-def __getattr__(name: str):
+def __getattr__(name: str) -> object:
     submodule_name = _SUBMODULE_EXPORTS.get(name)
     if submodule_name is not None:
         return import_module(submodule_name)
