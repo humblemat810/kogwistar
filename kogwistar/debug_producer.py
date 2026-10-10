@@ -5,13 +5,13 @@ import requests
 
 
 class DebugEventProducer:
-    def __init__(self, bridge_url: str, *, max_queue: int = 5000):
+    def __init__(self, bridge_url: str, *, max_queue: int = 5000) -> None:
         self.bridge_url = bridge_url.rstrip("/")
-        self.q: queue.Queue[dict] = queue.Queue(maxsize=max_queue)
+        self.q: queue.Queue[dict[str, object]] = queue.Queue(maxsize=max_queue)
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
-    def emit(self, event: dict) -> None:
+    def emit(self, event: dict[str, object]) -> None:
         # NEVER block engine
         try:
             self.q.put_nowait(event)

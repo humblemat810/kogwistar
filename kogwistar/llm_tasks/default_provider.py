@@ -249,7 +249,9 @@ def _extract_schema_for_mode(schema_mode: str) -> tuple[type[BaseModel], bool]:
 
 
 def _build_task_set_from_runner_getter(
-    *, get_runner_for_task, provider_hints: LLMTaskProviderHints
+    *,
+    get_runner_for_task: Callable[[str], _Runner],
+    provider_hints: LLMTaskProviderHints,
 ) -> LLMTaskSet:
     def _extract_graph(request: ExtractGraphTaskRequest) -> ExtractGraphTaskResult:
         schema, prefer_json_schema = _extract_schema_for_mode(request.schema_mode)

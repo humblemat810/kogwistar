@@ -49,7 +49,7 @@ def split_pages_from_text(raw: str) -> list[dict[str, Any]]:
 
 
 def coerce_pages(
-    content_or_pages: Any, *, default_page_start: int = 1
+    content_or_pages: object, *, default_page_start: int = 1
 ) -> list[dict[str, Any]]:
     def as_page_dict(x: PageLike, idx0: int) -> dict[str, Any] | None:
         if isinstance(x, str):

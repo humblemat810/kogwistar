@@ -8,7 +8,7 @@ from pydantic_extension.model_slicing import use_mode
 from ..runtime.models import WorkflowEdgeMetadata, WorkflowNodeMetadata
 
 
-def export_schemas():
+def export_schemas() -> None:
     # Use environment variable for frontend path
     frontend_src_raw = os.getenv("FRONTEND_SRC_PATH")
     if not frontend_src_raw:
