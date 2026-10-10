@@ -10,7 +10,7 @@ import json
 import urllib.error
 import urllib.request
 from collections.abc import Mapping
-from typing import Any, Protocol, Self, TypeVar, cast, runtime_checkable
+from typing import Protocol, Self, TypeVar, cast, runtime_checkable
 
 from kogwistar.json_types import JsonValue
 
@@ -27,6 +27,7 @@ TStructuredModel = TypeVar("TStructuredModel", bound=StructuredModelLike)
 TStructuredModel_co = TypeVar(
     "TStructuredModel_co", bound=StructuredModelLike, covariant=True
 )
+JsonSchema = dict[str, JsonValue]
 
 
 class StructuredOutputRunnable(Protocol[TStructuredModel_co]):
@@ -41,10 +42,10 @@ class StructuredOutputRunnable(Protocol[TStructuredModel_co]):
 class SupportsStructuredOutput(Protocol):
     def with_structured_output(
         self,
-        schema: type[TStructuredModel] | dict[str, Any],
+        schema: type[TStructuredModel] | JsonSchema,
         *,
         include_raw: bool = False,
-        **kwargs: Any,
+        **kwargs: object,
     ) -> object: ...
 
 
@@ -70,10 +71,10 @@ class StructuredBridgeChatModel:
 
     def with_structured_output(
         self,
-        schema: type[TStructuredModel] | dict[str, Any],
+        schema: type[TStructuredModel] | JsonSchema,
         *,
         include_raw: bool = True,
-        **kwargs: Any,
+        **kwargs: object,
     ) -> _StructuredBridgeResponse:
         _ = include_raw, kwargs
         if not isinstance(schema, type):
@@ -156,10 +157,10 @@ class ProviderChainChatModel:
 
     def with_structured_output(
         self,
-        schema: type[TStructuredModel] | dict[str, Any],
+        schema: type[TStructuredModel] | JsonSchema,
         *,
         include_raw: bool = True,
-        **kwargs: Any,
+        **kwargs: object,
     ) -> _ProviderChainResponse:
         _ = include_raw, kwargs
         if not isinstance(schema, type):
