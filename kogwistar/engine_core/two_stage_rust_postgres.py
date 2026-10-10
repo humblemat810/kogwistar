@@ -4,10 +4,60 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
-from typing import Any, cast
+from typing import Protocol, cast
 
+from kogwistar.json_types import JsonObject, JsonValue
+
+from .embedding_factory import EmbeddingFunctionLike
+from .canonical_events import CanonicalEntityRevision
+from .models import Edge, Node
 from ..utils.embedding_vectors import normalize_embedding_vector
 from .storage_backend import TwoStageProjectionCapability
+
+
+class _RustProjectionMeta(Protocol):
+    def upsert_graph_projection(self, **values: JsonValue) -> None: ...
+
+    def graph_projection_records(self, **values: JsonValue) -> list[JsonObject]: ...
+
+
+class _RustProjectionCollection(Protocol):
+    name: str
+
+
+class _RustProjectionBackend(Protocol):
+    embedding_dim: int
+    nodes: _RustProjectionCollection
+    edges: _RustProjectionCollection
+
+
+class _RustProjectionIndexing(Protocol):
+    def enqueue_index_job(self, **values: JsonValue) -> str: ...
+
+    def canonical_revision_payload(self, **values: JsonValue) -> str: ...
+
+    def canonical_entity_revision(
+        self, **values: JsonValue
+    ) -> CanonicalEntityRevision | None: ...
+
+
+class _RustProjectionWriter(Protocol):
+    def node_doc_and_meta(self, node: Node) -> tuple[str, JsonObject]: ...
+
+    def enrich_edge_meta(self, edge: Edge) -> JsonObject: ...
+
+
+class _RustEmbeddingHelper(Protocol):
+    def iterative_defensive_emb(self, document: str) -> Sequence[float]: ...
+
+
+class _RustProjectionEngine(Protocol):
+    namespace: str
+    backend: _RustProjectionBackend
+    indexing: _RustProjectionIndexing
+    write: _RustProjectionWriter
+    embed: _RustEmbeddingHelper
+    _ef: EmbeddingFunctionLike
 
 
 def rust_postgres_two_stage_capability() -> TwoStageProjectionCapability:
@@ -28,7 +78,7 @@ def rust_postgres_two_stage_capability() -> TwoStageProjectionCapability:
 class RustPostgresTwoStageProjectionAdapter:
     """Use native graph projection operations; no Python PG writer is involved."""
 
-    def __init__(self, engine: Any, meta: Any) -> None:
+    def __init__(self, engine: _RustProjectionEngine, meta: _RustProjectionMeta) -> None:
         self.engine = engine
         self.meta = meta
 
@@ -48,7 +98,14 @@ class RustPostgresTwoStageProjectionAdapter:
         )
         return str(json.loads(payload).get("source_fingerprint") or "")
 
-    def _upsert(self, *, entity_kind: str, entity: Any, document: str, metadata: dict[str, Any]) -> None:
+    def _upsert(
+        self,
+        *,
+        entity_kind: str,
+        entity: Node | Edge,
+        document: str,
+        metadata: JsonObject,
+    ) -> None:
         metadata = dict(metadata or {})
         # Admission runs inside the parent's native UoW. Do not re-read the
         # event stream here: the current event is already the authority and
@@ -78,13 +135,13 @@ class RustPostgresTwoStageProjectionAdapter:
             ),
         )
 
-    def add_node(self, node: Any, *, doc_id: str | None = None) -> None:
+    def add_node(self, node: Node, *, doc_id: str | None = None) -> None:
         if doc_id is not None:
             node.doc_id = doc_id
         document, metadata = self.engine.write.node_doc_and_meta(node)
         self._upsert(entity_kind="node", entity=node, document=document, metadata=metadata)
 
-    def add_edge(self, edge: Any, *, doc_id: str | None = None) -> None:
+    def add_edge(self, edge: Edge, *, doc_id: str | None = None) -> None:
         if doc_id is not None:
             edge.doc_id = doc_id
         document = edge.model_dump_json(field_mode="backend", exclude=["embedding"])
@@ -128,7 +185,9 @@ class RustPostgresTwoStageProjectionAdapter:
             raise RuntimeError("current Rust Stage-1 graph projection is missing")
         record = records[0]
         document = str(record.get("document") or "")
-        embedding = self.engine.embed.iterative_defensive_emb(document)
+        embedding = cast(
+            list[float], self.engine.embed.iterative_defensive_emb(document)
+        )
         self._promote_record(
             entity_kind=entity_kind,
             entity_id=entity_id,
@@ -142,11 +201,12 @@ class RustPostgresTwoStageProjectionAdapter:
         *,
         entity_kind: str,
         entity_id: str,
-        record: dict[str, Any],
-        embedding: Any,
+        record: JsonObject,
+        embedding: list[float],
         expected: str,
     ) -> None:
-        metadata = dict(record.get("metadata") or {})
+        raw_metadata = record.get("metadata")
+        metadata = dict(raw_metadata) if isinstance(raw_metadata, dict) else {}
         document = str(record.get("document") or "")
         stored_fingerprint = metadata.get("_kogwistar_source_fingerprint")
         if expected and stored_fingerprint and stored_fingerprint != expected:
@@ -171,18 +231,26 @@ class RustPostgresTwoStageProjectionAdapter:
             embedding_dim=int(self.engine.backend.embedding_dim),
         )
 
-    def apply_embedding_jobs_batch(self, jobs: list[Any]) -> dict[str, BaseException | None]:
+    def apply_embedding_jobs_batch(
+        self, jobs: Sequence[object]
+    ) -> dict[str, BaseException | None]:
         """Batch provider call with independent native promotion outcomes."""
-        prepared: list[tuple[str, str, str, dict[str, Any]]] = []
+        prepared: list[tuple[str, str, str, JsonObject]] = []
         outcomes: dict[str, BaseException | None] = {}
         for job in jobs:
-            value = lambda name: job.get(name) if isinstance(job, dict) else getattr(job, name, None)
+            def value(name: str) -> object:
+                if isinstance(job, dict):
+                    return job.get(name)
+                return getattr(job, name, None)
             job_id = str(value("job_id") or "")
             entity_kind = str(value("entity_kind") or "")
             entity_id = str(value("entity_id") or "")
             try:
                 op = str(value("op") or "UPSERT")
-                payload_json = value("payload_json")
+                payload_value = value("payload_json")
+                payload_json = (
+                    str(payload_value) if payload_value is not None else None
+                )
                 if op.upper() == "DELETE":
                     outcomes[job_id] = None
                     continue
