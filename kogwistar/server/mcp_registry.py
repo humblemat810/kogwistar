@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any, ParamSpec, TypeVar, cast, get_type_hints, overload
@@ -325,7 +325,7 @@ class McpRegistry:
         manager_holder: dict[str, StreamableHTTPSessionManager] = {}
 
         @asynccontextmanager
-        async def lifespan(_app: object):
+        async def lifespan(_app: object) -> AsyncIterator[None]:
             manager = StreamableHTTPSessionManager(self.server)
             manager_holder["manager"] = manager
             async with manager.run():
