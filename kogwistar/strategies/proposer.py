@@ -122,7 +122,7 @@ def _load_edges(engine: EngineLike, ids: Sequence[str]) -> list[Edge]:
 def _coerce_query_nodes(
     engine: EngineLike,
     spec: Node | Edge | str | Sequence[Node | Edge | str],
-    is_edge=False,
+    is_edge: bool = False,
 ) -> list[Node | Edge]:
     """Accept Node | id | list[...] and return concrete Node objects (with embeddings)."""
     if isinstance(spec, (Node, Edge, str)):
@@ -169,7 +169,7 @@ class VectorProposer(MergeCandidateProposer):
       - a 'where' filter that flows to Chroma, e.g. {"insertion_method": "graph_extractor"}
     """
 
-    def __init__(self, engine: EngineLike):
+    def __init__(self, engine: EngineLike) -> None:
         self.e = engine
         self.limit_per_bucket = 100
 
@@ -227,12 +227,15 @@ class VectorProposer(MergeCandidateProposer):
             return {}
 
         # ---- tiny local coercers (ids -> objects) -------------------------------------
-        def _coerce_query_nodes(e: EngineLike, xs) -> list[Node]:
+        def _coerce_query_nodes(
+            e: EngineLike,
+            xs: Node | Edge | str | Sequence[Node | Edge | str] | None,
+        ) -> list[Node | Edge]:
             if xs is None:
                 return []
             if isinstance(xs, (str, Node)):
                 xs = [xs]
-            out: list[Node] = []
+            out: list[Node | Edge] = []
             for item in xs:
                 if isinstance(item, Node):
                     out.append(item)
@@ -253,12 +256,15 @@ class VectorProposer(MergeCandidateProposer):
                         out.append(n)
             return out
 
-        def _coerce_query_edges(e: EngineLike, xs) -> list[Edge]:
+        def _coerce_query_edges(
+            e: EngineLike,
+            xs: Node | Edge | str | Sequence[Node | Edge | str] | None,
+        ) -> list[Node | Edge]:
             if xs is None:
                 return []
             if isinstance(xs, (str, Edge)):
                 xs = [xs]
-            out: list[Edge] = []
+            out: list[Node | Edge] = []
             for item in xs:
                 if isinstance(item, Edge):
                     out.append(item)
@@ -280,10 +286,12 @@ class VectorProposer(MergeCandidateProposer):
             return out
 
         # ---- build query set: nodes + edges ------------------------------------------
-        q_nodes = cast(
-            list[Node | Edge], _coerce_query_nodes(engine, new_node)
-        )
-        q_edges: list[Edge] = _coerce_query_edges(engine, new_edge)
+        q_nodes = _coerce_query_nodes(engine, new_node)
+        q_edges = [
+            item
+            for item in _coerce_query_edges(engine, new_edge)
+            if isinstance(item, Edge)
+        ]
         queries: list[Node | Edge] = q_nodes + q_edges
         # check_pairs = {('E_PHOTO_LEAVES', 'N_PHOTO_REIFIED'), ('E_PHOTO_LEAVES', 'E_PHOTO_LEAVES_DUP'), ('N_CHLORO', 'N_CHLORO_ALIAS')}
         if not queries:
@@ -663,7 +671,7 @@ class VectorProposer(MergeCandidateProposer):
 
 
 class CompositeProposer(MergeCandidateProposer):
-    def __init__(self, base: VectorProposer | None = None):
+    def __init__(self, base: VectorProposer | None = None) -> None:
         self.base = base
 
     def _proposer(self, engine: EngineLike) -> VectorProposer:
