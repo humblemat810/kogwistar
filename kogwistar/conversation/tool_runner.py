@@ -15,7 +15,7 @@ import json
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol, TypeVar, cast
+from typing import TYPE_CHECKING, Protocol, TypeAlias, TypeVar, cast
 
 from fastapi import HTTPException
 
@@ -40,7 +40,6 @@ if TYPE_CHECKING:
     from .models import MetaFromLastSummary
 
 T = TypeVar("T", bound=BaseToolResult)
-T_co = TypeVar("T_co", bound=BaseToolResult, covariant=True)
 
 
 class SubworkflowRunner(Protocol):
@@ -49,10 +48,15 @@ class SubworkflowRunner(Protocol):
     def __call__(self, **kwargs: JsonValue) -> object | Awaitable[object]: ...
 
 
-class ToolHandler(Protocol[T_co]):
-    """Execute a conversation tool from its JSON keyword payload."""
+ToolHandler: TypeAlias = Callable[..., T | Awaitable[T]]
+"""Signature-adaptive handler boundary for registered conversation tools.
 
-    def __call__(self, **kwargs: JsonValue) -> T_co | Awaitable[T_co]: ...
+Tool handlers retain their domain-specific keyword annotations, while the
+runner dispatches them from a JSON-shaped mapping.  A protocol with a fixed
+``**kwargs`` value type would reject valid handlers through callable
+contravariance, so this reflective dispatch boundary intentionally remains
+variadic while preserving the result type.
+"""
 
 
 def _safe_json(obj: object) -> str:
