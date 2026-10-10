@@ -54,7 +54,7 @@ def _get_doc(
     doc_id: str | None = None,
     doc: Document | None = None,
     engine: EngineLike | None = None,
-):
+) -> Document:
     if (doc is not None) and doc_id is not None:
         if doc.id == doc_id:
             pass  # ok they agree
@@ -258,9 +258,9 @@ class BaseDocValidator:
         doc_id: str | None = None,
         doc: Document | None = None,
         engine: EngineLike | None = None,
-        nodes_edges=None,
-        source_map=None,
-    ):
+        nodes_edges: object | None = None,
+        source_map: object | None = None,
+    ) -> dict[str, object]:
         # must coerce plain text into Document for processing
         # TO-DO fix logic start
         # 1) Validate existing coordinates quickly
@@ -377,7 +377,7 @@ class BaseDocValidator:
         doc_id: str | None = None,
         doc: Document | None = None,
         engine: EngineLike | None = None,
-    ):
+    ) -> dict[str, object]:
 
         if not doc:
             raise RuntimeError("fail to resolve document")
@@ -396,7 +396,7 @@ class PlainTextDocSpanValidator(BaseDocValidator):
         doc_id: str | None = None,
         doc: Document | None = None,
         engine: EngineLike | None = None,
-    ):
+    ) -> dict[str, object]:
         return super().validate_span(span=span, doc_id=doc_id, doc=doc, engine=engine)
         if (doc is not None) and doc_id is not None:
             raise ValueError("Either doc or doc_id can be non None")
@@ -426,7 +426,7 @@ class ChunkedDocValidator:
         doc_id: str | None = None,
         doc: Document | None = None,
         engine: EngineLike | None = None,
-    ):
+    ) -> dict[str, object]:
         raise NotImplementedError
 
 
@@ -437,7 +437,7 @@ class OcrDocSpanValidator(BaseDocValidator):
         doc_id: str | None = None,
         doc: Document | None = None,
         engine: EngineLike | None = None,
-    ):
+    ) -> dict[str, object]:
         if doc is None:
             if doc_id is None:
                 raise ValueError("Either doc or doc_id must be provided")
