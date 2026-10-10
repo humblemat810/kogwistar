@@ -7,14 +7,31 @@ import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Protocol, cast
 
 if TYPE_CHECKING:
     from ..engine_core.engine import GraphKnowledgeEngine
 
 
 BatchApply = Callable[[list[object]], dict[str, BaseException | None]]
-MetaCallback = Callable[..., object] | None
+
+
+class IndexJobDone(Protocol):
+    """Acknowledge one successfully applied index job."""
+
+    def __call__(self, job_id: str, /) -> object: ...
+
+
+class IndexJobRetry(Protocol):
+    """Requeue one failed index job with a bounded delay."""
+
+    def __call__(self, job_id: str, error: str, /, *, next_run_at_seconds: int) -> object: ...
+
+
+class IndexJobFailed(Protocol):
+    """Move one index job to terminal failure or a non-terminal failure state."""
+
+    def __call__(self, job_id: str, error: str, /, *, final: bool) -> object: ...
 
 
 @dataclass
@@ -202,9 +219,9 @@ class IndexJobWorker:
         batch_results: dict[str, BaseException | None] | None,
         namespace: str,
         entity_cache: dict[tuple[str, str, str], object],
-        mark_done: MetaCallback,
-        bump: MetaCallback,
-        mark_failed: MetaCallback,
+        mark_done: IndexJobDone | None,
+        bump: IndexJobRetry | None,
+        mark_failed: IndexJobFailed | None,
         metrics: WorkerTickMetrics,
         durations: list[float],
     ) -> None:
