@@ -125,7 +125,7 @@ class ContextCost:
             char_count=self.char_count + other.char_count, token_count=tc
         )
 
-    def to_flat_metadata(self, *, prefix: str = "cost") -> dict[str, Any]:
+    def to_flat_metadata(self, *, prefix: str = "cost") -> dict[str, JsonPrimitive]:
         # You requested dot keys.
         return {
             f"{prefix}.char_count": int(self.char_count),
@@ -136,18 +136,25 @@ class ContextCost:
 
     @staticmethod
     def from_flat_metadata(
-        meta: dict[str, Any], *, prefix: str = "cost"
+        meta: Mapping[str, JsonPrimitive], *, prefix: str = "cost"
     ) -> "ContextCost":
         cc_key = f"{prefix}.char_count"
         tc_key = f"{prefix}.token_count"
 
-        char_count = int(meta.get(cc_key, 0) or 0)
+        def coerce_count(value: JsonPrimitive, *, default: int = 0) -> int:
+            if value is None or value == "":
+                return default
+            if isinstance(value, (str, int, float, bool)):
+                return int(value)
+            raise TypeError(f"Unsupported context-cost value: {type(value).__name__}")
+
+        char_count = coerce_count(meta.get(cc_key, 0))
         token_raw = meta.get(tc_key, None)
         token_count: int | None
         if token_raw is None or token_raw == "":
             token_count = None
         else:
-            token_count = int(token_raw)
+            token_count = coerce_count(token_raw)
 
         return ContextCost(char_count=char_count, token_count=token_count)
 
