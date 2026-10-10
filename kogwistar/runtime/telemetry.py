@@ -8,11 +8,11 @@ import sqlite3
 import threading
 import time
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping, MutableMapping, Sequence
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 # -----------------------------
 # Trace / event schema helpers
@@ -598,9 +598,17 @@ class BoundLoggerAdapter(logging.LoggerAdapter):
     Ensures all logs contain correlation fields.
     """
 
-    def process(self, msg, kwargs):
-        extra = dict(kwargs.get("extra") or {})
-        extra.update(self.extra or {})  # correlation fields win
+    def process(
+        self, msg: object, kwargs: MutableMapping[str, object]
+    ) -> tuple[object, MutableMapping[str, object]]:
+        extra_value = kwargs.get("extra")
+        extra = (
+            dict(cast(Mapping[str, object], extra_value))
+            if isinstance(extra_value, Mapping)
+            else {}
+        )
+        extra.update(cast(Mapping[str, object], self.extra or {}))
+        # Correlation fields win over caller-provided values.
         kwargs["extra"] = extra
         return msg, kwargs
 
