@@ -19,12 +19,13 @@ from collections.abc import Mapping
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol, cast
+from typing import TYPE_CHECKING, Protocol, cast
 
 import httpx
 
 from kogwistar.id_provider import stable_id
 from kogwistar.json_types import JsonValue
+from kogwistar.runtime.models import StepRunResult
 
 from .contract import Predicate
 
@@ -37,7 +38,7 @@ if TYPE_CHECKING:
 class RustStepCallback(Protocol):
     """Callback resolved for one durable runtime operation."""
 
-    def __call__(self, context: StepContext) -> Any: ...
+    def __call__(self, context: StepContext) -> StepRunResult: ...
 
 
 class RustStepResolver(Protocol):
@@ -92,6 +93,13 @@ def _json_copy(value: object, *, field: str) -> JsonValue:
         return json.loads(_canonical(value))
     except (TypeError, ValueError) as error:
         raise RustWorkerError(f"{field} must be JSON-only: {error}") from error
+
+
+def _json_object_copy(value: object, *, field: str) -> JsonObject:
+    copied = _json_copy(value, field=field)
+    if not isinstance(copied, dict):
+        raise RustWorkerError(f"{field} must be a JSON object")
+    return copied
 
 
 def _json_int(value: JsonValue | None, default: int = 0) -> int:
@@ -259,7 +267,7 @@ class RustStepResolverAdapter:
         if not isinstance(raw_state, dict):
             raise RustWorkerError("claimed work state must be an object")
         state = _durable_state(raw_state, field="claimed work state")
-        before = _json_copy(state, field="claimed work state")
+        before = _json_object_copy(state, field="claimed work state")
         if self.dependency_provider is not None:
             dependencies = self.dependency_provider(work)
             if not isinstance(dependencies, Mapping):
@@ -277,7 +285,7 @@ class RustStepResolverAdapter:
         message_queue: queue.Queue[JsonObject] = queue.Queue()
         lane_message_attempts: list[JsonObject] = []
 
-        def record_lane_message(**kwargs: Any) -> dict[str, str]:
+        def record_lane_message(**kwargs: JsonValue) -> dict[str, str]:
             lane_message_attempts.append(dict(kwargs))
             return {"message_id": ""}
 
@@ -311,6 +319,7 @@ class RustStepResolverAdapter:
             )
         if inspect.isawaitable(result):
             raise RustWorkerError("async resolver callbacks are not in worker contract v1")
+        result = cast(StepRunResult, result)
         return self._effect_from_result(
             result=result,
             state=state,
@@ -324,9 +333,9 @@ class RustStepResolverAdapter:
     def _effect_from_result(
         self,
         *,
-        result: Any,
+        result: StepRunResult,
         state: JsonObject,
-        before: Any,
+        before: JsonObject,
         routes: list[_FrozenWorkerRoute],
         node_id: str,
         message_queue: queue.Queue[JsonObject],
@@ -520,7 +529,7 @@ class AsyncRustStepResolverAdapter(RustStepResolverAdapter):
         if not isinstance(raw_state, dict):
             raise RustWorkerError("claimed work state must be an object")
         state = _durable_state(raw_state, field="claimed work state")
-        before = _json_copy(state, field="claimed work state")
+        before = _json_object_copy(state, field="claimed work state")
         if self.dependency_provider is not None:
             dependencies = self.dependency_provider(work)
             if not isinstance(dependencies, Mapping):
@@ -538,7 +547,7 @@ class AsyncRustStepResolverAdapter(RustStepResolverAdapter):
         message_queue: queue.Queue[JsonObject] = queue.Queue()
         lane_message_attempts: list[JsonObject] = []
 
-        def record_lane_message(**kwargs: Any) -> dict[str, str]:
+        def record_lane_message(**kwargs: JsonValue) -> dict[str, str]:
             lane_message_attempts.append(dict(kwargs))
             return {"message_id": ""}
 
@@ -572,6 +581,7 @@ class AsyncRustStepResolverAdapter(RustStepResolverAdapter):
                 state_update=[],
                 errors=[str(error), traceback.format_exc()],
             )
+        result = cast(StepRunResult, result)
         return self._effect_from_result(
             result=result,
             state=state,
@@ -583,7 +593,7 @@ class AsyncRustStepResolverAdapter(RustStepResolverAdapter):
         )
 
 
-def _canonical(value: Any) -> str:
+def _canonical(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
