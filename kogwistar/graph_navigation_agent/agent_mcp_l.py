@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import os
 import uuid
+from collections.abc import Awaitable, Callable
 from typing import Any, cast
 
 from langchain_mcp_adapters.client import MultiServerMCPClient  # pyright: ignore[reportMissingImports]
@@ -76,7 +77,7 @@ EXPECTED_TOOLS = {
 }
 
 
-async def build_agent():
+async def build_agent() -> tuple[Any, Callable[[], Awaitable[None]]]:
     client = MultiServerMCPClient(cast(Any, SERVERS))
 
     # Open sessions to all configured servers
@@ -114,13 +115,13 @@ async def build_agent():
 
     PngDrawer().draw(graph, "mcp_query_graphviz.png")
 
-    async def _cleanup():
+    async def _cleanup() -> None:
         await asyncio.gather(*(ctx.__aexit__(None, None, None) for ctx in ctxs))
 
     return agent, _cleanup
 
 
-async def run_once(user_question: str):
+async def run_once(user_question: str) -> None:
     agent, cleanup = await build_agent()
     try:
         config: dict[str, Any] = {
