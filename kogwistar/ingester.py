@@ -2,9 +2,9 @@
 from __future__ import annotations
 import json
 import uuid
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Protocol, cast
 
 from pydantic import BaseModel, Field
 
@@ -94,6 +94,21 @@ class GroupResponse(BaseModel):
     groups: list[GroupItem]
 
 
+class _SummarizeCache(Protocol):
+    def __call__(
+        self,
+        prompt_key: str,
+        content: str,
+        final_summary: bool = False,
+    ) -> SummarizeResponse | FinalSummariseResponse: ...
+
+
+class _GroupCache(Protocol):
+    def __call__(
+        self, prompt_key: str, chunk_titles_and_summaries: str, max_groups: int
+    ) -> GroupResponse: ...
+
+
 # -----------------------------
 # Helper datatypes
 # -----------------------------
@@ -157,12 +172,12 @@ class BaseDocumentGraphIngestor:
         )
 
         # Wrap LLM calls with joblib to cache by pure-string inputs
-        self._cached_summarize: Callable[..., SummarizeResponse | FinalSummariseResponse] = cast(
-            Callable[..., SummarizeResponse | FinalSummariseResponse],
+        self._cached_summarize: _SummarizeCache = cast(
+            _SummarizeCache,
             self.memory.cache(self._summarize_call, ignore=["self"]),
         )
-        self._cached_group: Callable[..., GroupResponse] = cast(
-            Callable[..., GroupResponse],
+        self._cached_group: _GroupCache = cast(
+            _GroupCache,
             self.memory.cache(self._group_call, ignore=["self"]),
         )
 
