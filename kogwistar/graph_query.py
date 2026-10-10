@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, TypeAlias, cast
 
 from .engine_core.async_compat import run_awaitable_blocking
 from .engine_core.models import Edge, Node
+from .engine_core.storage_backend import AsyncStage1ProjectionAdapter
 
 if TYPE_CHECKING:
     from .engine_core.engine import GraphKnowledgeEngine
@@ -248,7 +249,7 @@ class GraphQuery:
         query = getattr(adapter, "stage1_query", None)
         if not callable(query):
             return []
-        rows = await cast(Any, query)(
+        rows = await cast(AsyncStage1ProjectionAdapter, adapter).stage1_query(
             entity_kind="edge",
             ids=[edge_id] if edge_id else None,
             limit=10000,
@@ -287,7 +288,6 @@ class GraphQuery:
     async def _endpoint_rows_async(
         self, where: dict, *, edge_id: str | None = None
     ) -> list[dict]:
-        backend = getattr(self.e, "backend", None)
         rows: list[GraphRow] = []
         got = await self._async_collection_call(
             "edge_endpoints", "get", where=where, include=["documents"]
@@ -369,7 +369,7 @@ class GraphQuery:
         stage1_rows = await self._stage1_endpoint_rows_async(edge_id=rid)
         adapter = getattr(self.e, "async_two_stage_projection_adapter", None)
         stage1_nodes = (
-            await cast(Any, adapter).stage1_query(
+            await cast(AsyncStage1ProjectionAdapter, adapter).stage1_query(
                 entity_kind="node", ids=[rid], limit=1
             )
             if callable(getattr(adapter, "stage1_query", None))
@@ -833,17 +833,17 @@ class GraphQuery:
         out_layers = [
             {
                 "nodes": [
-                    n.model_dump_json() for n in self._read_nodes(ids=list(l["nodes"]))
+                    n.model_dump_json() for n in self._read_nodes(ids=list(layer["nodes"]))
                 ]
-                if l["nodes"]
+                if layer["nodes"]
                 else [],
                 "edges": [
-                    e.model_dump_json() for e in self._read_edges(ids=list(l["edges"]))
+                    e.model_dump_json() for e in self._read_edges(ids=list(layer["edges"]))
                 ]
-                if l["edges"]
+                if layer["edges"]
                 else [],
             }
-            for l in layers
+            for layer in layers
         ]
         res = {"seeds": seed_docs, "layers": out_layers}
         return res

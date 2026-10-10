@@ -127,6 +127,13 @@ class TwoStageProjectionAdapter(Protocol):
     ) -> None: ...
 
 
+
+class Stage1ProjectionAdapter(TwoStageProjectionAdapter, Protocol):
+    """Synchronous two-stage adapter with transient Stage-1 traversal."""
+
+    def stage1_query(self, **kwargs: object) -> list[dict[str, object]]: ...
+
+
 class AsyncTwoStageProjectionAdapter(Protocol):
     """Async counterpart for arrangements used from an async engine.
 
@@ -147,6 +154,13 @@ class AsyncTwoStageProjectionAdapter(Protocol):
         op: str,
         payload_json: str | None,
     ) -> None: ...
+
+
+
+class AsyncStage1ProjectionAdapter(AsyncTwoStageProjectionAdapter, Protocol):
+    """Async two-stage adapter with transient Stage-1 traversal."""
+
+    async def stage1_query(self, **kwargs: object) -> list[dict[str, object]]: ...
 
 
 class ProjectionCapabilityBackend(Protocol):
