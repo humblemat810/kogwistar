@@ -330,7 +330,7 @@ def _main(argv: list[str]) -> int:
 
     stop = {"flag": False}
 
-    def _handle(_signum, _frame):
+    def _handle(_signum: int, _frame: object) -> None:
         stop["flag"] = True
 
     # Cross-platform-ish: SIGTERM works on POSIX; on Windows terminate() is hard-kill, but handler still helps for Ctrl+C.
