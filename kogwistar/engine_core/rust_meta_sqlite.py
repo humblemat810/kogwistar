@@ -6,7 +6,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import fields
 from pathlib import Path
-from typing import Any, NoReturn, Protocol, TYPE_CHECKING, cast
+from typing import Any, NoReturn, Protocol, TYPE_CHECKING, TypeVar, cast
 
 from kogwistar._rust_bridge import store_sqlite
 from kogwistar.engine_core.engine_sqlite import IndexJobRow, ProjectedLaneMessageSqlRow
@@ -19,6 +19,7 @@ if TYPE_CHECKING:
 
 _INDEX_JOB_FIELDS = {field.name for field in fields(IndexJobRow)}
 _LANE_MESSAGE_FIELDS = {field.name for field in fields(ProjectedLaneMessageSqlRow)}
+_RustResultT = TypeVar("_RustResultT")
 
 
 def _index_job_row(value: dict[str, Any]) -> IndexJobRow:
@@ -62,12 +63,22 @@ class RustEngineSQLite:
             f"kogwistar_rust_sqlite_transaction_{id(self)}", default=None
         )
 
-    def _call(self, kind: str, **values: JsonValue) -> Any:
-        return store_sqlite(
+    def _call(self, kind: str, **values: JsonValue) -> _RustResultT:  # pyright: ignore[reportInvalidTypeVarUse]
+        """Call the Rust JSON boundary with an explicit caller result type.
+
+        The native bridge returns decoded JSON whose concrete shape is defined
+        by ``kind``.  Keeping the boundary generic lets each facade method
+        state its existing result contract without leaking an untyped ``Any``
+        through the whole meta-store facade.
+        """
+        return cast(
+            _RustResultT,
+            store_sqlite(
             path=self.db_path,
             operation={"kind": kind, **values},
             transaction_id=self._transaction_id.get(),
             reuse_session=self._transaction_id.get() is not None,
+            ),
         )
 
     def ensure_initialized(self) -> None:

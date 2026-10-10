@@ -4,6 +4,7 @@ import shutil
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Iterator
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.server.chat_service import ChatRunService
@@ -17,7 +18,7 @@ class FakeEmbeddingFunction:
 
 
 @contextmanager
-def build_demo_service():
+def build_demo_service() -> Iterator[ChatRunService]:
     root = Path(".tmp_service_demo") / str(uuid.uuid4())
     root.mkdir(parents=True, exist_ok=True)
     try:

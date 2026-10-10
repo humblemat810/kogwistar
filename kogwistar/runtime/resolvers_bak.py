@@ -1,42 +1,27 @@
-from __future__ import annotations
-
-import functools
-import warnings
-from typing import TYPE_CHECKING, cast
-
-from kogwistar.utils.log import bind_log_context
-
-"""Workflow step resolvers.
+"""Compatibility workflow step resolver kept for legacy callers.
 
 This module provides a registry-based step resolver that can be used by
-`WorkflowRuntime` (or any workflow executor) that expects:
-
-    step_resolver(op_name: str) -> Callable[[StepContext], RunResult]
-
-Design goals
-------------
-* Keep step implementations out of the orchestrator.
-* Allow the orchestrator to inject runtime dependencies via `ctx.state["_deps"]`.
-* Keep the step resolver contract stable: *handlers return RunResult*.
-
-Dependency injection
---------------------
-Handlers are expected to retrieve dependencies from `ctx.state["_deps"]`, e.g.:
-
-    deps = ctx.state["_deps"]
-    conversation_engine = deps["conversation_engine"]
-
-The orchestrator should populate `_deps` in the workflow initial_state.
+``WorkflowRuntime`` (or any workflow executor) that expects a step resolver.
+It remains intentionally isolated from the current resolver implementation.
 """
 
-# Best-effort self-inspection for state schema inference
+from __future__ import annotations
+
 import ast
+import functools
 import inspect
+import warnings
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, cast
 
-Json = Any
+from kogwistar.json_types import JsonValue
+from kogwistar.runtime.models import RunFailure, RunSuccess, RunSuspended, StepRunResult
+from kogwistar.runtime.sandbox import SandboxRequest
+from kogwistar.utils.log import bind_log_context
+from typing import Protocol
+
+Json = JsonValue
 if TYPE_CHECKING:
     from kogwistar.runtime.runtime import StepContext
     from kogwistar.runtime.sandbox import Sandbox
@@ -45,15 +30,9 @@ if TYPE_CHECKING:
 class RawStepFn(Protocol):
     """Callable contract for one compatibility-runtime workflow step."""
 
-    def __call__(self, context: StepContext, /) -> Json | StepRunResult: ...
-
-from kogwistar.runtime.models import RunFailure, RunSuccess, RunSuspended, StepRunResult
-from kogwistar.runtime.sandbox import SandboxRequest
-
-# Import your real RunResult types from kogwistar.runtime/models
-
-
-
+    def __call__(
+        self, context: StepContext, *args: object, **kwargs: object
+    ) -> Json | StepRunResult | SandboxRequest: ...
 
 class BaseResolver:
     @property
@@ -91,7 +70,7 @@ class MappingStepResolver(BaseResolver):
         # The sandbox to use
         self._sandbox: Sandbox | None = None
 
-    def set_sandbox(self, sandbox: Sandbox):
+    def set_sandbox(self, sandbox: Sandbox) -> None:
         self._sandbox = sandbox
 
     def close_sandbox_run(self, run_id: str) -> None:
@@ -107,15 +86,17 @@ class MappingStepResolver(BaseResolver):
     ) -> Callable[[RawStepFn], RawStepFn]:
         def _decorator(fn: RawStepFn) -> RawStepFn:
             @functools.wraps(fn)
-            def wrapped_fun(*arg, **kwarg):
-                ctx: StepContext = arg[0]
+            def wrapped_fun(
+                context: StepContext, *args: object, **kwargs: object
+            ) -> Json | StepRunResult | SandboxRequest:
+                ctx = context
                 with bind_log_context(
                     op=op,
                     conversation_id=ctx.conversation_id,
                     workflow_run_id=f"{ctx.workflow_id}--{ctx.run_id}",
                     step_id=ctx.workflow_node_id,
                 ):
-                    return fn(*arg, **kwarg)
+                    return fn(ctx, *args, **kwargs)
 
             self.handlers[op] = fn  # wrapped_fun
             if is_nested:
@@ -161,7 +142,9 @@ class MappingStepResolver(BaseResolver):
 
         return _wrapped
 
-    def _maybe_execute_sandboxed(self, *, op: str, ctx: StepContext) -> Any:
+    def _maybe_execute_sandboxed(
+        self, *, op: str, ctx: StepContext
+    ) -> Json | StepRunResult | SandboxRequest:
         handler = self.handlers.get(op) or self.default
         if handler is None:
             raise KeyError(f"No step handler registered for op={op!r}")
@@ -186,8 +169,6 @@ class MappingStepResolver(BaseResolver):
         # )
         sandbox_context = self._sandbox_context(ctx)
         code = ctx.state_view.get('code')
-        with ctx.state_write as st:
-            pass
         if code is None:
             import warnings
             warnings.warn("no 'code' is found in state to run")
@@ -204,7 +185,9 @@ class MappingStepResolver(BaseResolver):
         # return self._sandbox.run(code, {}, sandbox_context)
 
     @staticmethod
-    def _coerce_sandbox_request(out: Any) -> SandboxRequest | None:
+    def _coerce_sandbox_request(
+        out: Json | StepRunResult | SandboxRequest,
+    ) -> SandboxRequest | None:
         if isinstance(out, SandboxRequest):
             return out
         if isinstance(out, str):
@@ -223,7 +206,7 @@ class MappingStepResolver(BaseResolver):
         return None
 
     @staticmethod
-    def _sandbox_context(ctx: StepContext) -> dict[str, Any]:
+    def _sandbox_context(ctx: StepContext) -> dict[str, Json]:
         return {
             "run_id": ctx.run_id,
             "workflow_id": ctx.workflow_id,
@@ -327,7 +310,7 @@ class MappingStepResolver(BaseResolver):
         return self.resolve(op)
 
 
-def _deps(ctx: StepContext) -> dict[str, Any]:
+def _deps(ctx: StepContext) -> dict[str, Json]:
     deps = ctx.state_view.get("_deps")
     if not isinstance(deps, dict):
         raise RuntimeError(
