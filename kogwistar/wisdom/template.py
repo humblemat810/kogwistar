@@ -1,11 +1,12 @@
-from __future__ import annotations
-
 """Reusable execution-history wisdom emission helpers."""
 
-from collections.abc import Callable
-from typing import Any
+from __future__ import annotations
 
-from kogwistar.engine_core.engine import scoped_namespace
+from collections.abc import Callable
+from typing import Protocol
+
+from kogwistar.engine_core.engine import GraphKnowledgeEngine, scoped_namespace
+from kogwistar.engine_core.models import Node
 from kogwistar.maintenance.artifacts import write_versioned_artifact
 from kogwistar.maintenance.contracts import BeforeWrite
 from kogwistar.wisdom.models import ExecutionWisdomTemplateResult
@@ -15,15 +16,25 @@ from kogwistar.workflow.analytics import (
 )
 
 
+class _PatternNodeBuilder(Protocol):
+    def __call__(
+        self,
+        pattern: ExecutionFailurePattern,
+        existing: list[Node],
+        created_at_ms: int,
+        /,
+    ) -> Node: ...
+
+
 def write_execution_wisdom_artifacts(
-    source_engine: Any,
+    source_engine: GraphKnowledgeEngine,
     *,
-    target_engine: Any,
+    target_engine: GraphKnowledgeEngine,
     source_namespace: str,
     target_namespace: str,
-    source_where: dict[str, Any],
-    build_node_for_pattern: Callable[[ExecutionFailurePattern, list[Any], int], Any],
-    match_where_for_pattern: Callable[[ExecutionFailurePattern], dict[str, Any]],
+    source_where: dict[str, object],
+    build_node_for_pattern: _PatternNodeBuilder,
+    match_where_for_pattern: Callable[[ExecutionFailurePattern], dict[str, object]],
     min_failure_signals: int = 2,
     before_write: BeforeWrite[ExecutionFailurePattern] | None = None,
 ) -> list[ExecutionWisdomTemplateResult]:

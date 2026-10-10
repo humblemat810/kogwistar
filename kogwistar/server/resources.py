@@ -56,7 +56,7 @@ class _LazyResource(Generic[T]):
                     object.__setattr__(self, "_value", value)
         return value
 
-    def __getattr__(self, name: str) -> Any:
+    def __getattr__(self, name: str) -> object:
         return getattr(self.get(), name)
 
     def __setattr__(self, name: str, value: object) -> None:
