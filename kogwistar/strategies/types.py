@@ -128,7 +128,10 @@ class IAdjudicator(Protocol):
 @runtime_checkable
 class PairAdjudicator(Protocol):
     def adjudicate(
-        self, engine: "EngineLike", left: Any, right: Any
+        self,
+        engine: "EngineLike",
+        left: AdjudicationTarget,
+        right: AdjudicationTarget,
     ) -> AdjudicationVerdict: ...
 
 
