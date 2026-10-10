@@ -4,7 +4,7 @@ import copy
 import logging
 import warnings
 from collections.abc import Iterable, Mapping
-from typing import TYPE_CHECKING, Any, Generic, TypeAlias, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Generic, Protocol, TypeAlias, TypeVar, cast
 
 from .._rust_bridge import (
     RustParityError,
@@ -35,6 +35,12 @@ RuntimePayload: TypeAlias = dict[str, object]
 StateSchema: TypeAlias = dict[str, str]
 RuntimeStateUpdate: TypeAlias = list[tuple[str, dict[str, object]]] | list[StateUpdate]
 ResolverT = TypeVar("ResolverT")
+
+
+class _ChildRunResult(Protocol):
+    final_state: WorkflowState
+    run_id: str
+    status: str
 
 
 def _state_list(state: WorkflowState, key: str) -> list[object]:
@@ -130,7 +136,7 @@ def _native_state_update_safe(
     return True
 
 
-def validate_initial_state(initial_state: WorkflowState):
+def validate_initial_state(initial_state: WorkflowState) -> None:
     """Validate user-provided initial workflow state.
 
     Workflow state is user-land except for a small set of underscore-prefixed
@@ -294,7 +300,7 @@ class BaseRuntime(Generic[ResolverT]):
         return ledger
 
     @staticmethod
-    def _edge_priority(edge: Any) -> int:
+    def _edge_priority(edge: object) -> int:
         md = getattr(edge, "metadata", {}) or {}
         try:
             return int(md.get("wf_priority", 100))
@@ -304,12 +310,12 @@ class BaseRuntime(Generic[ResolverT]):
     @staticmethod
     def _compute_route_next_shared(
         *,
-        edges: list[Any],
+        edges: list[object],
         state: WorkflowState,
-        last_result: Any,
+        last_result: object,
         fanout: bool,
         predicate_registry: dict[str, Predicate],
-        nodes: dict[str, Any] | None = None,
+        nodes: dict[str, object] | None = None,
         sort_edges: bool = False,
     ) -> RouteComputation:
         route_edges = list(edges)
@@ -501,7 +507,7 @@ class BaseRuntime(Generic[ResolverT]):
         *,
         state: WorkflowState,
         invocation: WorkflowInvocationRequest,
-        child_result: Any,
+        child_result: _ChildRunResult,
     ) -> None:
         result_key = (
             invocation.result_state_key or f"workflow_result::{invocation.workflow_id}"
