@@ -9,13 +9,23 @@ helpers and keeps workflow design management separate from run execution.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, cast
 
 from kogwistar.engine_core.models import Grounding, Span
 from kogwistar.id_provider import new_id_str
+from kogwistar.json_types import JsonObject
 from kogwistar.runtime.models import WorkflowEdge, WorkflowNode
 
-from .chat_service_workflow_history import _WorkflowDesignHistoryMixin
+from .chat_service_workflow_history import (
+    WorkflowVisibleDelta,
+    _WorkflowDesignHistoryMixin,
+)
+from .chat_service_shared import json_safe
+
+
+def _json_object(value: object) -> JsonObject:
+    converted = json_safe(value)
+    return cast(JsonObject, converted) if isinstance(converted, dict) else {}
 
 
 class _WorkflowDesignService(_WorkflowDesignHistoryMixin):
@@ -32,7 +42,7 @@ class _WorkflowDesignService(_WorkflowDesignHistoryMixin):
             raise PermissionError("designer_id must match authenticated subject")
         return resolved_designer
 
-    def workflow_design_history(self, *, workflow_id: str) -> dict[str, Any]:
+    def workflow_design_history(self, *, workflow_id: str) -> JsonObject:
         workflow_id = str(workflow_id or "").strip()
         if not workflow_id:
             raise ValueError("workflow_id is required")
@@ -46,12 +56,12 @@ class _WorkflowDesignService(_WorkflowDesignHistoryMixin):
                 materialize=projection_status == "rust_event_only",
             )
             projection_status = self._workflow_projection_status(workflow_id=workflow_id)
+            result = _json_object(state)
             if projection_status:
-                state = dict(state)
-                state["materialization_status"] = projection_status
-            return state
+                result["materialization_status"] = projection_status
+            return result
 
-    def refresh_workflow_design_projection(self, *, workflow_id: str) -> dict[str, Any]:
+    def refresh_workflow_design_projection(self, *, workflow_id: str) -> JsonObject:
         workflow_id = str(workflow_id or "").strip()
         if not workflow_id:
             raise ValueError("workflow_id is required")
@@ -70,8 +80,9 @@ class _WorkflowDesignService(_WorkflowDesignHistoryMixin):
             out = self._workflow_finalize_design_state_locked(
                 workflow_id=workflow_id, rebuild=True
             )
-            out["status"] = "ok"
-            return out
+            result = _json_object(out)
+            result["status"] = "ok"
+            return result
 
     def workflow_design_upsert_node(
         self,
@@ -87,7 +98,7 @@ class _WorkflowDesignService(_WorkflowDesignHistoryMixin):
         metadata: dict[str, Any] | None = None,
         actor_sub: str | None = None,
         source: str = "rest",
-    ) -> dict[str, Any]:
+    ) -> JsonObject:
         workflow_id = str(workflow_id or "").strip()
         if not workflow_id:
             raise ValueError("workflow_id is required")
@@ -206,7 +217,7 @@ class _WorkflowDesignService(_WorkflowDesignHistoryMixin):
         metadata: dict[str, Any] | None = None,
         actor_sub: str | None = None,
         source: str = "rest",
-    ) -> dict[str, Any]:
+    ) -> JsonObject:
         workflow_id = str(workflow_id or "").strip()
         if not workflow_id:
             raise ValueError("workflow_id is required")
@@ -321,7 +332,7 @@ class _WorkflowDesignService(_WorkflowDesignHistoryMixin):
         designer_id: str,
         actor_sub: str | None = None,
         source: str = "rest",
-    ) -> dict[str, Any]:
+    ) -> JsonObject:
         workflow_id = str(workflow_id or "").strip()
         node_id = str(node_id or "").strip()
         if not workflow_id:
@@ -421,7 +432,7 @@ class _WorkflowDesignService(_WorkflowDesignHistoryMixin):
         designer_id: str,
         actor_sub: str | None = None,
         source: str = "rest",
-    ) -> dict[str, Any]:
+    ) -> JsonObject:
         workflow_id = str(workflow_id or "").strip()
         edge_id = str(edge_id or "").strip()
         if not workflow_id:
@@ -519,7 +530,7 @@ class _WorkflowDesignService(_WorkflowDesignHistoryMixin):
         designer_id: str,
         actor_sub: str | None = None,
         source: str = "rest",
-    ) -> dict[str, Any]:
+    ) -> JsonObject:
         workflow_id = str(workflow_id or "").strip()
         if not workflow_id:
             raise ValueError("workflow_id is required")
@@ -533,11 +544,12 @@ class _WorkflowDesignService(_WorkflowDesignHistoryMixin):
             )
             current_version = int(state.get("current_version") or 0)
             if current_version <= 0:
-                state["status"] = "noop"
                 self._store_workflow_projection(
                     workflow_id=workflow_id, state=state, materialization_status="ready"
                 )
-                return state
+                result: JsonObject = _json_object(state)
+                result["status"] = "noop"
+                return result
             selected_versions = list(state.get("selected_versions") or [])
             current_entry = next(
                 (
@@ -587,7 +599,11 @@ class _WorkflowDesignService(_WorkflowDesignHistoryMixin):
             if delta is not None:
                 try:
                     self._workflow_apply_visible_delta(
-                        workflow_id=workflow_id, delta=dict(delta.get("inverse") or {})
+                        workflow_id=workflow_id,
+                        delta=cast(
+                            WorkflowVisibleDelta,
+                            delta.get("inverse") or self._workflow_empty_delta(),
+                        ),
                     )
                     applied_delta = True
                 except Exception:
@@ -604,8 +620,9 @@ class _WorkflowDesignService(_WorkflowDesignHistoryMixin):
                 workflow_id=workflow_id, state=out, materialization_status="ready"
             )
             self._workflow_store_snapshot_if_needed(workflow_id=workflow_id, state=out)
-            out["status"] = "ok"
-            return out
+            result = _json_object(out)
+            result["status"] = "ok"
+            return result
 
     def workflow_design_redo(
         self,
@@ -614,7 +631,7 @@ class _WorkflowDesignService(_WorkflowDesignHistoryMixin):
         designer_id: str,
         actor_sub: str | None = None,
         source: str = "rest",
-    ) -> dict[str, Any]:
+    ) -> JsonObject:
         workflow_id = str(workflow_id or "").strip()
         if not workflow_id:
             raise ValueError("workflow_id is required")
@@ -635,11 +652,12 @@ class _WorkflowDesignService(_WorkflowDesignHistoryMixin):
                 )
             current_index = active_ids.index(current_version)
             if current_index >= len(active_ids) - 1:
-                state["status"] = "noop"
                 self._store_workflow_projection(
                     workflow_id=workflow_id, state=state, materialization_status="ready"
                 )
-                return state
+                result: JsonObject = _json_object(state)
+                result["status"] = "noop"
+                return result
             target_entry = active_versions[current_index + 1]
             target_version = int(target_entry.get("version") or 0)
             target_seq = int(target_entry.get("seq") or 0)
@@ -663,7 +681,11 @@ class _WorkflowDesignService(_WorkflowDesignHistoryMixin):
             if delta is not None:
                 try:
                     self._workflow_apply_visible_delta(
-                        workflow_id=workflow_id, delta=dict(delta.get("forward") or {})
+                        workflow_id=workflow_id,
+                        delta=cast(
+                            WorkflowVisibleDelta,
+                            delta.get("forward") or self._workflow_empty_delta(),
+                        ),
                     )
                     applied_delta = True
                 except Exception:
@@ -680,8 +702,9 @@ class _WorkflowDesignService(_WorkflowDesignHistoryMixin):
                 workflow_id=workflow_id, state=out, materialization_status="ready"
             )
             self._workflow_store_snapshot_if_needed(workflow_id=workflow_id, state=out)
-            out["status"] = "ok"
-            return out
+            result = _json_object(out)
+            result["status"] = "ok"
+            return result
 
     def workflow_design_graph(
         self, workflow_id: str, refresh: bool = False

@@ -1,20 +1,25 @@
 from __future__ import annotations
 
 import uuid
-from typing import List, Optional, cast
+from typing import cast
 
 from kogwistar.llm_tasks import LLMTaskSet
 
-from .models import ConversationEdge
-from .models import RetrievalResult
-from .models import ConversationNode, MetaFromLastSummary, Node, Edge, FilteringResult
-from .callbacks import MemorySummarizeCallback, RetrievalFilteringCallback
 from ..engine_core.engine import GraphKnowledgeEngine
 from ..engine_core.models import Grounding, Span
-
-
-from .models import MemoryRetrievalResult, MemoryPinResult
 from ..server.auth_middleware import get_current_agent_id, get_security_scope
+from .callbacks import MemorySummarizeCallback, RetrievalFilteringCallback
+from .models import (
+    ConversationEdge,
+    ConversationNode,
+    Edge,
+    FilteringResult,
+    MemoryPinResult,
+    MemoryRetrievalResult,
+    MetaFromLastSummary,
+    Node,
+    RetrievalResult,
+)
 
 
 def _normalize_visibility_mode(value: object) -> str:
@@ -22,7 +27,7 @@ def _normalize_visibility_mode(value: object) -> str:
     return "shared" if vis == "shared" else "private"
 
 
-def is_node_memory_context(node: ConversationNode):
+def is_node_memory_context(node: ConversationNode) -> bool:
     # example node:
     # ConversationNode(
     #         id=mem_node_id,
@@ -98,11 +103,11 @@ class MemoryRetriever:
     def __init__(
         self,
         *,
-        conversation_engine,
+        conversation_engine: GraphKnowledgeEngine,
         llm_tasks: LLMTaskSet,
         filtering_callback: RetrievalFilteringCallback,
-        summarize_callback: Optional[MemorySummarizeCallback] = None,
-        prefer_types: Optional[List[str]] = None,
+        summarize_callback: MemorySummarizeCallback | None = None,
+        prefer_types: list[str] | None = None,
     ) -> None:
         self.conversation_engine: GraphKnowledgeEngine = conversation_engine
         self.llm_tasks = llm_tasks
@@ -119,7 +124,7 @@ class MemoryRetriever:
         *,
         user_id: str,
         current_conversation_id: str,
-        query_embedding: List[float],
+        query_embedding: list[float],
         user_text: str,
         context_text: str,
         n_results: int,
@@ -133,7 +138,9 @@ class MemoryRetriever:
             include=["metadatas", "documents", "embeddings"],
             node_type=ConversationNode,
         )
-        memory_nodes = node_batches[0] if node_batches else []
+        memory_nodes: list[ConversationNode] = (
+            list(cast(list[ConversationNode], node_batches[0])) if node_batches else []
+        )
         where = {"user_id": user_id}
         edge_batches = self.conversation_engine.read.query_edges(
             query_embeddings=[query_embedding],
@@ -142,15 +149,19 @@ class MemoryRetriever:
             include=["metadatas", "documents", "embeddings"],
             edge_type=ConversationEdge,
         )
-        memory_edges = edge_batches[0] if edge_batches else []
+        memory_edges: list[ConversationEdge] = (
+            list(cast(list[ConversationEdge], edge_batches[0])) if edge_batches else []
+        )
 
-        def _rank(m: Node | Edge):
+        def _rank(m: Node | Edge) -> int:
             t = m.type or m.metadata.get("entity_type") or ""
             return 0 if t in self.prefer_types else 1
 
         memory_nodes.sort(key=lambda x: _rank(x))
         memory_edges.sort(key=lambda x: _rank(x))
-        candidates = RetrievalResult(memory_nodes, memory_edges)
+        candidates = RetrievalResult(
+            cast(list[Node], memory_nodes), cast(list[Edge], memory_edges)
+        )
         # # Optional type preference reorder (soft heuristic, no filtering)
         # if candidate_ids and candidate_metas:
         #     zipped = list(zip(candidate_ids, candidate_docs, candidate_metas))
@@ -161,7 +172,7 @@ class MemoryRetriever:
         #     candidate_ids = [z[0] for z in zipped]
         #     candidate_docs = [z[1] for z in zipped]
         #     candidate_metas = [z[2] for z in zipped]
-        selected_ids: List[str] = []
+        selected_ids: list[str] = []
         reasoning = ""
         if candidates.nodes or candidates.edges:
             # Keep prompt compact: show meta summaries only
@@ -182,8 +193,8 @@ class MemoryRetriever:
                 user_text,
                 cand_node_list_str,
                 cand_edge_list_str,
-                [i.id for i in candidates.nodes],
-                [i.id for i in candidates.edges],
+                [node_id for i in candidates.nodes if (node_id := i.safe_get_id())],
+                [edge_id for i in candidates.edges if (edge_id := i.safe_get_id())],
                 context_text,
             )
 
@@ -200,16 +211,18 @@ class MemoryRetriever:
         #                                     reasoning=reasoning,memory_context_text="", seed_kg_node_ids=[])
         # Extract KG seeds from selected nodes when they are reference pointers
 
-        seed_kg_ids: List[str] = []
-        non_kg_node_ids: List[str] = []
-        non_kg_edge_ids: List[str] = []
-        conv_nodes: List[ConversationNode] = []
-        conv_edges: List[ConversationNode] = []
+        seed_kg_ids: list[str] = []
+        non_kg_node_ids: list[str] = []
+        non_kg_edge_ids: list[str] = []
+        conv_nodes: list[ConversationNode] = []
+        conv_edges: list[ConversationEdge] = []
         if selected:
             for n in selected.nodes:
                 if n.type != "reference_pointer":
-                    non_kg_node_ids.append(n.safe_get_id())
-                    conv_nodes.append(n)
+                    node_id = n.safe_get_id()
+                    if node_id is not None:
+                        non_kg_node_ids.append(node_id)
+                    conv_nodes.append(cast(ConversationNode, n))
                     continue
                 rid = (n.properties or {}).get("refers_to_id")
                 selected_ids.append(n.safe_get_id())
@@ -217,17 +230,21 @@ class MemoryRetriever:
                     seed_kg_ids.append(rid)
             for n in selected.edges:
                 if n.type != "reference_pointer":
-                    non_kg_edge_ids.append(n.safe_get_id())
-                    conv_edges.append(n)
+                    edge_id = n.safe_get_id()
+                    if edge_id is not None:
+                        non_kg_edge_ids.append(edge_id)
+                    conv_edges.append(cast(ConversationEdge, n))
                     continue
                 rid = (n.properties or {}).get("refers_to_id")
-                selected_ids.append(n.id)
+                edge_id = n.safe_get_id()
+                if edge_id is not None:
+                    selected_ids.append(edge_id)
                 if isinstance(rid, str) and rid:
                     seed_kg_ids.append(rid)
 
         # De-dupe seeds in order
         seen = set()
-        dedup_seeds: List[str] = []
+        dedup_seeds: list[str] = []
         for x in seed_kg_ids:
             if x not in seen:
                 seen.add(x)
@@ -289,7 +306,7 @@ class MemoryRetriever:
         shared_with_agents: list[str] | tuple[str, ...] | None = None,
         security_scope: str | None = None,
         agent_id: str | None = None,
-    ) -> Optional[MemoryPinResult]:
+    ) -> MemoryPinResult | None:
         """Materialize a `memory_context` node into the current conversation canvas.
 
         Edges:
@@ -381,8 +398,8 @@ class MemoryRetriever:
                 security_scope=effective_scope or None,
                 shared_with_principals=shared_values,
             )
-        edge_ids: List[str] = []
-        edges: List[ConversationEdge] = []
+        edge_ids: list[str] = []
+        edges: list[ConversationEdge] = []
         # Turn -> MemoryContext
         e1_id = f"{turn_node_id}::hm::{mem_node.safe_get_id()}"
         e1 = ConversationEdge(

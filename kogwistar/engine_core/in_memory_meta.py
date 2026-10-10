@@ -5,18 +5,49 @@ import copy
 import json
 import threading
 import uuid
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Iterator, Optional
+from types import TracebackType
+from typing import cast
 
-from .engine_sqlite import IndexJobRow
-from .meta_lane_messages import LaneMessageMetaStoreMixin
+from ..json_types import JsonValue
 from ..messaging.models import ProjectedLaneMessageRow
+from .engine_sqlite import IndexJobRow
 from .event_envelope import EntityEventEnvelope
+from .meta_lane_messages import LaneMessageMetaStoreMixin
+
+JsonObject = dict[str, JsonValue]
 
 
-_active_in_memory_meta_txn: contextvars.ContextVar["_TxnView | None"] = contextvars.ContextVar(
+def _json_object(value: object) -> JsonObject:
+    """Narrow a decoded JSON value at the storage boundary."""
+    if not isinstance(value, dict):
+        return {}
+    return cast(JsonObject, value)
+
+
+def _json_object_list(value: object) -> list[JsonObject]:
+    if not isinstance(value, list):
+        return []
+    return [_json_object(item) for item in value if isinstance(item, dict)]
+
+
+def _json_int(value: object, default: int = 0) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (int, float)):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return default
+    return default
+
+
+_active_in_memory_meta_txn: contextvars.ContextVar[_TxnView | None] = contextvars.ContextVar(
     "gke_in_memory_meta_txn", default=None
 )
 
@@ -207,7 +238,7 @@ class _MetaState:
     )
     entity_events: dict[str, list[_EntityEventRow]] = field(default_factory=dict)
     replay_cursors: dict[tuple[str, str], int] = field(default_factory=dict)
-    named_projections: dict[tuple[str, str], dict[str, Any]] = field(default_factory=dict)
+    named_projections: dict[tuple[str, str], JsonObject] = field(default_factory=dict)
     workflow_snapshots: dict[tuple[str, int], _WorkflowSnapshotRow] = field(default_factory=dict)
     workflow_deltas: dict[tuple[str, int, int], _WorkflowDeltaRow] = field(default_factory=dict)
     server_runs: dict[str, _ServerRunRow] = field(default_factory=dict)
@@ -215,30 +246,35 @@ class _MetaState:
 
 
 class _TxnView:
-    def __init__(self, owner: "InMemoryMetaStore", state: _MetaState) -> None:
+    def __init__(self, owner: InMemoryMetaStore, state: _MetaState) -> None:
         self.owner = owner
         self.state = state
 
 
 class _ResultShim:
-    def __init__(self, rows: list[Any]) -> None:
+    def __init__(self, rows: list[object]) -> None:
         self._rows = list(rows)
 
-    def fetchone(self) -> Any:
+    def fetchone(self) -> object | None:
         return self._rows[0] if self._rows else None
 
-    def fetchall(self) -> list[Any]:
+    def fetchall(self) -> list[object]:
         return list(self._rows)
 
 
 class _InMemoryMetaConnection:
-    def __init__(self, store: "InMemoryMetaStore") -> None:
+    def __init__(self, store: InMemoryMetaStore) -> None:
         self._store = store
 
-    def __enter__(self) -> "_InMemoryMetaConnection":
+    def __enter__(self) -> _InMemoryMetaConnection:
         return self
 
-    def __exit__(self, exc_type, exc, tb) -> None:
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
         return None
 
     def commit(self) -> None:
@@ -247,7 +283,7 @@ class _InMemoryMetaConnection:
     def rollback(self) -> None:
         return None
 
-    def execute(self, sql: str, params: tuple[Any, ...] = ()) -> _ResultShim:
+    def execute(self, sql: str, params: tuple[object, ...] = ()) -> _ResultShim:
         normalized = " ".join(str(sql).strip().split()).upper()
         if normalized == "UPDATE INDEX_JOBS SET LEASE_UNTIL = 0 WHERE JOB_ID = ?":
             if not params:
@@ -345,9 +381,9 @@ class InMemoryMetaStore(LaneMessageMetaStoreMixin):
         entity_id: str,
         index_kind: str,
         op: str,
-        payload_json: Optional[str] = None,
+        payload_json: str | None = None,
         max_retries: int = 10,
-        namespace: str = "default",
+        namespace: str | None = "default",
     ) -> str:
         now = _now_epoch()
         coalesce_key = f"{entity_kind}:{entity_id}:{index_kind}"
@@ -394,7 +430,7 @@ class InMemoryMetaStore(LaneMessageMetaStoreMixin):
         *,
         limit: int = 50,
         lease_seconds: int = 60,
-        namespace: Optional[str] = "default",
+        namespace: str | None = "default",
     ) -> list[IndexJobRow]:
         if int(limit) <= 0:
             return []
@@ -565,11 +601,11 @@ class InMemoryMetaStore(LaneMessageMetaStoreMixin):
     def list_index_jobs(
         self,
         *,
-        status: Optional[str] = None,
-        entity_kind: Optional[str] = None,
-        entity_id: Optional[str] = None,
-        index_kind: Optional[str] = None,
-        namespace: Optional[str] = "default",
+        status: str | None = None,
+        entity_kind: str | None = None,
+        entity_id: str | None = None,
+        index_kind: str | None = None,
+        namespace: str | None = "default",
         limit: int = 1000,
     ) -> list[IndexJobRow]:
         with self._lock:
@@ -633,7 +669,7 @@ class InMemoryMetaStore(LaneMessageMetaStoreMixin):
     def _lane_message_list_rows(
         self,
         *,
-        namespace: str = "default",
+        namespace: str | None = "default",
         purpose: str | None = None,
         inbox_id: str | None = None,
         run_id: str | None = None,
@@ -654,7 +690,7 @@ class InMemoryMetaStore(LaneMessageMetaStoreMixin):
             rows = list(self._state.lane_messages.values())
         out: list[ProjectedLaneMessageRow] = []
         for row in rows:
-            if row.namespace != str(namespace):
+            if namespace is not None and row.namespace != str(namespace):
                 continue
             if purpose is not None and row.purpose != str(purpose):
                 continue
@@ -697,7 +733,7 @@ class InMemoryMetaStore(LaneMessageMetaStoreMixin):
 
     def get_index_applied_fingerprint(
         self, *, namespace: str = "default", coalesce_key: str
-    ) -> Optional[str]:
+    ) -> str | None:
         with self._lock:
             row = self._state.applied_fingerprints.get((str(namespace), str(coalesce_key)))
         if row is None:
@@ -709,8 +745,8 @@ class InMemoryMetaStore(LaneMessageMetaStoreMixin):
         *,
         namespace: str = "default",
         coalesce_key: str,
-        applied_fingerprint: Optional[str],
-        last_job_id: Optional[str] = None,
+        applied_fingerprint: str | None,
+        last_job_id: str | None = None,
     ) -> None:
         with self.transaction() as txn:
             txn.state.applied_fingerprints[(str(namespace), str(coalesce_key))] = (
@@ -761,7 +797,7 @@ class InMemoryMetaStore(LaneMessageMetaStoreMixin):
         from_seq: int = 1,
         to_seq: int | None = None,
         batch_size: int = 500,
-    ):
+    ) -> Iterator[tuple[int, str, str, str, str]]:
         next_seq = int(from_seq)
         while True:
             with self._lock:
@@ -873,13 +909,13 @@ class InMemoryMetaStore(LaneMessageMetaStoreMixin):
             return max((int(row.seq) for row in events), default=0)
 
     @staticmethod
-    def _decode_named_projection_payload(raw_payload: Any) -> dict[str, Any]:
+    def _decode_named_projection_payload(raw_payload: object) -> JsonObject:
         payload = json.loads(str(raw_payload)) if raw_payload is not None else {}
         if not isinstance(payload, dict):
             raise ValueError("named projection payload must deserialize to a dict")
         return payload
 
-    def get_named_projection(self, namespace: str, key: str) -> Optional[dict[str, Any]]:
+    def get_named_projection(self, namespace: str, key: str) -> JsonObject | None:
         with self._lock:
             row = self._state.named_projections.get((str(namespace), str(key)))
             if row is None:
@@ -890,7 +926,7 @@ class InMemoryMetaStore(LaneMessageMetaStoreMixin):
         self,
         namespace: str,
         key: str,
-        payload: dict[str, Any],
+        payload: JsonObject,
         *,
         last_authoritative_seq: int,
         last_materialized_seq: int,
@@ -915,7 +951,7 @@ class InMemoryMetaStore(LaneMessageMetaStoreMixin):
         self,
         namespace: str,
         key: str,
-        payload: dict[str, Any],
+        payload: JsonObject,
         *,
         expected_last_authoritative_seq: int | None,
         expected_last_materialized_seq: int | None,
@@ -934,8 +970,8 @@ class InMemoryMetaStore(LaneMessageMetaStoreMixin):
                     return False
             elif (
                 existing is None
-                or int(existing.get("last_authoritative_seq", -1)) != int(expected_last_authoritative_seq)
-                or int(existing.get("last_materialized_seq", -1)) != int(expected_last_materialized_seq)
+                or _json_int(existing.get("last_authoritative_seq"), -1) != _json_int(expected_last_authoritative_seq, -1)
+                or _json_int(existing.get("last_materialized_seq"), -1) != _json_int(expected_last_materialized_seq, -1)
             ):
                 return False
             txn.state.named_projections[row_key] = {
@@ -950,7 +986,7 @@ class InMemoryMetaStore(LaneMessageMetaStoreMixin):
             }
         return True
 
-    def compare_and_swap_named_projections(self, updates: list[dict[str, Any]]) -> bool:
+    def compare_and_swap_named_projections(self, updates: list[JsonObject]) -> bool:
         if not updates:
             return True
         rows = sorted(updates, key=lambda item: (str(item["namespace"]), str(item["key"])))
@@ -965,19 +1001,19 @@ class InMemoryMetaStore(LaneMessageMetaStoreMixin):
                         return False
                 elif (
                     existing is None
-                    or int(existing.get("last_authoritative_seq", -1)) != int(ea)
-                    or int(existing.get("last_materialized_seq", -1)) != int(em)
+                    or _json_int(existing.get("last_authoritative_seq"), -1) != _json_int(ea, -1)
+                    or _json_int(existing.get("last_materialized_seq"), -1) != _json_int(em, -1)
                 ):
                     return False
             for item in rows:
                 txn.state.named_projections[(str(item["namespace"]), str(item["key"]))] = {
                     "namespace": str(item["namespace"]), "key": str(item["key"]), "payload": copy.deepcopy(item["payload"]),
-                    "last_authoritative_seq": int(item.get("last_authoritative_seq", 0)), "last_materialized_seq": int(item.get("last_materialized_seq", 0)),
-                    "projection_schema_version": int(item.get("projection_schema_version", 1)), "materialization_status": str(item.get("materialization_status", "ready")), "updated_at_ms": _now_ms(),
+                    "last_authoritative_seq": _json_int(item.get("last_authoritative_seq")), "last_materialized_seq": _json_int(item.get("last_materialized_seq")),
+                    "projection_schema_version": _json_int(item.get("projection_schema_version"), 1), "materialization_status": str(item.get("materialization_status", "ready")), "updated_at_ms": _now_ms(),
                 }
         return True
 
-    def list_named_projections(self, namespace: str) -> list[dict[str, Any]]:
+    def list_named_projections(self, namespace: str) -> list[JsonObject]:
         with self._lock:
             rows = [
                 copy.deepcopy(row)
@@ -998,42 +1034,40 @@ class InMemoryMetaStore(LaneMessageMetaStoreMixin):
                 if row_key[0] == target:
                     txn.state.named_projections.pop(row_key, None)
 
-    def get_workflow_design_projection(self, *, workflow_id: str) -> Optional[dict[str, Any]]:
+    def get_workflow_design_projection(self, *, workflow_id: str) -> JsonObject | None:
         projection = self.get_named_projection("workflow_design", str(workflow_id))
         if projection is None:
             return None
-        payload = projection.get("payload") or {}
-        versions = payload.get("versions") or []
-        dropped_ranges = payload.get("dropped_ranges") or []
+        payload = _json_object(projection.get("payload"))
+        versions = _json_object_list(payload.get("versions"))
+        dropped_ranges = _json_object_list(payload.get("dropped_ranges"))
         return {
             "workflow_id": str(workflow_id),
-            "current_version": int(payload.get("current_version") or 0),
-            "active_tip_version": int(payload.get("active_tip_version") or 0),
-            "last_authoritative_seq": int(projection.get("last_authoritative_seq") or 0),
-            "last_materialized_seq": int(projection.get("last_materialized_seq") or 0),
-            "projection_schema_version": int(projection.get("projection_schema_version") or 1),
-            "snapshot_schema_version": int(payload.get("snapshot_schema_version") or 1),
+            "current_version": _json_int(payload.get("current_version")),
+            "active_tip_version": _json_int(payload.get("active_tip_version")),
+            "last_authoritative_seq": _json_int(projection.get("last_authoritative_seq")),
+            "last_materialized_seq": _json_int(projection.get("last_materialized_seq")),
+            "projection_schema_version": _json_int(projection.get("projection_schema_version"), 1),
+            "snapshot_schema_version": _json_int(payload.get("snapshot_schema_version"), 1),
             "materialization_status": str(projection.get("materialization_status") or "ready"),
-            "updated_at_ms": int(projection.get("updated_at_ms") or 0),
+            "updated_at_ms": _json_int(projection.get("updated_at_ms")),
             "versions": [
                 {
-                    "version": int(item.get("version") or 0),
-                    "prev_version": int(item.get("prev_version") or 0),
-                    "target_seq": int(item.get("target_seq") or 0),
-                    "created_at_ms": int(item.get("created_at_ms") or 0),
+                    "version": _json_int(item.get("version")),
+                    "prev_version": _json_int(item.get("prev_version")),
+                    "target_seq": _json_int(item.get("target_seq")),
+                    "created_at_ms": _json_int(item.get("created_at_ms")),
                 }
                 for item in versions
-                if isinstance(item, dict)
             ],
             "dropped_ranges": [
                 {
-                    "start_seq": int(item.get("start_seq") or 0),
-                    "end_seq": int(item.get("end_seq") or 0),
-                    "start_version": int(item.get("start_version") or 0),
-                    "end_version": int(item.get("end_version") or 0),
+                    "start_seq": _json_int(item.get("start_seq")),
+                    "end_seq": _json_int(item.get("end_seq")),
+                    "start_version": _json_int(item.get("start_version")),
+                    "end_version": _json_int(item.get("end_version")),
                 }
                 for item in dropped_ranges
-                if isinstance(item, dict)
             ],
         }
 
@@ -1041,29 +1075,29 @@ class InMemoryMetaStore(LaneMessageMetaStoreMixin):
         self,
         *,
         workflow_id: str,
-        head: dict[str, Any],
-        versions: list[dict[str, Any]],
-        dropped_ranges: list[dict[str, Any]],
+        head: JsonObject,
+        versions: list[JsonObject],
+        dropped_ranges: list[JsonObject],
     ) -> None:
         payload = {
-            "current_version": int(head.get("current_version") or 0),
-            "active_tip_version": int(head.get("active_tip_version") or 0),
-            "snapshot_schema_version": int(head.get("snapshot_schema_version") or 1),
+            "current_version": _json_int(head.get("current_version")),
+            "active_tip_version": _json_int(head.get("active_tip_version")),
+            "snapshot_schema_version": _json_int(head.get("snapshot_schema_version"), 1),
             "versions": [
                 {
-                    "version": int(item.get("version") or 0),
-                    "prev_version": int(item.get("prev_version") or 0),
-                    "target_seq": int(item.get("target_seq") or 0),
-                    "created_at_ms": int(item.get("created_at_ms") or 0),
+                    "version": _json_int(item.get("version")),
+                    "prev_version": _json_int(item.get("prev_version")),
+                    "target_seq": _json_int(item.get("target_seq")),
+                    "created_at_ms": _json_int(item.get("created_at_ms")),
                 }
                 for item in versions
             ],
             "dropped_ranges": [
                 {
-                    "start_seq": int(item.get("start_seq") or 0),
-                    "end_seq": int(item.get("end_seq") or 0),
-                    "start_version": int(item.get("start_version") or 0),
-                    "end_version": int(item.get("end_version") or 0),
+                    "start_seq": _json_int(item.get("start_seq")),
+                    "end_seq": _json_int(item.get("end_seq")),
+                    "start_version": _json_int(item.get("start_version")),
+                    "end_version": _json_int(item.get("end_version")),
                 }
                 for item in dropped_ranges
             ],
@@ -1072,9 +1106,9 @@ class InMemoryMetaStore(LaneMessageMetaStoreMixin):
             "workflow_design",
             str(workflow_id),
             payload,
-            last_authoritative_seq=int(head.get("last_authoritative_seq") or 0),
-            last_materialized_seq=int(head.get("last_materialized_seq") or 0),
-            projection_schema_version=int(head.get("projection_schema_version") or 1),
+            last_authoritative_seq=_json_int(head.get("last_authoritative_seq")),
+            last_materialized_seq=_json_int(head.get("last_materialized_seq")),
+            projection_schema_version=_json_int(head.get("projection_schema_version"), 1),
             materialization_status=str(head.get("materialization_status") or "ready"),
         )
 
@@ -1106,7 +1140,7 @@ class InMemoryMetaStore(LaneMessageMetaStoreMixin):
         workflow_id: str,
         max_version: int,
         schema_version: int,
-    ) -> Optional[dict[str, Any]]:
+    ) -> JsonObject | None:
         with self._lock:
             rows = [
                 row
@@ -1162,7 +1196,7 @@ class InMemoryMetaStore(LaneMessageMetaStoreMixin):
         workflow_id: str,
         version: int,
         schema_version: int,
-    ) -> Optional[dict[str, Any]]:
+    ) -> JsonObject | None:
         with self._lock:
             row = self._state.workflow_deltas.get(
                 (str(workflow_id), int(version), int(schema_version))
@@ -1187,7 +1221,7 @@ class InMemoryMetaStore(LaneMessageMetaStoreMixin):
                     txn.state.workflow_deltas.pop(key, None)
 
     @staticmethod
-    def _decode_run_json(raw: Any) -> Any:
+    def _decode_run_json(raw: object) -> JsonValue | None:
         if raw in (None, ""):
             return None
         return json.loads(str(raw))
@@ -1221,7 +1255,7 @@ class InMemoryMetaStore(LaneMessageMetaStoreMixin):
                 finished_at_ms=None,
             )
 
-    def get_server_run(self, run_id: str) -> Optional[dict[str, Any]]:
+    def get_server_run(self, run_id: str) -> JsonObject | None:
         with self._lock:
             row = self._state.server_runs.get(str(run_id))
         if row is None:
@@ -1252,7 +1286,7 @@ class InMemoryMetaStore(LaneMessageMetaStoreMixin):
         workflow_id: str | None = None,
         conversation_id: str | None = None,
         limit: int = 100,
-    ) -> list[dict[str, Any]]:
+    ) -> list[JsonObject]:
         with self._lock:
             rows = list(self._state.server_runs.values())
         if status is not None:
@@ -1263,11 +1297,16 @@ class InMemoryMetaStore(LaneMessageMetaStoreMixin):
             rows = [row for row in rows if str(row.conversation_id) == str(conversation_id)]
         rows.sort(key=lambda row: (int(row.created_at_ms), str(row.run_id)))
         rows = rows[: int(limit)]
-        return [self.get_server_run(str(row.run_id)) for row in rows if self.get_server_run(str(row.run_id)) is not None]
+        out: list[JsonObject] = []
+        for row in rows:
+            result = self.get_server_run(str(row.run_id))
+            if result is not None:
+                out.append(result)
+        return out
 
     def list_server_run_events(
         self, run_id: str, *, after_seq: int = 0, limit: int = 500
-    ) -> list[dict[str, Any]]:
+    ) -> list[JsonObject]:
         with self._lock:
             rows = [
                 row
@@ -1292,7 +1331,7 @@ class InMemoryMetaStore(LaneMessageMetaStoreMixin):
         run_id: str,
         event_type: str,
         payload_json: str,
-    ) -> dict[str, Any]:
+    ) -> JsonObject:
         now = _now_ms()
         with self.transaction() as txn:
             events = txn.state.server_run_events.setdefault(str(run_id), [])

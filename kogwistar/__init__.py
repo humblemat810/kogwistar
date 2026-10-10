@@ -4,13 +4,15 @@ from __future__ import annotations
 
 from importlib import import_module
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from collections.abc import Iterator
+from typing import TYPE_CHECKING
 
 from kogwistar.provenance import EvidencePackDigest, evidence_pack_digest_hash
 
 __version__ = "0.2.5"
 
 if TYPE_CHECKING:
+    from kogwistar import shortids
     from kogwistar.conversation.conversation_orchestrator import (
         ConversationOrchestrator,
     )
@@ -25,38 +27,37 @@ if TYPE_CHECKING:
         VideoTrackManifest,
         VideoTrackRegion,
     )
-    from kogwistar.provenance import EvidencePackDigest
     from kogwistar.llm_tasks import (
         DefaultTaskProviderConfig,
         LLMTaskSet,
         build_default_llm_tasks,
     )
+    from kogwistar.provenance import EvidencePackDigest
     from kogwistar.runtime import WorkflowRuntime
-    from kogwistar import shortids
 
 __all__ = [
-    "GraphKnowledgeEngine",
-    "WorkflowRuntime",
     "ConversationOrchestrator",
     "ConversationService",
-    "LLMTaskSet",
     "DefaultTaskProviderConfig",
-    "build_default_llm_tasks",
-    "Node",
-    "Edge",
     "Document",
-    "Span",
-    "Grounding",
-    "MultimodalSpan",
-    "PinnedLogicalRef",
+    "Edge",
     "EmbeddingReference",
+    "EvidencePackDigest",
+    "GraphKnowledgeEngine",
+    "Grounding",
+    "LLMTaskSet",
+    "MultimodalSpan",
+    "Node",
+    "PinnedLogicalRef",
+    "Span",
     "VideoTrackFrame",
     "VideoTrackManifest",
     "VideoTrackRegion",
-    "EvidencePackDigest",
+    "WorkflowRuntime",
+    "build_default_llm_tasks",
     "evidence_pack_digest_hash",
-    "shortids",
     "list_submodules",
+    "shortids",
 ]
 
 _PACKAGE_DIR = Path(__file__).resolve().parent
@@ -112,7 +113,9 @@ def _is_public_module_name(name: str) -> bool:
     return not name.startswith("_")
 
 
-def _iter_package_modules(package_dir: Path, package_name: str, recursive: bool):
+def _iter_package_modules(
+    package_dir: Path, package_name: str, recursive: bool
+) -> Iterator[str]:
     for child in package_dir.iterdir():
         if child.name == "__pycache__" or not _is_public_module_name(child.name):
             continue
@@ -136,7 +139,7 @@ def list_submodules(recursive: bool = False) -> list[str]:
     return sorted(set(_iter_package_modules(_PACKAGE_DIR, __name__, recursive)))
 
 
-def __getattr__(name: str) -> Any:
+def __getattr__(name: str) -> object:
     export = _EXPORTS.get(name)
     if export is None:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -41,27 +41,39 @@ import json
 import logging
 import uuid
 from collections import deque
-from typing import TYPE_CHECKING, Any, Generator, NotRequired, TypedDict, cast
-
-if TYPE_CHECKING:
-    from sqlalchemy import Row as SQLAlchemyRow
-else:
-    SQLAlchemyRow = Any
+from collections.abc import Callable, Generator, Mapping
+from typing import NotRequired, Protocol, TypedDict, cast
 
 from kogwistar.runtime.models import WorkflowEdge, WorkflowNode
+from kogwistar.json_types import JsonObject
 
 from .chat_service_shared import WorkflowProjectionRebuildingError, _BaseComponent
 
 
+class EntityEventRow(Protocol):
+    """Minimal row surface consumed by the event-history replay path."""
+
+    def __getitem__(self, index: int, /) -> object: ...
+
+
+class _WorkflowMetaStore(Protocol):
+    """Metadata operations used directly by workflow-history helpers."""
+
+    get_named_projection: Callable[..., JsonObject | None]
+    get_workflow_design_delta: Callable[..., Mapping[str, object] | None]
+    get_workflow_design_snapshot: Callable[..., Mapping[str, object] | None]
+    get_latest_entity_event_seq: Callable[..., int]
+
+
 class WorkflowVisibleSnapshot(TypedDict):
-    nodes: list[dict[str, Any]]
-    edges: list[dict[str, Any]]
+    nodes: list[JsonObject]
+    edges: list[JsonObject]
 
 
 class WorkflowVisibleDelta(TypedDict):
-    upsert_nodes: list[dict[str, Any]]
+    upsert_nodes: list[JsonObject]
     delete_node_ids: list[str]
-    upsert_edges: list[dict[str, Any]]
+    upsert_edges: list[JsonObject]
     delete_edge_ids: list[str]
 
 
@@ -131,7 +143,7 @@ class WorkflowProjectionPayload(TypedDict, total=False):
     current_version: int
     active_tip_version: int
     snapshot_schema_version: int
-    versions: list[dict[str, Any]]
+    versions: list[JsonObject]
     dropped_ranges: list[WorkflowDroppedRange]
 
 
@@ -164,6 +176,22 @@ class WorkflowFoldState(TypedDict):
     commits: dict[int, WorkflowVersionCommit]
 
 
+def _json_int(value: object, default: int = 0) -> int:
+    """Decode an integer from a persisted JSON boundary without broad casts."""
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return default
+    return default
+
+
 class _WorkflowDesignHistoryMixin(_BaseComponent):
     """Designer-side workflow history and projection helper mixin.
 
@@ -181,6 +209,7 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
     It does not execute workflows and does not define conversation/runtime
     behavior.
     """
+
     def _safe_workflow_nodes(self, *, workflow_id: str) -> list[WorkflowNode]:
         """Return all visible workflow nodes for a workflow.
 
@@ -199,17 +228,22 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
         Notes:
             This reads the materialized graph projection, not the authoritative
             design-control history.
-        """        
+        """
         try:
-            return self._workflow_engine().read.get_nodes(
-                where={
-                    "$and": [
-                        {"entity_type": "workflow_node"},
-                        {"workflow_id": workflow_id},
-                    ]
-                },
-                limit=5000,
-                node_type=WorkflowNode,
+            return cast(
+                list[WorkflowNode],
+                list(
+                    self._workflow_engine().read.get_nodes(
+                        where={
+                            "$and": [
+                                {"entity_type": "workflow_node"},
+                                {"workflow_id": workflow_id},
+                            ]
+                        },
+                        limit=5000,
+                        node_type=WorkflowNode,
+                    )
+                ),
             )
         except Exception as exc:  # noqa: BLE001
             msg = str(exc)
@@ -231,15 +265,20 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
             The current visible workflow edges in the workflow namespace.
         """
         try:
-            return self._workflow_engine().read.get_edges(
-                where={
-                    "$and": [
-                        {"entity_type": "workflow_edge"},
-                        {"workflow_id": workflow_id},
-                    ]
-                },
-                limit=20_000,
-                edge_type=WorkflowEdge,
+            return cast(
+                list[WorkflowEdge],
+                list(
+                    self._workflow_engine().read.get_edges(
+                        where={
+                            "$and": [
+                                {"entity_type": "workflow_edge"},
+                                {"workflow_id": workflow_id},
+                            ]
+                        },
+                        limit=20_000,
+                        edge_type=WorkflowEdge,
+                    )
+                ),
             )
         except Exception as exc:  # noqa: BLE001
             msg = str(exc)
@@ -249,7 +288,7 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
 
     def _iter_entity_events(
         self, *, namespace: str, from_seq: int = 1, to_seq: int | None = None
-    ):
+    ) -> Generator[EntityEventRow, None, None]:
         """Iterate append-only entity events for a namespace.
 
         The underlying metadata store may expose slightly different iterator
@@ -275,12 +314,12 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
             bounds derived from version metadata.
         """
         iter_events = cast(
-            Generator[SQLAlchemyRow, Any, None],
+            Generator[EntityEventRow, object, None],
             getattr(self._workflow_engine().meta_sqlite, "iter_entity_events", None),
         )
         if not callable(iter_events):
             return
-        kwargs: dict[str, Any] = {
+        kwargs: dict[str, object] = {
             "namespace": str(namespace),
             "from_seq": int(from_seq),
         }
@@ -299,7 +338,7 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
                 break
             yield row
 
-    def _parse_event_payload(self, payload_raw: Any) -> dict[str, Any]:
+    def _parse_event_payload(self, payload_raw: object) -> JsonObject:
         """Best-effort parse an event payload into a dictionary.
 
         Payloads may already be decoded dicts or raw JSON strings depending on
@@ -328,7 +367,7 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
         op: str,
         designer_id: str,
         source: str,
-        payload: dict[str, Any] | None = None,
+            payload: JsonObject | None = None,
     ) -> int:
         """Append a designer control-plane event to the workflow namespace.
 
@@ -355,7 +394,7 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
         append = self._workflow_engine().meta_sqlite.append_entity_event
         if not callable(append):
             return 0
-        body = {
+        body: JsonObject = {
             "workflow_id": str(workflow_id),
             "designer_id": str(designer_id),
             "ts_ms": self._now_ms(),
@@ -380,7 +419,7 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
         entity_kind: str,
         entity_id: str,
         op: str,
-        payload: dict[str, Any] | None = None,
+            payload: JsonObject | None = None,
     ) -> int:
         """Append a workflow data-plane entity event to the workflow namespace.
 
@@ -417,11 +456,13 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
             )
         )
 
-    def _workflow_meta_store(self):
+    def _workflow_meta_store(self) -> _WorkflowMetaStore:
         """Return the workflow metadata store backing design history state."""
-        return self._workflow_engine().meta_sqlite
+        return cast(_WorkflowMetaStore, self._workflow_engine().meta_sqlite)
 
-    def _workflow_projection(self, *, workflow_id: str):
+    def _workflow_projection(
+        self, *, workflow_id: str
+    ) -> WorkflowProjectionRow | None:
         """Load the persisted workflow design projection metadata.
 
         This reads projection head/version metadata from the meta store, not the
@@ -442,20 +483,27 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
         payload = row.get("payload")
         if not isinstance(payload, dict):
             return None
-        return {
-            "current_version": int(payload.get("current_version") or 0),
-            "active_tip_version": int(payload.get("active_tip_version") or 0),
-            "last_authoritative_seq": int(row.get("last_authoritative_seq") or 0),
-            "last_materialized_seq": int(row.get("last_materialized_seq") or 0),
-            "projection_schema_version": int(
-                row.get("projection_schema_version") or self._projection_schema_version
-            ),
-            "snapshot_schema_version": int(
-                payload.get("snapshot_schema_version") or self._snapshot_schema_version
-            ),
-            "materialization_status": str(row.get("materialization_status") or "ready"),
-            "updated_at_ms": int(row.get("updated_at_ms") or self._now_ms()),
-        }
+        return cast(
+            WorkflowProjectionRow,
+            {
+                "current_version": _json_int(payload.get("current_version")),
+                "active_tip_version": _json_int(payload.get("active_tip_version")),
+                "last_authoritative_seq": _json_int(row.get("last_authoritative_seq")),
+                "last_materialized_seq": _json_int(row.get("last_materialized_seq")),
+                "projection_schema_version": _json_int(
+                    row.get("projection_schema_version")
+                    or self._projection_schema_version
+                ),
+                "snapshot_schema_version": _json_int(
+                    payload.get("snapshot_schema_version")
+                    or self._snapshot_schema_version
+                ),
+                "materialization_status": str(
+                    row.get("materialization_status") or "ready"
+                ),
+                "updated_at_ms": _json_int(row.get("updated_at_ms"), self._now_ms()),
+            },
+        )
 
     def _workflow_empty_delta(self) -> WorkflowVisibleDelta:
         """Return an empty visible-delta structure.
@@ -604,18 +652,25 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
         )
         if row is None:
             return None
-        return {
-            "workflow_id": str(row.get("workflow_id") or workflow_id),
-            "version": int(row.get("version") or version),
-            "prev_version": int(row.get("prev_version") or 0),
-            "target_seq": int(row.get("target_seq") or 0),
-            "forward": self._parse_event_payload(str(row.get("forward_json") or "{}")),
-            "inverse": self._parse_event_payload(str(row.get("inverse_json") or "{}")),
-            "schema_version": int(
-                row.get("schema_version") or self._delta_schema_version
-            ),
-            "created_at_ms": int(row.get("created_at_ms") or 0),
-        }
+        return cast(
+            WorkflowVersionDeltaRecord,
+            {
+                "workflow_id": str(row.get("workflow_id") or workflow_id),
+                "version": _json_int(row.get("version"), version),
+                "prev_version": _json_int(row.get("prev_version")),
+                "target_seq": _json_int(row.get("target_seq")),
+                "forward": self._parse_event_payload(
+                    str(row.get("forward_json") or "{}")
+                ),
+                "inverse": self._parse_event_payload(
+                    str(row.get("inverse_json") or "{}")
+                ),
+                "schema_version": _json_int(
+                    row.get("schema_version") or self._delta_schema_version
+                ),
+                "created_at_ms": _json_int(row.get("created_at_ms")),
+            },
+        )
 
     def _workflow_apply_visible_delta(
         self, *, workflow_id: str, delta: WorkflowVisibleDelta | None
@@ -641,7 +696,7 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
             Edge deletion happens before node deletion to avoid dangling edge
             references during backend mutation.
         """
-        payload: WorkflowVisibleDelta = dict(delta or self._workflow_empty_delta())
+        payload = cast(WorkflowVisibleDelta, delta or self._workflow_empty_delta())
         eng = self._workflow_engine()
         prev_log = getattr(eng, "_disable_event_log", False)
         prev_idx = getattr(eng, "_phase1_enable_index_jobs", False)
@@ -703,10 +758,10 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
                 continue
             payload = self._parse_event_payload(payload_raw)
             item: WorkflowControlTimelineItem = {
-                "seq": int(seq),
+                "seq": _json_int(seq),
                 "op": str(op),
                 "designer_id": str(payload.get("designer_id") or ""),
-                "ts_ms": int(payload.get("ts_ms") or 0),
+                "ts_ms": _json_int(payload.get("ts_ms")),
             }
             for key, value in payload.items():
                 if key in {"designer_id", "ts_ms"}:
@@ -740,7 +795,14 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
         """
         if int(version) <= 0:
             return [
-                {"version": 0, "prev_version": 0, "target_seq": 0, "created_at_ms": 0}
+                {
+                    "version": 0,
+                    "prev_version": 0,
+                    "target_seq": 0,
+                    "created_at_ms": 0,
+                    "entity_id": "",
+                    "action": "initial",
+                }
             ]
         path: list[WorkflowVersionCommit] = []
         seen: set[int] = set()
@@ -757,11 +819,17 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
                     f"Workflow design history missing committed version={current}"
                 )
             path.append(commit)
-            current = int(commit.get("prev_version") or 0)
+            current = _json_int(commit.get("prev_version"))
         path.reverse()
-        return [
-            {"version": 0, "prev_version": 0, "target_seq": 0, "created_at_ms": 0}
-        ] + path
+        initial: WorkflowVersionCommit = {
+            "version": 0,
+            "prev_version": 0,
+            "target_seq": 0,
+            "created_at_ms": 0,
+            "entity_id": "",
+            "action": "initial",
+        }
+        return [initial] + path
 
     def _workflow_fold_history(self, *, workflow_id: str) -> WorkflowFoldState:
         """Fold the workflow namespace event stream into designer history state.
@@ -807,20 +875,20 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
         for seq, entity_kind, _entity_id, op, payload_raw in self._iter_entity_events(
             namespace=namespace, from_seq=1
         ):
-            latest_seq = max(latest_seq, int(seq))
+            latest_seq = max(latest_seq, _json_int(seq))
             if str(entity_kind) != self._design_control_kind:
                 continue
             payload = self._parse_event_payload(payload_raw)
             op_s = str(op or "")
             if op_s == self._ctrl_mutation_committed:
-                version = int(payload.get("version") or 0)
-                prev_version = int(payload.get("prev_version") or 0)
-                target_seq = int(payload.get("target_seq") or payload.get("seq") or 0)
+                version = _json_int(payload.get("version"))
+                prev_version = _json_int(payload.get("prev_version"))
+                target_seq = _json_int(payload.get("target_seq") or payload.get("seq"))
                 commit: WorkflowVersionCommit = {
                     "version": version,
                     "prev_version": prev_version,
                     "target_seq": target_seq,
-                    "created_at_ms": int(payload.get("ts_ms") or 0),
+                    "created_at_ms": _json_int(payload.get("ts_ms")),
                     "entity_id": str(payload.get("entity_id") or ""),
                     "action": str(payload.get("action") or ""),
                 }
@@ -829,14 +897,14 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
                 current_version = version
                 active_tip_version = version
             elif op_s == self._ctrl_undo_applied:
-                current_version = int(payload.get("to_version") or current_version)
+                current_version = _json_int(payload.get("to_version"), current_version)
             elif op_s == self._ctrl_redo_applied:
-                current_version = int(payload.get("to_version") or current_version)
+                current_version = _json_int(payload.get("to_version"), current_version)
             elif op_s == self._ctrl_branch_dropped:
-                start_version = int(payload.get("drop_from_version") or 0)
-                end_version = int(payload.get("drop_to_version") or -1)
-                start_seq = int(payload.get("drop_from_seq") or 0)
-                end_seq = int(payload.get("drop_to_seq") or -1)
+                start_version = _json_int(payload.get("drop_from_version"))
+                end_version = _json_int(payload.get("drop_to_version"), -1)
+                start_seq = _json_int(payload.get("drop_from_seq"))
+                end_seq = _json_int(payload.get("drop_to_seq"), -1)
                 if end_version >= start_version >= 0 and end_seq >= start_seq >= 0:
                     dropped_ranges.append(
                         {
@@ -857,26 +925,26 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
         )
         active_versions: list[WorkflowVersionRef] = [
             {
-                "version": int(item.get("version") or 0),
-                "seq": int(item.get("target_seq") or 0),
-                "created_at_ms": int(item.get("created_at_ms") or 0),
+                "version": _json_int(item.get("version")),
+                "seq": _json_int(item.get("target_seq")),
+                "created_at_ms": _json_int(item.get("created_at_ms")),
             }
             for item in active_lineage
         ]
         selected_versions: list[WorkflowSelectedVersionRef] = [
             {
-                "version": int(item.get("version") or 0),
-                "seq": int(item.get("target_seq") or 0),
-                "created_at_ms": int(item.get("created_at_ms") or 0),
-                "prev_version": int(item.get("prev_version") or 0),
-                "target_seq": int(item.get("target_seq") or 0),
+                "version": _json_int(item.get("version")),
+                "seq": _json_int(item.get("target_seq")),
+                "created_at_ms": _json_int(item.get("created_at_ms")),
+                "prev_version": _json_int(item.get("prev_version")),
+                "target_seq": _json_int(item.get("target_seq")),
             }
             for item in selected_lineage
         ]
-        active_ids = [int(item.get("version") or 0) for item in active_lineage]
+        active_ids = [_json_int(item.get("version")) for item in active_lineage]
         current_seq = 0
         if current_version > 0:
-            current_seq = int(commits.get(current_version, {}).get("target_seq") or 0)
+            current_seq = _json_int(commits.get(current_version, {}).get("target_seq"))
         return {
             "workflow_id": workflow_id,
             "namespace": namespace,
@@ -908,17 +976,17 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
         if projection is None:
             return True
         if (
-            int(projection.get("projection_schema_version") or 0)
+            _json_int(projection.get("projection_schema_version"))
             != self._projection_schema_version
         ):
             return True
         if (
-            int(projection.get("snapshot_schema_version") or 0)
+            _json_int(projection.get("snapshot_schema_version"))
             != self._snapshot_schema_version
         ):
             return True
-        if int(projection.get("last_authoritative_seq") or 0) < int(
-            state.get("latest_seq") or 0
+        if _json_int(projection.get("last_authoritative_seq")) < _json_int(
+            state.get("latest_seq")
         ):
             return True
         if str(projection.get("materialization_status") or "") != "ready":
@@ -931,43 +999,49 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
         state: WorkflowFoldState,
     ) -> WorkflowProjectionPayload:
         return {
-            "current_version": int(state.get("current_version") or 0),
-            "active_tip_version": int(state.get("active_tip_version") or 0),
+            "current_version": _json_int(state.get("current_version")),
+            "active_tip_version": _json_int(state.get("active_tip_version")),
             "snapshot_schema_version": self._snapshot_schema_version,
             "versions": [
-                {
-                    "version": int(item.get("version") or 0),
-                    "prev_version": int(item.get("prev_version") or 0),
-                    "target_seq": int(item.get("target_seq") or 0),
-                    "created_at_ms": int(item.get("created_at_ms") or 0),
-                }
+                cast(
+                    JsonObject,
+                    {
+                        "version": _json_int(item.get("version")),
+                        "prev_version": _json_int(item.get("prev_version")),
+                        "target_seq": _json_int(item.get("target_seq")),
+                        "created_at_ms": _json_int(item.get("created_at_ms")),
+                    },
+                )
                 for item in state.get("selected_versions") or []
             ]
             + [
-                {
-                    "version": int(item.get("version") or 0),
-                    "prev_version": int(
-                        (state.get("commits") or {})
-                        .get(int(item.get("version") or 0), {})
-                        .get("prev_version")
-                        or 0
-                    ),
-                    "target_seq": int(item.get("seq") or 0),
-                    "created_at_ms": int(item.get("created_at_ms") or 0),
-                }
+                cast(
+                    JsonObject,
+                    {
+                        "version": _json_int(item.get("version")),
+                        "prev_version": _json_int(
+                            (state.get("commits") or {})
+                            .get(_json_int(item.get("version")), {})
+                            .get("prev_version")
+                            or 0
+                        ),
+                        "target_seq": _json_int(item.get("seq")),
+                        "created_at_ms": _json_int(item.get("created_at_ms")),
+                    },
+                )
                 for item in (state.get("versions") or [])
-                if int(item.get("version") or 0)
+                if _json_int(item.get("version"))
                 not in {
-                    int(v.get("version") or 0)
+                    _json_int(v.get("version"))
                     for v in (state.get("selected_versions") or [])
                 }
             ],
             "dropped_ranges": [
                 {
-                    "start_version": int(item.get("start_version") or 0),
-                    "end_version": int(item.get("end_version") or 0),
-                    "start_seq": int(item.get("start_seq") or 0),
-                    "end_seq": int(item.get("end_seq") or 0),
+                    "start_version": _json_int(item.get("start_version")),
+                    "end_version": _json_int(item.get("end_version")),
+                    "start_seq": _json_int(item.get("start_seq")),
+                    "end_seq": _json_int(item.get("end_seq")),
                 }
                 for item in state.get("dropped_ranges") or []
             ],
@@ -1025,12 +1099,12 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
         """
         getter = self._workflow_meta_store().get_latest_entity_event_seq
         if callable(getter) and int(from_seq) <= 1:
-            return int(getter(namespace=namespace))
+            return _json_int(getter(namespace=namespace))
         last = 0
         for seq, _ek, _eid, _op, _payload in self._iter_entity_events(
             namespace=namespace, from_seq=max(1, int(from_seq))
         ):
-            last = int(seq)
+            last = _json_int(seq)
         return last
 
     def _workflow_collect_visible_entity_ids(
@@ -1052,8 +1126,8 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
         self, seq: int, dropped_ranges: list[WorkflowDroppedRange]
     ) -> bool:
         for item in dropped_ranges:
-            start_seq = int(item.get("start_seq") or 0)
-            end_seq = int(item.get("end_seq") or -1)
+            start_seq = _json_int(item.get("start_seq"))
+            end_seq = _json_int(item.get("end_seq"), -1)
             if start_seq <= seq <= end_seq:
                 return True
         return False
@@ -1106,7 +1180,7 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
                 to_seq=int(to_seq),
             ):
                 if self._workflow_seq_in_dropped_ranges(
-                    int(seq), list(dropped_ranges or [])
+                    _json_int(seq), list(dropped_ranges or [])
                 ):
                     continue
                 entity_kind_s = str(entity_kind)
@@ -1119,9 +1193,7 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
                         try:
                             node = WorkflowNode.model_validate(payload)
                         except Exception:
-                            node = WorkflowNode.model_validate_json(
-                                json.dumps(payload)
-                            )
+                            node = WorkflowNode.model_validate_json(json.dumps(payload))
                         eng.write.add_node(node)
                     elif op_s in {"TOMBSTONE", "DELETE"}:
                         eng.backend.node_delete(ids=[str(entity_id)])
@@ -1130,9 +1202,7 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
                         try:
                             edge = WorkflowEdge.model_validate(payload)
                         except Exception:
-                            edge = WorkflowEdge.model_validate_json(
-                                json.dumps(payload)
-                            )
+                            edge = WorkflowEdge.model_validate_json(json.dumps(payload))
                         eng.write.add_edge(edge)
                     elif op_s in {"TOMBSTONE", "DELETE"}:
                         eng.backend.edge_delete(ids=[str(entity_id)])
@@ -1297,7 +1367,7 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
         snapshot_get = self._workflow_meta_store().get_workflow_design_snapshot
         selected_versions = list(state.get("selected_versions") or [])
         selected_by_version = {
-            int(item.get("version") or 0): item for item in selected_versions
+            _json_int(item.get("version")): item for item in selected_versions
         }
         restored_version = 0
         if callable(snapshot_get) and int(state.get("current_version") or 0) > 0:
@@ -1308,14 +1378,16 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
             )
             if (
                 snapshot is not None
-                and int(snapshot.get("version") or 0) in selected_by_version
+                and _json_int(snapshot.get("version")) in selected_by_version
             ):
                 try:
                     payload = self._parse_event_payload(
                         str(snapshot.get("payload_json") or "{}")
                     )
-                    self._workflow_restore_snapshot(snapshot_payload=payload)
-                    restored_version = int(snapshot.get("version") or 0)
+                    self._workflow_restore_snapshot(
+                        snapshot_payload=cast(WorkflowVisibleSnapshot, payload)
+                    )
+                    restored_version = _json_int(snapshot.get("version"))
                 except Exception:
                     logging.getLogger(__name__).exception(
                         "failed restoring workflow snapshot: workflow_id=%s",
@@ -1323,16 +1395,16 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
                     )
                     restored_version = 0
         for item in selected_versions:
-            version = int(item.get("version") or 0)
+            version = _json_int(item.get("version"))
             if version <= 0 or version <= restored_version:
                 continue
-            lower = int(item.get("prev_version") or 0)
+            lower = _json_int(item.get("prev_version"))
             lower_seq = 0
             if lower > 0:
-                lower_seq = int(
-                    selected_by_version.get(lower, {}).get("target_seq") or 0
+                lower_seq = _json_int(
+                    selected_by_version.get(lower, {}).get("target_seq")
                 )
-            upper_seq = int(item.get("target_seq") or 0)
+            upper_seq = _json_int(item.get("target_seq"))
             if upper_seq > lower_seq:
                 self._workflow_replay_entity_range(
                     namespace=namespace,
@@ -1368,7 +1440,9 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
         if (
             force_rebuild
             or materialize
-            and self._workflow_projection_stale(state=state, projection=projection)
+            and self._workflow_projection_stale(
+                state=state, projection=cast(WorkflowProjectionRow | None, projection)
+            )
         ):
             self._workflow_rebuild_namespace_for_state(
                 workflow_id=workflow_id, state=state
@@ -1407,7 +1481,7 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
         dropped_versions = [
             item
             for item in (state.get("versions") or [])
-            if int(item.get("version") or 0) > current_version
+            if _json_int(item.get("version")) > current_version
         ]
         if not dropped_versions:
             return False

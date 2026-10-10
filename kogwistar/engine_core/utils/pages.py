@@ -2,14 +2,15 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Dict, List, Optional, Tuple, Type, TypeVar, Union
+from typing import Any, TypeVar, Union
+
 from pydantic import BaseModel
 
-PageLike = Union[str, Dict[str, Any]]
+PageLike = Union[str, dict[str, Any]]
 T = TypeVar("T", bound=BaseModel)
 
 
-def split_pages_from_text(raw: str) -> List[Dict[str, Any]]:
+def split_pages_from_text(raw: str) -> list[dict[str, Any]]:
     if not raw:
         return []
 
@@ -48,9 +49,9 @@ def split_pages_from_text(raw: str) -> List[Dict[str, Any]]:
 
 
 def coerce_pages(
-    content_or_pages: Any, *, default_page_start: int = 1
-) -> List[Dict[str, Any]]:
-    def as_page_dict(x: PageLike, idx0: int) -> Optional[Dict[str, Any]]:
+    content_or_pages: object, *, default_page_start: int = 1
+) -> list[dict[str, Any]]:
+    def as_page_dict(x: PageLike, idx0: int) -> dict[str, Any] | None:
         if isinstance(x, str):
             t = x.strip()
             if not t:
@@ -85,7 +86,7 @@ def coerce_pages(
     if isinstance(content_or_pages, dict):
         if "pages" in content_or_pages:
             pages = content_or_pages.get("pages") or []
-            out: List[Dict[str, Any]] = []
+            out: list[dict[str, Any]] = []
             for i, item in enumerate(pages):
                 row = as_page_dict(item, i)
                 if row:
@@ -95,7 +96,7 @@ def coerce_pages(
         return [row] if row else []
 
     if isinstance(content_or_pages, list):
-        out: List[Dict[str, Any]] = []
+        out: list[dict[str, Any]] = []
         for i, item in enumerate(content_or_pages):
             row = as_page_dict(item, i)
             if row:
@@ -105,7 +106,7 @@ def coerce_pages(
     return []
 
 
-def chroma_docs_to_pydantic(objs: dict, model_cls: Type[T]) -> List[T]:
+def chroma_docs_to_pydantic(objs: dict, model_cls: type[T]) -> list[T]:
     docs = objs.get("documents") or []
     if docs and isinstance(docs[0], list):
         docs = docs[0]
@@ -113,8 +114,8 @@ def chroma_docs_to_pydantic(objs: dict, model_cls: Type[T]) -> List[T]:
 
 
 def normalize_chroma_result(
-    objs: Dict[str, Any],
-) -> Tuple[List[str], List[str], List[Dict[str, Any]]]:
+    objs: dict[str, Any],
+) -> tuple[list[str], list[str], list[dict[str, Any]]]:
     ids = objs.get("ids") or []
     docs = objs.get("documents") or []
     metas = objs.get("metadatas") or []
@@ -132,16 +133,16 @@ def normalize_chroma_result(
     return ids, docs, metas
 
 
-def chroma_to_models(objs: Dict[str, Any], model_cls: Type[T]) -> List[T]:
+def chroma_to_models(objs: dict[str, Any], model_cls: type[T]) -> list[T]:
     _, docs, _ = normalize_chroma_result(objs)
     return [model_cls.model_validate_json(doc) for doc in docs]
 
 
 def chroma_to_models_with_meta(
-    objs: Dict[str, Any], model_cls: Type[T]
-) -> List[Tuple[str, T, Dict[str, Any]]]:
+    objs: dict[str, Any], model_cls: type[T]
+) -> list[tuple[str, T, dict[str, Any]]]:
     ids, docs, metas = normalize_chroma_result(objs)
-    out: List[Tuple[str, T, Dict[str, Any]]] = []
+    out: list[tuple[str, T, dict[str, Any]]] = []
     for rid, doc, meta in zip(ids, docs, metas):
         out.append((rid, model_cls.model_validate_json(doc), meta or {}))
     return out

@@ -920,15 +920,10 @@ fn python_compare(left: &FilterValue, right: &FilterValue) -> Option<Ordering> {
             Some(number_compare(left, right))
         }
         (FilterValue::String(left), FilterValue::String(right)) => Some(left.cmp(right)),
-        (FilterValue::Array(left), FilterValue::Array(right)) => {
-            for (left_item, right_item) in left.iter().zip(right) {
-                let comparison = python_compare(left_item, right_item)?;
-                if comparison != Ordering::Equal {
-                    return Some(comparison);
-                }
-            }
-            Some(left.len().cmp(&right.len()))
-        }
+        // The Python metadata contract only orders numeric and string
+        // scalars. Lists must fail closed rather than use Rust's
+        // lexicographic ordering.
+        (FilterValue::Array(_), FilterValue::Array(_)) => None,
         _ => None,
     }
 }

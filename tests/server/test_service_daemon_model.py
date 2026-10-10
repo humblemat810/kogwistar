@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+import shutil
 import time
+import uuid
 from contextlib import contextmanager
 from pathlib import Path
-import shutil
-import uuid
 
 import pytest
 from fastapi.testclient import TestClient
@@ -12,17 +12,16 @@ from fastapi.testclient import TestClient
 import kogwistar.server_mcp_with_admin as server
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.models import Grounding, Node, Span
+from kogwistar.server import service_daemon
 from kogwistar.server.auth_middleware import claims_ctx
-import kogwistar.server.service_daemon as service_daemon
 from kogwistar.server.service_daemon import SERVICE_PROJECTION_NAMESPACE
+from tests._helpers.fake_backend import build_fake_backend
 from tests.server.test_chat_server_api import (
     FakeEmbeddingFunction,
     _configure_server,
     _runtime_success_runner,
     _token_header,
 )
-from tests._helpers.fake_backend import build_fake_backend
-
 
 pytestmark = pytest.mark.server
 

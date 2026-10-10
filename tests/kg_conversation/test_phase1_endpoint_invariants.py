@@ -1,6 +1,8 @@
 # tests/kg_conversation/test_phase1_endpoint_invariants.py
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import pytest
 
 from kogwistar.conversation.models import (
@@ -10,7 +12,6 @@ from kogwistar.conversation.models import (
 from kogwistar.engine_core.models import Grounding
 from tests._helpers.graph_builders import mk_document_span as _mk_span
 from tests.conftest import _make_engine_pair
-from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from kogwistar.engine_core.engine import GraphKnowledgeEngine

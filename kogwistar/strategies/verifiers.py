@@ -1,25 +1,38 @@
 # strategies/verifiers.py
 # -*- coding: utf-8 -*-
 from __future__ import annotations
-from typing import Dict, Optional, List, Tuple
-from dataclasses import dataclass
-from .types import EngineLike, Verifier
+
 import json
+from collections.abc import Mapping
+from dataclasses import dataclass
+from typing import Any, cast
+
+from .types import EngineLike, Verifier
 
 try:
-    from rapidfuzz.fuzz import ratio as fuzz_ratio
-    from rapidfuzz import fuzz
+    from rapidfuzz import fuzz as _rapidfuzz
 
     _HAS_RAPIDFUZZ = True
 except ImportError:
+    _rapidfuzz = None
     _HAS_RAPIDFUZZ = False
-
-    def fuzz_ratio(a: str, b: str) -> float:
-        # very small fallback
-        return 100.0 if a == b else 0.0
 
 
 from ..engine_core.models import Edge, Grounding, MentionVerification, Node, Span
+
+
+def _backend_mapping(value: object) -> Mapping[str, object]:
+    return cast(Mapping[str, object], value) if isinstance(value, Mapping) else {}
+
+
+def _backend_values(value: object) -> list[object]:
+    return list(value) if isinstance(value, list) else []
+
+
+def _rapidfuzz_token_set_ratio(a: str, b: str) -> float:
+    if not _HAS_RAPIDFUZZ or _rapidfuzz is None:
+        return 0.0
+    return float(cast(Any, _rapidfuzz).token_set_ratio(a, b))
 
 
 # from ..engine_core.engine import GraphKnowledgeEngine
@@ -53,19 +66,19 @@ class DefaultVerifier(Verifier):
         end = min(len(full_text), end)
         return full_text[start:end]
 
-    def _score_rapidfuzz(self, a: str, b: str) -> Optional[float]:
+    def _score_rapidfuzz(self, a: str, b: str) -> float | None:
         if not _HAS_RAPIDFUZZ:
             return None
         a, b = self._normalize(a), self._normalize(b)
         if not a or not b:
             return None
         # token_set_ratio is robust to word order/noise; scale 0..100 -> 0..1
-        return float(fuzz.token_set_ratio(a, b)) / 100.0
+        return _rapidfuzz_token_set_ratio(a, b) / 100.0
 
     @staticmethod
     def _score_coverage(
         extracted: str, cited: str, min_ngram: int = 5
-    ) -> Optional[float]:
+    ) -> float | None:
         """
         Percent of extracted characters covered by any n-gram (len>=min_ngram)
         that also appears in cited. Simple, fast lower bound for span support.
@@ -100,8 +113,8 @@ class DefaultVerifier(Verifier):
         return float((dot / (nu * nv))) if nu and nv else None
 
     def _ensemble(
-        self, scores: Dict[str, Optional[float]], weights: Dict[str, float]
-    ) -> Optional[float]:
+        self, scores: dict[str, float | None], weights: dict[str, float]
+    ) -> float | None:
         """Weighted average over available (non-None) scores."""
         num = 0.0
         den = 0.0
@@ -115,10 +128,10 @@ class DefaultVerifier(Verifier):
             return None
         return float(num / den)
 
-    def _embed_one(self, text: str):
+    def _embed_one(self, text: str) -> list[float]:
         return self.e.embed.iterative_defensive_emb(text)
 
-    def __init__(self, engine: EngineLike, config: Optional[VerifierConfig] = None):
+    def __init__(self, engine: EngineLike, config: VerifierConfig | None = None) -> None:
         self.e: EngineLike = engine
         self.cfg = config or VerifierConfig()
 
@@ -131,7 +144,7 @@ class DefaultVerifier(Verifier):
         ref: Span,
         *,
         min_ngram: int = 5,
-        weights: Dict[str, float] = {
+        weights: dict[str, float] = {
             "rapidfuzz": 0.5,
             "coverage": 0.3,
             "embedding": 0.2,
@@ -187,7 +200,7 @@ class DefaultVerifier(Verifier):
         grounding: Grounding,
         *,
         min_ngram: int = 5,
-        weights: Dict[str, float] = {
+        weights: dict[str, float] = {
             "rapidfuzz": 0.5,
             "coverage": 0.3,
             "embedding": 0.2,
@@ -212,16 +225,16 @@ class DefaultVerifier(Verifier):
         self,
         document_id: str,
         *,
-        source_text: Optional[str] = None,
+        source_text: str | None = None,
         min_ngram: int = 5,
         threshold: float = 0.70,
-        weights: Dict[str, float] = {
+        weights: dict[str, float] = {
             "rapidfuzz": 0.5,
             "coverage": 0.3,
             "embedding": 0.2,
         },
         update_edges: bool = True,
-    ) -> Dict[str, int]:
+    ) -> dict[str, int]:
         """
         Verify all references in nodes (and edges if update_edges=True) for a doc.
         Returns counts of updated items.
@@ -234,11 +247,11 @@ class DefaultVerifier(Verifier):
         upd_nodes = upd_edges = 0
 
         # Nodes
-        got = self.e.backend.node_get(
+        got = _backend_mapping(self.e.backend.node_get(
             where={"doc_id": document_id}, include=["documents"]
-        )
-        for nid, ndoc in zip(got.get("ids") or [], got.get("documents") or []):
-            n = Node.model_validate_json(ndoc)
+        ))
+        for nid, ndoc in zip(_backend_values(got.get("ids")), _backend_values(got.get("documents"))):
+            n = Node.model_validate_json(str(ndoc))
             # what text do we try to validate? prioritize summary, then label
             extracted = n.summary or n.label or ""
             if not (n.mentions and extracted):
@@ -260,11 +273,11 @@ class DefaultVerifier(Verifier):
             upd_nodes += 1
 
         if update_edges:
-            got = self.e.backend.edge_get(
+            got = _backend_mapping(self.e.backend.edge_get(
                 where={"doc_id": document_id}, include=["documents"]
-            )
-            for eid, edoc in zip(got.get("ids") or [], got.get("documents") or []):
-                e = Edge.model_validate_json(edoc)
+            ))
+            for eid, edoc in zip(_backend_values(got.get("ids")), _backend_values(got.get("documents"))):
+                e = Edge.model_validate_json(str(edoc))
                 extracted = e.summary or e.label or e.relation or ""
                 if not (e.mentions and extracted):
                     continue
@@ -287,17 +300,17 @@ class DefaultVerifier(Verifier):
 
     def verify_mentions_for_items(
         self,
-        items: List[Tuple[str, str]],  # list of ("node"|"edge", id)
+        items: list[tuple[str, str]],  # list of ("node"|"edge", id)
         *,
-        source_text_by_doc: Optional[Dict[str, str]] = None,
+        source_text_by_doc: dict[str, str] | None = None,
         min_ngram: int = 5,
         threshold: float = 0.70,
-        weights: Dict[str, float] = {
+        weights: dict[str, float] = {
             "rapidfuzz": 0.5,
             "coverage": 0.3,
             "embedding": 0.2,
         },
-    ) -> Dict[str, int]:
+    ) -> dict[str, int]:
         """
         Targeted verification for a mixed set of nodes/edges.
         source_text_by_doc lets you pass pre-fetched doc text keyed by doc_id.
@@ -305,13 +318,17 @@ class DefaultVerifier(Verifier):
         upd_nodes = upd_edges = 0
         for kind, rid in items:
             if kind == "node":
-                got = self.e.backend.node_get(
+                got = _backend_mapping(self.e.backend.node_get(
                     ids=[rid], include=["documents", "metadatas"]
-                )
-                if not got.get("documents"):
+                ))
+                documents = _backend_values(got.get("documents"))
+                if not documents:
                     continue
-                n = Node.model_validate_json(got["documents"][0])
-                doc_id = (got["metadatas"][0] or {}).get("doc_id")
+                n = Node.model_validate_json(str(documents[0]))
+                metadatas = _backend_values(got.get("metadatas"))
+                first_metadata = _backend_mapping(metadatas[0]) if metadatas else {}
+                doc_id_value = first_metadata.get("doc_id")
+                doc_id = str(doc_id_value) if doc_id_value else None
                 full_text = (
                     (source_text_by_doc or {}).get(doc_id)
                     or self.e.extract.fetch_document_text(doc_id)
@@ -337,13 +354,17 @@ class DefaultVerifier(Verifier):
                 self.e.write.index_node_docs(n)
                 upd_nodes += 1
             elif kind == "edge":
-                got = self.e.backend.edge_get(
+                got = _backend_mapping(self.e.backend.edge_get(
                     ids=[rid], include=["documents", "metadatas"]
-                )
-                if not got.get("documents"):
+                ))
+                documents = _backend_values(got.get("documents"))
+                if not documents:
                     continue
-                e = Edge.model_validate_json(got["documents"][0])
-                doc_id = (got["metadatas"][0] or {}).get("doc_id")
+                e = Edge.model_validate_json(str(documents[0]))
+                metadatas = _backend_values(got.get("metadatas"))
+                first_metadata = _backend_mapping(metadatas[0]) if metadatas else {}
+                doc_id_value = first_metadata.get("doc_id")
+                doc_id = str(doc_id_value) if doc_id_value else None
                 full_text = (
                     (source_text_by_doc or {}).get(doc_id)
                     or self.e.extract.fetch_document_text(doc_id)

@@ -1,22 +1,33 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import asynccontextmanager
 import uuid
+from contextlib import asynccontextmanager
 
 import pytest
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.runtime import AsyncWorkflowRuntime, WorkflowRuntime
-from kogwistar.runtime.models import RunSuccess, WorkflowCompletedNode, WorkflowEdge, WorkflowNode
+from kogwistar.runtime.models import (
+    RunSuccess,
+    WorkflowCompletedNode,
+    WorkflowEdge,
+    WorkflowNode,
+)
 from kogwistar.runtime.replay import load_checkpoint, replay_to
 from kogwistar.runtime.resolvers import AsyncMappingStepResolver, MappingStepResolver
 from tests._helpers.fake_backend import build_fake_backend
-from tests.conftest import _make_engine_pair, _make_workflow_engine
 from tests._helpers.workflow_builders import build_workflow_edge, build_workflow_node
-from tests.conftest import FakeEmbeddingFunction, _is_missing_pgvector_extension
+from tests.conftest import (
+    FakeEmbeddingFunction,
+    _is_missing_pgvector_extension,
+    _make_engine_pair,
+    _make_workflow_engine,
+)
 from tests.core._async_chroma_real import (
     make_real_async_chroma_backend,
+)
+from tests.core._async_chroma_real import (
     # Imported for pytest fixture discovery in this module.
     real_chroma_server as real_chroma_server,  # noqa: F401
 )

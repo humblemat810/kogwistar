@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import os
 import traceback
-from typing import Any
+from typing import cast
 
 from fastapi import HTTPException
+
+from ..json_types import JsonValue
 
 
 def dev_mode_enabled() -> bool:
@@ -26,9 +28,10 @@ def internal_http_error(exc: Exception) -> HTTPException:
     return HTTPException(status_code=500, detail=str(exc))
 
 
-def detail_payload(exc: Exception) -> dict[str, Any]:
+def detail_payload(exc: Exception) -> dict[str, JsonValue]:
+    traceback_lines = traceback.format_exception(type(exc), exc, exc.__traceback__)
     return {
         "error": str(exc),
         "error_type": exc.__class__.__name__,
-        "traceback": traceback.format_exception(type(exc), exc, exc.__traceback__),
+        "traceback": cast(JsonValue, traceback_lines),
     }

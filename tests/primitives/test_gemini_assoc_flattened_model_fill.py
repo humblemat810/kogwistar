@@ -5,12 +5,12 @@ import os
 from typing import Any, Literal
 
 import pytest
-from kogwistar.utils.cache_backend import Memory
 
 from kogwistar.engine_core.models import (
     AssocFlattenedLLMGraphExtraction,
     LLMGraphExtraction,
 )
+from kogwistar.utils.cache_backend import Memory
 
 pytestmark = [pytest.mark.ci_full]
 

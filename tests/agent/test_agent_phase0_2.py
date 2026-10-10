@@ -19,20 +19,19 @@ from kogwistar.agent import (
     HookRegistry,
     HookSpec,
     ProviderRegistry,
-    SkillProjectionStore,
     SkillGraphArtifact,
+    SkillProjectionStore,
+    build_goal_workflow,
+    build_plan_workflow,
     catalog_entries_from_artifact,
     parse_skill_text,
     select_skill_subgraph,
+    validate_agent_design,
     validate_command_argv,
     validate_package_relative_path,
     validate_skill_artifact,
-    build_plan_workflow,
-    build_goal_workflow,
-    validate_agent_design,
 )
 from kogwistar.agent.providers import ProviderCollisionError, ProviderOwnershipError
-
 
 pytestmark = [pytest.mark.ci, pytest.mark.core, pytest.mark.regression]
 

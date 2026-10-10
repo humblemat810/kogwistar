@@ -1,13 +1,13 @@
+import importlib.util
 import os
 import pathlib
-import importlib.util
+
 import pytest
+
 # This downloads a long public text and invokes a live Ollama/Azure provider.
 # It is retained for explicit slow model validation, not deterministic CI.
 pytestmark = pytest.mark.slow
 import requests
-from kogwistar.utils.cache_backend import Memory
-from tests._helpers.embeddings import build_test_embedding_function
 
 # Project imports (adjust if your package name/layout differs)
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
@@ -15,6 +15,8 @@ from kogwistar.engine_core.models import Document
 from kogwistar.ingester import (
     PagewiseSummaryIngestor,
 )  # your side-car ingester
+from kogwistar.utils.cache_backend import Memory
+from tests._helpers.embeddings import build_test_embedding_function
 
 # ----------------------------
 # Joblib cache for downloads

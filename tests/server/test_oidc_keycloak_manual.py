@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import os
 import csv
+import os
 import socket
 import subprocess
 import sys
@@ -13,6 +13,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+
 pytest.importorskip("fastapi")
 pytest.importorskip("mcp")
 pytest.importorskip("sqlalchemy")
@@ -20,9 +21,9 @@ from sqlalchemy.orm import sessionmaker
 
 from kogwistar.server.auth.db import create_auth_engine
 from kogwistar.server.auth.models import ExternalIdentity, User
-from .auth_env import TEST_JWT_SECRET
 from tests.server.oidc_test_support import oidc_provider_json, oidc_seed_json
 
+from .auth_env import TEST_JWT_SECRET
 
 pytestmark = [pytest.mark.manual]
 

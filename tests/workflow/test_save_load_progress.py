@@ -1,24 +1,21 @@
 # ruff: noqa: E402
 import pytest
+
 pytestmark = pytest.mark.core
 import json
 from pathlib import Path
 
-
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.models import (
     Grounding,
-    Span,
     MentionVerification,
+    Span,
 )
-
-from kogwistar.runtime.runtime import WorkflowRuntime
+from kogwistar.runtime.models import RunSuccess, WorkflowEdge, WorkflowNode
 from kogwistar.runtime.replay import load_checkpoint, replay_to
-from kogwistar.runtime.models import RunSuccess
-from kogwistar.runtime.models import WorkflowEdge, WorkflowNode
-from tests.conftest import FakeEmbeddingFunction
+from kogwistar.runtime.runtime import WorkflowRuntime
 from tests._helpers.fake_backend import build_fake_backend
-
+from tests.conftest import FakeEmbeddingFunction
 
 BACKEND_PARAMS = [
     pytest.param("fake", id="fake", marks=pytest.mark.ci_full),

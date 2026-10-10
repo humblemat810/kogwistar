@@ -6,11 +6,12 @@ from pathlib import Path
 # Add the project root to sys.path to allow importing kogwistar
 sys.path.append(str(Path(__file__).parent.parent))
 
-from kogwistar.runtime.models import (
-    WorkflowNodeMetadata,
-    WorkflowEdgeMetadata,
-)
 from pydantic_extension.model_slicing import use_mode
+
+from kogwistar.runtime.models import (
+    WorkflowEdgeMetadata,
+    WorkflowNodeMetadata,
+)
 
 
 def export_schemas():

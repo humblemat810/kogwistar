@@ -6,8 +6,9 @@ import math
 import re
 import shutil
 import webbrowser
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 from kogwistar.conversation.models import (
     ConversationAIResponse,
@@ -18,6 +19,7 @@ from kogwistar.conversation.models import (
 )
 from kogwistar.conversation.service import ConversationService
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.llm_tasks import LLMTaskSet
 from kogwistar.engine_core.models import (
     Edge,
     Grounding,
@@ -27,7 +29,6 @@ from kogwistar.engine_core.models import (
 )
 from kogwistar.runtime.replay import replay_to
 from kogwistar.utils.kge_debug_dump import dump_paired_bundles
-
 
 DEFAULT_QUESTION = "How does Kogwistar make AI workflows replayable and auditable?"
 
@@ -56,13 +57,13 @@ class DeterministicLexicalEmbeddingFunction:
     @classmethod
     def build_from_config(
         cls, config: dict[str, object] | None = None
-    ) -> "DeterministicLexicalEmbeddingFunction":
+    ) -> DeterministicLexicalEmbeddingFunction:
         _ = config
         return cls()
 
-    def __call__(self, input: Sequence[str]) -> list[list[float]]:
+    def __call__(self, documents_or_texts: list[str]) -> list[list[float]]:
         vectors: list[list[float]] = []
-        for text in input:
+        for text in documents_or_texts:
             vec = [0.0] * self._dim
             tokens = re.findall(r"[a-z0-9_]+", str(text or "").lower())
             for token in tokens:
@@ -263,6 +264,7 @@ def _seed_conversation_memory(conversation_engine: GraphKnowledgeEngine) -> None
         domain_id=None,
         canonical_entity_id=None,
         embedding=None,
+        level_from_root=0,
     )
     pointer = ConversationNode(
         id="hist-ref-workflow",
@@ -295,6 +297,7 @@ def _seed_conversation_memory(conversation_engine: GraphKnowledgeEngine) -> None
         domain_id=None,
         canonical_entity_id=None,
         embedding=None,
+        level_from_root=0,
     )
     conversation_engine.write.add_node(summary)
     conversation_engine.write.add_node(pointer)
@@ -333,20 +336,21 @@ def _seed_conversation_memory(conversation_engine: GraphKnowledgeEngine) -> None
 
 
 def _deterministic_filter(
-    _llm_tasks: Any,
-    conversation_content: str,
-    cand_node_list_str: str,
-    cand_edge_list_str: str,
-    candidate_node_ids: list[str],
-    candidate_edge_ids: list[str],
-    _context_text: str,
+    llm_tasks: LLMTaskSet,
+    user_text: str,
+    candidate_nodes: str,
+    candidate_edges: str,
+    node_ids: list[str],
+    edge_ids: list[str],
+    context_text: str,
 ) -> tuple[FilteringResult, str]:
-    question = str(conversation_content or "").lower()
+    del llm_tasks, context_text
+    question = str(user_text or "").lower()
     keywords = [token for token in re.findall(r"[a-z0-9_]+", question) if len(token) > 3]
 
     node_scores: list[tuple[int, str]] = []
-    for node_id in candidate_node_ids:
-        line = cand_node_list_str.lower()
+    for node_id in node_ids:
+        line = candidate_nodes.lower()
         score = sum(1 for keyword in keywords if keyword in line)
         if node_id == "hist-ref-workflow":
             score += 3
@@ -354,11 +358,11 @@ def _deterministic_filter(
     node_scores.sort(key=lambda item: (-item[0], item[1]))
     selected_nodes = [node_id for score, node_id in node_scores if score > 0][:3]
     if not selected_nodes:
-        selected_nodes = list(candidate_node_ids[:2])
+        selected_nodes = list(node_ids[:2])
 
     edge_scores: list[tuple[int, str]] = []
-    for edge_id in candidate_edge_ids:
-        line = cand_edge_list_str.lower()
+    for edge_id in edge_ids:
+        line = candidate_edges.lower()
         score = sum(1 for keyword in keywords if keyword in line)
         edge_scores.append((score, edge_id))
     edge_scores.sort(key=lambda item: (-item[0], item[1]))
@@ -376,7 +380,12 @@ def _latest_checkpoint_step(conversation_engine: GraphKnowledgeEngine, run_id: s
     )
     if not checkpoints:
         raise RuntimeError(f"No workflow checkpoints found for run_id={run_id!r}")
-    return max(int((node.metadata or {}).get("step_seq", 0)) for node in checkpoints)
+    def step_value(node: object) -> int:
+        metadata = getattr(node, "metadata", {}) or {}
+        value = metadata.get("step_seq") if isinstance(metadata, dict) else None
+        return int(value) if isinstance(value, (int, float, str)) else 0
+
+    return max(step_value(node) for node in checkpoints)
 
 
 def _extract_answer_text(
@@ -429,9 +438,9 @@ def run_provenance_quickstart(
         *,
         conversation_id: str,
         prev_turn_meta_summary: MetaFromLastSummary,
-        **_: Any,
+        **_: object,
     ) -> ConversationAIResponse:
-        _ = conversation_id, prev_turn_meta_summary
+        del conversation_id, prev_turn_meta_summary
         answer_text = (
             "Kogwistar stores the run, evidence pointers, and replayable context "
             f"snapshots as graph data. Question: {question}"
@@ -470,7 +479,7 @@ def run_provenance_quickstart(
         max_workers=1,
         strict_answer_failure=False,
         force_answer_only=True,
-        cache_dir=base_dir / "cache",
+        cache_dir=str(base_dir / "cache"),
     )
     run_id = f"add_turn|{add_result.user_turn_node_id}"
 

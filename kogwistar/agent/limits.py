@@ -3,9 +3,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
 
 from kogwistar.runtime.budget import StateBackedBudgetLedger
+
+RuntimeState = dict[str, object]
+
+
+def _numeric(value: object) -> int | float | None:
+    if isinstance(value, bool):
+        return None
+    return value if isinstance(value, (int, float)) else None
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,7 +48,7 @@ class AgentBudgetPolicy:
             if value is not None
         }
 
-    def seed(self, state: dict[str, Any]) -> dict[str, Any]:
+    def seed(self, state: RuntimeState) -> RuntimeState:
         """Seed checkpointable counters without installing process-local DI."""
 
         budget_state = state.get("budget")
@@ -49,13 +56,21 @@ class AgentBudgetPolicy:
             budget_state = state
         for key, requested in self.limits().items():
             current = budget_state.get(key)
-            budget_state[key] = (
-                min(float(current), float(requested))
-                if current
-                else (float(requested) if key == "cost_budget" else int(requested))
-            )
+            current_number = _numeric(current)
+            if current_number is not None and current_number > 0:
+                budget_state[key] = (
+                    min(float(current_number), float(requested))
+                    if key == "cost_budget"
+                    else min(int(current_number), int(requested))
+                )
+            else:
+                budget_state[key] = (
+                    float(requested) if key == "cost_budget" else int(requested)
+                )
             if key != "cost_budget":
-                budget_state[key] = int(budget_state[key])
+                seeded = budget_state.get(key)
+                if isinstance(seeded, (int, float)) and not isinstance(seeded, bool):
+                    budget_state[key] = int(seeded)
         for key, default in {
             "step_used": 0,
             "call_used": 0,
@@ -66,7 +81,7 @@ class AgentBudgetPolicy:
             budget_state.setdefault(key, default)
         return budget_state
 
-    def install(self, state: dict[str, Any]) -> StateBackedBudgetLedger:
+    def install(self, state: RuntimeState) -> StateBackedBudgetLedger:
         """Install ceilings and a process-local ledger in existing DI state."""
 
         budget_state = state.get("budget")
@@ -88,15 +103,15 @@ class AgentBudgetPolicy:
         return ledger
 
 
-def _remaining(limit: int | float, used: int | float) -> int | float | None:
+def _remaining(limit: float, used: float) -> int | float | None:
     if not limit:
         return None
     return max(0, limit - used)
 
 
 def budget_hints(
-    state: dict[str, Any], *, ledger: StateBackedBudgetLedger | None = None
-) -> dict[str, int | float | None]:
+    state: RuntimeState, *, ledger: StateBackedBudgetLedger | None = None
+) -> dict[str, int | float | bool | None]:
     """Return bounded display/context hints, never authority."""
 
     ledger = ledger or StateBackedBudgetLedger(state)
@@ -111,8 +126,8 @@ def budget_hints(
 
 
 def refresh_budget_hints(
-    state: dict[str, Any], *, ledger: StateBackedBudgetLedger | None = None
-) -> dict[str, int | float | None]:
+    state: RuntimeState, *, ledger: StateBackedBudgetLedger | None = None
+) -> dict[str, int | float | bool | None]:
     hints = budget_hints(state, ledger=ledger)
     state["agent_budget_hints"] = hints
     return hints

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+
+from kogwistar.json_types import JsonValue
 
 
 @dataclass(frozen=True)
@@ -28,9 +29,9 @@ class ToolReceipt:
     kind: str
     capability: str = ""
     status: str = "completed"
-    input: dict[str, Any] = field(default_factory=dict)
+    input: dict[str, JsonValue] = field(default_factory=dict)
     execution_mode: str = "inline"
-    output: dict[str, Any] | None = None
+    output: dict[str, JsonValue] | None = None
     error: str | None = None
     side_effects: list[str] = field(default_factory=list)
 

@@ -1,17 +1,15 @@
-import pytest
-
 import json
 
+import pytest
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.models import (
     Grounding,
-    Span,
     MentionVerification,
+    Span,
 )
+from kogwistar.runtime.models import RunSuccess, WorkflowEdge, WorkflowNode
 from kogwistar.runtime.runtime import WorkflowRuntime
-from kogwistar.runtime.models import RunSuccess
-from kogwistar.runtime.models import WorkflowEdge, WorkflowNode
 
 pytestmark = pytest.mark.ci_full
 

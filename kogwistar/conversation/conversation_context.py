@@ -1,11 +1,14 @@
 from __future__ import annotations
+
+import json
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Literal, Self, Sequence, TypeAlias
+from typing import Literal, Self, TypeAlias, cast
+
+from kogwistar.json_types import JsonValue
 from kogwistar.typing_interfaces import EngineLike
-from typing import Iterable
 
 from .models import ConversationEdge, ConversationNode
-import json
 
 Role: TypeAlias = Literal["system", "user", "assistant", "tool"]
 # system include kg graph, internal summary, filtering thinking, reasoning from llm call
@@ -66,7 +69,7 @@ class ContextItem:
     # Conversation
     role: Role
 
-    extra: dict | None = None
+    extra: dict[str, JsonValue] | None = None
 
     # provenance / tracing
     node_id: str | None = None
@@ -110,9 +113,34 @@ class ContextOrderingStrategy(Protocol):
 
     def pre_pack(self, items: list[ContextItem]) -> list[ContextItem]:
         """Return the iteration order used for packing/budgeting."""
+        ...
 
     def post_pack(self, kept: list[ContextItem]) -> list[ContextItem]:
         """Return final order fed into the renderer."""
+        ...
+
+
+class ContextSourceProvider(Protocol):
+    """Provider of graph-derived context items for one conversation."""
+
+    def gather(self, *, conversation_id: str, purpose: str) -> list[ContextItem]:
+        ...
+
+
+class ContextTokenizer(Protocol):
+    """Token-counting dependency used by the context budgeter."""
+
+    def count_tokens(self, text: str) -> int:
+        ...
+
+
+class ContextMessageRenderer(Protocol):
+    """Renderer converting selected context items into model messages."""
+
+    def render(
+        self, items: Sequence[ContextItem], *, purpose: str
+    ) -> list[ContextMessage]:
+        ...
 
 
 class OrderingRegistry:
@@ -198,7 +226,12 @@ class _GroupedPolicyOrdering:
             if it.kind != "tail_turn":
                 return 10**9
             extra = it.extra or {}
-            return int(extra.get("turn_index", 10**9))
+            turn_index = extra.get("turn_index", 10**9)
+            return (
+                int(turn_index)
+                if isinstance(turn_index, (int, float, str))
+                else 10**9
+            )
 
         out.sort(
             key=lambda x: (self._rank.get(x.kind, 99), turn_ix(x), (x.node_id or ""))
@@ -340,7 +373,9 @@ ConversationContextView = PromptContext
 
 
 class ContextRenderer:
-    def render(self, items, *, purpose: str):
+    def render(
+        self, items: Sequence[ContextItem], *, purpose: str
+    ) -> list[ContextMessage]:
 
         system_prompt_parts: list[str] = []
         head_summaries: list[str] = []
@@ -401,7 +436,13 @@ class ContextRenderer:
 
 
 class ConversationContextBuilder:
-    def __init__(self, *, sources, tokenizer, renderer):
+    def __init__(
+        self,
+        *,
+        sources: ContextSourceProvider,
+        tokenizer: ContextTokenizer,
+        renderer: ContextMessageRenderer,
+    ) -> None:
         """
         sources: gathers candidate ContextItems (turns/summaries/memory/kg refs)
         tokenizer: count_tokens()
@@ -563,7 +604,7 @@ class ContextSources:
     def __init__(
         self,
         *,
-        conversation_engine: "EngineLike",
+        conversation_engine: EngineLike,
         tail_turns: int = 8,
         include_summaries: bool = True,
         include_memory_context: bool = True,
@@ -579,7 +620,7 @@ class ContextSources:
         self.security_scope = security_scope
         self.agent_id = agent_id
 
-    def gather(self, *, conversation_id: str, purpose: str):
+    def gather(self, *, conversation_id: str, purpose: str) -> list[ContextItem]:
         # Phase 1: load nodes
         if getattr(self.engine, "acl_enabled", False):
             by_id, meta_by_id = self._load_acl_visible_nodes(conversation_id)
@@ -610,15 +651,21 @@ class ContextSources:
     # -------------------------
     def _load_node_rows(
         self, conversation_id: str
-    ) -> tuple[list[Any], list[Any], list[Any]]:
+    ) -> tuple[list[JsonValue], list[JsonValue], list[JsonValue]]:
         got = self.engine.backend.node_get(
             where={"conversation_id": conversation_id},
             include=["documents", "metadatas"],
         )
+        if not isinstance(got, Mapping):
+            return [], [], []
         ids = got.get("ids") or []
         docs = got.get("documents") or []
         metas = got.get("metadatas") or []
-        return ids, docs, metas
+        return (
+            list(ids) if isinstance(ids, list) else [],
+            list(docs) if isinstance(docs, list) else [],
+            list(metas) if isinstance(metas, list) else [],
+        )
 
     def _load_acl_visible_nodes(
         self, conversation_id: str
@@ -630,11 +677,14 @@ class ContextSources:
             limit=20000,
         )
         by_id: dict[str, ConversationNode] = {}
-        meta_by_id: dict[str, dict] = {}
+        meta_by_id: dict[str, dict[str, JsonValue]] = {}
         for node in nodes:
             node_id = str(node.safe_get_id())
-            by_id[node_id] = node
-            meta_by_id[node_id] = dict(getattr(node, "metadata", {}) or {})
+            by_id[node_id] = cast(ConversationNode, node)
+            metadata = getattr(node, "metadata", {}) or {}
+            meta_by_id[node_id] = (
+                dict(metadata) if isinstance(metadata, dict) else {}
+            )
         return by_id, meta_by_id
 
     # -------------------------
@@ -642,17 +692,22 @@ class ContextSources:
     # -------------------------
     def _decode_nodes(
         self,
-        ids: Iterable[Any],
-        docs: Iterable[Any],
-        metas: Iterable[Any],
+        ids: Iterable[JsonValue],
+        docs: Iterable[JsonValue],
+        metas: Iterable[JsonValue],
     ) -> tuple[dict[str, ConversationNode], dict[str, dict]]:
         by_id: dict[str, ConversationNode] = {}
-        meta_by_id: dict[str, dict] = {}
+        meta_by_id: dict[str, dict[str, JsonValue]] = {}
 
         for nid, doc, meta in zip(ids, docs, metas):
             base = self._safe_json_dict(doc)
+            existing_meta = base.get("metadata")
+            merged_meta: dict[str, JsonValue] = (
+                dict(existing_meta) if isinstance(existing_meta, dict) else {}
+            )
             if isinstance(meta, dict):
-                base["metadata"] = {**(base.get("metadata") or {}), **meta}
+                merged_meta.update(meta)
+            base["metadata"] = merged_meta
 
             n = self._safe_validate_conversation_node(base)
             if n is None:
@@ -660,10 +715,10 @@ class ContextSources:
 
             sid = str(nid)
             by_id[sid] = n
-            meta_by_id[sid] = base.get("metadata") or {}
+            meta_by_id[sid] = merged_meta
         return by_id, meta_by_id
 
-    def _safe_json_dict(self, doc: Any) -> dict:
+    def _safe_json_dict(self, doc: object) -> dict[str, JsonValue]:
         if not isinstance(doc, str):
             return {}
         try:
@@ -673,7 +728,7 @@ class ContextSources:
             return {}
 
     def _safe_validate_conversation_node(
-        self, payload: dict
+        self, payload: Mapping[str, JsonValue]
     ) -> ConversationNode | None:
         try:
             return ConversationNode.model_validate(payload)
@@ -770,6 +825,10 @@ class ContextSources:
             where={"doc_id": f"conv:{conversation_id}"},
             include=["metadatas"],
         )
+        if not isinstance(egot, Mapping):
+            return _EdgeSelection(
+                memctx_ids, ptr_ids, edge_ids_for_memctx, edge_ids_for_ptr
+            )
         eids = egot.get("ids") or []
         emetas = egot.get("metadatas") or []
 
@@ -800,7 +859,9 @@ class ContextSources:
             memctx_ids, ptr_ids, edge_ids_for_memctx, edge_ids_for_ptr
         )
 
-    def _ids_from_json_list(self, raw: Any) -> list[str]:
+    def _ids_from_json_list(self, raw: object) -> list[str]:
+        if not isinstance(raw, str):
+            return []
         try:
             xs = json.loads(raw or "[]")
         except Exception:
@@ -809,7 +870,7 @@ class ContextSources:
             return []
         return [str(x) for x in xs if x is not None]
 
-    def _first_id_from_json_list(self, raw: Any) -> str | None:
+    def _first_id_from_json_list(self, raw: object) -> str | None:
         ids = self._ids_from_json_list(raw)
         return ids[0] if ids else None
 
@@ -932,7 +993,7 @@ class ContextSources:
 
 @dataclass
 class EngineConversationStore:
-    engine: "EngineLike"
+    engine: EngineLike
 
     def get_turns(self, conversation_id: str) -> list[ContextMessage]:
         # 1) fetch all conversation nodes for this conversation_id
@@ -942,21 +1003,39 @@ class EngineConversationStore:
             include=["metadatas", "documents", "ids"],  # or whatever your wrapper uses
         )
 
+        if not isinstance(res, Mapping):
+            return []
+        ids = res.get("ids")
+        metadatas = res.get("metadatas")
+        documents = res.get("documents")
+        if not isinstance(ids, list) or not isinstance(metadatas, list):
+            return []
+        docs = documents if isinstance(documents, list) else [None] * len(ids)
+
         # 2) materialize + sort
         turns: list[ConversationNode] = []
         for nid, meta, doc in zip(
-            res["ids"], res["metadatas"], res.get("documents", [None] * len(res["ids"]))
+            ids, metadatas, docs
         ):
             # You might store content in doc, or in summary/properties.
             # If your storage puts text in `documents`, use doc.
             # Otherwise, parse from meta/properties as you do elsewhere.
-            node = ConversationNode(
-                id=nid,
-                metadata=meta,
-                # other required fields for Node/GraphEntityRefBase if needed…
-                # If ConversationNode requires label/type/summary/mentions, you may need to pull those too.
-            )
-            turns.append(node)
+            if not isinstance(nid, str) or not isinstance(meta, dict):
+                continue
+            payload: dict[str, JsonValue] = {}
+            if isinstance(doc, str):
+                try:
+                    decoded = json.loads(doc)
+                except json.JSONDecodeError:
+                    decoded = None
+                if isinstance(decoded, dict):
+                    payload.update(decoded)
+            payload["id"] = nid
+            payload["metadata"] = meta
+            try:
+                turns.append(ConversationNode.model_validate(payload))
+            except Exception:
+                continue
 
         turns.sort(key=lambda n: n.turn_index or 0)
 

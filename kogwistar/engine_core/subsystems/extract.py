@@ -1,29 +1,37 @@
 from __future__ import annotations
 
-from copy import deepcopy
 import importlib
 import json
 import math
-from typing import TYPE_CHECKING, Any, List, Literal, Type, cast
+from collections.abc import Callable, Mapping
+from copy import deepcopy
+from typing import TYPE_CHECKING, Any, Literal, cast
 
-from ..async_compat import run_awaitable_blocking
-from ...id_provider import stable_id
-from ...extraction import BaseDocValidator
-from ...llm_tasks import ExtractGraphTaskRequest
 from pydantic import BaseModel
+
+from ...extraction import BaseDocValidator
+from ...fuzzy_offsets import (
+    default_offset_repair_scorer as _shared_default_offset_repair_scorer,
+)
+from ...fuzzy_offsets import (
+    find_best_fuzzy_span as _shared_find_best_fuzzy_span,
+)
+from ...fuzzy_offsets import (
+    offset_repair_threshold as _shared_offset_repair_threshold,
+)
+from ...id_provider import stable_id
+from ...json_types import JsonObject, JsonValue
+from ...llm_tasks import ExtractGraphTaskRequest
+from ...typing_interfaces import ExtractLike
+from ..async_compat import run_awaitable_blocking
 from ..models import (
     AssocFlattenedLLMGraphExtraction,
     Document,
-    Edge,
     Grounding,
+    LLMEdge,
     LLMGraphExtraction,
-    Node,
+    LLMNode,
     Span,
-)
-from ...fuzzy_offsets import (
-    default_offset_repair_scorer as _shared_default_offset_repair_scorer,
-    find_best_fuzzy_span as _shared_find_best_fuzzy_span,
-    offset_repair_threshold as _shared_offset_repair_threshold,
 )
 from ..types import (
     ExtractionSchemaMode,
@@ -39,17 +47,16 @@ from ..utils.aliasing import (
     uuid_to_base62,
 )
 from .base import NamespaceProxy
-from ...typing_interfaces import ExtractLike
 
 if TYPE_CHECKING:
     from ..engine import GraphKnowledgeEngine
 
 
 class ExtractSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ExtractLike):
-    def __init__(self, engine: "GraphKnowledgeEngine") -> None:
+    def __init__(self, engine: GraphKnowledgeEngine) -> None:
         super().__init__(engine)
 
-    def _engine_const(self, name: str, default: Any) -> Any:
+    def _engine_const(self, name: str, default: object) -> object:
         mod = importlib.import_module(self._e.__class__.__module__)
         return getattr(mod, name, default)
 
@@ -104,7 +111,9 @@ class ExtractSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ExtractLike):
             + "9) excerpt MUST exactly equal document[start_char:end_char].\n"
         )
 
-    def structured_schema_for_mode(self, mode: ResolvedExtractionSchemaMode):
+    def structured_schema_for_mode(
+        self, mode: ResolvedExtractionSchemaMode
+    ) -> tuple[type[BaseModel], bool]:
         if mode == "full":
             return LLMGraphExtraction["llm"], False
         if mode == "lean":
@@ -139,7 +148,7 @@ class ExtractSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ExtractLike):
         return out
 
     @staticmethod
-    def _coerce_offset_score(raw_score: Any) -> float:
+    def _coerce_offset_score(raw_score: object) -> float:
         if not isinstance(raw_score, (int, float)):
             return 0.0
         score = float(raw_score)
@@ -247,7 +256,7 @@ class ExtractSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ExtractLike):
         self,
         *,
         mode: ResolvedExtractionSchemaMode,
-        parsed: Any,
+        parsed: object,
         content: str,
         offset_mismatch_policy: OffsetMismatchPolicy = "exact_fuzzy",
         offset_repair_scorer: OffsetRepairScorer | None = None,
@@ -272,21 +281,26 @@ class ExtractSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ExtractLike):
             )
         if mode == "full":
             return LLMGraphExtraction.from_normal_llm(
-                parsed,
+                cast(LLMGraphExtraction | dict[str, JsonValue] | BaseModel, parsed),
                 insertion_method="llm",
                 doc_id=doc_alias,
                 content=content,
             )
         if mode == "lean":
             return LLMGraphExtraction.from_llm_in_payload(
-                parsed,
+                cast(LLMGraphExtraction | dict[str, JsonValue] | BaseModel, parsed),
                 insertion_method="llm",
                 doc_id=doc_alias,
                 content=content,
             )
         if mode == "flattened_lean":
             return AssocFlattenedLLMGraphExtraction.to_canonical_from_llm_in_payload(
-                parsed,
+                cast(
+                    AssocFlattenedLLMGraphExtraction
+                    | dict[str, JsonValue]
+                    | BaseModel,
+                    parsed,
+                ),
                 doc_id=doc_alias,
                 content=content,
                 insertion_method="llm",
@@ -308,11 +322,11 @@ class ExtractSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ExtractLike):
         alias_nodes_str: str,
         alias_edges_str: str,
         instruction_for_node_edge_contents_parsing_inclusion: None | str = None,
-        last_iteration_result: dict | None = None,
+        last_iteration_result: dict[str, object] | None = None,
         extraction_schema_mode: ExtractionSchemaMode | None = None,
         offset_mismatch_policy: OffsetMismatchPolicy = "exact_fuzzy",
         offset_repair_scorer: OffsetRepairScorer | None = None,
-    ):
+    ) -> tuple[object | None, LLMGraphExtraction | None, str | None]:
         doc_alias = self._doc_alias()
         resolved_mode = self.resolve_extraction_schema_mode(extraction_schema_mode)
         prompt_rules = self.schema_prompt_rules(resolved_mode)
@@ -321,17 +335,17 @@ class ExtractSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ExtractLike):
                 "Nodes should include at least: Parties, Obligations, Rights, Deliverables, Payment Terms, Termination Conditions, Confidentiality Clauses, Governing Law, Dates, and Penalties.  "
                 "Edges should capture: (Party -> Obligation), (Obligation -> Condition), (Party -> Right), (Obligation -> Deliverable), (Clause -> Governing Law).  "
             )
-        last_parsed_payload: dict[str, object] | None = None
+        last_parsed_payload: JsonObject | None = None
         last_error: str | None = None
         if last_iteration_result and last_iteration_result.get("error"):
             last_error = str(last_iteration_result.get("error"))
             last_parsed = last_iteration_result.get("parsed")
             if isinstance(last_parsed, BaseModel):
                 last_parsed_payload = cast(
-                    dict[str, object], last_parsed.model_dump(mode="python")
+                    JsonObject, last_parsed.model_dump(mode="json")
                 )
             elif isinstance(last_parsed, dict):
-                last_parsed_payload = cast(dict[str, object], last_parsed)
+                last_parsed_payload = cast(JsonObject, last_parsed)
 
         result = self._e.llm_tasks.extract_graph(
             ExtractGraphTaskRequest(
@@ -367,7 +381,7 @@ class ExtractSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ExtractLike):
     ) -> LLMGraphExtraction:
         if self._id_strategy() == "base62":
 
-            def r(s: str, *, kind: AliasKind):
+            def r(s: str, *, kind: AliasKind) -> str:
                 if not s:
                     raise ValueError("s cannot be None or Falsy")
                 if s.startswith("N~"):
@@ -387,7 +401,7 @@ class ExtractSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ExtractLike):
         else:
             book = self._e._alias_book(doc_id)
 
-            def r(s: str, *, kind: AliasKind):
+            def r(s: str, *, kind: AliasKind) -> str:
                 if not s:
                     raise ValueError("s cannot be None or Falsy")
                 if kind == "node":
@@ -409,14 +423,17 @@ class ExtractSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ExtractLike):
         return parsed
 
     def aliasify_for_prompt(
-        self, doc_id: str, ctx_nodes: list[dict], ctx_edges: list[dict]
-    ):
+        self,
+        doc_id: str,
+        ctx_nodes: list[JsonObject],
+        ctx_edges: list[JsonObject],
+    ) -> tuple[list[JsonObject], list[JsonObject], str, str]:
         if self._id_strategy() == "base62":
             aliased_nodes = []
             for n in ctx_nodes:
                 aliased_nodes.append(
                     {
-                        "id": f"N~{uuid_to_base62(n['id'])}",
+                        "id": f"N~{uuid_to_base62(cast(str, n['id']))}",
                         "label": n["label"],
                         "type": n["type"],
                         "summary": n.get("summary", ""),
@@ -426,13 +443,15 @@ class ExtractSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ExtractLike):
             for e in ctx_edges:
                 aliased_edges.append(
                     {
-                        "id": f"E~{uuid_to_base62(e['id'])}",
+                        "id": f"E~{uuid_to_base62(cast(str, e['id']))}",
                         "relation": e["relation"],
                         "source_ids": [
-                            f"N~{uuid_to_base62(s)}" for s in e.get("source_ids", [])
+                            f"N~{uuid_to_base62(cast(str, s))}"
+                            for s in cast(list[JsonValue], e.get("source_ids", []))
                         ],
                         "target_ids": [
-                            f"N~{uuid_to_base62(t)}" for t in e.get("target_ids", [])
+                            f"N~{uuid_to_base62(cast(str, t))}"
+                            for t in cast(list[JsonValue], e.get("target_ids", []))
                         ],
                     }
                 )
@@ -444,19 +463,19 @@ class ExtractSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ExtractLike):
             )
 
         book = self._e._alias_book(doc_id)
-        node_ids = [n["id"] for n in ctx_nodes]
-        edge_ids = [e["id"] for e in ctx_edges]
+        node_ids = [cast(str, n["id"]) for n in ctx_nodes]
+        edge_ids = [cast(str, e["id"]) for e in ctx_edges]
         new_nodes, new_edges = book.legend_delta(node_ids, edge_ids)
 
-        def a_node(x):
+        def a_node(x: str) -> str:
             return book.alias_for_node(x)
 
-        def a_edge(x):
+        def a_edge(x: str) -> str:
             return book.alias_for_edge(x)
 
         aliased_nodes = [
             {
-                "id": a_node(n["id"]),
+                "id": a_node(cast(str, n["id"])),
                 "label": n["label"],
                 "type": n["type"],
                 "summary": n.get("summary", ""),
@@ -465,10 +484,16 @@ class ExtractSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ExtractLike):
         ]
         aliased_edges = [
             {
-                "id": a_edge(e["id"]),
+                "id": a_edge(cast(str, e["id"])),
                 "relation": e["relation"],
-                "source_ids": [a_node(s) for s in e.get("source_ids", [])],
-                "target_ids": [a_node(t) for t in e.get("target_ids", [])],
+                "source_ids": [
+                    a_node(cast(str, s))
+                    for s in cast(list[JsonValue], e.get("source_ids", []))
+                ],
+                "target_ids": [
+                    a_node(cast(str, t))
+                    for t in cast(list[JsonValue], e.get("target_ids", []))
+                ],
             }
             for e in ctx_edges
         ]
@@ -534,9 +559,13 @@ class ExtractSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ExtractLike):
             ):
                 continue
 
+            origin_start = cast(int, start_char)
+
             exact_matches = self._find_all_exact_occurrences(content, excerpt)
             if policy in {"exact", "exact_fuzzy"} and exact_matches:
-                best_start = min(exact_matches, key=lambda s: (abs(s - start_char), s))
+                best_start = min(
+                    exact_matches, key=lambda s: (abs(s - origin_start), s)
+                )
                 span_row["start_char"] = best_start
                 span_row["end_char"] = best_start + len(excerpt)
                 continue
@@ -546,7 +575,7 @@ class ExtractSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ExtractLike):
                 best_fuzzy = self._find_best_fuzzy_span(
                     content=content,
                     excerpt=excerpt,
-                    origin_start=max(0, start_char),
+                    origin_start=max(0, origin_start),
                     scorer=scorer,
                 )
                 if best_fuzzy is not None:
@@ -576,7 +605,7 @@ class ExtractSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ExtractLike):
             )
         return payload
 
-    def coerce_pages(self, content_or_pages):
+    def coerce_pages(self, content_or_pages: object) -> list[tuple[int, str]]:
         if isinstance(content_or_pages, dict):
             items = sorted(
                 ((int(k), v) for k, v in content_or_pages.items()), key=lambda x: x[0]
@@ -669,36 +698,42 @@ class ExtractSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ExtractLike):
         out: list[Span] = []
         for span in grounding.spans:
             out.append(self.delias_one_span(span, real_doc_id))
-        grounding_type: Type = type(grounding)
+        grounding_type: type = type(grounding)
         return grounding_type.model_validate({"spans": out})
 
     def dealias_span(
         self,
-        mentions: List[Grounding] | None,
+        mentions: list[Grounding] | None,
         real_doc_id: str,
-    ):
+    ) -> list[Grounding]:
         if not mentions or len(mentions) == 0:
             raise ValueError("No reference to dealias")
         return [self.dealias_one_grounding(r, real_doc_id) for r in mentions]
 
     def fetch_document_text(self, document_id: str) -> str:
-        got = run_awaitable_blocking(
+        got = cast(
+            Mapping[str, object],
+            run_awaitable_blocking(
             self._e.backend.document_get(ids=[document_id], include=["documents"])
+            ),
         )
         if got and got.get("documents"):
             docs = got.get("documents")
-            if docs:
-                return docs[0] or ""
+            if isinstance(docs, list) and docs:
+                return docs[0] if isinstance(docs[0], str) else ""
             raise Exception("document lost")
-        got = run_awaitable_blocking(
-            self._e.backend.document_get(
-                where={"doc_id": document_id}, include=["documents"]
-            )
+        got = cast(
+            Mapping[str, object],
+            run_awaitable_blocking(
+                self._e.backend.document_get(
+                    where={"doc_id": document_id}, include=["documents"]
+                )
+            ),
         )
         if got and got.get("documents"):
             docs = got.get("documents")
-            if docs:
-                return docs[0] or ""
+            if isinstance(docs, list) and docs:
+                return docs[0] if isinstance(docs[0], str) else ""
             raise Exception("document lost")
         return ""
 
@@ -736,17 +771,17 @@ class ExtractSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ExtractLike):
         *,
         content: str,
         doc_type: str,
-        alias_nodes_str="[Empty]",
-        alias_edges_str="[Empty]",
-        with_parsed=True,
+        alias_nodes_str: str = "[Empty]",
+        alias_edges_str: str = "[Empty]",
+        with_parsed: bool = True,
         instruction_for_node_edge_contents_parsing_inclusion: None | str = None,
-        validate=True,
+        validate: bool = True,
         autofix: bool | str = True,
-        last_iteration_result=None,
-        extraction_schema_mode=None,
-        offset_mismatch_policy="exact_fuzzy",
-        offset_repair_scorer=None,
-    ):
+        last_iteration_result: dict[str, object] | None = None,
+        extraction_schema_mode: ExtractionSchemaMode | None = None,
+        offset_mismatch_policy: OffsetMismatchPolicy = "exact_fuzzy",
+        offset_repair_scorer: OffsetRepairScorer | None = None,
+    ) -> dict[str, object]:
         """Pure: run LLM + parse + alias resolution. No writes."""
         # Keep compatibility seam: tests may monkeypatch engine._extract_graph_with_llm_aliases.
         raw, parsed, error = self._e._extract_graph_with_llm_aliases(
@@ -792,9 +827,11 @@ class ExtractSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ExtractLike):
                 embeddings=None,
                 source_map=None,
             )
-            pre_parse_nodes_or_edges: list[Node | Edge] = parsed.nodes + parsed.edges
+            pre_parse_nodes_or_edges: list[LLMNode | LLMEdge] = (
+                parsed.nodes + parsed.edges
+            )
             for i, node_or_edge in enumerate(parsed_copy.nodes + parsed_copy.edges):
-                node_or_edge: Node | Edge
+                node_or_edge: LLMNode | LLMEdge
                 for g in node_or_edge.mentions:
                     for sp in g.spans:
                         result = span_validator.validate_span(doc=dummy_doc, span=sp)
@@ -815,7 +852,7 @@ class ExtractSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ExtractLike):
                                         "string method options not iplemented"
                                     )
                             if result["correctness"] is False:
-                                pre_parsed_node_or_edge: Node | Edge = (
+                                pre_parsed_node_or_edge: LLMNode | LLMEdge = (
                                     pre_parse_nodes_or_edges[i]
                                 )
                                 validation_error_group.append(
@@ -830,5 +867,9 @@ class ExtractSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ExtractLike):
             }
         return {"raw": raw, "error": validation_error_group or None}
 
-    def cached_extract_graph_with_llm(self, *args, **kwargs):
-        return self._e._cached_extract_graph_with_llm(*args, **kwargs)
+    def cached_extract_graph_with_llm(
+        self, *args: object, **kwargs: object
+    ) -> object:
+        return cast(Callable[..., object], self._e._cached_extract_graph_with_llm)(
+            *args, **kwargs
+        )

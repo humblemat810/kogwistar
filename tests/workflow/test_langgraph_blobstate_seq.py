@@ -1,6 +1,6 @@
 
 from dataclasses import dataclass
-from typing import Any, Dict, List
+from typing import Any
 
 import pytest
 
@@ -24,7 +24,7 @@ class FakeNode:
     op: str
     terminal: bool
     fanout: bool
-    metadata: Dict[str, Any] | None = None
+    metadata: dict[str, Any] | None = None
 
     def safe_get_id(self):
         return self.id
@@ -35,18 +35,18 @@ class FakeEdge:
     id: str
     label: str
     predicate: str | None
-    source_ids: List[str]
-    target_ids: List[str]
+    source_ids: list[str]
+    target_ids: list[str]
     multiplicity: str
     is_default: bool
-    metadata: Dict[str, Any] | None = None
+    metadata: dict[str, Any] | None = None
 
     def safe_get_id(self):
         return self.id
 
 
 class FakeWorkflowEngine:
-    def __init__(self, nodes: List[FakeNode], edges: List[FakeEdge]) -> None:
+    def __init__(self, nodes: list[FakeNode], edges: list[FakeEdge]) -> None:
         self._nodes = nodes
         self._edges = edges
 
@@ -116,13 +116,13 @@ def _e(
 
 
 class Resolver:
-    def __init__(self, fns: Dict[str, Any]):
+    def __init__(self, fns: dict[str, Any]):
         self._fns = dict(fns)
 
     def resolve(self, op: str):
         return self._fns[op]
 
-    def describe_state(self) -> Dict[str, str]:
+    def describe_state(self) -> dict[str, str]:
         # only static keys known; everything else will default to overwrite
         return {"log": "a"}
 

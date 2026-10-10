@@ -9,7 +9,6 @@ from kogwistar.runtime import contract as workflow_contract
 from kogwistar.runtime import design as workflow_design
 from kogwistar.runtime.runtime import _compute_may_reach_join_bitsets
 
-
 pytestmark = [pytest.mark.ci, pytest.mark.core]
 
 
@@ -102,7 +101,7 @@ def test_native_invalid_payload_has_stable_machine_code(_native_extension) -> No
         _native_extension.workflow_may_reach_join(
             json.dumps({"node_ids": ["n"], "edges": "bad", "join_ids": []})
         )
-    assert getattr(raised.value, "code") == "KOGWISTAR_CONTRACT_WORKFLOW_TOPOLOGY_EDGES_TYPE"
+    assert raised.value.code == "KOGWISTAR_CONTRACT_WORKFLOW_TOPOLOGY_EDGES_TYPE"
 
 
 @pytest.mark.parametrize("mode", ["python", "shadow", "rust"])

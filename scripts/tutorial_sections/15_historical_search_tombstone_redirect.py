@@ -10,10 +10,6 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from kogwistar.conversation.service import ConversationService
-from kogwistar.engine_core.engine import GraphKnowledgeEngine
-from kogwistar.engine_core.models import Node
-
 from _helpers import (
     LexicalHashEmbeddingFunction,
     banner,
@@ -21,6 +17,10 @@ from _helpers import (
     show,
     tutorial_grounding,
 )
+
+from kogwistar.conversation.service import ConversationService
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.models import Node
 
 
 def _claim_node(

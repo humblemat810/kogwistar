@@ -1,20 +1,20 @@
 from __future__ import annotations
 
 import abc
-from dataclasses import dataclass, field
 import json
 import logging
 import multiprocessing
 import subprocess
 import threading
 import uuid
-from typing import Any, Dict, Optional
+from dataclasses import dataclass, field
+from typing import Any, cast
 
 from kogwistar.runtime.models import (
-    StepRunResult,
-    RunSuccess,
     RunFailure,
+    RunSuccess,
     RunSuspended,
+    StepRunResult,
 )
 
 logger = logging.getLogger("workflow.sandbox")
@@ -23,24 +23,24 @@ logger = logging.getLogger("workflow.sandbox")
 @dataclass(frozen=True, slots=True)
 class SandboxRequest:
     code: str
-    state: Optional[Dict[str, Any]] = None
-    context: Dict[str, Any] = field(default_factory=dict)
+    state: dict[str, Any] | None = None
+    context: dict[str, Any] = field(default_factory=dict)
 
 
-def _coerce_step_result(payload: Any) -> StepRunResult:
+def _coerce_step_result(payload: object) -> StepRunResult:
     if isinstance(payload, (RunSuccess, RunFailure, RunSuspended)):
         return payload
     if isinstance(payload, dict):
         # Support legacy sandbox payloads that omit nullable result fields.
-        payload = dict(payload)
-        payload.setdefault("conversation_node_id", None)
-        payload.setdefault("state_update", [])
-        status = payload.get("status")
+        payload_dict = cast(dict[str, Any], dict(payload))
+        payload_dict.setdefault("conversation_node_id", None)
+        payload_dict.setdefault("state_update", [])
+        status = payload_dict.get("status")
         if status == "failure":
-            return RunFailure(**payload)
+            return RunFailure(**payload_dict)
         if status == "suspended":
-            return RunSuspended(**payload)
-        return RunSuccess(**payload)
+            return RunSuspended(**payload_dict)
+        return RunSuccess(**payload_dict)
     return RunFailure(
         conversation_node_id=None,
         state_update=[],
@@ -51,7 +51,7 @@ def _coerce_step_result(payload: Any) -> StepRunResult:
 class Sandbox(abc.ABC):
     @abc.abstractmethod
     def run(
-        self, code: str, state: Dict[str, Any], context: Dict[str, Any]
+        self, code: str, state: dict[str, Any], context: dict[str, Any]
     ) -> StepRunResult:
         """Execute code in the sandbox."""
         pass
@@ -65,10 +65,10 @@ class Sandbox(abc.ABC):
 
 class SimplePythonSandbox(Sandbox):
     """A local process-based sandbox using restricted globals."""
-    def __init__(self, timeout=30):
+    def __init__(self, timeout: float = 30) -> None:
         self.timeout = timeout
     def run(
-        self, code: str, state: Dict[str, Any], context: Dict[str, Any]
+        self, code: str, state: dict[str, Any], context: dict[str, Any]
     ) -> StepRunResult:
         # We use a Queue to get the result back from the child process
         result_queue: multiprocessing.Queue = multiprocessing.Queue()
@@ -117,10 +117,10 @@ class SimplePythonSandbox(Sandbox):
     def _worker(
         self,
         code: str,
-        state: Dict[str, Any],
-        context: Dict[str, Any],
+        state: dict[str, Any],
+        context: dict[str, Any],
         queue: multiprocessing.Queue,
-    ):
+    ) -> None:
         try:
             # Restricted globals
             safe_globals = {
@@ -263,7 +263,7 @@ class DockerPythonSandbox(Sandbox):
         )
 
     def _run_subprocess(
-        self, args: list[str], *, payload_json: Optional[str] = None
+        self, args: list[str], *, payload_json: str | None = None
     ) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             args,
@@ -288,7 +288,7 @@ class DockerPythonSandbox(Sandbox):
         return []
 
     def _remove_container(
-        self, name: Optional[str], *, run_id: Optional[str] = None
+        self, name: str | None, *, run_id: str | None = None
     ) -> None:
         if not name:
             return
@@ -344,8 +344,8 @@ class DockerPythonSandbox(Sandbox):
         cmd: list[str],
         *,
         payload_json: str,
-        container_name: Optional[str] = None,
-        run_id: Optional[str] = None,
+        container_name: str | None = None,
+        run_id: str | None = None,
     ) -> StepRunResult:
         try:
             proc = self._run_subprocess(cmd, payload_json=payload_json)
@@ -384,15 +384,15 @@ class DockerPythonSandbox(Sandbox):
         return _coerce_step_result(payload)
 
     def run(
-        self, code: str, state: Dict[str, Any], context: Dict[str, Any]
+        self, code: str, state: dict[str, Any], context: dict[str, Any]
     ) -> StepRunResult:
         payload_json = json.dumps({"code": code, "state": state, "context": context})
         # sandbox specific code to run, default it is a code that take a json input and do something with it
         # the state design to have some code (not used unless changed runner script) to run eval on (this is why unsafe!)
         runner = self._runner_code() 
         
-        container_name: Optional[str] = None
-        run_id: Optional[str] = None
+        container_name: str | None = None
+        run_id: str | None = None
 
         try:
             if self.mode == "per_run":
@@ -461,12 +461,12 @@ class DockerPythonSandbox(Sandbox):
 
 
 class AzureFunctionSandbox(Sandbox):
-    def __init__(self, endpoint: str, key: Optional[str] = None):
+    def __init__(self, endpoint: str, key: str | None = None) -> None:
         self.endpoint = endpoint
         self.key = key
 
     def run(
-        self, code: str, state: Dict[str, Any], context: Dict[str, Any]
+        self, code: str, state: dict[str, Any], context: dict[str, Any]
     ) -> StepRunResult:
         import requests
 
@@ -488,14 +488,14 @@ class AzureFunctionSandbox(Sandbox):
 
 
 class LambdaSandbox(Sandbox):
-    def __init__(self, function_name: str, region_name: Optional[str] = None):
+    def __init__(self, function_name: str, region_name: str | None = None) -> None:
         self.function_name = function_name
         self.region_name = region_name
 
     def run(
-        self, code: str, state: Dict[str, Any], context: Dict[str, Any]
+        self, code: str, state: dict[str, Any], context: dict[str, Any]
     ) -> StepRunResult:
-        import boto3
+        import boto3  # pyright: ignore[reportMissingImports]
 
         client = boto3.client("lambda", region_name=self.region_name)
         payload = json.dumps({"code": code, "state": state, "context": context})
@@ -512,11 +512,11 @@ class LambdaSandbox(Sandbox):
 
 
 class CloudFunctionSandbox(Sandbox):
-    def __init__(self, endpoint: str):
+    def __init__(self, endpoint: str) -> None:
         self.endpoint = endpoint
 
     def run(
-        self, code: str, state: Dict[str, Any], context: Dict[str, Any]
+        self, code: str, state: dict[str, Any], context: dict[str, Any]
     ) -> StepRunResult:
         import google.auth.transport.requests
         import google.oauth2.id_token
@@ -549,7 +549,7 @@ class ClientSideSandbox(Sandbox):
     """
 
     def run(
-        self, code: str, state: Dict[str, Any], context: Dict[str, Any]
+        self, code: str, state: dict[str, Any], context: dict[str, Any]
     ) -> StepRunResult:
         return RunSuspended(
             conversation_node_id=None,
@@ -565,7 +565,7 @@ class ClientSideSandbox(Sandbox):
 
 class SandboxFactory:
     @staticmethod
-    def create(sandbox_type: str, config: Dict[str, Any]) -> Sandbox:
+    def create(sandbox_type: str, config: dict[str, Any]) -> Sandbox:
         if sandbox_type == "local":
             return SimplePythonSandbox()
         elif sandbox_type in {"docker", "container"}:

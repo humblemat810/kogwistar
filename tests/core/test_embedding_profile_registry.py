@@ -169,6 +169,7 @@ def test_chroma_persistent_profile_reopen_rejects_model_change(tmp_path: Path) -
 def test_chroma_nonempty_legacy_store_is_rejected_before_write(tmp_path: Path) -> None:
     pytest.importorskip("chromadb")
     import chromadb
+
     from kogwistar.engine_core.engine import GraphKnowledgeEngine
 
     client = chromadb.PersistentClient(path=str(tmp_path))
@@ -204,6 +205,7 @@ def test_chroma_directories_have_independent_profile_bindings(tmp_path: Path) ->
 def test_copied_chroma_bundle_keeps_profile_scope(tmp_path: Path) -> None:
     pytest.importorskip("chromadb")
     import shutil
+
     from kogwistar.engine_core.engine import GraphKnowledgeEngine
 
     source = tmp_path / "source"

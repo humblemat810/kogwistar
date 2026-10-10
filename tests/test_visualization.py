@@ -10,11 +10,11 @@ from kogwistar.engine_core.models import (
     Node,
     Span,
 )
-from kogwistar.visualization.basic_visualization import Visualizer
-
-from kogwistar.utils.kge_debug_dump import dump_d3_bundle
 from kogwistar.runtime.models import WorkflowEdge, WorkflowNode
+from kogwistar.utils.kge_debug_dump import dump_d3_bundle
+from kogwistar.visualization.basic_visualization import Visualizer
 from tests._helpers.fake_backend import build_fake_backend
+
 
 @pytest.mark.ci
 def test_pretty_print_graph():

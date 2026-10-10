@@ -9,7 +9,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-
 MARKERS = "ci and not ci_full and not slow and not manual and not llm_real and not requires_ollama"
 
 

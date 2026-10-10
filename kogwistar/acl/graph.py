@@ -1,13 +1,40 @@
 from __future__ import annotations
 
 from collections import OrderedDict
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from threading import RLock
-from typing import Any, Callable, Iterable, Literal, Mapping
+from typing import Literal, Protocol
 
+from ..json_types import JsonValue
 
 ACLMode = Literal["private", "shared", "scope", "group", "public"]
 ACLGrain = Literal["document", "grounding", "span", "node", "edge", "artifact"]
+
+
+class ACLRecordLoader(Protocol):
+    """Load all persisted ACL versions for one concrete target."""
+
+    def __call__(
+        self,
+        *,
+        truth_graph: str,
+        grain: ACLGrain | None,
+        entity_id: str,
+        target_item_id: str | None,
+    ) -> Iterable[ACLRecord]: ...
+
+
+class ACLTargetLoader(Protocol):
+    """Load entity ids that claim ACL over one target item."""
+
+    def __call__(
+        self,
+        *,
+        truth_graph: str,
+        grain: ACLGrain,
+        target_item_id: str,
+    ) -> Iterable[str]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,7 +57,7 @@ class ACLRecord:
     shared_with_groups: tuple[str, ...] = ()
     source_ids: tuple[str, ...] = ()
     derivation_type: str | None = None
-    derivation_audit: Mapping[str, Any] | None = None
+    derivation_audit: Mapping[str, JsonValue] | None = None
     tombstoned: bool = False
     supersedes_version: int | None = None
 
@@ -85,11 +112,8 @@ class ACLGraph:
             tuple[str, ACLGrain, str],
             tuple[str, ...],
         ] = OrderedDict()
-        self._record_loader: Callable[
-            [str, ACLGrain | None, str, str | None],
-            Iterable[ACLRecord],
-        ] | None = None
-        self._target_loader: Callable[[str, ACLGrain, str], Iterable[str]] | None = None
+        self._record_loader: ACLRecordLoader | None = None
+        self._target_loader: ACLTargetLoader | None = None
         self._max_record_cache_size = max(1, int(max_record_cache_size))
         self._max_target_cache_size = max(1, int(max_target_cache_size))
         self.cache_enabled = bool(cache_enabled)
@@ -98,11 +122,8 @@ class ACLGraph:
     def bind_loaders(
         self,
         *,
-        record_loader: Callable[
-            [str, ACLGrain | None, str, str | None],
-            Iterable[ACLRecord],
-        ] | None = None,
-        target_loader: Callable[[str, ACLGrain, str], Iterable[str]] | None = None,
+        record_loader: ACLRecordLoader | None = None,
+        target_loader: ACLTargetLoader | None = None,
     ) -> None:
         """Bind canonical truth loaders for record lookup and reverse target lookup."""
         # record_loader:
@@ -202,7 +223,7 @@ class ACLGraph:
         shared_with_groups: Iterable[str] = (),
         source_ids: Iterable[str] = (),
         derivation_type: str | None = None,
-        derivation_audit: Mapping[str, Any] | None = None,
+        derivation_audit: Mapping[str, JsonValue] | None = None,
         supersedes_version: int | None = None,
         tombstoned: bool = False,
     ) -> ACLRecord:

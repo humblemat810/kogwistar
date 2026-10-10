@@ -100,7 +100,7 @@
         "content",
         "type"
       ],
-      "title": "Document",
+      "title": "DocumentBackendSlice",
       "type": "object"
     },
     "Edge": {
@@ -125,6 +125,44 @@
           "title": "GroundingBackendSlice",
           "type": "object"
         },
+        "JsonScalar": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "JsonValue": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/JsonScalar"
+            },
+            {
+              "items": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "array"
+            },
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            }
+          ]
+        },
         "LegacyLocator": {
           "additionalProperties": false,
           "description": "Read-only compatibility wrapper for historical locator payloads.",
@@ -136,7 +174,9 @@
               "type": "string"
             },
             "payload": {
-              "additionalProperties": true,
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
               "title": "Payload",
               "type": "object"
             }
@@ -673,8 +713,9 @@
           "type": "array"
         },
         "metadata": {
-          "additionalProperties": true,
-          "default": {},
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
           "description": "metadata",
           "title": "Metadata",
           "type": "object"
@@ -833,11 +874,49 @@
         "source_edge_ids",
         "target_edge_ids"
       ],
-      "title": "Edge",
+      "title": "EdgeBackendSlice",
       "type": "object"
     },
     "Grounding": {
       "$defs": {
+        "JsonScalar": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "JsonValue": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/JsonScalar"
+            },
+            {
+              "items": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "array"
+            },
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            }
+          ]
+        },
         "LegacyLocator": {
           "additionalProperties": false,
           "description": "Read-only compatibility wrapper for historical locator payloads.",
@@ -849,7 +928,9 @@
               "type": "string"
             },
             "payload": {
-              "additionalProperties": true,
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
               "title": "Payload",
               "type": "object"
             }
@@ -1319,7 +1400,7 @@
           "type": "array"
         }
       },
-      "title": "Grounding",
+      "title": "GroundingBackendSlice",
       "type": "object"
     },
     "Node": {
@@ -1344,6 +1425,44 @@
           "title": "GroundingBackendSlice",
           "type": "object"
         },
+        "JsonScalar": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "JsonValue": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/JsonScalar"
+            },
+            {
+              "items": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "array"
+            },
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            }
+          ]
+        },
         "LegacyLocator": {
           "additionalProperties": false,
           "description": "Read-only compatibility wrapper for historical locator payloads.",
@@ -1355,7 +1474,9 @@
               "type": "string"
             },
             "payload": {
-              "additionalProperties": true,
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
               "title": "Payload",
               "type": "object"
             }
@@ -1905,8 +2026,9 @@
           "type": "array"
         },
         "metadata": {
-          "additionalProperties": true,
-          "default": {},
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
           "description": "metadata",
           "title": "Metadata",
           "type": "object"
@@ -2009,7 +2131,7 @@
         "summary",
         "mentions"
       ],
-      "title": "Node",
+      "title": "NodeBackendSlice",
       "type": "object"
     },
     "Span": {
@@ -2165,7 +2287,7 @@
         "start_char",
         "end_char"
       ],
-      "title": "Span",
+      "title": "SpanBackendSlice",
       "type": "object"
     },
     "WorkflowEdge": {
@@ -2190,6 +2312,44 @@
           "title": "GroundingBackendSlice",
           "type": "object"
         },
+        "JsonScalar": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "JsonValue": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/JsonScalar"
+            },
+            {
+              "items": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "array"
+            },
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            }
+          ]
+        },
         "LegacyLocator": {
           "additionalProperties": false,
           "description": "Read-only compatibility wrapper for historical locator payloads.",
@@ -2201,7 +2361,9 @@
               "type": "string"
             },
             "payload": {
-              "additionalProperties": true,
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
               "title": "Payload",
               "type": "object"
             }
@@ -2738,7 +2900,9 @@
           "type": "array"
         },
         "metadata": {
-          "additionalProperties": true,
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
           "title": "Metadata",
           "type": "object"
         },
@@ -2894,10 +3058,9 @@
         "target_ids",
         "relation",
         "source_edge_ids",
-        "target_edge_ids",
-        "metadata"
+        "target_edge_ids"
       ],
-      "title": "WorkflowEdge",
+      "title": "WorkflowEdgeBackendSlice",
       "type": "object"
     },
     "WorkflowNode": {
@@ -2922,6 +3085,44 @@
           "title": "GroundingBackendSlice",
           "type": "object"
         },
+        "JsonScalar": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "JsonValue": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/JsonScalar"
+            },
+            {
+              "items": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "array"
+            },
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            }
+          ]
+        },
         "LegacyLocator": {
           "additionalProperties": false,
           "description": "Read-only compatibility wrapper for historical locator payloads.",
@@ -2933,7 +3134,9 @@
               "type": "string"
             },
             "payload": {
-              "additionalProperties": true,
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
               "title": "Payload",
               "type": "object"
             }
@@ -3483,7 +3686,9 @@
           "type": "array"
         },
         "metadata": {
-          "additionalProperties": true,
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
           "title": "Metadata",
           "type": "object"
         },
@@ -3583,10 +3788,9 @@
         "label",
         "type",
         "summary",
-        "mentions",
-        "metadata"
+        "mentions"
       ],
-      "title": "WorkflowNode",
+      "title": "WorkflowNodeBackendSlice",
       "type": "object"
     }
   },
@@ -3716,6 +3920,44 @@
           "title": "Grounding",
           "type": "object"
         },
+        "JsonScalar": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "JsonValue": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/JsonScalar"
+            },
+            {
+              "items": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "array"
+            },
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            }
+          ]
+        },
         "LegacyLocator": {
           "additionalProperties": false,
           "description": "Read-only compatibility wrapper for historical locator payloads.",
@@ -3727,7 +3969,9 @@
               "type": "string"
             },
             "payload": {
-              "additionalProperties": true,
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
               "title": "Payload",
               "type": "object"
             }
@@ -4279,8 +4523,9 @@
           "type": "array"
         },
         "metadata": {
-          "additionalProperties": true,
-          "default": {},
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
           "description": "metadata",
           "title": "Metadata",
           "type": "object"
@@ -4444,6 +4689,44 @@
     },
     "Grounding": {
       "$defs": {
+        "JsonScalar": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "JsonValue": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/JsonScalar"
+            },
+            {
+              "items": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "array"
+            },
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            }
+          ]
+        },
         "LegacyLocator": {
           "additionalProperties": false,
           "description": "Read-only compatibility wrapper for historical locator payloads.",
@@ -4455,7 +4738,9 @@
               "type": "string"
             },
             "payload": {
-              "additionalProperties": true,
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
               "title": "Payload",
               "type": "object"
             }
@@ -4964,6 +5249,44 @@
           "title": "Grounding",
           "type": "object"
         },
+        "JsonScalar": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "JsonValue": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/JsonScalar"
+            },
+            {
+              "items": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "array"
+            },
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            }
+          ]
+        },
         "LegacyLocator": {
           "additionalProperties": false,
           "description": "Read-only compatibility wrapper for historical locator payloads.",
@@ -4975,7 +5298,9 @@
               "type": "string"
             },
             "payload": {
-              "additionalProperties": true,
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
               "title": "Payload",
               "type": "object"
             }
@@ -5540,8 +5865,9 @@
           "type": "array"
         },
         "metadata": {
-          "additionalProperties": true,
-          "default": {},
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
           "description": "metadata",
           "title": "Metadata",
           "type": "object"
@@ -5778,6 +6104,44 @@
           "title": "Grounding",
           "type": "object"
         },
+        "JsonScalar": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "JsonValue": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/JsonScalar"
+            },
+            {
+              "items": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "array"
+            },
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            }
+          ]
+        },
         "LegacyLocator": {
           "additionalProperties": false,
           "description": "Read-only compatibility wrapper for historical locator payloads.",
@@ -5789,7 +6153,9 @@
               "type": "string"
             },
             "payload": {
-              "additionalProperties": true,
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
               "title": "Payload",
               "type": "object"
             }
@@ -6428,7 +6794,9 @@
               "type": "array"
             },
             "metadata": {
-              "additionalProperties": true,
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
               "title": "Metadata",
               "type": "object"
             },
@@ -6584,8 +6952,7 @@
             "target_ids",
             "relation",
             "source_edge_ids",
-            "target_edge_ids",
-            "metadata"
+            "target_edge_ids"
           ],
           "title": "WorkflowEdge",
           "type": "object"
@@ -6784,7 +7151,9 @@
               "type": "array"
             },
             "metadata": {
-              "additionalProperties": true,
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
               "title": "Metadata",
               "type": "object"
             },
@@ -6884,8 +7253,7 @@
             "label",
             "type",
             "summary",
-            "mentions",
-            "metadata"
+            "mentions"
           ],
           "title": "WorkflowNode",
           "type": "object"
@@ -7305,6 +7673,44 @@
           "title": "Grounding",
           "type": "object"
         },
+        "JsonScalar": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "JsonValue": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/JsonScalar"
+            },
+            {
+              "items": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "array"
+            },
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            }
+          ]
+        },
         "LegacyLocator": {
           "additionalProperties": false,
           "description": "Read-only compatibility wrapper for historical locator payloads.",
@@ -7316,7 +7722,9 @@
               "type": "string"
             },
             "payload": {
-              "additionalProperties": true,
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
               "title": "Payload",
               "type": "object"
             }
@@ -8287,7 +8695,9 @@
               "type": "array"
             },
             "metadata": {
-              "additionalProperties": true,
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
               "title": "Metadata",
               "type": "object"
             },
@@ -8443,8 +8853,7 @@
             "target_ids",
             "relation",
             "source_edge_ids",
-            "target_edge_ids",
-            "metadata"
+            "target_edge_ids"
           ],
           "title": "WorkflowEdge",
           "type": "object"
@@ -8643,7 +9052,9 @@
               "type": "array"
             },
             "metadata": {
-              "additionalProperties": true,
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
               "title": "Metadata",
               "type": "object"
             },
@@ -8743,8 +9154,7 @@
             "label",
             "type",
             "summary",
-            "mentions",
-            "metadata"
+            "mentions"
           ],
           "title": "WorkflowNode",
           "type": "object"
@@ -8784,6 +9194,44 @@
           "title": "Grounding",
           "type": "object"
         },
+        "JsonScalar": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "JsonValue": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/JsonScalar"
+            },
+            {
+              "items": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "array"
+            },
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            }
+          ]
+        },
         "LegacyLocator": {
           "additionalProperties": false,
           "description": "Read-only compatibility wrapper for historical locator payloads.",
@@ -8795,7 +9243,9 @@
               "type": "string"
             },
             "payload": {
-              "additionalProperties": true,
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
               "title": "Payload",
               "type": "object"
             }
@@ -9347,7 +9797,9 @@
           "type": "array"
         },
         "metadata": {
-          "additionalProperties": true,
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
           "title": "Metadata",
           "type": "object"
         },
@@ -9503,8 +9955,7 @@
         "target_ids",
         "relation",
         "source_edge_ids",
-        "target_edge_ids",
-        "metadata"
+        "target_edge_ids"
       ],
       "title": "WorkflowEdge",
       "type": "object"
@@ -9531,6 +9982,44 @@
           "title": "Grounding",
           "type": "object"
         },
+        "JsonScalar": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "JsonValue": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/JsonScalar"
+            },
+            {
+              "items": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "array"
+            },
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            }
+          ]
+        },
         "LegacyLocator": {
           "additionalProperties": false,
           "description": "Read-only compatibility wrapper for historical locator payloads.",
@@ -9542,7 +10031,9 @@
               "type": "string"
             },
             "payload": {
-              "additionalProperties": true,
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
               "title": "Payload",
               "type": "object"
             }
@@ -10107,7 +10598,9 @@
           "type": "array"
         },
         "metadata": {
-          "additionalProperties": true,
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
           "title": "Metadata",
           "type": "object"
         },
@@ -10207,8 +10700,7 @@
         "label",
         "type",
         "summary",
-        "mentions",
-        "metadata"
+        "mentions"
       ],
       "title": "WorkflowNode",
       "type": "object"
@@ -10266,7 +10758,7 @@
         "content",
         "type"
       ],
-      "title": "Document",
+      "title": "DocumentDtoSlice",
       "type": "object"
     },
     "Edge": {
@@ -10291,6 +10783,44 @@
           "title": "GroundingDtoSlice",
           "type": "object"
         },
+        "JsonScalar": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "JsonValue": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/JsonScalar"
+            },
+            {
+              "items": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "array"
+            },
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            }
+          ]
+        },
         "LegacyLocator": {
           "additionalProperties": false,
           "description": "Read-only compatibility wrapper for historical locator payloads.",
@@ -10302,7 +10832,9 @@
               "type": "string"
             },
             "payload": {
-              "additionalProperties": true,
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
               "title": "Payload",
               "type": "object"
             }
@@ -10763,8 +11295,9 @@
           "type": "array"
         },
         "metadata": {
-          "additionalProperties": true,
-          "default": {},
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
           "description": "metadata",
           "title": "Metadata",
           "type": "object"
@@ -10923,11 +11456,49 @@
         "source_edge_ids",
         "target_edge_ids"
       ],
-      "title": "Edge",
+      "title": "EdgeDtoSlice",
       "type": "object"
     },
     "Grounding": {
       "$defs": {
+        "JsonScalar": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "JsonValue": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/JsonScalar"
+            },
+            {
+              "items": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "array"
+            },
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            }
+          ]
+        },
         "LegacyLocator": {
           "additionalProperties": false,
           "description": "Read-only compatibility wrapper for historical locator payloads.",
@@ -10939,7 +11510,9 @@
               "type": "string"
             },
             "payload": {
-              "additionalProperties": true,
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
               "title": "Payload",
               "type": "object"
             }
@@ -11333,7 +11906,7 @@
           "type": "array"
         }
       },
-      "title": "Grounding",
+      "title": "GroundingDtoSlice",
       "type": "object"
     },
     "Node": {
@@ -11358,6 +11931,44 @@
           "title": "GroundingDtoSlice",
           "type": "object"
         },
+        "JsonScalar": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "JsonValue": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/JsonScalar"
+            },
+            {
+              "items": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "array"
+            },
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            }
+          ]
+        },
         "LegacyLocator": {
           "additionalProperties": false,
           "description": "Read-only compatibility wrapper for historical locator payloads.",
@@ -11369,7 +11980,9 @@
               "type": "string"
             },
             "payload": {
-              "additionalProperties": true,
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
               "title": "Payload",
               "type": "object"
             }
@@ -11843,8 +12456,9 @@
           "type": "array"
         },
         "metadata": {
-          "additionalProperties": true,
-          "default": {},
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
           "description": "metadata",
           "title": "Metadata",
           "type": "object"
@@ -11947,7 +12561,7 @@
         "summary",
         "mentions"
       ],
-      "title": "Node",
+      "title": "NodeDtoSlice",
       "type": "object"
     },
     "Span": {
@@ -12025,7 +12639,7 @@
         "start_char",
         "end_char"
       ],
-      "title": "Span",
+      "title": "SpanDtoSlice",
       "type": "object"
     },
     "WorkflowEdge": {
@@ -12050,6 +12664,44 @@
           "title": "GroundingDtoSlice",
           "type": "object"
         },
+        "JsonScalar": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "JsonValue": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/JsonScalar"
+            },
+            {
+              "items": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "array"
+            },
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            }
+          ]
+        },
         "LegacyLocator": {
           "additionalProperties": false,
           "description": "Read-only compatibility wrapper for historical locator payloads.",
@@ -12061,7 +12713,9 @@
               "type": "string"
             },
             "payload": {
-              "additionalProperties": true,
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
               "title": "Payload",
               "type": "object"
             }
@@ -12522,7 +13176,9 @@
           "type": "array"
         },
         "metadata": {
-          "additionalProperties": true,
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
           "title": "Metadata",
           "type": "object"
         },
@@ -12678,10 +13334,9 @@
         "target_ids",
         "relation",
         "source_edge_ids",
-        "target_edge_ids",
-        "metadata"
+        "target_edge_ids"
       ],
-      "title": "WorkflowEdge",
+      "title": "WorkflowEdgeDtoSlice",
       "type": "object"
     },
     "WorkflowNode": {
@@ -12706,6 +13361,44 @@
           "title": "GroundingDtoSlice",
           "type": "object"
         },
+        "JsonScalar": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "JsonValue": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/JsonScalar"
+            },
+            {
+              "items": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "array"
+            },
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            }
+          ]
+        },
         "LegacyLocator": {
           "additionalProperties": false,
           "description": "Read-only compatibility wrapper for historical locator payloads.",
@@ -12717,7 +13410,9 @@
               "type": "string"
             },
             "payload": {
-              "additionalProperties": true,
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
               "title": "Payload",
               "type": "object"
             }
@@ -13191,7 +13886,9 @@
           "type": "array"
         },
         "metadata": {
-          "additionalProperties": true,
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
           "title": "Metadata",
           "type": "object"
         },
@@ -13291,17 +13988,16 @@
         "label",
         "type",
         "summary",
-        "mentions",
-        "metadata"
+        "mentions"
       ],
-      "title": "WorkflowNode",
+      "title": "WorkflowNodeDtoSlice",
       "type": "object"
     }
   },
   "frontend": {
     "Document": {
       "properties": {},
-      "title": "Document",
+      "title": "DocumentFrontendSliceEmpty",
       "type": "object"
     },
     "Edge": {
@@ -13326,6 +14022,44 @@
           "title": "GroundingFrontendSlice",
           "type": "object"
         },
+        "JsonScalar": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "JsonValue": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/JsonScalar"
+            },
+            {
+              "items": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "array"
+            },
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            }
+          ]
+        },
         "LegacyLocator": {
           "additionalProperties": false,
           "description": "Read-only compatibility wrapper for historical locator payloads.",
@@ -13337,7 +14071,9 @@
               "type": "string"
             },
             "payload": {
-              "additionalProperties": true,
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
               "title": "Payload",
               "type": "object"
             }
@@ -13798,8 +14534,9 @@
           "type": "array"
         },
         "metadata": {
-          "additionalProperties": true,
-          "default": {},
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
           "description": "metadata",
           "title": "Metadata",
           "type": "object"
@@ -13958,11 +14695,49 @@
         "source_edge_ids",
         "target_edge_ids"
       ],
-      "title": "Edge",
+      "title": "EdgeFrontendSlice",
       "type": "object"
     },
     "Grounding": {
       "$defs": {
+        "JsonScalar": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "JsonValue": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/JsonScalar"
+            },
+            {
+              "items": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "array"
+            },
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            }
+          ]
+        },
         "LegacyLocator": {
           "additionalProperties": false,
           "description": "Read-only compatibility wrapper for historical locator payloads.",
@@ -13974,7 +14749,9 @@
               "type": "string"
             },
             "payload": {
-              "additionalProperties": true,
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
               "title": "Payload",
               "type": "object"
             }
@@ -14368,7 +15145,7 @@
           "type": "array"
         }
       },
-      "title": "Grounding",
+      "title": "GroundingFrontendSlice",
       "type": "object"
     },
     "Node": {
@@ -14393,6 +15170,44 @@
           "title": "GroundingFrontendSlice",
           "type": "object"
         },
+        "JsonScalar": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "JsonValue": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/JsonScalar"
+            },
+            {
+              "items": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "array"
+            },
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            }
+          ]
+        },
         "LegacyLocator": {
           "additionalProperties": false,
           "description": "Read-only compatibility wrapper for historical locator payloads.",
@@ -14404,7 +15219,9 @@
               "type": "string"
             },
             "payload": {
-              "additionalProperties": true,
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
               "title": "Payload",
               "type": "object"
             }
@@ -14878,8 +15695,9 @@
           "type": "array"
         },
         "metadata": {
-          "additionalProperties": true,
-          "default": {},
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
           "description": "metadata",
           "title": "Metadata",
           "type": "object"
@@ -14982,7 +15800,7 @@
         "summary",
         "mentions"
       ],
-      "title": "Node",
+      "title": "NodeFrontendSlice",
       "type": "object"
     },
     "Span": {
@@ -15060,7 +15878,7 @@
         "start_char",
         "end_char"
       ],
-      "title": "Span",
+      "title": "SpanFrontendSlice",
       "type": "object"
     },
     "WorkflowEdge": {
@@ -15085,6 +15903,44 @@
           "title": "GroundingFrontendSlice",
           "type": "object"
         },
+        "JsonScalar": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "JsonValue": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/JsonScalar"
+            },
+            {
+              "items": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "array"
+            },
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            }
+          ]
+        },
         "LegacyLocator": {
           "additionalProperties": false,
           "description": "Read-only compatibility wrapper for historical locator payloads.",
@@ -15096,7 +15952,9 @@
               "type": "string"
             },
             "payload": {
-              "additionalProperties": true,
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
               "title": "Payload",
               "type": "object"
             }
@@ -15557,7 +16415,9 @@
           "type": "array"
         },
         "metadata": {
-          "additionalProperties": true,
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
           "title": "Metadata",
           "type": "object"
         },
@@ -15713,10 +16573,9 @@
         "target_ids",
         "relation",
         "source_edge_ids",
-        "target_edge_ids",
-        "metadata"
+        "target_edge_ids"
       ],
-      "title": "WorkflowEdge",
+      "title": "WorkflowEdgeFrontendSlice",
       "type": "object"
     },
     "WorkflowNode": {
@@ -15741,6 +16600,44 @@
           "title": "GroundingFrontendSlice",
           "type": "object"
         },
+        "JsonScalar": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "JsonValue": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/JsonScalar"
+            },
+            {
+              "items": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "array"
+            },
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            }
+          ]
+        },
         "LegacyLocator": {
           "additionalProperties": false,
           "description": "Read-only compatibility wrapper for historical locator payloads.",
@@ -15752,7 +16649,9 @@
               "type": "string"
             },
             "payload": {
-              "additionalProperties": true,
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
               "title": "Payload",
               "type": "object"
             }
@@ -16226,7 +17125,9 @@
           "type": "array"
         },
         "metadata": {
-          "additionalProperties": true,
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
           "title": "Metadata",
           "type": "object"
         },
@@ -16326,17 +17227,16 @@
         "label",
         "type",
         "summary",
-        "mentions",
-        "metadata"
+        "mentions"
       ],
-      "title": "WorkflowNode",
+      "title": "WorkflowNodeFrontendSlice",
       "type": "object"
     }
   },
   "llm": {
     "Document": {
       "properties": {},
-      "title": "Document",
+      "title": "DocumentLlmSliceEmpty",
       "type": "object"
     },
     "Edge": {
@@ -16460,7 +17360,7 @@
       "required": [
         "mentions"
       ],
-      "title": "Edge",
+      "title": "EdgeLlmSlice",
       "type": "object"
     },
     "Grounding": {
@@ -16566,7 +17466,7 @@
           "type": "array"
         }
       },
-      "title": "Grounding",
+      "title": "GroundingLlmSlice",
       "type": "object"
     },
     "Node": {
@@ -16690,7 +17590,7 @@
       "required": [
         "mentions"
       ],
-      "title": "Node",
+      "title": "NodeLlmSlice",
       "type": "object"
     },
     "Span": {
@@ -16781,7 +17681,7 @@
         "start_char",
         "end_char"
       ],
-      "title": "Span",
+      "title": "SpanLlmSlice",
       "type": "object"
     },
     "WorkflowEdge": {
@@ -16905,7 +17805,7 @@
       "required": [
         "mentions"
       ],
-      "title": "WorkflowEdge",
+      "title": "WorkflowEdgeLlmSlice",
       "type": "object"
     },
     "WorkflowNode": {
@@ -17029,7 +17929,7 @@
       "required": [
         "mentions"
       ],
-      "title": "WorkflowNode",
+      "title": "WorkflowNodeLlmSlice",
       "type": "object"
     }
   },
@@ -17081,7 +17981,7 @@
           "type": "array"
         }
       },
-      "title": "Grounding",
+      "title": "GroundingLlm_inSlice",
       "type": "object"
     },
     "Span": {
@@ -17116,7 +18016,7 @@
         "start_char",
         "end_char"
       ],
-      "title": "Span",
+      "title": "SpanLlm_inSlice",
       "type": "object"
     }
   }

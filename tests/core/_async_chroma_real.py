@@ -1,8 +1,10 @@
 from __future__ import annotations
+
+import asyncio
+
 # '''_async_chroma_real.py'''
 import contextlib
 import dataclasses
-import asyncio
 import os
 import socket
 import subprocess

@@ -15,7 +15,6 @@ meta tables to Postgres (either fully, or via a dual-write/outbox strategy).
 """
 
 from dataclasses import dataclass
-from typing import Tuple
 
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import create_async_engine
@@ -36,7 +35,7 @@ class EnginePostgresConfig(PgVectorConfig):
 
 def build_postgres_backend(
     cfg: EnginePostgresConfig,
-) -> Tuple[PgVectorBackend, PostgresUnitOfWork]:
+) -> tuple[PgVectorBackend, PostgresUnitOfWork]:
     max_workers = 4
     engine = sa.create_engine(
         cfg.dsn,
@@ -66,7 +65,7 @@ def build_postgres_backend(
 
 def build_async_postgres_backend(
     cfg: EnginePostgresConfig,
-) -> Tuple[PgVectorBackend, AsyncPostgresUnitOfWork]:
+) -> tuple[PgVectorBackend, AsyncPostgresUnitOfWork]:
 
     max_workers = 4
     engine = create_async_engine(

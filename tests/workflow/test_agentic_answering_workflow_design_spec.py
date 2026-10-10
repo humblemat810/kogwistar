@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import pytest
 import json
+
+import pytest
 
 from kogwistar.conversation.agentic_answering_design import (
     AGENTIC_ANSWERING_WORKFLOW_ID,

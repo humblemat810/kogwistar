@@ -1,12 +1,19 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Optional, Sequence
+from typing import Any
 
 from kogwistar.conversation.models import ConversationEdge, ConversationNode
 from kogwistar.conversation.service import ConversationService
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
-from kogwistar.engine_core.models import Edge, Grounding, MentionVerification, Node, Span
+from kogwistar.engine_core.models import (
+    Edge,
+    Grounding,
+    MentionVerification,
+    Node,
+    Span,
+)
 
 
 def mk_verification(
@@ -29,16 +36,16 @@ def mk_span(
     doc_id: str,
     full_text: str,
     start_char: int = 0,
-    end_char: Optional[int] = None,
+    end_char: int | None = None,
     page_number: int = 1,
     insertion_method: str = "seed",
     collection_page_url: str = "url",
     document_page_url: str = "url",
     context_before: str = "",
     context_after: str = "",
-    chunk_id: Optional[str] = None,
-    source_cluster_id: Optional[str] = None,
-    verification: Optional[MentionVerification] = None,
+    chunk_id: str | None = None,
+    source_cluster_id: str | None = None,
+    verification: MentionVerification | None = None,
 ) -> Span:
     if end_char is None:
         end_char = len(full_text)
@@ -69,7 +76,7 @@ def add_node_raw(
     node: Node | ConversationNode,
     *,
     embedding_dim: int = 384,
-    embedding: Optional[Sequence[float]] = None,
+    embedding: Sequence[float] | None = None,
 ) -> None:
     doc, meta = engine._node_doc_and_meta(node)
     if embedding is None and getattr(node, "embedding", None) is None:
@@ -90,7 +97,7 @@ def add_edge_raw(
     edge: Edge | ConversationEdge,
     *,
     embedding_dim: int = 384,
-    embedding: Optional[Sequence[float]] = None,
+    embedding: Sequence[float] | None = None,
 ) -> None:
     doc, meta = engine._edge_doc_and_meta(edge)
     if embedding is None and getattr(edge, "embedding", None) is None:

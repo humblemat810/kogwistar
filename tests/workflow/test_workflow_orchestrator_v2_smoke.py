@@ -1,12 +1,12 @@
 import pytest
 
-from kogwistar.conversation.filtering import candiate_filtering_callback
-from kogwistar.conversation.service import ConversationService
-from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.conversation.conversation_orchestrator import (
     ConversationOrchestrator,
 )
+from kogwistar.conversation.filtering import candiate_filtering_callback
 from kogwistar.conversation.models import MetaFromLastSummary
+from kogwistar.conversation.service import ConversationService
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.runtime import MappingStepResolver
 from kogwistar.runtime.models import WorkflowEdge, WorkflowNode
 from tests._helpers.embeddings import build_test_embedding_function
@@ -26,22 +26,21 @@ def test_workflow_runtime_uses_default_resolver(tmp_path):
     assertions minimal and avoids HTML bundle dumping.
     """
 
+    from collections.abc import Callable
+    from typing import ParamSpec, TypeVar, cast
+
+    from kogwistar.conversation.conversation_state_contracts import (
+        ConversationWorkflowState,
+        WorkflowStateModel,
+    )
+    from kogwistar.conversation.resolvers import default_resolver
+    from kogwistar.conversation.tool_runner import ToolRunner
     from kogwistar.engine_core.models import (
-        Span,
         Grounding,
         MentionVerification,
+        Span,
     )
-    from kogwistar.runtime.runtime import WorkflowRuntime
-    from kogwistar.conversation.conversation_state_contracts import (
-        WorkflowStateModel,
-        ConversationWorkflowState,
-    )
-    from kogwistar.runtime.runtime import StepRunResult, State
-    from kogwistar.conversation.resolvers import default_resolver
-
-    from kogwistar.conversation.tool_runner import ToolRunner
-
-    from typing import Callable, TypeVar, ParamSpec, cast
+    from kogwistar.runtime.runtime import State, StepRunResult, WorkflowRuntime
     from kogwistar.utils.cache_backend import Memory
 
     P = ParamSpec("P")
@@ -79,6 +78,7 @@ def test_workflow_runtime_uses_default_resolver(tmp_path):
         persist_directory=str(kg_dir), kg_graph_type="knowledge"
     )
     import os
+
     import numpy as np
 
     mem = Memory(

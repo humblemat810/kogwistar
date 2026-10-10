@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-import importlib
 import hashlib
+import importlib
 import json
-from pathlib import Path
 import re
+from pathlib import Path
 
 import pytest
-
 
 pytestmark = [pytest.mark.ci, pytest.mark.core]
 

@@ -1,15 +1,18 @@
 from __future__ import annotations
+
 import pytest
+
 pytestmark = pytest.mark.ci
 
 import contextlib
 import json
+from collections.abc import Iterator
 from dataclasses import dataclass
-from types import SimpleNamespace
 from pathlib import Path
-from typing import Any, Dict, Iterator, List
+from types import SimpleNamespace
+from typing import Any
 
-
+from kogwistar.conversation.resolvers import default_resolver
 from kogwistar.engine_core.models import Span
 from kogwistar.llm_tasks import (
     AdjudicateBatchTaskResult,
@@ -21,9 +24,7 @@ from kogwistar.llm_tasks import (
     RepairCitationsTaskResult,
     SummarizeContextTaskResult,
 )
-from kogwistar.runtime.models import RunFailure
-from kogwistar.conversation.resolvers import default_resolver
-from kogwistar.runtime.models import RunSuccess
+from kogwistar.runtime.models import RunFailure, RunSuccess
 
 
 @dataclass
@@ -36,16 +37,16 @@ class _FakeStepContext:
       - ctx.state_write (context manager giving mutable state dict)
     """
 
-    state: Dict[str, Any]
+    state: dict[str, Any]
 
     @property
-    def state_view(self) -> Dict[str, Any]:
+    def state_view(self) -> dict[str, Any]:
         return self.state
 
     @property
     def state_write(self):
         @contextlib.contextmanager
-        def _cm() -> Iterator[Dict[str, Any]]:
+        def _cm() -> Iterator[dict[str, Any]]:
             yield self.state
 
         return _cm()
@@ -160,10 +161,10 @@ class _StubConversationEngine:
         self.backend = _StubBackend(last_user_text=last_user_text)
         self.llm_tasks = _noop_task_set()
         self.tool_call_id_factory = lambda *args, **kwargs: "tool-call-id"
-        self.pre_add_node_hooks: List[Any] = []
-        self.pre_add_edge_hooks: List[Any] = []
-        self.pre_add_pure_edge_hooks: List[Any] = []
-        self.allow_missing_doc_id_on_endpoint_rows_hooks: List[Any] = []
+        self.pre_add_node_hooks: list[Any] = []
+        self.pre_add_edge_hooks: list[Any] = []
+        self.pre_add_pure_edge_hooks: list[Any] = []
+        self.allow_missing_doc_id_on_endpoint_rows_hooks: list[Any] = []
 
 
 class _StubAgentConfig:
@@ -182,7 +183,7 @@ class _StubAgent:
         self.config = _StubAgentConfig()
         self.cache_dir = str(Path.cwd() / ".tmp_pytest" / "agentic_answering_ops")
         Path(self.cache_dir).mkdir(parents=True, exist_ok=True)
-        self._project_calls: List[str] = []
+        self._project_calls: list[str] = []
 
     def _ensure_run_anchor(self, *, conversation_id: str, run_id: str) -> str:
         return f"run:{conversation_id}:{run_id}"
@@ -200,7 +201,7 @@ class _StubAgent:
             {"id": "n3", "label": "L3", "summary": "S3", "doc": "D3"},
         ]
 
-    def _select_used_evidence_bm25(self, *, question: str, candidates: List[dict]):
+    def _select_used_evidence_bm25(self, *, question: str, candidates: list[dict]):
         return SimpleNamespace(
             used_node_ids=[candidates[0]["id"], candidates[1]["id"]],
             model_dump=lambda: {
@@ -214,8 +215,8 @@ class _StubAgent:
     def _materialize_evidence_pack(
         agent,
         *,
-        node_ids: List[str],
-        edge_ids: List[str] | None,
+        node_ids: list[str],
+        edge_ids: list[str] | None,
         depth: str,
         max_chars_per_item: int,
         max_total_chars: int,
@@ -305,7 +306,7 @@ class _StubAgent:
 
 def _mk_state(
     *, agent: _StubAgent, conv_engine: _StubConversationEngine
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     return {
         "conversation_id": "c1",
         "user_id": "u1",
@@ -324,7 +325,7 @@ def _mk_state(
     }
 
 
-def _run_op(op: str, state: Dict[str, Any]):
+def _run_op(op: str, state: dict[str, Any]):
     ctx = _FakeStepContext(state)
     fn = default_resolver.resolve(op)
     res = fn(ctx)

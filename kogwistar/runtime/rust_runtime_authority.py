@@ -15,14 +15,20 @@ import tempfile
 import time
 from collections.abc import Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import httpx
 
 from .design import validate_workflow_design
-from .rust_worker import AsyncRustRuntimeWorker, RustRuntimeWorker
+from .rust_worker import (
+    AsyncRustRuntimeWorker,
+    RustRuntimeWorker,
+    RustStepResolver,
+)
 
 if TYPE_CHECKING:
+    from .async_runtime import AsyncWorkflowRuntime
+    from .models import StepRunResult, WorkflowEdge, WorkflowNode
     from .runtime import RunResult, WorkflowRuntime
 
 
@@ -64,7 +70,7 @@ def _json_state(initial_state: Mapping[str, Any]) -> dict[str, Any]:
     return value
 
 
-def _aliases(edge: Any, target: Any, target_id: str) -> list[str]:
+def _aliases(edge: WorkflowEdge, target: WorkflowNode, target_id: str) -> list[str]:
     values = [
         getattr(edge, "label", None),
         target_id,
@@ -80,7 +86,9 @@ def _aliases(edge: Any, target: Any, target_id: str) -> list[str]:
     return aliases
 
 
-def freeze_runtime_plan(runtime: Any, workflow_id: str) -> dict[str, Any]:
+def freeze_runtime_plan(
+    runtime: WorkflowRuntime | AsyncWorkflowRuntime, workflow_id: str
+) -> dict[str, Any]:
     """Freeze the validated Python graph into the Rust worker contract."""
     from .runtime import _compute_may_reach_join_bitsets
 
@@ -147,7 +155,7 @@ class RustRuntimeAuthority:
     def __init__(
         self,
         *,
-        runtime: Any,
+        runtime: WorkflowRuntime,
         base_url: str,
         cache_dir: str | os.PathLike[str] | None,
         client: httpx.Client | None = None,
@@ -178,7 +186,7 @@ class RustRuntimeAuthority:
             base_url=self.base_url,
             worker_id=worker_id,
             journal_path=journal_root / "results.sqlite3",
-            step_resolver=runtime.step_resolver,
+            step_resolver=cast(RustStepResolver, runtime.step_resolver),
             predicate_registry=runtime.predicate_registry,
             dependency_provider=self._dependencies,
             cache_dir=cache_dir,
@@ -196,9 +204,11 @@ class RustRuntimeAuthority:
         if self._owns_client:
             self.client.close()
 
-    def _request_json(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
+    def _request_json(self, method: str, path: str, **kwargs: object) -> dict[str, Any]:
         try:
-            response = self.client.request(method, path, **kwargs)
+            response = self.client.request(
+                method, path, **cast(dict[str, Any], kwargs)
+            )
             response.raise_for_status()
         except httpx.HTTPError as error:
             raise RustRuntimeAuthorityError(str(error)) from error
@@ -266,7 +276,7 @@ class RustRuntimeAuthority:
         *,
         workflow_id: str,
         suspended_node_id: str,
-        client_result: Any,
+        client_result: RunResult | StepRunResult,
         state: Mapping[str, Any],
     ) -> dict[str, Any]:
         from .base_runtime import apply_state_update_inplace
@@ -474,7 +484,7 @@ class RustRuntimeAuthority:
         run_id: str,
         suspended_node_id: str,
         suspended_token_id: str,
-        client_result: Any,
+        client_result: RunResult | StepRunResult,
         workflow_id: str,
         conversation_id: str,
         turn_node_id: str | None,
@@ -578,7 +588,7 @@ class AsyncRustRuntimeAuthority:
     def __init__(
         self,
         *,
-        runtime: Any,
+        runtime: AsyncWorkflowRuntime,
         base_url: str,
         cache_dir: str | os.PathLike[str] | None,
         client: httpx.AsyncClient | None = None,
@@ -609,7 +619,7 @@ class AsyncRustRuntimeAuthority:
             base_url=self.base_url,
             worker_id=worker_id,
             journal_path=journal_root / "async-results.sqlite3",
-            step_resolver=runtime.step_resolver,
+            step_resolver=cast(RustStepResolver, runtime.step_resolver),
             predicate_registry=runtime.predicate_registry,
             dependency_provider=self._dependencies,
             cache_dir=cache_dir,
@@ -628,10 +638,12 @@ class AsyncRustRuntimeAuthority:
             await self.client.aclose()
 
     async def _request_json(
-        self, method: str, path: str, **kwargs: Any
+        self, method: str, path: str, **kwargs: object
     ) -> dict[str, Any]:
         try:
-            response = await self.client.request(method, path, **kwargs)
+            response = await self.client.request(
+                method, path, **cast(dict[str, Any], kwargs)
+            )
             response.raise_for_status()
         except httpx.HTTPError as error:
             raise RustRuntimeAuthorityError(str(error)) from error
@@ -701,7 +713,7 @@ class AsyncRustRuntimeAuthority:
         run_id: str,
         durable_initial: Mapping[str, Any],
         dependencies: Mapping[str, Any],
-    ) -> "RunResult":
+    ) -> RunResult:
         from .runtime import RunResult
 
         deadline = time.monotonic() + float(
@@ -763,7 +775,7 @@ class AsyncRustRuntimeAuthority:
         turn_node_id: str | None,
         initial_state: Mapping[str, Any],
         run_id: str,
-    ) -> "RunResult":
+    ) -> RunResult:
         if initial_state.get("dream_deps"):
             raise RustRuntimeAuthorityError(
                 "dream_deps is not represented by Rust worker contract v1"
@@ -796,7 +808,7 @@ class AsyncRustRuntimeAuthority:
 
 
 async def run_with_rust_authority_async(
-    runtime: Any,
+    runtime: AsyncWorkflowRuntime,
     *,
     workflow_id: str,
     conversation_id: str,
@@ -804,7 +816,7 @@ async def run_with_rust_authority_async(
     initial_state: Mapping[str, Any],
     run_id: str,
     cache_dir: str | os.PathLike[str] | None,
-) -> "RunResult":
+) -> RunResult:
     url = rust_runtime_authority_url()
     if url is None:
         raise RustRuntimeAuthorityError("Rust runtime authority URL is not configured")

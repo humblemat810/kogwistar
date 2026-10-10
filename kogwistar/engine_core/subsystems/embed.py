@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from .base import NamespaceProxy
-from ..async_compat import run_sync_or_awaitable
-from ...utils.embedding_vectors import normalize_embedding_vector
 from ...typing_interfaces import TokenAwareEmbeddingFunction
+from ...utils.embedding_vectors import normalize_embedding_vector
+from ..async_compat import run_sync_or_awaitable
+from .base import NamespaceProxy
 
 if TYPE_CHECKING:
     from ..engine import GraphKnowledgeEngine
@@ -25,7 +25,7 @@ def _required_embedding(value: object) -> list[float]:
 
 
 class EmbedSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
-    def __init__(self, engine: "GraphKnowledgeEngine") -> None:
+    def __init__(self, engine: GraphKnowledgeEngine) -> None:
         super().__init__(engine)
 
     def iterative_defensive_emb(self, emb_text0: str) -> list[float]:

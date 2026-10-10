@@ -5,11 +5,16 @@ import json
 import signal
 import sys
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
     from ..engine_core.engine import GraphKnowledgeEngine
+
+
+BatchApply = Callable[[list[object]], dict[str, BaseException | None]]
+MetaCallback = Callable[..., object] | None
 
 
 @dataclass
@@ -18,7 +23,7 @@ class WorkerTickMetrics:
     done: int = 0
     retried: int = 0
     failed: int = 0
-    avg_job_duration_s: Optional[float] = None
+    avg_job_duration_s: float | None = None
 
 
 class IndexJobWorker:
@@ -40,7 +45,7 @@ class IndexJobWorker:
         batch_size: int = 50,
         lease_seconds: int = 60,
         max_jobs_per_tick: int = 200,
-        namespace: Optional[str] = None,
+        namespace: str | None = None,
     ) -> None:
         self.engine = engine
         self.max_inflight = int(max_inflight)
@@ -112,15 +117,18 @@ class IndexJobWorker:
                 else:
                     ordinary_jobs.append(job)
 
-            work_units: list[tuple[list[object], object | None]] = []
+            batch_fn: BatchApply | None = (
+                cast(BatchApply, batch_apply) if callable(batch_apply) else None
+            )
+            work_units: list[tuple[list[object], BatchApply | None]] = []
             for group in embedding_groups.values():
                 for start in range(0, len(group), max(1, self.batch_size)):
-                    work_units.append((group[start : start + max(1, self.batch_size)], batch_apply))
+                    work_units.append((group[start : start + max(1, self.batch_size)], batch_fn))
             work_units.extend(([job], None) for job in ordinary_jobs)
 
             for unit, batch_fn in work_units:
-                batch_results = None
-                if batch_fn is not None and len(unit) > 1 and callable(batch_fn):
+                batch_results: dict[str, BaseException | None] | None = None
+                if batch_fn is not None and len(unit) > 1:
                     try:
                         batch_results = batch_fn(unit)
                     except Exception as exc:
@@ -153,10 +161,27 @@ class IndexJobWorker:
         return metrics
 
     @staticmethod
-    def _job_value(job: object, name: str):
+    def _job_value(job: object, name: str) -> object:
         if isinstance(job, dict):
             return job.get(name)
         return getattr(job, name, None)
+
+    @staticmethod
+    def _optional_text(value: object) -> str | None:
+        return value if isinstance(value, str) else None
+
+    @staticmethod
+    def _as_int(value: object, default: int) -> int:
+        if isinstance(value, bool):
+            return int(value)
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str):
+            try:
+                return int(value)
+            except ValueError:
+                return default
+        return default
 
     @staticmethod
     def _decode_payload(payload_json: object) -> dict[str, object]:
@@ -174,12 +199,12 @@ class IndexJobWorker:
         self,
         *,
         job: object,
-        batch_results: Optional[dict[str, BaseException | None]],
+        batch_results: dict[str, BaseException | None] | None,
         namespace: str,
         entity_cache: dict[tuple[str, str, str], object],
-        mark_done,
-        bump,
-        mark_failed,
+        mark_done: MetaCallback,
+        bump: MetaCallback,
+        mark_failed: MetaCallback,
         metrics: WorkerTickMetrics,
         durations: list[float],
     ) -> None:
@@ -199,8 +224,8 @@ class IndexJobWorker:
                     self._job_value(job, "max_retries")
                 )
 
-                try_rc = int(retry_count or 0)
-                try_mr = int(max_retries or 10)
+                try_rc = self._as_int(retry_count, 0)
+                try_mr = self._as_int(max_retries, 10)
 
                 try:
                     if batch_results is not None:
@@ -217,7 +242,7 @@ class IndexJobWorker:
                             index_kind=str(index_kind),
                             op=str(op),
                             namespace=namespace,
-                            payload_json=payload_json,
+                            payload_json=self._optional_text(payload_json),
                             validated_entity_cache=entity_cache,
                         )
                     if mark_done is not None and job_id:
@@ -241,8 +266,8 @@ def run_forever(
     *,
     worker: IndexJobWorker,
     tick_interval_s: float = 0.5,
-    stop_flag: Optional[Callable[[], bool]] = None,
-    on_tick: Optional[Callable[[WorkerTickMetrics], None]] = None,
+    stop_flag: Callable[[], bool] | None = None,
+    on_tick: Callable[[WorkerTickMetrics], None] | None = None,
 ) -> None:
     """Runnable loop for a worker process."""
     while True:
@@ -305,7 +330,7 @@ def _main(argv: list[str]) -> int:
 
     stop = {"flag": False}
 
-    def _handle(_signum, _frame):
+    def _handle(_signum: int, _frame: object) -> None:
         stop["flag"] = True
 
     # Cross-platform-ish: SIGTERM works on POSIX; on Windows terminate() is hard-kill, but handler still helps for Ctrl+C.

@@ -1,13 +1,14 @@
-from __future__ import annotations
-
 """Dream-loop sampling and proposal helpers for wisdom maintenance."""
 
-from dataclasses import dataclass, field, replace
-from typing import Any, Callable, Iterable, Mapping, Sequence
+from __future__ import annotations
 
-from kogwistar.id_provider import stable_id
-from kogwistar.engine_core.engine import scoped_namespace
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass, field, replace
+from typing import Any
+
+from kogwistar.engine_core.engine import GraphKnowledgeEngine, scoped_namespace
 from kogwistar.engine_core.models import Edge, Grounding, Node, Span
+from kogwistar.id_provider import stable_id
 from kogwistar.policy import DefaultDreamLoopPolicy
 from kogwistar.wisdom.proposals import ProposalEvaluation, WisdomRevisionProposal
 
@@ -104,7 +105,7 @@ class DreamLoopRunResult:
     workflow_lineage_edge_ids: tuple[str, ...] = ()
 
 
-def _coerce_signal(item: Any) -> DreamLoopSignal:
+def _coerce_signal(item: object) -> DreamLoopSignal:
     if isinstance(item, DreamLoopSignal):
         return item
 
@@ -133,7 +134,10 @@ def _coerce_signal(item: Any) -> DreamLoopSignal:
             metadata=dict(meta),
         )
 
-    metadata = dict(getattr(item, "metadata", {}) or {})
+    metadata: dict[str, Any] = dict(getattr(item, "metadata", {}) or {})
+    completed_value = getattr(item, "completed_at_ms", None)
+    if completed_value is None:
+        completed_value = metadata.get("completed_at_ms")
     return DreamLoopSignal(
         workflow_id=str(
             getattr(item, "workflow_id", None)
@@ -149,18 +153,7 @@ def _coerce_signal(item: Any) -> DreamLoopSignal:
             or metadata.get("wf_op")
             or ""
         ),
-        completed_at_ms=(
-            int(
-                getattr(item, "completed_at_ms", None)
-                if getattr(item, "completed_at_ms", None) is not None
-                else metadata.get("completed_at_ms")
-            )
-            if (
-                getattr(item, "completed_at_ms", None) is not None
-                or metadata.get("completed_at_ms") is not None
-            )
-            else None
-        ),
+        completed_at_ms=int(completed_value) if completed_value is not None else None,
         failure_count=int(getattr(item, "failure_count", None) or metadata.get("failure_count") or 0),
         error_count=int(getattr(item, "error_count", None) or metadata.get("error_count") or 0),
         success_count=int(getattr(item, "success_count", None) or metadata.get("success_count") or 0),
@@ -205,7 +198,7 @@ def _coerce_signal(item: Any) -> DreamLoopSignal:
     )
 
 
-def _merge_signals(signals: Iterable[Any]) -> list[DreamLoopSignal]:
+def _merge_signals(signals: Iterable[object]) -> list[DreamLoopSignal]:
     merged: dict[str, DreamLoopSignal] = {}
     for item in signals:
         signal = _coerce_signal(item)
@@ -653,6 +646,11 @@ def _reasoning_node_from_proposal(proposal: WisdomRevisionProposal) -> Node:
         label=f"reasoning:{proposal.workflow_id}:{proposal.step_op}",
         type="entity",
         doc_id=reasoning_node_id,
+        domain_id=None,
+        canonical_entity_id=None,
+        properties={},
+        embedding=None,
+        level_from_root=None,
         summary="\n".join(proposal.reasoning_trace),
         mentions=_single_dummy_grounding(proposal.workflow_id),
         metadata={
@@ -676,6 +674,11 @@ def _proposal_node_from_proposal(
         label=f"proposal:{proposal.workflow_id}:{proposal.step_op}",
         type="entity",
         doc_id=proposal.proposal_id,
+        domain_id=None,
+        canonical_entity_id=None,
+        properties={},
+        embedding=None,
+        level_from_root=None,
         summary=proposal.summary,
         mentions=_single_dummy_grounding(proposal.workflow_id),
         metadata={
@@ -715,6 +718,11 @@ def _evaluation_node_from_evaluation(
         label=f"{evaluation.edge_kind}:{evaluation.decision}:{proposal.step_op}",
         type="entity",
         doc_id=evaluation_node_id,
+        domain_id=None,
+        canonical_entity_id=None,
+        properties={},
+        embedding=None,
+        level_from_root=None,
         summary=evaluation.rationale,
         mentions=_single_dummy_grounding(proposal.workflow_id),
         metadata={
@@ -753,6 +761,9 @@ def _evaluation_edge_from_evaluation(
         type="relationship",
         summary=evaluation.rationale,
         doc_id=proposal.workflow_id,
+        domain_id=None,
+        canonical_entity_id=None,
+        embedding=None,
         properties={},
         metadata={
             "workspace_id": proposal.metadata.get("workspace_id", "demo"),
@@ -771,7 +782,9 @@ def _evaluation_edge_from_evaluation(
     )
 
 
-def _persist_nodes(engine: Any, namespace: str, nodes: Sequence[Node]) -> list[str]:
+def _persist_nodes(
+    engine: GraphKnowledgeEngine, namespace: str, nodes: Sequence[Node]
+) -> list[str]:
     if not nodes:
         return []
     with scoped_namespace(engine, namespace):
@@ -780,7 +793,9 @@ def _persist_nodes(engine: Any, namespace: str, nodes: Sequence[Node]) -> list[s
     return [str(node.id) for node in nodes]
 
 
-def _persist_edges(engine: Any, namespace: str, edges: Sequence[Edge]) -> list[str]:
+def _persist_edges(
+    engine: GraphKnowledgeEngine, namespace: str, edges: Sequence[Edge]
+) -> list[str]:
     if not edges:
         return []
     with scoped_namespace(engine, namespace):
@@ -789,7 +804,9 @@ def _persist_edges(engine: Any, namespace: str, edges: Sequence[Edge]) -> list[s
     return [str(edge.id) for edge in edges]
 
 
-def _validate_candidate_workflow_design(design: Any, *, fallback_workflow_id: str) -> None:
+def _validate_candidate_workflow_design(
+    design: object, *, fallback_workflow_id: str
+) -> None:
     workflow_id = str(getattr(design, "workflow_id", None) or fallback_workflow_id or "").strip()
     if not workflow_id:
         raise ValueError("synthesized workflow design must have a workflow_id")
@@ -848,7 +865,7 @@ def _workflow_artifact_node(
     created_at_ms: int | None = None,
 ) -> Node:
     node_id = str(stable_id("workflow_artifact", workflow_id))
-    metadata = {
+    metadata: dict[str, Any] = {
         "workspace_id": workspace_id,
         "artifact_kind": "workflow_artifact",
         "entity_type": "workflow_artifact",
@@ -864,6 +881,11 @@ def _workflow_artifact_node(
         label=f"workflow:{workflow_id}",
         type="entity",
         doc_id=node_id,
+        domain_id=None,
+        canonical_entity_id=None,
+        properties={},
+        embedding=None,
+        level_from_root=None,
         summary=f"workflow artifact for {workflow_id}",
         mentions=_single_dummy_grounding(workflow_id),
         metadata=metadata,
@@ -897,6 +919,9 @@ def _workflow_lineage_edge(
         type="relationship",
         summary=f"{from_workflow_id} -> {to_workflow_id} ({revision_status})",
         doc_id=proposal.workflow_id,
+        domain_id=None,
+        canonical_entity_id=None,
+        embedding=None,
         properties={},
         metadata={
             "workspace_id": proposal.metadata.get("workspace_id", "demo"),
@@ -916,7 +941,7 @@ def _workflow_lineage_edge(
 
 
 def _normalize_dream_loop_decision(
-    value: Any,
+    value: object,
     *,
     proposal: WisdomRevisionProposal,
     evidence: DreamLoopEvidence,
@@ -956,17 +981,17 @@ def _normalize_dream_loop_decision(
 
 def run_dream_loop_cycle(
     *,
-    source_engine: Any,
+    source_engine: GraphKnowledgeEngine,
     source_namespace: str,
-    target_engine: Any,
+    target_engine: GraphKnowledgeEngine,
     target_namespace: str,
     source_where: dict[str, Any],
     workflow_id: str,
     created_at_ms: int,
     pending_proposals: Sequence[WisdomRevisionProposal] | None = None,
-    conversation_engine: Any | None = None,
+    conversation_engine: GraphKnowledgeEngine | None = None,
     conversation_namespace: str | None = None,
-    workflow_engine: Any | None = None,
+    workflow_engine: GraphKnowledgeEngine | None = None,
     workflow_namespace: str | None = None,
     policy: DefaultDreamLoopPolicy | None = None,
     budget_remaining: int | None = None,
@@ -1060,6 +1085,8 @@ def run_dream_loop_cycle(
             and not proposal.candidate_workflow_id
         )
         if should_materialize_candidate:
+            if workflow_engine is None or approved_workflow_builder is None:
+                raise RuntimeError("workflow materialization dependencies are missing")
             preview_evaluation = evaluate_wisdom_revision_proposal(
                 proposal,
                 decision=decision.decision,
@@ -1069,7 +1096,10 @@ def run_dream_loop_cycle(
                 lesson_summary=decision.lesson_summary,
                 evidence=evidence,
             )
-            design = approved_workflow_builder(proposal, preview_evaluation)
+            builder = approved_workflow_builder
+            if not callable(builder):
+                raise RuntimeError("workflow builder disappeared during materialization")
+            design = builder(proposal, preview_evaluation)
             _validate_candidate_workflow_design(
                 design,
                 fallback_workflow_id=str(

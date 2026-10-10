@@ -1,8 +1,13 @@
 import pytest
+
 pytestmark = [pytest.mark.ci_full, pytest.mark.runtime]
 import importlib.util
 import subprocess
 from unittest.mock import MagicMock, patch
+
+from kogwistar.runtime.models import RunFailure, RunSuccess
+from kogwistar.runtime.resolvers import MappingStepResolver
+from kogwistar.runtime.runtime import StepContext
 from kogwistar.runtime.sandbox import (
     AzureFunctionSandbox,
     CloudFunctionSandbox,
@@ -12,10 +17,6 @@ from kogwistar.runtime.sandbox import (
     SandboxRequest,
     SimplePythonSandbox,
 )
-from kogwistar.runtime.resolvers import MappingStepResolver
-from kogwistar.runtime.models import RunSuccess, RunFailure
-from kogwistar.runtime.runtime import StepContext
-
 
 HAS_BOTO3 = importlib.util.find_spec("boto3") is not None
 

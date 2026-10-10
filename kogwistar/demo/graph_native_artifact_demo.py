@@ -3,13 +3,15 @@ from __future__ import annotations
 import argparse
 import json
 import warnings
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Mapping, Sequence
+from typing import Any, cast
 
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.models import Grounding, MentionVerification, Node, Span
-from kogwistar.runtime import MappingStepResolver, StepContext, WorkflowRuntime
-from kogwistar.runtime.models import RunSuccess
-
+from kogwistar.json_types import JsonValue
+from kogwistar.runtime import MappingStepResolver, RunResult, StepContext, WorkflowRuntime
+from kogwistar.runtime.models import RunSuccess, StateUpdate
 
 warnings.filterwarnings(
     "ignore",
@@ -23,17 +25,17 @@ warnings.filterwarnings(
 )
 
 
-def _jsonable_copy(value: Any) -> Any:
-    return json.loads(json.dumps(value, default=str))
+def _jsonable_copy(value: object) -> JsonValue:
+    return cast(JsonValue, json.loads(json.dumps(value, default=str)))
 
 
-def _history_event(step: str, **payload: Any) -> dict[str, Any]:
+def _history_event(step: str, **payload: object) -> dict[str, Any]:
     event = {"step": step}
-    event.update(payload)
+    event.update(cast(dict[str, Any], payload))
     return event
 
 
-def _entity_to_dict(entity: Any) -> dict[str, Any]:
+def _entity_to_dict(entity: object) -> dict[str, Any]:
     metadata = dict(getattr(entity, "metadata", {}) or {})
     payload: dict[str, Any] = {
         "id": str(getattr(entity, "id", "")),
@@ -42,16 +44,16 @@ def _entity_to_dict(entity: Any) -> dict[str, Any]:
         "metadata": _jsonable_copy(metadata),
     }
     if hasattr(entity, "source_ids"):
-        payload["source_ids"] = list(getattr(entity, "source_ids") or [])
+        payload["source_ids"] = list(getattr(entity, "source_ids", []) or [])
     if hasattr(entity, "target_ids"):
-        payload["target_ids"] = list(getattr(entity, "target_ids") or [])
+        payload["target_ids"] = list(getattr(entity, "target_ids", []) or [])
     if hasattr(entity, "relation"):
         payload["relation"] = str(getattr(entity, "relation", ""))
     if hasattr(entity, "type"):
         payload["type"] = str(getattr(entity, "type", ""))
     if hasattr(entity, "mentions"):
         mentions = []
-        for grounding in list(getattr(entity, "mentions") or []):
+        for grounding in list(getattr(entity, "mentions", []) or []):
             spans = []
             for span in list(getattr(grounding, "spans", []) or []):
                 spans.append(
@@ -73,7 +75,7 @@ def _entity_to_dict(entity: Any) -> dict[str, Any]:
     return payload
 
 
-def _normalize_text(value: Any) -> str:
+def _normalize_text(value: object) -> str:
     return " ".join(str(value or "").strip().split())
 
 
@@ -218,6 +220,8 @@ def _grounding_for_note(note: Mapping[str, Any], *, insertion_method: str) -> Gr
                 page_number=1,
                 start_char=start_char,
                 end_char=end_char,
+                chunk_id=None,
+                source_cluster_id=None,
                 excerpt=excerpt,
                 context_before=context_before,
                 context_after=context_after,
@@ -352,12 +356,12 @@ class DemoGraphStore:
     """Minimal in-memory store used for the demo workflow graph and traces."""
 
     def __init__(self) -> None:
-        self._nodes: list[Any] = []
-        self._edges: list[Any] = []
+        self._nodes: list[object] = []
+        self._edges: list[object] = []
         self.read = self
         self.write = self
 
-    def add_node(self, node: Any) -> Any:
+    def add_node(self, node: object) -> object:
         node_id = self._entity_id(node)
         for idx, existing in enumerate(self._nodes):
             if self._entity_id(existing) == node_id:
@@ -366,7 +370,7 @@ class DemoGraphStore:
         self._nodes.append(node)
         return node
 
-    def add_edge(self, edge: Any) -> Any:
+    def add_edge(self, edge: object) -> object:
         edge_id = self._entity_id(edge)
         for idx, existing in enumerate(self._edges):
             if self._entity_id(existing) == edge_id:
@@ -376,17 +380,18 @@ class DemoGraphStore:
         return edge
 
     @staticmethod
-    def _metadata(entity: Any) -> dict[str, Any]:
+    def _metadata(entity: object) -> dict[str, Any]:
         metadata = getattr(entity, "metadata", None)
         return metadata if isinstance(metadata, dict) else {}
 
     @staticmethod
-    def _entity_id(entity: Any) -> str:
-        if hasattr(entity, "safe_get_id"):
-            return str(entity.safe_get_id())
+    def _entity_id(entity: object) -> str:
+        safe_get_id = getattr(entity, "safe_get_id", None)
+        if callable(safe_get_id):
+            return str(safe_get_id())
         return str(getattr(entity, "id", ""))
 
-    def _matches(self, entity: Any, where: dict[str, Any] | None) -> bool:
+    def _matches(self, entity: object, where: dict[str, Any] | None) -> bool:
         if where is None:
             return True
         if "$and" in where:
@@ -436,8 +441,8 @@ class DemoGraphStore:
         where: dict[str, Any] | None = None,
         limit: int = 5000,
         ids: Sequence[str] | None = None,
-        **_: Any,
-    ) -> list[Any]:
+        **_: object,
+    ) -> list[object]:
         return self._select(self._nodes, where=where, ids=ids, limit=limit)
 
     def get_edges(
@@ -445,9 +450,19 @@ class DemoGraphStore:
         where: dict[str, Any] | None = None,
         limit: int = 5000,
         ids: Sequence[str] | None = None,
-        **_: Any,
-    ) -> list[Any]:
+        **_: object,
+    ) -> list[object]:
         return self._select(self._edges, where=where, ids=ids, limit=limit)
+
+
+def _state_deps(ctx: StepContext) -> dict[str, Any]:
+    value = ctx.state_view.get("_deps")
+    return dict(value) if isinstance(value, Mapping) else {}
+
+
+def _state_list(ctx: StepContext, key: str) -> list[dict[str, Any]]:
+    value = ctx.state_view.get(key)
+    return [dict(item) for item in value if isinstance(item, Mapping)] if isinstance(value, list) else []
 
 
 def _wf_node(
@@ -552,15 +567,15 @@ def _collect_run_result(
     framework_name: str,
     step_order: list[str],
     transition_map: dict[str, dict[str, str]],
-    run_result: Any,
-    trace_sink: Any,
+    run_result: RunResult,
+    trace_sink: DemoGraphStore,
 ) -> dict[str, Any]:
     clean_state = {
         key: value
         for key, value in run_result.final_state.items()
         if key not in {"_deps", "_rt_join"}
     }
-    final_state = _jsonable_copy(clean_state)
+    final_state = cast(dict[str, Any], _jsonable_copy(clean_state))
 
     step_execs = trace_sink.get_nodes(
         where={
@@ -711,7 +726,7 @@ class GraphArtifactPipelineFramework:
         }
         return transition_map
 
-    def build_resolver(self, agent: "NoteGraphCuratorAgent") -> MappingStepResolver:
+    def build_resolver(self, agent: NoteGraphCuratorAgent) -> MappingStepResolver:
         resolver = MappingStepResolver()
         resolver.set_state_schema(
             {
@@ -721,11 +736,11 @@ class GraphArtifactPipelineFramework:
         )
 
         @resolver.register("ingest")
-        def _ingest(ctx: StepContext):
-            raw_notes = [dict(note) for note in ctx.state_view.get("raw_notes") or []]
-            deps = dict(ctx.state_view.get("_deps") or {})
-            graph_store = deps.get("graph_store")
-            if callable(getattr(graph_store, "add_node", None)):
+        def _ingest(ctx: StepContext) -> RunSuccess:
+            raw_notes = _state_list(ctx, "raw_notes")
+            deps = _state_deps(ctx)
+            graph_store = cast(DemoGraphStore | None, deps.get("graph_store"))
+            if graph_store is not None:
                 for note in raw_notes:
                     graph_store.add_node(
                         _source_document_node(note, workflow_id=self.workflow_id)
@@ -755,8 +770,8 @@ class GraphArtifactPipelineFramework:
             )
 
         @resolver.register("validate")
-        def _validate(ctx: StepContext):
-            notes = list(ctx.state_view.get("ingested_notes") or [])
+        def _validate(ctx: StepContext) -> RunSuccess:
+            notes = _state_list(ctx, "ingested_notes")
             errors: list[dict[str, Any]] = []
             seen_ids: set[str] = set()
             for note in notes:
@@ -776,7 +791,7 @@ class GraphArtifactPipelineFramework:
 
             valid = len(errors) == 0
             event = _history_event("validate", valid=valid, error_count=len(errors))
-            state_update: list[tuple[str, dict[str, Any]]] = [
+            state_update: list[StateUpdate] = [
                 (
                     "u",
                     {
@@ -793,12 +808,12 @@ class GraphArtifactPipelineFramework:
             return RunSuccess(conversation_node_id=None, state_update=state_update)
 
         @resolver.register("normalize")
-        def _normalize(ctx: StepContext):
-            deps = dict(ctx.state_view.get("_deps") or {})
+        def _normalize(ctx: StepContext) -> RunSuccess:
+            deps = _state_deps(ctx)
             infer_topic = deps.get("infer_topic")
             infer_topic_judgment = deps.get("infer_topic_judgment")
-            notes = list(ctx.state_view.get("ingested_notes") or [])
-            graph_store = deps.get("graph_store")
+            notes = _state_list(ctx, "ingested_notes")
+            graph_store = cast(DemoGraphStore | None, deps.get("graph_store"))
             normalized: list[dict[str, Any]] = []
             for note in notes:
                 note_id = str(note.get("id") or "").strip()
@@ -810,7 +825,7 @@ class GraphArtifactPipelineFramework:
                     else _infer_topic(note)
                 )
                 topic_judgment = (
-                    dict(infer_topic_judgment(note, ctx.state_view))
+                    dict(cast(Mapping[str, Any], infer_topic_judgment(note, ctx.state_view)))
                     if callable(infer_topic_judgment)
                     else _topic_judgment(note)
                 )
@@ -825,7 +840,7 @@ class GraphArtifactPipelineFramework:
                         "topic_judgment": topic_judgment,
                     }
                 )
-                if callable(getattr(graph_store, "add_node", None)):
+                if graph_store is not None:
                     graph_store.add_node(
                         _artifact_node_entity(
                             self.workflow_id,
@@ -846,13 +861,12 @@ class GraphArtifactPipelineFramework:
             )
 
         @resolver.register("link")
-        def _link(ctx: StepContext):
-            deps = dict(ctx.state_view.get("_deps") or {})
+        def _link(ctx: StepContext) -> RunSuccess:
+            deps = _state_deps(ctx)
             link_notes = deps.get("link_notes")
-            normalized = list(ctx.state_view.get("normalized_notes") or [])
-            graph_store = deps.get("graph_store")
+            normalized = _state_list(ctx, "normalized_notes")
             edges = (
-                list(link_notes(normalized, ctx.state_view))
+                list(cast(Sequence[Mapping[str, Any]], link_notes(normalized, ctx.state_view)))
                 if callable(link_notes)
                 else []
             )
@@ -867,12 +881,12 @@ class GraphArtifactPipelineFramework:
             )
 
         @resolver.register("commit")
-        def _commit(ctx: StepContext):
-            nodes = list(ctx.state_view.get("normalized_notes") or [])
-            edges = list(ctx.state_view.get("draft_edges") or [])
-            deps = dict(ctx.state_view.get("_deps") or {})
-            graph_store = deps.get("graph_store")
-            if callable(getattr(graph_store, "add_node", None)):
+        def _commit(ctx: StepContext) -> RunSuccess:
+            nodes = _state_list(ctx, "normalized_notes")
+            edges = _state_list(ctx, "draft_edges")
+            deps = _state_deps(ctx)
+            graph_store = cast(DemoGraphStore | None, deps.get("graph_store"))
+            if graph_store is not None:
                 for node in nodes:
                     graph_store.add_node(
                         _artifact_node_entity(
@@ -883,7 +897,7 @@ class GraphArtifactPipelineFramework:
                             status="committed",
                         )
                     )
-            if callable(getattr(graph_store, "add_edge", None)):
+            if graph_store is not None:
                 for edge in edges:
                     source = str(edge.get("source") or "")
                     target = str(edge.get("target") or "")
@@ -928,7 +942,7 @@ class GraphArtifactPipelineFramework:
             )
 
         @resolver.register("end")
-        def _end(ctx: StepContext):
+        def _end(ctx: StepContext) -> RunSuccess:
             final_status = str(ctx.state_view.get("final_status") or "blocked")
             event = _history_event("end", final_status=final_status)
             return RunSuccess(
@@ -943,7 +957,7 @@ class GraphArtifactPipelineFramework:
 
     def build_runtime(
         self,
-        agent: "NoteGraphCuratorAgent",
+        agent: NoteGraphCuratorAgent,
         *,
         graph_store: DemoGraphStore,
         conversation_id: str,
@@ -953,11 +967,11 @@ class GraphArtifactPipelineFramework:
         resolver = self.build_resolver(agent)
 
         runtime = WorkflowRuntime(
-            workflow_engine=graph_store,
-            conversation_engine=graph_store,
+            workflow_engine=cast(GraphKnowledgeEngine, graph_store),
+            conversation_engine=cast(GraphKnowledgeEngine, graph_store),
             step_resolver=resolver,
             predicate_registry={
-                "valid": lambda _e, state, _r: bool(state.get("validation_passed")),
+                "valid": lambda edge, state, result: bool(state.get("validation_passed")),
             },
             checkpoint_every_n_steps=1,
             max_workers=1,
@@ -972,7 +986,7 @@ class GraphArtifactPipelineFramework:
 
     def run(
         self,
-        agent: "NoteGraphCuratorAgent",
+        agent: NoteGraphCuratorAgent,
         *,
         graph_store: DemoGraphStore | None = None,
         conversation_id: str = "demo-conversation",
@@ -1103,15 +1117,17 @@ class NoteGraphCuratorAgent:
 
     def run(
         self,
-        framework: Any | None = None,
+        framework: GraphArtifactPipelineFramework | None = None,
         *,
         graph_store: DemoGraphStore | None = None,
         conversation_id: str = "demo-conversation",
         turn_node_id: str = "demo-turn",
         initial_state: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        framework = framework or self.framework
-        return framework.run(
+        active_framework = self.framework if framework is None else framework
+        if active_framework is None:
+            raise RuntimeError("demo framework is required")
+        return active_framework.run(
             self,
             graph_store=graph_store,
             conversation_id=conversation_id,
@@ -1129,7 +1145,7 @@ def run_graph_native_artifact_demo(
     return agent.run()
 
 
-def _result_json_dict(step_node: Any) -> dict[str, Any]:
+def _result_json_dict(step_node: object) -> dict[str, Any]:
     metadata = dict(getattr(step_node, "metadata", {}) or {})
     raw = metadata.get("result_json")
     if isinstance(raw, dict):

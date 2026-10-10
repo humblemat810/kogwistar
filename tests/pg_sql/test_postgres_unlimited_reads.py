@@ -9,7 +9,6 @@ sa = pytest.importorskip("sqlalchemy")
 
 from kogwistar.engine_core.postgres_backend import PgVectorBackend
 
-
 pytestmark = [pytest.mark.ci, pytest.mark.regression]
 
 

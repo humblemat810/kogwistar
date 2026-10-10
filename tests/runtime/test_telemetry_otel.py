@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import time
 import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -9,8 +9,7 @@ import pytest
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.runtime.models import RunSuccess, WorkflowInvocationRequest
 from kogwistar.runtime.resolvers import MappingStepResolver
-from kogwistar.runtime.runtime import StepContext
-from kogwistar.runtime.runtime import WorkflowRuntime
+from kogwistar.runtime.runtime import StepContext, WorkflowRuntime
 from kogwistar.runtime.telemetry import EventEmitter, TraceContext
 from kogwistar.runtime.telemetry_otel import (
     OpenTelemetrySink,

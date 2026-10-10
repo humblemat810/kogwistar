@@ -3,14 +3,13 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-from pathlib import Path
 import sqlite3
 import tempfile
+from pathlib import Path
 from typing import Any
 
 from kogwistar.engine_core.engine_postgres_meta import EnginePostgresMetaStore
 from kogwistar.engine_core.engine_sqlite import EngineSQLite
-
 
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = ROOT / "contracts" / "golden" / "database-ddl.json"

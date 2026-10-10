@@ -11,7 +11,6 @@ from kogwistar.interop.crewai import (
     static_semantic_signature,
 )
 
-
 pytestmark = [pytest.mark.ci, pytest.mark.core, pytest.mark.unit]
 
 

@@ -1,4 +1,5 @@
 import pytest
+
 pytestmark = pytest.mark.core
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine

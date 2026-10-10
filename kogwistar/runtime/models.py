@@ -1,7 +1,9 @@
-from typing import ClassVar, Literal, Optional, TypeAlias
+from typing import ClassVar, Literal, TypeAlias
+
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from ..engine_core.models import Edge, Node
+from ..json_types import JsonValue
 
 
 class WorkflowNodeMetadata(BaseModel):
@@ -83,30 +85,31 @@ class WorkflowNode(Node):
     itself to be managed, queried, and verified using the same engine as the knowledge data.
     """
 
-    metadata: dict
+    metadata: dict[str, JsonValue] = Field(default_factory=dict)
     id_kind: ClassVar[str] = "workflow.node"
 
     @field_validator("metadata")
-    def check_metadataWFN(cls, v):
+    def check_metadataWFN(cls, v: dict[str, JsonValue]) -> dict[str, JsonValue]:
         v2 = WorkflowNodeMetadata.model_validate(v).model_dump()
         v.update(v2)
         return v
 
     @property
-    def op(self):
-        return self.metadata.get("wf_op") or "noop"
+    def op(self) -> str:
+        value = self.metadata.get("wf_op")
+        return value if isinstance(value, str) else "noop"
 
     @property
-    def terminal(self):
-        return self.metadata.get("wf_terminal") or False
+    def terminal(self) -> bool:
+        return bool(self.metadata.get("wf_terminal"))
 
     @property
-    def start(self):
-        return self.metadata.get("wf_start") or False
+    def start(self) -> bool:
+        return bool(self.metadata.get("wf_start"))
 
     @property
-    def fanout(self):
-        return self.metadata.get("wf_fanout") or False
+    def fanout(self) -> bool:
+        return bool(self.metadata.get("wf_fanout"))
 
 
 class WorkflowEdge(Edge):
@@ -117,30 +120,36 @@ class WorkflowEdge(Edge):
     predicates, priority, and branching logic.
     """
 
-    metadata: dict
+    metadata: dict[str, JsonValue] = Field(default_factory=dict)
     id_kind: ClassVar[str] = "workflow.edge"
 
     @field_validator("metadata")
-    def check_workflow_edge_metadata(cls, v):
+    def check_workflow_edge_metadata(
+        cls, v: dict[str, JsonValue]
+    ) -> dict[str, JsonValue]:
         v = WorkflowEdgeMetadata.model_validate(v).model_dump()
         return v
 
     @property
-    def predicate(self):
-        return self.metadata.get("wf_predicate")
+    def predicate(self) -> str | None:
+        value = self.metadata.get("wf_predicate")
+        return value if isinstance(value, str) else None
 
     @property
-    def multiplicity(self):
-        return self.metadata.get("wf_multiplicity")
+    def multiplicity(self) -> Literal["one", "many"]:
+        value = self.metadata.get("wf_multiplicity")
+        return value if value in ("one", "many") else "one"
 
     @property
-    def is_default(self):
-        return self.metadata.get("wf_is_default")
+    def is_default(self) -> bool:
+        return bool(self.metadata.get("wf_is_default"))
 
     @property
-    def priority(self):
+    def priority(self) -> int:
         value = self.metadata.get("wf_priority", 100)
-        return int(value if value is not None else 100)
+        if isinstance(value, (bool, int, float, str)):
+            return int(value)
+        return 100
 
 
 class WorkflowDesignArtifact(BaseModel):
@@ -220,17 +229,14 @@ StateUpdate: TypeAlias = (
 
 
 def get_route_next_names(result: object) -> list[str]:
-    try:
-        route_names = getattr(result, "_route_next")
-    except Exception:
-        route_names = None
+    route_names = getattr(result, "_route_next", None)
     if route_names is None:
         route_names = getattr(result, "next_step_names", None)
     return [str(x) for x in (route_names or [])]
 
 
 class RunFailure(BaseModel):
-    conversation_node_id: Optional[str] = None
+    conversation_node_id: str | None = None
     state_update: list[StateUpdate]  # can still update, append an error message
     update: dict[str, object] | None = None
     errors: list[str]
@@ -245,7 +251,7 @@ class RunFailure(BaseModel):
 
 
 class RunSuspended(BaseModel):
-    conversation_node_id: Optional[str] = None
+    conversation_node_id: str | None = None
     state_update: list[StateUpdate] = Field(default_factory=list)
     update: dict[str, object] | None = None
     next_step_names: list[str] = Field(default_factory=list, alias="_route_next")
@@ -428,64 +434,64 @@ class WorkflowRuntimeEdgeMetadata(BaseModel):
 
 
 class WorkflowRunNode(Node):
-    metadata: dict
+    metadata: dict[str, JsonValue] = Field(default_factory=dict)
 
     @field_validator("metadata")
-    def check_metadata(cls, v):
+    def check_metadata(cls, v: dict[str, JsonValue]) -> dict[str, JsonValue]:
         WorkflowRunMetadata.model_validate(v)
         return v
 
 
 class WorkflowStepExecNode(Node):
-    metadata: dict
+    metadata: dict[str, JsonValue] = Field(default_factory=dict)
 
     @field_validator("metadata")
-    def check_metadata(cls, v):
+    def check_metadata(cls, v: dict[str, JsonValue]) -> dict[str, JsonValue]:
         WorkflowStepExecMetadata.model_validate(v)
         return v
 
 
 class WorkflowCheckpointNode(Node):
-    metadata: dict
+    metadata: dict[str, JsonValue] = Field(default_factory=dict)
 
     @field_validator("metadata")
-    def check_metadata(cls, v):
+    def check_metadata(cls, v: dict[str, JsonValue]) -> dict[str, JsonValue]:
         WorkflowCheckpointMetadata.model_validate(v)
         return v
 
 
 class WorkflowCompletedNode(Node):
-    metadata: dict
+    metadata: dict[str, JsonValue] = Field(default_factory=dict)
 
     @field_validator("metadata")
-    def check_metadata(cls, v):
+    def check_metadata(cls, v: dict[str, JsonValue]) -> dict[str, JsonValue]:
         WorkflowCompletedMetadata.model_validate(v)
         return v
 
 
 class WorkflowCancelledNode(Node):
-    metadata: dict
+    metadata: dict[str, JsonValue] = Field(default_factory=dict)
 
     @field_validator("metadata")
-    def check_metadata(cls, v):
+    def check_metadata(cls, v: dict[str, JsonValue]) -> dict[str, JsonValue]:
         WorkflowCancelledMetadata.model_validate(v)
         return v
 
 
 class WorkflowFailedNode(Node):
-    metadata: dict
+    metadata: dict[str, JsonValue] = Field(default_factory=dict)
 
     @field_validator("metadata")
-    def check_metadata(cls, v):
+    def check_metadata(cls, v: dict[str, JsonValue]) -> dict[str, JsonValue]:
         WorkflowFailedMetadata.model_validate(v)
         return v
 
 
 class WorkflowRuntimeEdge(Edge):
-    metadata: dict
+    metadata: dict[str, JsonValue] = Field(default_factory=dict)
     id_kind: ClassVar[str] = "workflow.runtime.edge"
 
     @field_validator("metadata")
-    def check_metadata(cls, v):
+    def check_metadata(cls, v: dict[str, JsonValue]) -> dict[str, JsonValue]:
         WorkflowRuntimeEdgeMetadata.model_validate(v)
         return v

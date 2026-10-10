@@ -4,24 +4,23 @@ from pathlib import Path
 
 import pytest
 
-import kogwistar.engine_core.rust_meta_sqlite as rust_meta_sqlite
+from kogwistar._rust_bridge import RustParityError
 from kogwistar.agent import (
     DurableCatalogStore,
     DurableSkillCatalogMaterializer,
     DurableSkillProjectionStore,
 )
 from kogwistar.agent.skills import parse_skill_text
+from kogwistar.engine_core import rust_meta_sqlite
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.event_envelope import EntityEventEnvelope
+from kogwistar.engine_core.in_memory_backend import InMemoryBackend, _DummyLock
 from kogwistar.engine_core.rust_meta_sqlite import (
     RustEngineSQLite,
     RustSQLiteConnectionUnavailable,
     build_sqlite_meta_store,
 )
-from kogwistar.engine_core.engine import GraphKnowledgeEngine
-from kogwistar.engine_core.event_envelope import EntityEventEnvelope
-from kogwistar._rust_bridge import RustParityError
-from kogwistar.engine_core.in_memory_backend import InMemoryBackend, _DummyLock
 from tests._helpers.graph_builders import build_entity_node
-
 
 pytestmark = [pytest.mark.ci, pytest.mark.core]
 

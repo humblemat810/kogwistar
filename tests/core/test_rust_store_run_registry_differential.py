@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from pathlib import Path
 import sqlite3
 import uuid
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -10,7 +10,6 @@ import pytest
 from kogwistar._rust_bridge import RustParityError, store_postgres, store_sqlite
 from kogwistar.engine_core.engine_postgres_meta import EnginePostgresMetaStore
 from kogwistar.engine_core.engine_sqlite import EngineSQLite
-
 
 pytestmark = [pytest.mark.ci_full, pytest.mark.core]
 

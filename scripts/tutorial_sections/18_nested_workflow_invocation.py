@@ -3,9 +3,9 @@
 # This companion is a golden example for both predesigned and dynamically persisted child workflows.
 
 # %%
-from kogwistar.demo import run_nested_workflow_invocation_demo
-
 from _helpers import banner, reset_data_dir, show
+
+from kogwistar.demo import run_nested_workflow_invocation_demo
 
 data_dir = reset_data_dir("18_nested_workflow_invocation")
 banner("Running a deterministic nested-workflow example with a fixed resettable data directory.")

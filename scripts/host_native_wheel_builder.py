@@ -6,12 +6,12 @@ import argparse
 import hashlib
 import json
 import os
-from pathlib import Path
 import shutil
 import subprocess
 import sys
 import tempfile
 import zipfile
+from pathlib import Path
 
 try:
     from source_fingerprint import candidate_source_fingerprint

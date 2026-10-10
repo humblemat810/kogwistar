@@ -7,37 +7,47 @@ import json
 import queue
 import time
 import uuid
+from collections.abc import Awaitable, Callable, Mapping
 from contextlib import nullcontext
 from typing import (
     TYPE_CHECKING,
     Any,
-    Awaitable,
-    Callable,
     ContextManager,
-    Mapping,
     Protocol,
     TypeAlias,
     cast,
 )
 
-from .models import RunFailure, StepRunResult, WorkflowState
-from .executor import TerminalStatus, WorkflowExecutor
-from .base_runtime import BaseRuntime, apply_state_update_inplace, validate_initial_state
-from .telemetry import TraceContext
 from kogwistar.engine_core.sqlite_context import sqlite_execution_bound
+from kogwistar.json_types import JsonObject, JsonValue
+
+from .base_runtime import (
+    BaseRuntime,
+    _ChildRunResult,
+    apply_state_update_inplace,
+    validate_initial_state,
+)
+from .contract import CancellationChecker, Predicate
+from .executor import TerminalStatus, WorkflowExecutor
+from .models import RunFailure, StepRunResult, WorkflowState
+from .models import WorkflowEdge, WorkflowInvocationRequest, WorkflowNode
+from .native_contracts import join_arrival_result, successor_plan
 from .runtime import (
-    LaneMessageEventSinkLike,
-    LaneMessageSenderLike,
     EventEmitter,
     EventSink,
+    LaneMessageEventSinkLike,
+    LaneMessageSenderLike,
     RunResult,
     StepContext,
-    WorkflowRuntime as ThreadedWorkflowRuntime,
     _compute_may_reach_join_bitsets,
     _iter_bits,
     derive_child_authority_context,
     sink_observes_otel,
 )
+from .runtime import (
+    WorkflowRuntime as ThreadedWorkflowRuntime,
+)
+from .telemetry import TraceContext
 
 # Compatibility anchor for tests and internal helper wiring.
 WorkflowRuntime = ThreadedWorkflowRuntime
@@ -66,7 +76,7 @@ class SyncCompatibleStepResolver(Protocol):
     def __call__(self, op: str) -> AsyncCompatibleStepFn: ...
 
 
-_CANCEL_REQUESTED_CTX: contextvars.ContextVar[Callable[[str], bool] | None] = (
+_CANCEL_REQUESTED_CTX: contextvars.ContextVar[CancellationChecker | None] = (
     contextvars.ContextVar("kogwistar_async_cancel_requested", default=None)
 )
 
@@ -98,7 +108,7 @@ class _SyncResolverAdapter:
     resolver and only adapts the call result shape (awaitable -> concrete).
     """
 
-    def __init__(self, resolver: SyncCompatibleStepResolver):
+    def __init__(self, resolver: SyncCompatibleStepResolver) -> None:
         self._resolver = resolver
         self.nested_ops = getattr(resolver, "nested_ops", set())
         self._state_schema = getattr(resolver, "_state_schema", {})
@@ -112,7 +122,7 @@ class _SyncResolverAdapter:
         return _as_sync_step_fn(self._resolver(op))
 
 
-class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
+class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
     """Async workflow runtime backed by the native asyncio scheduler."""
 
     def __init__(
@@ -121,14 +131,14 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
         workflow_engine: GraphKnowledgeEngine,
         conversation_engine: GraphKnowledgeEngine,
         step_resolver: AsyncStepResolver,
-        predicate_registry: dict[str, Any],
+        predicate_registry: dict[str, Predicate],
         checkpoint_every_n_steps: int = 1,
         max_workers: int = 4,
         transaction_mode: str | None = None,
         trace: bool = True,
         events: EventEmitter | None = None,
         sink: EventSink | None = None,
-        cancel_requested: Callable[[str], bool] | None = None,
+        cancel_requested: CancellationChecker | None = None,
         lane_message_sender: LaneMessageSenderLike | None = None,
         lane_message_event_sink: LaneMessageEventSinkLike | None = None,
         fast_trace_persistence: bool | None = None,
@@ -195,7 +205,7 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
         run_id: str | None = None,
         cache_dir: str | None = None,
         _resume_step_seq: int | None = None,
-        _resume_last_exec_node: Any | None = None,
+        _resume_last_exec_node: object | None = None,
         _run_metadata: Mapping[str, Any] | None = None,
         _trace_context: TraceContext | None = None,
         _authority_context: Mapping[str, Any] | None = None,
@@ -260,7 +270,7 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
         self,
         *,
         parent_state: WorkflowState,
-        invocation: Any,
+        invocation: WorkflowInvocationRequest,
     ) -> WorkflowState:
         return super()._child_workflow_initial_state(
             parent_state=parent_state,
@@ -271,8 +281,8 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
         self,
         *,
         state: WorkflowState,
-        invocation: Any,
-        child_result: RunResult,
+        invocation: WorkflowInvocationRequest,
+        child_result: _ChildRunResult,
     ) -> None:
         super()._apply_workflow_invocation_result(
             state=state,
@@ -283,7 +293,7 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
     async def _run_workflow_invocation_async(
         self,
         *,
-        invocation: Any,
+        invocation: WorkflowInvocationRequest,
         parent_state: WorkflowState,
         conversation_id: str,
         turn_node_id: str,
@@ -292,8 +302,8 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
         parent_trace_context: TraceContext | None = None,
         parent_authority_context: Mapping[str, Any] | None = None,
     ) -> RunResult:
-        if getattr(invocation, "workflow_design", None) is not None:
-            wf_design = getattr(invocation, "workflow_design")
+        wf_design = invocation.workflow_design
+        if wf_design is not None:
             if str(getattr(wf_design, "workflow_id", "")) != str(
                 getattr(invocation, "workflow_id", "")
             ):
@@ -490,14 +500,14 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
 
     @staticmethod
     def _select_next_edges(
-        node: Any,
-        edges: list[Any],
+        node: WorkflowNode,
+        edges: list[WorkflowEdge],
         state: WorkflowState,
         result: StepRunResult,
-        predicate_registry: dict[str, Any],
+        predicate_registry: dict[str, Predicate],
         *,
-        nodes: dict[str, Any] | None = None,
-    ) -> list[Any]:
+        nodes: Mapping[str, WorkflowNode] | None = None,
+    ) -> list[WorkflowEdge]:
         if not edges:
             return []
         fanout = bool((getattr(node, "metadata", {}) or {}).get("wf_fanout", False))
@@ -510,7 +520,7 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
             nodes=nodes,
             sort_edges=True,
         )
-        return list(computed.selected_edges)
+        return cast(list[WorkflowEdge], list(computed.selected_edges))
 
     async def _run_native_async(
         self,
@@ -689,7 +699,7 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
             return (1 << bi) if bi is not None else 0
 
         def _normalize_join_waiter(
-            item: Any,
+            item: object,
         ) -> tuple[int, str, str | None] | None:
             if not isinstance(item, (list, tuple)) or len(item) < 3:
                 return None
@@ -702,7 +712,7 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
                 return None
 
         def _normalize_rt_token(
-            item: Any,
+            item: object,
         ) -> tuple[str, int, str, str | None] | None:
             if not isinstance(item, (list, tuple)) or len(item) < 4:
                 return None
@@ -793,7 +803,9 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
         def _cancel_requested() -> bool:
             return bool(cancel_requested and cancel_requested(str(run_id)))
 
-        async def _run_one(item: tuple[int, int, str, str, str | None]):
+        async def _run_one(
+            item: tuple[int, int, str, str, str | None],
+        ) -> tuple[int, int, int, str, str, str | None, StepRunResult, float]:
             nonlocal seq
             launch_seq, mask, node_id, token_id, parent_token_id = item
             node = nodes[node_id]
@@ -941,20 +953,20 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
                 ],
             }
 
-        def _persist_step_exec_compat(**kwargs: Any) -> Any:
+        def _persist_step_exec_compat(**kwargs: object) -> object | None:
             persist = getattr(self._sync_runtime, "_persist_step_exec", None)
             if callable(persist):
                 return persist(**kwargs)
             return None
 
-        def _persist_checkpoint_compat(**kwargs: Any) -> Any:
+        def _persist_checkpoint_compat(**kwargs: object) -> object | None:
             persist = getattr(self._sync_runtime, "_persist_checkpoint", None)
             if callable(persist):
                 return persist(**kwargs)
             return None
 
         def _maybe_persist_checkpoint(
-            *, step_seq: int, state: WorkflowState, last_exec_node: Any | None
+            *, step_seq: int, state: WorkflowState, last_exec_node: object | None
         ) -> None:
             interval = max(1, int(getattr(self._sync_runtime, "checkpoint_every_n_steps", 1)))
             if (int(step_seq) % interval) != 0:
@@ -1178,6 +1190,7 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
                         ],
                     }
             native_plan = None
+            native_tokens = []
             if runtime_mode == "shadow":
                 oracle_outstanding = list(join_outstanding)
                 oracle_tokens = []
@@ -1206,19 +1219,23 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
                     )
                 runtime_plan_successors(
                     payload=successor_payload,
-                    python_value={
-                        "tokens": oracle_tokens,
-                        "join_outstanding": oracle_outstanding,
-                    },
+                    python_value=cast(
+                        JsonObject,
+                        {
+                            "tokens": cast(JsonValue, oracle_tokens),
+                            "join_outstanding": cast(
+                                JsonValue, oracle_outstanding
+                            ),
+                        },
+                    ),
                 )
             elif runtime_mode == "rust":
                 native_plan = runtime_plan_successors(payload=successor_payload)
-                join_outstanding[:] = [
-                    int(value) for value in native_plan["join_outstanding"]
-                ]
+                native_tokens, native_join_outstanding = successor_plan(native_plan)
+                join_outstanding[:] = native_join_outstanding
 
             planned_tokens = (
-                native_plan["tokens"]
+                native_tokens
                 if native_plan is not None
                 else [
                     {
@@ -1268,7 +1285,7 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
                     if runtime_mode == "rust" and join_idx is not None:
                         from kogwistar._rust_bridge import runtime_apply_join_arrival
 
-                        native_join = runtime_apply_join_arrival(
+                        native_join = join_arrival_result(runtime_apply_join_arrival(
                             payload={
                                 "join_index": int(join_idx),
                                 "join_outstanding": list(join_outstanding),
@@ -1287,10 +1304,8 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
                                 },
                                 "merge": True,
                             }
-                        )
-                        join_outstanding[:] = [
-                            int(value) for value in native_join["join_outstanding"]
-                        ]
+                        ))
+                        join_outstanding[:] = native_join["join_outstanding"]
                         waiters[:] = [
                             (
                                 int(waiter["join_mask"]),
@@ -1525,7 +1540,7 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
         run_id: str | None = None,
         cache_dir: str | None = None,
         _resume_step_seq: int | None = None,
-        _resume_last_exec_node: Any | None = None,
+        _resume_last_exec_node: object | None = None,
     ) -> RunResult:
         raise NotImplementedError(
             "AsyncWorkflowRuntime.run_sync() is removed; use async run()"

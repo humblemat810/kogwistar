@@ -1,7 +1,6 @@
 import json
 import os
 from contextlib import asynccontextmanager
-from typing import Dict
 
 import httpx
 import jwt
@@ -9,6 +8,7 @@ import pytest
 import requests
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
+
 from .auth_env import TEST_JWT_ALG, TEST_JWT_SECRET
 
 pytestmark = pytest.mark.ci_full
@@ -24,7 +24,7 @@ WRITE_TOOLS = {
 
 
 @asynccontextmanager
-async def _mcp_client(url: str, headers: Dict[str, str]):
+async def _mcp_client(url: str, headers: dict[str, str]):
     async with httpx.AsyncClient(headers=headers, timeout=None) as http_client:
         async with streamable_http_client(url, http_client=http_client) as streams:
             yield streams
@@ -59,7 +59,7 @@ async def test_readonly_token_blocks_writes_and_allows_reads(mcp_admin_server):
     mcp_url = str(mcp_admin_server["base_mcp"])
 
     ro_token = _mint_token(base_http, "ro")
-    headers: Dict[str, str] = {"Authorization": f"Bearer {ro_token}"}
+    headers: dict[str, str] = {"Authorization": f"Bearer {ro_token}"}
 
     resp = requests.delete(
         f"{base_http}/admin/doc/NONEXISTENT_DOC",

@@ -711,6 +711,44 @@
         "title": "IndexingItem",
         "type": "object"
       },
+      "JsonScalar": {
+        "anyOf": [
+          {
+            "type": "boolean"
+          },
+          {
+            "type": "integer"
+          },
+          {
+            "type": "number"
+          },
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "JsonValue": {
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/JsonScalar"
+          },
+          {
+            "items": {
+              "$ref": "#/components/schemas/JsonValue"
+            },
+            "type": "array"
+          },
+          {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/JsonValue"
+            },
+            "type": "object"
+          }
+        ]
+      },
       "LegacyLocator": {
         "additionalProperties": false,
         "description": "Read-only compatibility wrapper for historical locator payloads.",
@@ -722,7 +760,9 @@
             "type": "string"
           },
           "payload": {
-            "additionalProperties": true,
+            "additionalProperties": {
+              "$ref": "#/components/schemas/JsonValue"
+            },
             "title": "Payload",
             "type": "object"
           }
@@ -1072,60 +1112,6 @@
           "mentions"
         ],
         "title": "Node",
-        "type": "object"
-      },
-      "ResumeRunIn": {
-        "properties": {
-          "client_result": {
-            "additionalProperties": true,
-            "title": "Client Result",
-            "type": "object"
-          },
-          "conversation_id": {
-            "minLength": 1,
-            "title": "Conversation Id",
-            "type": "string"
-          },
-          "suspended_node_id": {
-            "minLength": 1,
-            "title": "Suspended Node Id",
-            "type": "string"
-          },
-          "suspended_token_id": {
-            "minLength": 1,
-            "title": "Suspended Token Id",
-            "type": "string"
-          },
-          "turn_node_id": {
-            "minLength": 1,
-            "title": "Turn Node Id",
-            "type": "string"
-          },
-          "user_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "User Id"
-          },
-          "workflow_id": {
-            "minLength": 1,
-            "title": "Workflow Id",
-            "type": "string"
-          }
-        },
-        "required": [
-          "suspended_node_id",
-          "suspended_token_id",
-          "workflow_id",
-          "conversation_id",
-          "turn_node_id"
-        ],
-        "title": "ResumeRunIn",
         "type": "object"
       },
       "ServiceDeclareIn": {
@@ -1872,6 +1858,116 @@
           "track_manifest_sha256"
         ],
         "title": "VideoRegionTrackLocator",
+        "type": "object"
+      },
+      "kogwistar__server__chat_api__ResumeRunIn": {
+        "properties": {
+          "client_result": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/JsonValue"
+            },
+            "title": "Client Result",
+            "type": "object"
+          },
+          "conversation_id": {
+            "minLength": 1,
+            "title": "Conversation Id",
+            "type": "string"
+          },
+          "suspended_node_id": {
+            "minLength": 1,
+            "title": "Suspended Node Id",
+            "type": "string"
+          },
+          "suspended_token_id": {
+            "minLength": 1,
+            "title": "Suspended Token Id",
+            "type": "string"
+          },
+          "turn_node_id": {
+            "minLength": 1,
+            "title": "Turn Node Id",
+            "type": "string"
+          },
+          "user_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User Id"
+          },
+          "workflow_id": {
+            "minLength": 1,
+            "title": "Workflow Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "suspended_node_id",
+          "suspended_token_id",
+          "workflow_id",
+          "conversation_id",
+          "turn_node_id"
+        ],
+        "title": "ResumeRunIn",
+        "type": "object"
+      },
+      "kogwistar__server__runtime_api__ResumeRunIn": {
+        "properties": {
+          "client_result": {
+            "additionalProperties": true,
+            "title": "Client Result",
+            "type": "object"
+          },
+          "conversation_id": {
+            "minLength": 1,
+            "title": "Conversation Id",
+            "type": "string"
+          },
+          "suspended_node_id": {
+            "minLength": 1,
+            "title": "Suspended Node Id",
+            "type": "string"
+          },
+          "suspended_token_id": {
+            "minLength": 1,
+            "title": "Suspended Token Id",
+            "type": "string"
+          },
+          "turn_node_id": {
+            "minLength": 1,
+            "title": "Turn Node Id",
+            "type": "string"
+          },
+          "user_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User Id"
+          },
+          "workflow_id": {
+            "minLength": 1,
+            "title": "Workflow Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "suspended_node_id",
+          "suspended_token_id",
+          "workflow_id",
+          "conversation_id",
+          "turn_node_id"
+        ],
+        "title": "ResumeRunIn",
         "type": "object"
       }
     }
@@ -2966,7 +3062,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/ResumeRunIn"
+                "$ref": "#/components/schemas/kogwistar__server__chat_api__ResumeRunIn"
               }
             }
           },
@@ -4639,7 +4735,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/ResumeRunIn"
+                "$ref": "#/components/schemas/kogwistar__server__runtime_api__ResumeRunIn"
               }
             }
           },
@@ -4929,7 +5025,7 @@
     },
     "/api/workflow/services/{service_id}": {
       "get": {
-        "operationId": "get_service_api_workflow_services__service_id__get",
+        "operationId": "get_service_endpoint_api_workflow_services__service_id__get",
         "parameters": [
           {
             "in": "path",
@@ -4961,7 +5057,7 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Get Service",
+        "summary": "Get Service Endpoint",
         "tags": [
           "runtime"
         ]

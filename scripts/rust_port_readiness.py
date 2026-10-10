@@ -11,7 +11,6 @@ import json
 from pathlib import Path
 from typing import Any
 
-
 STAGES = (
     ("internal/test", 0),
     ("1%", 1),

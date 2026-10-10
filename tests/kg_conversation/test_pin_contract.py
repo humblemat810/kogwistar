@@ -1,12 +1,13 @@
 import pytest
+
 pytestmark = pytest.mark.ci_full
 from kogwistar.conversation.models import ConversationNode
 from kogwistar.conversation.service import ConversationService
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.models import (
     Grounding,
-    Span,
     MentionVerification,
+    Span,
 )
 
 

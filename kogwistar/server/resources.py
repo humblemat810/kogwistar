@@ -3,14 +3,19 @@ from __future__ import annotations
 import importlib
 import os
 import pathlib
+from collections.abc import Callable
 from threading import Lock
-from typing import TYPE_CHECKING, Any, Callable, Generic, TypeVar
+from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast
 
 from fastapi.templating import Jinja2Templates
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.graph_query import GraphQuery
-from kogwistar.server.bootstrap import build_graph_engine, build_sqlalchemy_engine, load_server_storage_settings
+from kogwistar.server.bootstrap import (
+    build_graph_engine,
+    build_sqlalchemy_engine,
+    load_server_storage_settings,
+)
 from kogwistar.server.chat_service import ChatRunService
 from kogwistar.server.run_registry import RunRegistry
 
@@ -51,7 +56,7 @@ class _LazyResource(Generic[T]):
                     object.__setattr__(self, "_value", value)
         return value
 
-    def __getattr__(self, name: str) -> Any:
+    def __getattr__(self, name: str) -> object:
         return getattr(self.get(), name)
 
     def __setattr__(self, name: str, value: object) -> None:
@@ -67,7 +72,7 @@ class _LazyResource(Generic[T]):
 
 
 def _build_pg_sqlalchemy_engine() -> Engine:
-    return build_sqlalchemy_engine(storage_settings)
+    return cast(Engine, build_sqlalchemy_engine(storage_settings))
 
 
 def _shared_sqlalchemy_engine() -> Engine | None:
@@ -166,7 +171,7 @@ def _import_override_from_env(env_name: str) -> Callable[..., Any] | None:
     module = importlib.import_module(module_name)
     target = getattr(module, attr_name, None)
     if not callable(target):
-        raise RuntimeError(f"{env_name} target is not callable: {raw}")
+        raise TypeError(f"{env_name} target is not callable: {raw}")
     return target
 
 

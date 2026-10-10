@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Callable, Protocol
+from typing import Protocol
 
-from kogwistar.runtime.models import RunSuccess, WorkflowDesignArtifact, WorkflowInvocationRequest
-
+from kogwistar.runtime.models import (
+    RunSuccess,
+    WorkflowDesignArtifact,
+    WorkflowInvocationRequest,
+)
 
 AgentState = dict[str, object]
 
@@ -55,7 +58,10 @@ class DelegationSpec:
 def _effective_capabilities(
     requested: tuple[str, ...], parent: Mapping[str, object]
 ) -> tuple[str, ...]:
-    parent_caps = {str(item) for item in parent.get("effective_capabilities", ())}
+    raw_parent_caps = parent.get("effective_capabilities", ())
+    if not isinstance(raw_parent_caps, (list, tuple, set, frozenset)):
+        raw_parent_caps = ()
+    parent_caps = {str(item) for item in raw_parent_caps}
     requested_caps = {str(item) for item in requested}
     if not requested_caps <= parent_caps:
         raise PermissionError(

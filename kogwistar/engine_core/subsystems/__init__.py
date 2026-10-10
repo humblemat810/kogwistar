@@ -1,4 +1,4 @@
-from .acl import ACLSubsystem, ACLAwareReadSubsystem, ACLAwareWriteSubsystem
+from .acl import ACLAwareReadSubsystem, ACLAwareWriteSubsystem, ACLSubsystem
 from .adjudicate import AdjudicateSubsystem
 from .embed import EmbedSubsystem
 from .extract import ExtractSubsystem
@@ -9,9 +9,9 @@ from .rollback import RollbackSubsystem
 from .write import WriteSubsystem
 
 __all__ = [
-    "ACLSubsystem",
     "ACLAwareReadSubsystem",
     "ACLAwareWriteSubsystem",
+    "ACLSubsystem",
     "AdjudicateSubsystem",
     "EmbedSubsystem",
     "ExtractSubsystem",

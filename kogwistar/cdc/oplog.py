@@ -1,14 +1,16 @@
 # knowledge_graph_engine/changes/oplog.py
 from __future__ import annotations
+
 import json
 import os
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Iterator, Optional
+
 from .change_event import ChangeEvent
 
 
 class OplogWriter:
-    def __init__(self, path: Path, *, fsync: bool = False):
+    def __init__(self, path: Path, *, fsync: bool = False) -> None:
         self.path = path
         self.fsync = fsync
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -28,11 +30,11 @@ class OplogWriter:
 
 
 class OplogReader:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path) -> None:
         self.path = path
 
     def iter_since(
-        self, *, since_seq: int, limit: Optional[int] = None
+        self, *, since_seq: int, limit: int | None = None
     ) -> Iterator[ChangeEvent]:
         if not self.path.exists():
             return

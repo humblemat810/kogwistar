@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from types import MappingProxyType
-from typing import Any, Dict, Mapping, List
+from typing import Any
+
 import pytest
+
 pytestmark = pytest.mark.ci_full
 
 from kogwistar.conversation.models import ConversationAIResponse
@@ -12,16 +15,16 @@ from kogwistar.runtime.models import RunSuccess
 
 class FakeConversationEngine:
     def __init__(self) -> None:
-        self.nodes: Dict[str, Any] = {}
+        self.nodes: dict[str, Any] = {}
         self.write = self
 
     def _iterative_defensive_emb(self, _text: str):
         return [0.0, 0.1]
 
     def add_node(self, node: Any) -> None:
-        self.nodes[str(getattr(node, "id"))] = node
+        self.nodes[str(node.id)] = node
 
-    def get_nodes(self, ids: List[str]) -> List[Any]:
+    def get_nodes(self, ids: list[str]) -> list[Any]:
         return [self.nodes[str(i)] for i in ids]
 
     # Phase D hook
@@ -30,7 +33,7 @@ class FakeConversationEngine:
 
 
 class FakeStepContext:
-    def __init__(self, state: Dict[str, Any]) -> None:
+    def __init__(self, state: dict[str, Any]) -> None:
         self._state = state
         self.events = None
 
@@ -47,7 +50,7 @@ class _StateWriteTxn:
     def __init__(self, ctx: FakeStepContext) -> None:
         self._ctx = ctx
 
-    def __enter__(self) -> Dict[str, Any]:
+    def __enter__(self) -> dict[str, Any]:
         return self._ctx._state
 
     def __exit__(self, exc_type, exc, tb) -> None:

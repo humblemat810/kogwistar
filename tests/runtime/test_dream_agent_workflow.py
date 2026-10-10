@@ -20,7 +20,6 @@ from kogwistar.wisdom.agentic_dream_design import (
 from kogwistar.wisdom.resolvers import dream_default_resolver
 from tests._helpers.fake_backend import build_fake_backend
 
-
 pytestmark = [pytest.mark.core, pytest.mark.runtime, pytest.mark.e2e]
 
 

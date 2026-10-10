@@ -3,16 +3,16 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Callable, Mapping, Sequence
-from typing import Protocol, TYPE_CHECKING, TypeAlias, cast
+from typing import TYPE_CHECKING, Protocol, TypeAlias, cast
 
 from ..models import Grounding, MentionVerification, Span
+from ...json_types import JsonObject, JsonValue
 from .metadata import json_or_none, strip_none
 
 if TYPE_CHECKING:
     from ..models import Edge, Node, PureChromaEdge, PureChromaNode
 
 
-JsonObject: TypeAlias = dict[str, object]
 RefPayload: TypeAlias = JsonObject
 
 
@@ -111,7 +111,7 @@ def extract_doc_ids_from_refs(refs: list[Span] | list[Grounding]) -> list[str]:
     return sorted(dict.fromkeys(out))
 
 
-def select_best_grounding(entity: "Node | Edge") -> Grounding:
+def select_best_grounding(entity: Node | Edge) -> Grounding:
     mentions = list(getattr(entity, "mentions", None) or [])
     if mentions:
 
@@ -170,7 +170,7 @@ def select_best_grounding(entity: "Node | Edge") -> Grounding:
     return Grounding(spans=[span])
 
 
-def node_doc_and_meta(n: "Node | PureChromaNode") -> tuple[str, JsonObject]:
+def node_doc_and_meta(n: Node | PureChromaNode) -> tuple[str, JsonObject]:
     doc = n.model_dump_json(field_mode="backend", exclude=["embedding", "metadata"])
     meta = n.metadata
     meta.update(
@@ -184,7 +184,7 @@ def node_doc_and_meta(n: "Node | PureChromaNode") -> tuple[str, JsonObject]:
             "properties": json_or_none(getattr(n, "properties", None)),
         }
     )
-    meta.update(n.get_extra_update())
+    meta.update(cast(dict[str, JsonValue], n.get_extra_update()))
 
     mentions = getattr(n, "mentions", None)
     if mentions is not None:
@@ -195,7 +195,7 @@ def node_doc_and_meta(n: "Node | PureChromaNode") -> tuple[str, JsonObject]:
     return doc, meta
 
 
-def edge_doc_and_meta(e: "Edge | PureChromaEdge") -> tuple[str, JsonObject]:
+def edge_doc_and_meta(e: Edge | PureChromaEdge) -> tuple[str, JsonObject]:
     doc = e.model_dump_json(field_mode="backend")
     # Keep edge metadata in the backend row as well as in the canonical JSON
     # document.  Backend-side filtering must retain graph-space, workspace,
@@ -248,8 +248,9 @@ def merge_refs(
 
     seen = {key(r): r for r in old}
     for r in new_refs or []:
-        if hasattr(r, "model_dump"):
-            r2 = cast(RefPayload, r.model_dump(field_mode="backend"))
+        model_dump = getattr(r, "model_dump", None)
+        if callable(model_dump):
+            r2 = cast(RefPayload, model_dump(field_mode="backend"))
         elif isinstance(r, dict):
             r2 = cast(RefPayload, r)
         else:

@@ -1,56 +1,54 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import (
-    Protocol,
-    runtime_checkable,
-    List,
-    Tuple,
     Any,
     Dict,
+    List,
     Optional,
-    Iterable,
+    Protocol,
+    Tuple,
+    runtime_checkable,
 )
+
 from pydantic import BaseModel
-from .types import EngineLike
+
 from ..engine_core.models import (
-    Node,
-    Edge,
-    AdjudicationVerdict,
-    LLMMergeAdjudication,
     AdjudicationQuestionCode,
-    Span,
     AdjudicationTarget,
+    AdjudicationVerdict,
+    Edge,
+    LLMMergeAdjudication,
+    Node,
+    Span,
 )
-
-
 from ..typing_interfaces import (
-    NodeLike,
     EdgeLike,
+    NodeLike,
 )
-from .proposer import CompositeProposer, VectorProposer
 from .adjudicators import (
-    LLMPairAdjudicatorImpl,
-    LLMBatchAdjudicatorImpl,
     Adjudicator,
     IAdjudicator,
+    LLMBatchAdjudicatorImpl,
+    LLMPairAdjudicatorImpl,
 )
-from .verifiers import DefaultVerifier, VerifierConfig
 from .merge_policies import PreferExistingCanonical
-
+from .proposer import CompositeProposer, VectorProposer
+from .types import EngineLike
+from .verifiers import DefaultVerifier, VerifierConfig
 
 __all__ = [
-    "VectorProposer",
-    "CompositeProposer",
-    "LLMPairAdjudicatorImpl",
-    "LLMBatchAdjudicatorImpl",
-    "DefaultVerifier",
-    "VerifierConfig",
-    "PreferExistingCanonical",
-    "EngineLike",
-    "NodeLike",
-    "Adjudicator",
-    "IAdjudicator",
-    "DefaultVerifierEdgeLike",
     "AdjudicationTarget",
+    "Adjudicator",
+    "CompositeProposer",
+    "DefaultVerifier",
+    "EngineLike",
+    "IAdjudicator",
+    "LLMBatchAdjudicatorImpl",
+    "LLMPairAdjudicatorImpl",
+    "NodeLike",
+    "PreferExistingCanonical",
+    "VectorProposer",
+    "VerifierConfig",
 ]

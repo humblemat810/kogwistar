@@ -5,7 +5,6 @@ import pytest
 from kogwistar.server.auth.db import create_auth_engine, get_session, init_auth_db
 from kogwistar.server.auth.service import AuthService
 
-
 pytestmark = pytest.mark.ci
 
 

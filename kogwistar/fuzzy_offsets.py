@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 import difflib
-from typing import Callable
+from collections.abc import Callable
+from dataclasses import dataclass
 
 try:  # pragma: no cover - optional dependency
     from rapidfuzz import fuzz as _rapidfuzz

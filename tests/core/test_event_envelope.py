@@ -5,7 +5,6 @@ import pytest
 from kogwistar.engine_core.engine_sqlite import EngineSQLite
 from kogwistar.engine_core.event_envelope import EntityEventEnvelope
 
-
 pytestmark = [pytest.mark.ci, pytest.mark.core]
 
 

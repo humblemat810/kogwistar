@@ -1,33 +1,40 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Optional
 
 from kogwistar.llm_tasks import LLMTaskSet
 
-from .callbacks import RetrievalFilteringCallback
-from .models import KnowledgeRetrievalResult
-
-from .memory_retriever import MemoryRetriever, MemoryRetrievalResult, MemoryPinResult
-from .knowledge_retriever import KnowledgeRetriever
+from ..engine_core.engine import GraphKnowledgeEngine
 from ..engine_core.models import Span
+from .callbacks import RetrievalFilteringCallback
+from .knowledge_retriever import KnowledgeRetriever
+from .memory_retriever import MemoryPinResult, MemoryRetrievalResult, MemoryRetriever
+from .models import KnowledgeRetrievalResult, MetaFromLastSummary
 
 
 @dataclass(slots=True)
 class RetrievalOutcome:
     memory: MemoryRetrievalResult
     knowledge: KnowledgeRetrievalResult
-    memory_pin: Optional[MemoryPinResult]
-    pinned_kg_pointer_node_ids: List[str]
-    pinned_kg_edge_ids: List[str]
+    memory_pin: MemoryPinResult | None
+    pinned_kg_pointer_node_ids: list[str]
+    pinned_kg_edge_ids: list[str]
 
     @property
-    def memory_context_node_id(self):
-        return self.memory_pin.memory_context_node_id if self.memory_pin else None
+    def memory_context_node_id(self) -> str | None:
+        if self.memory_pin is None:
+            return None
+        return self.memory_pin.memory_context_node.safe_get_id()
 
     @property
-    def memory_context_edge_ids(self):
-        return self.memory_pin.pinned_edge_ids if self.memory_pin else []
+    def memory_context_edge_ids(self) -> list[str]:
+        if self.memory_pin is None:
+            return []
+        return [
+            edge_id
+            for edge in self.memory_pin.pinned_edges
+            if (edge_id := edge.safe_get_id()) is not None
+        ]
 
 
 class RetrievalOrchestrator:
@@ -45,17 +52,19 @@ class RetrievalOrchestrator:
     def __init__(
         self,
         *,
-        conversation_engine,
-        ref_knowledge_engine,
+        conversation_engine: GraphKnowledgeEngine,
+        ref_knowledge_engine: GraphKnowledgeEngine,
         llm_tasks: LLMTaskSet,
         memory_filtering_callback: RetrievalFilteringCallback,
         knowledge_filtering_callback: RetrievalFilteringCallback,
         max_retrieval_level: int = 2,
+        n_results: int = 12,
     ) -> None:
         self.conversation_engine = conversation_engine
         self.ref_knowledge_engine = ref_knowledge_engine
         self.llm_tasks = llm_tasks
         self.max_retrieval_level = max_retrieval_level
+        self.n_results = n_results
 
         self.memory_retriever = MemoryRetriever(
             conversation_engine=conversation_engine,
@@ -77,7 +86,7 @@ class RetrievalOrchestrator:
         conversation_id: str,
         mem_id: str,
         user_text: str,
-        query_embedding: List[float],
+        query_embedding: list[float],
         turn_node_id: str,
         turn_index: int,
         self_span: Span,
@@ -91,6 +100,7 @@ class RetrievalOrchestrator:
             query_embedding=query_embedding,
             user_text=user_text,
             context_text="",  # for inserting research progress so far if iterative agent later
+            n_results=self.n_results,
         )
         # 2) KG retrieval seeded by memory-derived KG ids (from selected pointers)
         kg: KnowledgeRetrievalResult = self.knowledge_retriever.retrieve(
@@ -101,7 +111,12 @@ class RetrievalOrchestrator:
         )
 
         # 3) pin memory_context into current canvas (if any selection)
-        memory_pin: Optional[MemoryPinResult] = None
+        prev_turn_meta_summary = MetaFromLastSummary(
+            prev_node_char_distance_from_last_summary=prev_char_distance_from_last_summary,
+            prev_node_distance_from_last_summary=prev_turn_distance_from_last_summary,
+            tail_turn_index=turn_index,
+        )
+        memory_pin: MemoryPinResult | None = None
         if mem.selected and mem.memory_context_text:
             memory_pin = self.memory_retriever.pin_selected(
                 user_id=user_id,
@@ -112,6 +127,7 @@ class RetrievalOrchestrator:
                 self_span=self_span,
                 selected_memory=mem.selected,
                 memory_context_text=mem.memory_context_text,
+                prev_turn_meta_summary=prev_turn_meta_summary,
             )
 
         # 4) pin selected KG refs
@@ -123,6 +139,7 @@ class RetrievalOrchestrator:
             self_span=self_span,
             selected_knowledge=kg.selected,
             selected_knowledge_nodes=kg.get_filtered_candidate(),
+            prev_turn_meta_summary=prev_turn_meta_summary,
         )
 
         return RetrievalOutcome(

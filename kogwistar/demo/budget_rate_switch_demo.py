@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 import threading
 from dataclasses import dataclass
-from typing import Any
+from typing import cast
+
+from kogwistar.json_types import JsonObject, JsonValue
 
 from kogwistar.runtime.budget import RateBudgetWindow
 from kogwistar.server.run_scheduler import RunScheduler
@@ -57,11 +59,11 @@ class FakeTokenGenerator:
             }
 
 
-def run_budget_rate_switch_demo() -> dict[str, Any]:
+def run_budget_rate_switch_demo() -> JsonObject:
     clock = FakeClock(now_ms=1000)
     tokens = FakeTokenGenerator(limit=3, window_ms=10_000, clock=clock)
     sched = RunScheduler(max_active=1, max_queue=8)
-    timeline: list[dict[str, Any]] = []
+    timeline: list[dict[str, JsonValue]] = []
     order: list[str] = []
     heavy_phase = {"step": 0}
     heavy_paused = threading.Event()
@@ -70,7 +72,7 @@ def run_budget_rate_switch_demo() -> dict[str, Any]:
     heavy_done = threading.Event()
     lock = threading.Lock()
 
-    def _record(event: str, **extra: Any) -> None:
+    def _record(event: str, **extra: JsonValue) -> None:
         with lock:
             timeline.append(
                 {
@@ -165,7 +167,7 @@ def run_budget_rate_switch_demo() -> dict[str, Any]:
         raise AssertionError("heavy run did not finish after refresh")
 
     sched.close()
-    return {
+    return cast(JsonObject, {
         "rate_window": tokens.snapshot(),
         "submissions": {
             "heavy": heavy_submit,
@@ -183,7 +185,7 @@ def run_budget_rate_switch_demo() -> dict[str, Any]:
             )
             and timeline[-1]["event"] == "heavy.finished",
         },
-    }
+    })
 
 
 def main() -> None:

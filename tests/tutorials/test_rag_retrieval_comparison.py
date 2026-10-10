@@ -3,7 +3,6 @@ from __future__ import annotations
 import runpy
 from pathlib import Path
 
-
 SCRIPT_PATH = Path(__file__).resolve().parents[2] / "scripts" / "rag_retrieval_comparison_tutorial.py"
 
 

@@ -1,13 +1,15 @@
 from __future__ import annotations
+
 import os
 
 from sqlalchemy import create_engine
-from sqlalchemy.engine import URL, make_url
-from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy.engine import Engine, URL, make_url
+from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
+
 from .models import Base
 
-_SessionLocal = None
+_SessionLocal: sessionmaker[Session] | None = None
 
 
 def _is_test_env() -> bool:
@@ -31,7 +33,11 @@ def _is_sqlite_in_memory(url: URL) -> bool:
     return False
 
 
-def create_auth_engine(db_url: str, *, allow_in_memory: bool | None = None):
+def create_auth_engine(
+    db_url: str,
+    *,
+    allow_in_memory: bool | None = None,
+) -> Engine:
     url = make_url(db_url)
     in_memory = _is_sqlite_in_memory(url)
     if in_memory:
@@ -50,7 +56,7 @@ def create_auth_engine(db_url: str, *, allow_in_memory: bool | None = None):
     return create_engine(db_url)
 
 
-def init_auth_db(engine):
+def init_auth_db(engine: Engine) -> None:
     global _SessionLocal
     Base.metadata.create_all(bind=engine)
     _SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

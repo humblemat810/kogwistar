@@ -3,9 +3,8 @@
 # This companion reuses the existing tutorial ladder seed and level helpers.
 
 # %%
-from tutorial_ladder import _ensure_seed, reset_data, run_level0, seed_data
-
 from _helpers import banner, reset_data_dir, show
+from tutorial_ladder import _ensure_seed, reset_data, run_level0, seed_data
 
 data_dir = reset_data_dir("03_build_a_small_knowledge_graph")
 show("reset", reset_data(data_dir))

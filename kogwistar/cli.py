@@ -4,23 +4,27 @@ import argparse
 import json
 import os
 from pathlib import Path
-from typing import Any
+from typing import TypeAlias
 
 import httpx
 from pydantic import ValidationError
 
 from kogwistar.demo import run_provenance_quickstart
+from kogwistar.json_types import JsonValue
 from kogwistar.ontology import (
-    OntologyPackage,
     OntologyCompositionError,
+    OntologyPackage,
     compose_ontology_packages,
     ontology_package_json_schema,
 )
 from kogwistar.server_mcp_with_admin import main as serve_main
 
+QueryParam: TypeAlias = str | int | float | bool | None
+
 
 def _print_quickstart_summary(summary: dict[str, object]) -> None:
-    artifacts = dict(summary.get("artifacts") or {})
+    artifacts_value = summary.get("artifacts")
+    artifacts = artifacts_value if isinstance(artifacts_value, dict) else {}
     print(f"Answer: {summary.get('answer_text', '')}")
     print(f"Replay: {'pass' if summary.get('replay_pass') else 'fail'}")
     print(f"Provenance Artifact: {artifacts.get('provenance_html', '')}")
@@ -41,9 +45,9 @@ def _request_json(
     *,
     method: str,
     url: str,
-    params: dict[str, Any] | None = None,
-    json_body: dict[str, Any] | None = None,
-) -> dict[str, Any]:
+    params: dict[str, QueryParam] | None = None,
+    json_body: dict[str, JsonValue] | None = None,
+) -> dict[str, JsonValue]:
     with httpx.Client(timeout=30.0) as client:
         resp = client.request(method, url, params=params, json=json_body)
         resp.raise_for_status()
@@ -52,7 +56,7 @@ def _request_json(
         return resp.json()
 
 
-def _print_json(payload: dict[str, Any]) -> None:
+def _print_json(payload: dict[str, JsonValue]) -> None:
     print(json.dumps(payload, indent=2, ensure_ascii=False))
 
 
@@ -145,11 +149,11 @@ def _ontology_validate(args: argparse.Namespace) -> int:
             suffix = f" at {location}" if location else ""
             print(f"- {item.get('message', 'validation failed')}{suffix}")
     else:
-        package = result["package"]
+        assert primary_package is not None
         print(
             "valid ontology package: "
-            f"{package['ontology_id']}@{package['version']} "
-            f"({package['descriptor_count']} descriptors)"
+            f"{primary_package.identity.ontology_id}@{primary_package.identity.version} "
+            f"({len(primary_package.descriptors)} descriptors)"
         )
         if composition is not None:
             print(

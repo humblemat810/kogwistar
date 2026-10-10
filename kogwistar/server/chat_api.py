@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any, Callable
+from collections.abc import AsyncIterator, Callable
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
+from kogwistar.json_types import JsonValue
 from kogwistar.server.chat_service import ChatRunService
 from kogwistar.server.error_reporting import internal_http_error
 
@@ -27,7 +28,7 @@ class SubmitAnswerIn(BaseModel):
 class ResumeRunIn(BaseModel):
     suspended_node_id: str = Field(min_length=1)
     suspended_token_id: str = Field(min_length=1)
-    client_result: dict[str, Any] = Field(default_factory=dict)
+    client_result: dict[str, JsonValue] = Field(default_factory=dict)
     workflow_id: str = Field(min_length=1)
     conversation_id: str = Field(min_length=1)
     turn_node_id: str = Field(min_length=1)
@@ -44,7 +45,7 @@ def _as_http_error(exc: Exception) -> HTTPException:
     return internal_http_error(exc)
 
 
-def _sse_frame(*, event_type: str, seq: int, payload: dict[str, Any]) -> str:
+def _sse_frame(*, event_type: str, seq: int, payload: dict[str, JsonValue]) -> str:
     return f"id: {seq}\nevent: {event_type}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
@@ -52,15 +53,15 @@ def create_chat_router(
     *,
     get_service: Callable[[], ChatRunService],
     require_role: Callable[[str], None],
-    require_namespace: Callable[[Any], None],
-    conversation_namespace: Any,
-    workflow_namespaces: Any,
+    require_namespace: Callable[[object], None],
+    conversation_namespace: object,
+    workflow_namespaces: object,
     get_user_id: Callable[[], str | None] | None = None,
-):
+) -> APIRouter:
     router = APIRouter(prefix="/api", tags=["chat"])
 
     @router.get("/conversations")
-    def list_conversations():
+    def list_conversations() -> dict[str, object]:
         require_role("ro")
         require_namespace(conversation_namespace)
         try:
@@ -76,7 +77,7 @@ def create_chat_router(
             raise _as_http_error(exc)
 
     @router.post("/conversations")
-    def create_conversation(inp: CreateConversationIn):
+    def create_conversation(inp: CreateConversationIn) -> object:
         require_role("rw")
         require_namespace(conversation_namespace)
         try:
@@ -92,7 +93,7 @@ def create_chat_router(
             raise _as_http_error(exc)
 
     @router.get("/conversations/{conversation_id}")
-    def get_conversation(conversation_id: str):
+    def get_conversation(conversation_id: str) -> object:
         require_role("ro")
         require_namespace(conversation_namespace)
         try:
@@ -101,7 +102,7 @@ def create_chat_router(
             raise _as_http_error(exc)
 
     @router.get("/conversations/{conversation_id}/turns")
-    def get_transcript(conversation_id: str):
+    def get_transcript(conversation_id: str) -> dict[str, object]:
         require_role("ro")
         require_namespace(conversation_namespace)
         try:
@@ -113,7 +114,9 @@ def create_chat_router(
             raise _as_http_error(exc)
 
     @router.post("/conversations/{conversation_id}/turns:answer")
-    def submit_answer(conversation_id: str, inp: SubmitAnswerIn):
+    def submit_answer(
+        conversation_id: str, inp: SubmitAnswerIn
+    ) -> JSONResponse:
         require_role("rw")
         require_namespace(conversation_namespace)
         try:
@@ -133,7 +136,7 @@ def create_chat_router(
     @router.get("/conversations/{conversation_id}/snapshots/latest")
     def latest_snapshot(
         conversation_id: str, run_id: str | None = None, stage: str | None = None
-    ):
+    ) -> object:
         require_role("ro")
         require_namespace(workflow_namespaces)
         try:
@@ -144,7 +147,7 @@ def create_chat_router(
             raise _as_http_error(exc)
 
     @router.get("/runs/{run_id}")
-    def get_run(run_id: str):
+    def get_run(run_id: str) -> object:
         require_role("ro")
         require_namespace(conversation_namespace)
         try:
@@ -153,7 +156,9 @@ def create_chat_router(
             raise _as_http_error(exc)
 
     @router.get("/runs/{run_id}/events")
-    async def get_run_events(run_id: str, after_seq: int = 0):
+    async def get_run_events(
+        run_id: str, after_seq: int = 0
+    ) -> StreamingResponse:
         require_role("ro")
         require_namespace(conversation_namespace)
         try:
@@ -161,7 +166,7 @@ def create_chat_router(
         except Exception as exc:  # noqa: BLE001
             raise _as_http_error(exc)
 
-        async def event_stream():
+        async def event_stream() -> AsyncIterator[str]:
             last_seq = int(after_seq or 0)
             while True:
                 service = get_service()
@@ -192,7 +197,9 @@ def create_chat_router(
         )
 
     @router.get("/runs/{run_id}/events/poll")
-    def get_run_events_poll(run_id: str, after_seq: int = 0, limit: int = 500):
+    def get_run_events_poll(
+        run_id: str, after_seq: int = 0, limit: int = 500
+    ) -> dict[str, object]:
         require_role("ro")
         require_namespace(conversation_namespace)
         try:
@@ -207,7 +214,7 @@ def create_chat_router(
             raise _as_http_error(exc)
 
     @router.post("/runs/{run_id}/cancel")
-    def cancel_run(run_id: str):
+    def cancel_run(run_id: str) -> JSONResponse:
         require_role("rw")
         require_namespace(conversation_namespace)
         try:
@@ -217,7 +224,7 @@ def create_chat_router(
             raise _as_http_error(exc)
 
     @router.get("/runs/{run_id}/steps")
-    def get_run_steps(run_id: str):
+    def get_run_steps(run_id: str) -> dict[str, object]:
         require_role("ro")
         require_namespace(workflow_namespaces)
         try:
@@ -229,7 +236,7 @@ def create_chat_router(
             raise _as_http_error(exc)
 
     @router.get("/runs/{run_id}/checkpoints")
-    def get_run_checkpoints(run_id: str):
+    def get_run_checkpoints(run_id: str) -> dict[str, object]:
         require_role("ro")
         require_namespace(workflow_namespaces)
         try:
@@ -241,7 +248,7 @@ def create_chat_router(
             raise _as_http_error(exc)
 
     @router.get("/runs/{run_id}/evidence")
-    def get_run_evidence(run_id: str):
+    def get_run_evidence(run_id: str) -> object:
         require_role("ro")
         require_namespace(workflow_namespaces)
         try:
@@ -250,7 +257,7 @@ def create_chat_router(
             raise _as_http_error(exc)
 
     @router.get("/runs/{run_id}/checkpoints/{step_seq}")
-    def get_checkpoint(run_id: str, step_seq: int):
+    def get_checkpoint(run_id: str, step_seq: int) -> object:
         require_role("ro")
         require_namespace(workflow_namespaces)
         try:
@@ -259,7 +266,7 @@ def create_chat_router(
             raise _as_http_error(exc)
 
     @router.get("/runs/{run_id}/replay")
-    def replay_run(run_id: str, target_step_seq: int):
+    def replay_run(run_id: str, target_step_seq: int) -> object:
         require_role("ro")
         require_namespace(workflow_namespaces)
         try:
@@ -268,7 +275,7 @@ def create_chat_router(
             raise _as_http_error(exc)
 
     @router.get("/runs/{run_id}/resume-contract")
-    def resume_contract(run_id: str):
+    def resume_contract(run_id: str) -> object:
         require_role("ro")
         require_namespace(workflow_namespaces)
         try:
@@ -277,7 +284,7 @@ def create_chat_router(
             raise _as_http_error(exc)
 
     @router.post("/runs/{run_id}/resume")
-    def resume_run(run_id: str, inp: ResumeRunIn):
+    def resume_run(run_id: str, inp: ResumeRunIn) -> object:
         require_role("rw")
         require_namespace(workflow_namespaces)
         try:

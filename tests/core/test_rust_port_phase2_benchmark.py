@@ -13,7 +13,6 @@ from scripts.rust_port_phase2_benchmark import (
     run_phase2_benchmark,
 )
 
-
 pytestmark = [pytest.mark.ci, pytest.mark.core, pytest.mark.requires_rust]
 ROOT = Path(__file__).resolve().parents[2]
 REPORT_PATH = ROOT / "contracts" / "benchmarks" / "rust-memory-phase2-windows.json"

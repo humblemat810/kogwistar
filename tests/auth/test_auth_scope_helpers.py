@@ -4,18 +4,19 @@ import pytest
 
 from kogwistar.server.auth_middleware import (
     can_access_security_scope,
-    describe_storage_security_mapping,
     claims_ctx,
-    get_execution_namespace,
+    describe_storage_security_mapping,
     get_current_capabilities,
+    get_execution_namespace,
     get_security_scope,
     get_security_scope_parts,
     get_storage_namespace,
-    require_namespace,
     require_capability,
+    require_namespace,
     require_security_scope,
     require_security_scope_access,
 )
+
 
 def test_scope_helpers_default_to_claim_namespace():
     token = claims_ctx.set({"ns": "conversation"})

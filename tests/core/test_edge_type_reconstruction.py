@@ -10,7 +10,6 @@ from kogwistar.engine_core.subsystems.read import ReadSubsystem
 from kogwistar.entity_registry import pick_edge_type
 from kogwistar.runtime.models import WorkflowEdge
 
-
 pytestmark = pytest.mark.core
 
 

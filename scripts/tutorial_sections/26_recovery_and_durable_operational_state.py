@@ -9,11 +9,11 @@
 from __future__ import annotations
 
 from _helpers import banner, reset_data_dir, show
+
 from kogwistar.engine_core import GraphKnowledgeEngine
 from kogwistar.engine_core.engine import scoped_namespace
 from kogwistar.engine_core.in_memory_backend import build_in_memory_backend
 from kogwistar.server.auth_middleware import claims_ctx
-
 
 data_dir = reset_data_dir("26_recovery_and_durable_operational_state")
 engine = GraphKnowledgeEngine(

@@ -23,7 +23,6 @@ from kogwistar.ontology import (
     validate_payload,
 )
 
-
 pytestmark = [pytest.mark.ci, pytest.mark.core]
 
 

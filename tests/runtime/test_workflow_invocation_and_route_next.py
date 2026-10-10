@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-import pytest
 import json
 
-from kogwistar.engine_core.models import Grounding, MentionVerification, Span
+import pytest
+
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.models import Grounding, MentionVerification, Span
 from kogwistar.runtime import MappingStepResolver, WorkflowRuntime
 from kogwistar.runtime.models import (
     RunFailure,

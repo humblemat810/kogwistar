@@ -2,11 +2,22 @@ from __future__ import annotations
 
 """Core knowledge-management policy protocols and conservative defaults."""
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Mapping, Protocol, Sequence
+from typing import Protocol
 
+from ..json_types import JsonValue
 
 _VISIBILITY_VALUES = {"internal", "review", "knowledge", "projection", "wisdom"}
+
+
+class PolicyEntityLike(Protocol):
+    """Minimal graph-entity surface needed by policy decisions."""
+
+    id: str | None
+    label: str
+    summary: str
+    metadata: Mapping[str, object] | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -14,7 +25,7 @@ class PromotionContext:
     promotion_mode: str
     auto_accept_threshold: float
     default_accept_threshold: float = 0.95
-    metadata: Mapping[str, Any] = field(default_factory=dict)
+    metadata: Mapping[str, JsonValue] = field(default_factory=dict)
     promotion_approved: bool = False
 
 
@@ -22,12 +33,12 @@ class PromotionContext:
 class PromotionDecision:
     should_promote: bool
     reason: str = ""
-    metadata: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, JsonValue] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
 class SourceQueryDecision:
-    where: dict[str, Any] = field(default_factory=dict)
+    where: dict[str, JsonValue] = field(default_factory=dict)
 
 
 class PromotionPolicy(Protocol):
@@ -35,19 +46,19 @@ class PromotionPolicy(Protocol):
 
 
 class ArtifactVisibilityPolicy(Protocol):
-    def visibility_for(self, metadata: Mapping[str, Any]) -> str: ...
+    def visibility_for(self, metadata: Mapping[str, JsonValue]) -> str: ...
 
 
 class ProjectionEligibilityPolicy(Protocol):
-    def is_projection_eligible(self, metadata: Mapping[str, Any]) -> bool: ...
+    def is_projection_eligible(self, metadata: Mapping[str, JsonValue]) -> bool: ...
 
 
 class DerivedKnowledgePolicy(Protocol):
-    def group_key(self, node: Any) -> str: ...
+    def group_key(self, node: PolicyEntityLike) -> str: ...
 
     def source_query(self, *, workspace_id: str) -> SourceQueryDecision: ...
 
-    def match_where(self, *, workspace_id: str, label: str) -> dict[str, Any]: ...
+    def match_where(self, *, workspace_id: str, label: str) -> dict[str, JsonValue]: ...
 
     def build_metadata(
         self,
@@ -58,7 +69,7 @@ class DerivedKnowledgePolicy(Protocol):
         replaces_ids: Sequence[str],
         created_at_ms: int,
         artifact_kind: str,
-    ) -> dict[str, Any]: ...
+    ) -> dict[str, JsonValue]: ...
 
 
 class WisdomPolicy(Protocol):
@@ -67,7 +78,7 @@ class WisdomPolicy(Protocol):
 
     def source_query(self, *, workspace_id: str) -> SourceQueryDecision: ...
 
-    def match_where(self, *, workspace_id: str, step_op: str) -> dict[str, Any]: ...
+    def match_where(self, *, workspace_id: str, step_op: str) -> dict[str, JsonValue]: ...
 
     def build_metadata(
         self,
@@ -79,13 +90,13 @@ class WisdomPolicy(Protocol):
         replaces_ids: Sequence[str],
         created_at_ms: int,
         artifact_kind: str,
-    ) -> dict[str, Any]: ...
+    ) -> dict[str, JsonValue]: ...
 
 
 class KnowledgeLifecyclePolicy(Protocol):
     def requires_provenance(self, artifact_kind: str) -> bool: ...
 
-    def replacement_ids(self, existing: Sequence[Any]) -> list[str]: ...
+    def replacement_ids(self, existing: Sequence[PolicyEntityLike | str]) -> list[str]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -137,7 +148,7 @@ class DefaultPromotionPolicy:
 class DefaultArtifactVisibilityPolicy:
     """Metadata-driven visibility classifier with conservative fallbacks."""
 
-    def visibility_for(self, metadata: Mapping[str, Any]) -> str:
+    def visibility_for(self, metadata: Mapping[str, JsonValue]) -> str:
         meta = dict(metadata or {})
         explicit = str(meta.get("visibility") or "").strip().lower()
         if explicit in _VISIBILITY_VALUES:
@@ -164,7 +175,7 @@ class DefaultProjectionEligibilityPolicy:
         default_factory=DefaultArtifactVisibilityPolicy
     )
 
-    def is_projection_eligible(self, metadata: Mapping[str, Any]) -> bool:
+    def is_projection_eligible(self, metadata: Mapping[str, JsonValue]) -> bool:
         meta = dict(metadata or {})
         if meta.get("projection_visible") is True:
             return True
@@ -175,7 +186,7 @@ class DefaultProjectionEligibilityPolicy:
 class DefaultDerivedKnowledgePolicy:
     """Stable grouping and versioned replacement defaults for derived knowledge."""
 
-    def group_key(self, node: Any) -> str:
+    def group_key(self, node: PolicyEntityLike) -> str:
         metadata = dict(getattr(node, "metadata", {}) or {})
         label = metadata.get("label") or getattr(node, "label", None) or getattr(node, "summary", None)
         text = str(label or "").strip()
@@ -184,7 +195,7 @@ class DefaultDerivedKnowledgePolicy:
     def source_query(self, *, workspace_id: str) -> SourceQueryDecision:
         return SourceQueryDecision(where={"workspace_id": workspace_id})
 
-    def match_where(self, *, workspace_id: str, label: str) -> dict[str, Any]:
+    def match_where(self, *, workspace_id: str, label: str) -> dict[str, JsonValue]:
         return {
             "workspace_id": workspace_id,
             "label": label,
@@ -199,7 +210,7 @@ class DefaultDerivedKnowledgePolicy:
         replaces_ids: Sequence[str],
         created_at_ms: int,
         artifact_kind: str,
-    ) -> dict[str, Any]:
+    ) -> dict[str, JsonValue]:
         return {
             "workspace_id": workspace_id,
             "artifact_kind": artifact_kind,
@@ -219,7 +230,7 @@ class DefaultWisdomPolicy:
     def source_query(self, *, workspace_id: str) -> SourceQueryDecision:
         return SourceQueryDecision(where={"workspace_id": workspace_id})
 
-    def match_where(self, *, workspace_id: str, step_op: str) -> dict[str, Any]:
+    def match_where(self, *, workspace_id: str, step_op: str) -> dict[str, JsonValue]:
         return {
             "workspace_id": workspace_id,
             "step_op": step_op,
@@ -235,7 +246,7 @@ class DefaultWisdomPolicy:
         replaces_ids: Sequence[str],
         created_at_ms: int,
         artifact_kind: str,
-    ) -> dict[str, Any]:
+    ) -> dict[str, JsonValue]:
         return {
             "workspace_id": workspace_id,
             "artifact_kind": artifact_kind,
@@ -258,7 +269,7 @@ class DefaultKnowledgeLifecyclePolicy:
     def requires_provenance(self, artifact_kind: str) -> bool:
         return str(artifact_kind or "").strip().lower() in self.provenance_required_stages
 
-    def replacement_ids(self, existing: Sequence[Any]) -> list[str]:
+    def replacement_ids(self, existing: Sequence[PolicyEntityLike | str]) -> list[str]:
         out: list[str] = []
         for item in existing:
             item_id = getattr(item, "id", item)
@@ -272,17 +283,17 @@ __all__ = [
     "ArtifactVisibilityPolicy",
     "DefaultArtifactVisibilityPolicy",
     "DefaultDerivedKnowledgePolicy",
-    "DefaultKnowledgeLifecyclePolicy",
     "DefaultDreamLoopPolicy",
-    "DefaultPromotionPolicy",
+    "DefaultKnowledgeLifecyclePolicy",
     "DefaultProjectionEligibilityPolicy",
+    "DefaultPromotionPolicy",
     "DefaultWisdomPolicy",
     "DerivedKnowledgePolicy",
     "KnowledgeLifecyclePolicy",
+    "ProjectionEligibilityPolicy",
     "PromotionContext",
     "PromotionDecision",
     "PromotionPolicy",
-    "ProjectionEligibilityPolicy",
     "SourceQueryDecision",
     "WisdomPolicy",
 ]

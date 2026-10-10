@@ -7,31 +7,73 @@ The provider can be selected explicitly with ``KOGWISTAR_CACHE_BACKEND``.
 
 from __future__ import annotations
 
-import os
 import hashlib
+import inspect
+import os
 import pickle
 import sys
+from collections.abc import Callable
 from functools import wraps
 from pathlib import Path
-from typing import Any, Callable, Literal, ParamSpec, Protocol, TypeVar, overload
+from typing import Any, Generic, Literal, ParamSpec, Protocol, TypeVar, cast, overload
 
 P = ParamSpec("P")
 R = TypeVar("R")
+R_co = TypeVar("R_co", covariant=True)
 CacheBackend = Literal["auto", "joblib", "diskcache", "none"]
 
 
-class MemoryLike(Protocol):
+class CachedCallable(Protocol[P, R_co]):
+    """Callable returned by a cache provider for a typed function."""
+
+    def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R_co: ...
+
+    def clear(self, *args: object, **kwargs: object) -> None: ...
+
+    def check_call_in_cache(self, *args: object, **kwargs: object) -> bool: ...
+
+
+class _JoblibModule(Protocol):
+    def hash(self, value: object) -> object: ...
+
+    def dump(self, value: object, filename: str | Path) -> object: ...
+
+    def load(self, filename: str | Path) -> object: ...
+
+
+class CacheProvider(Protocol):
+    """Minimal provider surface required by :class:`CacheMemory`."""
+
+    @overload
+    def cache(
+        self, function: Callable[P, R], **kwargs: object
+    ) -> CachedCallable[P, R]: ...
+
+    @overload
+    def cache(
+        self, function: None = None, **kwargs: object
+    ) -> Callable[[Callable[P, R]], CachedCallable[P, R]]: ...
+
+    def cache(
+        self, function: Callable[P, R] | None = None, **kwargs: object
+    ) -> CachedCallable[P, R] | Callable[[Callable[P, R]], CachedCallable[P, R]]: ...
+
+    def clear(self, *args: object, **kwargs: object) -> None: ...
+
+    def close(self) -> None: ...
+
+
+class MemoryLike(CacheProvider, Protocol):
     """Common cache surface used by Kogwistar call sites."""
 
-    def cache(self, function: Callable[P, R] | None = None, **kwargs: Any) -> Any:
-        ...
+    """Named compatibility protocol for historical cache consumers."""
 
 
 class CacheBackendUnavailable(RuntimeError):
     """Raised when an explicitly requested optional cache provider is absent."""
 
 
-class _FunctionWrapper:
+class _FunctionWrapper(Generic[P, R]):
     def __init__(self, function: Callable[P, R]) -> None:
         self._function = function
         wraps(function)(self)
@@ -42,14 +84,14 @@ class _FunctionWrapper:
     def call(self, *args: P.args, **kwargs: P.kwargs) -> R:
         return self(*args, **kwargs)
 
-    def clear(self, *args: Any, **kwargs: Any) -> None:
+    def clear(self, *args: object, **kwargs: object) -> None:
         clear = getattr(self._function, "clear", None)
         if clear is None:
             clear = getattr(self._function, "cache_clear", None)
         if callable(clear):
             clear(*args, **kwargs)
 
-    def check_call_in_cache(self, *args: Any, **kwargs: Any) -> bool:
+    def check_call_in_cache(self, *args: object, **kwargs: object) -> bool:
         checker = getattr(self._function, "check_call_in_cache", None)
         if callable(checker):
             return bool(checker(*args, **kwargs))
@@ -57,62 +99,88 @@ class _FunctionWrapper:
 
 
 class _NoCacheMemory:
-    def __init__(self, location: str | Path | None = None, **_: Any) -> None:
+    def __init__(self, location: str | Path | None = None, **_: object) -> None:
         self.location = location
 
-    def clear(self, *_: Any, **__: Any) -> None:
+    def clear(self, *_: object, **__: object) -> None:
+        return None
+
+    def close(self) -> None:
         return None
 
     @overload
-    def cache(self, function: Callable[P, R], **kwargs: Any) -> _FunctionWrapper: ...
+    def cache(
+        self, function: Callable[P, R], **kwargs: object
+    ) -> _FunctionWrapper[P, R]: ...
 
     @overload
-    def cache(self, function: None = None, **kwargs: Any) -> Callable[
-        [Callable[P, R]], _FunctionWrapper
-    ]: ...
+    def cache(
+        self, function: None = None, **kwargs: object
+    ) -> Callable[[Callable[P, R]], _FunctionWrapper[P, R]]: ...
 
     def cache(
         self,
         function: Callable[P, R] | None = None,
-        **_: Any,
-    ) -> _FunctionWrapper | Callable[[Callable[P, R]], _FunctionWrapper]:
-        def decorate(fn: Callable[P, R]) -> _FunctionWrapper:
+        **_: object,
+    ) -> _FunctionWrapper[P, R] | Callable[[Callable[P, R]], _FunctionWrapper[P, R]]:
+        def decorate(fn: Callable[P, R]) -> _FunctionWrapper[P, R]:
             return _FunctionWrapper(fn)
 
         return decorate(function) if function is not None else decorate
 
 
 class _DiskCacheMemory:
-    def __init__(self, location: str | Path, **_: Any) -> None:
-        from diskcache import Cache
+    def __init__(self, location: str | Path, **_: object) -> None:
+        from diskcache import Cache  # type: ignore[import-not-found]
 
         self.location = location
         self._cache = Cache(str(location))
 
-    def clear(self, *_: Any, **__: Any) -> None:
+    def clear(self, *_: object, **__: object) -> None:
         self._cache.clear()
 
     def close(self) -> None:
         self._cache.close()
 
     @overload
-    def cache(self, function: Callable[P, R], **kwargs: Any) -> _FunctionWrapper: ...
+    def cache(
+        self, function: Callable[P, R], **kwargs: object
+    ) -> _FunctionWrapper[P, R]: ...
 
     @overload
-    def cache(self, function: None = None, **kwargs: Any) -> Callable[
-        [Callable[P, R]], _FunctionWrapper
-    ]: ...
+    def cache(
+        self, function: None = None, **kwargs: object
+    ) -> Callable[[Callable[P, R]], _FunctionWrapper[P, R]]: ...
 
     def cache(
         self,
         function: Callable[P, R] | None = None,
-        **kwargs: Any,
-    ) -> _FunctionWrapper | Callable[[Callable[P, R]], _FunctionWrapper]:
-        ignored = tuple(kwargs.get("ignore", ()))
-        memoize = self._cache.memoize(ignore=ignored)
+        **kwargs: object,
+    ) -> _FunctionWrapper[P, R] | Callable[[Callable[P, R]], _FunctionWrapper[P, R]]:
+        requested_ignore = tuple(
+            cast(tuple[str | int, ...], kwargs.get("ignore", ()))
+        )
 
-        def decorate(fn: Callable[P, R]) -> _FunctionWrapper:
-            return _FunctionWrapper(memoize(fn))
+        def decorate(fn: Callable[P, R]) -> _FunctionWrapper[P, R]:
+            # Joblib accepts parameter names for positional arguments. DiskCache
+            # requires their positional indexes, so provide both forms where
+            # possible. Keeping names also preserves keyword-call behavior.
+            ignored: set[str | int] = set(requested_ignore)
+            try:
+                parameters = inspect.signature(fn).parameters.values()
+            except (TypeError, ValueError):
+                parameters = ()
+            positional_index = 0
+            for parameter in parameters:
+                if parameter.kind in (
+                    inspect.Parameter.POSITIONAL_ONLY,
+                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                ):
+                    if parameter.name in ignored:
+                        ignored.add(positional_index)
+                    positional_index += 1
+            memoize = self._cache.memoize(ignore=tuple(ignored))
+            return _FunctionWrapper(cast(Callable[P, R], memoize(fn)))
 
         return decorate(function) if function is not None else decorate
 
@@ -141,15 +209,16 @@ class CacheMemory:
         location: str | Path | None = None,
         *,
         backend: CacheBackend | None = None,
-        **kwargs: Any,
+        **kwargs: object,
     ) -> None:
         requested = _requested_backend(backend)
         selected = _selected_backend(requested)
         self.location = location
+        self._delegate: CacheProvider
 
         if selected == "none" or location is None:
             self.backend = "none"
-            self._delegate: Any = _NoCacheMemory(location, **kwargs)
+            self._delegate = _NoCacheMemory(location, **kwargs)
             return
 
         try:
@@ -158,7 +227,10 @@ class CacheMemory:
             else:
                 from joblib import Memory as JoblibMemory
 
-                self._delegate = JoblibMemory(location=location, **kwargs)
+                joblib_kwargs = cast(dict[str, Any], kwargs)
+                self._delegate = cast(
+                    CacheProvider, JoblibMemory(location=location, **joblib_kwargs)
+                )
         except (ImportError, AttributeError) as exc:
             if requested != "auto":
                 raise CacheBackendUnavailable(
@@ -169,10 +241,12 @@ class CacheMemory:
             return
         self.backend = selected
 
-    def cache(self, function: Callable[P, R] | None = None, **kwargs: Any) -> Any:
+    def cache(
+        self, function: Callable[P, R] | None = None, **kwargs: object
+    ) -> CachedCallable[P, R] | Callable[[Callable[P, R]], CachedCallable[P, R]]:
         return self._delegate.cache(function, **kwargs)
 
-    def clear(self, *args: Any, **kwargs: Any) -> None:
+    def clear(self, *args: object, **kwargs: object) -> None:
         clear = getattr(self._delegate, "clear", None)
         if callable(clear):
             clear(*args, **kwargs)
@@ -186,17 +260,17 @@ class CacheMemory:
 Memory = CacheMemory
 
 
-def _joblib_module() -> Any | None:
+def _joblib_module() -> _JoblibModule | None:
     if _selected_backend(_requested_backend(None)) != "joblib":
         return None
     try:
         import joblib
     except (ImportError, AttributeError):
         return None
-    return joblib
+    return cast(_JoblibModule, joblib)
 
 
-def cache_hash(value: Any) -> str:
+def cache_hash(value: object) -> str:
     """Return a stable cache key using Joblib or portable pickle hashing."""
 
     joblib = _joblib_module()
@@ -205,7 +279,7 @@ def cache_hash(value: Any) -> str:
     return hashlib.sha256(pickle.dumps(value, protocol=5)).hexdigest()
 
 
-def cache_dump(value: Any, filename: str | Path) -> Any:
+def cache_dump(value: object, filename: str | Path) -> object:
     """Persist a staged cache value without importing Joblib on PyPy."""
 
     joblib = _joblib_module()
@@ -216,7 +290,7 @@ def cache_dump(value: Any, filename: str | Path) -> Any:
     return [str(filename)]
 
 
-def cache_load(filename: str | Path) -> Any:
+def cache_load(filename: str | Path) -> object:
     """Load a staged cache value using the selected cache provider."""
 
     joblib = _joblib_module()

@@ -8,17 +8,17 @@ import queue
 import threading
 import time
 from collections.abc import Mapping
-from typing import Any, Optional, Protocol
+from typing import Any, Protocol, TypedDict, Unpack, cast
 
 
 class _Span(Protocol):
     def add_event(
-        self, name: str, attributes: Optional[Mapping[str, Any]] = None
+        self, name: str, attributes: Mapping[str, Any] | None = None
     ) -> None: ...
 
     def end(self) -> None: ...
 
-    def set_status(self, status: Any) -> None: ...
+    def set_status(self, status: object) -> None: ...
 
     def record_exception(self, exception: BaseException) -> None: ...
 
@@ -28,22 +28,34 @@ class _Tracer(Protocol):
         self,
         name: str,
         *,
-        context: Any = None,
-        attributes: Optional[Mapping[str, Any]] = None,
+        context: object = None,
+        attributes: Mapping[str, Any] | None = None,
     ) -> _Span: ...
+
+
+class _ContextFactory(Protocol):
+    def __call__(self, span: object, context: object = None) -> object: ...
+
+
+class _SinkOptions(TypedDict, total=False):
+    context_factory: _ContextFactory | None
+    queue_max: int
+    logger: logging.Logger | None
 
 
 def opentelemetry_available() -> bool:
     """Return whether the optional OpenTelemetry API and SDK are installed."""
     try:
-        import opentelemetry.trace  # noqa: F401
-        import opentelemetry.sdk.trace  # noqa: F401
+        import opentelemetry.sdk.trace  # pyright: ignore[reportMissingImports]  # noqa: F401
+        import opentelemetry.trace  # pyright: ignore[reportMissingImports]  # noqa: F401
     except ImportError:
         return False
     return True
 
 
-def try_create_opentelemetry_sink(**kwargs: Any) -> "OpenTelemetrySink | None":
+def try_create_opentelemetry_sink(
+    **kwargs: Unpack[_SinkOptions],
+) -> OpenTelemetrySink | None:
     """Create optional sink, or disable observability when OTel is absent."""
     try:
         return OpenTelemetrySink.from_opentelemetry(**kwargs)
@@ -71,16 +83,16 @@ class OpenTelemetrySink:
         self,
         tracer: _Tracer,
         *,
-        context_factory: Any = None,
+        context_factory: _ContextFactory | None = None,
         queue_max: int = 1_000,
-        logger: Optional[logging.Logger] = None,
+        logger: logging.Logger | None = None,
     ) -> None:
         if queue_max <= 0:
             raise ValueError("queue_max must be positive")
         self._tracer = tracer
         self._context_factory = context_factory
         self._log = logger or logging.getLogger(__name__)
-        self._queue: "queue.Queue[dict[str, Any]]" = queue.Queue(maxsize=queue_max)
+        self._queue: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=queue_max)
         self._stop = threading.Event()
         self._closed = False
         self._lock = threading.Lock()
@@ -100,15 +112,18 @@ class OpenTelemetrySink:
         cls,
         *,
         instrumentation_name: str = "kogwistar.runtime",
-        **kwargs: Any,
-    ) -> "OpenTelemetrySink":
+        **kwargs: Unpack[_SinkOptions],
+    ) -> OpenTelemetrySink:
         """Create sink using installed OTel API; raises ImportError if absent."""
         from opentelemetry import trace
 
+        context_factory = kwargs.pop("context_factory", None)
         return cls(
-            trace.get_tracer(instrumentation_name),
-            context_factory=trace.set_span_in_context,
-            **kwargs,
+            cast(_Tracer, trace.get_tracer(instrumentation_name)),
+            context_factory=context_factory
+            or cast(_ContextFactory, trace.set_span_in_context),
+            queue_max=kwargs.get("queue_max", 1_000),
+            logger=kwargs.get("logger"),
         )
 
     def emit(self, evt: dict[str, Any]) -> None:

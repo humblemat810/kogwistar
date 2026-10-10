@@ -4,8 +4,13 @@ import pytest
 
 from kogwistar.engine_core import GraphKnowledgeEngine
 from kogwistar.engine_core.in_memory_backend import build_in_memory_backend
-from kogwistar.engine_core.models import Edge, Grounding, MentionVerification, Node, Span
-
+from kogwistar.engine_core.models import (
+    Edge,
+    Grounding,
+    MentionVerification,
+    Node,
+    Span,
+)
 
 pytestmark = [pytest.mark.core]
 

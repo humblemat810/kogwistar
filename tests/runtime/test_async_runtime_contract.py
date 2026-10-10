@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import queue
 import time
 
 import pytest
@@ -18,7 +19,6 @@ from kogwistar.runtime.runtime import (
     apply_state_update_inplace,
 )
 from kogwistar.runtime.telemetry import TraceContext
-import queue
 
 pytestmark = [pytest.mark.ci, pytest.mark.runtime, pytest.mark.runtime_async]
 
@@ -84,15 +84,15 @@ def test_async_resolver_runs_two_awaited_handlers_concurrently():
 
 
 def test_async_runtime_native_scheduler_sync_handlers_run_inline_without_to_thread(monkeypatch):
-    from pathlib import Path
     import tempfile
     import uuid
+    from pathlib import Path
 
     from kogwistar.engine_core.engine import GraphKnowledgeEngine
     from kogwistar.engine_core.models import Grounding, Span
     from kogwistar.runtime.models import WorkflowEdge, WorkflowNode
-    from tests.conftest import FakeEmbeddingFunction
     from tests._helpers.fake_backend import build_fake_backend
+    from tests.conftest import FakeEmbeddingFunction
 
     def _g():
         return Grounding(spans=[Span.from_dummy_for_conversation()])
@@ -1414,16 +1414,21 @@ def test_async_runtime_native_scheduler_persists_pending_token_parent_links_on_c
 @pytest.mark.parametrize("terminal_case", ["success", "failure"])
 def test_async_runtime_side_by_side_node_edge_and_terminal_parity(terminal_case):
     """Sync mirror: node/edge parity in `tests/workflow/test_workflow_join.py` and `tests/workflow/test_workflow_native_update.py`."""
-    from pathlib import Path
     import tempfile
     import uuid
+    from pathlib import Path
 
     from kogwistar.engine_core.engine import GraphKnowledgeEngine
     from kogwistar.engine_core.models import Grounding, Span
-    from kogwistar.runtime.models import WorkflowCompletedNode, WorkflowEdge, WorkflowFailedNode, WorkflowNode
+    from kogwistar.runtime.models import (
+        WorkflowCompletedNode,
+        WorkflowEdge,
+        WorkflowFailedNode,
+        WorkflowNode,
+    )
     from kogwistar.runtime.runtime import WorkflowRuntime
-    from tests.conftest import FakeEmbeddingFunction
     from tests._helpers.fake_backend import build_fake_backend
+    from tests.conftest import FakeEmbeddingFunction
 
     def _g():
         return Grounding(spans=[Span.from_dummy_for_conversation()])
@@ -1643,15 +1648,21 @@ def test_async_runtime_side_by_side_node_edge_and_terminal_parity(terminal_case)
 @pytest.mark.parametrize("client_status", ["success", "failure"])
 def test_async_runtime_suspend_and_resume_roundtrip(client_status):
     """Sync mirror: `tests/runtime/test_workflow_suspend_resume.py` roundtrip cases."""
-    from pathlib import Path
     import tempfile
     import uuid
+    from pathlib import Path
 
     from kogwistar.engine_core.engine import GraphKnowledgeEngine
     from kogwistar.engine_core.models import Grounding, Span
-    from kogwistar.runtime.models import RunFailure, RunSuspended, RunSuccess, WorkflowEdge, WorkflowNode
-    from tests.conftest import FakeEmbeddingFunction
+    from kogwistar.runtime.models import (
+        RunFailure,
+        RunSuccess,
+        RunSuspended,
+        WorkflowEdge,
+        WorkflowNode,
+    )
     from tests._helpers.fake_backend import build_fake_backend
+    from tests.conftest import FakeEmbeddingFunction
 
     def _g():
         return Grounding(spans=[Span.from_dummy_for_conversation()])
@@ -1789,16 +1800,21 @@ def test_async_runtime_suspend_and_resume_roundtrip(client_status):
 @pytest.mark.ci_full
 def test_async_runtime_nested_workflow_invocation_matches_sync():
     """Sync mirror: `tests/runtime/test_workflow_invocation_and_route_next.py::test_nested_workflow_synthesized_design_is_persisted_and_used`."""
-    from pathlib import Path
     import tempfile
     import uuid
+    from pathlib import Path
 
     from kogwistar.engine_core.engine import GraphKnowledgeEngine
     from kogwistar.engine_core.models import Grounding, Span
-    from kogwistar.runtime.models import RunSuccess, WorkflowEdge, WorkflowInvocationRequest, WorkflowNode
+    from kogwistar.runtime.models import (
+        RunSuccess,
+        WorkflowEdge,
+        WorkflowInvocationRequest,
+        WorkflowNode,
+    )
     from kogwistar.runtime.runtime import WorkflowRuntime
-    from tests.conftest import FakeEmbeddingFunction
     from tests._helpers.fake_backend import build_fake_backend
+    from tests.conftest import FakeEmbeddingFunction
 
     def _g():
         return Grounding(spans=[Span.from_dummy_for_conversation()])
@@ -1962,16 +1978,22 @@ def test_async_runtime_nested_workflow_invocation_matches_sync():
 @pytest.mark.ci_full
 def test_async_runtime_nested_workflow_child_failure_fails_parent():
     """Sync mirror: `tests/runtime/test_workflow_invocation_and_route_next.py` nested workflow failure semantics; also `tests/runtime/test_workflow_cancel_event_sourced.py`."""
-    from pathlib import Path
     import tempfile
     import uuid
+    from pathlib import Path
 
     from kogwistar.engine_core.engine import GraphKnowledgeEngine
     from kogwistar.engine_core.models import Grounding, Span
-    from kogwistar.runtime.models import RunFailure, RunSuccess, WorkflowEdge, WorkflowInvocationRequest, WorkflowNode
+    from kogwistar.runtime.models import (
+        RunFailure,
+        RunSuccess,
+        WorkflowEdge,
+        WorkflowInvocationRequest,
+        WorkflowNode,
+    )
     from kogwistar.runtime.runtime import WorkflowRuntime
-    from tests.conftest import FakeEmbeddingFunction
     from tests._helpers.fake_backend import build_fake_backend
+    from tests.conftest import FakeEmbeddingFunction
 
     def _g():
         return Grounding(spans=[Span.from_dummy_for_conversation()])
@@ -2125,15 +2147,20 @@ def test_async_runtime_nested_workflow_child_failure_fails_parent():
 @pytest.mark.ci_full
 def test_async_runtime_parent_cancellation_propagates_to_child():
     """Sync mirror: `tests/runtime/test_workflow_suspend_resume.py` cancellation propagation; also `tests/runtime/test_workflow_cancel_event_sourced.py`."""
-    from pathlib import Path
     import tempfile
     import uuid
+    from pathlib import Path
 
     from kogwistar.engine_core.engine import GraphKnowledgeEngine
     from kogwistar.engine_core.models import Grounding, Span
-    from kogwistar.runtime.models import RunSuccess, WorkflowEdge, WorkflowInvocationRequest, WorkflowNode
-    from tests.conftest import FakeEmbeddingFunction
+    from kogwistar.runtime.models import (
+        RunSuccess,
+        WorkflowEdge,
+        WorkflowInvocationRequest,
+        WorkflowNode,
+    )
     from tests._helpers.fake_backend import build_fake_backend
+    from tests.conftest import FakeEmbeddingFunction
 
     def _g():
         return Grounding(spans=[Span.from_dummy_for_conversation()])
@@ -2975,8 +3002,8 @@ async def test_async_runtime_suspend_with_join_waiter_returns_suspended_when_idl
     tmp_path, request, backend_kind
 ):
     """Sync mirror: `tests/runtime/test_workflow_suspend_resume.py::test_workflow_suspend_with_join_waiter_returns_suspended_when_idle`."""
-    from contextlib import contextmanager
     import uuid
+    from contextlib import contextmanager
 
     from kogwistar.engine_core.engine import GraphKnowledgeEngine
     from kogwistar.engine_core.models import Grounding, Span

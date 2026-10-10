@@ -4,13 +4,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from kogwistar.engine_core.subsystems.read import ReadSubsystem
 from kogwistar.engine_core.rust_postgres_session import (
     RustEnginePostgresMetaStore,
     RustPostgresConnectionUnavailable,
     RustPostgresSession,
 )
-
+from kogwistar.engine_core.subsystems.read import ReadSubsystem
 
 pytestmark = [pytest.mark.ci, pytest.mark.core]
 

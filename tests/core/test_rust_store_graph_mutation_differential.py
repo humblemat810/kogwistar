@@ -12,7 +12,6 @@ from kogwistar._rust_bridge import RustParityError, store_postgres
 from kogwistar.engine_core.engine_postgres_meta import EnginePostgresMetaStore
 from kogwistar.engine_core.postgres_backend import PgVectorBackend
 
-
 pytestmark = [pytest.mark.ci_full, pytest.mark.core]
 
 

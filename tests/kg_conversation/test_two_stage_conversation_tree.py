@@ -10,12 +10,11 @@ from kogwistar.graph_query import GraphQuery
 from tests._helpers.embeddings import build_test_embedding_function
 from tests._helpers.fake_backend import build_fake_backend
 from tests._helpers.graph_builders import build_entity_node, build_relationship_edge
-from tests.core.test_two_stage_chroma import _engine as _chroma_test_engine
 from tests.core._async_chroma_real import (
     make_real_async_chroma_backend,
     real_chroma_server,  # noqa: F401
 )
-
+from tests.core.test_two_stage_chroma import _engine as _chroma_test_engine
 
 pytestmark = pytest.mark.conversation
 

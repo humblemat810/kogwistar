@@ -4,7 +4,6 @@ import pytest
 
 from kogwistar import rust_server
 
-
 pytestmark = [pytest.mark.ci, pytest.mark.core]
 
 

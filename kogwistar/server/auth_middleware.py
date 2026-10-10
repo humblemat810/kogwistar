@@ -8,25 +8,26 @@ import logging
 import os
 import threading
 import traceback
-from pathlib import Path
 from contextvars import ContextVar
 from enum import Enum
-from typing import TYPE_CHECKING
+from pathlib import Path
+from typing import TYPE_CHECKING, Callable, cast
 
 try:
-    from dotenv import load_dotenv
+    from dotenv import load_dotenv as _load_dotenv  # pyright: ignore[reportAssignmentType]
 except ModuleNotFoundError:
 
-    def load_dotenv(*args, **kwargs):
+    def _load_dotenv(*args: object, **kwargs: object) -> bool:
         return False
-
 
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 from jose import JWTError, jwt
-from starlette.types import Receive, Scope, Send
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from kogwistar.shortids import run_id_scope
+
+load_dotenv: Callable[..., bool] = cast(Callable[..., bool], cast(object, _load_dotenv))
 
 if TYPE_CHECKING:
     pass
@@ -34,7 +35,8 @@ if TYPE_CHECKING:
 
 load_dotenv()
 logger = logging.getLogger(__name__)
-_auth_app = None
+_auth_app: object | None = None
+Claims = dict[str, object]
 
 
 def _runtime_env_jwt_settings() -> dict[str, str | None]:
@@ -54,7 +56,7 @@ def _runtime_env_jwt_settings() -> dict[str, str | None]:
     return settings
 
 
-def _resolve_stateful_app(app):
+def _resolve_stateful_app(app: object | None) -> object | None:
     current = app
     seen: set[int] = set()
     for _ in range(8):
@@ -70,7 +72,7 @@ def _resolve_stateful_app(app):
     return None
 
 
-def get_app_jwt_settings(app=None) -> dict[str, str | None]:
+def get_app_jwt_settings(app: object | None = None) -> dict[str, str | None]:
     target = _resolve_stateful_app(app if app is not None else _auth_app)
     state = getattr(target, "state", None)
     if state is None:
@@ -143,7 +145,7 @@ _existing_claims_ctx = globals().get("claims_ctx")
 if isinstance(_existing_claims_ctx, contextvars.ContextVar):
     claims_ctx = _existing_claims_ctx
 else:
-    claims_ctx: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
+    claims_ctx: contextvars.ContextVar[Claims | None] = contextvars.ContextVar(
         "claims", default=None
     )
 
@@ -191,7 +193,7 @@ def _append_auth_debug_log(record: dict) -> None:
         logger.exception("auth probe write failed")
 
 
-def _auth_probe(event: str, **extra) -> None:
+def _auth_probe(event: str, **extra: object) -> None:
     if not _auth_debug_probe_enabled():
         return
     payload = {
@@ -233,29 +235,31 @@ def _secret_fingerprint(secret: str | None) -> dict[str, object]:
     }
 
 
-def set_claims_ctx(claims: dict | None):
+def set_claims_ctx(claims: Claims | None) -> contextvars.Token[Claims | None]:
     token = claims_ctx.set(claims)
     _auth_probe("claims_set", claims=claims)
     return token
 
 
-def reset_claims_ctx(token) -> None:
+def reset_claims_ctx(token: contextvars.Token[Claims | None]) -> None:
     claims_ctx.reset(token)
     _auth_probe("claims_reset", claims=claims_ctx.get())
 
 
-def set_current_role(role: str):
+def set_current_role(role: str) -> contextvars.Token[str]:
     token = current_role.set(role)
     _auth_probe("current_role_set", role=role)
     return token
 
 
-def reset_current_role(token) -> None:
+def reset_current_role(token: contextvars.Token[str]) -> None:
     current_role.reset(token)
     _auth_probe("current_role_reset", role=current_role.get())
 
 
-def verify_jwt(token: str, jwt_settings: dict[str, str | None] | None = None) -> dict:
+def verify_jwt(
+    token: str, jwt_settings: dict[str, str | None] | None = None
+) -> Claims:
     """
     Validates a JWT and returns claims. Works for HS256 or RS256 depending on env.
     - HS256: set JWT_ALG=HS256 and JWT_SECRET=<shared secret>
@@ -312,7 +316,7 @@ def _decode_role_from_headers(
 class DevStreamGuardMiddleware:
     """Dev-only ASGI guard that downgrades expected stream disconnect noise."""
 
-    def __init__(self, app):
+    def __init__(self, app: ASGIApp) -> None:
         self.app = app
         self.enabled = str(os.getenv("DEV_STREAM_GUARD", "1")).strip().lower() in {
             "1",
@@ -347,7 +351,7 @@ class DevStreamGuardMiddleware:
             return True
         return isinstance(exc, RuntimeError) and str(exc) == "No response returned."
 
-    async def __call__(self, scope: Scope, receive, send):
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if not self._applies(scope):
             await self.app(scope, receive, send)
             return
@@ -360,10 +364,10 @@ class DevStreamGuardMiddleware:
 
 
 class JWTProtectMiddleware:
-    def __init__(self, app):
+    def __init__(self, app: ASGIApp) -> None:
         self.app = app
 
-    async def __call__(self, scope: Scope, receive: Receive, send: Send):
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope.get("type") != "http":
             await self.app(scope, receive, send)
             return
@@ -446,7 +450,7 @@ def get_current_role() -> str:
     return DEFAULT_ROLE
 
 
-def require_role(min_role: str = "ro"):
+def require_role(min_role: str = "ro") -> None:
     user_role = get_current_role()
     if ROLE_ORDER.get(user_role, 0) < ROLE_ORDER.get(min_role, 0):
         _auth_probe(
@@ -549,8 +553,10 @@ def get_current_capabilities() -> set[str]:
     caps = claims.get("capabilities") or claims.get("caps") or []
     if isinstance(caps, str):
         raw_items = [caps]
+    elif isinstance(caps, list):
+        raw_items = caps
     else:
-        raw_items = list(caps)
+        raw_items = []
     out = {
         str(item).strip().lower()
         for item in raw_items
@@ -572,7 +578,8 @@ def get_current_subject() -> str | None:
 
 def get_current_user_id() -> str | None:
     claims = claims_ctx.get() or {}
-    return claims.get("user_id")
+    user_id = claims.get("user_id")
+    return user_id if isinstance(user_id, str) else None
 
 
 def get_current_agent_id() -> str | None:
@@ -606,7 +613,9 @@ def _normalize_namespaces(
     return allowed
 
 
-def require_namespace(expected: set[NameSpace] | NameSpace | set[str] | str):
+def require_namespace(
+    expected: set[NameSpace] | NameSpace | set[str] | str,
+) -> str:
     allowed = _normalize_namespaces(expected)
     actuals = get_current_namespaces()
 
@@ -623,7 +632,7 @@ def require_namespace(expected: set[NameSpace] | NameSpace | set[str] | str):
     )
 
 
-def require_security_scope(expected: set[str] | str):
+def require_security_scope(expected: set[str] | str) -> str:
     if isinstance(expected, set):
         allowed = {str(item).lower() for item in expected if str(item).strip()}
     else:
@@ -670,7 +679,7 @@ def require_security_scope_access(
     )
 
 
-def require_capability(expected: set[str] | str):
+def require_capability(expected: set[str] | str) -> str | None:
     if isinstance(expected, set):
         allowed = {str(item).strip().lower() for item in expected if str(item).strip()}
     else:
@@ -684,13 +693,13 @@ def require_capability(expected: set[str] | str):
     )
 
 
-def set_auth_app(app) -> None:
+def set_auth_app(app: object) -> None:
     global _auth_app
     _auth_app = app
     get_app_jwt_settings(app)
 
 
-def require_workflow_access(workflow_id: str, required_role: str = "ro"):
+def require_workflow_access(workflow_id: str, required_role: str = "ro") -> None:
     user_id = get_current_user_id()
     if not user_id:
         # For dev-token users, we might want to bypass or have a default
@@ -700,8 +709,14 @@ def require_workflow_access(workflow_id: str, required_role: str = "ro"):
         raise RuntimeError("Auth app not configured")
 
     # Injected AuthService
-    auth_service = _auth_app.state.auth_service
-    if not auth_service.check_workflow_access(workflow_id, user_id, required_role):
+    state = getattr(_auth_app, "state", None)
+    auth_service = getattr(state, "auth_service", None)
+    check_access = getattr(auth_service, "check_workflow_access", None)
+    if not callable(check_access):
+        raise RuntimeError("Auth service is not configured")
+    if not cast(Callable[[str, str, str], bool], check_access)(
+        workflow_id, user_id, required_role
+    ):
         raise HTTPException(
             status_code=403,
             detail=f"Forbidden: user {user_id} does not have {required_role} access to workflow {workflow_id}",
@@ -709,45 +724,45 @@ def require_workflow_access(workflow_id: str, required_role: str = "ro"):
 
 
 __all__ = [
-    "JWT_ALG",
-    "JWT_SECRET",
-    "JWT_ISS",
-    "JWT_AUD",
-    "get_jwt_alg",
-    "get_jwt_secret",
-    "get_jwt_iss",
-    "get_jwt_aud",
-    "PROTECTED_PREFIXES",
-    "Role",
-    "NameSpace",
-    "ROLE_ORDER",
-    "DEFAULT_ROLE",
     "DEFAULT_NAMESPACE",
-    "claims_ctx",
-    "current_role",
-    "_decode_role_from_headers",
-    "verify_jwt",
+    "DEFAULT_ROLE",
+    "JWT_ALG",
+    "JWT_AUD",
+    "JWT_ISS",
+    "JWT_SECRET",
+    "PROTECTED_PREFIXES",
+    "ROLE_ORDER",
     "DevStreamGuardMiddleware",
     "JWTProtectMiddleware",
-    "get_current_role",
-    "require_role",
-    "get_current_namespaces",
-    "get_storage_namespace",
-    "get_execution_namespace",
-    "get_security_scope",
-    "get_security_scope_parts",
+    "NameSpace",
+    "Role",
+    "_decode_role_from_headers",
+    "_normalize_namespaces",
+    "can_access_security_scope",
+    "claims_ctx",
+    "current_role",
     "describe_storage_security_mapping",
+    "get_current_agent_id",
+    "get_current_capabilities",
+    "get_current_namespaces",
+    "get_current_role",
     "get_current_subject",
     "get_current_user_id",
-    "get_current_capabilities",
+    "get_execution_namespace",
+    "get_jwt_alg",
+    "get_jwt_aud",
+    "get_jwt_iss",
+    "get_jwt_secret",
+    "get_security_scope",
+    "get_security_scope_parts",
+    "get_storage_namespace",
     "has_explicit_capabilities_claim",
-    "get_current_agent_id",
-    "require_namespace",
-    "require_security_scope",
-    "can_access_security_scope",
-    "require_security_scope_access",
     "require_capability",
-    "_normalize_namespaces",
-    "set_auth_app",
+    "require_namespace",
+    "require_role",
+    "require_security_scope",
+    "require_security_scope_access",
     "require_workflow_access",
+    "set_auth_app",
+    "verify_jwt",
 ]

@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """PostgreSQL + pgvector backend.
 
 This module provides a *Chroma-shaped* backend surface so `engine.py` can swap
@@ -39,28 +37,44 @@ Index/materialization collections (non-vector):
 
 """
 
+from __future__ import annotations
+
 import asyncio
+import contextvars
 import hashlib
 import inspect
+import json
 import os
 import re
-import threading
 import sys
+import threading
 import time
-from dataclasses import dataclass
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Iterator, Sequence
 from contextlib import asynccontextmanager, contextmanager
-import contextvars
-import json
-from typing import Any, AsyncIterator, cast, Dict, List, Optional, Sequence, Set, Tuple
+from dataclasses import dataclass
+from typing import Any, Protocol, TypeVar, cast
 
 import sqlalchemy as sa
-from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
+from sqlalchemy import event
 from sqlalchemy.dialects import postgresql as psql
+from sqlalchemy.engine import Connection, Engine
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from ..utils.embedding_vectors import normalize_embedding_rows, normalize_embedding_vector
+from ..json_types import JsonValue
+from ..utils.embedding_vectors import (
+    normalize_embedding_rows,
+    normalize_embedding_vector,
+)
 from .async_compat import run_awaitable_blocking
 from .embedding_profile import EmbeddingProfileError, EmbeddingStorageState
-from .storage_backend import AtomicMutationCapability
+from .storage_backend import (
+    AsyncTwoStageProjectionAdapter,
+    AtomicMutationCapability,
+    TwoStageProjectionAdapter,
+    TwoStageProjectionCapability,
+)
+
+_T = TypeVar("_T")
 
 try:
     # pip install pgvector
@@ -72,7 +86,30 @@ else:
     _pgvector_import_error = None
 
 
-Json = Dict[str, Any]
+Json = dict[str, JsonValue]
+class _CursorLike(Protocol):
+    def execute(self, statement: str, parameters: tuple[str, ...]) -> object: ...
+
+    def close(self) -> None: ...
+
+
+class _DbapiConnectionLike(Protocol):
+    def cursor(self) -> _CursorLike: ...
+
+
+class _ConnectionRecordLike(Protocol):
+    info: dict[str, object]
+
+
+def _require_json_object(value: JsonValue, *, name: str) -> Json:
+    if not isinstance(value, dict):
+        raise TypeError(f"{name} must be an object")
+    return cast(Json, value)
+
+
+def _json_value(value: object) -> JsonValue:
+    """Narrow values assembled from SQLAlchemy rows at the JSON boundary."""
+    return cast(JsonValue, value)
 JSONB = psql.JSONB
 
 
@@ -103,7 +140,7 @@ class PgVectorSchemaMismatchError(EmbeddingProfileError):
         self.expected_dimension = expected_dimension
         self.mismatches = tuple(mismatches)
         observed = "; ".join(
-            f'{schema}.{item.table_name}.{item.column_name} is {item.type_name}'
+            f"{schema}.{item.table_name}.{item.column_name} is {item.type_name}"
             for item in self.mismatches
         )
         super().__init__(
@@ -124,16 +161,16 @@ def _parse_vector_dimension(type_name: object) -> int | None:
 
 
 class _AwaitableValue:
-    def __init__(self, value: Any):
+    def __init__(self, value: object) -> None:
         self._value = value
 
-    def __await__(self):
-        async def _done():
+    def __await__(self) -> Iterator[object]:
+        async def _done() -> object:
             return self._value
 
         return _done().__await__()
 
-    def __getattr__(self, name: str) -> Any:
+    def __getattr__(self, name: str) -> object:
         return getattr(self._value, name)
 
     def __bool__(self) -> bool:
@@ -144,26 +181,26 @@ class _AwaitableValue:
 
 
 class _AwaitableDict(dict):
-    def __await__(self):
-        async def _done():
+    def __await__(self) -> Iterator[object]:
+        async def _done() -> _AwaitableDict:
             return self
 
         return _done().__await__()
 
 
-def _awaitable_result(value: Any) -> Any:
+def _awaitable_result(value: _T) -> _T:
     if isinstance(value, dict):
-        return _AwaitableDict(value)
-    return _AwaitableValue(value)
+        return cast(_T, _AwaitableDict(value))
+    return cast(_T, _AwaitableValue(value))
 
 
-_pg_uow_conn: contextvars.ContextVar[Any | None] = contextvars.ContextVar(
+_pg_uow_conn: contextvars.ContextVar[object | None] = contextvars.ContextVar(
     "gke_pg_uow_conn", default=None
 )
 
 
 @contextmanager
-def _set_active_conn(conn: Any):
+def _set_active_conn(conn: object) -> Iterator[None]:
     token = _pg_uow_conn.set(conn)
     try:
         yield
@@ -171,21 +208,25 @@ def _set_active_conn(conn: Any):
         _pg_uow_conn.reset(token)
 
 
-def get_active_conn() -> Any | None:
+def get_active_conn() -> object | None:
     return _pg_uow_conn.get()
 
 
-def _install_connection_observability(engine: sa.Engine | AsyncEngine, *, component: str) -> None:
+def _install_connection_observability(
+    engine: sa.Engine | AsyncEngine, *, component: str
+) -> None:
     """Tag checked-out PostgreSQL connections with their Python owner."""
 
     sync_engine = engine.sync_engine if isinstance(engine, AsyncEngine) else engine
 
-    @sa.event.listens_for(sync_engine, "checkout")
-    def _tag_connection(dbapi_connection, connection_record, connection_proxy) -> None:
+    @event.listens_for(sync_engine, "checkout")
+    def _tag_connection(
+        dbapi_connection: _DbapiConnectionLike,
+        connection_record: _ConnectionRecordLike,
+        connection_proxy: object,
+    ) -> None:
         del connection_proxy
-        label = (
-            f"kogwistar:{component}:p{os.getpid()}:t{threading.get_ident()}"
-        )[:63]
+        label = (f"kogwistar:{component}:p{os.getpid()}:t{threading.get_ident()}")[:63]
         connection_record.info["kogwistar_application_name"] = label
         cursor = dbapi_connection.cursor()
         try:
@@ -194,15 +235,15 @@ def _install_connection_observability(engine: sa.Engine | AsyncEngine, *, compon
             cursor.close()
 
 
-def _run_coro_sync(coro):
+def _run_coro_sync(coro: Awaitable[_T]) -> _T:
     if sys.platform == "win32":
         runner = asyncio.Runner(loop_factory=asyncio.SelectorEventLoop)
         try:
             try:
                 asyncio.get_running_loop()
             except RuntimeError:
-                return runner.run(coro)
-            box: dict[str, Any] = {}
+                return runner.run(cast(Coroutine[Any, Any, _T], coro))
+            box: dict[str, object] = {}
 
             def _worker() -> None:
                 try:
@@ -214,15 +255,15 @@ def _run_coro_sync(coro):
             thread.start()
             thread.join()
             if "error" in box:
-                raise box["error"]
-            return box.get("result")
+                raise cast(BaseException, box["error"])
+            return cast(_T, box.get("result"))
         finally:
             runner.close()
     try:
         asyncio.get_running_loop()
     except RuntimeError:
-        return asyncio.run(coro)
-    box: dict[str, Any] = {}
+        return asyncio.run(cast(Coroutine[Any, Any, _T], coro))
+    box: dict[str, object] = {}
 
     def _worker() -> None:
         try:
@@ -234,8 +275,8 @@ def _run_coro_sync(coro):
     thread.start()
     thread.join()
     if "error" in box:
-        raise box["error"]
-    return box.get("result")
+        raise cast(BaseException, box["error"])
+    return cast(_T, box.get("result"))
 
 
 class PostgresUnitOfWork:
@@ -244,11 +285,11 @@ class PostgresUnitOfWork:
     PgVectorBackend methods will *join* the active connection if one is set.
     """
 
-    def __init__(self, *, engine: sa.Engine):
+    def __init__(self, *, engine: sa.Engine) -> None:
         self._engine = engine
 
     @contextmanager
-    def transaction(self):
+    def transaction(self) -> Iterator[None]:
         existing = get_active_conn()
         if existing is not None:
             # Join outer transaction
@@ -263,7 +304,7 @@ class PostgresUnitOfWork:
 class AsyncPostgresUnitOfWork:
     """Async transaction wrapper for async SQLAlchemy Postgres engines."""
 
-    def __init__(self, *, engine: AsyncEngine):
+    def __init__(self, *, engine: AsyncEngine) -> None:
         self._engine = engine
 
     @asynccontextmanager
@@ -318,7 +359,10 @@ def postgres_connect_args(cfg: PgVectorConfig) -> dict[str, str]:
         options.extend(["-c", f"statement_timeout={int(cfg.statement_timeout_ms)}"])
     if cfg.idle_transaction_timeout_ms is not None:
         options.extend(
-            ["-c", f"idle_in_transaction_session_timeout={int(cfg.idle_transaction_timeout_ms)}"]
+            [
+                "-c",
+                f"idle_in_transaction_session_timeout={int(cfg.idle_transaction_timeout_ms)}",
+            ]
         )
     args: dict[str, str] = {"application_name": cfg.application_name}
     if options:
@@ -342,13 +386,14 @@ class PgCollectionFacade:
     """Small, precise adapter that implements the repeated Chroma-shaped verbs."""
 
     def __init__(
-        self, backend: "PgVectorBackend", table: sa.Table, spec: CollectionSpec
-    ):
+        self, backend: PgVectorBackend, table: sa.Table, spec: CollectionSpec
+    ) -> None:
         self._b = backend
         self._t = table
         self._s = spec
 
-    def _call_async(self, fn):
+    def _call_async(self, fn: Callable[[], _T]) -> _T:
+        """Preserve the facade's historical sync/async return convention."""
         return fn()
 
     def add(
@@ -357,12 +402,12 @@ class PgCollectionFacade:
         ids: Sequence[str],
         documents: Sequence[str],
         metadatas: Sequence[Json],
-        embeddings: Optional[Sequence[Sequence[float]]] = None,
+        embeddings: Sequence[Sequence[float]] | None = None,
     ) -> None:
         if self._s.ignore_embeddings:
             embeddings = None
         if self._b._is_async_engine:
-            return self._call_async(
+            return cast(None, self._call_async(
                 lambda: self._b._upsert_async(
                     self._t,
                     ids=ids,
@@ -370,14 +415,16 @@ class PgCollectionFacade:
                     metadatas=metadatas,
                     embeddings=embeddings,
                 )
+            ))
+        return _awaitable_result(
+            self._b._upsert(
+                self._t,
+                ids=ids,
+                documents=documents,
+                metadatas=metadatas,
+                embeddings=embeddings,
             )
-        return _awaitable_result(self._b._upsert(
-            self._t,
-            ids=ids,
-            documents=documents,
-            metadatas=metadatas,
-            embeddings=embeddings,
-        ))
+        )
 
     def upsert(
         self,
@@ -385,7 +432,7 @@ class PgCollectionFacade:
         ids: Sequence[str],
         documents: Sequence[str],
         metadatas: Sequence[Json],
-        embeddings: Optional[Sequence[Sequence[float]]] = None,
+        embeddings: Sequence[Sequence[float]] | None = None,
     ) -> None:
         return self.add(
             ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings
@@ -394,45 +441,47 @@ class PgCollectionFacade:
     def get(
         self,
         *,
-        ids: Optional[Sequence[str]] = None,
-        where: Optional[Json] = None,
-        include: Optional[List[str]] = None,
+        ids: Sequence[str] | None = None,
+        where: Json | None = None,
+        include: list[str] | None = None,
         limit: int = 200,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, JsonValue]:
         include = include or ["documents", "metadatas"]
         if self._b._is_async_engine:
-            return self._call_async(
+            return cast(dict[str, JsonValue], self._call_async(
                 lambda: self._b._get_flat_async(
                     self._t, ids=ids, where=where, include=include, limit=limit
                 )
+            ))
+        return _awaitable_result(
+            self._b._get_flat(
+                self._t, ids=ids, where=where, include=include, limit=limit
             )
-        return _awaitable_result(self._b._get_flat(
-            self._t, ids=ids, where=where, include=include, limit=limit
-        ))
+        )
 
     def delete(
-        self, *, ids: Optional[Sequence[str]] = None, where: Optional[Json] = None
+        self, *, ids: Sequence[str] | None = None, where: Json | None = None
     ) -> None:
         if self._b._is_async_engine:
-            return self._call_async(
+            return cast(None, self._call_async(
                 lambda: self._b._delete_async(self._t, ids=ids, where=where)
-            )
+            ))
         return _awaitable_result(self._b._delete(self._t, ids=ids, where=where))
 
     def query(
         self,
         *,
-        query_embeddings: Optional[Sequence[Sequence[float]]] = None,
+        query_embeddings: Sequence[Sequence[float]] | None = None,
         n_results: int = 10,
-        where: Optional[Json] = None,
-        include: Optional[List[str]] = None,
-    ) -> Dict[str, Any]:
+        where: Json | None = None,
+        include: list[str] | None = None,
+    ) -> dict[str, JsonValue]:
         if self._s.vector:
             include = include or ["documents", "metadatas", "distances"]
             if query_embeddings is None:
                 raise ValueError("query_embeddings is required for vector collections")
             if self._b._is_async_engine:
-                return self._call_async(
+                return cast(dict[str, JsonValue], self._call_async(
                     lambda: self._b._query_vector_async(
                         self._t,
                         query_embeddings=query_embeddings,
@@ -440,33 +489,37 @@ class PgCollectionFacade:
                         where=where,
                         include=include,
                     )
+                ))
+            return _awaitable_result(
+                self._b._query_vector(
+                    self._t,
+                    query_embeddings=query_embeddings,
+                    n_results=n_results,
+                    where=where,
+                    include=include,
                 )
-            return _awaitable_result(self._b._query_vector(
-                self._t,
-                query_embeddings=query_embeddings,
-                n_results=n_results,
-                where=where,
-                include=include,
-            ))
+            )
 
         include = include or ["documents", "metadatas"]
         if self._b._is_async_engine:
-            return self._call_async(
+            return cast(dict[str, JsonValue], self._call_async(
                 lambda: self._b._query_nonvector_async(
                     self._t, where=where, n_results=n_results, include=include
                 )
+            ))
+        return _awaitable_result(
+            self._b._query_nonvector(
+                self._t, where=where, n_results=n_results, include=include
             )
-        return _awaitable_result(self._b._query_nonvector(
-            self._t, where=where, n_results=n_results, include=include
-        ))
+        )
 
     def update(
         self,
         *,
         ids: Sequence[str],
-        documents: Optional[Sequence[Optional[str]]] = None,
-        metadatas: Optional[Sequence[Json]] = None,
-        embeddings: Optional[Sequence[Sequence[float]]] = None,
+        documents: Sequence[str | None] | None = None,
+        metadatas: Sequence[Json] | None = None,
+        embeddings: Sequence[Sequence[float]] | None = None,
     ) -> None:
         """Chroma-shaped update.
 
@@ -477,7 +530,7 @@ class PgCollectionFacade:
         if self._s.ignore_embeddings:
             embeddings = None
         if self._b._is_async_engine:
-            return self._call_async(
+            return cast(None, self._call_async(
                 lambda: self._b._update_doc_meta_embedding_merge_async(
                     self._t,
                     ids=ids,
@@ -485,21 +538,23 @@ class PgCollectionFacade:
                     metadatas=metadatas,
                     embeddings=embeddings,
                 )
+            ))
+        return _awaitable_result(
+            self._b._update_doc_meta_embedding_merge(
+                self._t,
+                ids=ids,
+                documents=documents,
+                metadatas=metadatas,
+                embeddings=embeddings,
             )
-        return _awaitable_result(self._b._update_doc_meta_embedding_merge(
-            self._t,
-            ids=ids,
-            documents=documents,
-            metadatas=metadatas,
-            embeddings=embeddings,
-        ))
+        )
 
 
 # ----------------------------
 # where DSL → SQLAlchemy
 # ----------------------------
 
-_NUMERIC_KEYS_DEFAULT: Set[str] = {"seq"}
+_NUMERIC_KEYS_DEFAULT: set[str] = {"seq"}
 
 
 def _json_text(metadata_col: sa.ColumnElement, key: str) -> sa.ColumnElement:
@@ -510,9 +565,9 @@ def _json_text(metadata_col: sa.ColumnElement, key: str) -> sa.ColumnElement:
 def _json_typed(
     metadata_col: sa.ColumnElement,
     key: str,
-    rhs: Any,
+    rhs: object,
     *,
-    numeric_keys: Set[str],
+    numeric_keys: set[str],
 ) -> sa.ColumnElement:
     """
     Return a SQLAlchemy expression for metadata[key] with an appropriate type.
@@ -558,7 +613,7 @@ def where_jsonb(
     metadata_col: sa.ColumnElement,
     where: Json,
     *,
-    numeric_keys: Optional[Set[str]] = None,
+    numeric_keys: set[str] | None = None,
 ) -> sa.ColumnElement:
     """Translate a Chroma-like `where` dict into a SQLAlchemy boolean expression over JSONB.
 
@@ -583,7 +638,11 @@ def where_jsonb(
         return (
             sa.and_(
                 *[
-                    where_jsonb(metadata_col, p, numeric_keys=numeric_keys_set)
+                    where_jsonb(
+                        metadata_col,
+                        _require_json_object(p, name="$and item"),
+                        numeric_keys=numeric_keys_set,
+                    )
                     for p in parts
                 ]
             )
@@ -598,7 +657,11 @@ def where_jsonb(
         return (
             sa.or_(
                 *[
-                    where_jsonb(metadata_col, p, numeric_keys=numeric_keys_set)
+                    where_jsonb(
+                        metadata_col,
+                        _require_json_object(p, name="$or item"),
+                        numeric_keys=numeric_keys_set,
+                    )
                     for p in parts
                 ]
             )
@@ -606,7 +669,7 @@ def where_jsonb(
             else sa.true()
         )
 
-    clauses: List[sa.ColumnElement] = []
+    clauses: list[sa.ColumnElement] = []
     for k, v in where.items():
         if k in ("$and", "$or"):
             continue
@@ -629,9 +692,18 @@ def where_jsonb(
                 if isinstance(sample, bool):
                     rhs_list = [bool(x) for x in vals]
                 elif isinstance(sample, int) and not isinstance(sample, bool):
-                    rhs_list = [int(x) for x in vals]
+                    if not all(
+                        isinstance(x, int) and not isinstance(x, bool) for x in vals
+                    ):
+                        raise TypeError(f"$in for {k} must contain integers")
+                    rhs_list = [int(cast(int, x)) for x in vals]
                 elif isinstance(sample, float):
-                    rhs_list = [float(x) for x in vals]
+                    if not all(
+                        isinstance(x, (int, float)) and not isinstance(x, bool)
+                        for x in vals
+                    ):
+                        raise TypeError(f"$in for {k} must contain numbers")
+                    rhs_list = [float(cast(int | float, x)) for x in vals]
                 else:
                     rhs_list = [str(x) for x in vals]
 
@@ -678,6 +750,9 @@ class PgVectorBackend:
         mode="atomic",
         reason="PostgreSQL backend joins the engine SQL transaction",
     )
+    two_stage_projection_capability: TwoStageProjectionCapability
+    two_stage_projection_adapter: TwoStageProjectionAdapter | None
+    async_two_stage_projection_adapter: AsyncTwoStageProjectionAdapter | None
 
     @staticmethod
     def _normalize_distance(distance: str) -> str:
@@ -723,8 +798,8 @@ class PgVectorBackend:
         edge_refs_table: str = "gke_edge_refs",
         node_docs_table: str = "gke_node_docs",
         node_refs_table: str = "gke_node_refs",
-        numeric_keys: Optional[Set[str]] = None,
-    ):
+        numeric_keys: set[str] | None = None,
+    ) -> None:
         if Vector is None:  # pragma: no cover
             raise RuntimeError(
                 "pgvector is not installed. Install with `pip install pgvector` to use PgVectorBackend."
@@ -801,10 +876,17 @@ class PgVectorBackend:
             sa.Column("entity_kind", sa.String, nullable=False),
             sa.Column("entity_id", sa.String, nullable=False),
             sa.Column("document", sa.Text, nullable=False),
-            sa.Column("metadata", JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")),
+            sa.Column(
+                "metadata", JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")
+            ),
             sa.Column("source_fingerprint", sa.String, nullable=False),
             sa.Column("revision", sa.BigInteger, nullable=False, server_default="0"),
-            sa.Column("materialization_status", sa.String, nullable=False, server_default="'pending'"),
+            sa.Column(
+                "materialization_status",
+                sa.String,
+                nullable=False,
+                server_default="'pending'",
+            ),
             sa.Column("updated_at_ms", sa.BigInteger, nullable=False),
             sa.PrimaryKeyConstraint("namespace", "entity_kind", "entity_id"),
         )
@@ -1006,11 +1088,15 @@ class PgVectorBackend:
         if self._is_async_engine:
             return run_awaitable_blocking(self.inspect_embedding_storage_async())
         tables = (self.nodes, self.edges, self.documents, self.domains)
-        with self.engine.connect() as conn:
+        with cast(Engine, self.engine).connect() as conn:
             counts = tuple(
                 (
                     table.name,
-                    int(conn.execute(sa.select(sa.func.count()).select_from(table)).scalar_one()),
+                    int(
+                        conn.execute(
+                            sa.select(sa.func.count()).select_from(table)
+                        ).scalar_one()
+                    ),
                 )
                 for table in tables
             )
@@ -1026,10 +1112,12 @@ class PgVectorBackend:
         """Async counterpart used by async engine bootstrap paths."""
 
         tables = (self.nodes, self.edges, self.documents, self.domains)
-        async with self.engine.connect() as conn:
+        async with cast(AsyncEngine, self.engine).connect() as conn:
             counts_list: list[tuple[str, int]] = []
             for table in tables:
-                result = await conn.execute(sa.select(sa.func.count()).select_from(table))
+                result = await conn.execute(
+                    sa.select(sa.func.count()).select_from(table)
+                )
                 counts_list.append((table.name, int(result.scalar_one())))
             counts = tuple(counts_list)
         return EmbeddingStorageState(
@@ -1039,6 +1127,7 @@ class PgVectorBackend:
             vector_count=sum(count for _name, count in counts),
             details=tuple(f"{name}={count}" for name, count in counts),
         )
+
     # ----------------------------
     # DDL / bootstrap
     # ----------------------------
@@ -1048,7 +1137,7 @@ class PgVectorBackend:
         if self._is_async_engine:
             _run_coro_sync(self._ensure_schema_async())
             return
-        with self.engine.begin() as conn:
+        with cast(Engine, self.engine).begin() as conn:
             self._ensure_schema_sync(conn)
 
     # ----------------------------
@@ -1056,7 +1145,7 @@ class PgVectorBackend:
     # ----------------------------
 
     @contextmanager
-    def _conn(self):
+    def _conn(self) -> Iterator[Connection]:
         """Yield an active SQLAlchemy connection.
 
         If the runtime/engine opened a PostgresUnitOfWork transaction, backend
@@ -1064,19 +1153,19 @@ class PgVectorBackend:
         """
         active = get_active_conn()
         if active is not None:
-            yield active
+            yield cast(Connection, active)
             return
-        with self.engine.begin() as conn:
+        with cast(Engine, self.engine).begin() as conn:
             yield conn
 
     @asynccontextmanager
-    async def _async_conn(self):
+    async def _async_conn(self) -> AsyncIterator[AsyncConnection]:
         """Yield active async connection without falling back to sync bridge."""
         active = get_active_conn()
         if isinstance(active, AsyncConnection):
             yield active
             return
-        async with self.engine.begin() as conn:
+        async with cast(AsyncEngine, self.engine).begin() as conn:
             yield conn
 
     # ----------------------------
@@ -1090,7 +1179,7 @@ class PgVectorBackend:
         entity_kind: str,
         entity_id: str,
         document: str,
-        metadata: dict[str, Any],
+        metadata: dict[str, JsonValue],
         source_fingerprint: str,
         revision: int = 0,
     ) -> None:
@@ -1124,17 +1213,21 @@ class PgVectorBackend:
 
     def stage1_projection_get(
         self, *, namespace: str, entity_kind: str, entity_id: str
-    ) -> dict[str, Any] | None:
+    ) -> dict[str, JsonValue] | None:
         if entity_kind not in {"node", "edge"}:
             raise ValueError(f"unsupported Stage-1 entity kind: {entity_kind!r}")
         with self._conn() as conn:
-            row = conn.execute(
-                sa.select(self.stage1_projections).where(
-                    self.stage1_projections.c.namespace == str(namespace),
-                    self.stage1_projections.c.entity_kind == entity_kind,
-                    self.stage1_projections.c.entity_id == str(entity_id),
+            row = (
+                conn.execute(
+                    sa.select(self.stage1_projections).where(
+                        self.stage1_projections.c.namespace == str(namespace),
+                        self.stage1_projections.c.entity_kind == entity_kind,
+                        self.stage1_projections.c.entity_id == str(entity_id),
+                    )
                 )
-            ).mappings().first()
+                .mappings()
+                .first()
+            )
         return dict(row) if row is not None else None
 
     def stage1_projection_query(
@@ -1143,9 +1236,9 @@ class PgVectorBackend:
         namespace: str,
         entity_kind: str,
         ids: Sequence[str] | None = None,
-        metadata: dict[str, Any] | None = None,
+        metadata: dict[str, JsonValue] | None = None,
         limit: int | None = 200,
-    ) -> list[dict[str, Any]]:
+    ) -> list[dict[str, JsonValue]]:
         if entity_kind not in {"node", "edge"}:
             raise ValueError(f"unsupported Stage-1 entity kind: {entity_kind!r}")
         table = self.stage1_projections
@@ -1157,7 +1250,9 @@ class PgVectorBackend:
         # Keep Stage-1 query semantics aligned with the existing narrow adapter.
         for key, value in (metadata or {}).items():
             if not isinstance(key, str) or isinstance(value, (dict, list, tuple, set)):
-                raise ValueError("PostgreSQL Stage-1 supports flat metadata equality only")
+                raise ValueError(
+                    "PostgreSQL Stage-1 supports flat metadata equality only"
+                )
             q = q.where(table.c.metadata[key].astext == str(value))
         q = q.order_by(table.c.updated_at_ms, table.c.entity_id)
         if limit is not None:
@@ -1187,7 +1282,7 @@ class PgVectorBackend:
         entity_kind: str,
         entity_id: str,
         document: str,
-        metadata: dict[str, Any],
+        metadata: dict[str, JsonValue],
         source_fingerprint: str,
         revision: int = 0,
     ) -> None:
@@ -1195,10 +1290,14 @@ class PgVectorBackend:
             raise ValueError(f"unsupported Stage-1 entity kind: {entity_kind!r}")
         table = self.stage1_projections
         stmt = psql.insert(table).values(
-            namespace=str(namespace), entity_kind=entity_kind,
-            entity_id=str(entity_id), document=str(document),
-            metadata=dict(metadata or {}), source_fingerprint=str(source_fingerprint or ""),
-            revision=int(revision), materialization_status="pending",
+            namespace=str(namespace),
+            entity_kind=entity_kind,
+            entity_id=str(entity_id),
+            document=str(document),
+            metadata=dict(metadata or {}),
+            source_fingerprint=str(source_fingerprint or ""),
+            revision=int(revision),
+            materialization_status="pending",
             updated_at_ms=int(time.time() * 1000),
         )
         stmt = stmt.on_conflict_do_update(
@@ -1217,17 +1316,23 @@ class PgVectorBackend:
 
     async def stage1_projection_get_async(
         self, *, namespace: str, entity_kind: str, entity_id: str
-    ) -> dict[str, Any] | None:
+    ) -> dict[str, JsonValue] | None:
         if entity_kind not in {"node", "edge"}:
             raise ValueError(f"unsupported Stage-1 entity kind: {entity_kind!r}")
         async with self._async_conn() as conn:
-            row = (await conn.execute(
-                sa.select(self.stage1_projections).where(
-                    self.stage1_projections.c.namespace == str(namespace),
-                    self.stage1_projections.c.entity_kind == entity_kind,
-                    self.stage1_projections.c.entity_id == str(entity_id),
+            row = (
+                (
+                    await conn.execute(
+                        sa.select(self.stage1_projections).where(
+                            self.stage1_projections.c.namespace == str(namespace),
+                            self.stage1_projections.c.entity_kind == entity_kind,
+                            self.stage1_projections.c.entity_id == str(entity_id),
+                        )
+                    )
                 )
-            )).mappings().first()
+                .mappings()
+                .first()
+            )
         return dict(row) if row is not None else None
 
     async def stage1_projection_query_async(
@@ -1236,9 +1341,9 @@ class PgVectorBackend:
         namespace: str,
         entity_kind: str,
         ids: Sequence[str] | None = None,
-        metadata: dict[str, Any] | None = None,
+        metadata: dict[str, JsonValue] | None = None,
         limit: int | None = 200,
-    ) -> list[dict[str, Any]]:
+    ) -> list[dict[str, JsonValue]]:
         if entity_kind not in {"node", "edge"}:
             raise ValueError(f"unsupported Stage-1 entity kind: {entity_kind!r}")
         table = self.stage1_projections
@@ -1250,7 +1355,9 @@ class PgVectorBackend:
             query = query.where(table.c.entity_id.in_([str(item) for item in ids]))
         for key, value in (metadata or {}).items():
             if not isinstance(key, str) or isinstance(value, (dict, list, tuple, set)):
-                raise ValueError("PostgreSQL Stage-1 supports flat metadata equality only")
+                raise ValueError(
+                    "PostgreSQL Stage-1 supports flat metadata equality only"
+                )
             query = query.where(table.c.metadata[key].astext == str(value))
         query = query.order_by(table.c.updated_at_ms, table.c.entity_id)
         if limit is not None:
@@ -1265,11 +1372,13 @@ class PgVectorBackend:
         if entity_kind not in {"node", "edge"}:
             raise ValueError(f"unsupported Stage-1 entity kind: {entity_kind!r}")
         async with self._async_conn() as conn:
-            await conn.execute(sa.delete(self.stage1_projections).where(
-                self.stage1_projections.c.namespace == str(namespace),
-                self.stage1_projections.c.entity_kind == entity_kind,
-                self.stage1_projections.c.entity_id == str(entity_id),
-            ))
+            await conn.execute(
+                sa.delete(self.stage1_projections).where(
+                    self.stage1_projections.c.namespace == str(namespace),
+                    self.stage1_projections.c.entity_kind == entity_kind,
+                    self.stage1_projections.c.entity_id == str(entity_id),
+                )
+            )
 
     def _ensure_schema_sync(self, conn: sa.Connection) -> None:
         # Extension creation is database-wide.  IF NOT EXISTS does not by
@@ -1279,8 +1388,7 @@ class PgVectorBackend:
         # without holding a process-local lock that other replicas cannot see.
         conn.execute(
             sa.text(
-                "SELECT pg_advisory_xact_lock(" \
-                "hashtext('kogwistar.pgvector.extension'))"
+                "SELECT pg_advisory_xact_lock(hashtext('kogwistar.pgvector.extension'))"
             )
         )
         conn.execute(sa.text("CREATE EXTENSION IF NOT EXISTS vector"))
@@ -1331,9 +1439,10 @@ class PgVectorBackend:
             self.documents.name,
             self.domains.name,
         )
-        rows = conn.execute(
-            sa.text(
-                """
+        rows = (
+            conn.execute(
+                sa.text(
+                    """
                 SELECT c.relname AS table_name,
                        a.attname AS column_name,
                        format_type(a.atttypid, a.atttypmod) AS type_name
@@ -1347,9 +1456,12 @@ class PgVectorBackend:
                    AND a.attnum > 0
                    AND NOT a.attisdropped
                 """
-            ).bindparams(sa.bindparam("table_names", expanding=True)),
-            {"schema": self.schema, "table_names": list(table_names)},
-        ).mappings().all()
+                ).bindparams(sa.bindparam("table_names", expanding=True)),
+                {"schema": self.schema, "table_names": list(table_names)},
+            )
+            .mappings()
+            .all()
+        )
         mismatches: list[PgVectorColumnDimension] = []
         for row in rows:
             type_name = str(row["type_name"])
@@ -1371,33 +1483,38 @@ class PgVectorBackend:
             )
 
     async def _ensure_schema_async(self) -> None:
-        async with self.engine.begin() as conn:
+        async with cast(AsyncEngine, self.engine).begin() as conn:
             await conn.run_sync(self._ensure_schema_sync)
 
-    async def _run_in_async_txn(self, fn):
+    async def _run_in_async_txn(self, fn: Callable[[], _T]) -> _T:
         active = get_active_conn()
         invoke_async = getattr(active, "invoke_async", None)
         if callable(invoke_async):
-            def _call(sync_conn):
+
+            def _call(sync_conn: object) -> _T:
                 token = _pg_uow_conn.set(sync_conn)
                 try:
                     return fn()
                 finally:
                     _pg_uow_conn.reset(token)
 
-            return await invoke_async(_call)
+            return await cast(
+                Callable[[Callable[[object], _T]], Awaitable[_T]], invoke_async
+            )(_call)
         invoke_sync = getattr(active, "invoke_sync", None)
         if callable(invoke_sync):
-            def _call(sync_conn):
+
+            def _call(sync_conn: object) -> _T:
                 token = _pg_uow_conn.set(sync_conn)
                 try:
                     return fn()
                 finally:
                     _pg_uow_conn.reset(token)
 
-            return invoke_sync(_call)
+            return cast(Callable[[Callable[[object], _T]], _T], invoke_sync)(_call)
         if isinstance(active, AsyncConnection):
-            def _call(sync_conn):
+
+            def _call(sync_conn: object) -> _T:
                 token = _pg_uow_conn.set(sync_conn)
                 try:
                     return fn()
@@ -1406,8 +1523,9 @@ class PgVectorBackend:
 
             return await active.run_sync(_call)
 
-        async with self.engine.begin() as conn:
-            def _call(sync_conn):
+        async with cast(AsyncEngine, self.engine).begin() as conn:
+
+            def _call(sync_conn: object) -> _T:
                 token = _pg_uow_conn.set(sync_conn)
                 try:
                     return fn()
@@ -1420,11 +1538,11 @@ class PgVectorBackend:
         self,
         table: sa.Table,
         *,
-        ids: Optional[Sequence[str]],
-        where: Optional[Json],
-        include: List[str],
-        limit: Optional[int],
-    ) -> Dict[str, Any]:
+        ids: Sequence[str] | None,
+        where: Json | None,
+        include: list[str],
+        limit: int | None,
+    ) -> dict[str, JsonValue]:
         has_embedding = "embedding" in table.c
         cols = [table.c.id, table.c.document, table.c.metadata]
         if has_embedding and "embeddings" in include:
@@ -1443,26 +1561,26 @@ class PgVectorBackend:
         with self._conn() as conn:
             rows = conn.execute(q).fetchall()
 
-        out: Dict[str, Any] = {"ids": [r.id for r in rows]}
+        out: dict[str, JsonValue] = {"ids": [r.id for r in rows]}
         if "documents" in include:
             out["documents"] = [r.document for r in rows]
         if "metadatas" in include:
             out["metadatas"] = [dict(r.metadata or {}) for r in rows]
         if "embeddings" in include and has_embedding:
-            out["embeddings"] = [
-                normalize_embedding_vector(r.embedding) for r in rows
-            ]
+            out["embeddings"] = _json_value(
+                [normalize_embedding_vector(r.embedding) for r in rows]
+            )
         return out
 
     async def _get_flat_async(
         self,
         table: sa.Table,
         *,
-        ids: Optional[Sequence[str]],
-        where: Optional[Json],
-        include: List[str],
-        limit: Optional[int],
-    ) -> Dict[str, Any]:
+        ids: Sequence[str] | None,
+        where: Json | None,
+        include: list[str],
+        limit: int | None,
+    ) -> dict[str, JsonValue]:
         has_embedding = "embedding" in table.c
         cols = [table.c.id, table.c.document, table.c.metadata]
         if has_embedding and "embeddings" in include:
@@ -1481,19 +1599,19 @@ class PgVectorBackend:
         async with self._async_conn() as conn:
             rows = (await conn.execute(q)).fetchall()
 
-        out: Dict[str, Any] = {"ids": [r.id for r in rows]}
+        out: dict[str, JsonValue] = {"ids": [r.id for r in rows]}
         if "documents" in include:
             out["documents"] = [r.document for r in rows]
         if "metadatas" in include:
             out["metadatas"] = [dict(r.metadata or {}) for r in rows]
         if "embeddings" in include and has_embedding:
-            out["embeddings"] = [
-                normalize_embedding_vector(r.embedding) for r in rows
-            ]
+            out["embeddings"] = _json_value(
+                [normalize_embedding_vector(r.embedding) for r in rows]
+            )
         return out
 
     def _delete(
-        self, table: sa.Table, *, ids: Optional[Sequence[str]], where: Optional[Json]
+        self, table: sa.Table, *, ids: Sequence[str] | None, where: Json | None
     ) -> None:
         stmt = sa.delete(table)
         if ids is not None:
@@ -1506,7 +1624,7 @@ class PgVectorBackend:
             conn.execute(stmt)
 
     async def _delete_async(
-        self, table: sa.Table, *, ids: Optional[Sequence[str]], where: Optional[Json]
+        self, table: sa.Table, *, ids: Sequence[str] | None, where: Json | None
     ) -> None:
         stmt = sa.delete(table)
         if ids is not None:
@@ -1525,7 +1643,7 @@ class PgVectorBackend:
         ids: Sequence[str],
         documents: Sequence[str],
         metadatas: Sequence[Json],
-        embeddings: Optional[Sequence[Sequence[float]]] = None,
+        embeddings: Sequence[Sequence[float]] | None = None,
     ) -> None:
         if embeddings is not None and len(embeddings) != len(ids):
             raise ValueError("embeddings length must match ids length")
@@ -1540,9 +1658,9 @@ class PgVectorBackend:
                         f"embedding dim mismatch at index {i}: got {len(e)}, expected {self.embedding_dim}"
                     )
 
-        rows: List[Dict[str, Any]] = []
+        rows: list[dict[str, object]] = []
         for i, _id in enumerate(ids):
-            row: Dict[str, Any] = {
+            row: dict[str, object] = {
                 "id": _id,
                 "document": documents[i] if i < len(documents) else None,
                 "metadata": metadatas[i] if i < len(metadatas) else {},
@@ -1554,7 +1672,7 @@ class PgVectorBackend:
             rows.append(row)
 
         stmt = psql.insert(table).values(rows)
-        set_map: Dict[str, Any] = {
+        set_map: dict[str, object] = {
             "document": stmt.excluded.document,
             "metadata": stmt.excluded.metadata,
             "updated_at": sa.func.now(),
@@ -1574,7 +1692,7 @@ class PgVectorBackend:
         ids: Sequence[str],
         documents: Sequence[str],
         metadatas: Sequence[Json],
-        embeddings: Optional[Sequence[Sequence[float]]] = None,
+        embeddings: Sequence[Sequence[float]] | None = None,
     ) -> None:
         if embeddings is not None and len(embeddings) != len(ids):
             raise ValueError("embeddings length must match ids length")
@@ -1589,9 +1707,9 @@ class PgVectorBackend:
                         f"embedding dim mismatch at index {i}: got {len(e)}, expected {self.embedding_dim}"
                     )
 
-        rows: List[Dict[str, Any]] = []
+        rows: list[dict[str, object]] = []
         for i, _id in enumerate(ids):
-            row: Dict[str, Any] = {
+            row: dict[str, object] = {
                 "id": _id,
                 "document": documents[i] if i < len(documents) else None,
                 "metadata": metadatas[i] if i < len(metadatas) else {},
@@ -1603,7 +1721,7 @@ class PgVectorBackend:
             rows.append(row)
 
         stmt = psql.insert(table).values(rows)
-        set_map: Dict[str, Any] = {
+        set_map: dict[str, object] = {
             "document": stmt.excluded.document,
             "metadata": stmt.excluded.metadata,
             "updated_at": sa.func.now(),
@@ -1616,13 +1734,33 @@ class PgVectorBackend:
         async with self._async_conn() as conn:
             await conn.execute(stmt)
 
-    async def async_node_upsert(self, **kwargs: Any) -> None:
+    async def async_node_upsert(
+        self,
+        *,
+        ids: Sequence[str],
+        documents: Sequence[str],
+        metadatas: Sequence[Json],
+        embeddings: Sequence[Sequence[float]] | None = None,
+    ) -> None:
         """Public async semantic write used by single-stage admission."""
-        await self._upsert_async(self.nodes, **kwargs)
+        await self._upsert_async(
+            self.nodes, ids=ids, documents=documents,
+            metadatas=metadatas, embeddings=embeddings,
+        )
 
-    async def async_edge_upsert(self, **kwargs: Any) -> None:
+    async def async_edge_upsert(
+        self,
+        *,
+        ids: Sequence[str],
+        documents: Sequence[str],
+        metadatas: Sequence[Json],
+        embeddings: Sequence[Sequence[float]] | None = None,
+    ) -> None:
         """Public async semantic write used by single-stage admission."""
-        await self._upsert_async(self.edges, **kwargs)
+        await self._upsert_async(
+            self.edges, ids=ids, documents=documents,
+            metadatas=metadatas, embeddings=embeddings,
+        )
 
     def _query_vector(
         self,
@@ -1630,9 +1768,9 @@ class PgVectorBackend:
         *,
         query_embeddings: Sequence[Sequence[float]],
         n_results: int,
-        where: Optional[Json],
-        include: List[str],
-    ) -> Dict[str, Any]:
+        where: Json | None,
+        include: list[str],
+    ) -> dict[str, JsonValue]:
         query_embeddings = cast(
             Sequence[Sequence[float]],
             normalize_embedding_rows(query_embeddings, allow_empty=False),
@@ -1642,10 +1780,10 @@ class PgVectorBackend:
         if "embedding" not in table.c:
             raise TypeError("vector query requested for a table without embedding")
 
-        ids_out: List[List[str]] = []
-        docs_out: List[List[Optional[str]]] = []
-        metas_out: List[List[Json]] = []
-        dists_out: List[List[float]] = []
+        ids_out: list[list[str]] = []
+        docs_out: list[list[str | None]] = []
+        metas_out: list[list[Json]] = []
+        dists_out: list[list[float]] = []
 
         # Operator mapping per pgvector docs:
         #   <->  : L2 distance
@@ -1655,7 +1793,9 @@ class PgVectorBackend:
         op = op_map[self.distance]
 
         # Bind the RHS as a real pgvector type to avoid adapter / text-cast issues.
-        qv_param = sa.bindparam("qv", type_=Vector(self.embedding_dim))
+        qv_param = sa.bindparam(
+            "qv", type_=cast(Callable[[int], Any], Vector)(self.embedding_dim)
+        )
 
         # IMPORTANT: cast to Float so the pgvector result processor doesn't try
         # to parse this column as a Vector.
@@ -1663,8 +1803,7 @@ class PgVectorBackend:
             "distance"
         )
         want_embeddings = "embeddings" in include
-        if want_embeddings:
-            embs_out: List[List[float]] = []
+        embs_out: list[list[list[float]]] = []
         with self._conn() as conn:
             for qv in query_embeddings:
                 cols = [table.c.id, table.c.document, table.c.metadata, distance_expr]
@@ -1691,20 +1830,21 @@ class PgVectorBackend:
                 if want_embeddings:
                     embs_out.append(
                         [
-                            normalize_embedding_vector(r.embedding, allow_none=False) or []
+                            normalize_embedding_vector(r.embedding, allow_none=False)
+                            or []
                             for r in rows
                         ]
                     )
 
-        out: Dict[str, Any] = {"ids": ids_out}
+        out: dict[str, JsonValue] = {"ids": _json_value(ids_out)}
         if "documents" in include:
-            out["documents"] = docs_out
+            out["documents"] = _json_value(docs_out)
         if "metadatas" in include:
-            out["metadatas"] = metas_out
+            out["metadatas"] = _json_value(metas_out)
         if "distances" in include:
-            out["distances"] = dists_out
+            out["distances"] = _json_value(dists_out)
         if want_embeddings:
-            out["embeddings"] = embs_out
+            out["embeddings"] = _json_value(embs_out)
         return out
 
     async def _query_vector_async(
@@ -1713,9 +1853,9 @@ class PgVectorBackend:
         *,
         query_embeddings: Sequence[Sequence[float]],
         n_results: int,
-        where: Optional[Json],
-        include: List[str],
-    ) -> Dict[str, Any]:
+        where: Json | None,
+        include: list[str],
+    ) -> dict[str, JsonValue]:
         query_embeddings = cast(
             Sequence[Sequence[float]],
             normalize_embedding_rows(query_embeddings, allow_empty=False),
@@ -1725,20 +1865,21 @@ class PgVectorBackend:
         if "embedding" not in table.c:
             raise TypeError("vector query requested for a table without embedding")
 
-        ids_out: List[List[str]] = []
-        docs_out: List[List[Optional[str]]] = []
-        metas_out: List[List[Json]] = []
-        dists_out: List[List[float]] = []
+        ids_out: list[list[str]] = []
+        docs_out: list[list[str | None]] = []
+        metas_out: list[list[Json]] = []
+        dists_out: list[list[float]] = []
 
         op_map = {"cosine": "<=>", "l2": "<->", "ip": "<#>"}
         op = op_map[self.distance]
-        qv_param = sa.bindparam("qv", type_=Vector(self.embedding_dim))
+        qv_param = sa.bindparam(
+            "qv", type_=cast(Callable[[int], Any], Vector)(self.embedding_dim)
+        )
         distance_expr = sa.cast(table.c.embedding.op(op)(qv_param), sa.Float).label(
             "distance"
         )
         want_embeddings = "embeddings" in include
-        if want_embeddings:
-            embs_out: List[List[float]] = []
+        embs_out: list[list[list[float]]] = []
 
         async with self._async_conn() as conn:
             for qv in query_embeddings:
@@ -1763,20 +1904,21 @@ class PgVectorBackend:
                 if want_embeddings:
                     embs_out.append(
                         [
-                            normalize_embedding_vector(r.embedding, allow_none=False) or []
+                            normalize_embedding_vector(r.embedding, allow_none=False)
+                            or []
                             for r in rows
                         ]
                     )
 
-        out: Dict[str, Any] = {"ids": ids_out}
+        out: dict[str, JsonValue] = {"ids": _json_value(ids_out)}
         if "documents" in include:
-            out["documents"] = docs_out
+            out["documents"] = _json_value(docs_out)
         if "metadatas" in include:
-            out["metadatas"] = metas_out
+            out["metadatas"] = _json_value(metas_out)
         if "distances" in include:
-            out["distances"] = dists_out
+            out["distances"] = _json_value(dists_out)
         if want_embeddings:
-            out["embeddings"] = embs_out
+            out["embeddings"] = _json_value(embs_out)
         return out
 
     def _update_doc_meta_embedding_merge(
@@ -1784,9 +1926,9 @@ class PgVectorBackend:
         table: sa.Table,
         *,
         ids: Sequence[str],
-        documents: Optional[Sequence[Optional[str]]] = None,
-        metadatas: Optional[Sequence[Json]] = None,
-        embeddings: Optional[Sequence[Sequence[float]]] = None,
+        documents: Sequence[str | None] | None = None,
+        metadatas: Sequence[Json] | None = None,
+        embeddings: Sequence[Sequence[float]] | None = None,
     ) -> None:
         """Update document and/or merge metadata patch and/or update embedding for each id.
 
@@ -1829,8 +1971,8 @@ class PgVectorBackend:
 
         with self._conn() as conn:
             for i, _id in enumerate(ids):
-                values: Dict[str, Any] = {"updated_at": sa.func.now()}
-                params: Dict[str, Any] = {}
+                values: dict[str, object] = {"updated_at": sa.func.now()}
+                params: dict[str, object] = {}
 
                 if documents is not None:
                     values["document"] = documents[i]
@@ -1856,9 +1998,9 @@ class PgVectorBackend:
         table: sa.Table,
         *,
         ids: Sequence[str],
-        documents: Optional[Sequence[Optional[str]]] = None,
-        metadatas: Optional[Sequence[Json]] = None,
-        embeddings: Optional[Sequence[Sequence[float]]] = None,
+        documents: Sequence[str | None] | None = None,
+        metadatas: Sequence[Json] | None = None,
+        embeddings: Sequence[Sequence[float]] | None = None,
     ) -> None:
         if documents is None and metadatas is None and embeddings is None:
             return
@@ -1887,8 +2029,8 @@ class PgVectorBackend:
 
         async with self._async_conn() as conn:
             for i, _id in enumerate(ids):
-                values: Dict[str, Any] = {"updated_at": sa.func.now()}
-                params: Dict[str, Any] = {}
+                values: dict[str, object] = {"updated_at": sa.func.now()}
+                params: dict[str, object] = {}
 
                 if documents is not None:
                     values["document"] = documents[i]
@@ -1913,8 +2055,8 @@ class PgVectorBackend:
         table: sa.Table,
         *,
         ids: Sequence[str],
-        documents: Optional[Sequence[Optional[str]]] = None,
-        metadatas: Optional[Sequence[Json]] = None,
+        documents: Sequence[str | None] | None = None,
+        metadatas: Sequence[Json] | None = None,
     ) -> None:
         """Backward compatible wrapper: update doc + merge metadata (no embedding)."""
         self._update_doc_meta_embedding_merge(
@@ -1933,10 +2075,10 @@ class PgVectorBackend:
         self,
         table: sa.Table,
         *,
-        where: Optional[Json],
+        where: Json | None,
         n_results: int,
-        include: List[str],
-    ) -> Dict[str, Any]:
+        include: list[str],
+    ) -> dict[str, JsonValue]:
         """Best-effort query for non-vector tables.
 
         Chroma's `.query()` is fundamentally vector-similarity driven.
@@ -1951,7 +2093,7 @@ class PgVectorBackend:
             include=["documents", "metadatas"],
             limit=int(n_results),
         )
-        out: Dict[str, Any] = {"ids": [flat.get("ids", [])]}
+        out: dict[str, Any] = {"ids": [flat.get("ids", [])]}
         if "documents" in include:
             out["documents"] = [flat.get("documents", [])]
         if "metadatas" in include:
@@ -1964,10 +2106,10 @@ class PgVectorBackend:
         self,
         table: sa.Table,
         *,
-        where: Optional[Json],
+        where: Json | None,
         n_results: int,
-        include: List[str],
-    ) -> Dict[str, Any]:
+        include: list[str],
+    ) -> dict[str, JsonValue]:
         flat = await self._get_flat_async(
             table,
             ids=None,
@@ -1975,7 +2117,7 @@ class PgVectorBackend:
             include=["documents", "metadatas"],
             limit=int(n_results),
         )
-        out: Dict[str, Any] = {"ids": [flat.get("ids", [])]}
+        out: dict[str, Any] = {"ids": [flat.get("ids", [])]}
         if "documents" in include:
             out["documents"] = [flat.get("documents", [])]
         if "metadatas" in include:
@@ -2029,10 +2171,10 @@ class PgVectorBackend:
         async SQL work to completion here and wrap the value so both styles work.
         """
 
-        def _bind(name: str):
+        def _bind(name: str) -> None:
             original = getattr(self, name)
 
-            def _sync_wrapper(*args, **kwargs):
+            def _sync_wrapper(*args: object, **kwargs: object) -> object:
                 if get_active_conn() is not None:
                     return original(*args, **kwargs)
                 return _awaitable_result(_run_coro_sync(original(*args, **kwargs)))
@@ -2101,7 +2243,7 @@ class PgVectorBackend:
         ids: Sequence[str],
         documents: Sequence[str],
         metadatas: Sequence[Json],
-        embeddings: Optional[Sequence[Sequence[float]]] = None,
+        embeddings: Sequence[Sequence[float]] | None = None,
     ) -> None:
         return self._nodes_c.add(
             ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings
@@ -2113,7 +2255,7 @@ class PgVectorBackend:
         ids: Sequence[str],
         documents: Sequence[str],
         metadatas: Sequence[Json],
-        embeddings: Optional[Sequence[Sequence[float]]] = None,
+        embeddings: Sequence[Sequence[float]] | None = None,
     ) -> None:
         return self._nodes_c.upsert(
             ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings
@@ -2122,15 +2264,15 @@ class PgVectorBackend:
     def node_get(
         self,
         *,
-        ids: Optional[Sequence[str]] = None,
-        where: Optional[Json] = None,
-        include: Optional[List[str]] = None,
+        ids: Sequence[str] | None = None,
+        where: Json | None = None,
+        include: list[str] | None = None,
         limit: int = 200,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, JsonValue]:
         return self._nodes_c.get(ids=ids, where=where, include=include, limit=limit)
 
     def node_delete(
-        self, *, ids: Optional[Sequence[str]] = None, where: Optional[Json] = None
+        self, *, ids: Sequence[str] | None = None, where: Json | None = None
     ) -> None:
         return self._nodes_c.delete(ids=ids, where=where)
 
@@ -2139,9 +2281,9 @@ class PgVectorBackend:
         *,
         query_embeddings: Sequence[Sequence[float]],
         n_results: int = 10,
-        where: Optional[Json] = None,
-        include: Optional[List[str]] = None,
-    ) -> Dict[str, Any]:
+        where: Json | None = None,
+        include: list[str] | None = None,
+    ) -> dict[str, JsonValue]:
         return self._nodes_c.query(
             query_embeddings=query_embeddings,
             n_results=n_results,
@@ -2153,9 +2295,9 @@ class PgVectorBackend:
         self,
         *,
         ids: Sequence[str],
-        documents: Optional[Sequence[Optional[str]]] = None,
-        metadatas: Optional[Sequence[Json]] = None,
-        embeddings: Optional[Sequence[Sequence[float]]] = None,
+        documents: Sequence[str | None] | None = None,
+        metadatas: Sequence[Json] | None = None,
+        embeddings: Sequence[Sequence[float]] | None = None,
     ) -> None:
         return self._nodes_c.update(
             ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings
@@ -2171,7 +2313,7 @@ class PgVectorBackend:
         ids: Sequence[str],
         documents: Sequence[str],
         metadatas: Sequence[Json],
-        embeddings: Optional[Sequence[Sequence[float]]] = None,
+        embeddings: Sequence[Sequence[float]] | None = None,
     ) -> None:
         return self._edges_c.add(
             ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings
@@ -2183,7 +2325,7 @@ class PgVectorBackend:
         ids: Sequence[str],
         documents: Sequence[str],
         metadatas: Sequence[Json],
-        embeddings: Optional[Sequence[Sequence[float]]] = None,
+        embeddings: Sequence[Sequence[float]] | None = None,
     ) -> None:
         return self._edges_c.upsert(
             ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings
@@ -2192,15 +2334,15 @@ class PgVectorBackend:
     def edge_get(
         self,
         *,
-        ids: Optional[Sequence[str]] = None,
-        where: Optional[Json] = None,
-        include: Optional[List[str]] = None,
+        ids: Sequence[str] | None = None,
+        where: Json | None = None,
+        include: list[str] | None = None,
         limit: int = 200,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, JsonValue]:
         return self._edges_c.get(ids=ids, where=where, include=include, limit=limit)
 
     def edge_delete(
-        self, *, ids: Optional[Sequence[str]] = None, where: Optional[Json] = None
+        self, *, ids: Sequence[str] | None = None, where: Json | None = None
     ) -> None:
         return self._edges_c.delete(ids=ids, where=where)
 
@@ -2209,9 +2351,9 @@ class PgVectorBackend:
         *,
         query_embeddings: Sequence[Sequence[float]],
         n_results: int = 10,
-        where: Optional[Json] = None,
-        include: Optional[List[str]] = None,
-    ) -> Dict[str, Any]:
+        where: Json | None = None,
+        include: list[str] | None = None,
+    ) -> dict[str, JsonValue]:
         return self._edges_c.query(
             query_embeddings=query_embeddings,
             n_results=n_results,
@@ -2223,9 +2365,9 @@ class PgVectorBackend:
         self,
         *,
         ids: Sequence[str],
-        documents: Optional[Sequence[Optional[str]]] = None,
-        metadatas: Optional[Sequence[Json]] = None,
-        embeddings: Optional[Sequence[Sequence[float]]] = None,
+        documents: Sequence[str | None] | None = None,
+        metadatas: Sequence[Json] | None = None,
+        embeddings: Sequence[Sequence[float]] | None = None,
     ) -> None:
         return self._edges_c.update(
             ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings
@@ -2241,7 +2383,7 @@ class PgVectorBackend:
         ids: Sequence[str],
         documents: Sequence[str],
         metadatas: Sequence[Json],
-        embeddings: Optional[Sequence[Sequence[float]]] = None,
+        embeddings: Sequence[Sequence[float]] | None = None,
     ) -> None:
         return self._documents_c.add(
             ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings
@@ -2253,7 +2395,7 @@ class PgVectorBackend:
         ids: Sequence[str],
         documents: Sequence[str],
         metadatas: Sequence[Json],
-        embeddings: Optional[Sequence[Sequence[float]]] = None,
+        embeddings: Sequence[Sequence[float]] | None = None,
     ) -> None:
         return self._documents_c.upsert(
             ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings
@@ -2262,15 +2404,15 @@ class PgVectorBackend:
     def document_get(
         self,
         *,
-        ids: Optional[Sequence[str]] = None,
-        where: Optional[Json] = None,
-        include: Optional[List[str]] = None,
+        ids: Sequence[str] | None = None,
+        where: Json | None = None,
+        include: list[str] | None = None,
         limit: int = 200,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, JsonValue]:
         return self._documents_c.get(ids=ids, where=where, include=include, limit=limit)
 
     def document_delete(
-        self, *, ids: Optional[Sequence[str]] = None, where: Optional[Json] = None
+        self, *, ids: Sequence[str] | None = None, where: Json | None = None
     ) -> None:
         return self._documents_c.delete(ids=ids, where=where)
 
@@ -2279,9 +2421,9 @@ class PgVectorBackend:
         *,
         query_embeddings: Sequence[Sequence[float]],
         n_results: int = 10,
-        where: Optional[Json] = None,
-        include: Optional[List[str]] = None,
-    ) -> Dict[str, Any]:
+        where: Json | None = None,
+        include: list[str] | None = None,
+    ) -> dict[str, JsonValue]:
         return self._documents_c.query(
             query_embeddings=query_embeddings,
             n_results=n_results,
@@ -2293,9 +2435,9 @@ class PgVectorBackend:
         self,
         *,
         ids: Sequence[str],
-        documents: Optional[Sequence[Optional[str]]] = None,
-        metadatas: Optional[Sequence[Json]] = None,
-        embeddings: Optional[Sequence[Sequence[float]]] = None,
+        documents: Sequence[str | None] | None = None,
+        metadatas: Sequence[Json] | None = None,
+        embeddings: Sequence[Sequence[float]] | None = None,
     ) -> None:
         return self._documents_c.update(
             ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings
@@ -2311,7 +2453,7 @@ class PgVectorBackend:
         ids: Sequence[str],
         documents: Sequence[str],
         metadatas: Sequence[Json],
-        embeddings: Optional[Sequence[Sequence[float]]] = None,
+        embeddings: Sequence[Sequence[float]] | None = None,
     ) -> None:
         return self._domains_c.add(
             ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings
@@ -2323,7 +2465,7 @@ class PgVectorBackend:
         ids: Sequence[str],
         documents: Sequence[str],
         metadatas: Sequence[Json],
-        embeddings: Optional[Sequence[Sequence[float]]] = None,
+        embeddings: Sequence[Sequence[float]] | None = None,
     ) -> None:
         return self._domains_c.upsert(
             ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings
@@ -2332,15 +2474,15 @@ class PgVectorBackend:
     def domain_get(
         self,
         *,
-        ids: Optional[Sequence[str]] = None,
-        where: Optional[Json] = None,
-        include: Optional[List[str]] = None,
+        ids: Sequence[str] | None = None,
+        where: Json | None = None,
+        include: list[str] | None = None,
         limit: int = 200,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, JsonValue]:
         return self._domains_c.get(ids=ids, where=where, include=include, limit=limit)
 
     def domain_delete(
-        self, *, ids: Optional[Sequence[str]] = None, where: Optional[Json] = None
+        self, *, ids: Sequence[str] | None = None, where: Json | None = None
     ) -> None:
         return self._domains_c.delete(ids=ids, where=where)
 
@@ -2349,9 +2491,9 @@ class PgVectorBackend:
         *,
         query_embeddings: Sequence[Sequence[float]],
         n_results: int = 10,
-        where: Optional[Json] = None,
-        include: Optional[List[str]] = None,
-    ) -> Dict[str, Any]:
+        where: Json | None = None,
+        include: list[str] | None = None,
+    ) -> dict[str, JsonValue]:
         return self._domains_c.query(
             query_embeddings=query_embeddings,
             n_results=n_results,
@@ -2363,9 +2505,9 @@ class PgVectorBackend:
         self,
         *,
         ids: Sequence[str],
-        documents: Optional[Sequence[Optional[str]]] = None,
-        metadatas: Optional[Sequence[Json]] = None,
-        embeddings: Optional[Sequence[Sequence[float]]] = None,
+        documents: Sequence[str | None] | None = None,
+        metadatas: Sequence[Json] | None = None,
+        embeddings: Sequence[Sequence[float]] | None = None,
     ) -> None:
         return self._domains_c.update(
             ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings
@@ -2381,7 +2523,7 @@ class PgVectorBackend:
         ids: Sequence[str],
         documents: Sequence[str],
         metadatas: Sequence[Json],
-        embeddings: Any = None,
+        embeddings: Sequence[Sequence[float]] | None = None,
     ) -> None:
         return self._edge_endpoints_c.add(
             ids=ids, documents=documents, metadatas=metadatas, embeddings=None
@@ -2393,7 +2535,7 @@ class PgVectorBackend:
         ids: Sequence[str],
         documents: Sequence[str],
         metadatas: Sequence[Json],
-        embeddings: Any = None,
+        embeddings: Sequence[Sequence[float]] | None = None,
     ) -> None:
         return self._edge_endpoints_c.upsert(
             ids=ids, documents=documents, metadatas=metadatas, embeddings=None
@@ -2402,11 +2544,11 @@ class PgVectorBackend:
     def edge_endpoints_get(
         self,
         *,
-        ids: Optional[Sequence[str]] = None,
-        where: Optional[Json] = None,
-        include: Optional[List[str]] = None,
+        ids: Sequence[str] | None = None,
+        where: Json | None = None,
+        include: list[str] | None = None,
         limit: int = 200,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, JsonValue]:
         return self._edge_endpoints_c.get(
             ids=ids, where=where, include=include, limit=limit
         )
@@ -2414,11 +2556,11 @@ class PgVectorBackend:
     def edge_endpoints_query(
         self,
         *,
-        query_embeddings: Any = None,
+        query_embeddings: Sequence[Sequence[float]] | None = None,
         n_results: int = 10,
-        where: Optional[Json] = None,
-        include: Optional[List[str]] = None,
-    ) -> Dict[str, Any]:
+        where: Json | None = None,
+        include: list[str] | None = None,
+    ) -> dict[str, JsonValue]:
         return self._edge_endpoints_c.query(
             query_embeddings=None, n_results=n_results, where=where, include=include
         )
@@ -2427,16 +2569,16 @@ class PgVectorBackend:
         self,
         *,
         ids: Sequence[str],
-        documents: Optional[Sequence[Optional[str]]] = None,
-        metadatas: Optional[Sequence[Json]] = None,
-        embeddings: Optional[Sequence[Sequence[float]]] = None,
+        documents: Sequence[str | None] | None = None,
+        metadatas: Sequence[Json] | None = None,
+        embeddings: Sequence[Sequence[float]] | None = None,
     ) -> None:
         return self._edge_endpoints_c.update(
             ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings
         )
 
     def edge_endpoints_delete(
-        self, *, ids: Optional[Sequence[str]] = None, where: Optional[Json] = None
+        self, *, ids: Sequence[str] | None = None, where: Json | None = None
     ) -> None:
         return self._edge_endpoints_c.delete(ids=ids, where=where)
 
@@ -2450,7 +2592,7 @@ class PgVectorBackend:
         ids: Sequence[str],
         documents: Sequence[str],
         metadatas: Sequence[Json],
-        embeddings: Any = None,
+        embeddings: Sequence[Sequence[float]] | None = None,
     ) -> None:
         return self._edge_refs_c.add(
             ids=ids, documents=documents, metadatas=metadatas, embeddings=None
@@ -2462,7 +2604,7 @@ class PgVectorBackend:
         ids: Sequence[str],
         documents: Sequence[str],
         metadatas: Sequence[Json],
-        embeddings: Any = None,
+        embeddings: Sequence[Sequence[float]] | None = None,
     ) -> None:
         return self._edge_refs_c.upsert(
             ids=ids, documents=documents, metadatas=metadatas, embeddings=None
@@ -2471,21 +2613,21 @@ class PgVectorBackend:
     def edge_refs_get(
         self,
         *,
-        ids: Optional[Sequence[str]] = None,
-        where: Optional[Json] = None,
-        include: Optional[List[str]] = None,
+        ids: Sequence[str] | None = None,
+        where: Json | None = None,
+        include: list[str] | None = None,
         limit: int = 200,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, JsonValue]:
         return self._edge_refs_c.get(ids=ids, where=where, include=include, limit=limit)
 
     def edge_refs_query(
         self,
         *,
-        query_embeddings: Any = None,
+        query_embeddings: Sequence[Sequence[float]] | None = None,
         n_results: int = 10,
-        where: Optional[Json] = None,
-        include: Optional[List[str]] = None,
-    ) -> Dict[str, Any]:
+        where: Json | None = None,
+        include: list[str] | None = None,
+    ) -> dict[str, JsonValue]:
         return self._edge_refs_c.query(
             query_embeddings=None, n_results=n_results, where=where, include=include
         )
@@ -2494,16 +2636,16 @@ class PgVectorBackend:
         self,
         *,
         ids: Sequence[str],
-        documents: Optional[Sequence[Optional[str]]] = None,
-        metadatas: Optional[Sequence[Json]] = None,
-        embeddings: Optional[Sequence[Sequence[float]]] = None,
+        documents: Sequence[str | None] | None = None,
+        metadatas: Sequence[Json] | None = None,
+        embeddings: Sequence[Sequence[float]] | None = None,
     ) -> None:
         return self._edge_refs_c.update(
             ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings
         )
 
     def edge_refs_delete(
-        self, *, ids: Optional[Sequence[str]] = None, where: Optional[Json] = None
+        self, *, ids: Sequence[str] | None = None, where: Json | None = None
     ) -> None:
         return self._edge_refs_c.delete(ids=ids, where=where)
 
@@ -2517,7 +2659,7 @@ class PgVectorBackend:
         ids: Sequence[str],
         documents: Sequence[str],
         metadatas: Sequence[Json],
-        embeddings: Any = None,
+        embeddings: Sequence[Sequence[float]] | None = None,
     ) -> None:
         return self._node_docs_c.add(
             ids=ids, documents=documents, metadatas=metadatas, embeddings=None
@@ -2529,7 +2671,7 @@ class PgVectorBackend:
         ids: Sequence[str],
         documents: Sequence[str],
         metadatas: Sequence[Json],
-        embeddings: Any = None,
+        embeddings: Sequence[Sequence[float]] | None = None,
     ) -> None:
         return self._node_docs_c.upsert(
             ids=ids, documents=documents, metadatas=metadatas, embeddings=None
@@ -2538,21 +2680,21 @@ class PgVectorBackend:
     def node_docs_get(
         self,
         *,
-        ids: Optional[Sequence[str]] = None,
-        where: Optional[Json] = None,
-        include: Optional[List[str]] = None,
+        ids: Sequence[str] | None = None,
+        where: Json | None = None,
+        include: list[str] | None = None,
         limit: int = 200,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, JsonValue]:
         return self._node_docs_c.get(ids=ids, where=where, include=include, limit=limit)
 
     def node_docs_query(
         self,
         *,
-        query_embeddings: Any = None,
+        query_embeddings: Sequence[Sequence[float]] | None = None,
         n_results: int = 10,
-        where: Optional[Json] = None,
-        include: Optional[List[str]] = None,
-    ) -> Dict[str, Any]:
+        where: Json | None = None,
+        include: list[str] | None = None,
+    ) -> dict[str, JsonValue]:
         return self._node_docs_c.query(
             query_embeddings=None, n_results=n_results, where=where, include=include
         )
@@ -2561,16 +2703,16 @@ class PgVectorBackend:
         self,
         *,
         ids: Sequence[str],
-        documents: Optional[Sequence[Optional[str]]] = None,
-        metadatas: Optional[Sequence[Json]] = None,
-        embeddings: Optional[Sequence[Sequence[float]]] = None,
+        documents: Sequence[str | None] | None = None,
+        metadatas: Sequence[Json] | None = None,
+        embeddings: Sequence[Sequence[float]] | None = None,
     ) -> None:
         return self._node_docs_c.update(
             ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings
         )
 
     def node_docs_delete(
-        self, *, ids: Optional[Sequence[str]] = None, where: Optional[Json] = None
+        self, *, ids: Sequence[str] | None = None, where: Json | None = None
     ) -> None:
         return self._node_docs_c.delete(ids=ids, where=where)
 
@@ -2584,7 +2726,7 @@ class PgVectorBackend:
         ids: Sequence[str],
         documents: Sequence[str],
         metadatas: Sequence[Json],
-        embeddings: Any = None,
+        embeddings: Sequence[Sequence[float]] | None = None,
     ) -> None:
         return self._node_refs_c.add(
             ids=ids, documents=documents, metadatas=metadatas, embeddings=None
@@ -2596,7 +2738,7 @@ class PgVectorBackend:
         ids: Sequence[str],
         documents: Sequence[str],
         metadatas: Sequence[Json],
-        embeddings: Any = None,
+        embeddings: Sequence[Sequence[float]] | None = None,
     ) -> None:
         return self._node_refs_c.upsert(
             ids=ids, documents=documents, metadatas=metadatas, embeddings=None
@@ -2605,21 +2747,21 @@ class PgVectorBackend:
     def node_refs_get(
         self,
         *,
-        ids: Optional[Sequence[str]] = None,
-        where: Optional[Json] = None,
-        include: Optional[List[str]] = None,
+        ids: Sequence[str] | None = None,
+        where: Json | None = None,
+        include: list[str] | None = None,
         limit: int = 200,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, JsonValue]:
         return self._node_refs_c.get(ids=ids, where=where, include=include, limit=limit)
 
     def node_refs_query(
         self,
         *,
-        query_embeddings: Any = None,
+        query_embeddings: Sequence[Sequence[float]] | None = None,
         n_results: int = 10,
-        where: Optional[Json] = None,
-        include: Optional[List[str]] = None,
-    ) -> Dict[str, Any]:
+        where: Json | None = None,
+        include: list[str] | None = None,
+    ) -> dict[str, JsonValue]:
         return self._node_refs_c.query(
             query_embeddings=None, n_results=n_results, where=where, include=include
         )
@@ -2628,23 +2770,23 @@ class PgVectorBackend:
         self,
         *,
         ids: Sequence[str],
-        documents: Optional[Sequence[Optional[str]]] = None,
-        metadatas: Optional[Sequence[Json]] = None,
-        embeddings: Optional[Sequence[Sequence[float]]] = None,
+        documents: Sequence[str | None] | None = None,
+        metadatas: Sequence[Json] | None = None,
+        embeddings: Sequence[Sequence[float]] | None = None,
     ) -> None:
         return self._node_refs_c.update(
             ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings
         )
 
     def node_refs_delete(
-        self, *, ids: Optional[Sequence[str]] = None, where: Optional[Json] = None
+        self, *, ids: Sequence[str] | None = None, where: Json | None = None
     ) -> None:
         return self._node_refs_c.delete(ids=ids, where=where)
 
 
 def build_postgres_backend(
     cfg: PgVectorConfig,
-) -> Tuple[PgVectorBackend, PostgresUnitOfWork]:
+) -> tuple[PgVectorBackend, PostgresUnitOfWork]:
     """Convenience helper for engine wiring."""
 
     engine = sa.create_engine(
@@ -2676,7 +2818,7 @@ def build_postgres_backend(
 
 def build_async_postgres_backend(
     cfg: PgVectorConfig,
-) -> Tuple[PgVectorBackend, AsyncPostgresUnitOfWork]:
+) -> tuple[PgVectorBackend, AsyncPostgresUnitOfWork]:
     """Async SQLAlchemy variant of `build_postgres_backend`."""
 
     from sqlalchemy.ext.asyncio import create_async_engine

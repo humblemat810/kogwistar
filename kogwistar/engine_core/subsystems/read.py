@@ -2,26 +2,13 @@ from __future__ import annotations
 
 import ast
 import json
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime, timezone
 from typing import (
-    Any,
-    Dict,
-    List,
+    TYPE_CHECKING,
     Literal,
-    Mapping,
-    Optional,
-    Sequence,
-    Type,
     TypeVar,
-    Union,
     cast,
-)
-from typing import TYPE_CHECKING
-
-from ...utils.embedding_vectors import (
-    normalize_embedding_rows,
-    normalize_embedding_vector,
 )
 
 from ...entity_registry import (
@@ -30,12 +17,17 @@ from ...entity_registry import (
     pick_edge_type,
     pick_node_type,
 )
+from ...json_types import JsonObject, JsonValue
+from ...typing_interfaces import ProjectionBackendLike
+from ...utils.embedding_vectors import (
+    normalize_embedding_rows,
+    normalize_embedding_vector,
+)
 from ..async_compat import run_awaitable_blocking
 from ..models import Document, Edge, Node
 from ..utils.refs import ref_doc_id
 from ..vector_search import VectorSearchHit, similarity_from_distance
 from .base import NamespaceProxy
-from ...typing_interfaces import ProjectionBackendLike, ReadLike
 
 if TYPE_CHECKING:
     from ..engine import GraphKnowledgeEngine
@@ -44,12 +36,72 @@ TNode = TypeVar("TNode", bound=Node)
 TEdge = TypeVar("TEdge", bound=Edge)
 
 
-class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
-    def __init__(self, engine: "GraphKnowledgeEngine") -> None:
+def _json_object(value: object) -> JsonObject:
+    """Narrow backend payloads at the graph read boundary."""
+
+    if not isinstance(value, Mapping):
+        raise TypeError("graph backend returned a non-object payload")
+    return cast(JsonObject, {str(key): item for key, item in value.items()})
+
+
+def _json_objects(value: object) -> list[JsonObject]:
+    if not isinstance(value, list):
+        return []
+    return [_json_object(item) for item in value if isinstance(item, Mapping)]
+
+
+def _json_strings(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value]
+
+
+def _json_string_rows(value: object) -> list[list[str]]:
+    if not isinstance(value, list):
+        return []
+    return [_json_strings(row) for row in value]
+
+
+def _json_float_rows(value: object) -> list[list[float]]:
+    if not isinstance(value, list):
+        return []
+    rows: list[list[float]] = []
+    for row in value:
+        if isinstance(row, list):
+            rows.append([float(item) for item in row if isinstance(item, (int, float))])
+    return rows
+
+
+def _string_sequence(value: object) -> list[str]:
+    if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
+        raise TypeError("expected a sequence of identifiers")
+    return [str(item) for item in value]
+
+
+def _json_embeddings(value: object) -> list[JsonValue]:
+    if not isinstance(value, list):
+        return []
+    result: list[JsonValue] = []
+    for row in value:
+        if row is None:
+            result.append(None)
+        elif isinstance(row, (list, tuple)):
+            result.append([float(item) for item in row])
+    return result
+
+
+def _json_float(value: JsonValue, default: float = 0.0) -> float:
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    return default
+
+
+class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
+    def __init__(self, engine: GraphKnowledgeEngine) -> None:
         super().__init__(engine)
 
     @staticmethod
-    def _native_equality_filter(where: Any) -> dict[str, Any] | None:
+    def _native_equality_filter(where: object) -> dict[str, JsonValue] | None:
         if where is None:
             return {}
         if not isinstance(where, dict):
@@ -61,17 +113,17 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
             for key, value in where.items()
         ):
             return None
-        return dict(where)
+        return cast(dict[str, JsonValue], dict(where))
 
     def _rust_postgres_projection_get(
         self,
         *,
         entity_kind: str,
         ids: Sequence[str] | None,
-        where: Any,
+        where: object,
         limit: int | None,
         include: list[str],
-    ) -> dict[str, Any] | None:
+    ) -> dict[str, JsonValue] | None:
         from ..rust_postgres_session import RustEnginePostgresMetaStore
 
         meta = getattr(self._e, "meta_sqlite", None)
@@ -104,20 +156,17 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
             metadata=metadata,
             limit=int(limit),
         )
-        result: dict[str, Any] = {
+        result: JsonObject = {
             "ids": [str(record.get("id") or "") for record in records]
         }
         if "documents" in effective_include:
             result["documents"] = [record.get("document") for record in records]
         if "metadatas" in effective_include:
-            result["metadatas"] = [
-                dict(record.get("metadata") or {}) for record in records
-            ]
+            result["metadatas"] = [_json_object(record.get("metadata") or {}) for record in records]
         if "embeddings" in effective_include:
-            result["embeddings"] = [
-                normalize_embedding_vector(record.get("embedding"))
-                for record in records
-            ]
+            result["embeddings"] = _json_embeddings(
+                [normalize_embedding_vector(record.get("embedding")) for record in records]
+            )
         return result
 
     def _rust_postgres_projection_query(
@@ -125,10 +174,10 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
         *,
         entity_kind: str,
         query_embeddings: Sequence[Sequence[float]],
-        where: Any,
+        where: object,
         n_results: int,
         include: list[str],
-    ) -> dict[str, Any] | None:
+    ) -> dict[str, JsonValue] | None:
         from ..rust_postgres_session import RustEnginePostgresMetaStore
 
         meta = getattr(self._e, "meta_sqlite", None)
@@ -155,28 +204,24 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
             metric=str(cast(ProjectionBackendLike, self._e.backend).distance),
             limit=int(n_results),
         )
-        records = [dict(match.get("record") or {}) for match in matches]
+        records = [_json_object(match.get("record") or {}) for match in matches]
         effective_include = include or ["documents", "metadatas", "distances"]
-        result: dict[str, Any] = {
+        result: JsonObject = {
             "ids": [[str(record.get("id") or "") for record in records]]
         }
         if "documents" in effective_include:
             result["documents"] = [[record.get("document") for record in records]]
         if "metadatas" in effective_include:
-            result["metadatas"] = [
-                [dict(record.get("metadata") or {}) for record in records]
-            ]
+            result["metadatas"] = [[_json_object(record.get("metadata") or {}) for record in records]]
         if "embeddings" in effective_include:
-            result["embeddings"] = [
-                [
-                    normalize_embedding_vector(record.get("embedding"))
-                    for record in records
-                ]
-            ]
+            result["embeddings"] = [_json_embeddings(
+                [normalize_embedding_vector(record.get("embedding")) for record in records]
+            )]
         if "distances" in effective_include:
-            result["distances"] = [
-                [float(match.get("distance", 0.0)) for match in matches]
-            ]
+            result["distances"] = cast(
+                JsonValue,
+                [[_json_float(match.get("distance", 0.0)) for match in matches]],
+            )
         return result
 
     def _stage1_fallback_get(
@@ -184,10 +229,10 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
         *,
         entity_kind: str,
         ids: Sequence[str] | None,
-        where: Any,
+        where: object,
         limit: int | None,
         include: list[str],
-    ) -> dict[str, Any] | None:
+    ) -> dict[str, JsonValue] | None:
         """Read pending Chroma entities from the transient SQLite projection."""
         if getattr(self._e, "persistence_mode", "single_stage") != "two_stage":
             return None
@@ -200,22 +245,26 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
         rows = query(
             ids=list(ids) if ids is not None else None,
             entity_kind=entity_kind,
-            metadata=dict(where or {}),
+            metadata=(
+                dict(cast(Mapping[str, object], where))
+                if isinstance(where, Mapping)
+                else {}
+            ),
             limit=limit,
         )
         if not isinstance(rows, Iterable):
             return None
-        rows = [cast(Mapping[str, Any], row) for row in rows if isinstance(row, Mapping)]
+        rows = [cast(Mapping[str, object], row) for row in rows if isinstance(row, Mapping)]
         if not rows:
             return None
-        payloads = [dict(row.get("payload") or {}) for row in rows]
-        result: dict[str, Any] = {
+        payloads = [_json_object(row.get("payload") or {}) for row in rows]
+        result: JsonObject = {
             "ids": [str(payload.get("id") or row.get("key") or "") for payload, row in zip(payloads, rows)]
         }
         if "documents" in include:
             result["documents"] = [payload.get("document") for payload in payloads]
         if "metadatas" in include:
-            result["metadatas"] = [dict(payload.get("metadata") or {}) for payload in payloads]
+            result["metadatas"] = [_json_object(payload.get("metadata") or {}) for payload in payloads]
         if "embeddings" in include:
             result["embeddings"] = [None for _ in payloads]
         return result
@@ -224,10 +273,10 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
         self,
         *,
         ids: Sequence[str] | None = None,
-        where=None,
+        where: dict[str, JsonValue] | None = None,
         limit: int | None = 200,
         include: list[str] | None = None,
-    ) -> dict[str, Any]:
+    ) -> dict[str, JsonValue]:
         if include is None:
             include = ["documents", "embeddings", "metadatas"]
         native = self._rust_postgres_projection_get(
@@ -239,12 +288,12 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
         )
         if native is not None:
             return native
-        result = run_awaitable_blocking(self._e.backend.node_get(
+        result = _json_object(run_awaitable_blocking(self._e.backend.node_get(
             ids=ids,
             include=include,
             where=where,
             limit=limit,
-        ))
+        )))
         if not result.get("ids"):
             return self._stage1_fallback_get(
                 entity_kind="node", ids=ids, where=where, limit=limit, include=include
@@ -255,10 +304,10 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
         self,
         *,
         ids: Sequence[str] | None = None,
-        where=None,
+        where: dict[str, JsonValue] | None = None,
         limit: int | None = 400,
         include: list[str] | None = None,
-    ) -> dict[str, Any]:
+    ) -> dict[str, JsonValue]:
         if include is None:
             include = ["documents", "embeddings", "metadatas"]
         native = self._rust_postgres_projection_get(
@@ -270,12 +319,12 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
         )
         if native is not None:
             return native
-        result = run_awaitable_blocking(self._e.backend.edge_get(
+        result = _json_object(run_awaitable_blocking(self._e.backend.edge_get(
             ids=ids,
             include=include,
             where=where,
             limit=limit,
-        ))
+        )))
         if not result.get("ids"):
             return self._stage1_fallback_get(
                 entity_kind="edge", ids=ids, where=where, limit=limit, include=include
@@ -285,7 +334,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
     def node_exists(
         self,
         ids: Sequence[str] | None = None,
-        where=None,
+        where: dict[str, JsonValue] | None = None,
     ) -> bool:
         limit = 1 if ids is None else max(1, len(ids))
         got = self._node_get_raw(
@@ -299,7 +348,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
     def edge_exists(
         self,
         ids: Sequence[str] | None = None,
-        where=None,
+        where: dict[str, JsonValue] | None = None,
     ) -> bool:
         limit = 1 if ids is None else max(1, len(ids))
         got = self._edge_get_raw(
@@ -313,56 +362,54 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
     def get_node_metadatas(
         self,
         ids: Sequence[str] | None = None,
-        where=None,
+        where: dict[str, JsonValue] | None = None,
         limit: int | None = 200,
-    ) -> list[dict[str, Any]]:
+    ) -> list[dict[str, JsonValue]]:
         got = self._node_get_raw(
             ids=ids,
             where=where,
             limit=limit,
             include=["metadatas"],
         )
-        metadatas = got.get("metadatas") or []
-        return [dict(meta) for meta in metadatas if isinstance(meta, dict)]
+        return _json_objects(got.get("metadatas"))
 
     def get_edge_metadatas(
         self,
         ids: Sequence[str] | None = None,
-        where=None,
+        where: dict[str, JsonValue] | None = None,
         limit: int | None = 400,
-    ) -> list[dict[str, Any]]:
+    ) -> list[dict[str, JsonValue]]:
         got = self._edge_get_raw(
             ids=ids,
             where=where,
             limit=limit,
             include=["metadatas"],
         )
-        metadatas = got.get("metadatas") or []
-        return [dict(meta) for meta in metadatas if isinstance(meta, dict)]
+        return _json_objects(got.get("metadatas"))
 
     def get_edge_endpoints(
         self,
         *,
-        where=None,
+        where: dict[str, JsonValue] | None = None,
         include: list[str] | None = None,
         limit: int | None = 10000,
-    ) -> dict[str, Any]:
+    ) -> dict[str, JsonValue]:
         """Read structural endpoint rows through the engine read boundary."""
-        return run_awaitable_blocking(
+        return _json_object(run_awaitable_blocking(
             self._e.backend.edge_endpoints_get(
                 where=where,
                 include=include or ["documents", "metadatas"],
                 limit=limit,
             )
-        )
+            ))
 
     # Canonical read API
     def get_nodes(
         self,
         ids: Sequence[str] | None = None,
-        node_type: Type[Node] | None = None,
+        node_type: type[Node] | None = None,
         include: list[str] | None = None,
-        where=None,
+        where: dict[str, JsonValue] | None = None,
         limit: int | None = 200,
         resolve_mode: Literal[
             "active_only", "redirect", "include_tombstones"
@@ -413,8 +460,8 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
     def get_edges(
         self,
         ids: Sequence[str] | None = None,
-        edge_type: Type[Edge] | None = None,
-        where=None,
+        edge_type: type[Edge] | None = None,
+        where: dict[str, JsonValue] | None = None,
         limit: int | None = 400,
         include: list[str] | None = None,
         resolve_mode: Literal[
@@ -466,28 +513,30 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
         return self._e._filter_items_by_resolve_mode(edges, resolve_mode)
 
     def get_document(self, doc_id: str) -> Document:
-        doc_get_result = self._rust_postgres_projection_get(
+        raw_doc_get_result = self._rust_postgres_projection_get(
             entity_kind="document",
             ids=[doc_id],
             where=None,
             limit=1,
             include=["documents", "metadatas"],
         )
-        if doc_get_result is None:
-            doc_get_result = run_awaitable_blocking(
+        if raw_doc_get_result is None:
+            raw_doc_get_result = run_awaitable_blocking(
                 self._e.backend.document_get(ids=[doc_id])
             )
-        if len(doc_get_result["ids"]) == 0:
+        doc_get_result = _json_object(raw_doc_get_result)
+        ids = _json_strings(doc_get_result.get("ids"))
+        if len(ids) == 0:
             raise ValueError(f"no document found for doc id = {doc_id}")
-        metadatas = doc_get_result["metadatas"]
-        docs = doc_get_result["documents"]
+        metadatas = _json_objects(doc_get_result.get("metadatas"))
+        docs = _json_strings(doc_get_result.get("documents"))
 
-        if docs is None or metadatas is None:
+        if not docs or not metadatas:
             raise ValueError("Invalid documnet metadata")
-        metadata: dict = cast(dict, metadatas[0])
+        metadata = metadatas[0]
 
         doc = Document(
-            id=doc_get_result["ids"][0],
+            id=ids[0],
             content=docs[0],
             metadata=metadata,
             domain_id=(
@@ -495,8 +544,8 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
                 if metadata.get("domain_id") is None
                 else str(metadata.get("domain_id"))
             ),
-            type=metadata["type"],
-            processed=metadata["processed"],
+            type=str(metadata.get("type") or "text"),
+            processed=bool(metadata.get("processed", False)),
             embeddings=None,
             source_map=None,
         )
@@ -504,12 +553,12 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
 
     def query_nodes(
         self,
-        *args,
-        query=None,
-        query_embeddings=None,
-        include=["documents", "embeddings", "metadatas"],
-        node_type: Type[TNode] | None = None,
-        **kwargs,
+        *args: object,
+        query: str | None = None,
+        query_embeddings: Sequence[float] | Sequence[Sequence[float]] | None = None,
+        include: list[str] | None = None,
+        node_type: type[TNode] | None = None,
+        **kwargs: object,
     ) -> list[list[TNode]]:
         if query_embeddings is not None:
             if query is not None:
@@ -521,6 +570,8 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
                 query_embeddings = self._e._iterative_defensive_emb(query)
             else:
                 raise ValueError("either query or query embeddings must be specified")
+        if include is None:
+            include = ["documents", "embeddings", "metadatas"]
         query_embeddings = cast(
             list[list[float]],
             normalize_embedding_rows(query_embeddings, allow_empty=False),
@@ -533,27 +584,27 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
             entity_kind="node",
             query_embeddings=query_embeddings,
             where=kwargs.get("where"),
-            n_results=int(kwargs.get("n_results", 10)),
+            n_results=int(cast(int, kwargs.get("n_results", 10))),
             include=include,
             )
         )
         got = cast(
-            Mapping[str, Any],
+            Mapping[str, JsonValue],
             native
             or run_awaitable_blocking(
                 self._e.backend.node_query(
-                    query_embeddings=query_embeddings,
                     *args,
+                    query_embeddings=query_embeddings,
                     include=include,
                     **kwargs,
                 )
             ),
         )
         return self.nodes_from_query_result(
-            got, node_type=cast(Type[TNode], node_type or Node)
+            got, node_type=cast(type[TNode], node_type or Node)
         )
 
-    def _coerce_ts_utc(self, raw: Any) -> datetime | None:
+    def _coerce_ts_utc(self, raw: object) -> datetime | None:
         if raw is None:
             return None
         if isinstance(raw, datetime):
@@ -606,7 +657,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
         node: Node,
         *,
         as_of: datetime,
-        node_type: Type[Node],
+        node_type: type[Node],
         cache: dict[str, Node],
         follow_redirects: bool,
         max_redirect_hops: int,
@@ -659,13 +710,14 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
         query: str | None = None,
         query_embeddings: Sequence[float] | Sequence[Sequence[float]] | None = None,
         as_of_ts: datetime | str,
-        where: dict[str, Any] | None = None,
+        where: dict[str, JsonValue] | None = None,
         n_results: int = 20,
         follow_redirects: bool = True,
-        node_type: Type[Node] = Node,
+        node_type: type[Node] = Node,
         include: list[str] | None = None,
         max_redirect_hops: int = 16,
-        **kwargs,
+        similarity_threshold: float | None = None,
+        **kwargs: object,
     ) -> list[Node]:
         return [
             node
@@ -679,6 +731,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
                 node_type=node_type,
                 include=include,
                 max_redirect_hops=max_redirect_hops,
+                similarity_threshold=similarity_threshold,
                 **kwargs,
             )
             for node in (hit.node,)
@@ -690,14 +743,14 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
         query: str | None = None,
         query_embeddings: Sequence[float] | Sequence[Sequence[float]] | None = None,
         as_of_ts: datetime | str,
-        where: dict[str, Any] | None = None,
+        where: dict[str, JsonValue] | None = None,
         n_results: int = 20,
         follow_redirects: bool = True,
-        node_type: Type[Node] = Node,
+        node_type: type[Node] = Node,
         include: list[str] | None = None,
         max_redirect_hops: int = 16,
         similarity_threshold: float | None = None,
-        **kwargs,
+        **kwargs: object,
     ) -> list[VectorSearchHit[Node]]:
         """Return as-of nodes together with backend order scores.
 
@@ -743,7 +796,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
         if getattr(self._e.backend, "supports_historical_tombstone_query", False):
             query_kwargs["include_tombstoned"] = True
         try:
-            got = run_awaitable_blocking(self._e.backend.node_query(**query_kwargs))
+            got = _json_object(run_awaitable_blocking(self._e.backend.node_query(**query_kwargs)))
         except Exception as exc:
             # Chroma's embedded Rust reader can briefly lose an HNSW segment
             # after a local persistent update. Historical filtering is still
@@ -757,17 +810,17 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
             )
             if not is_chroma_hnsw_gap:
                 raise
-            got = run_awaitable_blocking(
+            got = _json_object(run_awaitable_blocking(
                 self._e.backend.node_get(
                     where=where,
                     limit=max(int(n_results), 10_000),
                     include=["documents", "metadatas"],
                 )
-            )
+            ))
         batches = self.nodes_from_query_result(got, node_type=node_type)
         candidates = [node for batch in batches for node in batch] if batches else []
-        raw_ids = [item for batch in (got.get("ids") or []) for item in batch]
-        raw_distances = [item for batch in (got.get("distances") or []) for item in batch]
+        raw_ids = [item for batch in _json_string_rows(got.get("ids")) for item in batch]
+        raw_distances = [item for batch in _json_float_rows(got.get("distances")) for item in batch]
         metric = str(
             getattr(getattr(self._e, "embedding_profile", None), "similarity_metric", None)
             or "cosine"
@@ -828,18 +881,20 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
 
     def query_edges(
         self,
-        *args,
-        query=None,
-        query_embeddings=None,
-        include=["documents", "embeddings", "metadatas"],
-        edge_type: Type[TEdge] | None = None,
-        **kwargs,
+        *args: object,
+        query: str | None = None,
+        query_embeddings: Sequence[float] | Sequence[Sequence[float]] | None = None,
+        include: list[str] | None = None,
+        edge_type: type[TEdge] | None = None,
+        **kwargs: object,
     ) -> list[list[TEdge]]:
         if query_embeddings is None:
             if query is not None:
                 query_embeddings = self._e._iterative_defensive_emb(query)
             else:
                 raise ValueError("either query or query embeddings must be specified")
+        if include is None:
+            include = ["documents", "embeddings", "metadatas"]
         query_embeddings = cast(
             list[list[float]],
             normalize_embedding_rows(query_embeddings, allow_empty=False),
@@ -852,12 +907,12 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
             entity_kind="edge",
             query_embeddings=query_embeddings,
             where=kwargs.get("where"),
-            n_results=int(kwargs.get("n_results", 10)),
+            n_results=int(cast(int, kwargs.get("n_results", 10))),
             include=include,
             )
         )
         got = cast(
-            Mapping[str, Any],
+            Mapping[str, JsonValue],
             native
             or run_awaitable_blocking(
                 self._e.backend.edge_query(
@@ -869,13 +924,13 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
             ),
         )
         return self.edges_from_query_result(
-            got, edge_type=cast(Type[TEdge], edge_type or Edge)
+            got, edge_type=cast(type[TEdge], edge_type or Edge)
         )
 
     def nodes_from_single_or_id_query_result(
         self,
-        got: Mapping[str, Any],
-        node_type: Type[TNode] = Node,
+        got: Mapping[str, JsonValue],
+        node_type: type[TNode] = Node,
     ) -> list[TNode]:
         docs: list[str] = cast(list[str], got.get("documents"))
         if docs is None:
@@ -888,7 +943,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
             embs = [None] * len(docs)
         embs = cast(list[list[float] | None], embs)
 
-        metadatas = cast(list[dict[str, Any]], got.get("metadatas"))
+        metadatas = cast(list[dict[str, JsonValue]], got.get("metadatas"))
         if metadatas is None:
             raise Exception("Missing Metadatas")
 
@@ -910,7 +965,10 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
         return res
 
     def edges_from_single_or_id_query_result(
-        self, got: Mapping[str, Any], edge_type: Type[TEdge] = Edge, include=None
+        self,
+        got: Mapping[str, JsonValue],
+        edge_type: type[TEdge] = Edge,
+        include: list[str] | None = None,
     ) -> list[TEdge]:
         if include is None:
             include = ["documents", "metadatas", "embeddings"]
@@ -925,7 +983,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
             embs = [None] * len(docs or [])
         embs = cast(list[list[float] | None], embs)
 
-        metadatas = cast(list[dict[str, Any]], got.get("metadatas"))
+        metadatas = cast(list[dict[str, JsonValue]], got.get("metadatas"))
         if metadatas is None:
             raise Exception("Missing Metadatas")
 
@@ -943,13 +1001,13 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
         return res
 
     def nodes_from_query_result(
-        self, gots: Mapping[str, Any], node_type: Type[TNode] = Node
+        self, gots: Mapping[str, JsonValue], node_type: type[TNode] = Node
     ) -> list[list[TNode]]:
         res: list[list[TNode]] = []
         id_rows = cast(list[list[str]], gots.get("ids") or [])
         document_rows = cast(list[list[str]], gots.get("documents") or [[] for _ in id_rows])
         embedding_rows = cast(list[list[list[float] | None]], gots.get("embeddings") or [[] for _ in id_rows])
-        metadata_rows = cast(list[list[dict[str, Any]]], gots.get("metadatas") or [[] for _ in id_rows])
+        metadata_rows = cast(list[list[dict[str, JsonValue]]], gots.get("metadatas") or [[] for _ in id_rows])
         for index, ids in enumerate(id_rows):
             if not ids:
                 continue
@@ -962,13 +1020,13 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
         return res
 
     def edges_from_query_result(
-        self, gots: Mapping[str, Any], edge_type: Type[TEdge] = Edge
+        self, gots: Mapping[str, JsonValue], edge_type: type[TEdge] = Edge
     ) -> list[list[TEdge]]:
         res: list[list[TEdge]] = []
         id_rows = cast(list[list[str]], gots.get("ids") or [])
         document_rows = cast(list[list[str]], gots.get("documents") or [[] for _ in id_rows])
         embedding_rows = cast(list[list[list[float] | None]], gots.get("embeddings") or [[] for _ in id_rows])
-        metadata_rows = cast(list[list[dict[str, Any]]], gots.get("metadatas") or [[] for _ in id_rows])
+        metadata_rows = cast(list[list[dict[str, JsonValue]]], gots.get("metadatas") or [[] for _ in id_rows])
         for index, ids in enumerate(id_rows):
             if not ids:
                 continue
@@ -989,7 +1047,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
             return {"lifecycle_status": "active"}
         return {}
 
-    def _infer_doc_id_from_ref(self, ref) -> Optional[str]:
+    def _infer_doc_id_from_ref(self, ref: object) -> str | None:
         did = getattr(ref, "doc_id", None)
         if did:
             return did
@@ -1002,33 +1060,37 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
 
     def extract_reference_contexts(
         self,
-        node_or_id: Union[Node | Edge, str],
+        node_or_id: Node | Edge | str,
         *,
         window_chars: int = 120,
-        max_contexts: Optional[int] = None,
+        max_contexts: int | None = None,
         prefer_label_fallback: bool = True,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, object]]:
         from ..models import GraphEntityRefBase
 
         if isinstance(node_or_id, GraphEntityRefBase):
             obj = node_or_id
         else:
-            got = run_awaitable_blocking(self._e.backend.node_get(ids=[node_or_id], include=["documents"]))
-            doc_list = got.get("documents") or []
+            got = _json_object(
+                run_awaitable_blocking(self._e.backend.node_get(ids=[node_or_id], include=["documents"]))
+            )
+            doc_list = _json_strings(got.get("documents"))
             if doc_list:
                 obj = Node.model_validate_json(doc_list[0])
             else:
-                got = run_awaitable_blocking(self._e.backend.edge_get(ids=[node_or_id], include=["documents"]))
-                edoc_list = got.get("documents") or []
+                got = _json_object(
+                    run_awaitable_blocking(self._e.backend.edge_get(ids=[node_or_id], include=["documents"]))
+                )
+                edoc_list = _json_strings(got.get("documents"))
                 if not edoc_list:
                     raise ValueError(f"Unknown node/edge id: {node_or_id}")
                 obj = Edge.model_validate_json(edoc_list[0])
 
         label = getattr(obj, "label", None)
-        out: List[Dict[str, Any]] = []
+        out: list[dict[str, object]] = []
         doc_cache = {}
 
-        def _coerce_to_referencable_text(text_or_ast_str):
+        def _coerce_to_referencable_text(text_or_ast_str: str) -> str:
             try:
                 return "\n".join(
                     (
@@ -1140,17 +1202,17 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
                 doc_id=doc_id,
             )
         if hasattr(self._e, "node_docs_collection"):
-            rows = run_awaitable_blocking(self._e.backend.node_docs_get(
+            rows = _json_object(run_awaitable_blocking(self._e.backend.node_docs_get(
                 where={"doc_id": doc_id}, include=["metadatas"]
-            ))
+            )))
             result = set()
-            for m in rows.get("metadatas") or []:
-                if m and m.get("node_id"):
-                    result.add(m.get("node_id"))
+            for m in _json_objects(rows.get("metadatas")):
+                if m.get("node_id"):
+                    result.add(str(m.get("node_id")))
             if result:
                 return sorted(result)
-        got = run_awaitable_blocking(self._e.backend.node_get(where={"doc_id": doc_id}))
-        result = set(got.get("ids") or [])
+        got = _json_object(run_awaitable_blocking(self._e.backend.node_get(where={"doc_id": doc_id})))
+        result = set(_json_strings(got.get("ids")))
         adapter = getattr(self._e, "two_stage_projection_adapter", None)
         query = getattr(adapter, "stage1_query", None)
         if callable(query):
@@ -1160,9 +1222,9 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
             for raw_row in rows:
                 if not isinstance(raw_row, Mapping):
                     continue
-                row = cast(Mapping[str, Any], raw_row)
-                payload = dict(row.get("payload") or {})
-                if (payload.get("metadata") or {}).get("doc_id") == doc_id:
+                row = cast(Mapping[str, JsonValue], raw_row)
+                payload = _json_object(row.get("payload"))
+                if _json_object(payload.get("metadata")).get("doc_id") == doc_id:
                     result.add(str(payload.get("id") or row.get("key")))
         return sorted(result)
 
@@ -1175,13 +1237,13 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
                 insertion_method=insertion_method,
                 doc_id=doc_id,
             )
-        eps = run_awaitable_blocking(self._e.backend.edge_endpoints_get(
+        eps = _json_object(run_awaitable_blocking(self._e.backend.edge_endpoints_get(
             where={"doc_id": doc_id}, include=["metadatas"]
-        ))
+        )))
         result = set()
-        for m in eps.get("metadatas") or []:
-            if m and m.get("edge_id"):
-                result.add(m.get("edge_id"))
+        for m in _json_objects(eps.get("metadatas")):
+            if m.get("edge_id"):
+                result.add(str(m.get("edge_id")))
         adapter = getattr(self._e, "two_stage_projection_adapter", None)
         query = getattr(adapter, "stage1_query", None)
         if callable(query):
@@ -1191,20 +1253,22 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
             for raw_row in rows:
                 if not isinstance(raw_row, Mapping):
                     continue
-                row = cast(Mapping[str, Any], raw_row)
-                payload = dict(row.get("payload") or {})
-                if (payload.get("metadata") or {}).get("doc_id") == doc_id:
+                row = cast(Mapping[str, JsonValue], raw_row)
+                payload = _json_object(row.get("payload"))
+                if _json_object(payload.get("metadata")).get("doc_id") == doc_id:
                     result.add(str(payload.get("id") or row.get("key")))
         return sorted(result)
 
-    def edges_by_doc(self, doc_id: str, where: dict | None = None) -> list[str]:
-        where = (
+    def edges_by_doc(
+        self, doc_id: str, where: dict[str, JsonValue] | None = None
+    ) -> list[str]:
+        query_where: dict[str, object] = (
             {"doc_id": doc_id}
             if not where
             else {"$and": [{"doc_id": doc_id}] + [{k: v} for k, v in where.items()]}
         )
-        rows = run_awaitable_blocking(self._e.backend.edge_refs_get(where=where, include=["documents"]))
-        return list({json.loads(d)["edge_id"] for d in (rows.get("documents") or [])})
+        rows = _json_object(run_awaitable_blocking(self._e.backend.edge_refs_get(where=query_where, include=["documents"])))
+        return list({json.loads(d)["edge_id"] for d in _json_strings(rows.get("documents"))})
 
     def list_edges_with_ref_filter(
         self, doc_id: str, where: dict | None = None
@@ -1212,8 +1276,8 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
         ids = self.edges_by_doc(doc_id, where)
         if not ids:
             return []
-        got = run_awaitable_blocking(self._e.backend.edge_get(ids=ids, include=["documents"]))
-        return [Edge.model_validate_json(js) for js in (got.get("documents") or [])]
+        got = _json_object(run_awaitable_blocking(self._e.backend.edge_get(ids=ids, include=["documents"])))
+        return [Edge.model_validate_json(js) for js in _json_strings(got.get("documents"))]
 
     def nodes_by_doc(self, doc_id: str, *, where: dict | None = None) -> list[str]:
         where = (
@@ -1221,8 +1285,8 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
             if not where
             else {"$and": [{"doc_id": doc_id}] + [{k: v} for k, v in where.items()]}
         )
-        rows = run_awaitable_blocking(self._e.backend.node_refs_get(where=where, include=["documents"]))
-        return list({json.loads(d)["node_id"] for d in (rows.get("documents") or [])})
+        rows = _json_object(run_awaitable_blocking(self._e.backend.node_refs_get(where=where, include=["documents"])))
+        return list({json.loads(d)["node_id"] for d in _json_strings(rows.get("documents"))})
 
     def list_nodes_with_ref_filter(
         self, doc_id: str, *, where: dict | None = None
@@ -1230,16 +1294,16 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
         ids = self.nodes_by_doc(doc_id, where=where)
         if not ids:
             return []
-        got = run_awaitable_blocking(self._e.backend.node_get(ids=ids, include=["documents"]))
-        return [Node.model_validate_json(js) for js in (got.get("documents") or [])]
+        got = _json_object(run_awaitable_blocking(self._e.backend.node_get(ids=ids, include=["documents"])))
+        return [Node.model_validate_json(js) for js in _json_strings(got.get("documents"))]
 
     def ids_with_insertion_method(
         self,
         *,
         kind: str,
         insertion_method: str,
-        ids: Optional[Sequence[str]] = None,
-        doc_id: Optional[str] = None,
+        ids: Sequence[str] | None = None,
+        doc_id: str | None = None,
     ) -> list[str]:
         """
         Return distinct node_ids/edge_ids that have at least one reference row with the
@@ -1253,29 +1317,29 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
             key = "edge_id"
             model_cls = Edge
 
-        where: dict[str, Any] = {"insertion_method": insertion_method}
+        where: dict[str, JsonValue] = {"insertion_method": insertion_method}
         if doc_id:
             where["doc_id"] = doc_id
         if ids:
             where[key] = {"$in": list(ids)}
 
         get_refs = self._e.backend.node_refs_get if kind == "node" else self._e.backend.edge_refs_get
-        rows = run_awaitable_blocking(get_refs(where=where, include=["metadatas"]))
+        rows = _json_object(run_awaitable_blocking(get_refs(where=where, include=["metadatas"])))
         picked = {
-            str(m.get(key)) for m in (rows.get("metadatas") or []) if m and m.get(key)
+            str(m.get(key)) for m in _json_objects(rows.get("metadatas")) if m.get(key)
         }
         if picked:
             return sorted(picked)
 
         get_primary = self._e.backend.node_get if kind == "node" else self._e.backend.edge_get
         if ids:
-            got = run_awaitable_blocking(get_primary(ids=list(ids), include=["documents"]))
-            documents = got.get("documents") or []
-            entity_ids = got.get("ids") or []
+            got = _json_object(run_awaitable_blocking(get_primary(ids=list(ids), include=["documents"])))
+            documents = _json_strings(got.get("documents"))
+            entity_ids = _json_strings(got.get("ids"))
         else:
-            got = run_awaitable_blocking(get_primary(include=["documents"]))
-            documents = got.get("documents") or []
-            entity_ids = got.get("ids") or []
+            got = _json_object(run_awaitable_blocking(get_primary(include=["documents"])))
+            documents = _json_strings(got.get("documents"))
+            entity_ids = _json_strings(got.get("ids"))
 
         keep: set[str] = set()
         for entity_id, blob in zip(entity_ids, documents):
@@ -1298,7 +1362,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
     ) -> list[str]:
         return self.edge_ids_by_doc(doc_id, insertion_method=insertion_method)
 
-    def load_node_map(self, *args: Any, **kwargs: Any) -> dict[str, Node]:
+    def load_node_map(self, *args: object, **kwargs: object) -> dict[str, Node]:
         ids = kwargs.pop("ids", None)
         if ids is None and args:
             ids = args[0]
@@ -1310,11 +1374,14 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
         if ids is None:
             return {}
         nodes = self.get_nodes(
-            ids=list(ids), node_type=node_type, include=include or ["documents"]
+            ids=_string_sequence(ids),
+            node_type=cast(type[Node] | None, node_type if isinstance(node_type, type) else None),
+            include=cast(list[str] | None, include if isinstance(include, list) else None)
+            or ["documents"],
         )
         return {n.safe_get_id(): n for n in nodes}
 
-    def load_edge_map(self, *args: Any, **kwargs: Any) -> dict[str, Edge]:
+    def load_edge_map(self, *args: object, **kwargs: object) -> dict[str, Edge]:
         ids = kwargs.pop("ids", None)
         if ids is None and args:
             ids = args[0]
@@ -1326,6 +1393,9 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
         if ids is None:
             return {}
         edges = self.get_edges(
-            ids=list(ids), edge_type=edge_type, include=include or ["documents"]
+            ids=_string_sequence(ids),
+            edge_type=cast(type[Edge] | None, edge_type if isinstance(edge_type, type) else None),
+            include=cast(list[str] | None, include if isinstance(include, list) else None)
+            or ["documents"],
         )
         return {e.safe_get_id(): e for e in edges}

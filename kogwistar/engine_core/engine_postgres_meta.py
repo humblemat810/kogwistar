@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import contextmanager
-from dataclasses import dataclass
 import json
 import logging
 import os
@@ -11,16 +9,22 @@ import sys
 import threading
 import time
 import uuid
-from typing import Any, Dict, Iterator, List, Optional
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import AbstractContextManager, contextmanager
+from dataclasses import dataclass
+from types import TracebackType
+from typing import Any, Coroutine, Literal, TypeVar, cast
 
 import sqlalchemy as sa
+from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from .postgres_backend import get_active_conn, _set_active_conn
+from ..json_types import JsonValue
 from ..messaging.models import ProjectedLaneMessageRow
-from .meta_lane_messages import LaneMessageMetaStoreMixin
+from ..typing_interfaces import SqlAlchemyConnectionLike, SqlAlchemyResultLike
 from .event_envelope import EntityEventEnvelope
-
+from .meta_lane_messages import LaneMessageMetaStoreMixin
+from .postgres_backend import _set_active_conn, get_active_conn
 
 _SCHEMA_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 # All processes must serialize the startup DDL batch.  This is deliberately a
@@ -28,9 +32,24 @@ _SCHEMA_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 # hash so independent processes and releases use the same lock.
 POSTGRES_BOOTSTRAP_ADVISORY_LOCK_KEY = 748219503
 logger = logging.getLogger(__name__)
+T = TypeVar("T")
 
 
-def _run_coro_blocking(coro):
+def _int_or_default(value: object, default: int = 0) -> int:
+    """Normalize opaque SQL-driver scalar values at one boundary."""
+    if value is None or isinstance(value, bool):
+        return default
+    if isinstance(value, int):
+        return value
+    if isinstance(value, (float, str)):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+    return default
+
+
+def _run_coro_blocking(coro: Coroutine[Any, Any, T]) -> T:
     try:
         asyncio.get_running_loop()
     except RuntimeError:
@@ -42,7 +61,7 @@ def _run_coro_blocking(coro):
                 runner.close()
         return asyncio.run(coro)
 
-    box: dict[str, Any] = {}
+    box: dict[str, object] = {}
 
     def _worker() -> None:
         try:
@@ -54,30 +73,41 @@ def _run_coro_blocking(coro):
     thread.start()
     thread.join()
     if "error" in box:
-        raise box["error"]
-    return box.get("result")
+        raise cast(BaseException, box["error"])
+    return cast(T, box.get("result"))
 
 
 class _BufferedMappings:
-    def __init__(self, rows: list[Any]):
+    def __init__(self, rows: list[object]) -> None:
         self._rows = rows
 
-    def all(self) -> list[dict[str, Any]]:
-        return [dict(getattr(row, "_mapping", row)) for row in self._rows]
+    def all(self) -> list[dict[str, object]]:
+        mappings: list[dict[str, object]] = []
+        for row in self._rows:
+            value = getattr(row, "_mapping", row)
+            mappings.append(dict(value) if isinstance(value, Mapping) else {})
+        return mappings
+
+    def first(self) -> dict[str, object] | None:
+        rows = self.all()
+        return rows[0] if rows else None
 
 
 class _BufferedResult:
-    def __init__(self, rows: list[Any], rowcount: int | None = None):
+    def __init__(self, rows: list[object], rowcount: int | None = None) -> None:
         self._rows = rows
-        self.rowcount = rowcount if rowcount is not None else len(rows)
+        self.rowcount: int = rowcount if rowcount is not None else len(rows)
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator[object]:
         return iter(self._rows)
 
-    def fetchone(self):
-        return self._rows[0] if self._rows else None
+    def fetchone(self) -> Sequence[Any] | None:
+        return cast(Sequence[Any], self._rows[0]) if self._rows else None
 
-    def fetchall(self):
+    def first(self) -> Sequence[Any] | None:
+        return self.fetchone()
+
+    def fetchall(self) -> list[object]:
         return list(self._rows)
 
     def mappings(self) -> _BufferedMappings:
@@ -85,44 +115,57 @@ class _BufferedResult:
 
 
 class _AsyncConnectionAdapter:
-    def __init__(self, conn: AsyncConnection, runner: asyncio.Runner):
+    def __init__(self, conn: AsyncConnection, runner: asyncio.Runner) -> None:
         self._conn = conn
         self._runner = runner
 
-    def invoke_sync(self, fn):
+    def invoke_sync(self, fn: Callable[[Connection], object]) -> object:
         return _run_coro_blocking(self._conn.run_sync(fn))
 
-    async def invoke_async(self, fn):
+    async def invoke_async(self, fn: Callable[[Connection], object]) -> object:
         return await self._conn.run_sync(fn)
 
-    def execute(self, statement, params=None):
-        def _execute(sync_conn):
+    def execute(self, statement: object, params: object = None) -> SqlAlchemyResultLike:
+        def _execute(sync_conn: Connection) -> SqlAlchemyResultLike:
+            typed_conn = cast(SqlAlchemyConnectionLike, sync_conn)
             result = (
-                sync_conn.execute(statement)
+                typed_conn.execute(statement)
                 if params is None
-                else sync_conn.execute(statement, params)
+                else typed_conn.execute(statement, params)
             )
-            rows = result.fetchall() if result.returns_rows else []
-            return _BufferedResult(rows, getattr(result, "rowcount", None))
+            rows = (
+                cast(list[object], list(result.fetchall()))
+                if bool(getattr(result, "returns_rows", False))
+                else []
+            )
+            return cast(
+                SqlAlchemyResultLike,
+                _BufferedResult(rows, getattr(result, "rowcount", None)),
+            )
 
-        return self.invoke_sync(_execute)
+        return cast(SqlAlchemyResultLike, self.invoke_sync(_execute))
 
-    def begin_nested(self):
+    def begin_nested(self) -> _AsyncNestedTransaction:
         return _AsyncNestedTransaction(self)
 
 
 class _AsyncNestedTransaction:
-    def __init__(self, adapter: _AsyncConnectionAdapter):
+    def __init__(self, adapter: _AsyncConnectionAdapter) -> None:
         self.adapter = adapter
         self.transaction = None
 
-    def __enter__(self):
+    def __enter__(self) -> _AsyncNestedTransaction:
         self.transaction = self.adapter._runner.run(
             self.adapter._conn.begin_nested().start()
         )
         return self
 
-    def __exit__(self, exc_type, exc, tb):
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> Literal[False]:
         if self.transaction is None:
             return False
         operation = (
@@ -152,17 +195,17 @@ class IndexJob:
     coalesce_key: str
     op: str
     status: str
-    lease_until: Optional[str] = None
-    next_run_at: Optional[str] = None
+    lease_until: str | None = None
+    next_run_at: str | None = None
     max_retries: int = 10
     retry_count: int = 0
-    last_error: Optional[str] = None
-    payload_json: Optional[str] = None
-    claim_token: Optional[str] = None
+    last_error: str | None = None
+    payload_json: str | None = None
+    claim_token: str | None = None
     claim_attempts: int = 0
-    accepted_result_json: Optional[str] = None
-    accepted_result_sha256: Optional[str] = None
-    accepted_at: Optional[str] = None
+    accepted_result_json: str | None = None
+    accepted_result_sha256: str | None = None
+    accepted_at: str | None = None
 
 
 @dataclass
@@ -177,20 +220,20 @@ class ProjectedLaneMessage:
     status: str
     seq: int
     conversation_seq: int
-    claimed_by: Optional[str] = None
-    lease_until: Optional[str] = None
+    claimed_by: str | None = None
+    lease_until: str | None = None
     retry_count: int = 0
     created_at: int = 0
     available_at: int = 0
-    run_id: Optional[str] = None
-    step_id: Optional[str] = None
-    correlation_id: Optional[str] = None
-    payload_json: Optional[str] = None
-    error_json: Optional[str] = None
-    prev_message_id: Optional[str] = None
-    next_message_id: Optional[str] = None
-    inbox_tail_message_id: Optional[str] = None
-    conversation_tail_message_id: Optional[str] = None
+    run_id: str | None = None
+    step_id: str | None = None
+    correlation_id: str | None = None
+    payload_json: str | None = None
+    error_json: str | None = None
+    prev_message_id: str | None = None
+    next_message_id: str | None = None
+    inbox_tail_message_id: str | None = None
+    conversation_tail_message_id: str | None = None
 
 
 @dataclass
@@ -441,7 +484,7 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
             f"CREATE INDEX IF NOT EXISTS idx_server_run_events_run_seq ON {schema}.server_run_events(run_id, seq)",
         ]
 
-    def _run_bootstrap(self, conn: Any) -> None:
+    def _run_bootstrap(self, conn: SqlAlchemyConnectionLike) -> None:
         conn.execute(
             sa.text("SELECT pg_advisory_xact_lock(:lock_key)"),
             {"lock_key": POSTGRES_BOOTSTRAP_ADVISORY_LOCK_KEY},
@@ -454,10 +497,11 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
             _run_coro_blocking(self._ensure_initialized_async())
             return
         with self.transaction() as conn:
-            self._run_bootstrap(conn)
+            self._run_bootstrap(cast(SqlAlchemyConnectionLike, conn))
 
     async def _ensure_initialized_async(self) -> None:
-        async with self.engine.begin() as conn:
+        async_engine = cast(AsyncEngine, self.engine)
+        async with async_engine.begin() as conn:
             await conn.execute(
                 sa.text("SELECT pg_advisory_xact_lock(:lock_key)"),
                 {"lock_key": POSTGRES_BOOTSTRAP_ADVISORY_LOCK_KEY},
@@ -469,39 +513,40 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
     # Transaction helpers
     # ----------------------------
     @contextmanager
-    def transaction(self) -> Iterator[sa.Connection | _AsyncConnectionAdapter]:
+    def transaction(self) -> Iterator[SqlAlchemyConnectionLike]:
         existing = get_active_conn()
         if existing is not None:
             if isinstance(existing, _AsyncConnectionAdapter):
                 with existing.begin_nested():
-                    yield existing
+                    yield cast(SqlAlchemyConnectionLike, existing)
             elif isinstance(existing, AsyncConnection):
                 runner = _make_runner()
                 try:
                     adapter = _AsyncConnectionAdapter(existing, runner)
                     with adapter.begin_nested():
-                        yield adapter
+                        yield cast(SqlAlchemyConnectionLike, adapter)
                 finally:
                     runner.close()
             else:
                 nested = getattr(existing, "begin_nested", None)
                 if callable(nested):
-                    with nested():
-                        yield existing
+                    with cast(AbstractContextManager[object], nested()):
+                        yield cast(SqlAlchemyConnectionLike, existing)
                 else:  # pragma: no cover - defensive adapter compatibility
-                    yield existing
+                    yield cast(SqlAlchemyConnectionLike, existing)
             return
 
         if self._is_async_engine:
             runner = _make_runner()
-            conn_ctx = self.engine.connect()
-            conn = _run_coro_blocking(conn_ctx.__aenter__())
+            async_engine = cast(AsyncEngine, self.engine)
+            conn_ctx = async_engine.connect()
+            conn = cast(AsyncConnection, _run_coro_blocking(conn_ctx.__aenter__()))
             txn = conn.begin()
             _run_coro_blocking(txn.start())
             adapter = _AsyncConnectionAdapter(conn, runner)
             try:
                 with _set_active_conn(adapter):
-                    yield adapter
+                    yield cast(SqlAlchemyConnectionLike, adapter)
             except BaseException:
                 _run_coro_blocking(txn.rollback())
                 raise
@@ -512,12 +557,15 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                 runner.close()
             return
 
-        with self.engine.begin() as conn:
+        sync_engine = cast(sa.Engine, self.engine)
+        with sync_engine.begin() as conn:
             with _set_active_conn(conn):
-                yield conn
+                yield cast(SqlAlchemyConnectionLike, conn)
 
     @contextmanager
-    def _queue_transaction(self, *, job_id: str, namespace: str):
+    def _queue_transaction(
+        self, *, job_id: str, namespace: str
+    ) -> Iterator[SqlAlchemyConnectionLike]:
         """Run queue metadata in a savepoint-aware transaction with diagnostics."""
         try:
             with self.transaction() as conn:
@@ -552,6 +600,8 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                 row = conn.execute(
                     sa.text(f"UPDATE {gt} SET value = value + 1 RETURNING value")
                 ).fetchone()
+            if row is None:
+                raise RuntimeError("failed to allocate global sequence")
             return int(row[0])
 
     def current_global_seq(self) -> int:
@@ -578,6 +628,8 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                 ),
                 {"user_id": user_id},
             ).fetchone()
+            if row is None:
+                raise RuntimeError("failed to allocate user sequence")
             return int(row[0])
 
     def next_scoped_seq(self, scope_id: str) -> int:
@@ -628,7 +680,7 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
         entity_id: str,
         index_kind: str,
         op: str,
-        payload_json: Optional[str] = None,
+        payload_json: str | None = None,
         max_retries: int = 10,
     ) -> str:
         """Enqueue durable derived-index work in the Postgres metastore.
@@ -698,8 +750,8 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
         *,
         limit: int = 50,
         lease_seconds: int = 60,
-        namespace: Optional[str] = "default",
-    ) -> List[IndexJob]:
+        namespace: str | None = "default",
+    ) -> list[IndexJob]:
         """Lease runnable jobs from the Postgres-backed queue.
 
         Eligibility is decided in SQL: pending jobs whose delay has elapsed plus
@@ -715,7 +767,7 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
             else f'{self.schema}."{self.index_jobs_table}"'
         )
         namespace_sql = ""
-        params: Dict[str, Any] = {
+        params: dict[str, Any] = {
             "limit": int(limit),
             "lease_seconds": int(lease_seconds),
             "claim_token": str(uuid.uuid4()),
@@ -772,7 +824,7 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
             threading.get_ident(),
         )
 
-        out: List[IndexJob] = []
+        out: list[IndexJob] = []
         for r in rows:
             out.append(
                 IndexJob(
@@ -794,8 +846,8 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                         if r.get("next_run_at") is not None
                         else None
                     ),
-                    max_retries=int(r.get("max_retries") or 10),
-                    retry_count=int(r.get("retry_count") or 0),
+                    max_retries=_int_or_default(r.get("max_retries"), 10),
+                    retry_count=_int_or_default(r.get("retry_count")),
                     last_error=(
                         str(r.get("last_error"))
                         if r.get("last_error") is not None
@@ -807,7 +859,7 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                         else None
                     ),
                     claim_token=(str(r.get("claim_token")) if r.get("claim_token") is not None else None),
-                    claim_attempts=int(r.get("claim_attempts") or 0),
+                    claim_attempts=_int_or_default(r.get("claim_attempts")),
                     accepted_result_json=(str(r.get("accepted_result_json")) if r.get("accepted_result_json") is not None else None),
                     accepted_result_sha256=(str(r.get("accepted_result_sha256")) if r.get("accepted_result_sha256") is not None else None),
                     accepted_at=(str(r.get("accepted_at")) if r.get("accepted_at") is not None else None),
@@ -994,20 +1046,20 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
     def list_index_jobs(
         self,
         *,
-        namespace: Optional[str] = "default",
-        status: Optional[str] = None,
-        entity_kind: Optional[str] = None,
-        entity_id: Optional[str] = None,
-        index_kind: Optional[str] = None,
+        namespace: str | None = "default",
+        status: str | None = None,
+        entity_kind: str | None = None,
+        entity_id: str | None = None,
+        index_kind: str | None = None,
         limit: int = 1000,
-    ) -> List[IndexJob]:
+    ) -> list[IndexJob]:
         ij = (
             f"{self.schema}.{self.index_jobs_table}"
             if self.index_jobs_table == "index_jobs"
             else f'{self.schema}."{self.index_jobs_table}"'
         )
-        where: List[str] = []
-        params: Dict[str, Any] = {"limit": int(limit)}
+        where: list[str] = []
+        params: dict[str, Any] = {"limit": int(limit)}
         if namespace is not None:
             where.append("namespace = :namespace")
             params["namespace"] = namespace
@@ -1036,7 +1088,7 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
         )
         with self.transaction() as conn:
             rows = conn.execute(sql, params).mappings().all()
-        out: List[IndexJob] = []
+        out: list[IndexJob] = []
         for r in rows:
             out.append(
                 IndexJob(
@@ -1058,8 +1110,8 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                         if r.get("next_run_at") is not None
                         else None
                     ),
-                    max_retries=int(r.get("max_retries") or 10),
-                    retry_count=int(r.get("retry_count") or 0),
+                    max_retries=_int_or_default(r.get("max_retries"), 10),
+                    retry_count=_int_or_default(r.get("retry_count")),
                     last_error=(
                         str(r.get("last_error"))
                         if r.get("last_error") is not None
@@ -1263,13 +1315,13 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                 sender_id=str(r.get("sender_id")),
                 msg_type=str(r.get("msg_type")),
                 status=str(r.get("status")),
-                seq=int(r.get("seq") or 0),
-                conversation_seq=int(r.get("conversation_seq") or 0),
+                seq=_int_or_default(r.get("seq")),
+                conversation_seq=_int_or_default(r.get("conversation_seq")),
                 claimed_by=(str(r.get("claimed_by")) if r.get("claimed_by") is not None else None),
                 lease_until=None,
-                retry_count=int(r.get("retry_count") or 0),
-                created_at=int(r.get("created_at") or 0),
-                available_at=int(r.get("available_at") or 0),
+                retry_count=_int_or_default(r.get("retry_count")),
+                created_at=_int_or_default(r.get("created_at")),
+                available_at=_int_or_default(r.get("available_at")),
                 run_id=(str(r.get("run_id")) if r.get("run_id") is not None else None),
                 step_id=(str(r.get("step_id")) if r.get("step_id") is not None else None),
                 correlation_id=(str(r.get("correlation_id")) if r.get("correlation_id") is not None else None),
@@ -1362,7 +1414,7 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
     ) -> list[ProjectedLaneMessageRow]:
         table = f"{self.schema}.projected_lane_messages"
         where = ["namespace = :namespace"]
-        params: Dict[str, Any] = {"namespace": str(namespace), "limit": int(limit)}
+        params: dict[str, Any] = {"namespace": str(namespace), "limit": int(limit)}
         _ = reply_to_message_id
         if purpose is not None:
             where.append("purpose = :purpose")
@@ -1433,13 +1485,13 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                 sender_id=str(r.get("sender_id")),
                 msg_type=str(r.get("msg_type")),
                 status=str(r.get("status")),
-                seq=int(r.get("seq") or 0),
-                conversation_seq=int(r.get("conversation_seq") or 0),
+                seq=_int_or_default(r.get("seq")),
+                conversation_seq=_int_or_default(r.get("conversation_seq")),
                 claimed_by=(str(r.get("claimed_by")) if r.get("claimed_by") is not None else None),
                 lease_until=None,
-                retry_count=int(r.get("retry_count") or 0),
-                created_at=int(r.get("created_at") or 0),
-                available_at=int(r.get("available_at") or 0),
+                retry_count=_int_or_default(r.get("retry_count")),
+                created_at=_int_or_default(r.get("created_at")),
+                available_at=_int_or_default(r.get("available_at")),
                 run_id=(str(r.get("run_id")) if r.get("run_id") is not None else None),
                 step_id=(str(r.get("step_id")) if r.get("step_id") is not None else None),
                 correlation_id=(str(r.get("correlation_id")) if r.get("correlation_id") is not None else None),
@@ -1459,7 +1511,7 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
 
     def get_index_applied_fingerprint(
         self, *, namespace: str = "default", coalesce_key: str
-    ) -> Optional[str]:
+    ) -> str | None:
         ias = f"{self.schema}.index_applied_state"
         with self.transaction() as conn:
             row = conn.execute(
@@ -1475,8 +1527,8 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
         *,
         namespace: str = "default",
         coalesce_key: str,
-        applied_fingerprint: Optional[str],
-        last_job_id: Optional[str] = None,
+        applied_fingerprint: str | None,
+        last_job_id: str | None = None,
     ) -> None:
         ias = f"{self.schema}.index_applied_state"
         with self.transaction() as conn:
@@ -1583,7 +1635,7 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
         from_seq: int = 1,
         to_seq: int | None = None,
         batch_size: int = 500,
-    ):
+    ) -> Iterator[tuple[int, str, str, str, str]]:
         # PostgreSQL streams the selected range from one transaction.  Keep
         # the common projection-store signature even though this backend does
         # not need client-side paging for the current iterator.
@@ -1610,7 +1662,14 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                     """),
                     {"ns": namespace, "from_seq": int(from_seq), "to_seq": int(to_seq)},
                 )
-            yield from rows
+            for row in rows:
+                yield (
+                    int(row[0]),
+                    str(row[1]),
+                    str(row[2]),
+                    str(row[3]),
+                    str(row[4]),
+                )
 
     def iter_entity_event_envelopes(
         self,
@@ -1661,7 +1720,7 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                 if actual != event:
                     raise ValueError(f"event_id {event.event_id!r} conflicts with stored event")
                 return actual.seq
-            latest = int(conn.execute(sa.text(
+            latest = _int_or_default(conn.execute(sa.text(
                 f"SELECT COALESCE(MAX(seq), 0) FROM {schema}.entity_events WHERE namespace=:ns"
             ), {"ns": event.namespace}).scalar_one())
             if event.seq != latest + 1:
@@ -1738,13 +1797,13 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
         return int(row[0]) if row else 0
 
     @staticmethod
-    def _decode_named_projection_payload(raw_payload: Any) -> dict[str, Any]:
+    def _decode_named_projection_payload(raw_payload: object) -> dict[str, Any]:
         payload = json.loads(str(raw_payload)) if raw_payload is not None else {}
         if not isinstance(payload, dict):
             raise ValueError("named projection payload must deserialize to a dict")
         return payload
 
-    def get_named_projection(self, namespace: str, key: str) -> Optional[dict[str, Any]]:
+    def get_named_projection(self, namespace: str, key: str) -> dict[str, Any] | None:
         schema = self.schema
         with self.transaction() as conn:
             row = conn.execute(
@@ -1879,8 +1938,8 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                 )
             else:
                 params.update(
-                    expected_last_authoritative_seq=int(expected_last_authoritative_seq),
-                    expected_last_materialized_seq=int(expected_last_materialized_seq),
+                    expected_last_authoritative_seq=_int_or_default(expected_last_authoritative_seq),
+                    expected_last_materialized_seq=_int_or_default(expected_last_materialized_seq),
                 )
                 result = conn.execute(
                     sa.text(
@@ -1931,7 +1990,7 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                 if expected_a is None and expected_m is None:
                     if current is not None:
                         return False
-                elif current is None or int(current[0]) != int(expected_a) or int(current[1]) != int(expected_m):
+                elif current is None or _int_or_default(current[0]) != _int_or_default(expected_a) or _int_or_default(current[1]) != _int_or_default(expected_m):
                     return False
             for item in rows:
                 params = {"namespace": str(item["namespace"]), "key": str(item["key"]), "payload_json": json.dumps(item["payload"], sort_keys=True, separators=(",", ":")), "a": int(item.get("last_authoritative_seq", 0)), "m": int(item.get("last_materialized_seq", 0)), "v": int(item.get("projection_schema_version", 1)), "status": str(item.get("materialization_status", "ready")), "now": now}
@@ -1996,7 +2055,7 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
 
     def get_workflow_design_projection(
         self, *, workflow_id: str
-    ) -> Optional[dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         projection = self.get_named_projection("workflow_design", str(workflow_id))
         if projection is None:
             return None
@@ -2128,7 +2187,7 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
         workflow_id: str,
         max_version: int,
         schema_version: int,
-    ) -> Optional[dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         schema = self.schema
         with self.transaction() as conn:
             row = conn.execute(
@@ -2221,7 +2280,7 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
         workflow_id: str,
         version: int,
         schema_version: int,
-    ) -> Optional[dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         schema = self.schema
         with self.transaction() as conn:
             row = conn.execute(
@@ -2265,10 +2324,10 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
             )
 
     @staticmethod
-    def _decode_run_json(raw: Any) -> Any:
+    def _decode_run_json(raw: object) -> JsonValue | None:
         if raw in (None, ""):
             return None
-        return json.loads(str(raw))
+        return cast(JsonValue, json.loads(str(raw)))
 
     def create_server_run(
         self,
@@ -2311,7 +2370,7 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                 },
             )
 
-    def get_server_run(self, run_id: str) -> Optional[dict[str, Any]]:
+    def get_server_run(self, run_id: str) -> dict[str, Any] | None:
         schema = self.schema
         with self.transaction() as conn:
             row = conn.execute(
@@ -2456,6 +2515,8 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                     "created_at_ms": now_ms,
                 },
             ).fetchone()
+            if row is None:
+                raise RuntimeError("failed to append server run event")
             seq = int(row[0])
         return {
             "seq": seq,

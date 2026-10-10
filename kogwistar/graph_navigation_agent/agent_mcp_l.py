@@ -1,8 +1,16 @@
 # agent_mcp_graph_explicit.py
 from __future__ import annotations
-import os
+
 import asyncio
+import os
 import uuid
+from collections.abc import Awaitable, Callable
+from typing import Any, cast
+
+from langchain_mcp_adapters.client import MultiServerMCPClient  # pyright: ignore[reportMissingImports]
+from langchain_mcp_adapters.tools import load_mcp_tools  # pyright: ignore[reportMissingImports]
+from langgraph.checkpoint.memory import InMemorySaver  # pyright: ignore[reportMissingImports]
+from langgraph.prebuilt import create_react_agent  # pyright: ignore[reportMissingImports]
 
 # LLMs
 USE_GEMINI = bool(os.getenv("GOOGLE_API_KEY"))
@@ -18,7 +26,7 @@ if USE_GEMINI:
 else:
     from langchain_openai import AzureChatOpenAI
 
-    llm = AzureChatOpenAI(
+    llm = cast(Any, AzureChatOpenAI)(
         deployment_name=os.getenv("OPENAI_DEPLOYMENT_NAME_GPT4_1"),
         model_name=os.getenv("OPENAI_MODEL_NAME_GPT4_1"),
         azure_endpoint=os.getenv("OPENAI_DEPLOYMENT_ENDPOINT_GPT4_1"),
@@ -30,14 +38,6 @@ else:
         max_tokens=12000,
         openai_api_type="azure",
     )
-
-# LangGraph ReAct agent
-from langgraph.prebuilt import create_react_agent
-from langgraph.checkpoint.memory import InMemorySaver
-
-# MCP adapter (agent side)
-from langchain_mcp_adapters.client import MultiServerMCPClient
-from langchain_mcp_adapters.tools import load_mcp_tools
 
 # ---------- REQUIRED: point to YOUR server ----------
 # Streamable HTTP (recommended)
@@ -77,8 +77,8 @@ EXPECTED_TOOLS = {
 }
 
 
-async def build_agent():
-    client = MultiServerMCPClient(SERVERS)
+async def build_agent() -> tuple[Any, Callable[[], Awaitable[None]]]:
+    client = MultiServerMCPClient(cast(Any, SERVERS))
 
     # Open sessions to all configured servers
     ctxs = [client.session(s) for s in SERVERS]
@@ -115,16 +115,16 @@ async def build_agent():
 
     PngDrawer().draw(graph, "mcp_query_graphviz.png")
 
-    async def _cleanup():
+    async def _cleanup() -> None:
         await asyncio.gather(*(ctx.__aexit__(None, None, None) for ctx in ctxs))
 
     return agent, _cleanup
 
 
-async def run_once(user_question: str):
+async def run_once(user_question: str) -> None:
     agent, cleanup = await build_agent()
     try:
-        config = {
+        config: dict[str, Any] = {
             "configurable": {
                 "run_name": "graph_qa",
                 "run_id": str(uuid.uuid4()),
@@ -132,7 +132,8 @@ async def run_once(user_question: str):
             }
         }
         # result = await agent.ainvoke({"messages": [{"role": "user", "content": user_question}]}, config=config)
-        events = []
+        events: list[Any] = []
+        event: Any = None
         cnt = 0
         async for event in agent.astream_events(
             {
@@ -141,11 +142,13 @@ async def run_once(user_question: str):
                     "content": user_question,  # "Use Chroma to  LangChain and scrape langchain.com"
                 }
             },
-            config=config,
+            config=cast(Any, config),
         ):
             cnt += 1
             print(event)
             events.append(event)
+        if event is None:
+            raise RuntimeError("MCP agent produced no stream events")
         final_results = event["data"]["output"]["messages"][-1].content
         print(final_results)
         print("\n=== FINAL ANSWER ===\n", final_results)

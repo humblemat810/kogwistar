@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """Volatile in-memory backend used for local demos, tutorials, and tests.
 
 This backend is intentionally small but not simplistic:
@@ -30,46 +28,64 @@ The same pattern can be parameterized in pytest fixtures so a test can opt into:
 - real backend + real/provider embeddings for fuller coverage
 """
 
+from __future__ import annotations
+
 import copy
+import inspect
 import json
 import math
+from collections.abc import Awaitable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Any, Sequence
+from types import TracebackType
+from typing import TYPE_CHECKING, TypeGuard, cast
+
+from kogwistar.engine_core.embedding_profile import EmbeddingStorageState
 from kogwistar.engine_core.in_memory_meta import InMemoryMetaStore
+from kogwistar.engine_core.models import Edge, Node
 from kogwistar.engine_core.storage_backend import (
     NoopUnitOfWork,
     TwoStageProjectionCapability,
 )
-from kogwistar.engine_core.embedding_profile import EmbeddingStorageState
+from kogwistar.json_types import JsonObject, JsonValue
 
+if TYPE_CHECKING:
+    from kogwistar.engine_core.engine import GraphKnowledgeEngine
 
-def _is_operator_dict(value: Any) -> bool:
-    return isinstance(value, dict) and any(
+def _is_operator_dict(value: object) -> TypeGuard[dict[str, object]]:
+    return isinstance(value, dict) and all(isinstance(k, str) for k in value) and any(
         isinstance(k, str) and k.startswith("$") for k in value.keys()
     )
 
 
-def _safe_cmp(left: Any, right: Any, op: str) -> bool:
+def _safe_cmp(left: object, right: object, op: str) -> bool:
     try:
         if op == "$eq":
             return left == right
         if op == "$ne":
             return left != right
-        if op == "$gt":
-            return left > right
-        if op == "$gte":
-            return left >= right
-        if op == "$lt":
-            return left < right
-        if op == "$lte":
-            return left <= right
+        if op in {"$gt", "$gte", "$lt", "$lte"}:
+            if isinstance(left, (int, float)) and isinstance(right, (int, float)):
+                return {
+                    "$gt": left > right,
+                    "$gte": left >= right,
+                    "$lt": left < right,
+                    "$lte": left <= right,
+                }[op]
+            if isinstance(left, str) and isinstance(right, str):
+                return {
+                    "$gt": left > right,
+                    "$gte": left >= right,
+                    "$lt": left < right,
+                    "$lte": left <= right,
+                }[op]
+            return False
     except Exception:
         return False
     return False
 
 
-def _contains_any(left: Any, expected: Any) -> bool:
+def _contains_any(left: object, expected: object) -> bool:
     if isinstance(left, (list, tuple, set, frozenset)):
         if isinstance(expected, (list, tuple, set, frozenset)):
             return any(item in expected for item in left)
@@ -82,7 +98,21 @@ def _contains_any(left: Any, expected: Any) -> bool:
 _MISSING = object()
 
 
-def _matches_field(value: Any, condition: Any) -> bool:
+def _where_clauses(value: object) -> list[dict[str, object]]:
+    if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
+        raise TypeError("logical where clauses must be a list of mappings")
+    return cast(list[dict[str, object]], value)
+
+
+def _object_int(value: object, *, default: int = 0) -> int:
+    if value is None:
+        return default
+    if isinstance(value, (bool, int, float, str)):
+        return int(value)
+    raise TypeError("expected an integer-compatible scalar")
+
+
+def _matches_field(value: object, condition: object) -> bool:
     if value is _MISSING:
         return False
     if _is_operator_dict(condition):
@@ -132,7 +162,9 @@ def _matches_field(value: Any, condition: Any) -> bool:
     return value == condition
 
 
-def _matches_where_python(metadata: dict[str, Any], where: dict[str, Any] | None) -> bool:
+def _matches_where_python(
+    metadata: dict[str, object], where: dict[str, object] | None
+) -> bool:
     if not where:
         return True
     if not isinstance(where, dict):
@@ -141,12 +173,12 @@ def _matches_where_python(metadata: dict[str, Any], where: dict[str, Any] | None
     # Chroma-style logic keys are explicit; plain field keys are combined with AND.
     for key, condition in where.items():
         if key == "$and":
-            clauses = condition or []
+            clauses = _where_clauses(condition or [])
             if not all(_matches_where_python(metadata, clause) for clause in clauses):
                 return False
             continue
         if key == "$or":
-            clauses = condition or []
+            clauses = _where_clauses(condition or [])
             if not any(_matches_where_python(metadata, clause) for clause in clauses):
                 return False
             continue
@@ -162,7 +194,9 @@ def _matches_where_python(metadata: dict[str, Any], where: dict[str, Any] | None
     return True
 
 
-def _matches_where(metadata: dict[str, Any], where: dict[str, Any] | None) -> bool:
+def _matches_where(
+    metadata: dict[str, object], where: dict[str, object] | None
+) -> bool:
     """Evaluate `where` through selected contract owner without API change."""
     from kogwistar._rust_bridge import (
         contract_implementation_mode,
@@ -175,7 +209,9 @@ def _matches_where(metadata: dict[str, Any], where: dict[str, Any] | None) -> bo
         metadata
     ) and metadata_filter_json_contract_compatible(where)
     if mode == "rust" and native_compatible:
-        return contract_metadata_filter_matches(metadata=metadata, where=where)
+        return contract_metadata_filter_matches(
+            metadata=cast(JsonObject, metadata), where=cast(JsonValue, where)
+        )
 
     # The native boundary is canonical JSON. Keep legacy support for Python-only
     # values (tuple/set/non-finite float/non-string keys) rather than silently
@@ -184,8 +220,8 @@ def _matches_where(metadata: dict[str, Any], where: dict[str, Any] | None) -> bo
     if not native_compatible:
         return python_value
     return contract_metadata_filter_matches(
-        metadata=metadata,
-        where=where,
+        metadata=cast(JsonObject, metadata),
+        where=cast(JsonValue, where),
         python_value=python_value,
     )
 
@@ -201,7 +237,7 @@ def _cosine_similarity(left: Sequence[float], right: Sequence[float]) -> float:
     return dot / (left_norm * right_norm)
 
 
-def _as_list(value: Any) -> list[Any]:
+def _as_list(value: object) -> list[object]:
     if value is None:
         return []
     if isinstance(value, list):
@@ -213,12 +249,12 @@ def _as_list(value: Any) -> list[Any]:
 class _StoredRow:
     id: str
     document: str
-    metadata: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, object] = field(default_factory=dict)
     embedding: list[float] | None = None
 
 
 class _InMemoryCollection:
-    def __init__(self, *, name: str, backend: "InMemoryBackend"):
+    def __init__(self, *, name: str, backend: InMemoryBackend) -> None:
         self.name = name
         self._backend = backend
         self._rows: dict[str, _StoredRow] = {}
@@ -244,7 +280,7 @@ class _InMemoryCollection:
         *,
         ids: Sequence[str],
         documents: Sequence[str] | None = None,
-        metadatas: Sequence[dict[str, Any]] | None = None,
+        metadatas: Sequence[dict[str, object]] | None = None,
         embeddings: Sequence[Sequence[float]] | None = None,
         replace: bool = False,
     ) -> None:
@@ -292,25 +328,35 @@ class _InMemoryCollection:
         *,
         ids: Sequence[str],
         documents: Sequence[str] | None = None,
-        metadatas: Sequence[dict[str, Any]] | None = None,
+        metadatas: Sequence[dict[str, object]] | None = None,
         embeddings: Sequence[Sequence[float]] | None = None,
-        **_: Any,
+        **_: object,
     ) -> None:
         self._store(
             ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings
         )
 
-    def upsert(self, **kwargs: Any) -> None:
-        self.add(**kwargs)
+    def upsert(
+        self,
+        *,
+        ids: Sequence[str],
+        documents: Sequence[str] | None = None,
+        metadatas: Sequence[dict[str, object]] | None = None,
+        embeddings: Sequence[Sequence[float]] | None = None,
+        **_: object,
+    ) -> None:
+        self.add(
+            ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings
+        )
 
     def update(
         self,
         *,
         ids: Sequence[str],
         documents: Sequence[str | None] | None = None,
-        metadatas: Sequence[dict[str, Any]] | None = None,
+        metadatas: Sequence[dict[str, object]] | None = None,
         embeddings: Sequence[Sequence[float]] | None = None,
-        **_: Any,
+        **_: object,
     ) -> None:
         ids_list = [str(i) for i in ids]
         docs_list = list(documents or [])
@@ -342,7 +388,7 @@ class _InMemoryCollection:
         self,
         *,
         ids: Sequence[str] | None = None,
-        where: dict[str, Any] | None = None,
+        where: dict[str, object] | None = None,
         limit: int | None = None,
     ) -> list[_StoredRow]:
         if ids is not None:
@@ -360,9 +406,9 @@ class _InMemoryCollection:
         rows: list[_StoredRow],
         *,
         include: Sequence[str] | None = None,
-    ) -> dict[str, Any]:
+    ) -> dict[str, object]:
         include_set = set(include or ["documents", "metadatas", "embeddings"])
-        out: dict[str, Any] = {"ids": [row.id for row in rows]}
+        out: dict[str, object] = {"ids": [row.id for row in rows]}
         out["documents"] = [row.document for row in rows]
         out["metadatas"] = [copy.deepcopy(row.metadata) for row in rows]
         out["embeddings"] = [
@@ -376,11 +422,11 @@ class _InMemoryCollection:
         self,
         *,
         ids: Sequence[str] | None = None,
-        where: dict[str, Any] | None = None,
+        where: dict[str, object] | None = None,
         include: Sequence[str] | None = None,
         limit: int | None = 200,
-        **_: Any,
-    ) -> dict[str, Any]:
+        **_: object,
+    ) -> dict[str, object]:
         rows = self._select_rows(ids=ids, where=where, limit=limit)
         return self._format_get(rows, include=include)
 
@@ -390,10 +436,10 @@ class _InMemoryCollection:
         query_embeddings: Sequence[Sequence[float]] | None = None,
         query_texts: Sequence[str] | None = None,
         n_results: int = 10,
-        where: dict[str, Any] | None = None,
+        where: dict[str, object] | None = None,
         include: Sequence[str] | None = None,
-        **_: Any,
-    ) -> dict[str, Any]:
+        **_: object,
+    ) -> dict[str, object]:
         include_set = set(include or ["documents", "metadatas", "embeddings"])
         if query_embeddings is None and query_texts is not None:
             query_embeddings = self._backend.embed(query_texts)
@@ -413,7 +459,7 @@ class _InMemoryCollection:
 
         ids_batches: list[list[str]] = []
         docs_batches: list[list[str]] = []
-        metas_batches: list[list[dict[str, Any]]] = []
+        metas_batches: list[list[dict[str, object]]] = []
         embs_batches: list[list[list[float] | None]] = []
         dist_batches: list[list[float]] = []
 
@@ -443,7 +489,7 @@ class _InMemoryCollection:
                 [1.0 - max(score, -1.0) for score, _ in ranked[: max(int(n_results), 0)]]
             )
 
-        out: dict[str, Any] = {"ids": ids_batches}
+        out: dict[str, object] = {"ids": ids_batches}
         out["documents"] = docs_batches
         out["metadatas"] = metas_batches
         out["embeddings"] = embs_batches
@@ -460,8 +506,8 @@ class _InMemoryCollection:
         self,
         *,
         ids: Sequence[str] | None = None,
-        where: dict[str, Any] | None = None,
-        **_: Any,
+        where: dict[str, object] | None = None,
+        **_: object,
     ) -> None:
         if ids is not None:
             for row_id in [str(i) for i in ids]:
@@ -476,10 +522,11 @@ class _InMemoryCollection:
 
 
 class InMemoryBackend:
+    backend_kind = "memory"
     supports_historical_tombstone_query = True
     vector_distance_kind = "distance"
 
-    def __init__(self, engine: Any):
+    def __init__(self, engine: GraphKnowledgeEngine) -> None:
         self._engine = engine
         self.unit_of_work = NoopUnitOfWork()
         self.node_index = _InMemoryCollection(name="node_index", backend=self)
@@ -538,194 +585,194 @@ class InMemoryBackend:
         except AttributeError as exc:
             raise KeyError(f"Unknown collection_key={key!r}") from exc
 
-    def call(self, collection_key: str, method: str, **kwargs) -> Any:
+    def call(self, collection_key: str, method: str, **kwargs: object) -> object:
         coll = self._c(collection_key)
         fn = getattr(coll, method)
         return fn(**kwargs)
 
-    def node_index_get(self, **kwargs) -> Any:
+    def node_index_get(self, **kwargs: object) -> object:
         return self.call("node_index", "get", **kwargs)
 
-    def node_index_query(self, **kwargs) -> Any:
+    def node_index_query(self, **kwargs: object) -> object:
         return self.call("node_index", "query", **kwargs)
 
-    def node_index_add(self, **kwargs) -> Any:
+    def node_index_add(self, **kwargs: object) -> object:
         return self.call("node_index", "add", **kwargs)
 
-    def node_index_upsert(self, **kwargs) -> Any:
+    def node_index_upsert(self, **kwargs: object) -> object:
         return self.call("node_index", "upsert", **kwargs)
 
-    def node_index_update(self, **kwargs) -> Any:
+    def node_index_update(self, **kwargs: object) -> object:
         return self.call("node_index", "update", **kwargs)
 
-    def node_index_delete(self, **kwargs) -> Any:
+    def node_index_delete(self, **kwargs: object) -> object:
         return self.call("node_index", "delete", **kwargs)
 
-    def node_get(self, **kwargs) -> Any:
+    def node_get(self, **kwargs: object) -> object:
         return self.call("node", "get", **kwargs)
 
-    def node_query(self, **kwargs) -> Any:
+    def node_query(self, **kwargs: object) -> object:
         return self.call("node", "query", **kwargs)
 
-    def node_add(self, **kwargs) -> Any:
+    def node_add(self, **kwargs: object) -> object:
         return self.call("node", "add", **kwargs)
 
-    def node_upsert(self, **kwargs) -> Any:
+    def node_upsert(self, **kwargs: object) -> object:
         return self.call("node", "upsert", **kwargs)
 
-    def node_update(self, **kwargs) -> Any:
+    def node_update(self, **kwargs: object) -> object:
         return self.call("node", "update", **kwargs)
 
-    def node_clear_embeddings(self, **kwargs) -> Any:
-        return self.node.clear_embeddings(**kwargs)
+    def node_clear_embeddings(self, **kwargs: object) -> object:
+        return self.call("node", "clear_embeddings", **kwargs)
 
-    def node_delete(self, **kwargs) -> Any:
+    def node_delete(self, **kwargs: object) -> object:
         return self.call("node", "delete", **kwargs)
 
-    def edge_get(self, **kwargs) -> Any:
+    def edge_get(self, **kwargs: object) -> object:
         return self.call("edge", "get", **kwargs)
 
-    def edge_query(self, **kwargs) -> Any:
+    def edge_query(self, **kwargs: object) -> object:
         return self.call("edge", "query", **kwargs)
 
-    def edge_add(self, **kwargs) -> Any:
+    def edge_add(self, **kwargs: object) -> object:
         return self.call("edge", "add", **kwargs)
 
-    def edge_upsert(self, **kwargs) -> Any:
+    def edge_upsert(self, **kwargs: object) -> object:
         return self.call("edge", "upsert", **kwargs)
 
-    def edge_update(self, **kwargs) -> Any:
+    def edge_update(self, **kwargs: object) -> object:
         return self.call("edge", "update", **kwargs)
 
-    def edge_clear_embeddings(self, **kwargs) -> Any:
-        return self.edge.clear_embeddings(**kwargs)
+    def edge_clear_embeddings(self, **kwargs: object) -> object:
+        return self.call("edge", "clear_embeddings", **kwargs)
 
-    def edge_delete(self, **kwargs) -> Any:
+    def edge_delete(self, **kwargs: object) -> object:
         return self.call("edge", "delete", **kwargs)
 
-    def edge_endpoints_get(self, **kwargs) -> Any:
+    def edge_endpoints_get(self, **kwargs: object) -> object:
         return self.call("edge_endpoints", "get", **kwargs)
 
-    def edge_endpoints_query(self, **kwargs) -> Any:
+    def edge_endpoints_query(self, **kwargs: object) -> object:
         return self.call("edge_endpoints", "query", **kwargs)
 
-    def edge_endpoints_add(self, **kwargs) -> Any:
+    def edge_endpoints_add(self, **kwargs: object) -> object:
         return self.call("edge_endpoints", "add", **kwargs)
 
-    def edge_endpoints_upsert(self, **kwargs) -> Any:
+    def edge_endpoints_upsert(self, **kwargs: object) -> object:
         return self.call("edge_endpoints", "upsert", **kwargs)
 
-    def edge_endpoints_update(self, **kwargs) -> Any:
+    def edge_endpoints_update(self, **kwargs: object) -> object:
         return self.call("edge_endpoints", "update", **kwargs)
 
-    def edge_endpoints_delete(self, **kwargs) -> Any:
+    def edge_endpoints_delete(self, **kwargs: object) -> object:
         return self.call("edge_endpoints", "delete", **kwargs)
 
-    def document_get(self, **kwargs) -> Any:
+    def document_get(self, **kwargs: object) -> object:
         return self.call("document", "get", **kwargs)
 
-    def document_query(self, **kwargs) -> Any:
+    def document_query(self, **kwargs: object) -> object:
         return self.call("document", "query", **kwargs)
 
-    def document_add(self, **kwargs) -> Any:
+    def document_add(self, **kwargs: object) -> object:
         return self.call("document", "add", **kwargs)
 
-    def document_upsert(self, **kwargs) -> Any:
+    def document_upsert(self, **kwargs: object) -> object:
         return self.call("document", "upsert", **kwargs)
 
-    def document_update(self, **kwargs) -> Any:
+    def document_update(self, **kwargs: object) -> object:
         return self.call("document", "update", **kwargs)
 
-    def document_delete(self, **kwargs) -> Any:
+    def document_delete(self, **kwargs: object) -> object:
         return self.call("document", "delete", **kwargs)
 
-    def domain_get(self, **kwargs) -> Any:
+    def domain_get(self, **kwargs: object) -> object:
         return self.call("domain", "get", **kwargs)
 
-    def domain_query(self, **kwargs) -> Any:
+    def domain_query(self, **kwargs: object) -> object:
         return self.call("domain", "query", **kwargs)
 
-    def domain_add(self, **kwargs) -> Any:
+    def domain_add(self, **kwargs: object) -> object:
         return self.call("domain", "add", **kwargs)
 
-    def domain_upsert(self, **kwargs) -> Any:
+    def domain_upsert(self, **kwargs: object) -> object:
         return self.call("domain", "upsert", **kwargs)
 
-    def domain_update(self, **kwargs) -> Any:
+    def domain_update(self, **kwargs: object) -> object:
         return self.call("domain", "update", **kwargs)
 
-    def domain_delete(self, **kwargs) -> Any:
+    def domain_delete(self, **kwargs: object) -> object:
         return self.call("domain", "delete", **kwargs)
 
-    def node_docs_get(self, **kwargs) -> Any:
+    def node_docs_get(self, **kwargs: object) -> object:
         return self.call("node_docs", "get", **kwargs)
 
-    def node_docs_query(self, **kwargs) -> Any:
+    def node_docs_query(self, **kwargs: object) -> object:
         return self.call("node_docs", "query", **kwargs)
 
-    def node_docs_add(self, **kwargs) -> Any:
+    def node_docs_add(self, **kwargs: object) -> object:
         return self.call("node_docs", "add", **kwargs)
 
-    def node_docs_upsert(self, **kwargs) -> Any:
+    def node_docs_upsert(self, **kwargs: object) -> object:
         return self.call("node_docs", "upsert", **kwargs)
 
-    def node_docs_update(self, **kwargs) -> Any:
+    def node_docs_update(self, **kwargs: object) -> object:
         return self.call("node_docs", "update", **kwargs)
 
-    def node_docs_delete(self, **kwargs) -> Any:
+    def node_docs_delete(self, **kwargs: object) -> object:
         return self.call("node_docs", "delete", **kwargs)
 
-    def node_refs_get(self, **kwargs) -> Any:
+    def node_refs_get(self, **kwargs: object) -> object:
         return self.call("node_refs", "get", **kwargs)
 
-    def node_refs_query(self, **kwargs) -> Any:
+    def node_refs_query(self, **kwargs: object) -> object:
         return self.call("node_refs", "query", **kwargs)
 
-    def node_refs_add(self, **kwargs) -> Any:
+    def node_refs_add(self, **kwargs: object) -> object:
         return self.call("node_refs", "add", **kwargs)
 
-    def node_refs_upsert(self, **kwargs) -> Any:
+    def node_refs_upsert(self, **kwargs: object) -> object:
         return self.call("node_refs", "upsert", **kwargs)
 
-    def node_refs_update(self, **kwargs) -> Any:
+    def node_refs_update(self, **kwargs: object) -> object:
         return self.call("node_refs", "update", **kwargs)
 
-    def node_refs_delete(self, **kwargs) -> Any:
+    def node_refs_delete(self, **kwargs: object) -> object:
         return self.call("node_refs", "delete", **kwargs)
 
-    def edge_refs_get(self, **kwargs) -> Any:
+    def edge_refs_get(self, **kwargs: object) -> object:
         return self.call("edge_refs", "get", **kwargs)
 
-    def edge_refs_query(self, **kwargs) -> Any:
+    def edge_refs_query(self, **kwargs: object) -> object:
         return self.call("edge_refs", "query", **kwargs)
 
-    def edge_refs_add(self, **kwargs) -> Any:
+    def edge_refs_add(self, **kwargs: object) -> object:
         return self.call("edge_refs", "add", **kwargs)
 
-    def edge_refs_upsert(self, **kwargs) -> Any:
+    def edge_refs_upsert(self, **kwargs: object) -> object:
         return self.call("edge_refs", "upsert", **kwargs)
 
-    def edge_refs_update(self, **kwargs) -> Any:
+    def edge_refs_update(self, **kwargs: object) -> object:
         return self.call("edge_refs", "update", **kwargs)
 
-    def edge_refs_delete(self, **kwargs) -> Any:
+    def edge_refs_delete(self, **kwargs: object) -> object:
         return self.call("edge_refs", "delete", **kwargs)
 
     def embed(self, texts: Sequence[str]) -> list[list[float]]:
         ef = getattr(self._engine, "_ef", None)
         if callable(ef):
-            return list(ef(list(texts)))
+            return [list(values) for values in cast(Sequence[Sequence[float]], ef(list(texts)))]
         return [[0.0] for _ in texts]
 
 
-class _InMemoryTwoStageProjectionAdapter:
-    """Volatile two-stage arrangement used only by deterministic tests."""
+class _InMemoryTwoStageProjectionCommon:
+    """Shared state and queue plumbing for sync and async adapters."""
 
     def __init__(self, backend: InMemoryBackend) -> None:
         self.backend = backend
 
     @property
-    def engine(self) -> Any:
+    def engine(self) -> GraphKnowledgeEngine:
         return self.backend._engine
 
     def _enqueue(self, *, entity_kind: str, entity_id: str, op: str) -> None:
@@ -744,7 +791,11 @@ class _InMemoryTwoStageProjectionAdapter:
 
     enqueue_embedding_job = _enqueue
 
-    def add_node(self, node: Any, *, doc_id: str | None = None) -> None:
+
+class _InMemoryTwoStageProjectionAdapter(_InMemoryTwoStageProjectionCommon):
+    """Synchronous volatile arrangement used by deterministic tests."""
+
+    def add_node(self, node: Node, *, doc_id: str | None = None) -> None:
         if doc_id is not None:
             node.doc_id = doc_id
         doc, meta = self.engine.write.node_doc_and_meta(node)
@@ -757,7 +808,7 @@ class _InMemoryTwoStageProjectionAdapter:
         )
         self._enqueue(entity_kind="node", entity_id=node.safe_get_id(), op="UPSERT")
 
-    def add_edge(self, edge: Any, *, doc_id: str | None = None) -> None:
+    def add_edge(self, edge: Edge, *, doc_id: str | None = None) -> None:
         if doc_id is not None:
             edge.doc_id = doc_id
         doc = edge.model_dump_json(field_mode="backend", exclude=["embedding"])
@@ -802,14 +853,35 @@ class _InMemoryTwoStageProjectionAdapter:
         )
 
 
-class AsyncInMemoryTwoStageProjectionAdapter(_InMemoryTwoStageProjectionAdapter):
+class AsyncInMemoryTwoStageProjectionAdapter(_InMemoryTwoStageProjectionCommon):
     """Non-blocking adapter for the volatile in-memory async test path."""
 
-    async def add_node(self, node: Any, *, doc_id: str | None = None) -> None:
-        super().add_node(node, doc_id=doc_id)
+    async def add_node(self, node: Node, *, doc_id: str | None = None) -> None:
+        if doc_id is not None:
+            node.doc_id = doc_id
+        doc, meta = self.engine.write.node_doc_and_meta(node)
+        self.backend.node_clear_embeddings(ids=[node.safe_get_id()])
+        self.backend.node_add(
+            ids=[node.safe_get_id()],
+            documents=[doc],
+            metadatas=[meta],
+            embeddings=[None],
+        )
+        self._enqueue(entity_kind="node", entity_id=node.safe_get_id(), op="UPSERT")
 
-    async def add_edge(self, edge: Any, *, doc_id: str | None = None) -> None:
-        super().add_edge(edge, doc_id=doc_id)
+    async def add_edge(self, edge: Edge, *, doc_id: str | None = None) -> None:
+        if doc_id is not None:
+            edge.doc_id = doc_id
+        doc = edge.model_dump_json(field_mode="backend", exclude=["embedding"])
+        meta = self.engine.write.enrich_edge_meta(edge)
+        self.backend.edge_clear_embeddings(ids=[edge.safe_get_id()])
+        self.backend.edge_add(
+            ids=[edge.safe_get_id()],
+            documents=[str(doc)],
+            metadatas=[meta],
+            embeddings=[None],
+        )
+        self._enqueue(entity_kind="edge", entity_id=edge.safe_get_id(), op="UPSERT")
 
     async def apply_embedding_job(
         self,
@@ -839,34 +911,36 @@ class AsyncInMemoryTwoStageProjectionAdapter(_InMemoryTwoStageProjectionAdapter)
         provider = getattr(self.engine, "_ef", None)
         if callable(provider):
             embedding_result = provider([str(document)])
-            if hasattr(embedding_result, "__await__"):
-                embedding_result = await embedding_result
-            embedding = list(embedding_result)[0]
+            if inspect.isawaitable(embedding_result):
+                embedding_result = await cast(Awaitable[object], embedding_result)
+            embedding = list(cast(Sequence[Sequence[float]], embedding_result))[0]
         else:
             embedding = self.engine.embed.iterative_defensive_emb(str(document))
-            if hasattr(embedding, "__await__"):
-                embedding = await embedding
+            if inspect.isawaitable(embedding):
+                embedding = await cast(Awaitable[object], embedding)
         getattr(self.backend, f"{entity_kind}_update")(
             ids=[entity_id], embeddings=[embedding]
         )
 
-    async def apply_embedding_jobs_batch(self, jobs: list[Any]) -> dict[str, BaseException | None]:
+    async def apply_embedding_jobs_batch(self, jobs: Sequence[object]) -> dict[str, BaseException | None]:
         """Embed compatible in-memory jobs in one provider call."""
-        prepared: list[tuple[str, str, str, str, dict[str, Any]]] = []
+        prepared: list[tuple[str, str, str, str, JsonObject]] = []
         outcomes: dict[str, BaseException | None] = {}
         for job in jobs:
-            value = lambda name: job.get(name) if isinstance(job, dict) else getattr(job, name, None)
+            def value(name: str) -> object:
+                return job.get(name) if isinstance(job, dict) else getattr(job, name, None)
             job_id = str(value("job_id") or "")
             entity_kind = str(value("entity_kind") or "")
             entity_id = str(value("entity_id") or "")
             payload_json = value("payload_json")
+            payload_text = payload_json if isinstance(payload_json, str) else None
             try:
                 if str(value("op") or "UPSERT").upper() == "DELETE":
                     await self.apply_embedding_job(
                         entity_kind=entity_kind,
                         entity_id=entity_id,
                         op="DELETE",
-                        payload_json=payload_json,
+                        payload_json=payload_text,
                     )
                     outcomes[job_id] = None
                     continue
@@ -876,11 +950,11 @@ class AsyncInMemoryTwoStageProjectionAdapter(_InMemoryTwoStageProjectionAdapter)
                 if not current.get("ids"):
                     outcomes[job_id] = None
                     continue
-                expected = str(json.loads(payload_json or "{}").get("source_fingerprint", ""))
+                expected = str(json.loads(payload_text or "{}").get("source_fingerprint", ""))
                 actual = self.engine.indexing.canonical_revision_payload(
                     entity_kind=entity_kind, entity_id=entity_id
                 )
-                if expected and expected != str(json.loads(actual).get("source_fingerprint", "")):
+                if expected and expected != str(json.loads(str(actual)).get("source_fingerprint", "")):
                     outcomes[job_id] = None
                     continue
                 prepared.append(
@@ -897,9 +971,9 @@ class AsyncInMemoryTwoStageProjectionAdapter(_InMemoryTwoStageProjectionAdapter)
             if not callable(provider):
                 raise RuntimeError("async in-memory batch requires an embedding provider")
             raw = provider(documents)
-            if hasattr(raw, "__await__"):
-                raw = await raw
-            embeddings = list(raw)
+            if inspect.isawaitable(raw):
+                raw = await cast(Awaitable[object], raw)
+            embeddings = list(cast(Sequence[Sequence[float]], raw))
             if len(embeddings) != len(prepared):
                 raise RuntimeError("embedding provider returned wrong batch length")
         except BaseException as exc:
@@ -929,13 +1003,13 @@ class _FakeMetaStore:
     def __init__(self) -> None:
         self._user_seq: dict[str, int] = {}
         self._global_seq = 0
-        self._named_projections: dict[tuple[str, str], dict[str, Any]] = {}
+        self._named_projections: dict[tuple[str, str], JsonObject] = {}
 
     def ensure_initialized(self) -> None:
         return None
 
     @contextmanager
-    def transaction(self):
+    def transaction(self) -> Iterator[None]:
         yield None
 
     def next_user_seq(self, user_id: str) -> int:
@@ -965,7 +1039,7 @@ class _FakeMetaStore:
     def current_global_seq(self) -> int:
         return self._global_seq
 
-    def get_named_projection(self, namespace: str, key: str) -> dict[str, Any] | None:
+    def get_named_projection(self, namespace: str, key: str) -> JsonObject | None:
         row = self._named_projections.get((str(namespace), str(key)))
         return copy.deepcopy(row) if row is not None else None
 
@@ -973,7 +1047,7 @@ class _FakeMetaStore:
         self,
         namespace: str,
         key: str,
-        payload: dict[str, Any],
+        payload: JsonObject,
         *,
         last_authoritative_seq: int,
         last_materialized_seq: int,
@@ -995,7 +1069,7 @@ class _FakeMetaStore:
         self,
         namespace: str,
         key: str,
-        payload: dict[str, Any],
+        payload: JsonObject,
         *,
         expected_last_authoritative_seq: int | None,
         expected_last_materialized_seq: int | None,
@@ -1011,8 +1085,10 @@ class _FakeMetaStore:
                 return False
         elif (
             existing is None
-            or int(existing.get("last_authoritative_seq", -1)) != int(expected_last_authoritative_seq)
-            or int(existing.get("last_materialized_seq", -1)) != int(expected_last_materialized_seq)
+            or _object_int(existing.get("last_authoritative_seq"), default=-1)
+            != _object_int(expected_last_authoritative_seq, default=-1)
+            or _object_int(existing.get("last_materialized_seq"), default=-1)
+            != _object_int(expected_last_materialized_seq, default=-1)
         ):
             return False
         self.replace_named_projection(
@@ -1026,7 +1102,7 @@ class _FakeMetaStore:
         )
         return True
 
-    def list_named_projections(self, namespace: str) -> list[dict[str, Any]]:
+    def list_named_projections(self, namespace: str) -> list[JsonObject]:
         rows = [
             copy.deepcopy(row)
             for (row_namespace, _key), row in self._named_projections.items()
@@ -1046,26 +1122,32 @@ class _FakeMetaStore:
 
 
 class _DummyLock:
-    def acquire(self, *args: Any, **kwargs: Any) -> bool:
+    def acquire(self, *args: object, **kwargs: object) -> bool:
         return True
 
     def release(self) -> None:
         return None
 
-    def __enter__(self) -> "_DummyLock":
+    def __enter__(self) -> _DummyLock:
         return self
 
-    def __exit__(self, exc_type, exc, tb) -> None:
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
         return None
 
 
-def build_in_memory_backend(engine: Any) -> InMemoryBackend:
+def build_in_memory_backend(engine: GraphKnowledgeEngine) -> InMemoryBackend:
     backend = InMemoryBackend(engine)
-    engine.backend_kind = "memory"
+    setattr(engine, "backend_kind", "memory")
     backend.backend_kind = "memory"
-    engine.meta_sqlite = InMemoryMetaStore()
-    engine.meta_sqlite.ensure_initialized()
-    engine.collection_lock = {
+    meta_store = InMemoryMetaStore()
+    meta_store.ensure_initialized()
+    setattr(engine, "meta_sqlite", meta_store)
+    setattr(engine, "collection_lock", {
         "node": _DummyLock(),
         "edge": _DummyLock(),
         "node_index": _DummyLock(),
@@ -1075,16 +1157,16 @@ def build_in_memory_backend(engine: Any) -> InMemoryBackend:
         "node_docs": _DummyLock(),
         "node_refs": _DummyLock(),
         "edge_refs": _DummyLock(),
-    }
-    engine.node_index_collection = backend.node_index
-    engine.node_collection = backend.node
-    engine.edge_collection = backend.edge
-    engine.edge_endpoints_collection = backend.edge_endpoints
-    engine.document_collection = backend.document
-    engine.domain_collection = backend.domain
-    engine.node_docs_collection = backend.node_docs
-    engine.node_refs_collection = backend.node_refs
-    engine.edge_refs_collection = backend.edge_refs
+    })
+    setattr(engine, "node_index_collection", backend.node_index)
+    setattr(engine, "node_collection", backend.node)
+    setattr(engine, "edge_collection", backend.edge)
+    setattr(engine, "edge_endpoints_collection", backend.edge_endpoints)
+    setattr(engine, "document_collection", backend.document)
+    setattr(engine, "domain_collection", backend.domain)
+    setattr(engine, "node_docs_collection", backend.node_docs)
+    setattr(engine, "node_refs_collection", backend.node_refs)
+    setattr(engine, "edge_refs_collection", backend.edge_refs)
     return backend
 
 
@@ -1093,6 +1175,6 @@ build_fake_backend = build_in_memory_backend
 
 __all__ = [
     "InMemoryBackend",
-    "build_in_memory_backend",
     "build_fake_backend",
+    "build_in_memory_backend",
 ]

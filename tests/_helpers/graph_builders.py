@@ -1,8 +1,15 @@
 from __future__ import annotations
 
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
-from kogwistar.engine_core.models import Edge, Grounding, MentionVerification, Node, Span
+from kogwistar.engine_core.models import (
+    Edge,
+    Grounding,
+    MentionVerification,
+    Node,
+    Span,
+)
 
 
 def mk_document_span(doc_id: str) -> Span:

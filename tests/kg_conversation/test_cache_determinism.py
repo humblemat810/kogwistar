@@ -1,20 +1,21 @@
 import pytest
+
 pytestmark = [pytest.mark.ci_full, pytest.mark.requires_ollama]
-import shutil
-import os
-import pathlib
 import dataclasses
 import json
+import os
+import pathlib
+import shutil
 from typing import Any
-from kogwistar.utils.cache_backend import Memory
 
 from kogwistar.conversation.agentic_answering import AnswerWithCitations
 from kogwistar.conversation.conversation_orchestrator import ConversationOrchestrator
-from kogwistar.llm_tasks import AnswerWithCitationsTaskResult, LLMTaskSet
-from tests.conftest import _make_engine_pair, _make_workflow_engine
-from tests.conftest import _to_stable_key
+from kogwistar.engine_core.models import Grounding, Node, Span
 from kogwistar.id_provider import stable_id
-from kogwistar.engine_core.models import Node, Grounding, Span
+from kogwistar.llm_tasks import AnswerWithCitationsTaskResult, LLMTaskSet
+from kogwistar.utils.cache_backend import Memory
+from tests.conftest import _make_engine_pair, _make_workflow_engine, _to_stable_key
+
 
 @pytest.mark.parametrize("llm_provider_name", ["ollama"], indirect=True)
 def test_cross_backend_cache_determinism(

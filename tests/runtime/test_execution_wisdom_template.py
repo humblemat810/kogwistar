@@ -11,7 +11,6 @@ from kogwistar.engine_core.models import Grounding, Node, Span
 from kogwistar.wisdom.template import write_execution_wisdom_artifacts
 from tests._helpers.fake_backend import build_fake_backend
 
-
 pytestmark = [pytest.mark.core, pytest.mark.runtime]
 
 

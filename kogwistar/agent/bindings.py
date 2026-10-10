@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from typing import Any, cast
+from typing import Protocol, cast
 
 from kogwistar.acl.derivation import (
     ACLInput,
+    ACLRecord,
     Declassifier,
     derive_acl,
     normalize_derivation_policy,
 )
 from kogwistar.acl.graph import ACLMode
+from kogwistar.json_types import JsonValue
 from kogwistar.runtime.budget import (
     BudgetEvent,
     BudgetExhaustedError,
@@ -25,17 +27,21 @@ from kogwistar.runtime.models import (
 )
 from kogwistar.runtime.resolvers import MappingStepResolver
 from kogwistar.runtime.runtime import StepContext
-from kogwistar.json_types import JsonValue
 
 from .limits import refresh_budget_hints
 from .providers import ModelProvider, ToolProvider
 from .read_tools import AgentReadTools, ReadScope
 
-
 # Compatibility names retained for callers of the deterministic test bindings.
 # The provider protocols are the single source of truth for these contracts.
 FakeModel = ModelProvider[JsonValue]
 FakeTool = ToolProvider[JsonValue]
+
+
+class InvocationFactory(Protocol):
+    """Build a validated nested workflow request for one runtime step."""
+
+    def __call__(self, context: StepContext, /) -> WorkflowInvocationRequest: ...
 
 
 class SequenceFakeModel:
@@ -91,7 +97,25 @@ def _failure(ctx: StepContext, message: str) -> RunFailure:
     )
 
 
-def _trusted_acl_inputs(ctx: StepContext, key: str) -> list[Any]:
+ACLInputValue = ACLInput | ACLRecord | Mapping[str, object]
+
+
+def _json_number(value: object, *, name: str) -> int | float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{name} must be numeric")
+    return value
+
+
+def _json_int(value: object, *, name: str) -> int:
+    number = _json_number(value, name=name)
+    return int(number)
+
+
+def _json_float(value: object, *, name: str) -> float:
+    return float(_json_number(value, name=name))
+
+
+def _trusted_acl_inputs(ctx: StepContext, key: str) -> list[ACLInputValue]:
     """Read ACL descriptors from the runtime authority carrier only.
 
     Mutable workflow state may carry provenance for display, but cannot widen
@@ -102,14 +126,26 @@ def _trusted_acl_inputs(ctx: StepContext, key: str) -> list[Any]:
     if isinstance(authority, Mapping):
         supplied = authority.get("acl_inputs")
         if supplied is not None:
-            if isinstance(supplied, Mapping) or isinstance(supplied, ACLInput):
+            if isinstance(supplied, (Mapping, ACLInput, ACLRecord)):
                 return [supplied]
-            return list(supplied)
+            if isinstance(supplied, Sequence) and not isinstance(
+                supplied, (str, bytes, bytearray)
+            ):
+                return [
+                    item
+                    for item in supplied
+                    if isinstance(item, (Mapping, ACLInput, ACLRecord))
+                ]
+            return []
     state_supplied = ctx.state_view.get(key)
     if state_supplied is None:
         return []
     if isinstance(state_supplied, Mapping) or isinstance(state_supplied, ACLInput):
         state_supplied = [state_supplied]
+    elif not isinstance(state_supplied, Sequence) or isinstance(
+        state_supplied, (str, bytes, bytearray)
+    ):
+        return []
     return [
         ACLInput(
             object_id=str(item.get("object_id") or item.get("id") or "untrusted-state-acl"),
@@ -180,8 +216,12 @@ def register_model_step(
             object_id=output_key,
             generation_id=str(ctx.run_id),
         )
+        budget_hints = ctx.state_view.get("agent_budget_hints")
         model_context: dict[str, JsonValue] = {
-            "budget": cast(JsonValue, dict(ctx.state_view.get("agent_budget_hints") or {}))
+            "budget": cast(
+                JsonValue,
+                dict(budget_hints) if isinstance(budget_hints, Mapping) else {},
+            )
         }
         # ACL derivation is an authorization and audit concern, not prompt
         # content.  Do not expose modes, policies, source IDs, scopes, or
@@ -197,7 +237,10 @@ def register_model_step(
         if isinstance(usage, Mapping):
             try:
                 ledger.debit(
-                    int(usage.get("total_tokens") or usage.get("output_tokens") or 0),
+                    _json_int(
+                        usage.get("total_tokens") or usage.get("output_tokens") or 0,
+                        name="total_tokens",
+                    ),
                     reason=op,
                     run_id=str(ctx.run_id),
                 )
@@ -211,7 +254,7 @@ def register_model_step(
                         run_id=str(ctx.run_id),
                         source="agent",
                         kind="cost",
-                        amount=float(actual_cost),
+                        amount=_json_float(actual_cost, name="total_cost"),
                         unit="total_cost",
                         meta={"reason": op},
                     )
@@ -347,7 +390,7 @@ def register_catalog_search_step(
 
 
 def make_nested_invocation_handler(
-    invocation_factory: Callable[[StepContext], WorkflowInvocationRequest],
+    invocation_factory: InvocationFactory,
 ) -> Callable[[StepContext], RunSuccess]:
     """Create an ordinary resolver handler returning one nested invocation."""
 
@@ -372,7 +415,9 @@ def validate_invocation_request(
     return request
 
 
-def static_invocation(workflow_id: str, *, result_state_key: str = "agent_action_result") -> Callable[[StepContext], WorkflowInvocationRequest]:
+def static_invocation(
+    workflow_id: str, *, result_state_key: str = "agent_action_result"
+) -> InvocationFactory:
     def _factory(ctx: StepContext) -> WorkflowInvocationRequest:
         return validate_invocation_request(WorkflowInvocationRequest(
             workflow_id=workflow_id,
@@ -385,7 +430,7 @@ def static_invocation(workflow_id: str, *, result_state_key: str = "agent_action
 
 def dynamic_invocation(
     design: WorkflowDesignArtifact, *, result_state_key: str = "agent_action_result"
-) -> Callable[[StepContext], WorkflowInvocationRequest]:
+) -> InvocationFactory:
     def _factory(ctx: StepContext) -> WorkflowInvocationRequest:
         return validate_invocation_request(WorkflowInvocationRequest(
             workflow_id=design.workflow_id,

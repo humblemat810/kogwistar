@@ -12,7 +12,6 @@ from kogwistar.runtime.projections import (
     workflow_run_status_projection_namespace,
 )
 
-
 pytestmark = [pytest.mark.ci_full, pytest.mark.runtime]
 
 

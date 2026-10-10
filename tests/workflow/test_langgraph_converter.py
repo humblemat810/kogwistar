@@ -1,16 +1,18 @@
-import pytest
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Set
+from typing import Any
+
+import pytest
 
 pytest.importorskip("langgraph")
+
+from langgraph.graph.state import CompiledStateGraph
 
 from kogwistar.runtime.contract import BasePredicate
 from kogwistar.runtime.langgraph_converter import (
     LGConverterOptions,
     to_langgraph,
 )
-from langgraph.graph.state import CompiledStateGraph
 
 pytestmark = pytest.mark.ci
 
@@ -26,7 +28,7 @@ class FakeNode:
     op: str
     terminal: bool
     fanout: bool
-    metadata: Dict[str, Any] | None = None
+    metadata: dict[str, Any] | None = None
 
     def safe_get_id(self):
         return self.id
@@ -37,18 +39,18 @@ class FakeEdge:
     id: str
     label: str
     predicate: str
-    source_ids: List[str]
-    target_ids: List[str]
+    source_ids: list[str]
+    target_ids: list[str]
     multiplicity: Any
     is_default: bool
-    metadata: Dict[str, Any] | None = None
+    metadata: dict[str, Any] | None = None
 
     def safe_get_id(self):
         return self.id
 
 
 class FakeWorkflowEngine:
-    def __init__(self, nodes: List[FakeNode], edges: List[FakeEdge]) -> None:
+    def __init__(self, nodes: list[FakeNode], edges: list[FakeEdge]) -> None:
         self._nodes = nodes
         self._edges = edges
 
@@ -149,8 +151,8 @@ def dump_langgraph_image(compiled: CompiledStateGraph, name="graph"):
     out.write_bytes(png_bytes)
 
 
-def _seen_nodes(compiled, init_state: Dict[str, Any]) -> Set[str]:
-    seen: Set[str] = set()
+def _seen_nodes(compiled, init_state: dict[str, Any]) -> set[str]:
+    seen: set[str] = set()
     evs = []
     for ev in compiled.stream(init_state, stream_mode="updates"):
         evs.append(ev)

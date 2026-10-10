@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """
 python -m kogwistar.workers.run_index_job_worker \
   --backend chroma \
@@ -7,15 +5,17 @@ python -m kogwistar.workers.run_index_job_worker \
   --namespace default        
 """
 
+from __future__ import annotations
+
 import argparse
 import os
-from typing import Any, Optional
+from typing import Any
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 
-PgVectorBackend: Any | None = None
+from .index_job_worker import IndexJobWorker, WorkerTickMetrics, run_forever
 
-from .index_job_worker import IndexJobWorker, run_forever
+PgVectorBackend: Any | None = None
 
 
 def _normalize_backend_name(raw_backend: str) -> str:
@@ -86,7 +86,7 @@ def build_worker(eng: GraphKnowledgeEngine, args: argparse.Namespace) -> IndexJo
     )
 
 
-def main(argv: Optional[list[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Run the GKE index_jobs worker")
     ap.add_argument(
         "--backend",
@@ -152,7 +152,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         )
         return 0
 
-    def _log(m):
+    def _log(m: WorkerTickMetrics) -> None:
         print(
             f"claimed={m.claimed} done={m.done} retried={m.retried} failed={m.failed} "
             + (

@@ -6,10 +6,9 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Optional
 
 
-def _write_text(path: Optional[str], content: str) -> None:
+def _write_text(path: str | None, content: str) -> None:
     if not path:
         return
     p = Path(path)
@@ -55,7 +54,7 @@ def _main(argv: list[str]) -> int:
 
     stop = {"flag": False}
 
-    def _handle(_signum, _frame):
+    def _handle(_signum: int, _frame: object) -> None:
         stop["flag"] = True
 
     try:
@@ -96,7 +95,7 @@ def _main(argv: list[str]) -> int:
         worker_args.append("--phase1-enable-index-jobs")
 
     python_exe = sys.executable
-    proc: Optional[subprocess.Popen] = None
+    proc: subprocess.Popen | None = None
 
     while not stop["flag"]:
         if proc is None or proc.poll() is not None:

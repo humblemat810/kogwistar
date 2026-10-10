@@ -1,14 +1,16 @@
 import time
-from typing import Any, Dict, List
+from typing import Any
 
 import httpx
 import pytest
+
 pytestmark = pytest.mark.ci_full
 import json
-import requests
 
+import requests
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
+
 from tests._helpers.server_http_helpers import mint_dev_token_http
 from tests.graph_sample_data import build_small_test_docs_nodes_edge_adjudcate
 from tests.net_helpers import pick_free_port
@@ -25,7 +27,7 @@ def _run_uvicorn(app_import: str, host: str, port: int) -> None:
 
 
 @pytest.fixture(scope="session")
-def running_server() -> Dict[str, Any]:
+def running_server() -> dict[str, Any]:
     """Start the FastAPI plus official MCP server for these tests.
 
     The previous version of this test assumed a developer had a server already
@@ -61,8 +63,8 @@ def running_server() -> Dict[str, Any]:
     host = "127.0.0.1"
     port = pick_free_port()
     import subprocess
-    import threading
     import sys
+    import threading
     from collections import deque
 
     log_buf = deque(maxlen=400)
@@ -121,7 +123,7 @@ def running_server() -> Dict[str, Any]:
 
 
 @pytest.fixture()
-def base_http(running_server: Dict[str, Any]) -> str:
+def base_http(running_server: dict[str, Any]) -> str:
     return str(running_server["base_http"])
 
 
@@ -165,9 +167,9 @@ async def test_doc_node_edge_adjudicate(
     """
 
     bundle = build_small_test_docs_nodes_edge_adjudcate()
-    docs: Dict[str, str] = bundle["docs"]
-    nodes: List[Dict[str, Any]] = bundle["nodes"]
-    edges: List[Dict[str, Any]] = bundle["edges"]
+    docs: dict[str, str] = bundle["docs"]
+    nodes: list[dict[str, Any]] = bundle["nodes"]
+    edges: list[dict[str, Any]] = bundle["edges"]
     insertion_method = "llm_graph_extraction"
 
     with requests.Session() as session:
@@ -190,11 +192,11 @@ async def test_doc_node_edge_adjudicate(
         )
 
     def _subset_for_doc(
-        items: List[Dict[str, Any]], doc_id: str
-    ) -> List[Dict[str, Any]]:
+        items: list[dict[str, Any]], doc_id: str
+    ) -> list[dict[str, Any]]:
         """Keep only items that have at least one reference for doc_id.
         Also ensure each reference carries 'insertion_method' (server may filter by it)."""
-        out: List[Dict[str, Any]] = []
+        out: list[dict[str, Any]] = []
         for it in items or []:
             spans = it.get("mentions") or []
             # if not any(r.get("doc_id") == doc_id for r in spans):

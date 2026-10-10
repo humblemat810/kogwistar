@@ -9,24 +9,44 @@ from __future__ import annotations
 import json
 import urllib.error
 import urllib.request
-from typing import Any, Protocol, TypeVar, runtime_checkable
+from collections.abc import Mapping
+from typing import Protocol, Self, TypeVar, cast, runtime_checkable
+
+from kogwistar.json_types import JsonValue
+
 
 class StructuredModelLike(Protocol):
     @classmethod
-    def model_validate(cls, payload: Any) -> Any: ...
+    def model_validate(cls, payload: object, /) -> Self: ...
+
+    @classmethod
+    def model_json_schema(cls) -> dict[str, JsonValue]: ...
 
 
 TStructuredModel = TypeVar("TStructuredModel", bound=StructuredModelLike)
+TStructuredModel_co = TypeVar(
+    "TStructuredModel_co", bound=StructuredModelLike, covariant=True
+)
+JsonSchema = dict[str, JsonValue]
+
+
+class StructuredOutputRunnable(Protocol[TStructuredModel_co]):
+    """Runnable returned by a structured-output provider."""
+
+    def invoke(
+        self, messages: object, config: object | None = None,
+    ) -> dict[str, object]: ...
 
 
 @runtime_checkable
 class SupportsStructuredOutput(Protocol):
     def with_structured_output(
         self,
-        schema: Any,
-        *args: Any,
-        **kwargs: Any,
-    ) -> Any: ...
+        schema: type[TStructuredModel] | JsonSchema,
+        *,
+        include_raw: bool = False,
+        **kwargs: object,
+    ) -> object: ...
 
 
 class StructuredBridgeChatModel:
@@ -51,14 +71,19 @@ class StructuredBridgeChatModel:
 
     def with_structured_output(
         self,
-        schema: type[TStructuredModel],
+        schema: type[TStructuredModel] | JsonSchema,
+        *,
         include_raw: bool = True,
-        **kwargs: Any,
-    ) -> "_StructuredBridgeResponse":
+        **kwargs: object,
+    ) -> _StructuredBridgeResponse:
         _ = include_raw, kwargs
+        if not isinstance(schema, type):
+            raise TypeError("the structured bridge requires a model type schema")
         return _StructuredBridgeResponse(self, schema)
 
-    def complete(self, messages: Any, schema: Any) -> dict[str, Any]:
+    def complete(
+        self, messages: object, schema: type[TStructuredModel]
+    ) -> dict[str, object]:
         body = {
             "model": self.model,
             "messages": bridge_messages(messages),
@@ -77,7 +102,7 @@ class StructuredBridgeChatModel:
         for attempt in range(self.max_retries + 1):
             try:
                 with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
-                    result = json.loads(response.read().decode("utf-8"))
+                    result: object = json.loads(response.read().decode("utf-8"))
                 break
             except urllib.error.HTTPError as exc:
                 detail = exc.read().decode("utf-8", errors="replace")[:1000]
@@ -90,9 +115,9 @@ class StructuredBridgeChatModel:
                     raise TimeoutError(f"structured bridge unavailable: {exc}") from exc
         else:
             raise TimeoutError("structured bridge exhausted retries")
-        if not isinstance(result, dict) or not isinstance(result.get("output"), dict):
+        if not isinstance(result, Mapping) or not isinstance(result.get("output"), Mapping):
             raise TypeError("structured bridge returned no structured output object")
-        return result["output"]
+        return dict(result["output"])
 
 
 class _StructuredBridgeResponse:
@@ -100,14 +125,14 @@ class _StructuredBridgeResponse:
         self.model = model
         self.schema = schema
 
-    def invoke(self, messages: Any, config: Any = None) -> dict[str, Any]:
+    def invoke(self, messages: object, config: object | None = None) -> dict[str, object]:
         _ = config
         payload = self.model.complete(messages, self.schema)
         parsed = self.schema.model_validate(payload)
         return {"parsed": parsed, "raw": payload, "parsing_error": None}
 
 
-def bridge_messages(messages: Any) -> list[dict[str, str]]:
+def bridge_messages(messages: object) -> list[dict[str, str]]:
     """Convert common chat-message objects without exposing local paths."""
     if not isinstance(messages, (list, tuple)):
         messages = [messages]
@@ -132,11 +157,14 @@ class ProviderChainChatModel:
 
     def with_structured_output(
         self,
-        schema: type[TStructuredModel],
+        schema: type[TStructuredModel] | JsonSchema,
+        *,
         include_raw: bool = True,
-        **kwargs: Any,
-    ) -> "_ProviderChainResponse":
+        **kwargs: object,
+    ) -> _ProviderChainResponse:
         _ = include_raw, kwargs
+        if not isinstance(schema, type):
+            raise TypeError("provider chains require a model type schema")
         return _ProviderChainResponse(self.models, schema)
 
 
@@ -145,11 +173,15 @@ class _ProviderChainResponse:
         self.models = models
         self.schema = schema
 
-    def invoke(self, messages: Any, config: Any = None) -> dict[str, Any]:
+    def invoke(self, messages: object, config: object | None = None) -> dict[str, object]:
         last_error: Exception | None = None
         for index, (provider, model) in enumerate(self.models):
             try:
-                result = model.with_structured_output(self.schema, include_raw=True).invoke(messages, config=config)
+                runnable = cast(
+                    StructuredOutputRunnable[StructuredModelLike],
+                    model.with_structured_output(self.schema, include_raw=True),
+                )
+                result = runnable.invoke(messages, config=config)
                 if not isinstance(result, dict):
                     raise TypeError(f"{provider} returned an invalid structured result")
                 result = dict(result)
@@ -167,8 +199,9 @@ class _ProviderChainResponse:
 
 __all__ = [
     "ProviderChainChatModel",
-    "StructuredModelLike",
     "StructuredBridgeChatModel",
+    "StructuredModelLike",
+    "StructuredOutputRunnable",
     "SupportsStructuredOutput",
     "bridge_messages",
 ]

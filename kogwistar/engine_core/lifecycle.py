@@ -1,10 +1,13 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Callable, Literal, Sequence, TypeVar, TYPE_CHECKING, cast
 import uuid
-from .subsystems.base import NamespaceProxy
+from collections.abc import Callable, Sequence
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING, Literal, TypeVar, cast
+
 from ..typing_interfaces import ProjectionBackendLike
+from ..json_types import JsonObject, JsonValue
+from .subsystems.base import NamespaceProxy
 
 if TYPE_CHECKING:
     # Avoid runtime import cycles; we only need this for typing.
@@ -74,7 +77,10 @@ class LifecycleSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             next_frontier_ids: set[str] = set()
 
             for item in frontier:
-                item_id = str(getattr(item, "id"))
+                item_id_value = getattr(item, "id", None)
+                if item_id_value is None:
+                    continue
+                item_id = str(item_id_value)
                 if item_id in visited:
                     continue
                 visited.add(item_id)
@@ -104,7 +110,7 @@ class LifecycleSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
     # Write-side
     # -----------------------
 
-    def tombstone_node(self, node_id: str, **kw: object) -> bool:
+    def tombstone_node(self, node_id: str, **kw: JsonValue) -> bool:
         patch = {
             "lifecycle_status": "tombstoned",
             "redirect_to_id": None,
@@ -146,7 +152,7 @@ class LifecycleSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
 
         return ok
 
-    def redirect_node(self, from_id: str, to_id: str, **kw: object) -> bool:
+    def redirect_node(self, from_id: str, to_id: str, **kw: JsonValue) -> bool:
         """Supersede ``from_id`` with ``to_id`` while preserving lookup continuity.
 
         The source node becomes tombstoned, but its ``redirect_to_id`` points at the
@@ -195,7 +201,7 @@ class LifecycleSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             self._maybe_index_delete(entity_kind="node", entity_id=from_id)
         return ok
 
-    def tombstone_edge(self, edge_id: str, **kw: object) -> bool:
+    def tombstone_edge(self, edge_id: str, **kw: JsonValue) -> bool:
         patch = {
             "lifecycle_status": "tombstoned",
             "redirect_to_id": None,
@@ -237,7 +243,7 @@ class LifecycleSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
 
         return ok
 
-    def redirect_edge(self, from_id: str, to_id: str, **kw: object) -> bool:
+    def redirect_edge(self, from_id: str, to_id: str, **kw: JsonValue) -> bool:
         """Supersede ``from_id`` with ``to_id`` while preserving lookup continuity."""
         if from_id == to_id:
             return False
@@ -308,16 +314,16 @@ class LifecycleSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         *,
         entity_kind: str,
         entity_id: str,
-        lifecycle_patch: dict[str, object],
+        lifecycle_patch: JsonObject,
         op: str,
-        **kw,
+        **kw: JsonValue,
     ) -> bool | None:
         from .rust_postgres_session import RustEnginePostgresMetaStore
 
         meta = getattr(self._e, "meta_sqlite", None)
         if not isinstance(meta, RustEnginePostgresMetaStore):
             return None
-        payload: dict[str, object] = {"entity_id": entity_id}
+        payload: JsonObject = {"entity_id": entity_id}
         if kw.get("reason") is not None:
             payload["reason"] = kw["reason"]
         if kw.get("deleted_by") is not None:
@@ -371,7 +377,7 @@ class LifecycleSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         *,
         entity_kind: str,
         entity_id: str,
-        lifecycle_patch: dict[str, object],
+        lifecycle_patch: JsonObject,
     ) -> bool:
         from .rust_postgres_session import RustEnginePostgresMetaStore
 
@@ -410,16 +416,16 @@ class LifecycleSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         return bool(updated)
 
     def _append_lifecycle_event(
-        self, *, entity_kind: str, entity_id: str, op: str, **kw
+        self, *, entity_kind: str, entity_id: str, op: str, **kw: JsonValue
     ) -> None:
         """Require lifecycle mutation event before non-native projection changes."""
-        payload: dict[str, object] = {"entity_id": entity_id}
+        payload: JsonObject = {"entity_id": entity_id}
         if kw.get("reason") is not None:
             payload["reason"] = kw.get("reason")
         if kw.get("deleted_by") is not None:
             payload["deleted_by"] = kw.get("deleted_by")
         if isinstance(kw.get("lifecycle_patch"), dict):
-            payload["lifecycle_patch"] = dict(kw["lifecycle_patch"])
+            payload["lifecycle_patch"] = cast(JsonObject, kw["lifecycle_patch"])
         self._e._append_event_for_entity(
             namespace=getattr(self._e, "namespace", "default"),
             entity_kind=entity_kind,

@@ -11,14 +11,14 @@ from kogwistar.engine_core import GraphKnowledgeEngine
 from kogwistar.engine_core.in_memory_backend import build_in_memory_backend
 from kogwistar.runtime import MappingStepResolver
 from kogwistar.runtime.models import RunSuccess
-from kogwistar.server.run_registry import RunRegistry, RunRegistryLaneMessageEventSink
 from kogwistar.runtime.runtime import (
-    RunResult,
     RouteDecision,
+    RunResult,
     StepContext,
     WorkflowRuntime,
     apply_state_update_inplace,
 )
+from kogwistar.server.run_registry import RunRegistry, RunRegistryLaneMessageEventSink
 
 pytestmark = [pytest.mark.ci, pytest.mark.runtime, pytest.mark.runtime_sync]
 

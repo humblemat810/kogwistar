@@ -13,45 +13,42 @@ from __future__ import annotations
 import inspect
 import json
 import time
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Callable, Optional, Protocol, TypeVar, Tuple
+from typing import TYPE_CHECKING, Protocol, TypeVar, cast
+
 from fastapi import HTTPException
 
-
-from .models import ConversationEdge
+from ..engine_core.async_compat import run_awaitable_blocking
+from ..engine_core.models import Grounding, MentionVerification, Span
+from ..engine_core.types import ToolCallIdFactory
+from ..json_types import JsonValue
+from ..server.auth_middleware import (
+    get_current_capabilities,
+    has_explicit_capabilities_claim,
+)
+from .models import BaseToolResult, ConversationEdge, ConversationNode
+from .policy import get_chat_tail
 from .tool_registry import ToolReceipt
 
-
-from .models import BaseToolResult, ConversationNode
-from ..engine_core.models import Grounding, MentionVerification, Span
-from ..engine_core.async_compat import run_awaitable_blocking
-from .policy import get_chat_tail
-from ..server.auth_middleware import get_current_capabilities, has_explicit_capabilities_claim
-
 if TYPE_CHECKING:
-    from .models import MetaFromLastSummary
-    from kogwistar.engine_core.engine import GraphKnowledgeEngine
     from kogwistar.conversation.conversation_orchestrator import (
         ConversationOrchestrator,
     )
+    from kogwistar.engine_core.engine import GraphKnowledgeEngine
+
+    from .models import MetaFromLastSummary
 
 T = TypeVar("T", bound=BaseToolResult)
-
-
-class ToolCallIdFactory(Protocol):
-    """Build deterministic IDs for tool-call and tool-result events."""
-
-    def __call__(self, *parts: str) -> str: ...
 
 
 class SubworkflowRunner(Protocol):
     """Invoke a child workflow with its tool-shaped keyword payload."""
 
-    def __call__(self, **kwargs: Any) -> object | Awaitable[object]: ...
+    def __call__(self, **kwargs: JsonValue) -> object | Awaitable[object]: ...
 
 
-def _safe_json(obj: Any) -> str:
+def _safe_json(obj: object) -> str:
     try:
         return json.dumps(obj, ensure_ascii=False, default=str)
     except Exception:
@@ -78,11 +75,11 @@ class ToolRunner:
     def join_tool_node_to_turn(
         self,
         orchestrator: ConversationOrchestrator,
-        conversation_id,
-        call_node,
-        turn_node_id,
-        prev_turn_meta_summary,
-    ):
+        conversation_id: str,
+        call_node: ConversationNode,
+        turn_node_id: str,
+        prev_turn_meta_summary: MetaFromLastSummary,
+    ) -> None:
         orchestrator.join_tool_node_to_turn(
             conversation_id,
             call_node.safe_get_id(),
@@ -103,8 +100,8 @@ class ToolRunner:
         turn_node_id: str,
         turn_index: int,
         tool_name: str,
-        args: list,
-        kwargs: dict[str, Any],
+        args: list[JsonValue],
+        kwargs: dict[str, JsonValue],
         prev_turn_meta_summary: MetaFromLastSummary,
     ) -> tuple[ConversationNode, ConversationNode | None, str]:
         try:
@@ -187,11 +184,11 @@ class ToolRunner:
         turn_node_id: str,
         turn_index: int,
         tool_name: str,
-        input_args: list,
-        input_kwargs: dict[str, Any],
+        input_args: list[JsonValue],
+        input_kwargs: dict[str, JsonValue],
         call_node: ConversationNode,
         result_summary: str,
-        result_payload: dict[str, Any],
+        result_payload: Mapping[str, object],
         prev_turn_meta_summary: MetaFromLastSummary,
         execution_mode: str,
         kind: str,
@@ -329,17 +326,17 @@ class ToolRunner:
         turn_node_id: str,
         turn_index: int,
         tool_name: str,
-        args: list,
-        kwargs: dict[str, Any],
-        handler: Callable[..., T],
+        args: list[JsonValue],
+        kwargs: dict[str, JsonValue],
+        handler: Callable[..., T | Awaitable[T]],
         prev_turn_meta_summary: MetaFromLastSummary,
-        render_result: Optional[Callable[[T], str]] = None,
+        render_result: Callable[[T], str] | None = None,
         prev_node: ConversationNode | None = None,
         orchestrator: ConversationOrchestrator | None = None,
         tool_kind: str | None = None,
         execution_mode: str = "inline",
         supports_async: bool | None = None,
-    ) -> Tuple[T, str]:
+    ) -> tuple[T, str]:
         """Execute a tool handler and record tool_call/tool_result nodes."""
         required_capability = str(kwargs.get("capability") or "").strip().lower()
         if required_capability:
@@ -384,7 +381,12 @@ class ToolRunner:
             if inspect.isawaitable(raw_result)
             else raw_result
         )
-        result: BaseToolResult = result_any
+        if not isinstance(result_any, BaseToolResult):
+            raise TypeError(
+                f"Tool '{tool_name}' returned {type(result_any).__name__}; "
+                "expected BaseToolResult"
+            )
+        result = cast(T, result_any)
         if result:
             if (
                 tn := result.node_id_entry
@@ -393,7 +395,9 @@ class ToolRunner:
                     [tn], node_type=ConversationNode
                 )
                 if created_nodes:
-                    n: ConversationNode = created_nodes[0]
+                    # The backend API returns the base Node type even when a
+                    # concrete node_type filter was supplied.
+                    n = cast(ConversationNode, created_nodes[0])
                     self_span = Span(
                         collection_page_url=f"conversation/{conversation_id}",
                         document_page_url=f"conversation/{conversation_id}#{n.safe_get_id()}",
@@ -450,6 +454,10 @@ class ToolRunner:
                 compact = ""
         if not compact:
             compact = _safe_json(getattr(result, "__dict__", result))[:800]
+        raw_payload = getattr(result, "__dict__", {})
+        result_payload = (
+            dict(raw_payload) if isinstance(raw_payload, Mapping) else {}
+        )
         res_node, res_id = self._record_tool_result(
             conversation_id=conversation_id,
             user_id=user_id,
@@ -460,7 +468,7 @@ class ToolRunner:
             input_args=args,
             input_kwargs=kwargs,
             result_summary=compact,
-            result_payload=getattr(result, "__dict__", result),
+            result_payload=result_payload,
             prev_turn_meta_summary=prev_turn_meta_summary,
             execution_mode=execution_mode,
             kind=self._normalize_kind(
@@ -472,7 +480,7 @@ class ToolRunner:
                 ),
             ),
             side_effects=(
-                [str(getattr(result, "node_id_entry"))]
+                [str(result.node_id_entry)]
                 if getattr(result, "node_id_entry", None)
                 else []
             ),
@@ -487,15 +495,15 @@ class ToolRunner:
         turn_node_id: str,
         turn_index: int,
         tool_name: str,
-        args: list,
-        kwargs: dict[str, Any],
+        args: list[JsonValue],
+        kwargs: dict[str, JsonValue],
         subworkflow_runner: SubworkflowRunner,
         prev_turn_meta_summary: MetaFromLastSummary,
-        render_result: Optional[Callable[[Any], str]] = None,
+        render_result: Callable[[object], str] | None = None,
         orchestrator: ConversationOrchestrator | None = None,
         tool_kind: str = "workflow/subworkflow",
         execution_mode: str = "child-process",
-    ) -> Tuple[object, str]:
+    ) -> tuple[object, str]:
         """Run nested workflow as tool-shaped child process."""
         call_node, _, _ = self._record_tool_call(
             conversation_id=conversation_id,

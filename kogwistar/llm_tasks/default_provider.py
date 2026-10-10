@@ -1,11 +1,13 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 import os
-from typing import Literal, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
+from typing import Literal, Protocol, cast
 
 from pydantic import BaseModel
 
+from ..json_types import JsonObject
 from ..llm_structured_output import build_structured_output_runnable
 from .contracts import (
     AdjudicateBatchTaskRequest,
@@ -26,8 +28,17 @@ from .contracts import (
     SummarizeContextTaskResult,
 )
 from .errors import ProviderDependencyError
+from .providers import SupportsStructuredOutput
 
 ProviderName = Literal["gemini", "openai", "ollama"] # add your own
+
+
+class _RunnableLike(Protocol):
+    def invoke(self, input_value: object) -> object: ...
+
+
+class _PromptLike(Protocol):
+    def __or__(self, other: object) -> _RunnableLike: ...
 
 
 @dataclass(frozen=True)
@@ -108,9 +119,9 @@ class _LangChainRunner(_Runner):
                 "Default task provider needs 'langchain-core'. Install with: pip install 'kogwistar[full]'"
             ) from e
 
-        prompt = ChatPromptTemplate.from_messages(list(messages))
+        prompt = cast(_PromptLike, ChatPromptTemplate.from_messages(list(messages)))
         structured = build_structured_output_runnable(
-            self._model,
+            cast(SupportsStructuredOutput, self._model),
             schema,
             include_raw=True,
             prefer_json_schema=prefer_json_schema,
@@ -133,7 +144,7 @@ class _LangChainRunner(_Runner):
             raise ProviderDependencyError(
                 "Default task provider needs 'langchain-core'. Install with: pip install 'kogwistar[full]'"
             ) from e
-        prompt = ChatPromptTemplate.from_messages(list(messages))
+        prompt = cast(_PromptLike, ChatPromptTemplate.from_messages(list(messages)))
         result = (prompt | self._model).invoke(dict(variables))
         if isinstance(result, str):
             return result
@@ -162,7 +173,7 @@ def _build_runner(provider: ProviderName, config: DefaultTaskProviderConfig) -> 
         except Exception:
             return _MissingRunner(_missing_provider_message(provider))
         return _LangChainRunner(
-            ChatGoogleGenerativeAI(
+            cast(Callable[..., object], ChatGoogleGenerativeAI)(
                 model=config.gemini_model_name,
                 temperature=0.1,
                 max_tokens=None,
@@ -173,11 +184,11 @@ def _build_runner(provider: ProviderName, config: DefaultTaskProviderConfig) -> 
 
     if provider == "ollama":
         try:
-            from langchain_ollama import ChatOllama
+            from langchain_ollama import ChatOllama  # type: ignore[reportMissingImports]
         except Exception:
             return _MissingRunner(_missing_provider_message(provider))
         return _LangChainRunner(
-            ChatOllama(
+            cast(Callable[..., object], ChatOllama)(
                 model=config.ollama_model_name,
                 temperature=0.1,
             )
@@ -188,7 +199,7 @@ def _build_runner(provider: ProviderName, config: DefaultTaskProviderConfig) -> 
     except Exception:
         return _MissingRunner(_missing_provider_message(provider))
     return _LangChainRunner(
-        AzureChatOpenAI(
+        cast(Callable[..., object], AzureChatOpenAI)(
             deployment_name=os.getenv("OPENAI_DEPLOYMENT_NAME_GPT4_1"),
             model_name=os.getenv("OPENAI_MODEL_NAME_GPT4_1"),
             azure_endpoint=os.getenv("OPENAI_DEPLOYMENT_ENDPOINT_GPT4_1"),
@@ -203,14 +214,14 @@ def _build_runner(provider: ProviderName, config: DefaultTaskProviderConfig) -> 
     )
 
 
-def _payload(parsed: object | None) -> Mapping[str, object] | None:
+def _payload(parsed: object | None) -> JsonObject | None:
     if parsed is None:
         return None
     if isinstance(parsed, BaseModel):
-        dumped = parsed.model_dump(mode="python")
-        return dumped if isinstance(dumped, dict) else {"value": dumped}
+        dumped = parsed.model_dump(mode="json")
+        return cast(JsonObject, dumped) if isinstance(dumped, dict) else {"value": dumped}
     if isinstance(parsed, Mapping):
-        return dict(parsed)
+        return cast(JsonObject, dict(parsed))
     return None
 
 
@@ -238,7 +249,9 @@ def _extract_schema_for_mode(schema_mode: str) -> tuple[type[BaseModel], bool]:
 
 
 def _build_task_set_from_runner_getter(
-    *, get_runner_for_task, provider_hints: LLMTaskProviderHints
+    *,
+    get_runner_for_task: Callable[[str], _Runner],
+    provider_hints: LLMTaskProviderHints,
 ) -> LLMTaskSet:
     def _extract_graph(request: ExtractGraphTaskRequest) -> ExtractGraphTaskResult:
         schema, prefer_json_schema = _extract_schema_for_mode(request.schema_mode)
@@ -369,7 +382,7 @@ def _build_task_set_from_runner_getter(
         )
 
         payload = _payload(parsed) or {}
-        verdict_payloads: list[Mapping[str, object]] = []
+        verdict_payloads: list[JsonObject] = []
         items = payload.get("items")
         if isinstance(items, list):
             verdict_payloads = [dict(x) for x in items if isinstance(x, Mapping)]

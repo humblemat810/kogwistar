@@ -1,17 +1,18 @@
-from pathlib import Path
-from typing import Any, List, Optional
 import asyncio
 import sys
+from pathlib import Path
+from typing import Any
 
 import pytest
+
+from kogwistar.conversation.policy import install_engine_hooks
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.postgres_backend import PgVectorBackend
-from kogwistar.conversation.policy import install_engine_hooks
-from tests._helpers.embeddings import build_test_embedding_function
-from tests._helpers.fake_backend import build_fake_backend
 from tests._helpers.embeddings import (
     ConstantEmbeddingFunction,
+    build_test_embedding_function,
 )
+from tests._helpers.fake_backend import build_fake_backend
 
 try:
     from langchain_core.runnables import Runnable
@@ -263,22 +264,22 @@ class FakeStructuredRunnable(Runnable):
         self._parsed = parsed
         self._include_raw = include_raw
 
-    def invoke(self, input: Any, config: Optional[dict] = None, **kwargs: Any) -> Any:
+    def invoke(self, input: Any, config: dict | None = None, **kwargs: Any) -> Any:
         if self._include_raw:
             return {"raw": None, "parsed": self._parsed, "parsing_error": None}
         return self._parsed
 
     async def ainvoke(
-        self, input: Any, config: Optional[dict] = None, **kwargs: Any
+        self, input: Any, config: dict | None = None, **kwargs: Any
     ) -> Any:
         return self.invoke(input, config=config, **kwargs)
 
     def batch(
-        self, inputs: List[Any], config: Optional[dict] = None, **kwargs: Any
-    ) -> List[Any]:
+        self, inputs: list[Any], config: dict | None = None, **kwargs: Any
+    ) -> list[Any]:
         return [self.invoke(i, config=config, **kwargs) for i in inputs]
 
     async def abatch(
-        self, inputs: List[Any], config: Optional[dict] = None, **kwargs: Any
-    ) -> List[Any]:
+        self, inputs: list[Any], config: dict | None = None, **kwargs: Any
+    ) -> list[Any]:
         return [self.invoke(i, config=config, **kwargs) for i in inputs]

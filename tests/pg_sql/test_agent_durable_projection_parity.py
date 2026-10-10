@@ -15,11 +15,12 @@ from kogwistar.agent import (
 )
 from kogwistar.agent.catalog import scoped_projection_namespace
 from kogwistar.agent.skills import parse_skill_text
+from kogwistar.engine_core.async_named_projection import (
+    AsyncPostgresNamedProjectionStore,
+)
 from kogwistar.engine_core.engine_postgres_meta import EnginePostgresMetaStore
-from kogwistar.engine_core.async_named_projection import AsyncPostgresNamedProjectionStore
 from kogwistar.engine_core.rust_postgres_session import RustEnginePostgresMetaStore
 from tests.conftest import _run_async_windows_safe
-
 
 pytestmark = [pytest.mark.integration, pytest.mark.slow, pytest.mark.requires_pgvector]
 

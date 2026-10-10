@@ -1,17 +1,18 @@
 # tests/test_graph_query_real_engine.py
 from __future__ import annotations
+
 import pytest
 
 import kogwistar.engine_core.engine as engmod
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
-from kogwistar.graph_query import GraphQuery
 from kogwistar.engine_core.models import (
     Document,
-    Node,
     Edge,
-    Span,
     Grounding,
+    Node,
+    Span,
 )
+from kogwistar.graph_query import GraphQuery
 from tests._helpers.embeddings import build_test_embedding_function
 from tests._helpers.fake_backend import build_fake_backend
 

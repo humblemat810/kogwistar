@@ -7,8 +7,8 @@ from typing import Any
 import pytest
 
 from kogwistar._rust_bridge import RustParityError, store_postgres
-from kogwistar.engine_core.engine_postgres_meta import EnginePostgresMetaStore
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.engine_postgres_meta import EnginePostgresMetaStore
 from kogwistar.engine_core.models import (
     Document,
     Domain,
@@ -26,7 +26,6 @@ from tests._helpers.graph_builders import (
     build_relationship_edge,
     mk_document_span,
 )
-
 
 pytestmark = [pytest.mark.ci_full, pytest.mark.core]
 

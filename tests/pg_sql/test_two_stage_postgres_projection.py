@@ -1,18 +1,18 @@
 from __future__ import annotations
 
-import json
 import asyncio
+import json
 import threading
 
 import pytest
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.postgres_backend import PgVectorBackend
+from kogwistar.graph_query import GraphQuery
+from kogwistar.workers.async_index_job_worker import AsyncIndexJobWorker
 from tests._helpers.embeddings import ConstantEmbeddingFunction
 from tests._helpers.graph_builders import build_entity_node, build_relationship_edge
 from tests.core.two_stage_case_catalog import two_stage_case
-from kogwistar.workers.async_index_job_worker import AsyncIndexJobWorker
-from kogwistar.graph_query import GraphQuery
 
 pytestmark = [pytest.mark.ci_full, pytest.mark.integration, pytest.mark.e2e]
 

@@ -4,8 +4,15 @@ import asyncio
 import inspect
 import json
 import time
+from collections.abc import Awaitable, Iterable
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import TYPE_CHECKING, TypeVar, cast
+
+if TYPE_CHECKING:
+    from ..engine_core.engine import GraphKnowledgeEngine
+
+
+T = TypeVar("T")
 
 
 @dataclass
@@ -14,12 +21,12 @@ class AsyncWorkerTickMetrics:
     done: int = 0
     retried: int = 0
     failed: int = 0
-    avg_job_duration_s: Optional[float] = None
+    avg_job_duration_s: float | None = None
 
 
-async def _maybe_await(value: Any) -> Any:
+async def _maybe_await(value: T | Awaitable[T]) -> T:
     if inspect.isawaitable(value):
-        return await value
+        return await cast(Awaitable[T], value)
     return value
 
 
@@ -29,7 +36,7 @@ class AsyncIndexJobWorker:
     def __init__(
         self,
         *,
-        engine: Any,
+        engine: GraphKnowledgeEngine,
         max_inflight: int = 1,
         batch_size: int = 50,
         lease_seconds: int = 60,
@@ -57,12 +64,12 @@ class AsyncIndexJobWorker:
                 namespace=ns,
             )
         )
-        jobs = list(jobs or [])
+        jobs = self._jobs(jobs)
         metrics.claimed = len(jobs)
         durations: list[float] = []
         adapter = getattr(self.engine, "async_two_stage_projection_adapter", None)
-        embedding_groups: dict[tuple[str, str, str], list[Any]] = {}
-        ordinary_jobs: list[Any] = []
+        embedding_groups: dict[tuple[str, str, str], list[object]] = {}
+        ordinary_jobs: list[object] = []
         for job in jobs:
             if str(self._value(job, "index_kind") or "") != "node_embedding":
                 ordinary_jobs.append(job)
@@ -81,7 +88,7 @@ class AsyncIndexJobWorker:
             )
             embedding_groups.setdefault(key, []).append(job)
 
-        work_units: list[tuple[list[Any], Any | None]] = []
+        work_units: list[tuple[list[object], object | None]] = []
         batch_apply = getattr(adapter, "apply_embedding_jobs_batch", None)
         for group in embedding_groups.values():
             width = max(1, self.batch_size)
@@ -118,7 +125,7 @@ class AsyncIndexJobWorker:
                             entity_kind=str(self._value(job, "entity_kind")),
                             entity_id=str(self._value(job, "entity_id")),
                             op=str(self._value(job, "op") or "UPSERT"),
-                            payload_json=self._value(job, "payload_json"),
+                            payload_json=self._optional_text(self._value(job, "payload_json")),
                         )
                     else:
                         # Legacy projection handlers remain isolated from the
@@ -131,7 +138,7 @@ class AsyncIndexJobWorker:
                             index_kind=str(self._value(job, "index_kind") or ""),
                             op=str(self._value(job, "op") or "UPSERT"),
                             namespace=ns,
-                            payload_json=self._value(job, "payload_json"),
+                            payload_json=self._optional_text(self._value(job, "payload_json")),
                         )
                     done = getattr(meta, "mark_index_job_done", None)
                     if callable(done):
@@ -139,8 +146,8 @@ class AsyncIndexJobWorker:
                     metrics.done += 1
                 except Exception as exc:
                     error = f"{type(exc).__name__}: {exc}"
-                    retry = int(self._value(job, "retry_count") or 0) + 1
-                    max_retries = int(self._value(job, "max_retries") or 10)
+                    retry = self._as_int(self._value(job, "retry_count"), 0) + 1
+                    max_retries = self._as_int(self._value(job, "max_retries"), 10)
                     bump = getattr(meta, "bump_retry_and_requeue", None)
                     failed = getattr(meta, "mark_index_job_failed", None)
                     if retry < max_retries and callable(bump):
@@ -162,8 +169,33 @@ class AsyncIndexJobWorker:
         return metrics
 
     @staticmethod
-    def _value(job: Any, name: str) -> Any:
+    def _value(job: object, name: str) -> object:
         return job.get(name) if isinstance(job, dict) else getattr(job, name, None)
+
+    @staticmethod
+    def _jobs(value: object) -> list[object]:
+        if value is None or isinstance(value, (str, bytes, bytearray)):
+            return []
+        if isinstance(value, Iterable):
+            return list(value)
+        return []
+
+    @staticmethod
+    def _optional_text(value: object) -> str | None:
+        return value if isinstance(value, str) else None
+
+    @staticmethod
+    def _as_int(value: object, default: int) -> int:
+        if isinstance(value, bool):
+            return int(value)
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str):
+            try:
+                return int(value)
+            except ValueError:
+                return default
+        return default
 
 
 __all__ = ["AsyncIndexJobWorker", "AsyncWorkerTickMetrics"]

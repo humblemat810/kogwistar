@@ -4,14 +4,16 @@ import asyncio
 import json
 import os
 import time
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
-from typing import Any, cast, Callable
+from typing import Any, cast
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
-from .chat_service import WorkflowProjectionRebuildingError, ChatRunService
+
+from .chat_service import ChatRunService, WorkflowProjectionRebuildingError
 from .error_reporting import internal_http_error
 
 
@@ -175,14 +177,14 @@ def _runtime_sse_debug_log(
 
 def create_runtime_router(
     *,
-    get_service: Callable[[], Any],
+    get_service: Callable[[], ChatRunService],
     require_role: Callable[[str], None],
-    require_namespace: Callable[[Any], None],
-    runtime_namespaces: Any,
+    require_namespace: Callable[[object], None],
+    runtime_namespaces: object,
     get_subject: Callable[[], str | None] | None = None,
     get_user_id: Callable[[], str | None] | None = None,
     require_workflow_access: Callable[[str, str], None] | None = None,
-):
+) -> APIRouter:
     router = APIRouter(prefix="/api/workflow", tags=["runtime"])
     get_service_r = cast(Callable[[], ChatRunService], get_service)
     templates = Jinja2Templates(
@@ -190,7 +192,7 @@ def create_runtime_router(
     )
 
     @router.get("/designer", response_class=HTMLResponse, include_in_schema=False)
-    def workflow_designer(request: Request):
+    def workflow_designer(request: Request) -> object:
         """Serve the graph-native workflow design surface."""
         require_role("ro")
         require_namespace(runtime_namespaces)
@@ -199,7 +201,7 @@ def create_runtime_router(
         )
 
     @router.post("/runs")
-    def submit_workflow_run(inp: SubmitWorkflowRunIn):
+    def submit_workflow_run(inp: SubmitWorkflowRunIn) -> object:
         require_role("rw")
         require_namespace(runtime_namespaces)
         if require_workflow_access:
@@ -224,7 +226,7 @@ def create_runtime_router(
             raise _as_http_error(exc)
 
     @router.get("/runs/{run_id}")
-    def get_workflow_run(run_id: str):
+    def get_workflow_run(run_id: str) -> object:
         require_role("ro")
         require_namespace(runtime_namespaces)
         try:
@@ -236,7 +238,9 @@ def create_runtime_router(
             raise _as_http_error(exc)
 
     @router.get("/runs/{run_id}/events")
-    async def get_workflow_run_events(run_id: str, after_seq: int = 0):
+    async def get_workflow_run_events(
+        run_id: str, after_seq: int = 0
+    ) -> StreamingResponse:
         require_role("ro")
         require_namespace(runtime_namespaces)
         try:
@@ -245,7 +249,7 @@ def create_runtime_router(
             raise _as_http_error(exc)
         _runtime_sse_debug_log(stage="open", run_id=run_id, after_seq=after_seq)
 
-        async def event_stream():
+        async def event_stream() -> AsyncIterator[str]:
             last_seq = int(after_seq or 0)
             while True:
                 service = get_service_r()
@@ -305,7 +309,7 @@ def create_runtime_router(
         )
 
     @router.post("/runs/{run_id}/cancel")
-    def cancel_workflow_run(run_id: str):
+    def cancel_workflow_run(run_id: str) -> object:
         require_role("rw")
         require_namespace(runtime_namespaces)
         try:
@@ -315,7 +319,7 @@ def create_runtime_router(
             raise _as_http_error(exc)
 
     @router.get("/resources")
-    def get_resource_snapshot():
+    def get_resource_snapshot() -> object:
         require_role("ro")
         require_namespace(runtime_namespaces)
         try:
@@ -324,7 +328,7 @@ def create_runtime_router(
             raise _as_http_error(exc)
 
     @router.get("/visibility")
-    def get_visibility_snapshot():
+    def get_visibility_snapshot() -> object:
         require_role("ro")
         require_namespace(runtime_namespaces)
         try:
@@ -333,7 +337,7 @@ def create_runtime_router(
             raise _as_http_error(exc)
 
     @router.get("/scheduler/timeline")
-    def get_scheduler_timeline(run_id: str | None = None, limit: int = 200):
+    def get_scheduler_timeline(run_id: str | None = None, limit: int = 200) -> object:
         require_role("ro")
         require_namespace(runtime_namespaces)
         try:
@@ -347,7 +351,7 @@ def create_runtime_router(
             raise _as_http_error(exc)
 
     @router.get("/budget")
-    def get_budget_snapshot():
+    def get_budget_snapshot() -> object:
         require_role("ro")
         require_namespace(runtime_namespaces)
         try:
@@ -356,7 +360,7 @@ def create_runtime_router(
             raise _as_http_error(exc)
 
     @router.get("/budget/history")
-    def get_budget_history(limit: int = 200):
+    def get_budget_history(limit: int = 200) -> object:
         require_role("ro")
         require_namespace(runtime_namespaces)
         try:
@@ -367,7 +371,7 @@ def create_runtime_router(
     @router.get("/lane/progress")
     def get_lane_message_progress(
         run_id: str | None = None, conversation_id: str | None = None, limit: int = 200
-    ):
+    ) -> object:
         require_role("ro")
         require_namespace(runtime_namespaces)
         try:
@@ -378,7 +382,7 @@ def create_runtime_router(
             raise _as_http_error(exc)
 
     @router.get("/tools/audit")
-    def get_tool_audit(conversation_id: str | None = None, limit: int = 200):
+    def get_tool_audit(conversation_id: str | None = None, limit: int = 200) -> object:
         require_role("ro")
         require_namespace(runtime_namespaces)
         try:
@@ -389,7 +393,7 @@ def create_runtime_router(
             raise _as_http_error(exc)
 
     @router.post("/services")
-    def declare_service(inp: ServiceDeclareIn):
+    def declare_service(inp: ServiceDeclareIn) -> object:
         require_role("rw")
         require_namespace(runtime_namespaces)
         try:
@@ -411,7 +415,7 @@ def create_runtime_router(
             raise _as_http_error(exc)
 
     @router.get("/services")
-    def list_services(limit: int = 200):
+    def list_services(limit: int = 200) -> object:
         require_role("ro")
         require_namespace(runtime_namespaces)
         try:
@@ -420,7 +424,7 @@ def create_runtime_router(
             raise _as_http_error(exc)
 
     @router.get("/services/{service_id}")
-    def get_service(service_id: str):
+    def get_service_endpoint(service_id: str) -> object:
         require_role("ro")
         require_namespace(runtime_namespaces)
         try:
@@ -429,7 +433,7 @@ def create_runtime_router(
             raise _as_http_error(exc)
 
     @router.post("/services/{service_id}/enable")
-    def enable_service(service_id: str):
+    def enable_service(service_id: str) -> object:
         require_role("rw")
         require_namespace(runtime_namespaces)
         try:
@@ -438,7 +442,7 @@ def create_runtime_router(
             raise _as_http_error(exc)
 
     @router.post("/services/{service_id}/disable")
-    def disable_service(service_id: str):
+    def disable_service(service_id: str) -> object:
         require_role("rw")
         require_namespace(runtime_namespaces)
         try:
@@ -447,7 +451,7 @@ def create_runtime_router(
             raise _as_http_error(exc)
 
     @router.post("/services/{service_id}/heartbeat")
-    def record_service_heartbeat(service_id: str, inp: ServiceHeartbeatIn):
+    def record_service_heartbeat(service_id: str, inp: ServiceHeartbeatIn) -> object:
         require_role("rw")
         require_namespace(runtime_namespaces)
         try:
@@ -460,7 +464,7 @@ def create_runtime_router(
             raise _as_http_error(exc)
 
     @router.post("/services/{service_id}/trigger")
-    def trigger_service(service_id: str, inp: ServiceTriggerIn):
+    def trigger_service(service_id: str, inp: ServiceTriggerIn) -> object:
         require_role("rw")
         require_namespace(runtime_namespaces)
         try:
@@ -473,7 +477,7 @@ def create_runtime_router(
             raise _as_http_error(exc)
 
     @router.get("/services/{service_id}/events")
-    def get_service_events(service_id: str, limit: int = 500):
+    def get_service_events(service_id: str, limit: int = 500) -> object:
         require_role("ro")
         require_namespace(runtime_namespaces)
         try:
@@ -486,37 +490,8 @@ def create_runtime_router(
         except Exception as exc:  # noqa: BLE001
             raise _as_http_error(exc)
 
-    @router.post("/services/{service_id}/repair")
-    def repair_service_projection(service_id: str):
-        require_role("rw")
-        require_namespace(runtime_namespaces)
-        try:
-            return get_service_r().repair_service_projection(service_id)
-        except Exception as exc:  # noqa: BLE001
-            raise _as_http_error(exc)
-
-    @router.post("/services/repair")
-    def repair_service_projections(limit: int = 10_000):
-        require_role("rw")
-        require_namespace(runtime_namespaces)
-        try:
-            return get_service_r().repair_service_projections(limit=limit)
-        except Exception as exc:  # noqa: BLE001
-            raise _as_http_error(exc)
-
-    @router.post("/messages/repair-orphans")
-    def repair_orphaned_claimed_messages(inbox_id: str | None = None, limit: int = 100):
-        require_role("rw")
-        require_namespace(runtime_namespaces)
-        try:
-            return get_service_r().repair_orphaned_claimed_messages(
-                inbox_id=inbox_id, limit=limit
-            )
-        except Exception as exc:  # noqa: BLE001
-            raise _as_http_error(exc)
-
     @router.get("/dead-letters")
-    def dead_letter_snapshot(limit: int = 100):
+    def dead_letter_snapshot(limit: int = 100) -> object:
         require_role("ro")
         require_namespace(runtime_namespaces)
         try:
@@ -525,7 +500,7 @@ def create_runtime_router(
             raise _as_http_error(exc)
 
     @router.post("/dead-letters/{run_id}/replay")
-    def replay_dead_letter(run_id: str):
+    def replay_dead_letter(run_id: str) -> object:
         require_role("rw")
         require_namespace(runtime_namespaces)
         try:
@@ -534,7 +509,7 @@ def create_runtime_router(
             raise _as_http_error(exc)
 
     @router.post("/services/{service_id}/repair")
-    def repair_service_projection(service_id: str):
+    def repair_service_projection(service_id: str) -> object:
         require_role("rw")
         require_namespace(runtime_namespaces)
         try:
@@ -543,7 +518,7 @@ def create_runtime_router(
             raise _as_http_error(exc)
 
     @router.post("/services/repair")
-    def repair_service_projections(limit: int = 10_000):
+    def repair_service_projections(limit: int = 10_000) -> object:
         require_role("rw")
         require_namespace(runtime_namespaces)
         try:
@@ -552,7 +527,9 @@ def create_runtime_router(
             raise _as_http_error(exc)
 
     @router.post("/messages/repair-orphans")
-    def repair_orphaned_claimed_messages(inbox_id: str | None = None, limit: int = 100):
+    def repair_orphaned_claimed_messages(
+        inbox_id: str | None = None, limit: int = 100
+    ) -> object:
         require_role("rw")
         require_namespace(runtime_namespaces)
         try:
@@ -563,7 +540,7 @@ def create_runtime_router(
             raise _as_http_error(exc)
 
     @router.get("/capabilities")
-    def get_capabilities_snapshot():
+    def get_capabilities_snapshot() -> object:
         require_role("ro")
         require_namespace(runtime_namespaces)
         try:
@@ -572,7 +549,7 @@ def create_runtime_router(
             raise _as_http_error(exc)
 
     @router.get("/operator/dashboard")
-    def get_operator_dashboard(limit: int = 100):
+    def get_operator_dashboard(limit: int = 100) -> object:
         require_role("ro")
         require_namespace(runtime_namespaces)
         try:
@@ -581,7 +558,7 @@ def create_runtime_router(
             raise _as_http_error(exc)
 
     @router.post("/capabilities/approve")
-    def approve_capability(inp: CapabilityApproveIn):
+    def approve_capability(inp: CapabilityApproveIn) -> object:
         require_role("rw")
         require_namespace(runtime_namespaces)
         try:
@@ -595,7 +572,7 @@ def create_runtime_router(
             raise _as_http_error(exc)
 
     @router.post("/capabilities/revoke")
-    def revoke_capability(inp: CapabilityRevokeIn):
+    def revoke_capability(inp: CapabilityRevokeIn) -> object:
         require_role("rw")
         require_namespace(runtime_namespaces)
         try:
@@ -608,7 +585,7 @@ def create_runtime_router(
             raise _as_http_error(exc)
 
     @router.get("/runs/{run_id}/steps")
-    def get_workflow_steps(run_id: str):
+    def get_workflow_steps(run_id: str) -> object:
         require_role("ro")
         require_namespace(runtime_namespaces)
         try:
@@ -620,7 +597,7 @@ def create_runtime_router(
             raise _as_http_error(exc)
 
     @router.get("/runs/{run_id}/lineage")
-    def get_workflow_run_lineage(run_id: str):
+    def get_workflow_run_lineage(run_id: str) -> object:
         require_role("ro")
         require_namespace(runtime_namespaces)
         try:
@@ -638,7 +615,7 @@ def create_runtime_router(
             raise _as_http_error(exc)
 
     @router.get("/runs/{run_id}/checkpoints")
-    def get_workflow_checkpoints(run_id: str):
+    def get_workflow_checkpoints(run_id: str) -> object:
         require_role("ro")
         require_namespace(runtime_namespaces)
         try:
@@ -650,7 +627,7 @@ def create_runtime_router(
             raise _as_http_error(exc)
 
     @router.get("/runs/{run_id}/checkpoints/{step_seq}")
-    def get_workflow_checkpoint(run_id: str, step_seq: int):
+    def get_workflow_checkpoint(run_id: str, step_seq: int) -> object:
         require_role("ro")
         require_namespace(runtime_namespaces)
         try:
@@ -659,7 +636,7 @@ def create_runtime_router(
             raise _as_http_error(exc)
 
     @router.get("/runs/{run_id}/replay")
-    def replay_workflow_run(run_id: str, target_step_seq: int):
+    def replay_workflow_run(run_id: str, target_step_seq: int) -> object:
         require_role("ro")
         require_namespace(runtime_namespaces)
         try:
@@ -668,7 +645,7 @@ def create_runtime_router(
             raise _as_http_error(exc)
 
     @router.get("/runs/{run_id}/resume-contract")
-    def get_workflow_resume_contract(run_id: str):
+    def get_workflow_resume_contract(run_id: str) -> object:
         require_role("ro")
         require_namespace(runtime_namespaces)
         try:
@@ -677,7 +654,7 @@ def create_runtime_router(
             raise _as_http_error(exc)
 
     @router.post("/runs/{run_id}/resume")
-    def resume_workflow_run(run_id: str, inp: ResumeRunIn):
+    def resume_workflow_run(run_id: str, inp: ResumeRunIn) -> object:
         require_role("rw")
         require_namespace(runtime_namespaces)
         if require_workflow_access:
@@ -697,7 +674,7 @@ def create_runtime_router(
             raise _as_http_error(exc)
 
     @router.post("/design/{workflow_id}/nodes")
-    def upsert_workflow_node(workflow_id: str, inp: UpsertWorkflowNodeIn):
+    def upsert_workflow_node(workflow_id: str, inp: UpsertWorkflowNodeIn) -> object:
         require_role("rw")
         require_namespace(runtime_namespaces)
         if require_workflow_access:
@@ -721,7 +698,7 @@ def create_runtime_router(
             raise _as_http_error(exc)
 
     @router.post("/design/{workflow_id}/edges")
-    def upsert_workflow_edge(workflow_id: str, inp: UpsertWorkflowEdgeIn):
+    def upsert_workflow_edge(workflow_id: str, inp: UpsertWorkflowEdgeIn) -> object:
         require_role("rw")
         require_namespace(runtime_namespaces)
         if require_workflow_access:
@@ -747,7 +724,9 @@ def create_runtime_router(
             raise _as_http_error(exc)
 
     @router.delete("/design/{workflow_id}/nodes/{node_id}")
-    def delete_workflow_node(workflow_id: str, node_id: str, inp: DesignActorIn):
+    def delete_workflow_node(
+        workflow_id: str, node_id: str, inp: DesignActorIn
+    ) -> object:
         require_role("rw")
         require_namespace(runtime_namespaces)
         if require_workflow_access:
@@ -765,7 +744,9 @@ def create_runtime_router(
             raise _as_http_error(exc)
 
     @router.delete("/design/{workflow_id}/edges/{edge_id}")
-    def delete_workflow_edge(workflow_id: str, edge_id: str, inp: DesignActorIn):
+    def delete_workflow_edge(
+        workflow_id: str, edge_id: str, inp: DesignActorIn
+    ) -> object:
         require_role("rw")
         require_namespace(runtime_namespaces)
         if require_workflow_access:
@@ -783,7 +764,7 @@ def create_runtime_router(
             raise _as_http_error(exc)
 
     @router.get("/design/{workflow_id}/history")
-    def workflow_design_history(workflow_id: str):
+    def workflow_design_history(workflow_id: str) -> object:
         require_role("ro")
         require_namespace(runtime_namespaces)
         if require_workflow_access:
@@ -794,7 +775,7 @@ def create_runtime_router(
             raise _as_http_error(exc)
 
     @router.post("/design/{workflow_id}/undo")
-    def workflow_design_undo(workflow_id: str, inp: DesignActorIn):
+    def workflow_design_undo(workflow_id: str, inp: DesignActorIn) -> object:
         require_role("rw")
         require_namespace(runtime_namespaces)
         if require_workflow_access:
@@ -811,7 +792,7 @@ def create_runtime_router(
             raise _as_http_error(exc)
 
     @router.post("/design/{workflow_id}/redo")
-    def workflow_design_redo(workflow_id: str, inp: DesignActorIn):
+    def workflow_design_redo(workflow_id: str, inp: DesignActorIn) -> object:
         require_role("rw")
         require_namespace(runtime_namespaces)
         if require_workflow_access:
@@ -828,7 +809,7 @@ def create_runtime_router(
             raise _as_http_error(exc)
 
     @router.get("/design/{workflow_id}/graph")
-    def workflow_design_graph(workflow_id: str, refresh: bool = False):
+    def workflow_design_graph(workflow_id: str, refresh: bool = False) -> object:
         require_role("ro")
         require_namespace(runtime_namespaces)
         if require_workflow_access:
@@ -837,7 +818,7 @@ def create_runtime_router(
         return service.workflow_design_graph(workflow_id=workflow_id, refresh=refresh)
 
     @router.get("/catalog/ops")
-    def workflow_catalog_ops():
+    def workflow_catalog_ops() -> object:
         require_role("ro")
         require_namespace(runtime_namespaces)
         service = get_service_r()

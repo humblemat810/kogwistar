@@ -1,35 +1,45 @@
-from __future__ import annotations
-
 """Grouped replacement-artifact helpers for maintenance flows."""
 
-from typing import Any, Callable
+from __future__ import annotations
 
+from collections.abc import Mapping
+
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.models import Node
 from kogwistar.maintenance.artifacts import (
     write_versioned_artifact,
+)
+from kogwistar.maintenance.contracts import (
+    BeforeWrite,
+    GroupedArtifactNodeBuilder,
+    GroupKeyForNode,
+    MatchWhereForGroup,
 )
 from kogwistar.maintenance.models import GroupedArtifactWriteResult
 
 
 def write_grouped_versioned_artifacts(
-    source_engine: Any,
+    source_engine: GraphKnowledgeEngine,
     *,
-    target_engine: Any,
+    target_engine: GraphKnowledgeEngine,
     source_namespace: str,
     target_namespace: str,
-    source_where: dict[str, Any],
-    group_key_for_node: Callable[[Any], str],
-    build_node_for_group: Callable[[str, list[Any], list[Any], int], Any],
-    match_where_for_group: Callable[[str], dict[str, Any]],
+    source_where: Mapping[str, object],
+    group_key_for_node: GroupKeyForNode,
+    build_node_for_group: GroupedArtifactNodeBuilder,
+    match_where_for_group: MatchWhereForGroup,
     replace_existing: bool = True,
-    before_write: Callable[[str], None] | None = None,
+    before_write: BeforeWrite[str] | None = None,
 ) -> list[GroupedArtifactWriteResult]:
     """Write one replacement artifact per grouped source slice."""
     from kogwistar.engine_core.engine import scoped_namespace
 
     with scoped_namespace(source_engine, source_namespace):
-        source_nodes = list(source_engine.read.get_nodes(where=source_where))
+        source_nodes: list[Node] = list(
+            source_engine.read.get_nodes(where=dict(source_where))
+        )
 
-    grouped: dict[str, list[Any]] = {}
+    grouped: dict[str, list[Node]] = {}
     for node in source_nodes:
         grouped.setdefault(str(group_key_for_node(node)), []).append(node)
 

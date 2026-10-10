@@ -11,7 +11,6 @@ from kogwistar.engine_core.engine import GraphKnowledgeEngine, scoped_namespace
 from kogwistar.server.auth_middleware import claims_ctx
 from tests._helpers.fake_backend import build_fake_backend
 
-
 pytestmark = pytest.mark.core
 
 

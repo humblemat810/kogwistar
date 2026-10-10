@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass
-from typing import Any, Iterable
 
 from kogwistar.server.auth_middleware import (
     claims_ctx,
@@ -22,15 +22,15 @@ class AclContext:
     visibility: str | None = None
     owner_id: str | None = None
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, object]:
         return asdict(self)
 
 
-def _normalize_groups(raw: Any) -> tuple[str, ...]:
+def _normalize_groups(raw: object) -> tuple[str, ...]:
     if raw is None:
         return ()
     if isinstance(raw, str):
-        items: Iterable[Any] = (raw,)
+        items: Iterable[object] = (raw,)
     elif isinstance(raw, Iterable):
         items = raw
     else:

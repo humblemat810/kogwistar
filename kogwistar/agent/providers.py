@@ -2,24 +2,47 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from hashlib import sha256
 from threading import RLock
-from typing import Callable, Literal, Mapping, Protocol, TypeVar, cast, runtime_checkable
+from typing import (
+    Literal,
+    Protocol,
+    TypeVar,
+    cast,
+    runtime_checkable,
+)
 
 from kogwistar.engine_core.embedding_profile import NamedProjectionStore
-from kogwistar.json_types import JsonValue
+from kogwistar.json_types import JsonObject, JsonValue
 from kogwistar.runtime import ProjectionPayload
 
 from .catalog import CatalogEntry
-
 
 PROVIDER_LIFECYCLE_NAMESPACE = "agent_provider_lifecycle"
 
 
 TModelResult = TypeVar("TModelResult", covariant=True)
 TToolResult = TypeVar("TToolResult", covariant=True)
-TOperationResult = TypeVar("TOperationResult")
+TOperationResult = TypeVar("TOperationResult", covariant=True)
+
+
+def _json_object(value: object) -> JsonObject:
+    if isinstance(value, dict):
+        return cast(JsonObject, value)
+    return {}
+
+
+def _json_int(value: object, default: int = 0) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (int, float, str)):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+    return default
 
 
 class ProviderCollisionError(ValueError):
@@ -41,7 +64,7 @@ class DiscoveryProvider(Protocol):
     provider_id: str
     provider_version: str
 
-    def descriptors(self) -> list[Mapping[str, object]]: ...
+    def descriptors(self) -> list[Mapping[str, JsonValue]]: ...
 
 
 @runtime_checkable
@@ -62,7 +85,7 @@ class ToolProvider(Protocol[TToolResult]):
 class SkillProvider(Protocol):
     provider_id: str
 
-    def descriptors(self) -> list[Mapping[str, object]]: ...
+    def descriptors(self) -> list[Mapping[str, JsonValue]]: ...
 
     def load(self, provider_local_id: str) -> str: ...
 
@@ -81,8 +104,20 @@ class CompressorProvider(Protocol):
     def compress(self, request: Mapping[str, JsonValue]) -> Mapping[str, JsonValue]: ...
 
 
+class ProviderOperation(Protocol[TOperationResult]):
+    """Run one provider operation while its registration is held active."""
+
+    def __call__(self) -> TOperationResult: ...
+
+
+class ProviderCleanup(Protocol):
+    """Remove derived views owned by one provider identity."""
+
+    def __call__(self, provider_id: str, /) -> None: ...
+
+
 def normalize_descriptor(
-    descriptor: Mapping[str, object], *, provider_id: str, provider_version: str = "v1"
+    descriptor: Mapping[str, JsonValue], *, provider_id: str, provider_version: str = "v1"
 ) -> CatalogEntry:
     """Normalize provider data without granting invocation authority."""
 
@@ -136,7 +171,7 @@ class ProviderCleanupToken(str):
     generation: int
     lifecycle_token: str
 
-    def __new__(cls, registration: ProviderRegistration) -> "ProviderCleanupToken":
+    def __new__(cls, registration: ProviderRegistration) -> ProviderCleanupToken:
         value = str.__new__(cls, registration.identity.provider_id)
         value.provider_version = registration.identity.version
         value.generation = registration.generation
@@ -176,12 +211,12 @@ class ProviderRegistry:
             "status": status,
         }
         expected_a = (
-            int(expected["last_authoritative_seq"])
+            _json_int(expected["last_authoritative_seq"])
             if expected is not None
             else None
         )
         expected_m = (
-            int(expected["last_materialized_seq"])
+            _json_int(expected["last_materialized_seq"])
             if expected is not None
             else None
         )
@@ -192,12 +227,12 @@ class ProviderRegistry:
             expected_last_authoritative_seq=expected_a,
             expected_last_materialized_seq=expected_m,
             last_authoritative_seq=(
-                int(expected["last_authoritative_seq"]) + 1
+                _json_int(expected["last_authoritative_seq"]) + 1
                 if expected is not None
                 else int(generation)
             ),
             last_materialized_seq=(
-                int(expected["last_materialized_seq"]) + 1
+                _json_int(expected["last_materialized_seq"]) + 1
                 if expected is not None
                 else int(generation)
             ),
@@ -213,11 +248,11 @@ class ProviderRegistry:
             row = self._lifecycle_row(registration.identity.qualified_id)
             if self._metadata is None:
                 return None
-            payload = (row or {}).get("payload") or {}
+            payload = _json_object((row or {}).get("payload"))
             if (
                 row is None
                 or str(payload.get("status")) != "active"
-                or int(payload.get("generation", -1)) != registration.generation
+                or _json_int(payload.get("generation"), -1) != registration.generation
                 or str(payload.get("registration_fingerprint"))
                 != registration.registration_fingerprint
             ):
@@ -225,8 +260,8 @@ class ProviderRegistry:
                     "durable provider lifecycle is no longer active: "
                     f"{registration.identity.qualified_id}@{registration.generation}"
                 )
-            expected_a = int(row.get("last_authoritative_seq", 0))
-            expected_m = int(row.get("last_materialized_seq", 0))
+            expected_a = _json_int(row.get("last_authoritative_seq"))
+            expected_m = _json_int(row.get("last_materialized_seq"))
             return {
                 "namespace": PROVIDER_LIFECYCLE_NAMESPACE,
                 "key": registration.identity.qualified_id,
@@ -235,7 +270,7 @@ class ProviderRegistry:
                 "expected_last_materialized_seq": expected_m,
                 "last_authoritative_seq": expected_a,
                 "last_materialized_seq": expected_m,
-                "projection_schema_version": int(row.get("projection_schema_version", 1)),
+                "projection_schema_version": _json_int(row.get("projection_schema_version"), 1),
                 "materialization_status": "active",
             }
 
@@ -265,10 +300,10 @@ class ProviderRegistry:
                     f"provider identity already registered: {key}"
                 )
             durable_row = self._lifecycle_row(key)
-            durable_payload = (durable_row or {}).get("payload") or {}
+            durable_payload = _json_object((durable_row or {}).get("payload"))
             generation = max(
                 self._generations.get(key, 0),
-                int(durable_payload.get("generation", 0) or 0),
+                _json_int(durable_payload.get("generation")),
             ) + 1
             registration = ProviderRegistration(
                 identity=identity,
@@ -322,7 +357,7 @@ class ProviderRegistry:
     def run_if_active(
         self,
         registration: ProviderRegistration,
-        operation: Callable[[], TOperationResult],
+        operation: ProviderOperation[TOperationResult],
     ) -> TOperationResult:
         """Commit provider work only while exact registration remains active."""
 
@@ -339,11 +374,11 @@ class ProviderRegistry:
                 )
             if self._metadata is not None:
                 durable = self._lifecycle_row(key)
-                payload = (durable or {}).get("payload") or {}
+                payload = _json_object((durable or {}).get("payload"))
                 if (
                     durable is None
                     or str(payload.get("status")) != "active"
-                    or int(payload.get("generation", -1)) != registration.generation
+                    or _json_int(payload.get("generation"), -1) != registration.generation
                     or str(payload.get("registration_fingerprint"))
                     != registration.registration_fingerprint
                 ):
@@ -360,7 +395,7 @@ class ProviderRegistry:
         provider_id: str,
         version: str = "v1",
         *,
-        cleanup: Callable[[str], None] | None = None,
+        cleanup: ProviderCleanup | None = None,
     ) -> None:
         """Retract projections before retiring ownership.
 
@@ -387,7 +422,7 @@ class ProviderRegistry:
                 continue
             try:
                 descriptors = cast(
-                    Callable[[], list[Mapping[str, object]]], loader
+                    Callable[[], list[Mapping[str, JsonValue]]], loader
                 )()
             except Exception:
                 isolated = (

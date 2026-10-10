@@ -10,15 +10,27 @@
 #   python mcp_diag_seed.py --url http://127.0.0.1:28110/mcp --doc-id D1 --delete
 
 from __future__ import annotations
+
 import argparse
 import asyncio
 import json
 import re
+from typing import Any, Protocol, cast
 
 import httpx
-from langchain_mcp_adapters.client import MultiServerMCPClient
+from mcp import types as mcp_types
 
 # ---------- helpers ----------
+
+
+class _McpSession(Protocol):
+    async def list_tools(
+        self, *, params: mcp_types.PaginatedRequestParams | None = None
+    ) -> mcp_types.ListToolsResult: ...
+
+    async def call_tool(
+        self, name: str, *, arguments: dict[str, Any]
+    ) -> mcp_types.CallToolResult: ...
 
 
 def _base_from_mcp(url: str) -> str:
@@ -26,7 +38,7 @@ def _base_from_mcp(url: str) -> str:
     return re.sub(r"/mcp/?$", "", url)
 
 
-def _needs_inp_wrapper(input_schema: dict | None) -> bool:
+def _needs_inp_wrapper(input_schema: dict[str, Any] | None) -> bool:
     if not input_schema:
         return False
     props = input_schema.get("properties") or {}
@@ -34,38 +46,49 @@ def _needs_inp_wrapper(input_schema: dict | None) -> bool:
     return "inp" in props and (props["inp"].get("type") in (None, "object"))
 
 
-def _wrap_if_needed(input_schema: dict | None, payload: dict) -> dict:
+def _wrap_if_needed(
+    input_schema: dict[str, Any] | None, payload: dict[str, Any]
+) -> dict[str, Any]:
     return {"inp": payload} if _needs_inp_wrapper(input_schema) else payload
 
 
-async def _find_tool(session, name: str) -> dict | None:
+async def _find_tool(session: _McpSession, name: str) -> dict[str, Any] | None:
     tools = await session.list_tools()
     for t in tools.tools:
         if t.name == name:
             return {
                 "name": t.name,
                 "input_schema": t.input_schema,
-                "output_schema": t.outputSchema,
+                "output_schema": t.output_schema,
             }
     return None
 
 
-async def _call_tool_json(session, name: str, args: dict) -> dict:
+async def _call_tool_json(
+    session: _McpSession, name: str, args: dict[str, Any]
+) -> dict[str, Any]:
     res = await session.call_tool(name, arguments=args)
-    block = res.content[0]
-    if (
-        getattr(block, "type", None) == "json"
-        and getattr(block, "json", None) is not None
-    ):
-        return block.json
-    # normalize text results so the CLI never crashes
-    return {"text": getattr(block, "text", "")}
+    if isinstance(res.structured_content, dict):
+        return res.structured_content
+    for block in res.content:
+        if isinstance(block, mcp_types.TextContent):
+            try:
+                decoded = json.loads(block.text)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(decoded, dict):
+                return decoded
+    # Normalize non-JSON results so the CLI never crashes.
+    text_blocks = [block.text for block in res.content if isinstance(block, mcp_types.TextContent)]
+    return {"text": "\n".join(text_blocks)}
 
 
 # ---------- main ----------
 
 
-async def main():
+async def main() -> None:
+    from langchain_mcp_adapters.client import MultiServerMCPClient
+
     ap = argparse.ArgumentParser()
     ap.add_argument(
         "--url",
@@ -114,7 +137,7 @@ async def main():
         }
     }
 
-    client = MultiServerMCPClient(SERVERS)
+    client = MultiServerMCPClient(cast(Any, SERVERS))
 
     # Create the context manager and ENTER it to get a real MCP session
     ctxs = [client.session(s) for s in SERVERS]

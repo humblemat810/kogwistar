@@ -1,13 +1,25 @@
 from __future__ import annotations
+
 import base64
 import hashlib
 import secrets
+from collections.abc import Mapping
+from typing import cast
 from urllib.parse import urlencode
-from typing import Dict, Any, Optional
 
 import httpx
 import jwt as pyjwt
 from jwt import InvalidTokenError
+
+from kogwistar.json_types import JsonValue
+
+JsonObject = dict[str, JsonValue]
+
+
+def _json_object(value: object) -> JsonObject:
+    if not isinstance(value, Mapping):
+        raise ValueError("OIDC response must be a JSON object")
+    return {str(key): cast(JsonValue, item) for key, item in value.items()}
 
 
 class OIDCClient:
@@ -21,7 +33,7 @@ class OIDCClient:
         issuer: str | None = None,
         scopes: list[str] | None = None,
         clock_skew_seconds: int = 60,
-    ):
+    ) -> None:
         self.client_id = client_id
         self.client_secret = client_secret
         self.discovery_url = discovery_url
@@ -29,24 +41,32 @@ class OIDCClient:
         self.issuer = issuer
         self.scopes = scopes or ["openid", "email", "profile"]
         self.clock_skew_seconds = clock_skew_seconds
-        self._config: Optional[Dict[str, Any]] = None
-        self._jwk_client: Optional[pyjwt.PyJWKClient] = None
+        self._config: JsonObject | None = None
+        self._jwk_client: pyjwt.PyJWKClient | None = None
 
-    async def _ensure_config(self):
+    async def _ensure_config(self) -> None:
         if not self._config:
             async with httpx.AsyncClient() as client:
                 resp = await client.get(self.discovery_url)
                 resp.raise_for_status()
-                self._config = resp.json()
+                self._config = _json_object(resp.json())
 
-    async def _ensure_jwk_client(self):
+    def _config_string(self, key: str) -> str:
+        if self._config is None:
+            raise RuntimeError("OIDC discovery configuration is unavailable")
+        value = self._config.get(key)
+        if not isinstance(value, str) or not value:
+            raise ValueError(f"OIDC discovery field {key!r} must be a non-empty string")
+        return value
+
+    async def _ensure_jwk_client(self) -> None:
         await self._ensure_config()
         assert self._config is not None
         if self._jwk_client is None:
-            self._jwk_client = pyjwt.PyJWKClient(self._config["jwks_uri"])
+            self._jwk_client = pyjwt.PyJWKClient(self._config_string("jwks_uri"))
 
     @staticmethod
-    def generate_pkce() -> Dict[str, str]:
+    def generate_pkce() -> dict[str, str]:
         verifier = secrets.token_urlsafe(64)
         challenge = (
             base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest())
@@ -77,9 +97,9 @@ class OIDCClient:
             "nonce": nonce,
         }
         query = urlencode(params)
-        return f"{self._config['authorization_endpoint']}?{query}"
+        return f"{self._config_string('authorization_endpoint')}?{query}"
 
-    async def exchange_code(self, code: str, code_verifier: str) -> Dict[str, Any]:
+    async def exchange_code(self, code: str, code_verifier: str) -> JsonObject:
         await self._ensure_config()
         assert self._config is not None
         data = {
@@ -92,20 +112,22 @@ class OIDCClient:
         if self.client_secret:
             data["client_secret"] = self.client_secret
         async with httpx.AsyncClient() as client:
-            resp = await client.post(self._config["token_endpoint"], data=data)
+            resp = await client.post(self._config_string("token_endpoint"), data=data)
             resp.raise_for_status()
-            return resp.json()
+            return _json_object(resp.json())
 
-    async def get_userinfo(self, access_token: str) -> Dict[str, Any]:
+    async def get_userinfo(self, access_token: str) -> JsonObject:
         await self._ensure_config()
         assert self._config is not None
         headers = {"Authorization": f"Bearer {access_token}"}
         async with httpx.AsyncClient() as client:
-            resp = await client.get(self._config["userinfo_endpoint"], headers=headers)
+            resp = await client.get(
+                self._config_string("userinfo_endpoint"), headers=headers
+            )
             resp.raise_for_status()
-            return resp.json()
+            return _json_object(resp.json())
 
-    async def validate_id_token(self, id_token: str, *, nonce: str) -> Dict[str, Any]:
+    async def validate_id_token(self, id_token: str, *, nonce: str) -> JsonObject:
         await self._ensure_jwk_client()
         assert self._config is not None
         assert self._jwk_client is not None
@@ -120,7 +142,7 @@ class OIDCClient:
                 signing_key,
                 algorithms=[alg],
                 audience=self.client_id,
-                issuer=self.issuer or self._config.get("issuer"),
+                issuer=self.issuer or self._config_string("issuer"),
                 leeway=self.clock_skew_seconds,
                 options={"require": ["exp", "iat", "iss", "aud", "sub"]},
             )
@@ -139,4 +161,4 @@ class OIDCClient:
             if azp != self.client_id:
                 raise ValueError("id_token azp does not match client_id")
 
-        return claims
+        return cast(JsonObject, claims)

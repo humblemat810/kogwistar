@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from pathlib import Path
 import shutil
 import uuid
+from pathlib import Path
 
 import pytest
 
@@ -12,7 +12,6 @@ from kogwistar.server.run_registry import RunRegistry
 from tests._helpers.engine_factories import FakeEmbeddingFunction
 from tests._helpers.fake_backend import build_fake_backend
 from tests._helpers.server_fixtures import build_engine_triplet
-
 
 pytestmark = pytest.mark.server
 

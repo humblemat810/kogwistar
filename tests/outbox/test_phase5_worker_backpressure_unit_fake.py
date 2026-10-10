@@ -1,7 +1,8 @@
-import pytest
 import json
 from dataclasses import dataclass
-from typing import List, Literal, Optional
+from typing import Literal
+
+import pytest
 
 from kogwistar.workers.index_job_worker import IndexJobWorker
 
@@ -15,12 +16,12 @@ class _Job:
     op: str = "upsert"
     retry_count: int = 0
     max_retries: int = 10
-    lease_until: Optional[int] = None
-    payload_json: Optional[str] = None
+    lease_until: int | None = None
+    payload_json: str | None = None
 
 
 class _FakeMeta:
-    def __init__(self, jobs: List[_Job]):
+    def __init__(self, jobs: list[_Job]):
         self._jobs = jobs[:]  # queue
         self.claim_calls: list[int] = []
         self.done: set[str] = set()
@@ -70,7 +71,7 @@ class FakeIndexing:
 
 
 class _FakeEngine:
-    def __init__(self, jobs: List[_Job], namespace: str = "default"):
+    def __init__(self, jobs: list[_Job], namespace: str = "default"):
         self.meta_sqlite = _FakeMeta(jobs)
         self.namespace = namespace
         self.indexing = FakeIndexing(self)

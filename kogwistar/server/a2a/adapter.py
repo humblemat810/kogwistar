@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import ipaddress
 import json
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from typing import Protocol, cast
 from urllib.parse import urlsplit
-from typing import Any, Callable, Iterable, Mapping, Protocol
+
+from ...json_types import JsonValue
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,7 +24,7 @@ class A2AAgentCard:
 class A2AMessage:
     message_id: str
     role: str
-    parts: tuple[Mapping[str, Any], ...] = ()
+    parts: tuple[Mapping[str, JsonValue], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,7 +33,7 @@ class A2ATask:
     context_id: str
     run_id: str
     status: str
-    result: Mapping[str, Any] | None = None
+    result: Mapping[str, JsonValue] | None = None
     input_required: bool = False
     evidence_refs: tuple[str, ...] = ()
 
@@ -65,22 +68,62 @@ class A2ATaskMappingStore(Protocol):
     def put(self, task_id: str, context_id: str, run_id: str) -> None: ...
 
 
+class A2ASubmitter(Protocol):
+    """Submit an ordinary host-owned run for an external A2A task."""
+
+    def __call__(
+        self, *, context_id: str, message: A2AMessage, **kwargs: object
+    ) -> Mapping[str, JsonValue]: ...
+
+
+class A2ATaskInspector(Protocol):
+    def __call__(self, run_id: str, /) -> Mapping[str, JsonValue]: ...
+
+
+class A2ATaskCanceller(Protocol):
+    def __call__(self, run_id: str, /) -> Mapping[str, JsonValue]: ...
+
+
+class A2ATaskResumer(Protocol):
+    def __call__(self, run_id: str, message: A2AMessage, /) -> Mapping[str, JsonValue]: ...
+
+
+class A2AEventReader(Protocol):
+    def __call__(self, run_id: str, after: int, /) -> Iterable[Mapping[str, JsonValue]]: ...
+
+
+class A2AAuthorizer(Protocol):
+    def __call__(self, context_id: str, role: str, /) -> bool: ...
+
+
+class A2ADeliveryEnqueuer(Protocol):
+    def __call__(self, payload: Mapping[str, JsonValue], /) -> Mapping[str, JsonValue]: ...
+
+
+class A2ACallbackSigner(Protocol):
+    def __call__(self, delivery_id: str, body: bytes, /) -> Mapping[str, str]: ...
+
+
+class A2ADeliveryAuditor(Protocol):
+    def __call__(self, payload: Mapping[str, JsonValue], /) -> None: ...
+
+
 class A2AAdapter:
     """Map external task/context IDs to ordinary Kogwistar run APIs."""
 
     def __init__(
         self,
         *,
-        submit: Callable[..., Mapping[str, Any]],
-        inspect: Callable[[str], Mapping[str, Any]],
-        cancel: Callable[[str], Mapping[str, Any]],
-        resume: Callable[[str, A2AMessage], Mapping[str, Any]] | None = None,
-        events: Callable[[str, int], Iterable[Mapping[str, Any]]] | None = None,
-        authorize: Callable[[str, str], bool] | None = None,
+        submit: A2ASubmitter,
+        inspect: A2ATaskInspector,
+        cancel: A2ATaskCanceller,
+        resume: A2ATaskResumer | None = None,
+        events: A2AEventReader | None = None,
+        authorize: A2AAuthorizer | None = None,
         card: A2AAgentCard | None = None,
-        enqueue_delivery: Callable[[Mapping[str, Any]], Mapping[str, Any]] | None = None,
-        sign_callback: Callable[[str, bytes], Mapping[str, str]] | None = None,
-        audit_delivery: Callable[[Mapping[str, Any]], None] | None = None,
+        enqueue_delivery: A2ADeliveryEnqueuer | None = None,
+        sign_callback: A2ACallbackSigner | None = None,
+        audit_delivery: A2ADeliveryAuditor | None = None,
         allowed_callback_hosts: Iterable[str] = (),
         max_push_body_bytes: int = 256 * 1024,
         task_mapping_store: A2ATaskMappingStore | None = None,
@@ -112,7 +155,7 @@ class A2AAdapter:
 
         return self._card
 
-    def submit_task(self, *, task_id: str, context_id: str, message: A2AMessage, **kwargs: Any) -> A2ATask:
+    def submit_task(self, *, task_id: str, context_id: str, message: A2AMessage, **kwargs: object) -> A2ATask:
         if self._authorize is not None and not self._authorize(context_id, message.role):
             raise PermissionError("A2A task is not authorized")
         existing = self._by_task.get(task_id)
@@ -146,7 +189,7 @@ class A2AAdapter:
         payload = dict(self._resume(bound[1], message))
         return self._task(task_id, context_id, {**payload, "run_id": bound[1]})
 
-    def stream_events(self, *, task_id: str, context_id: str, after: int = 0) -> tuple[Mapping[str, Any], ...]:
+    def stream_events(self, *, task_id: str, context_id: str, after: int = 0) -> tuple[Mapping[str, JsonValue], ...]:
         if self._events is None:
             raise NotImplementedError("A2A event streaming is not configured")
         bound = self._bound(task_id, context_id)
@@ -206,7 +249,7 @@ class A2AAdapter:
         task_id: str,
         context_id: str,
         event_seq: int,
-        payload: Mapping[str, Any],
+        payload: Mapping[str, JsonValue],
     ) -> A2APushDelivery:
         """Enqueue one signed, bounded, idempotent task update."""
 
@@ -231,7 +274,11 @@ class A2AAdapter:
         if len(body_bytes) > self._max_push_body_bytes:
             raise ValueError("A2A push payload exceeds configured bound")
         delivery_id = f"a2a:{task_id}:{int(event_seq)}"
-        headers = dict(self._sign_callback(delivery_id, body_bytes))
+        sign_callback = self._sign_callback
+        enqueue_delivery = self._enqueue_delivery
+        if sign_callback is None or enqueue_delivery is None:
+            raise RuntimeError("A2A push requires durable enqueue and callback signing")
+        headers = dict(sign_callback(delivery_id, body_bytes))
         if not headers:
             raise PermissionError("A2A callback signer returned no authentication headers")
         delivery = A2APushDelivery(
@@ -257,7 +304,7 @@ class A2AAdapter:
             "retry_backoff_seconds": delivery.retry_backoff_seconds,
         }
         try:
-            result = dict(self._enqueue_delivery(queue_payload))
+            result = dict(enqueue_delivery(queue_payload))
         except Exception as exc:
             if self._audit_delivery is not None:
                 self._audit_delivery(
@@ -307,15 +354,27 @@ class A2AAdapter:
         return bound
 
     @staticmethod
-    def _task(task_id: str, context_id: str, payload: Mapping[str, Any]) -> A2ATask:
+    def _task(task_id: str, context_id: str, payload: Mapping[str, JsonValue]) -> A2ATask:
+        raw_result = payload.get("result")
+        result = (
+            cast(Mapping[str, JsonValue], raw_result)
+            if isinstance(raw_result, Mapping)
+            else None
+        )
+        raw_evidence_refs = payload.get("evidence_refs")
+        evidence_refs = (
+            tuple(str(item) for item in raw_evidence_refs)
+            if isinstance(raw_evidence_refs, list)
+            else ()
+        )
         return A2ATask(
             task_id=task_id,
             context_id=context_id,
             run_id=str(payload["run_id"]),
             status=str(payload.get("status", "queued")),
-            result=payload.get("result"),
+            result=result,
             input_required=bool(payload.get("input_required", False)),
-            evidence_refs=tuple(str(item) for item in payload.get("evidence_refs", ())),
+            evidence_refs=evidence_refs,
         )
 
 

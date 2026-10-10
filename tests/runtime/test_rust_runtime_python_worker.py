@@ -9,6 +9,8 @@ from typing import Any
 import httpx
 import pytest
 
+from kogwistar.runtime.models import RunFailure, RunSuccess, RunSuspended
+from kogwistar.runtime.resolvers import MappingStepResolver
 from kogwistar.runtime.rust_worker import (
     AmbiguousWorkerExecution,
     AsyncRustRuntimeWorker,
@@ -18,9 +20,6 @@ from kogwistar.runtime.rust_worker import (
     RustWorkerError,
     WorkerResultJournal,
 )
-from kogwistar.runtime.models import RunFailure, RunSuccess, RunSuspended
-from kogwistar.runtime.resolvers import MappingStepResolver
-
 
 pytestmark = [pytest.mark.ci, pytest.mark.runtime]
 

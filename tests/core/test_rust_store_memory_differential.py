@@ -15,7 +15,6 @@ from kogwistar._rust_bridge import (
 )
 from kogwistar.engine_core.in_memory_backend import build_in_memory_backend
 
-
 pytestmark = [pytest.mark.ci, pytest.mark.core]
 
 
@@ -594,10 +593,10 @@ def test_store_selectors_shadow_oracle_requirement_and_error_codes(monkeypatch, 
         meta_store_implementation_mode()
     with pytest.raises(Exception) as invalid_json:
         _native_extension.store_memory_read_json("not-json")
-    assert getattr(invalid_json.value, "code") == "KOGWISTAR_STORE_INVALID_JSON"
+    assert invalid_json.value.code == "KOGWISTAR_STORE_INVALID_JSON"
     with pytest.raises(Exception) as invalid_payload:
         _native_extension.store_memory_read_json('{"snapshot":{},"operation":{"kind":"nope"}}')
-    assert getattr(invalid_payload.value, "code") == "KOGWISTAR_STORE_INVALID_PAYLOAD"
+    assert invalid_payload.value.code == "KOGWISTAR_STORE_INVALID_PAYLOAD"
 
 
 def test_shadow_compares_caller_value_without_oracle_recursion(monkeypatch) -> None:

@@ -13,7 +13,6 @@ import pytest
 
 from kogwistar.runtime.rust_worker import RustRuntimeWorker, RustWorkerError
 
-
 pytestmark = [pytest.mark.ci]
 ROOT = Path(__file__).resolve().parents[2]
 SERVER = ROOT / "rust" / "target" / "debug" / "kogwistar-server.exe"

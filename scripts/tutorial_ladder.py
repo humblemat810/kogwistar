@@ -7,8 +7,10 @@ import re
 import shutil
 import sys
 import time
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
+
 if True:
     ROOT = Path(__file__).resolve().parents[1]
     if str(ROOT) not in sys.path:
@@ -45,7 +47,7 @@ from kogwistar.llm_tasks import (
 )
 
 # replace with your embedding functions if you want real semantic embeddings
-from scripts.tutorial_sections._helpers import LexicalHashEmbeddingFunction 
+from scripts.tutorial_sections._helpers import LexicalHashEmbeddingFunction
 
 
 def _now_id(prefix: str) -> str:

@@ -13,10 +13,10 @@ if TYPE_CHECKING:
     from kogwistar.messaging.service import LaneMessagingService
 
 __all__ = [
-    "LaneMessagingService",
     "LaneMessageLookup",
     "LaneMessageProjectionRepairResult",
     "LaneMessageSendResult",
+    "LaneMessagingService",
     "ProjectedLaneMessageRow",
 ]
 
@@ -29,7 +29,7 @@ _EXPORTS = {
 }
 
 
-def __getattr__(name: str):
+def __getattr__(name: str) -> object:
     module_name = _EXPORTS.get(name)
     if module_name is None:
         raise AttributeError(name)

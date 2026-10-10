@@ -1,14 +1,14 @@
 import pathlib
 
 import pytest
+
 pytestmark = pytest.mark.core
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
-from tests._helpers.fake_backend import build_fake_backend
-
 from kogwistar.engine_core.models import Node
-from tests.conftest import FakeEmbeddingFunction
+from tests._helpers.fake_backend import build_fake_backend
 from tests._helpers.graph_builders import build_entity_node
+from tests.conftest import FakeEmbeddingFunction
 
 EMBEDDING_DIM = 3
 TEST_EMBEDDING = FakeEmbeddingFunction(dim=EMBEDDING_DIM)

@@ -3,13 +3,17 @@ from __future__ import annotations
 import json
 import time
 import uuid
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import BaseModel, Field
 
-from kogwistar.engine_core.models import Grounding, Node, Span
+from kogwistar.engine_core.models import Grounding, JsonPrimitive, Node, Span
+from kogwistar.json_types import JsonValue
 
+if TYPE_CHECKING:
+    from kogwistar.engine_core.engine import GraphKnowledgeEngine
 
 SERVICE_PROJECTION_NAMESPACE = "service_registry"
 SERVICE_TRIGGER_TYPES = {
@@ -21,12 +25,37 @@ SERVICE_TRIGGER_TYPES = {
     "restart",
 }
 
+JsonObject = dict[str, JsonValue]
 
-def _json_text(value: Any) -> str:
+
+def _json_object(value: object) -> JsonObject:
+    if not isinstance(value, Mapping):
+        return {}
+    return {str(key): cast(JsonValue, item) for key, item in value.items()}
+
+
+def _json_objects(value: object) -> list[JsonObject]:
+    if not isinstance(value, list):
+        return []
+    return [_json_object(item) for item in value if isinstance(item, Mapping)]
+
+
+def _int_value(value: object, default: int = 0) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (int, float, str)):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+    return default
+
+
+def _json_text(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True)
 
 
-def _json_value(value: Any) -> Any:
+def _json_value(value: object) -> JsonPrimitive:
     if isinstance(value, (str, int, float, bool)) or value is None:
         return value
     return _json_text(value)
@@ -39,7 +68,7 @@ def _now_ms() -> int:
 class ServiceTriggerSpec(BaseModel):
     type: str = Field(min_length=1)
     enabled: bool = True
-    selector: dict[str, Any] = Field(default_factory=dict)
+    selector: JsonObject = Field(default_factory=dict)
     debounce_ms: int = 0
     cooldown_ms: int = 0
 
@@ -49,10 +78,10 @@ class WorkflowServiceDefinition(BaseModel):
     service_kind: str = "service"
     target_kind: str = "workflow"
     target_ref: str = Field(min_length=1)
-    target_config: dict[str, Any] = Field(default_factory=dict)
+    target_config: JsonObject = Field(default_factory=dict)
     enabled: bool = True
     autostart: bool = False
-    restart_policy: dict[str, Any] = Field(default_factory=dict)
+    restart_policy: JsonObject = Field(default_factory=dict)
     heartbeat_ttl_ms: int = 60_000
     trigger_specs: list[ServiceTriggerSpec] = Field(default_factory=list)
     security_scope: str = "workflow"
@@ -96,8 +125,8 @@ class ServiceProjectionRow(BaseModel):
     last_trigger_type: str | None = None
     last_triggered_at_ms: int | None = None
     heartbeat_ttl_ms: int = 60_000
-    restart_policy: dict[str, Any] = Field(default_factory=dict)
-    trigger_specs: list[dict[str, Any]] = Field(default_factory=list)
+    restart_policy: JsonObject = Field(default_factory=dict)
+    trigger_specs: list[JsonObject] = Field(default_factory=list)
     last_message_seen_ms: int = 0
     last_graph_event_seq: int = 0
     next_due_at_ms: int | None = None
@@ -108,8 +137,8 @@ class ServiceProjectionRow(BaseModel):
 
 @dataclass
 class ServiceSupervisor:
-    get_workflow_engine: Callable[[], Any]
-    get_conversation_engine: Callable[[], Any]
+    get_workflow_engine: Callable[[], GraphKnowledgeEngine]
+    get_conversation_engine: Callable[[], GraphKnowledgeEngine]
     run_registry: Any
     spawn_workflow_run: Callable[..., dict[str, Any]]
     scope_snapshot: Callable[[], dict[str, str]]
@@ -142,13 +171,13 @@ class ServiceSupervisor:
         service_kind: str,
         target_kind: str,
         target_ref: str,
-        target_config: dict[str, Any] | None = None,
+        target_config: JsonObject | None = None,
         enabled: bool = True,
         autostart: bool = False,
-        restart_policy: dict[str, Any] | None = None,
+        restart_policy: JsonObject | None = None,
         heartbeat_ttl_ms: int = 60_000,
-        trigger_specs: list[dict[str, Any]] | list[ServiceTriggerSpec] | None = None,
-    ) -> dict[str, Any]:
+        trigger_specs: list[JsonObject] | list[ServiceTriggerSpec] | None = None,
+    ) -> JsonObject:
         now = _now_ms()
         scope = self.scope_snapshot()
         definition = WorkflowServiceDefinition(
@@ -181,27 +210,27 @@ class ServiceSupervisor:
         self.tick()
         return self.get_service(service_id)
 
-    def get_service(self, service_id: str) -> dict[str, Any]:
+    def get_service(self, service_id: str) -> JsonObject:
         projection = self._projection(service_id)
         if projection is None:
             self._rebuild_projection(service_id)
             projection = self._projection(service_id)
         if projection is None:
             raise KeyError(f"Unknown service_id: {service_id}")
-        return projection["payload"]
+        return _json_object(projection.get("payload"))
 
-    def list_services(self, *, limit: int = 200) -> list[dict[str, Any]]:
+    def list_services(self, *, limit: int = 200) -> list[JsonObject]:
         self._ensure_all_projections()
         meta = self._workflow_engine().meta_sqlite
         rows = list(meta.list_named_projections(SERVICE_PROJECTION_NAMESPACE))
-        items = [row["payload"] for row in rows][: int(limit)]
+        items = [_json_object(row.get("payload")) for row in rows][:_int_value(limit)]
         items.sort(key=lambda item: str(item.get("service_id") or ""))
         return items
 
-    def enable_service(self, service_id: str) -> dict[str, Any]:
+    def enable_service(self, service_id: str) -> JsonObject:
         return self._set_enabled(service_id, True)
 
-    def disable_service(self, service_id: str) -> dict[str, Any]:
+    def disable_service(self, service_id: str) -> JsonObject:
         return self._set_enabled(service_id, False)
 
     def record_service_heartbeat(
@@ -209,8 +238,8 @@ class ServiceSupervisor:
         service_id: str,
         *,
         instance_id: str,
-        payload: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
+        payload: JsonObject | None = None,
+    ) -> JsonObject:
         projection_payload = self._projection_payload(service_id)
         if projection_payload is None:
             self._rebuild_projection(service_id)
@@ -255,8 +284,8 @@ class ServiceSupervisor:
         service_id: str,
         *,
         trigger_type: str,
-        payload: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
+        payload: JsonObject | None = None,
+    ) -> JsonObject:
         return self._trigger_service(
             service_id=service_id,
             trigger_type=trigger_type,
@@ -264,7 +293,7 @@ class ServiceSupervisor:
             force=True,
         )
 
-    def health_snapshot(self, service_id: str) -> dict[str, Any]:
+    def health_snapshot(self, service_id: str) -> JsonObject:
         row = ServiceProjectionRow.model_validate(self.get_service(service_id))
         return ServiceHealthSnapshot(
             service_id=row.service_id,
@@ -281,7 +310,7 @@ class ServiceSupervisor:
 
     def list_service_events(
         self, service_id: str, *, limit: int = 500
-    ) -> list[dict[str, Any]]:
+    ) -> list[JsonObject]:
         nodes = self._workflow_engine().read.get_nodes(
             where={
                 "$and": [
@@ -291,7 +320,7 @@ class ServiceSupervisor:
             },
             limit=max(1, int(limit)),
         )
-        out: list[dict[str, Any]] = []
+        out: list[JsonObject] = []
         for node in nodes:
             md = dict(getattr(node, "metadata", {}) or {})
             properties = dict(getattr(node, "properties", {}) or {})
@@ -300,11 +329,11 @@ class ServiceSupervisor:
                     "event_id": str(getattr(node, "id", "") or ""),
                     "service_id": str(md.get("service_id") or ""),
                     "event_type": str(md.get("service_event_type") or ""),
-                    "ts_ms": int(md.get("ts_ms", 0) or 0),
+                    "ts_ms": _int_value(md.get("ts_ms", 0)),
                     "payload": json.loads(str(properties.get("payload_json") or "{}")),
                 }
             )
-        out.sort(key=lambda item: int(item["ts_ms"]))
+        out.sort(key=lambda item: _int_value(item["ts_ms"]))
         return out
 
     def tick(self) -> None:
@@ -313,7 +342,7 @@ class ServiceSupervisor:
         rows = list(meta.list_named_projections(SERVICE_PROJECTION_NAMESPACE))
         now = _now_ms()
         for row in rows:
-            payload = dict(row.get("payload") or {})
+            payload = _json_object(row.get("payload"))
             service_id = str(payload.get("service_id") or "")
             if not service_id:
                 continue
@@ -324,7 +353,7 @@ class ServiceSupervisor:
             self._evaluate_graph_trigger(service_id, payload, now_ms=now)
             self._rebuild_projection(service_id)
 
-    def _set_enabled(self, service_id: str, enabled: bool) -> dict[str, Any]:
+    def _set_enabled(self, service_id: str, enabled: bool) -> JsonObject:
         latest = self._latest_definition(service_id)
         if latest is None:
             raise KeyError(f"Unknown service_id: {service_id}")
@@ -348,9 +377,9 @@ class ServiceSupervisor:
         service_id: str,
         *,
         trigger_type: str,
-        payload: dict[str, Any],
+        payload: JsonObject,
         force: bool = False,
-    ) -> dict[str, Any]:
+    ) -> JsonObject:
         definition = self._latest_definition(service_id)
         if definition is None:
             raise KeyError(f"Unknown service_id: {service_id}")
@@ -374,8 +403,8 @@ class ServiceSupervisor:
         if spec is not None and not force:
             if not bool(spec.get("enabled", True)):
                 return projection.model_dump(mode="python")
-            cooldown_ms = int(spec.get("cooldown_ms", 0) or 0)
-            debounce_ms = int(spec.get("debounce_ms", 0) or 0)
+            cooldown_ms = _int_value(spec.get("cooldown_ms", 0))
+            debounce_ms = _int_value(spec.get("debounce_ms", 0))
             not_before = max(cooldown_ms, debounce_ms)
             last_triggered_at_ms = int(projection.last_triggered_at_ms or 0)
             if not_before > 0 and last_triggered_at_ms > 0:
@@ -404,8 +433,8 @@ class ServiceSupervisor:
             )
             turn_node_id = payload.get("turn_node_id") or target_cfg.get("turn_node_id")
             user_id = payload.get("user_id") or target_cfg.get("user_id")
-            initial_state = dict(target_cfg.get("initial_state") or {})
-            initial_state.update(dict(payload.get("initial_state") or {}))
+            initial_state = _json_object(target_cfg.get("initial_state"))
+            initial_state.update(_json_object(payload.get("initial_state")))
             run_payload = self.spawn_workflow_run(
                 workflow_id=definition.target_ref,
                 conversation_id=conversation_id,
@@ -429,7 +458,7 @@ class ServiceSupervisor:
         return self.get_service(service_id)
 
     def _evaluate_child_state(
-        self, service_id: str, payload: dict[str, Any], *, now_ms: int
+        self, service_id: str, payload: JsonObject, *, now_ms: int
     ) -> None:
         current_child_run_id = str(payload.get("current_child_run_id") or "")
         if not current_child_run_id:
@@ -453,9 +482,9 @@ class ServiceSupervisor:
         if definition is None:
             return
         mode = str((definition.restart_policy or {}).get("mode") or "never").strip().lower()
-        max_restarts = int((definition.restart_policy or {}).get("max_restarts", 0) or 0)
-        backoff_ms = int((definition.restart_policy or {}).get("restart_backoff_ms", 0) or 0)
-        restart_count = int(payload.get("restart_count", 0) or 0)
+        max_restarts = _int_value((definition.restart_policy or {}).get("max_restarts", 0))
+        backoff_ms = _int_value((definition.restart_policy or {}).get("restart_backoff_ms", 0))
+        restart_count = _int_value(payload.get("restart_count", 0))
         should_restart = False
         if mode == "always":
             should_restart = True
@@ -483,7 +512,7 @@ class ServiceSupervisor:
                 )
                 self._store_projection_payload(service_id, payload)
                 return
-            if now_ms < int(restart_not_before_ms):
+            if now_ms < _int_value(restart_not_before_ms):
                 self._store_projection_payload(service_id, payload)
                 return
             payload["restart_not_before_ms"] = None
@@ -500,11 +529,11 @@ class ServiceSupervisor:
         self._store_projection_payload(service_id, payload)
 
     def _evaluate_health(
-        self, service_id: str, payload: dict[str, Any], *, now_ms: int
+        self, service_id: str, payload: JsonObject, *, now_ms: int
     ) -> None:
         enabled = bool(payload.get("enabled"))
         last_heartbeat_ms = payload.get("last_heartbeat_ms")
-        ttl = int(payload.get("heartbeat_ttl_ms", 60_000) or 60_000)
+        ttl = _int_value(payload.get("heartbeat_ttl_ms", 60_000), 60_000)
         current_child_run_id = str(payload.get("current_child_run_id") or "")
         current_child_status = str(payload.get("current_child_status") or "")
         lifecycle_status = "stopped"
@@ -518,7 +547,7 @@ class ServiceSupervisor:
             elif current_child_run_id and current_child_status in {"queued", "running"}:
                 lifecycle_status = "starting" if current_child_status == "queued" else "healthy"
                 health_status = "healthy"
-            elif last_heartbeat_ms is not None and now_ms - int(last_heartbeat_ms) <= ttl:
+            elif last_heartbeat_ms is not None and now_ms - _int_value(last_heartbeat_ms) <= ttl:
                 lifecycle_status = "healthy"
                 health_status = "healthy"
             else:
@@ -535,7 +564,7 @@ class ServiceSupervisor:
         payload["health_status"] = health_status
 
     def _evaluate_schedule_trigger(
-        self, service_id: str, payload: dict[str, Any], *, now_ms: int
+        self, service_id: str, payload: JsonObject, *, now_ms: int
     ) -> None:
         if not bool(payload.get("enabled")):
             return
@@ -544,18 +573,18 @@ class ServiceSupervisor:
             "running",
         }:
             return
-        for spec in payload.get("trigger_specs", []):
+        for spec in _json_objects(payload.get("trigger_specs")):
             if str(spec.get("type") or "") != "schedule" or not bool(spec.get("enabled", True)):
                 continue
-            selector = dict(spec.get("selector") or {})
-            cooldown_ms = int(spec.get("cooldown_ms", 0) or 0)
-            interval_ms = int(selector.get("interval_ms", 0) or 0)
+            selector = _json_object(spec.get("selector"))
+            cooldown_ms = _int_value(spec.get("cooldown_ms", 0))
+            interval_ms = _int_value(selector.get("interval_ms", 0))
             next_due = payload.get("next_due_at_ms")
             if next_due is None:
                 next_due = now_ms if bool(payload.get("autostart")) else now_ms + interval_ms
-            if now_ms < int(next_due):
+            if now_ms < _int_value(next_due):
                 continue
-            last_triggered_at_ms = int(payload.get("last_triggered_at_ms", 0) or 0)
+            last_triggered_at_ms = _int_value(payload.get("last_triggered_at_ms", 0))
             if cooldown_ms > 0 and now_ms - last_triggered_at_ms < cooldown_ms:
                 continue
             self._trigger_service(
@@ -569,7 +598,7 @@ class ServiceSupervisor:
             return
 
     def _evaluate_message_trigger(
-        self, service_id: str, payload: dict[str, Any], *, now_ms: int
+        self, service_id: str, payload: JsonObject, *, now_ms: int
     ) -> None:
         if not bool(payload.get("enabled")):
             return
@@ -583,30 +612,31 @@ class ServiceSupervisor:
         )
         if not callable(list_fn):
             return
-        for spec in payload.get("trigger_specs", []):
+        for spec in _json_objects(payload.get("trigger_specs")):
             if str(spec.get("type") or "") != "message arrival" or not bool(spec.get("enabled", True)):
                 continue
-            selector = dict(spec.get("selector") or {})
+            selector = _json_object(spec.get("selector"))
             inbox_id = selector.get("inbox_id")
             if not inbox_id:
                 continue
-            cooldown_ms = int(spec.get("cooldown_ms", 0) or 0)
-            rows = list_fn(
+            cooldown_ms = _int_value(spec.get("cooldown_ms", 0))
+            rows_raw = list_fn(
                 namespace=str(payload.get("storage_namespace") or "default"),
                 inbox_id=str(inbox_id),
                 status="pending",
             )
+            rows = rows_raw if isinstance(rows_raw, list) else []
             latest_ms = 0
             for row in rows:
                 latest_ms = max(
                     latest_ms,
-                    int(getattr(row, "updated_at_ms", 0) or 0),
-                    int(getattr(row, "created_at_ms", 0) or 0),
-                    int(getattr(row, "created_at", 0) or 0) * 1000,
+                    _int_value(getattr(row, "updated_at_ms", 0)),
+                    _int_value(getattr(row, "created_at_ms", 0)),
+                    _int_value(getattr(row, "created_at", 0)) * 1000,
                 )
-            if latest_ms <= int(payload.get("last_message_seen_ms", 0) or 0):
+            if latest_ms <= _int_value(payload.get("last_message_seen_ms", 0)):
                 continue
-            last_triggered_at_ms = int(payload.get("last_triggered_at_ms", 0) or 0)
+            last_triggered_at_ms = _int_value(payload.get("last_triggered_at_ms", 0))
             if cooldown_ms > 0 and last_triggered_at_ms > 0 and now_ms - last_triggered_at_ms < cooldown_ms:
                 continue
             self._trigger_service(
@@ -620,7 +650,7 @@ class ServiceSupervisor:
             return
 
     def _evaluate_graph_trigger(
-        self, service_id: str, payload: dict[str, Any], *, now_ms: int
+        self, service_id: str, payload: JsonObject, *, now_ms: int
     ) -> None:
         if not bool(payload.get("enabled")):
             return
@@ -629,12 +659,12 @@ class ServiceSupervisor:
             "running",
         }:
             return
-        for spec in payload.get("trigger_specs", []):
+        for spec in _json_objects(payload.get("trigger_specs")):
             if str(spec.get("type") or "") != "graph change" or not bool(spec.get("enabled", True)):
                 continue
-            selector = dict(spec.get("selector") or {})
+            selector = _json_object(spec.get("selector"))
             engine_name = str(selector.get("engine") or "workflow").strip().lower()
-            cooldown_ms = int(spec.get("cooldown_ms", 0) or 0)
+            cooldown_ms = _int_value(spec.get("cooldown_ms", 0))
             if engine_name == "conversation":
                 engine = self._conversation_engine()
             else:
@@ -643,10 +673,10 @@ class ServiceSupervisor:
             getter = getattr(engine.meta_sqlite, "get_latest_entity_event_seq", None)
             if not callable(getter):
                 continue
-            latest_seq = int(getter(namespace=namespace) or 0)
-            if latest_seq <= int(payload.get("last_graph_event_seq", 0) or 0):
+            latest_seq = _int_value(getter(namespace=namespace))
+            if latest_seq <= _int_value(payload.get("last_graph_event_seq", 0)):
                 continue
-            last_triggered_at_ms = int(payload.get("last_triggered_at_ms", 0) or 0)
+            last_triggered_at_ms = _int_value(payload.get("last_triggered_at_ms", 0))
             if cooldown_ms > 0 and last_triggered_at_ms > 0 and now_ms - last_triggered_at_ms < cooldown_ms:
                 continue
             self._trigger_service(
@@ -685,8 +715,13 @@ class ServiceSupervisor:
             label=f"service_definition:{definition.service_id}",
             type="entity",
             summary=f"Service definition {definition.service_id}",
+            doc_id=definition.service_id,
             mentions=[Grounding(spans=[Span.from_dummy_for_workflow(definition.service_id)])],
             properties=properties,
+            embedding=None,
+            level_from_root=0,
+            domain_id=None,
+            canonical_entity_id=None,
             metadata={
                 "entity_type": "service_definition",
                 "artifact_kind": "service_definition",
@@ -703,7 +738,7 @@ class ServiceSupervisor:
         self._workflow_engine().write.add_node(node)
 
     def _append_event(
-        self, *, service_id: str, event_type: str, payload: dict[str, Any]
+        self, *, service_id: str, event_type: str, payload: JsonObject
     ) -> None:
         now = _now_ms()
         node = Node(
@@ -711,6 +746,7 @@ class ServiceSupervisor:
             label=f"service_event:{event_type}",
             type="entity",
             summary=f"Service event {event_type} for {service_id}",
+            doc_id=service_id,
             mentions=[Grounding(spans=[Span.from_dummy_for_workflow(service_id)])],
             properties={
                 "payload_json": _json_text(payload),
@@ -720,6 +756,10 @@ class ServiceSupervisor:
                     if isinstance(key, str)
                 },
             },
+            embedding=None,
+            level_from_root=0,
+            domain_id=None,
+            canonical_entity_id=None,
             metadata={
                 "entity_type": "service_event",
                 "artifact_kind": "service_event",
@@ -783,7 +823,11 @@ class ServiceSupervisor:
     def _ensure_all_projections(self) -> None:
         meta = self._workflow_engine().meta_sqlite
         existing = {
-            str((row.get("payload") or {}).get("service_id") or row.get("key") or "")
+            str(
+                _json_object(_json_object(row).get("payload")).get("service_id")
+                or _json_object(row).get("key")
+                or ""
+            )
             for row in meta.list_named_projections(SERVICE_PROJECTION_NAMESPACE)
         }
         for service_id in self._all_service_ids():
@@ -792,7 +836,7 @@ class ServiceSupervisor:
 
     def _matching_trigger_spec(
         self, *, definition: WorkflowServiceDefinition, trigger_type: str
-    ) -> dict[str, Any] | None:
+    ) -> JsonObject | None:
         for spec in definition.trigger_specs:
             payload = spec.model_dump(mode="python")
             if str(payload.get("type") or "").strip().lower() == str(trigger_type).strip().lower():
@@ -832,9 +876,9 @@ class ServiceSupervisor:
         ).model_dump(mode="python")
         for event in events:
             event_type = str(event.get("event_type") or "")
-            evt_payload = dict(event.get("payload") or {})
-            ts_ms = int(event.get("ts_ms", 0) or 0)
-            payload["updated_at_ms"] = max(int(payload.get("updated_at_ms", 0) or 0), ts_ms)
+            evt_payload = _json_object(event.get("payload"))
+            ts_ms = _int_value(event.get("ts_ms", 0))
+            payload["updated_at_ms"] = max(_int_value(payload.get("updated_at_ms", 0)), ts_ms)
             if event_type == "service.heartbeat":
                 payload["last_heartbeat_ms"] = ts_ms
             elif event_type == "service.enabled":
@@ -860,10 +904,9 @@ class ServiceSupervisor:
             elif event_type == "service.restarting":
                 payload["lifecycle_status"] = "restarting"
                 payload["restart_not_before_ms"] = evt_payload.get("restart_not_before_ms")
-                payload["restart_count"] = int(
+                payload["restart_count"] = _int_value(
                     evt_payload.get("restart_count", payload.get("restart_count", 0))
                     or payload.get("restart_count", 0)
-                    or 0
                 )
             elif event_type == "service.stopped":
                 payload["enabled"] = bool(evt_payload.get("enabled", payload["enabled"]))
@@ -885,12 +928,14 @@ class ServiceSupervisor:
         self._evaluate_health(service_id, payload, now_ms=_now_ms())
         self._store_projection_payload(service_id, payload)
 
-    def _store_projection_payload(self, service_id: str, payload: dict[str, Any]) -> None:
-        payload["updated_at_ms"] = int(payload.get("updated_at_ms") or _now_ms())
+    def _store_projection_payload(self, service_id: str, payload: JsonObject) -> None:
+        payload["updated_at_ms"] = _int_value(payload.get("updated_at_ms"), _now_ms())
         getter = getattr(self._workflow_engine().meta_sqlite, "get_latest_entity_event_seq", None)
         latest_seq = 0
         if callable(getter):
-            latest_seq = int(getter(namespace=getattr(self._workflow_engine(), "namespace", "default")) or 0)
+            latest_seq = _int_value(
+                getter(namespace=getattr(self._workflow_engine(), "namespace", "default"))
+            )
         self._workflow_engine().meta_sqlite.replace_named_projection(
             SERVICE_PROJECTION_NAMESPACE,
             str(service_id),
@@ -901,19 +946,19 @@ class ServiceSupervisor:
             materialization_status="ready",
         )
 
-    def _projection(self, service_id: str) -> dict[str, Any] | None:
+    def _projection(self, service_id: str) -> JsonObject | None:
         return self._workflow_engine().meta_sqlite.get_named_projection(
             SERVICE_PROJECTION_NAMESPACE, str(service_id)
         )
 
-    def _projection_payload(self, service_id: str) -> dict[str, Any] | None:
+    def _projection_payload(self, service_id: str) -> JsonObject | None:
         projection = self._projection(service_id)
         if projection is None:
             return None
-        return dict(projection.get("payload") or {})
+        return _json_object(projection.get("payload"))
 
-    def _workflow_engine(self) -> Any:
+    def _workflow_engine(self) -> GraphKnowledgeEngine:
         return self.get_workflow_engine()
 
-    def _conversation_engine(self) -> Any:
+    def _conversation_engine(self) -> GraphKnowledgeEngine:
         return self.get_conversation_engine()

@@ -1,19 +1,21 @@
-from __future__ import annotations
-
 """TO-DO  ingestor responsibility to verify that empty excerpt is only allowed if that source there is really empty only."""
+from __future__ import annotations
+import json
 import uuid
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import List, Optional, Sequence, TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
+
+from pydantic import BaseModel, Field
 
 from .utils.cache_backend import Memory
-from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
-import json
+
 from .engine_core.engine import GraphKnowledgeEngine
-from .engine_core.models import Document, Edge, Span as GroundingSpan
-from .engine_core.models import Node
+from .engine_core.models import Document, Edge, Grounding, Node
+from .engine_core.models import Span as GroundingSpan
 from .llm_structured_output import build_structured_output_runnable
 from .utils.embedding_vectors import normalize_embedding_vector
 
@@ -32,9 +34,23 @@ REL_DOCUMENT_DETAILED_BY = "document_detailed_by"  # document_node -> final_summ
 # Joblib cache (disk-persistent)
 # -----------------------------
 # Default under the engine's persist directory for easy cleanup/backups
-def _default_cache_dir(persist_dir: Optional[str]) -> str:
+def _default_cache_dir(persist_dir: str | None) -> str:
     base = persist_dir or "./chroma_db"
     return f"{base.rstrip('/')}/.ingester_cache"
+
+
+def _text_content(value: object) -> str:
+    """Normalize backend document content before text-only parsing."""
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, ensure_ascii=False, default=str)
+
+
+def _required_id(value: object) -> str:
+    identifier = getattr(value, "id", None)
+    if not isinstance(identifier, str) or not identifier:
+        raise ValueError("graph entity is missing a persistent string id")
+    return identifier
 
 
 # -----------------------------
@@ -58,7 +74,7 @@ class FinalSummariseResponse(BaseModel):
 
 
 class SummarizeResponse(BaseModel):
-    micro_chunks: List[MiniChunk] = Field(
+    micro_chunks: list[MiniChunk] = Field(
         ...,
         description="Ordered micro-chunks covering the input span without large overlap.",
     )
@@ -69,13 +85,13 @@ class GroupItem(BaseModel):
 
     title: str = Field(..., description="Group title.")
     summary: str = Field(..., description="Higher-level summary of the group.")
-    member_indices: List[int] = Field(
+    member_indices: list[int] = Field(
         ..., description="Indices into the provided chunk list, in order."
     )
 
 
 class GroupResponse(BaseModel):
-    groups: List[GroupItem]
+    groups: list[GroupItem]
 
 
 # -----------------------------
@@ -120,9 +136,9 @@ class SummaryChunk(BaseModel):
 class BaseDocumentGraphIngestor:
     engine: GraphKnowledgeEngine
     llm: BaseChatModel
-    cache_dir: Optional[str] = None
+    cache_dir: str | None = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         self.use_uuid = False
         self.memory = Memory(
             self.cache_dir
@@ -141,18 +157,22 @@ class BaseDocumentGraphIngestor:
         )
 
         # Wrap LLM calls with joblib to cache by pure-string inputs
-        self._cached_summarize = self.memory.cache(
-            self._summarize_call, ignore=["self"]
+        self._cached_summarize: Callable[..., SummarizeResponse | FinalSummariseResponse] = cast(
+            Callable[..., SummarizeResponse | FinalSummariseResponse],
+            self.memory.cache(self._summarize_call, ignore=["self"]),
         )
-        self._cached_group = self.memory.cache(self._group_call, ignore=["self"])
+        self._cached_group: Callable[..., GroupResponse] = cast(
+            Callable[..., GroupResponse],
+            self.memory.cache(self._group_call, ignore=["self"]),
+        )
 
     # ---------- NEW: page coercion helper ----------
     def _coerce_pages(
         self,
         *,
         document: Document,
-        pages: Optional[Sequence[str]] = None,
-    ) -> Optional[List[str]]:
+        pages: Sequence[str] | None = None,
+    ) -> list[str] | None:
         """
         Best-effort normalize "pages" input:
           - if pages argument is provided -> list[str]
@@ -165,7 +185,7 @@ class BaseDocumentGraphIngestor:
             out = [str(p) for p in pages if isinstance(p, (str, bytes))]
             return out if out else None
 
-        content = document.content or ""
+        content = _text_content(document.content or "")
         # JSON array? (e.g. '["page1", "page2"]' or [{"text": "..."}])
         if content.lstrip().startswith("["):
             try:
@@ -197,7 +217,7 @@ class BaseDocumentGraphIngestor:
         group_size: int = 5,
         max_levels: int = 6,
         force_summarise_after_levels: int = 3,
-        pages: Optional[Sequence[str]] = None,
+        pages: Sequence[str] | None = None,
     ) -> dict:
         """
         Run the hierarchical side-car ingestion pipeline for one document.
@@ -215,7 +235,7 @@ class BaseDocumentGraphIngestor:
             coerced_pages = self._coerce_pages(document=document, pages=pages)
             # Step 1: split
             leaves = self._split_into_leaves(
-                document.content or "",
+                _text_content(document.content or ""),
                 split_max_chars,
                 document.id,
                 pages=coerced_pages,
@@ -225,10 +245,10 @@ class BaseDocumentGraphIngestor:
             leaf_nodes = self._persist_leaf_nodes(document.id, leaves)
 
             # Build "next_to" adjacency among leaves (bidirectional)
-            self._persist_adjacency(document.id, [n.id for n in leaf_nodes])
+            self._persist_adjacency(document.id, [_required_id(n) for n in leaf_nodes])
 
             # Current layer = leaves -> summarize into micro-chunks (level 0)   # self.engine.node_ids_by_doc(document.id)
-            current_layer: List[SummaryChunk] = self._summarize_layer(
+            current_layer: list[SummaryChunk] = self._summarize_layer(
                 document.id, leaves, level=0
             )
 
@@ -292,9 +312,7 @@ class BaseDocumentGraphIngestor:
             # wire asymmetric, document-level relationship
             self._bi_edge(
                 document.id,
-                src=final_node_id
-                if isinstance(final_node_id, str)
-                else self._as_node(document.id, final).id,
+                src=final_node_id,
                 tgt=docnode_id,
                 relation=REL_SUMMARIZES_DOCUMENT,
                 reverse_relation=REL_DOCUMENT_DETAILED_BY,
@@ -312,15 +330,25 @@ class BaseDocumentGraphIngestor:
         }
 
     def _ensure_document_node(
-        self, doc_id: str, *, title: str | None = None, leaves
+        self,
+        doc_id: str,
+        *,
+        title: str | None = None,
+        leaves: Sequence[LeafChunk],
     ) -> str:
         node_id = f"docnode:{doc_id}"
         if not self.engine.persist.exists_node(node_id):
             from kogwistar.engine_core.models import Node
 
-            embeddings = self.engine.backend.document_get(
+            document_payload = self.engine.backend.document_get(
                 ids=[doc_id], include=["embeddings"]
-            )["embeddings"][0]
+            )
+            if not isinstance(document_payload, Mapping):
+                raise TypeError("document_get must return a mapping")
+            raw_embeddings = document_payload.get("embeddings")
+            if not isinstance(raw_embeddings, Sequence) or not raw_embeddings:
+                raise ValueError(f"document {doc_id!r} has no embedding")
+            embeddings = raw_embeddings[0]
             ref = self._ref(
                 doc_id=doc_id,
                 excerpt=None,
@@ -332,7 +360,7 @@ class BaseDocumentGraphIngestor:
                 type="entity",
                 summary="Represents the whole source document.",
                 mentions=[
-                    ref
+                    Grounding(spans=[ref])
                     # ReferenceSession(
                     # collection_page_url=f"document_collection/{doc_id}",
                     # document_page_url=f"document/{doc_id}",
@@ -341,7 +369,11 @@ class BaseDocumentGraphIngestor:
                     # doc_id = doc_id)
                 ],
                 doc_id=doc_id,
+                domain_id=None,
+                canonical_entity_id=None,
                 properties={"kind": "document_root"},
+                metadata={},
+                level_from_root=None,
                 embedding=normalize_embedding_vector(embeddings, allow_none=False),
             )
             self.engine.write.add_node(n, doc_id=doc_id)
@@ -353,12 +385,12 @@ class BaseDocumentGraphIngestor:
         self,
         text: str,
         max_chars: int,
-        doc_id,
+        doc_id: str,
         *,
-        pages: Optional[List[str]] = None,
-    ) -> List[LeafChunk]:
+        pages: list[str] | None = None,
+    ) -> list[LeafChunk]:
         if pages:
-            leaves: List[LeafChunk] = []
+            leaves: list[LeafChunk] = []
             for i, page in enumerate(pages, start=1):
                 pid = f"doc:{doc_id}|leaf:{uuid.uuid4() if self.use_uuid else i}"
                 span = Span(start_page=i, end_page=i, start_char=0, end_char=len(page))
@@ -367,7 +399,7 @@ class BaseDocumentGraphIngestor:
 
         if "\f" in text:  # respect page breaks if present
             raw_pages = [p for p in (seg.strip() for seg in text.split("\f")) if p]
-            leaves: List[LeafChunk] = []
+            leaves: list[LeafChunk] = []
             pos_char = 0
             for i, page in enumerate(raw_pages, start=1):
                 pid = f"doc:{doc_id}|leaf:{uuid.uuid4() if self.use_uuid else i}"
@@ -378,8 +410,8 @@ class BaseDocumentGraphIngestor:
 
         # greedily pack paragraphs into ~max_chars chunks
         paras = [p for p in text.replace("\r\n", "\n").split("\n\n") if p.strip()]
-        leaves: List[LeafChunk] = []
-        buf: List[str] = []
+        leaves: list[LeafChunk] = []
+        buf: list[str] = []
         cur_len = 0
         start_char_global = 0
         page_counter = 1  # if no page info, keep page=1 for all
@@ -430,8 +462,8 @@ class BaseDocumentGraphIngestor:
     # ---------- LLM calls (cached) ----------
 
     def _summarize_call(
-        self, prompt_key: str, content: str, final_summary=False
-    ):  # -> SummarizeResponse | FinalSummariseResponse:
+        self, prompt_key: str, content: str, final_summary: bool = False
+    ) -> SummarizeResponse | FinalSummariseResponse:
         # single, stable prompt
         system = (
             "You are a precise technical summarizer. "
@@ -449,19 +481,17 @@ class BaseDocumentGraphIngestor:
         else:
             chain = self._summarize_chain  # structured to SummarizeResponse
         result = chain.invoke(messages)
-        to_return = result["parsed"]
+        to_return = result.get("parsed")
         err = result["parsing_error"]
-        raw = result["raw"]
-        try:
-            assert err is None
-            assert to_return is not None
-        except:
-            raise
+        if err is not None or not isinstance(
+            to_return, (SummarizeResponse, FinalSummariseResponse)
+        ):
+            raise TypeError("structured summarization did not return a validated response")
         return to_return
 
     def _group_call(
         self, prompt_key: str, chunk_titles_and_summaries: str, max_groups: int
-    ):  # -> GroupResponse:
+    ) -> GroupResponse:
         system = (
             "You are a careful text organizer. "
             f"Group the provided items into ≤{max_groups} higher-level groups. "
@@ -474,14 +504,10 @@ class BaseDocumentGraphIngestor:
         ]
         chain = self._group_chain  # structured to GroupResponse
         result = chain.invoke(messages)
-        to_return = result["parsed"]
+        to_return = result.get("parsed")
         err = result["parsing_error"]
-        raw = result["raw"]
-        try:
-            assert err is None
-            assert to_return is not None
-        except:
-            raise
+        if err is not None or not isinstance(to_return, GroupResponse):
+            raise TypeError("structured grouping did not return a validated response")
         return to_return
 
     # ---------- summarize/group layers ----------
@@ -523,7 +549,7 @@ class BaseDocumentGraphIngestor:
 
     def _summarize_layer(
         self, doc_id: str, leaves: Sequence[LeafChunk], *, level: int
-    ) -> List[SummaryChunk]:
+    ) -> list[SummaryChunk]:
         """Summarize each leaf into micro-chunks and persist that local layer.
 
         Each leaf is summarized independently, producing one or more SummaryChunk
@@ -531,8 +557,8 @@ class BaseDocumentGraphIngestor:
         adjacency are persisted immediately so later grouping steps work against
         committed graph entities, not only transient chunk objects.
         """
-        out: List[SummaryChunk] = []
-        counts_per_leaf: List[int] = []
+        out: list[SummaryChunk] = []
+        counts_per_leaf: list[int] = []
 
         # 1) Summarize each leaf into micro-chunks (collect SummaryChunk objects)
         for leaf in leaves:
@@ -588,7 +614,7 @@ class BaseDocumentGraphIngestor:
 
     def _group_layer(
         self, doc_id: str, current: Sequence[SummaryChunk], *, level: int
-    ) -> List[SummaryChunk]:
+    ) -> list[SummaryChunk]:
         """Group adjacent summary chunks into a higher-level layer.
 
         Grouping is LLM-assisted but keyed for deterministic cache reuse. Each child
@@ -604,7 +630,7 @@ class BaseDocumentGraphIngestor:
         key = f"group:v1|doc:{doc_id}|level:{level}|n:{len(current)}"
         res: GroupResponse = self._cached_group(key, items_text, max_groups)
 
-        children: List[SummaryChunk] = []
+        children: list[SummaryChunk] = []
         for i, g in enumerate(res.groups):
             # derive span as min..max of member spans
             members = [current[i] for i in g.member_indices if 0 <= i < len(current)]
@@ -668,19 +694,31 @@ class BaseDocumentGraphIngestor:
 
     def _persist_leaf_nodes(
         self, doc_id: str, leaves: Sequence[LeafChunk]
-    ) -> List[Node]:
-        nodes: List[Node] = []
+    ) -> list[Node]:
+        nodes: list[Node] = []
         for i, leaf in enumerate(leaves, start=1):
             leaf_text = leaf.text.lstrip("\ufeff") if isinstance(leaf.text, str) else leaf.text
             try:
-                leaf_json = json.loads(leaf_text)
+                parsed_leaf = json.loads(leaf_text)
+                leaf_json = (
+                    dict(parsed_leaf)
+                    if isinstance(parsed_leaf, Mapping)
+                    else {"text": leaf_text}
+                )
             except json.JSONDecodeError:
                 leaf_json = {"text": leaf_text}
             try:
                 embedding_text = leaf_json.get("text")
-                if embedding_text is None:
+                if not isinstance(embedding_text, str):
+                    clusters = leaf_json.get("OCR_text_clusters")
+                    if not isinstance(clusters, Sequence) or isinstance(clusters, (str, bytes)):
+                        raise ValueError("leaf payload has no text or OCR_text_clusters")
                     embedding_text = json.dumps(
-                        [i["text"] for i in leaf_json.get("OCR_text_clusters")]
+                        [
+                            item.get("text", "")
+                            for item in clusters
+                            if isinstance(item, Mapping)
+                        ]
                     )
 
                 embedding_vector = self.engine._ef([embedding_text])[0]
@@ -691,17 +729,26 @@ class BaseDocumentGraphIngestor:
                 label=f"raw_text_chunk {i}",
                 type="entity",
                 summary=leaf.text,
-                mentions=[self._ref(doc_id, leaf.span, excerpt=leaf.text[:160])],
+                mentions=[
+                    Grounding(
+                        spans=[self._ref(doc_id, leaf.span, excerpt=leaf.text[:160])]
+                    )
+                ],
                 doc_id=doc_id,
+                domain_id=None,
+                canonical_entity_id=None,
                 properties={
                     "level": -1,
                     "source_leaf_id": leaf.id,
                 },
+                metadata={},
+                level_from_root=None,
                 embedding=normalize_embedding_vector(
                     embedding_vector, allow_none=False
                 ),
             )
-            if not self.engine.persist.exists_node(n.id):
+            node_id = _required_id(n)
+            if not self.engine.persist.exists_node(node_id):
                 self.engine.write.add_node(n, doc_id=doc_id)
             nodes.append(n)
         return nodes
@@ -714,9 +761,18 @@ class BaseDocumentGraphIngestor:
             label=label,
             type="entity",
             summary=ch.summary,
-            mentions=[self._ref(doc_id, ch.span, excerpt=ch.summary[:160])],
+            mentions=[
+                Grounding(
+                    spans=[self._ref(doc_id, ch.span, excerpt=ch.summary[:160])]
+                )
+            ],
             doc_id=doc_id,
+            domain_id=None,
+            canonical_entity_id=None,
             properties={"level": ch.level},
+            metadata={},
+            level_from_root=ch.level,
+            embedding=None,
             # embedding=self.engine._ef(f"{label}: {ch.summary}")[0]
         )
 
@@ -726,9 +782,15 @@ class BaseDocumentGraphIngestor:
             self.engine.write.add_node(self._as_node(doc_id, ch), doc_id=doc_id)
         return nid
 
-    def _persist_layer(self, doc_id: str, *, parents, children):
+    def _persist_layer(
+        self,
+        doc_id: str,
+        *,
+        parents: Sequence[Node | SummaryChunk],
+        children: Sequence[SummaryChunk],
+    ) -> None:
         # Ensure children exist first
-        self._persist_micro_chunks_as_nodes(doc_id, children)
+        self._persist_micro_chunks_as_nodes(doc_id, list(children))
 
         # Ensure parents exist (accept Node or SummaryChunk)
         parent_ids = []
@@ -737,12 +799,13 @@ class BaseDocumentGraphIngestor:
                 self._ensure_node(doc_id, p)
                 parent_ids.append(self._as_node(doc_id, p).id)
             else:  # Node
-                if not self.engine.persist.exists_node(p.id):
+                parent_id = _required_id(p)
+                if not self.engine.persist.exists_node(parent_id):
                     self.engine.write.add_node(p, doc_id=doc_id)
-                parent_ids.append(p.id)
+                parent_ids.append(parent_id)
 
         # Now it’s safe to create edges: parent -(summarizes)-> child, child -(details)-> parent
-        child_ids = [self._as_node(doc_id, c).id for c in children]
+        child_ids = [_required_id(self._as_node(doc_id, c)) for c in children]
         for c in children:
             cid = c.id
             for pid in c.parent_ids:
@@ -786,20 +849,29 @@ class BaseDocumentGraphIngestor:
                 label=ch.title,
                 type="entity",
                 summary=ch.summary,
-                mentions=[ref],
+                mentions=[Grounding(spans=[ref])],
                 doc_id=doc_id,  # will also be set by engine.write.add_node(doc_id=...) but harmless here
+                domain_id=None,
+                canonical_entity_id=None,
+                properties=None,
+                metadata={},
+                level_from_root=ch.level,
+                embedding=None,
                 # embedding = self.engine._ef(ch.summary)[0]
             )
 
             # Idempotent add (don’t recreate if present)
-            if not self.engine.persist.exists_node(n.id):
+            node_id = _required_id(n)
+            if not self.engine.persist.exists_node(node_id):
                 self.engine.write.add_node(n, doc_id=doc_id)
 
-            node_ids.append(n.id)
+            node_ids.append(node_id)
 
         return node_ids
 
-    def _persist_adjacency(self, doc_id: str, ordered_node_ids: Sequence[str]):
+    def _persist_adjacency(
+        self, doc_id: str, ordered_node_ids: Sequence[str]
+    ) -> None:
         """
         Persist asymmetric sibling adjacency:
         a -(precedes)-> b
@@ -812,7 +884,7 @@ class BaseDocumentGraphIngestor:
 
     def _bi_edge(
         self, doc_id: str, *, src: str, tgt: str, relation: str, reverse_relation: str
-    ):
+    ) -> None:
         "this document graph does not enfoce multi headed edge"
 
         span = GroundingSpan.from_dummy_for_document()
@@ -829,8 +901,13 @@ class BaseDocumentGraphIngestor:
             summary=f"{relation}: {src} → {tgt}",
             source_edge_ids=[],
             target_edge_ids=[],
-            mentions=[self._ref(doc_id, span, excerpt=None)],
+            mentions=[Grounding(spans=[self._ref(doc_id, span, excerpt=None)])],
             doc_id=doc_id,
+            domain_id=None,
+            canonical_entity_id=None,
+            properties=None,
+            metadata={},
+            embedding=None,
         )
         # reverse (distinct relation name)
         e2 = Edge(
@@ -843,16 +920,23 @@ class BaseDocumentGraphIngestor:
             summary=f"{reverse_relation}: {tgt} → {src}",
             source_edge_ids=[],
             target_edge_ids=[],
-            mentions=[self._ref(doc_id, span, excerpt=None)],
+            mentions=[Grounding(spans=[self._ref(doc_id, span, excerpt=None)])],
             doc_id=doc_id,
+            domain_id=None,
+            canonical_entity_id=None,
+            properties=None,
+            metadata={},
+            embedding=None,
         )
-        if not self.engine.persist.exists_edge(e1.id):
+        edge_id = _required_id(e1)
+        reverse_edge_id = _required_id(e2)
+        if not self.engine.persist.exists_edge(edge_id):
             self.engine.write.add_edge(e1, doc_id=doc_id)
-        if not self.engine.persist.exists_edge(e2.id):
+        if not self.engine.persist.exists_edge(reverse_edge_id):
             self.engine.write.add_edge(e2, doc_id=doc_id)
 
     def _ref(
-        self, doc_id: str, span: GroundingSpan, *, excerpt: Optional[str]
+        self, doc_id: str, span: object, *, excerpt: str | None
     ) -> GroundingSpan:
         start_page = getattr(span, "start_page", None)
         end_page = getattr(span, "end_page", None)
@@ -875,12 +959,16 @@ class BaseDocumentGraphIngestor:
             doc_id=doc_id,
             collection_page_url=f"document_collection/{doc_id}",
             document_page_url=f"document/{doc_id}",
-            start_page=int(start_page),
-            end_page=int(end_page),
+            page_number=int(start_page),
             start_char=int(start_char),
             end_char=int(end_char),
             insertion_method=str(insertion_method),
-            excerpt=excerpt,
+            excerpt=excerpt or "",
+            context_before="",
+            context_after="",
+            chunk_id=None,
+            source_cluster_id=None,
+            verification=None,
         )
 
 

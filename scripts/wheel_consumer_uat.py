@@ -10,9 +10,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
-from pathlib import Path
 import subprocess
 import sys
+from pathlib import Path
 from typing import Any
 
 
@@ -33,8 +33,9 @@ def _store(mode: str, directory: Path):
 
 
 def _identity(step: str, observed: str) -> dict[str, Any]:
-    import kogwistar
     import kogwistar._rust as native
+
+    import kogwistar
 
     return {
         "step": step,

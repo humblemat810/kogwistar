@@ -1,0 +1,25 @@
+{
+    "include": [
+        "kogwistar"
+    ],
+    "exclude": [
+        "kogwistar/demo",
+        "tests",
+        "**/.joblib",
+        "**/.embedding_cache",
+        "**/.pytest_cache",
+        "**/.tmp*"
+    ],
+    "typeCheckingMode": "standard",
+    "venvPath": ".",
+    "venv": ".venv",
+    "executionEnvironments": [
+        {
+            "root": ".",
+            "extraPaths": [
+                ".",
+                "kogwistar"
+            ]
+        }
+    ]
+}

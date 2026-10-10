@@ -12,67 +12,85 @@ import asyncio
 import contextlib
 import json
 import threading
-from typing import Any, Callable
+from collections.abc import Callable, Iterator
+from typing import Any, ClassVar, cast
 
 from kogwistar.conversation.models import ConversationNode
 from kogwistar.conversation.service import ConversationService
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.json_types import JsonValue
+from kogwistar.runtime.cost_ledger import CostLedger
 
-from .chat_service_conversation_queries import _ConversationQueryService
-from .chat_service_run_execution import _RunExecutionService
-from .chat_service_run_inspection import _RunInspectionService
-from .chat_service_shared import (
-    AnswerRunRequest,
-    RunCancelledError,
-    RuntimeRunRequest,
-    RuntimeResumeRequest,
-    WorkflowProjectionRebuildingError,
-    json_safe,
-    now_ms,
-    workflow_namespace,
-)
-from .capability_kernel import CapabilityKernel, DEFAULT_CAPABILITY_SPECS
 from .auth_middleware import (
     can_access_security_scope,
     describe_storage_security_mapping,
     get_current_agent_id,
     get_current_capabilities,
     get_current_role,
-    get_execution_namespace,
     get_current_subject,
     get_current_user_id,
-    has_explicit_capabilities_claim,
+    get_execution_namespace,
     get_security_scope,
     get_storage_namespace,
+    has_explicit_capabilities_claim,
+)
+from .capability_kernel import DEFAULT_CAPABILITY_SPECS, CapabilityKernel
+from .chat_service_conversation_queries import _ConversationQueryService
+from .chat_service_run_execution import _RunExecutionService
+from .chat_service_run_inspection import _RunInspectionService
+from .chat_service_shared import (
+    AnswerRunRequest,
+    RunCancelledError,
+    RuntimeResumeRequest,
+    RuntimeRunRequest,
+    PublishPayload,
+    WorkflowProjectionRebuildingError,
+    json_safe,
+    now_ms,
+    workflow_namespace,
 )
 from .chat_service_workflow_design import _WorkflowDesignService
+from .run_registry import RunRegistry, RunRegistryMetaStoreLike
 from .run_scheduler import RunScheduler
-from .run_registry import RunRegistry
 from .service_daemon import ServiceSupervisor
-from kogwistar.runtime.cost_ledger import CostLedger
+
+JsonObject = dict[str, JsonValue]
+
+
+def _records(value: object) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [dict(item) for item in value if isinstance(item, dict)]
+
+
+def _mapping(value: object) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    return dict(value)
 
 
 class ChatRunService:
     """Facade that composes workflow design, conversation, run execution, and replay collaborators."""
 
-    _DESIGN_CONTROL_KIND = "design_control"
-    _CTRL_UNDO_APPLIED = "UNDO_APPLIED"
-    _CTRL_REDO_APPLIED = "REDO_APPLIED"
-    _CTRL_BRANCH_DROPPED = "BRANCH_DROPPED"
-    _CTRL_MUTATION_COMMITTED = "MUTATION_COMMITTED"
-    _PROJECTION_SCHEMA_VERSION = 1
-    _SNAPSHOT_SCHEMA_VERSION = 1
-    _DELTA_SCHEMA_VERSION = 1
-    _SNAPSHOT_INTERVAL = 50
+    _DESIGN_CONTROL_KIND: ClassVar[str] = "design_control"
+    _CTRL_UNDO_APPLIED: ClassVar[str] = "UNDO_APPLIED"
+    _CTRL_REDO_APPLIED: ClassVar[str] = "REDO_APPLIED"
+    _CTRL_BRANCH_DROPPED: ClassVar[str] = "BRANCH_DROPPED"
+    _CTRL_MUTATION_COMMITTED: ClassVar[str] = "MUTATION_COMMITTED"
+    _PROJECTION_SCHEMA_VERSION: ClassVar[int] = 1
+    _SNAPSHOT_SCHEMA_VERSION: ClassVar[int] = 1
+    _DELTA_SCHEMA_VERSION: ClassVar[int] = 1
+    _SNAPSHOT_INTERVAL: ClassVar[int] = 50
 
     def __init__(
         self,
         *,
-        get_knowledge_engine: Callable[[], Any],
-        get_conversation_engine: Callable[[], Any],
-        get_workflow_engine: Callable[[], Any],
+        get_knowledge_engine: Callable[[], GraphKnowledgeEngine],
+        get_conversation_engine: Callable[[], GraphKnowledgeEngine],
+        get_workflow_engine: Callable[[], GraphKnowledgeEngine],
         run_registry: RunRegistry,
-        answer_runner: Callable[[AnswerRunRequest], dict[str, Any]] | None = None,
-        runtime_runner: Callable[[RuntimeRunRequest], dict[str, Any]] | None = None,
+        answer_runner: Callable[[AnswerRunRequest], JsonObject] | None = None,
+        runtime_runner: Callable[[RuntimeRunRequest], JsonObject] | None = None,
         default_runtime_kind: str = "sync",
     ) -> None:
         self._get_knowledge_engine = get_knowledge_engine
@@ -105,15 +123,16 @@ class ChatRunService:
         self.runtime_runner = (
             runtime_runner or self._run_execution._default_runtime_runner
         )
+        self.resume_runner = self._run_execution._default_resume_runner
         self.service_supervisor.bootstrap()
 
-    def _knowledge_engine(self) -> Any:
+    def _knowledge_engine(self) -> GraphKnowledgeEngine:
         return self._get_knowledge_engine()
 
-    def _conversation_engine(self) -> Any:
+    def _conversation_engine(self) -> GraphKnowledgeEngine:
         return self._get_conversation_engine()
 
-    def _workflow_engine(self) -> Any:
+    def _workflow_engine(self) -> GraphKnowledgeEngine:
         return self._get_workflow_engine()
 
     def _conversation_service(self) -> ConversationService:
@@ -160,7 +179,7 @@ class ChatRunService:
         required: str | list[str] | set[str] | tuple[str, ...],
         *,
         approval_message: str | None = None,
-    ) -> dict[str, Any]:
+    ) -> JsonObject:
         decision = self.capability_kernel.require(
             subject=self._capability_subject(),
             action=action,
@@ -185,7 +204,7 @@ class ChatRunService:
         subject: str | None = None,
         action: str,
         capabilities: str | list[str] | tuple[str, ...],
-    ) -> dict[str, Any]:
+    ) -> JsonObject:
         owner = str(subject or self._capability_subject()).strip().lower()
         self.capability_kernel.grant(
             subject=owner, action=action, capabilities=capabilities
@@ -197,24 +216,23 @@ class ChatRunService:
         *,
         subject: str | None = None,
         capability: str,
-    ) -> dict[str, Any]:
+    ) -> JsonObject:
         owner = str(subject or self._capability_subject()).strip().lower()
         self.capability_kernel.revoke(subject=owner, capability=capability)
         return self.capability_snapshot()
 
-    def capability_snapshot(self) -> dict[str, Any]:
-        snap = self.capability_kernel.snapshot()
-        snap["current_subject"] = self._capability_subject()
-        snap["effective_capabilities"] = list(self._effective_capabilities())
-        return snap
-
     def _publish(
-        self, run_id: str, event_type: str, payload: dict[str, Any] | None = None
-    ) -> dict[str, Any]:
-        return self.run_registry.append_event(run_id, event_type, payload)
+        self, run_id: str, event_type: str, payload: PublishPayload = None
+    ) -> JsonObject:
+        safe = self._json_safe(payload or {})
+        return self.run_registry.append_event(
+            run_id,
+            event_type,
+            cast(JsonObject, safe) if isinstance(safe, dict) else {},
+        )
 
     @staticmethod
-    def _json_safe(value: Any) -> Any:
+    def _json_safe(value: object) -> JsonValue:
         return json_safe(value)
 
     @staticmethod
@@ -226,7 +244,9 @@ class ChatRunService:
         return workflow_namespace(workflow_id)
 
     @contextlib.contextmanager
-    def _workflow_namespace_scope(self, workflow_id: str):
+    def _workflow_namespace_scope(
+        self, workflow_id: str
+    ) -> Iterator[GraphKnowledgeEngine]:
         eng = self._workflow_engine()
         prev_ns = str(getattr(eng, "namespace", "default") or "default")
         target_ns = self._workflow_namespace(workflow_id)
@@ -248,8 +268,11 @@ class ChatRunService:
         )
 
     def _workflow_capture_visible_snapshot(self, *, workflow_id: str) -> dict[str, Any]:
-        return self._workflow_design._workflow_capture_visible_snapshot(
-            workflow_id=workflow_id
+        return cast(
+            dict[str, Any],
+            self._workflow_design._workflow_capture_visible_snapshot(
+                workflow_id=workflow_id
+            ),
         )
 
     def workflow_design_history(self, *, workflow_id: str) -> dict[str, Any]:
@@ -656,7 +679,7 @@ class ChatRunService:
             },
         }
 
-    def visibility_snapshot(self) -> dict[str, Any]:
+    def visibility_snapshot(self) -> JsonObject:
         self._require_capability(
             "read_security_scope",
             ["read_security_scope", "project_view"],
@@ -673,11 +696,11 @@ class ChatRunService:
                 "execution_namespace": scope["execution_namespace"],
             },
             "security_scope": scope["security_scope"],
-            "storage_security_mapping": mapping,
+            "storage_security_mapping": cast(JsonValue, mapping),
             "can_access_public": can_access_security_scope("public", shared=True),
         }
 
-    def capability_snapshot(self) -> dict[str, Any]:
+    def capability_snapshot(self) -> JsonObject:
         self._require_capability(
             "project_view",
             ["project_view", "read_security_scope"],
@@ -697,7 +720,7 @@ class ChatRunService:
         action: str,
         capabilities: str | list[str] | tuple[str, ...],
         subject: str | None = None,
-    ) -> dict[str, Any]:
+    ) -> JsonObject:
         self._require_capability(
             "approve_action",
             ["approve_action"],
@@ -714,7 +737,7 @@ class ChatRunService:
         *,
         capability: str,
         subject: str | None = None,
-    ) -> dict[str, Any]:
+    ) -> JsonObject:
         self._require_capability(
             "approve_action",
             ["approve_action"],
@@ -820,12 +843,12 @@ class ChatRunService:
         )
         return self._workflow_design.workflow_catalog_ops()
 
-    def _execution_meta_store(self) -> Any:
+    def _execution_meta_store(self) -> RunRegistryMetaStoreLike:
         conversation_engine = self._conversation_engine()
         meta_store = getattr(conversation_engine, "meta_sqlite", None)
         if meta_store is None:
             raise AttributeError("conversation_engine does not expose meta_sqlite")
-        return meta_store
+        return cast(RunRegistryMetaStoreLike, meta_store)
 
     @staticmethod
     def _scope_snapshot() -> dict[str, str]:
@@ -967,13 +990,15 @@ class ChatRunService:
         )
         meta_store = self._execution_meta_store()
         list_runs = getattr(meta_store, "list_server_runs", None)
-        runs = []
+        runs: list[dict[str, Any]] = []
         if callable(list_runs):
-            runs = list_runs(
-                status=status,
-                workflow_id=workflow_id,
-                conversation_id=conversation_id,
-                limit=limit,
+            runs = _records(
+                list_runs(
+                    status=status,
+                    workflow_id=workflow_id,
+                    conversation_id=conversation_id,
+                    limit=limit,
+                )
             )
         out: list[dict[str, Any]] = []
         scope = self._scope_snapshot()
@@ -982,7 +1007,7 @@ class ChatRunService:
             events = []
             list_events = getattr(meta_store, "list_server_run_events", None)
             if callable(list_events):
-                events = list_events(run_id, after_seq=0, limit=50)
+                events = _records(list_events(run_id, after_seq=0, limit=50))
             last_event = events[-1] if events else None
             status_val = str(run.get("status") or "")
             out.append(
@@ -1014,7 +1039,7 @@ class ChatRunService:
             if workflow_id and str(service.get("target_ref") or "") != str(workflow_id):
                 continue
             if conversation_id:
-                target_cfg = dict(service.get("target_config") or {})
+                target_cfg = _mapping(service.get("target_config"))
                 if str(target_cfg.get("conversation_id") or "") != str(conversation_id):
                     continue
             service_status = str(service.get("lifecycle_status") or "")
@@ -1028,7 +1053,7 @@ class ChatRunService:
                     "workflow_id": service.get("target_ref")
                     if str(service.get("target_kind") or "") == "workflow"
                     else None,
-                    "conversation_id": dict(service.get("target_config") or {}).get(
+                    "conversation_id": _mapping(service.get("target_config")).get(
                         "conversation_id"
                     ),
                     "user_id": None,
@@ -1085,10 +1110,13 @@ class ChatRunService:
         list_fn = getattr(meta_store, "list_projected_lane_messages", None)
         if not callable(list_fn):
             return []
-        rows = list_fn(
-            namespace=self._scope_snapshot()["storage_namespace"],
-            inbox_id=inbox_id,
-            status=status,
+        rows = cast(
+            list[Any],
+            list_fn(
+                namespace=self._scope_snapshot()["storage_namespace"],
+                inbox_id=inbox_id,
+                status=status,
+            ),
         )
         visible_rows = []
         for row in rows:
@@ -1184,7 +1212,9 @@ class ChatRunService:
         if not callable(list_fn) or not callable(update_fn):
             return {"repaired_message_ids": []}
         scope = self._scope_snapshot()["storage_namespace"]
-        rows = list_fn(namespace=scope, inbox_id=inbox_id, status="claimed")
+        rows = cast(
+            list[Any], list_fn(namespace=scope, inbox_id=inbox_id, status="claimed")
+        )
         repaired: list[str] = []
         now = now_ms()
         for row in rows:
@@ -1239,7 +1269,9 @@ class ChatRunService:
         if not callable(list_fn):
             return {"total": 0, "by_status": {}, "by_inbox": {}, "failed": []}
         scope = self._scope_snapshot()["storage_namespace"]
-        rows = list_fn(namespace=scope, inbox_id=inbox_id, status=None)
+        rows = cast(
+            list[Any], list_fn(namespace=scope, inbox_id=inbox_id, status=None)
+        )
         by_status: dict[str, int] = {}
         by_inbox: dict[str, int] = {}
         failed: list[dict[str, Any]] = []
@@ -1347,7 +1379,9 @@ class ChatRunService:
         list_events = getattr(meta_store, "list_server_run_events", None)
         if not callable(list_events):
             return []
-        return list_events(str(run_id), after_seq=int(after_seq), limit=int(limit))
+        return _records(
+            list_events(str(run_id), after_seq=int(after_seq), limit=int(limit))
+        )
 
     def list_scheduler_timeline(
         self, *, run_id: str | None = None, limit: int = 200
@@ -1449,13 +1483,16 @@ class ChatRunService:
         if conversation_id:
             engine = self._conversation_engine()
             list_fn = getattr(getattr(engine, "meta_sqlite", None), "list_projected_lane_messages", None)
-            projected_rows = []
+            projected_rows: list[Any] = []
             if callable(list_fn):
                 projected_rows = [
                     row
-                    for row in list_fn(
-                        namespace=self._scope_snapshot()["storage_namespace"],
-                        limit=int(limit),
+                    for row in cast(
+                        list[Any],
+                        list_fn(
+                            namespace=self._scope_snapshot()["storage_namespace"],
+                            limit=int(limit),
+                        ),
                     )
                     if str(getattr(row, "conversation_id", "") or "") == str(conversation_id)
                 ]

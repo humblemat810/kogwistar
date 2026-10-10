@@ -8,17 +8,46 @@ vectors.  The registry is operational metadata, not graph truth.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import hashlib
 import json
-from typing import Callable, Mapping, Protocol, cast, runtime_checkable
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
+from typing import Protocol, cast, runtime_checkable
 from urllib.parse import urlsplit, urlunsplit
 
+from kogwistar.json_types import JsonObject, JsonValue
 from kogwistar.runtime.checkpointed_projection import ProjectionPayload
-
 
 PROFILE_REGISTRY_NAMESPACE = "__kogwistar_embedding_profiles_v1__"
 PROFILE_PROJECTION_SCHEMA_VERSION = 1
+
+
+def _json_object(value: JsonValue | None, *, field: str) -> JsonObject:
+    """Narrow a persisted JSON value while keeping corruption fail-closed."""
+
+    if not isinstance(value, dict):
+        raise TypeError(f"{field} must be a JSON object")
+    return value
+
+
+def _json_int(value: JsonValue | None, *, field: str, default: int | None = None) -> int | None:
+    """Convert the scalar integer forms accepted by legacy profile records."""
+
+    if value is None:
+        return default
+    if isinstance(value, (bool, int, float, str)):
+        return int(value)
+    raise TypeError(f"{field} must be an integer-compatible JSON scalar")
+
+
+def _json_text(value: JsonValue | None, *, field: str, default: str = "") -> str:
+    """Read a persisted string field without allowing nested JSON values."""
+
+    if value is None:
+        return default
+    if not isinstance(value, str):
+        raise TypeError(f"{field} must be a string")
+    return value
 
 
 def endpoint_fingerprint(endpoint: str | None) -> str | None:
@@ -98,7 +127,7 @@ class EmbeddingProfile:
         if self.max_image_patches is not None and int(self.max_image_patches) <= 0:
             raise ValueError("embedding profile max_image_patches must be positive")
 
-    def as_dict(self) -> dict[str, object]:
+    def as_dict(self) -> JsonObject:
         result = {
             "provider": str(self.provider).strip().lower(),
             "model": str(self.model).strip(),
@@ -126,51 +155,51 @@ class EmbeddingProfile:
         ).hexdigest()
 
     @classmethod
-    def from_mapping(cls, value: Mapping[str, object]) -> "EmbeddingProfile":
+    def from_mapping(cls, value: Mapping[str, JsonValue]) -> EmbeddingProfile:
         if not isinstance(value, Mapping):
             raise TypeError("embedding profile payload must be a mapping")
         return cls(
-            provider=str(value.get("provider", "")),
-            model=str(value.get("model", "")),
-            dimension=int(value.get("dimension", 0)),
-            similarity_metric=str(value.get("similarity_metric", "cosine")),
+            provider=_json_text(value.get("provider"), field="provider"),
+            model=_json_text(value.get("model"), field="model"),
+            dimension=_json_int(value.get("dimension"), field="dimension", default=0) or 0,
+            similarity_metric=_json_text(
+                value.get("similarity_metric"), field="similarity_metric", default="cosine"
+            ),
             endpoint_fingerprint=(
-                str(value["endpoint_fingerprint"])
+                _json_text(value.get("endpoint_fingerprint"), field="endpoint_fingerprint")
                 if value.get("endpoint_fingerprint") is not None
                 else None
             ),
-            max_sequence_length=(
-                int(value["max_sequence_length"])
-                if value.get("max_sequence_length") is not None
-                else None
+            max_sequence_length=_json_int(
+                value.get("max_sequence_length"), field="max_sequence_length"
             ),
-            crop_token_budget=(
-                int(value["crop_token_budget"])
-                if value.get("crop_token_budget") is not None
-                else None
-            ),
+            crop_token_budget=_json_int(value.get("crop_token_budget"), field="crop_token_budget"),
             tokenizer_fingerprint=(
-                str(value["tokenizer_fingerprint"])
+                _json_text(value.get("tokenizer_fingerprint"), field="tokenizer_fingerprint")
                 if value.get("tokenizer_fingerprint") is not None
                 else None
             ),
-            crop_policy=(str(value["crop_policy"]) if value.get("crop_policy") is not None else None),
+            crop_policy=(
+                _json_text(value.get("crop_policy"), field="crop_policy")
+                if value.get("crop_policy") is not None
+                else None
+            ),
             embedding_kind=(
-                str(value["embedding_kind"]) if value.get("embedding_kind") is not None else None
+                _json_text(value.get("embedding_kind"), field="embedding_kind")
+                if value.get("embedding_kind") is not None
+                else None
             ),
             model_revision=(
-                str(value["model_revision"]) if value.get("model_revision") is not None else None
+                _json_text(value.get("model_revision"), field="model_revision")
+                if value.get("model_revision") is not None
+                else None
             ),
             preprocessing_fingerprint=(
-                str(value["preprocessing_fingerprint"])
+                _json_text(value.get("preprocessing_fingerprint"), field="preprocessing_fingerprint")
                 if value.get("preprocessing_fingerprint") is not None
                 else None
             ),
-            max_image_patches=(
-                int(value["max_image_patches"])
-                if value.get("max_image_patches") is not None
-                else None
-            ),
+            max_image_patches=_json_int(value.get("max_image_patches"), field="max_image_patches"),
         )
 
 
@@ -331,11 +360,11 @@ class EmbeddingProfileRegistry:
         inspector: EmbeddingStorageInspector,
         *,
         configured: EmbeddingProfile | None = None,
-    ) -> dict[str, object]:
+    ) -> JsonObject:
         scope = self._key(inspector)
         state = inspector.inspect_embedding_storage()
         projection = self._metadata.get_named_projection(PROFILE_REGISTRY_NAMESPACE, scope)
-        result: dict[str, object] = {
+        result: JsonObject = {
             "storage_scope": scope,
             "storage_state": {
                 "backend_kind": state.backend_kind,
@@ -347,10 +376,12 @@ class EmbeddingProfileRegistry:
             "configured": configured.as_dict() if configured else None,
         }
         if projection is not None:
-            payload = projection.get("payload") or {}
+            payload = _json_object(projection.get("payload"), field="payload")
             self._validate_schema(scope, projection, payload)
             try:
-                registered = EmbeddingProfile.from_mapping(payload["embedding_profile"])
+                registered = EmbeddingProfile.from_mapping(
+                    _json_object(payload.get("embedding_profile"), field="embedding_profile")
+                )
             except (KeyError, TypeError, ValueError) as exc:
                 raise CorruptEmbeddingProfileError(
                     f"invalid embedding profile registry record for {scope}"
@@ -411,7 +442,7 @@ class EmbeddingProfileRegistry:
                 raise CorruptEmbeddingProfileError(
                     f"conflicting legacy embedding profile bindings for {scope}"
                 )
-            payload = legacy_rows[0].get("payload") or {}
+            payload = _json_object(legacy_rows[0].get("payload"), field="payload")
             inserted = self._metadata.compare_and_swap_named_projection(
                 PROFILE_REGISTRY_NAMESPACE,
                 scope,
@@ -420,7 +451,14 @@ class EmbeddingProfileRegistry:
                 expected_last_materialized_seq=None,
                 last_authoritative_seq=0,
                 last_materialized_seq=0,
-                projection_schema_version=int(legacy_rows[0].get("projection_schema_version", 1)),
+                projection_schema_version=(
+                    _json_int(
+                        legacy_rows[0].get("projection_schema_version"),
+                        field="projection_schema_version",
+                        default=1,
+                    )
+                    or 1
+                ),
                 materialization_status="bound",
             )
             if inserted:
@@ -459,11 +497,13 @@ class EmbeddingProfileRegistry:
         return self._validate_current(scope, winner, configured)
 
     @staticmethod
-    def _registered_profile(scope: str, projection: Mapping[str, object]) -> EmbeddingProfile:
-        payload = projection.get("payload") or {}
+    def _registered_profile(scope: str, projection: Mapping[str, JsonValue]) -> EmbeddingProfile:
+        payload = _json_object(projection.get("payload"), field="payload")
         EmbeddingProfileRegistry._validate_schema(scope, projection, payload)
         try:
-            return EmbeddingProfile.from_mapping(payload["embedding_profile"])
+            return EmbeddingProfile.from_mapping(
+                _json_object(payload.get("embedding_profile"), field="embedding_profile")
+            )
         except (KeyError, TypeError, ValueError) as exc:
             raise CorruptEmbeddingProfileError(
                 f"invalid embedding profile registry record for {scope}"
@@ -472,13 +512,15 @@ class EmbeddingProfileRegistry:
     @staticmethod
     def _validate_current(
         scope: str,
-        projection: Mapping[str, object],
+        projection: Mapping[str, JsonValue],
         configured: EmbeddingProfile,
     ) -> EmbeddingProfile:
-        payload = projection.get("payload") or {}
+        payload = _json_object(projection.get("payload"), field="payload")
         EmbeddingProfileRegistry._validate_schema(scope, projection, payload)
         try:
-            registered = EmbeddingProfile.from_mapping(payload["embedding_profile"])
+            registered = EmbeddingProfile.from_mapping(
+                _json_object(payload.get("embedding_profile"), field="embedding_profile")
+            )
         except (KeyError, TypeError, ValueError) as exc:
             raise CorruptEmbeddingProfileError(
                 f"invalid embedding profile registry record for {scope}"
@@ -494,12 +536,18 @@ class EmbeddingProfileRegistry:
     @staticmethod
     def _validate_schema(
         scope: str,
-        projection: Mapping[str, object],
-        payload: Mapping[str, object],
+        projection: Mapping[str, JsonValue],
+        payload: Mapping[str, JsonValue],
     ) -> None:
         try:
-            projection_version = int(projection.get("projection_schema_version", -1))
-            payload_version = int(payload.get("profile_schema_version", -1))
+            projection_version = _json_int(
+                projection.get("projection_schema_version"),
+                field="projection_schema_version",
+                default=-1,
+            )
+            payload_version = _json_int(
+                payload.get("profile_schema_version"), field="profile_schema_version", default=-1
+            )
         except (TypeError, ValueError) as exc:
             raise CorruptEmbeddingProfileError(
                 f"invalid embedding profile schema metadata for {scope}"
@@ -515,6 +563,9 @@ class EmbeddingProfileRegistry:
 
 
 __all__ = [
+    "PROFILE_PROJECTION_SCHEMA_VERSION",
+    "PROFILE_REGISTRY_NAMESPACE",
+    "AsyncNamedProjectionStore",
     "CorruptEmbeddingProfileError",
     "EmbeddingProfile",
     "EmbeddingProfileError",
@@ -523,9 +574,6 @@ __all__ = [
     "EmbeddingStorageInspector",
     "EmbeddingStorageState",
     "LegacyEmbeddingProfileError",
-    "AsyncNamedProjectionStore",
     "NamedProjectionStore",
-    "PROFILE_PROJECTION_SCHEMA_VERSION",
-    "PROFILE_REGISTRY_NAMESPACE",
     "endpoint_fingerprint",
 ]

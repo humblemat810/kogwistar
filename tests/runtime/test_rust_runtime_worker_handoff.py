@@ -13,7 +13,6 @@ from kogwistar.runtime.rust_runtime_adapter import (
     read_recorded_runtime_state,
 )
 
-
 pytestmark = [pytest.mark.ci_full, pytest.mark.runtime]
 
 

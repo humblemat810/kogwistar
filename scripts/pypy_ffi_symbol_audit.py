@@ -10,12 +10,11 @@ from __future__ import annotations
 import argparse
 import json
 import os
-from pathlib import Path
 import re
 import shutil
 import subprocess
-from typing import Iterable, Sequence
-
+from collections.abc import Iterable, Sequence
+from pathlib import Path
 
 _LINK_NAME = re.compile(r'link_name\s*=\s*"(PyPy[A-Za-z0-9_]+)"')
 _PYTHON_ABI_SYMBOL = re.compile(r"^_?Py")

@@ -11,10 +11,10 @@ import json
 import math
 import re
 from typing import Annotated, Literal, TypeAlias
+
 from typing_extensions import TypeAliasType
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-
 
 _IDENTIFIER = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]*$")
 _QUALIFIED_IDENTIFIER = re.compile(
@@ -23,10 +23,12 @@ _QUALIFIED_IDENTIFIER = re.compile(
 _SEMVER = re.compile(r"^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
-JsonPrimitive: TypeAlias = str | int | float | bool | None
+JsonPrimitive = TypeAliasType(
+    "JsonPrimitive", str | int | float | bool | None
+)
 JsonValue = TypeAliasType(
     "JsonValue",
-    JsonPrimitive | list["JsonValue"] | dict[str, "JsonValue"],
+    JsonPrimitive | list["JsonValue"] | dict[str, "JsonValue"],  # pyright: ignore[reportInvalidTypeForm]
 )
 
 DescriptorKind = Literal[
@@ -160,7 +162,7 @@ class OntologyPackageManifest(BaseModel):
         return value
 
     @model_validator(mode="after")
-    def _unique_imports(self) -> "OntologyPackageManifest":
+    def _unique_imports(self) -> OntologyPackageManifest:
         identities = [item.qualified_id for item in self.imports]
         if len(identities) != len(set(identities)):
             raise ValueError("imports must not contain duplicate package identities")
@@ -208,7 +210,7 @@ class OntologyPropertyDescriptor(OntologyDescriptorBase):
     max_count: int | None = Field(default=1, ge=1)
 
     @model_validator(mode="after")
-    def _valid_cardinality(self) -> "OntologyPropertyDescriptor":
+    def _valid_cardinality(self) -> OntologyPropertyDescriptor:
         if self.max_count is not None and self.max_count < self.min_count:
             raise ValueError("max_count must be greater than or equal to min_count")
         return self
@@ -265,7 +267,7 @@ class OntologyEdgeRole(BaseModel):
         )
 
     @model_validator(mode="after")
-    def _valid_cardinality(self) -> "OntologyEdgeRole":
+    def _valid_cardinality(self) -> OntologyEdgeRole:
         if self.max_count is not None and self.max_count < self.min_count:
             raise ValueError("max_count must be greater than or equal to min_count")
         return self
@@ -284,7 +286,7 @@ class OntologyEdgeShapeDescriptor(OntologyDescriptorBase):
         return _validate_reference(value, field_name="relation_id")
 
     @model_validator(mode="after")
-    def _unique_roles(self) -> "OntologyEdgeShapeDescriptor":
+    def _unique_roles(self) -> OntologyEdgeShapeDescriptor:
         role_ids = [role.role_id for role in self.roles]
         if len(role_ids) != len(set(role_ids)):
             raise ValueError("edge shape roles must have unique role_id values")
@@ -309,7 +311,7 @@ class OntologyPackage(BaseModel):
     descriptors: tuple[OntologyDescriptor, ...] = Field(min_length=1)
 
     @model_validator(mode="after")
-    def _unique_descriptors_and_digest(self) -> "OntologyPackage":
+    def _unique_descriptors_and_digest(self) -> OntologyPackage:
         descriptor_ids = [descriptor.descriptor_id for descriptor in self.descriptors]
         if len(descriptor_ids) != len(set(descriptor_ids)):
             raise ValueError("descriptor_id values must be unique within a package")
@@ -373,7 +375,7 @@ class OntologyPackage(BaseModel):
         summary: str = "",
         imports: tuple[OntologyImport, ...] | list[OntologyImport] = (),
         extensions: dict[str, JsonValue] | None = None,
-    ) -> "OntologyPackage":
+    ) -> OntologyPackage:
         """Construct a package and calculate its canonical digest."""
 
         manifest = OntologyPackageManifest.model_construct(

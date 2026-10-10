@@ -1,9 +1,11 @@
 import uuid
+
 import pytest
+
 pytestmark = pytest.mark.ci_full
 
-from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core import models
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from tests.conftest import FakeEmbeddingFunction
 
 EMBEDDING_DIM = 3

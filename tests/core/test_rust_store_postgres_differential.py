@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import pytest
@@ -10,7 +10,6 @@ pytest.importorskip("sqlalchemy")
 
 from kogwistar._rust_bridge import RustParityError, store_postgres
 from kogwistar.engine_core.engine_postgres_meta import EnginePostgresMetaStore
-
 
 pytestmark = [pytest.mark.ci_full, pytest.mark.core]
 

@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 import importlib.util
-from pathlib import Path
 import shutil
+from pathlib import Path
 from types import ModuleType
-
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "rust_port_build_wheel.py"

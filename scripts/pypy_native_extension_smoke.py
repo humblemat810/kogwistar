@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import importlib.util
-from importlib.machinery import EXTENSION_SUFFIXES
-from pathlib import Path
 import sys
 import sysconfig
 import types
+from importlib.machinery import EXTENSION_SUFFIXES
+from pathlib import Path
 
 
 def _extension_candidates() -> list[Path]:

@@ -3,7 +3,7 @@
 # This file shows that conversation artifacts live in the graph as first-class nodes.
 
 # %%
-from kogwistar.conversation.service import ConversationService
+from _helpers import banner, reset_data_dir, show
 from tutorial_ladder import (
     _ensure_seed,
     deterministic_filter_callback,
@@ -11,7 +11,7 @@ from tutorial_ladder import (
     seed_data,
 )
 
-from _helpers import banner, reset_data_dir, show
+from kogwistar.conversation.service import ConversationService
 
 data_dir = reset_data_dir("04_conversation_graph_basics")
 show("reset", reset_data(data_dir))

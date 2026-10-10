@@ -1,9 +1,10 @@
 import pytest
+
 pytest.importorskip("sqlalchemy")
 
-from kogwistar.engine_core.models import Node, Edge, Grounding, Span
-from kogwistar.engine_core.postgres_backend import PgVectorBackend
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.models import Edge, Grounding, Node, Span
+from kogwistar.engine_core.postgres_backend import PgVectorBackend
 from tests.conftest import FakeEmbeddingFunction
 
 EMBEDDING_DIM = 3

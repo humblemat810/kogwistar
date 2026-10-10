@@ -11,11 +11,13 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+
 pytest.importorskip("fastapi")
 pytest.importorskip("mcp")
 pytest.importorskip("sqlalchemy")
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
+
 from .auth_env import TEST_JWT_ALG, TEST_JWT_SECRET
 
 os.environ.setdefault("JWT_SECRET", TEST_JWT_SECRET)
@@ -26,16 +28,16 @@ from kogwistar.conversation.agentic_answering_design import DEBUG_RAG_WORKFLOW_I
 from kogwistar.conversation.models import ConversationNode
 from kogwistar.conversation.service import ConversationService
 from kogwistar.engine_core.models import Grounding, Node, Span
-from kogwistar.runtime.runtime import RunResult
-from kogwistar.runtime.telemetry import EventEmitter, TraceContext
-from kogwistar.runtime.telemetry_otel import OpenTelemetrySink
 from kogwistar.runtime.design import load_workflow_design
 from kogwistar.runtime.models import (
     WorkflowCancelledNode,
-    WorkflowCompletedNode,
     WorkflowCheckpointNode,
+    WorkflowCompletedNode,
     WorkflowStepExecNode,
 )
+from kogwistar.runtime.runtime import RunResult
+from kogwistar.runtime.telemetry import EventEmitter, TraceContext
+from kogwistar.runtime.telemetry_otel import OpenTelemetrySink
 from kogwistar.server.chat_service import (
     AnswerRunRequest,
     ChatRunService,

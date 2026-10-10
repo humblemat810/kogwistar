@@ -9,10 +9,10 @@ from __future__ import annotations
 
 import math
 import os
-from typing import Any
+from typing import cast
 
 from .._rust_bridge import store_sqlite
-
+from ..json_types import JsonObject, JsonValue
 
 _TRANSITION_FIELDS = frozenset(
     {
@@ -45,7 +45,7 @@ _WORKER_HANDOFF_FIELDS = frozenset(
 )
 
 
-def _require_json(value: Any, *, field: str) -> None:
+def _require_json(value: JsonValue, *, field: str) -> None:
     if value is None or isinstance(value, (str, bool, int)):
         return
     if isinstance(value, float):
@@ -65,7 +65,7 @@ def _require_json(value: Any, *, field: str) -> None:
     raise TypeError(f"{field} must be JSON-only, got {type(value).__name__}")
 
 
-def _require_transition(transition: dict[str, Any]) -> None:
+def _require_transition(transition: JsonObject) -> None:
     if not isinstance(transition, dict):
         raise TypeError("transition must be a JSON object")
     _require_json(transition, field="transition")
@@ -87,7 +87,7 @@ def _require_transition(transition: dict[str, Any]) -> None:
         raise ValueError(f"transition missing fields: {sorted(missing)!r}")
 
 
-def _require_worker_handoff(handoff: dict[str, Any]) -> None:
+def _require_worker_handoff(handoff: JsonObject) -> None:
     if not isinstance(handoff, dict):
         raise TypeError("handoff must be a JSON object")
     _require_json(handoff, field="handoff")
@@ -106,9 +106,9 @@ def _require_worker_handoff(handoff: dict[str, Any]) -> None:
 def apply_recorded_transition(
     *,
     path: str | os.PathLike[str],
-    transition: dict[str, Any],
+    transition: JsonObject,
     abort_after_writes: bool = False,
-) -> dict[str, Any]:
+) -> JsonObject:
     """Atomically record one previously-obtained runtime transition.
 
     `abort_after_writes` exists only for fault-injection tests. Public
@@ -127,16 +127,16 @@ def apply_recorded_transition(
     )
     if not isinstance(value, dict):
         raise RuntimeError("recorded runtime transition returned non-object JSON")
-    return value
+    return cast(JsonObject, value)
 
 
 def apply_claimed_worker_result(
     *,
     path: str | os.PathLike[str],
-    handoff: dict[str, Any],
-    transition: dict[str, Any],
+    handoff: JsonObject,
+    transition: JsonObject,
     abort_after_writes: bool = False,
-) -> dict[str, Any]:
+) -> JsonObject:
     """Atomically accept one claimed Python-worker result.
 
     Rust validates durable claim ownership and request identity, records the
@@ -158,7 +158,7 @@ def apply_claimed_worker_result(
     )
     if not isinstance(value, dict):
         raise RuntimeError("worker result handoff returned non-object JSON")
-    return value
+    return cast(JsonObject, value)
 
 
 def read_recorded_runtime_state(
@@ -167,7 +167,7 @@ def read_recorded_runtime_state(
     run_id: str,
     workflow_id: str,
     conversation_id: str,
-) -> dict[str, Any] | None:
+) -> JsonObject | None:
     """Read restart state; never dispatch pending or suspended tokens."""
     for field, value in (
         ("run_id", run_id),
@@ -187,4 +187,4 @@ def read_recorded_runtime_state(
     )
     if value is not None and not isinstance(value, dict):
         raise RuntimeError("recorded runtime read returned non-object JSON")
-    return value
+    return cast(JsonObject, value) if isinstance(value, dict) else None

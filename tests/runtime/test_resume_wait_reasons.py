@@ -6,7 +6,12 @@ import pytest
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.models import Grounding, MentionVerification, Span
-from kogwistar.runtime.models import RunSuccess, RunSuspended, WorkflowEdge, WorkflowNode
+from kogwistar.runtime.models import (
+    RunSuccess,
+    RunSuspended,
+    WorkflowEdge,
+    WorkflowNode,
+)
 from kogwistar.runtime.resolvers import MappingStepResolver
 from kogwistar.runtime.runtime import StepContext, WorkflowRuntime
 from tests._helpers.embeddings import ConstantEmbeddingFunction

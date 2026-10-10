@@ -13,7 +13,6 @@ from kogwistar.cdc.change_bridge import create_app
 from kogwistar.utils.kge_debug_dump import dump_sigma_bundle
 from kogwistar.visualization import graph_viz
 
-
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SIGMA_TEMPLATE = _REPO_ROOT / "kogwistar" / "templates" / "sigma.html"
 _FORGE_TEMPLATE = _REPO_ROOT / "kogwistar" / "templates" / "cdc_event_forge.html"

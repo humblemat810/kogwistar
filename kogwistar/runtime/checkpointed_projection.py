@@ -6,12 +6,12 @@ from dataclasses import dataclass
 from typing import Generic, Protocol, TypeVar
 
 from kogwistar.id_provider import stable_id
-
+from kogwistar.json_types import JsonValue
 
 TState = TypeVar("TState")
 TEvent = TypeVar("TEvent")
 TSnapshot = TypeVar("TSnapshot")
-ProjectionPayload = dict[str, object]
+ProjectionPayload = dict[str, JsonValue]
 _PROCESSED_EVENT_ID_TAIL_LIMIT = 1024
 
 
@@ -92,6 +92,17 @@ def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
+def _json_int(value: JsonValue | None, default: int = 0) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (int, float, str)):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+    return default
+
+
 def _default_snapshot_id(*, workspace_id: str, projection_id: str, source_to_seq: int) -> str:
     return str(stable_id("projection_snapshot", workspace_id, projection_id, str(source_to_seq)))
 
@@ -105,24 +116,24 @@ def refresh_checkpointed_named_projection(
     workspace_id: str,
     source_namespace: str,
     projection_schema_version: int,
-    decode_current: Callable[[Mapping[str, object]], ProjectionLoadResult[TState]],
+    decode_current: Callable[[Mapping[str, JsonValue]], ProjectionLoadResult[TState]],
     create_state: Callable[[], TState],
     decode_event: Callable[[str], TEvent],
     event_key: Callable[[TEvent], str],
     apply_event: Callable[[TState, TEvent, int], None],
     build_payload: Callable[[TState, ProjectionCheckpoint, Sequence[str]], ProjectionPayload],
-    build_snapshot: Callable[[Mapping[str, object]], TSnapshot],
+    build_snapshot: Callable[[Mapping[str, JsonValue]], TSnapshot],
     include_event: Callable[[str, str, str, str], bool] | None = None,
     rebuild_from_scratch: bool = False,
 ) -> TSnapshot:
     current_row = store.get_named_projection(namespace, key)
     expected_last_authoritative_seq = (
-        int(current_row["last_authoritative_seq"])
+        _json_int(current_row.get("last_authoritative_seq"))
         if current_row is not None and current_row.get("last_authoritative_seq") is not None
         else None
     )
     expected_last_materialized_seq = (
-        int(current_row["last_materialized_seq"])
+        _json_int(current_row.get("last_materialized_seq"))
         if current_row is not None and current_row.get("last_materialized_seq") is not None
         else None
     )
@@ -192,11 +203,10 @@ def refresh_checkpointed_named_projection(
             seen_event_ids.add(event_id)
             processed_event_ids.append(event_id)
             raw_event_count += 1
-            if hasattr(event, "ts_ms"):
-                ts_value = getattr(event, "ts_ms")
-                if ts_value is not None:
-                    ts_int = int(ts_value)
-                    last_source_event_ts_ms = max(last_source_event_ts_ms or ts_int, ts_int)
+            ts_value = getattr(event, "ts_ms", None)
+            if ts_value is not None:
+                ts_int = _json_int(ts_value)
+                last_source_event_ts_ms = max(last_source_event_ts_ms or ts_int, ts_int)
             apply_event(state, event, _seq)
 
         projected_at_ms = _now_ms()

@@ -3,24 +3,24 @@ from __future__ import annotations
 import json
 import shutil
 import time
+import uuid
 from contextlib import contextmanager
 from pathlib import Path
-import uuid
 
 import pytest
+
 pytest.importorskip("fastapi")
 pytest.importorskip("mcp")
 
 pytestmark = pytest.mark.ci_full
 
 import kogwistar.server_mcp_with_admin as server
-from kogwistar.server import resources as server_resources
-from kogwistar.server.auth_middleware import claims_ctx
 from kogwistar.conversation.models import ConversationNode
-from kogwistar.runtime.models import WorkflowCheckpointNode
 from kogwistar.engine_core.models import Grounding, Span
 from kogwistar.graph_query import GraphQuery
-from tests._helpers.graph_builders import build_entity_node, build_relationship_edge
+from kogwistar.runtime.models import WorkflowCheckpointNode
+from kogwistar.server import resources as server_resources
+from kogwistar.server.auth_middleware import claims_ctx
 from kogwistar.server.chat_service import (
     AnswerRunRequest,
     ChatRunService,
@@ -30,6 +30,7 @@ from kogwistar.server.chat_service import (
 from kogwistar.server.run_registry import RunRegistry
 from tests._helpers.engine_factories import FakeEmbeddingFunction
 from tests._helpers.fake_backend import build_fake_backend
+from tests._helpers.graph_builders import build_entity_node, build_relationship_edge
 from tests._helpers.server_fixtures import build_engine_triplet
 
 
@@ -146,8 +147,8 @@ def _structured(result):
 @pytest.mark.asyncio
 async def test_mcp_stage1_read_and_semantic_visibility(monkeypatch, tmp_path):
     """MCP must expose Stage 1 references but never Stage 1 semantic hits."""
-    from tests.core.test_two_stage_chroma import _engine
     from kogwistar.server import mcp_tools
+    from tests.core.test_two_stage_chroma import _engine
 
     engine, adapter = _engine(tmp_path)
     engine._iterative_defensive_emb = lambda _text: [0.0, 0.0]

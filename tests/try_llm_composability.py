@@ -1,12 +1,13 @@
+import os
+from typing import Any
+from uuid import UUID
+
+import dotenv
+from langchain_core.callbacks import BaseCallbackHandler
+from langchain_core.messages import BaseMessage
 from langchain_openai import AzureChatOpenAI
 from pydantic import BaseModel
-import dotenv
-import os
 
-from langchain_core.callbacks import BaseCallbackHandler
-from typing import Any, Optional
-from uuid import UUID
-from langchain_core.messages import BaseMessage
 dotenv.load_dotenv(".env")
 
 
@@ -28,9 +29,9 @@ class cb_two(BaseCallbackHandler):
         messages: list[list[BaseMessage]],
         *,
         run_id: UUID,
-        parent_run_id: Optional[UUID] = None,
-        tags: Optional[list[str]] = None,
-        metadata: Optional[dict[str, Any]] = None,
+        parent_run_id: UUID | None = None,
+        tags: list[str] | None = None,
+        metadata: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> Any:
         print(messages)

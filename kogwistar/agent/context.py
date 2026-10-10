@@ -8,8 +8,9 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from kogwistar.json_types import JsonValue
 
-ContextItem = dict[str, object]
+ContextItem = dict[str, JsonValue]
 
 
 class ContextPolicy(BaseModel):

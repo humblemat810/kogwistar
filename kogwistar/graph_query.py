@@ -1,17 +1,33 @@
 # graph_query.py — polished traversal layer with higher‑level APIs
 from __future__ import annotations
-from collections import deque
-from typing import Dict, Set, List, Optional, Iterable
-import json
+
 import asyncio
 import inspect
+import json
+from collections import deque
+from collections.abc import Iterable, Mapping
+from typing import TYPE_CHECKING, Any, TypeAlias, cast
 
-from .engine_core.models import Node, Edge
 from .engine_core.async_compat import run_awaitable_blocking
-from typing import TYPE_CHECKING
+from .engine_core.models import Edge, Node
+from .engine_core.storage_backend import AsyncStage1ProjectionAdapter
 
 if TYPE_CHECKING:
     from .engine_core.engine import GraphKnowledgeEngine
+
+
+GraphRow: TypeAlias = dict[str, Any]  # noqa: UP040    pypy3.11
+GraphPayload: TypeAlias = dict[str, Any]  # noqa: UP040    pypy3.11
+
+
+def _as_graph_row(value: object) -> GraphRow:
+    """Narrow an untyped projection row at the backend boundary."""
+    return cast(GraphRow, value) if isinstance(value, dict) else {}
+
+
+def _as_graph_payload(value: object) -> GraphPayload:
+    """Narrow an untyped collection result at the backend boundary."""
+    return cast(GraphPayload, value) if isinstance(value, dict) else {}
 
 
 class GraphQuery:
@@ -36,47 +52,91 @@ class GraphQuery:
     """
 
     # ---- construction ----
-    def __init__(self, engine: "GraphKnowledgeEngine"):
+    def __init__(self, engine: GraphKnowledgeEngine) -> None:
         self.e = engine
 
-    def _read_nodes(self, *, ids=None, where=None) -> list[Node]:
+    def _read_nodes(
+        self,
+        *,
+        ids: Iterable[str] | None = None,
+        where: Mapping[str, Any] | None = None,
+    ) -> list[Node]:
         """Read nodes through the engine facade, including staged rows."""
         reader = getattr(self.e, "read", None)
         if reader is not None and callable(getattr(reader, "get_nodes", None)):
             try:
-                return list(reader.get_nodes(ids=ids, where=where, include=["documents"]))
+                return list(
+                    cast(
+                        Iterable[Node],
+                        reader.get_nodes(ids=ids, where=where, include=["documents"]),
+                    )
+                )
             except TypeError:
                 # Tiny legacy read shims may expose only ids/include.
                 if where is None:
-                    return list(reader.get_nodes(ids))
+                    return list(cast(Iterable[Node], reader.get_nodes(ids)))
                 raw_get = getattr(reader, "_node_get_raw", None)
                 if callable(raw_get):
-                    got = raw_get(ids=ids, where=where, limit=10000, include=["documents"])
-                    return [Node.model_validate_json(doc) for doc in (got.get("documents") or []) if doc]
+                    got = _as_graph_payload(
+                        raw_get(
+                            ids=ids, where=where, limit=10000, include=["documents"]
+                        )
+                    )
+                    return [
+                        Node.model_validate_json(str(doc))
+                        for doc in (got.get("documents") or [])
+                        if doc
+                    ]
                 return []
         if reader is not None:
             return []
-        got = self.e.backend.node_get(ids=ids, where=where, include=["documents"])
-        return [Node.model_validate_json(doc) for doc in (got.get("documents") or []) if doc]
+        got = _as_graph_payload(
+            self.e.backend.node_get(ids=ids, where=where, include=["documents"])
+        )
+        return [
+            Node.model_validate_json(doc) for doc in (got.get("documents") or []) if doc
+        ]
 
-    def _read_edges(self, *, ids=None, where=None) -> list[Edge]:
+    def _read_edges(
+        self,
+        *,
+        ids: Iterable[str] | None = None,
+        where: Mapping[str, Any] | None = None,
+    ) -> list[Edge]:
         """Read edges through the engine facade, including staged rows."""
         reader = getattr(self.e, "read", None)
         if reader is not None and callable(getattr(reader, "get_edges", None)):
             try:
-                return list(reader.get_edges(ids=ids, where=where, include=["documents"]))
+                return list(
+                    cast(
+                        Iterable[Edge],
+                        reader.get_edges(ids=ids, where=where, include=["documents"]),
+                    )
+                )
             except TypeError:
                 if where is None:
-                    return list(reader.get_edges(ids))
+                    return list(cast(Iterable[Edge], reader.get_edges(ids)))
                 raw_get = getattr(reader, "_edge_get_raw", None)
                 if callable(raw_get):
-                    got = raw_get(ids=ids, where=where, limit=10000, include=["documents"])
-                    return [Edge.model_validate_json(doc) for doc in (got.get("documents") or []) if doc]
+                    got = _as_graph_payload(
+                        raw_get(
+                            ids=ids, where=where, limit=10000, include=["documents"]
+                        )
+                    )
+                    return [
+                        Edge.model_validate_json(str(doc))
+                        for doc in (got.get("documents") or [])
+                        if doc
+                    ]
                 return []
         if reader is not None:
             return []
-        got = self.e.backend.edge_get(ids=ids, where=where, include=["documents"])
-        return [Edge.model_validate_json(doc) for doc in (got.get("documents") or []) if doc]
+        got = _as_graph_payload(
+            self.e.backend.edge_get(ids=ids, where=where, include=["documents"])
+        )
+        return [
+            Edge.model_validate_json(doc) for doc in (got.get("documents") or []) if doc
+        ]
 
     # ---- internals ----
     def _is_node(self, rid: str) -> bool:
@@ -86,7 +146,7 @@ class GraphQuery:
             return bool(exists(ids=[rid]))
         if reader is not None:
             return bool(self._read_nodes(ids=[rid]))
-        hit = self.e.backend.node_get(ids=[rid])
+        hit = _as_graph_payload(self.e.backend.node_get(ids=[rid]))
         return (hit.get("ids") or [None])[0] == rid
 
     def _is_edge(self, rid: str) -> bool:
@@ -96,7 +156,7 @@ class GraphQuery:
             return bool(exists(ids=[rid]))
         if reader is not None:
             return bool(self._read_edges(ids=[rid]))
-        hit = self.e.backend.edge_get(ids=[rid])
+        hit = _as_graph_payload(self.e.backend.edge_get(ids=[rid]))
         return (hit.get("ids") or [None])[0] == rid
 
     def _stage1_endpoint_rows(self, *, edge_id: str | None = None) -> list[dict]:
@@ -147,14 +207,15 @@ class GraphQuery:
                 except Exception:
                     rows = []
 
-        endpoints: list[dict] = []
-        for row in rows or []:
-            payload = dict(row.get("payload") or row)
+        endpoints: list[GraphRow] = []
+        for raw_row in cast(Iterable[object], rows or []):
+            row = _as_graph_row(raw_row)
+            payload = _as_graph_row(row.get("payload") or row)
             document = payload.get("document")
             if not document:
                 continue
             try:
-                edge = Edge.model_validate_json(document)
+                edge = Edge.model_validate_json(str(document))
             except Exception:
                 continue
             current_edge_id = str(edge.safe_get_id())
@@ -178,7 +239,9 @@ class GraphQuery:
                     )
         return endpoints
 
-    async def _stage1_endpoint_rows_async(self, *, edge_id: str | None = None) -> list[dict]:
+    async def _stage1_endpoint_rows_async(
+        self, *, edge_id: str | None = None
+    ) -> list[dict]:
         """Read pending Stage-1 edge payloads without a sync bridge."""
         if getattr(self.e, "persistence_mode", "single_stage") != "two_stage":
             return []
@@ -186,19 +249,20 @@ class GraphQuery:
         query = getattr(adapter, "stage1_query", None)
         if not callable(query):
             return []
-        rows = await query(
+        rows = await cast(AsyncStage1ProjectionAdapter, adapter).stage1_query(
             entity_kind="edge",
             ids=[edge_id] if edge_id else None,
             limit=10000,
         )
-        endpoints: list[dict] = []
-        for row in rows or []:
-            payload = dict(row.get("payload") or row)
+        endpoints: list[GraphRow] = []
+        for raw_row in cast(Iterable[object], rows or []):
+            row = _as_graph_row(raw_row)
+            payload = _as_graph_row(row.get("payload") or row)
             document = payload.get("document")
             if not document:
                 continue
             try:
-                edge = Edge.model_validate_json(document)
+                edge = Edge.model_validate_json(str(document))
             except Exception:
                 continue
             for role, ids, endpoint_type in (
@@ -208,20 +272,23 @@ class GraphQuery:
                 ("tgt", getattr(edge, "target_edge_ids", []) or [], "edge"),
             ):
                 for endpoint_id in ids:
-                    endpoints.append({
-                        "id": f"{edge.safe_get_id()}::{role}::{endpoint_type}::{endpoint_id}",
-                        "edge_id": str(edge.safe_get_id()),
-                        "endpoint_id": str(endpoint_id),
-                        "endpoint_type": endpoint_type,
-                        "role": role,
-                        "doc_id": edge.doc_id,
-                        "relation": edge.relation,
-                    })
+                    endpoints.append(
+                        {
+                            "id": f"{edge.safe_get_id()}::{role}::{endpoint_type}::{endpoint_id}",
+                            "edge_id": str(edge.safe_get_id()),
+                            "endpoint_id": str(endpoint_id),
+                            "endpoint_type": endpoint_type,
+                            "role": role,
+                            "doc_id": edge.doc_id,
+                            "relation": edge.relation,
+                        }
+                    )
         return endpoints
 
-    async def _endpoint_rows_async(self, where: dict, *, edge_id: str | None = None) -> list[dict]:
-        backend = getattr(self.e, "backend", None)
-        rows: list[dict] = []
+    async def _endpoint_rows_async(
+        self, where: dict, *, edge_id: str | None = None
+    ) -> list[dict]:
+        rows: list[GraphRow] = []
         got = await self._async_collection_call(
             "edge_endpoints", "get", where=where, include=["documents"]
         )
@@ -236,7 +303,8 @@ class GraphQuery:
             clauses = where.get("$and", [where]) if isinstance(where, dict) else []
             return all(
                 row.get(key) == value
-                for clause in clauses if isinstance(clause, dict)
+                for clause in clauses
+                if isinstance(clause, dict)
                 for key, value in clause.items()
             )
 
@@ -245,15 +313,19 @@ class GraphQuery:
             for row in rows
         }
         for row in await self._stage1_endpoint_rows_async(edge_id=edge_id):
-            key = (str(row.get("edge_id")), str(row.get("endpoint_id")), str(row.get("role")))
+            key = (
+                str(row.get("edge_id")),
+                str(row.get("endpoint_id")),
+                str(row.get("role")),
+            )
             if matches(row) and key not in existing:
                 rows.append(row)
                 existing.add(key)
         return rows
 
     async def _async_collection_call(
-        self, collection_key: str, method: str, **kwargs
-    ) -> dict | None:
+        self, collection_key: str, method: str, **kwargs: object
+    ) -> GraphPayload | None:
         """Call native async backend verbs without forcing a sync bridge."""
         backend = getattr(self.e, "backend", None)
         async_call = getattr(backend, "async_call", None)
@@ -266,31 +338,49 @@ class GraphQuery:
             result = fn(**kwargs)
         if inspect.isawaitable(result):
             result = await result
-        return result
+        return _as_graph_payload(result)
 
     async def neighbors_async(
-        self, rid: str, *, direction: str = "both", doc_id: Optional[str] = None,
+        self,
+        rid: str,
+        *,
+        direction: str = "both",
+        doc_id: str | None = None,
         allow_jump_edge: bool = True,
-    ) -> Dict[str, Set[str]]:
+    ) -> dict[str, set[str]]:
         """Async traversal path for async backends and pending Stage-1 rows."""
         if getattr(self.e, "backend", None) is None:
-            return self.neighbors(rid, direction=direction, doc_id=doc_id, allow_jump_edge=allow_jump_edge)
+            return self.neighbors(
+                rid, direction=direction, doc_id=doc_id, allow_jump_edge=allow_jump_edge
+            )
 
-        node_hit = await self._async_collection_call(
-            "node", "get", ids=[rid], include=["documents"]
-        ) or {}
-        edge_hit = await self._async_collection_call(
-            "edge", "get", ids=[rid], include=["documents"]
-        ) or {}
+        node_hit = (
+            await self._async_collection_call(
+                "node", "get", ids=[rid], include=["documents"]
+            )
+            or {}
+        )
+        edge_hit = (
+            await self._async_collection_call(
+                "edge", "get", ids=[rid], include=["documents"]
+            )
+            or {}
+        )
         stage1_rows = await self._stage1_endpoint_rows_async(edge_id=rid)
         adapter = getattr(self.e, "async_two_stage_projection_adapter", None)
-        stage1_nodes = await adapter.stage1_query(entity_kind="node", ids=[rid], limit=1) \
-            if callable(getattr(adapter, "stage1_query", None)) else []
+        stage1_nodes = (
+            await cast(AsyncStage1ProjectionAdapter, adapter).stage1_query(
+                entity_kind="node", ids=[rid], limit=1
+            )
+            if callable(getattr(adapter, "stage1_query", None))
+            else []
+        )
         is_node = bool((node_hit.get("ids") or [None])[0] == rid)
         is_node = is_node or bool(stage1_nodes)
-        is_edge = bool((edge_hit.get("ids") or [None])[0] == rid or any(
-            row.get("edge_id") == rid for row in stage1_rows
-        ))
+        is_edge = bool(
+            (edge_hit.get("ids") or [None])[0] == rid
+            or any(row.get("edge_id") == rid for row in stage1_rows)
+        )
         if not (is_node or is_edge):
             return {"nodes": set(), "edges": set()}
 
@@ -305,7 +395,10 @@ class GraphQuery:
                     for other in await self._endpoint_rows_async(
                         {"edge_id": row["edge_id"]}, edge_id=str(row["edge_id"])
                     ):
-                        if other.get("endpoint_type") == "node" and other["endpoint_id"] != rid:
+                        if (
+                            other.get("endpoint_type") == "node"
+                            and other["endpoint_id"] != rid
+                        ):
                             nodes.add(str(other["endpoint_id"]))
         if is_edge:
             clauses = [{"edge_id": rid}]
@@ -322,25 +415,28 @@ class GraphQuery:
 
     def _endpoint_rows(self, where: dict, *, edge_id: str | None = None) -> list[dict]:
         """Return backend endpoint rows plus matching transient Stage-1 rows."""
-        rows: list[dict] = []
-        try:
-            reader = getattr(self.e, "read", None)
-            endpoint_get = getattr(reader, "get_edge_endpoints", None)
-            if callable(endpoint_get):
-                got = endpoint_get(where=where, include=["documents"])
-            elif reader is not None:
-                got = {"documents": []}
-            else:
-                got = self.e.backend.edge_endpoints_get(
+        rows: list[GraphRow] = []
+        
+        reader = getattr(self.e, "read", None)
+        endpoint_get = getattr(reader, "get_edge_endpoints", None)
+        if callable(endpoint_get):
+            got = _as_graph_payload(
+                endpoint_get(where=where, include=["documents"])
+            )
+        elif reader is not None:
+            got = {"documents": []}
+        else:
+            got = _as_graph_payload(
+                self.e.backend.edge_endpoints_get(
                     where=where, include=["documents"]
                 )
-            rows.extend(
-                json.loads(document)
-                for document in (got.get("documents") or [])
-                if document
             )
-        except Exception:
-            pass
+        rows.extend(
+            json.loads(document)
+            for document in (got.get("documents") or [])
+            if document
+        )
+
 
         def matches(row: dict) -> bool:
             clauses = where.get("$and", [where]) if isinstance(where, dict) else []
@@ -358,24 +454,28 @@ class GraphQuery:
         }
         for row in self._stage1_endpoint_rows(edge_id=edge_id):
             if matches(row):
-                key = (str(row.get("edge_id")), str(row.get("endpoint_id")), str(row.get("role")))
+                key = (
+                    str(row.get("edge_id")),
+                    str(row.get("endpoint_id")),
+                    str(row.get("role")),
+                )
                 if key not in existing:
                     rows.append(row)
                     existing.add(key)
         return rows
 
     # ---- doc scoping ----
-    def nodes_in_doc(self, doc_id: str) -> List[Node]:
+    def nodes_in_doc(self, doc_id: str) -> list[Node]:
         ids = self.e.read.node_ids_by_doc(doc_id)
         return self._read_nodes(ids=ids) if ids else []
 
-    def edges_in_doc(self, doc_id: str) -> List[Edge]:
+    def edges_in_doc(self, doc_id: str) -> list[Edge]:
         ids = self.e.read.edge_ids_by_doc(doc_id)
         return self._read_edges(ids=ids) if ids else []
 
     def document_subgraph(
-        self, doc_id: str, *, center_ids: Optional[Iterable[str]] = None, hops: int = 1
-    ) -> Dict[str, List]:
+        self, doc_id: str, *, center_ids: Iterable[str] | None = None, hops: int = 1
+    ) -> dict[str, object]:
         """Return a small subgraph for a document: seeds + k‑hop neighborhood.
         If center_ids omitted, seeds are all nodes in the doc (bounded by hops=0/1 recommended).
         """
@@ -385,8 +485,8 @@ class GraphQuery:
             seeds = self.e.read.node_ids_by_doc(doc_id)
         layers = self.k_hop(seeds, k=max(0, hops), doc_id=doc_id)
         # Flatten and dedupe
-        node_ids: Set[str] = set(seeds)
-        edge_ids: Set[str] = set()
+        node_ids: set[str] = set(seeds)
+        edge_ids: set[str] = set()
         for L in layers:
             node_ids |= set(L["nodes"])  # discovered opposite endpoints
             edge_ids |= set(L["edges"])  # incident edges
@@ -395,30 +495,39 @@ class GraphQuery:
         return {"seed_ids": seeds, "nodes": nodes, "edges": edges, "layers": layers}
 
     # ---- document summary helpers ----
-    def final_summary_node_id(self, doc_id: str) -> Optional[str]:
+    def final_summary_node_id(self, doc_id: str) -> str | None:
         """Find the single node that has a 'summarizes_document' edge -> docnode:{doc_id}."""
         tgt = f"docnode:{doc_id}"
         eps = self._endpoint_rows(
-            {"$and": [
-                {"endpoint_id": tgt},
-                {"endpoint_type": "node"},
-                {"role": "tgt"},
-                {"relation": "summarizes_document"},
-            ]}
+            {
+                "$and": [
+                    {"endpoint_id": tgt},
+                    {"endpoint_type": "node"},
+                    {"role": "tgt"},
+                    {"relation": "summarizes_document"},
+                ]
+            }
         )
         eids = {str(row["edge_id"]) for row in eps}
         if not eids:
             return None
         # For each edge, fetch its src node endpoint
         for eid in eids:
-            srcs = self._endpoint_rows({"$and": [
-                {"edge_id": eid}, {"endpoint_type": "node"}, {"role": "src"}
-            ]}, edge_id=eid)
+            srcs = self._endpoint_rows(
+                {
+                    "$and": [
+                        {"edge_id": eid},
+                        {"endpoint_type": "node"},
+                        {"role": "src"},
+                    ]
+                },
+                edge_id=eid,
+            )
             for row in srcs:
                 return row.get("endpoint_id")
         return None
 
-    def final_summary_node(self, doc_id: str) -> Optional[Node]:
+    def final_summary_node(self, doc_id: str) -> Node | None:
         rid = self.final_summary_node_id(doc_id)
         if not rid:
             return None
@@ -431,9 +540,9 @@ class GraphQuery:
         rid: str,
         *,
         direction: str = "both",
-        doc_id: Optional[str] = None,
-        allow_jump_edge=True,
-    ) -> Dict[str, Set[str]]:
+        doc_id: str | None = None,
+        allow_jump_edge: bool = True,
+    ) -> dict[str, set[str]]:
         """
         For a node-id: neighbors are incident edges and opposite endpoint nodes.
         For an edge-id: neighbors are endpoint nodes and meta-edges (if any).
@@ -485,18 +594,18 @@ class GraphQuery:
 
     def k_hop(
         self,
-        start_ids: List[str],
+        start_ids: list[str],
         k: int = 2,
         *,
-        doc_id: Optional[str] = None,
-        allow_jump_edge=False,
-    ) -> List[Dict[str, Set[str]]]:
-        visited: Set[str] = set()
-        frontier: Set[str] = set(start_ids)
-        layers: List[Dict[str, Set[str]]] = []
+        doc_id: str | None = None,
+        allow_jump_edge: bool = False,
+    ) -> list[dict[str, set[str]]]:
+        visited: set[str] = set()
+        frontier: set[str] = set(start_ids)
+        layers: list[dict[str, set[str]]] = []
 
         for _ in range(max(0, k)):
-            next_frontier: Set[str] = set()
+            next_frontier: set[str] = set()
             layer_nodes, layer_edges = set(), set()
             for rid in frontier:
                 if rid in visited:
@@ -517,9 +626,9 @@ class GraphQuery:
         src_id: str,
         dst_id: str,
         *,
-        doc_id: Optional[str] = None,
+        doc_id: str | None = None,
         max_depth: int = 8,
-    ) -> List[str]:
+    ) -> list[str]:
         if src_id == dst_id:
             return [src_id]
         q = deque([(src_id, [src_id])])
@@ -544,19 +653,19 @@ class GraphQuery:
     def search_nodes(
         self,
         *,
-        label_contains: Optional[str] = None,
-        summary_contains: Optional[str] = None,
-        type: Optional[str] = None,
-        doc_id: Optional[str] = None,
+        label_contains: str | None = None,
+        summary_contains: str | None = None,
+        type: str | None = None,
+        doc_id: str | None = None,
         limit: int = 200,
-    ) -> List[str]:
+    ) -> list[str]:
         """Return node IDs filtered by simple metadata and post‑filtered by JSON fields."""
         where = {}
         if doc_id:
             where["doc_id"] = doc_id
         # Pull candidate set by doc scope, then filter by JSON to avoid over‑constraining Chroma metadata
         nodes = self._read_nodes(where=(where or None))
-        out: List[str] = []
+        out: list[str] = []
         for n in nodes:
             nid = n.safe_get_id()
             if not nid:
@@ -581,9 +690,9 @@ class GraphQuery:
         src_substr: str,
         dst_substr: str,
         *,
-        doc_id: Optional[str] = None,
+        doc_id: str | None = None,
         max_depth: int = 8,
-    ) -> List[str]:
+    ) -> list[str]:
         """Find a shortest path between any node whose label contains src_substr and any whose label contains dst_substr."""
         src_candidates = self.search_nodes(
             label_contains=src_substr, doc_id=doc_id, limit=50
@@ -591,7 +700,7 @@ class GraphQuery:
         dst_candidates = set(
             self.search_nodes(label_contains=dst_substr, doc_id=doc_id, limit=50)
         )
-        best: List[str] = []
+        best: list[str] = []
         for s in src_candidates:
             for t in dst_candidates:
                 p = self.shortest_path(s, t, doc_id=doc_id, max_depth=max_depth)
@@ -602,11 +711,11 @@ class GraphQuery:
     def find_edges(
         self,
         *,
-        relation: Optional[str] = None,
-        src_label_contains: Optional[str] = None,
-        tgt_label_contains: Optional[str] = None,
-        doc_id: Optional[str] = None,
-    ) -> List[str]:
+        relation: str | None = None,
+        src_label_contains: str | None = None,
+        tgt_label_contains: str | None = None,
+        doc_id: str | None = None,
+    ) -> list[str]:
         where = {}
         if relation:
             where["relation"] = relation
@@ -617,7 +726,7 @@ class GraphQuery:
         elif len(where) > 1:
             where = {"$and": [{k: v} for k, v in where.items()]}
         edges = self._read_edges(where=where)
-        out: List[str] = []
+        out: list[str] = []
         for e in edges:
             eid = e.safe_get_id()
             if not eid:
@@ -644,30 +753,33 @@ class GraphQuery:
         return out
 
     def adjacency_list(
-        self, node_ids: Iterable[str], *, doc_id: Optional[str] = None
-    ) -> Dict[str, Dict[str, Set[str]]]:
+        self, node_ids: Iterable[str], *, doc_id: str | None = None
+    ) -> dict[str, dict[str, set[str]]]:
         """For each node id, return {node_id: {"nodes": set(), "edges": set()}}"""
-        out: Dict[str, Dict[str, Set[str]]] = {}
+        out: dict[str, dict[str, set[str]]] = {}
         for nid in node_ids:
             out[nid] = self.neighbors(nid, doc_id=doc_id)
         return out
 
     # ---- semantic seed ----
     def semantic_seed_then_expand(
-        self, query_embedding: List[float], *, top_k: int = 5, hops: int = 1
-    ):
+        self, query_embedding: list[float], *, top_k: int = 5, hops: int = 1
+    ) -> dict[str, object]:
         query_reader = getattr(getattr(self.e, "read", None), "query_nodes", None)
         hits = (
             query_reader(query_embeddings=[query_embedding], n_results=top_k)
             if callable(query_reader)
-            else [] if getattr(self.e, "read", None) is not None else self.e.backend.node_query(
+            else []
+            if getattr(self.e, "read", None) is not None
+            else self.e.backend.node_query(
                 query_embeddings=[query_embedding], n_results=top_k
             )
         )
         if isinstance(hits, list):
             seed_ids = [str(node.safe_get_id()) for node in hits[0]] if hits else []
         else:
-            seed_ids = [nid for nid in (hits.get("ids") or [[]])[0]]
+            hit_payload = _as_graph_payload(hits)
+            seed_ids = [nid for nid in (hit_payload.get("ids") or [[]])[0]]
         layers = self.k_hop(seed_ids, k=hops)
         return {"seeds": seed_ids, "layers": layers}
 
@@ -677,35 +789,36 @@ class GraphQuery:
         *,
         top_k: int = 5,
         hops: int = 1,
-        doc_ids=None,
-        where=None,
-    ):
+        doc_ids: str | list[str] | None = None,
+        where: Mapping[str, Any] | None = None,
+    ) -> dict[str, object]:
         """Seed by a TEXT query using the collection's default embedding function, then expand K hops.
         This avoids any custom embedding pipeline and uses the underlying vector store's default embeddings.
         """
-        _where = {"doc_id": doc_ids} if type(doc_ids) is str else None
+        _where: dict[str, Any] = (
+            {"doc_id": doc_ids} if type(doc_ids) is str else {}
+        )
         if type(doc_ids) is list:
-            if _where is None:
-                _where = {}
             _where["doc_id"] = {"$in": doc_ids}
         if where:
-            if _where:
-                if _where.get("and"):
-                    if type(_where["and"]) is list:
-                        _where_and: list = _where["and"]
-                        _where_and.append(where)
-                    else:
-                        raise SyntaxError(
-                            "vector backend syntax error: where invalid syntax"
-                        )
-                    # _where['and'].append()
+            if _where.get("and"):
+                if type(_where["and"]) is list:
+                    _where_and: list = _where["and"]
+                    _where_and.append(where)
                 else:
-                    _where = {"$and": [where, _where]}
+                    raise SyntaxError(
+                        "vector backend syntax error: where invalid syntax"
+                    )
+                # _where['and'].append()
+            else:
+                _where = {"$and": [where, _where]}
         query_reader = getattr(getattr(self.e, "read", None), "query_nodes", None)
         hits = (
             query_reader(query=query_text, n_results=top_k, where=_where)
             if callable(query_reader)
-            else [] if getattr(self.e, "read", None) is not None else self.e.backend.node_query(
+            else []
+            if getattr(self.e, "read", None) is not None
+            else self.e.backend.node_query(
                 query_texts=[query_text], n_results=top_k, where=_where
             )
         )
@@ -713,19 +826,24 @@ class GraphQuery:
             seed_ids = [str(node.safe_get_id()) for node in hits[0]] if hits else []
             seed_docs = [node.model_dump_json() for node in hits[0]] if hits else []
         else:
-            seed_ids = [nid for nid in (hits.get("ids") or [[]])[0] if nid]
-            seed_docs = hits.get("documents", [[]])[0]
+            hit_payload = _as_graph_payload(hits)
+            seed_ids = [nid for nid in (hit_payload.get("ids") or [[]])[0] if nid]
+            seed_docs = hit_payload.get("documents", [[]])[0]
         layers = self.k_hop(seed_ids, k=hops)
         out_layers = [
             {
-                "nodes": [n.model_dump_json() for n in self._read_nodes(ids=list(l["nodes"]))]
-                if l["nodes"]
+                "nodes": [
+                    n.model_dump_json() for n in self._read_nodes(ids=list(layer["nodes"]))
+                ]
+                if layer["nodes"]
                 else [],
-                "edges": [e.model_dump_json() for e in self._read_edges(ids=list(l["edges"]))]
-                if l["edges"]
+                "edges": [
+                    e.model_dump_json() for e in self._read_edges(ids=list(layer["edges"]))
+                ]
+                if layer["edges"]
                 else [],
             }
-            for l in layers
+            for layer in layers
         ]
         res = {"seeds": seed_docs, "layers": out_layers}
         return res

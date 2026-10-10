@@ -10,7 +10,6 @@ from kogwistar.engine_core.postgres_backend import (
     _parse_vector_dimension,
 )
 
-
 pytestmark = [pytest.mark.ci_full, pytest.mark.regression]
 
 

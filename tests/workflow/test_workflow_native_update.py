@@ -1,9 +1,9 @@
 from __future__ import annotations
-import pytest
-
 
 from dataclasses import dataclass
-from typing import Any, Dict, List
+from typing import Any
+
+import pytest
 
 from kogwistar.runtime.contract import BasePredicate
 
@@ -17,7 +17,7 @@ class FakeNode:
     op: str
     terminal: bool
     fanout: bool
-    metadata: Dict[str, Any] | None = None
+    metadata: dict[str, Any] | None = None
 
     def safe_get_id(self):
         return self.id
@@ -28,11 +28,11 @@ class FakeEdge:
     id: str
     label: str
     predicate: str | None
-    source_ids: List[str]
-    target_ids: List[str]
+    source_ids: list[str]
+    target_ids: list[str]
     multiplicity: str
     is_default: bool
-    metadata: Dict[str, Any] | None = None
+    metadata: dict[str, Any] | None = None
 
     def safe_get_id(self):
         return self.id
@@ -97,7 +97,7 @@ def _e(
 
 
 class FakeEngine:
-    def __init__(self, nodes: List[FakeNode], edges: List[FakeEdge]):
+    def __init__(self, nodes: list[FakeNode], edges: list[FakeEdge]):
         self._nodes = list(nodes)
         self._edges = list(edges)
 

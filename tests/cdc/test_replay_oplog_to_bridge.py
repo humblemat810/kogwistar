@@ -1,21 +1,21 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Dict, Iterable, Optional
+from typing import Any
+
 import pytest
+
 pytest.importorskip("fastapi")
 pytest.importorskip("websocket")
 import requests
 import websocket  # pip install websocket-client
-
-
 from fastapi.testclient import TestClient
 
 from kogwistar.cdc.change_bridge import create_app
 from kogwistar.cdc.change_event import ChangeEvent
 from kogwistar.cdc.oplog import OplogWriter
-
 
 _SAMPLE_CHANGESET: tuple[ChangeEvent, ...] = (
     ChangeEvent(
@@ -128,7 +128,7 @@ def replay_oplog_path(tmp_path: Path) -> Path:
     return _export_sample_oplog(tmp_path / "changes.jsonl")
 
 
-def _iter_jsonl(path: Path) -> Iterable[Dict[str, Any]]:
+def _iter_jsonl(path: Path) -> Iterable[dict[str, Any]]:
     """Minimal JSONL reader that skips non-JSON/header lines."""
     with path.open("r", encoding="utf-8") as f:
         for line in f:
@@ -146,10 +146,10 @@ def _load_filtered_events(
     *,
     oplog_path: Path,
     since_seq: int = 0,
-    kg_graph_type: Optional[str] = None,
-    limit: Optional[int] = None,
-) -> list[Dict[str, Any]]:
-    events: list[Dict[str, Any]] = []
+    kg_graph_type: str | None = None,
+    limit: int | None = None,
+) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
     for ev in _iter_jsonl(oplog_path):
         try:
             seq = int(ev.get("seq", -1))

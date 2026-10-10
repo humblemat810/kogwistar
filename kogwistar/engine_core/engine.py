@@ -1,48 +1,52 @@
 from __future__ import annotations
 
-from contextlib import contextmanager
 import contextvars
-import threading
-
 import pathlib
-import uuid
-
-
+import threading
 import time
+import uuid
+from contextlib import contextmanager
 
-from .utils import AliasBook
-from .async_compat import run_sync_or_awaitable
-from .async_compat import run_awaitable_blocking
-
-from .chroma_backend import ChromaBackend, ChromaStorageInspector
-
-
+from ..acl.graph import (
+    ACLDecision,
+    ACLGrain,
+    ACLNodeReadDecision,
+    ACLRecord,
+    ACLUsageDecision,
+)
+from ..acl.graph import ACLGraph
+from ..graph_kinds import normalize_graph_kind
+from ..utils.log import bind_log_context
+from ..workers.index_job_worker import IndexJobWorker
+from .acl_protocol import require_acl_protocols
+from .async_compat import run_awaitable_blocking, run_sync_or_awaitable
+from .chroma_backend import ChromaBackend, ChromaClient, ChromaStorageInspector
+from .embedding_profile import (
+    EmbeddingProfile,
+    EmbeddingProfileRegistry,
+    EmbeddingStorageInspector,
+)
+from .indexing import IndexingSubsystem
+from .jobs import JobQueueSubsystem
+from .recovery import RecoverySubsystem
 from .rust_meta_sqlite import build_sqlite_meta_store
+from .search_index.service import SearchIndexService
+from .service_health import ServiceHealthRegistry
 from .storage_backend import (
     AtomicMutationCapability,
     NoopUnitOfWork,
     StorageBackend,
+    UnitOfWork,
+    projection_capability_backend,
     get_async_two_stage_projection_adapter,
     get_atomic_mutation_capability,
     get_two_stage_projection_adapter,
     get_two_stage_projection_capability,
 )
-from .acl_protocol import require_acl_protocols
-from .embedding_profile import (
-    EmbeddingProfile,
-    EmbeddingProfileRegistry,
-)
-from .vector_search import VectorSearchHit
-from ..workers.index_job_worker import IndexJobWorker
-from ..utils.log import bind_log_context
-from .indexing import IndexingSubsystem
-from .jobs import JobQueueSubsystem
-from .recovery import RecoverySubsystem
-from .service_health import ServiceHealthRegistry
 from .subsystems import (
-    ACLSubsystem,
     ACLAwareReadSubsystem,
     ACLAwareWriteSubsystem,
+    ACLSubsystem,
     AdjudicateSubsystem,
     EmbedSubsystem,
     ExtractSubsystem,
@@ -52,29 +56,31 @@ from .subsystems import (
     RollbackSubsystem,
     WriteSubsystem,
 )
-from .search_index.service import SearchIndexService
 from .types import (
+    EdgePreAddHook,
     EngineType,
     ExtractionSchemaMode,
+    NodePreAddHook,
     OffsetMismatchPolicy,
     OffsetRepairScorer,
     ResolvedExtractionSchemaMode,
+    ToolCallIdFactory,
 )
-from ..graph_kinds import normalize_graph_kind
+from .utils import AliasBook
 from .utils.aliasing import AliasBookStore
-from ..acl.graph import ACLGraph
+from .vector_search import VectorSearchHit
 
 
 class _BackendCallBridge:
-    def __init__(self, backend):
+    def __init__(self, backend: StorageBackend) -> None:
         self._backend = backend
 
-    def __getattr__(self, name: str):
+    def __getattr__(self, name: str) -> object:
         attr = getattr(self._backend, name)
         if not callable(attr):
             return attr
 
-        def _call(*args, **kwargs):
+        def _call(*args: object, **kwargs: object) -> object:
             return run_awaitable_blocking(attr(*args, **kwargs))
 
         return _call
@@ -95,65 +101,73 @@ class _BackendCallBridge:
     #     verifier=VF.ensemble_default,          # or VF.coverage_only / VF.strict_with_min_span
     # )
     # """
-from typing import TYPE_CHECKING, List, Optional, Dict, Any, Tuple, cast, TypeVar, ParamSpec
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, TypeVar, cast
 
 try:
     from typing import Self, TypeAlias
 except ImportError:  # pragma: no cover - py<3.11 compatibility
-    from typing_extensions import TypeAlias
-from ..typing_interfaces import EmbeddingFunctionLike, ReadLike, WriteLike
-from ..graph_query import GraphQuery
-from kogwistar.extraction import BaseDocValidator
-from .models import (
-    Node,
-    Edge,
-    Document,
-    Domain,
-    Grounding,
-    PureChromaNode,
-    PureChromaEdge,
-    PureGraph,
-    Span,
-    LLMGraphExtraction,
-    AdjudicationTarget,
-    AdjudicationCandidate,
-    AdjudicationQuestionCode,
-    AdjudicationVerdict,
+    from typing import TypeAlias
+import json
+import math
+import os
+import warnings
+from collections.abc import Callable, Iterable, Iterator, Sequence
+from datetime import datetime
+from functools import wraps
+from typing import (
+    Literal,
+    Protocol,
+    Union,
 )
-from ..cdc.change_event import Op, EntityRefModel
+
+from dotenv import load_dotenv
+from pydantic import BaseModel
+
+from kogwistar.cdc.change_bus import ChangeBus, FastAPIChangeSink
+from kogwistar.cdc.change_event import ChangeEvent
+from kogwistar.cdc.oplog import OplogWriter
+from kogwistar.extraction import BaseDocValidator
+
+from ..cdc.change_event import EntityRefModel, Op
+from ..graph_query import GraphQuery
+from ..integrations.openai_embeddings import build_azure_embedding_fn_from_env
+from ..json_types import JsonValue
 from ..llm_tasks import (
     DefaultTaskProviderConfig,
     LLMTaskSet,
     build_default_llm_tasks,
     validate_llm_task_set,
 )
-from ..integrations.openai_embeddings import build_azure_embedding_fn_from_env
-import json
-import os
-from dotenv import load_dotenv
+from ..strategies.types import IAdjudicator, MergeCandidateProposer, MergePolicy, Verifier
+from ..typing_interfaces import EmbeddingFunctionLike, ReadLike, WriteLike
 from ..utils.cache_backend import Memory
-from functools import wraps
-import warnings
 from .models import (
+    AdjudicationCandidate,
+    AdjudicationQuestionCode,
+    AdjudicationTarget,
+    AdjudicationVerdict,
+    Document,
+    Domain,
+    Edge,
     GraphExtractionWithIDs,
+    Grounding,
+    LLMEdge,
+    LLMGraphExtraction,
+    LLMNode,
+    Node,
+    PureChromaEdge,
+    PureChromaNode,
+    PureGraph,
+    Span,
 )
-from typing import (
-    Callable,
-    Iterable,
-    Sequence,
-    Literal,
-    Protocol,
-    Type,
-    Union,
-)
-import math
 
-from datetime import datetime
-from kogwistar.cdc.change_bus import ChangeBus, FastAPIChangeSink
-from kogwistar.cdc.change_event import ChangeEvent
-from kogwistar.cdc.oplog import OplogWriter
-
-from pydantic import BaseModel
+if TYPE_CHECKING:
+    from ..messaging.models import (
+        LaneMessageProjectionRepairResult,
+        LaneMessageSendResult,
+        ProjectedLaneMessageRow,
+    )
 
 # Optional: RapidFuzz
 try:
@@ -162,19 +176,27 @@ try:
 except Exception:
     _HAS_RAPIDFUZZ = False
 
-PageLike = Union[str, Dict[str, Any]]
+PageLike = Union[str, dict[str, Any]]
 NodeOrEdge: TypeAlias = Node | Edge
+ParsedExtraction: TypeAlias = LLMGraphExtraction | PureGraph | GraphExtractionWithIDs
+PersistedGraphObject: TypeAlias = (
+    Node | Edge | LLMNode | LLMEdge | PureChromaNode | PureChromaEdge
+)
+DocumentContext: TypeAlias = tuple[list[dict[str, Any]], list[dict[str, Any]]]
+PageText: TypeAlias = tuple[int, str]
 
 
 class StorageBackendFactory(Protocol):
     """Build the backend bound to one graph engine instance."""
 
-    def __call__(self, engine: "GraphKnowledgeEngine", /) -> StorageBackend: ...
+    def __call__(self, engine: GraphKnowledgeEngine, /) -> StorageBackend: ...
 
 if TYPE_CHECKING:
-    from .engine_sqlite import EngineSQLite
     from .engine_postgres_meta import EnginePostgresMetaStore
+    from .engine_sqlite import EngineSQLite
     from .postgres_backend import PgVectorBackend
+    from .rust_meta_sqlite import RustEngineSQLite
+    from .rust_postgres_session import RustEnginePostgresMetaStore
 
     T = TypeVar("T", Node, Edge)
     # TT= TypeVar("TT", Type[Node], Type[Edge])
@@ -185,10 +207,17 @@ if TYPE_CHECKING:
 
 P = ParamSpec("P")
 R = TypeVar("R")
+SelfT = TypeVar("SelfT")
 
 
-def cached(memory: Memory, fn: Callable[P, R], *args, **kwargs) -> Callable[P, R]:
-    return cast(Callable[P, R], memory.cache(fn, *args, **kwargs))
+def cached(
+    memory: Memory,
+    fn: Callable[P, R],
+    **options: object,
+) -> Callable[P, R]:
+    """Apply the configured cache while preserving the callable signature."""
+
+    return cast(Callable[P, R], memory.cache(fn, **options))
 
 
 def _optional_dependency_error(*, extra: str, detail: str) -> RuntimeError:
@@ -197,7 +226,9 @@ def _optional_dependency_error(*, extra: str, detail: str) -> RuntimeError:
     )
 
 
-def _import_chroma_client():
+def _import_chroma_client() -> tuple[
+    Callable[..., ChromaClient], Callable[..., object]
+]:
     try:
         from chromadb import Client  # type: ignore
         from chromadb.config import Settings  # type: ignore
@@ -206,7 +237,9 @@ def _import_chroma_client():
             extra="chroma",
             detail="Chroma backend requires the 'chromadb' package",
         ) from e
-    return Client, Settings
+    return cast(Callable[..., ChromaClient], Client), cast(
+        Callable[..., object], Settings
+    )
 
 
 def _is_pgvector_backend_instance(backend: object) -> bool:
@@ -218,7 +251,7 @@ def _is_pgvector_backend_instance(backend: object) -> bool:
     return isinstance(backend, PgVectorBackend)
 
 
-def _build_postgres_uow_if_needed(backend: StorageBackend):
+def _build_postgres_uow_if_needed(backend: StorageBackend) -> UnitOfWork:
     if not _is_pgvector_backend_instance(backend):
         return NoopUnitOfWork()
     if getattr(backend, "_is_async_engine", False):
@@ -236,10 +269,14 @@ def _build_postgres_uow_if_needed(backend: StorageBackend):
             detail="PgVector backend requires optional PostgreSQL dependencies",
         ) from e
     pg_backend = cast(PgVectorBackend, backend)
+    from sqlalchemy.engine import Engine
+
+    if not isinstance(pg_backend.engine, Engine):
+        raise TypeError("synchronous PostgreSQL UoW requires a SQLAlchemy Engine")
     return PostgresUnitOfWork(engine=pg_backend.engine)
 
 
-def _safe_json_dict(doc: Any) -> dict:
+def _safe_json_dict(doc: object) -> dict[str, JsonValue]:
     if isinstance(doc, dict):
         return doc
     if not isinstance(doc, str):
@@ -251,25 +288,27 @@ def _safe_json_dict(doc: Any) -> dict:
         return {}
 
 
-def _merge_meta(base_meta: dict | None, patch: dict) -> dict:
+def _merge_meta(
+    base_meta: dict[str, JsonValue] | None, patch: dict[str, JsonValue]
+) -> dict[str, JsonValue]:
     base_meta = base_meta or {}
     # flat merge
     return {**base_meta, **patch}
 
 
-def _strip_none(d: dict) -> dict:
+def _strip_none(d: dict[str, JsonValue | None]) -> dict[str, JsonValue]:
     return {k: v for k, v in d.items() if v is not None}
 
 
-def _json_or_none(v):
+def _json_or_none(v: object) -> str | None:
     return None if v is None else json.dumps(v)
 
 
-def _node_doc_and_meta(n: Union["Node", "PureChromaNode"]) -> tuple[str, dict]:
+def _node_doc_and_meta(n: Node | PureChromaNode) -> tuple[str, dict]:
     """Return (documents_string, metadata_dict) for Chroma. helper when inserting to backend db,"""
     """Extract and flatten certain fields that can be searched via collection """
     doc = n.model_dump_json(field_mode="backend", exclude=["embedding", "metadata"])
-    meta = n.metadata  # user custom metadata will be overwritten by system metadata
+    meta = cast(dict[str, JsonValue], n.metadata)  # user metadata is flattened below
     meta.update(
         {
             "doc_id": getattr(n, "doc_id", None),
@@ -281,7 +320,7 @@ def _node_doc_and_meta(n: Union["Node", "PureChromaNode"]) -> tuple[str, dict]:
             "properties": _json_or_none(getattr(n, "properties", None)),
         }
     )
-    meta.update(n.get_extra_update())
+    meta.update(cast(dict[str, JsonValue], n.get_extra_update()))
 
     mentions = getattr(n, "mentions", None)
     if mentions is not None:
@@ -292,7 +331,7 @@ def _node_doc_and_meta(n: Union["Node", "PureChromaNode"]) -> tuple[str, dict]:
     return doc, meta
 
 
-def _edge_doc_and_meta(e: Union["Edge", "PureChromaEdge"]) -> tuple[str, dict]:
+def _edge_doc_and_meta(e: Edge | PureChromaEdge) -> tuple[str, dict]:
     """Return (documents_string, metadata_dict) for Chroma."""
     doc = e.model_dump_json(field_mode="backend")
     # Preserve edge metadata in the backend row.  Reads reconstruct metadata
@@ -410,8 +449,7 @@ except Exception:
 
     Embeddings = list[list[float]]  # type: ignore
 
-from typing import Any, Callable
-
+from typing import Any
 
 # ---------------------------------------------------------------------------
 # Embedding providers — now in embedding_factory.py
@@ -421,7 +459,9 @@ from kogwistar.engine_core.embedding_factory import (
 )
 
 
-def engine_context(fn):
+def engine_context(
+    fn: Callable[Concatenate[SelfT, P], R],
+) -> Callable[Concatenate[SelfT, P], R]:
     """
     Decorator for engine boundary methods.
     Automatically binds engine_type and common engine attributes.
@@ -434,7 +474,9 @@ def engine_context(fn):
     """
 
     @wraps(fn)
-    def wrapper(self, *args, **kwargs):
+    def wrapper(
+        self: SelfT, *args: P.args, **kwargs: P.kwargs
+    ) -> R:
         ctx_kwargs = {
             "engine_type": getattr(self, "kg_graph_type", None),
             "engine_id": getattr(self, "engine_id", None),
@@ -452,18 +494,18 @@ def engine_context(fn):
 class _NamespacedEngineProxy:
     """Copy-on-Write namespace view over a ``GraphKnowledgeEngine``."""
 
-    def __init__(self, real_engine: Any, namespace: str) -> None:
+    def __init__(self, real_engine: GraphKnowledgeEngine, namespace: str) -> None:
         object.__setattr__(self, "_real", real_engine)
         object.__setattr__(self, "_ns", namespace)
 
-    def __getattribute__(self, name: str) -> Any:
+    def __getattribute__(self, name: str) -> object:
         if name in ("_real", "_ns"):
             return object.__getattribute__(self, name)
         if name == "namespace":
             return object.__getattribute__(self, "_ns")
         return getattr(object.__getattribute__(self, "_real"), name)
 
-    def __setattr__(self, name: str, value: Any) -> None:
+    def __setattr__(self, name: str, value: object) -> None:
         if name == "namespace":
             object.__setattr__(self, "_ns", value)
         elif name in ("_real", "_ns"):
@@ -476,7 +518,7 @@ _ENGINE_NS_LOCKS: dict[int, threading.RLock] = {}
 _ENGINE_NS_LOCKS_META = threading.Lock()
 
 
-def _get_engine_ns_lock(engine: Any) -> threading.RLock:
+def _get_engine_ns_lock(engine: GraphKnowledgeEngine) -> threading.RLock:
     eid = id(engine)
     with _ENGINE_NS_LOCKS_META:
         if eid not in _ENGINE_NS_LOCKS:
@@ -498,10 +540,10 @@ _SUBSYSTEMS_WITH_E = (
 
 
 @contextmanager
-def scoped_namespace(engine: GraphKnowledgeEngine, namespace: str):
+def scoped_namespace(engine: GraphKnowledgeEngine, namespace: str) -> Iterator[None]:
     """Temporarily scope a graph engine to a namespace without mutating it."""
     proxy = _NamespacedEngineProxy(engine, namespace)
-    rebindings: list[tuple[Any, str, Any]] = []
+    rebindings: list[tuple[object, str, object]] = []
     for sub_name in _SUBSYSTEMS_WITH_E:
         sub = getattr(engine, sub_name, None)
         if sub is not None and hasattr(sub, "_e"):
@@ -548,7 +590,9 @@ class GraphKnowledgeEngine:
     """
 
     @property
-    def metadata(self):
+    def metadata(
+        self,
+    ) -> "EngineSQLite | EnginePostgresMetaStore | RustEngineSQLite | RustEnginePostgresMetaStore":
         """Return the engine's metadata store under its backend-neutral name.
 
         ``meta_sqlite`` is retained as a compatibility alias because existing
@@ -558,16 +602,24 @@ class GraphKnowledgeEngine:
         return self._metadata
 
     @metadata.setter
-    def metadata(self, value) -> None:
+    def metadata(
+        self,
+        value: "EngineSQLite | EnginePostgresMetaStore | RustEngineSQLite | RustEnginePostgresMetaStore",
+    ) -> None:
         self._metadata = value
 
     @property
-    def meta_sqlite(self):
+    def meta_sqlite(
+        self,
+    ) -> "EngineSQLite | EnginePostgresMetaStore | RustEngineSQLite | RustEnginePostgresMetaStore":
         """Deprecated compatibility alias for :attr:`metadata`."""
         return self.metadata
 
     @meta_sqlite.setter
-    def meta_sqlite(self, value) -> None:
+    def meta_sqlite(
+        self,
+        value: "EngineSQLite | EnginePostgresMetaStore | RustEngineSQLite | RustEnginePostgresMetaStore",
+    ) -> None:
         self.metadata = value
 
     # --------------------
@@ -591,36 +643,36 @@ class GraphKnowledgeEngine:
             resolve_mode=resolve_mode,
         )
 
-    def tombstone_node(self, node_id: str, **kw) -> bool:
+    def tombstone_node(self, node_id: str, **kw: JsonValue) -> bool:
         return self.lifecycle.tombstone_node(node_id, **kw)
 
-    def redirect_node(self, from_id: str, to_id: str, **kw) -> bool:
+    def redirect_node(self, from_id: str, to_id: str, **kw: JsonValue) -> bool:
         return self.lifecycle.redirect_node(from_id, to_id, **kw)
 
     @engine_context
-    def tombstone_edge(self, edge_id: str, **kw) -> bool:
+    def tombstone_edge(self, edge_id: str, **kw: JsonValue) -> bool:
         return self.lifecycle.tombstone_edge(edge_id, **kw)
 
-    def redirect_edge(self, from_id: str, to_id: str, **kw) -> bool:
+    def redirect_edge(self, from_id: str, to_id: str, **kw: JsonValue) -> bool:
         return self.lifecycle.redirect_edge(from_id, to_id, **kw)
 
-    def node_ids_by_doc(self, doc_id: str) -> List[str]:
+    def node_ids_by_doc(self, doc_id: str) -> list[str]:
 
         return self._nodes_by_doc(doc_id)
 
-    def edge_ids_by_doc(self, doc_id: str) -> List[str]:
+    def edge_ids_by_doc(self, doc_id: str) -> list[str]:
 
         return self._edge_ids_by_doc(doc_id)
 
     @property
-    def embedding_function(self):
+    def embedding_function(self) -> EmbeddingFunctionLike:
         return self._ef
 
     @embedding_function.setter
-    def embedding_function(self, val):
+    def embedding_function(self, val: EmbeddingFunctionLike) -> None:
         self._ef = val
 
-    def _infer_doc_id_from_ref(self, ref: Span) -> Optional[str]:
+    def _infer_doc_id_from_ref(self, ref: Span) -> str | None:
         """Best-effort: prefer explicit ref.doc_id; else try to parse document_page_url like 'document/<id>'."""
         did = getattr(ref, "doc_id", None)
         if did:
@@ -635,14 +687,12 @@ class GraphKnowledgeEngine:
 
     def extract_reference_contexts(
         self,
-        node_or_id: Union[
-            Node | Edge, str
-        ],  # also works if you pass an Edge or edge id
+        node_or_id: Node | Edge | str,  # also works if you pass an Edge or edge id
         *,
         window_chars: int = 120,
-        max_contexts: Optional[int] = None,
+        max_contexts: int | None = None,
         prefer_label_fallback: bool = True,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         return self.read.extract_reference_contexts(
             node_or_id=node_or_id,
             window_chars=window_chars,
@@ -686,78 +736,45 @@ class GraphKnowledgeEngine:
     def get_nodes(
         self,
         ids: Sequence[str] | None = None,
-        node_type: Type[Node] | None = None,
+        node_type: type[Node] | None = None,
         include: None | list[str] = None,
-        where=None,
+        where: object = None,
         limit: None | int = 200,
         resolve_mode: Literal[
             "active_only", "redirect", "include_tombstones"
         ] = "active_only",
-    ) -> List[Node]:
-        return self.read.get_nodes(
+    ) -> list[Node]:
+        return list(self.read.get_nodes(
             ids=ids,
             node_type=node_type,
             include=include,
             where=where,
             limit=limit,
             resolve_mode=resolve_mode,
-        )
-
-    def get_node_acl_checked(
-        self,
-        node_id: str,
-        *,
-        grounding_item_ids: Sequence[str] = (),
-        target_item_ids: Sequence[str] = (),
-        principal_id: str,
-        principal_groups: Sequence[str] = (),
-        security_scope: str | None = None,
-        node_type: Type[Node] | None = None,
-        include: None | list[str] = None,
-        resolve_mode: Literal[
-            "active_only", "redirect", "include_tombstones"
-        ] = "active_only",
-    ) -> Node:
-        nodes = self.read.get_nodes(
-            ids=[node_id],
-            node_type=node_type,
-            include=include,
-            resolve_mode=resolve_mode,
-        )
-        if not nodes:
-            raise ValueError(f"no node found for id = {node_id}")
-        decision = self.acl.decide_acl_node_read(
-            item_grain="span",
-            truth_graph=self.kg_graph_type,
-            entity_id=node_id,
-            grounding_item_ids=tuple(grounding_item_ids),
-            target_item_ids=tuple(target_item_ids),
-            principal_id=principal_id,
-            principal_groups=tuple(principal_groups),
-            security_scope=security_scope,
-        )
-        if not decision.visible:
-            raise PermissionError(
-                f"ACL denied node {node_id}: {decision.reason}"
-            )
-        return nodes[0]
+        ))
 
     def query_nodes(
         self,
-        *args,
-        query=None,
-        query_embeddings=None,
-        include=["documents", "embeddings", "metadatas"],
-        node_type: Type[Node] = Node,
-        **kwargs,
-    ):
-        return self.read.query_nodes(
-            *args,
-            query=query,
-            query_embeddings=query_embeddings,
-            include=include,
-            node_type=node_type,
-            **kwargs,
+        *args: object,
+        query: str | None = None,
+        query_embeddings: list[list[float]] | None = None,
+        include: Sequence[str] | None = None,
+        node_type: type[TNode] = Node,
+        **kwargs: object,
+    ) -> list[list[TNode]]:
+        selected_include = list(
+            include if include is not None else ("documents", "embeddings", "metadatas")
+        )
+        return cast(
+            list[list[TNode]],
+            self.read.query_nodes(
+                *args,
+                query=query,
+                query_embeddings=query_embeddings,
+                include=selected_include,
+                node_type=node_type,
+                **kwargs,
+            ),
         )
 
     def search_nodes_as_of(
@@ -769,12 +786,13 @@ class GraphKnowledgeEngine:
         where: dict[str, Any] | None = None,
         n_results: int = 20,
         follow_redirects: bool = True,
-        node_type: Type[Node] = Node,
+        node_type: type[Node] = Node,
         include: list[str] | None = None,
         max_redirect_hops: int = 16,
-        **kwargs,
+        similarity_threshold: float | None = None,
+        **kwargs: object,
     ) -> list[Node]:
-        return self.read.search_nodes_as_of(
+        return list(self.read.search_nodes_as_of(
             query=query,
             query_embeddings=query_embeddings,
             as_of_ts=as_of_ts,
@@ -784,116 +802,137 @@ class GraphKnowledgeEngine:
             node_type=node_type,
             include=include,
             max_redirect_hops=max_redirect_hops,
+            similarity_threshold=similarity_threshold,
+            **kwargs,
+        ))
+
+    def search_nodes_as_of_scored(
+        self,
+        *,
+        query: str | None = None,
+        query_embeddings: Sequence[float] | Sequence[Sequence[float]] | None = None,
+        as_of_ts: datetime | str,
+        where: dict[str, JsonValue] | None = None,
+        n_results: int = 20,
+        follow_redirects: bool = True,
+        node_type: type[Node] = Node,
+        include: list[str] | None = None,
+        max_redirect_hops: int = 16,
+        similarity_threshold: float | None = None,
+        **kwargs: object,
+    ) -> list[VectorSearchHit[Node]]:
+        return self.read.search_nodes_as_of_scored(
+            query=query,
+            query_embeddings=query_embeddings,
+            as_of_ts=as_of_ts,
+            where=where,
+            n_results=n_results,
+            follow_redirects=follow_redirects,
+            node_type=node_type,
+            include=include,
+            max_redirect_hops=max_redirect_hops,
+            similarity_threshold=similarity_threshold,
             **kwargs,
         )
 
-    def search_nodes_as_of_scored(self, **kwargs: Any) -> list[VectorSearchHit[Node]]:
-        return self.read.search_nodes_as_of_scored(**kwargs)
-
     def query_edges(
         self,
-        *args,
-        query=None,
-        query_embeddings=None,
-        include=["documents", "embeddings", "metadatas"],
-        edge_type: Type[Edge] = Edge,
-        **kwargs,
-    ):
-        return self.read.query_edges(
-            *args,
-            query=query,
-            query_embeddings=query_embeddings,
-            include=include,
-            edge_type=edge_type,
-            **kwargs,
+        *args: object,
+        query: str | None = None,
+        query_embeddings: list[list[float]] | None = None,
+        include: Sequence[str] | None = None,
+        edge_type: type[TEdge] = Edge,
+        **kwargs: object,
+    ) -> list[list[TEdge]]:
+        selected_include = list(
+            include if include is not None else ("documents", "embeddings", "metadatas")
+        )
+        return cast(
+            list[list[TEdge]],
+            self.read.query_edges(
+                *args,
+                query=query,
+                query_embeddings=query_embeddings,
+                include=selected_include,
+                edge_type=edge_type,
+                **kwargs,
+            ),
         )
 
     def nodes_from_single_or_id_query_result(
         self,
-        got,
-        node_type: Type[TNode] = Node,
+        got: Mapping[str, JsonValue],
+        node_type: type[TNode] = Node,
     ) -> list[TNode]:
-        return self.read.nodes_from_single_or_id_query_result(got, node_type=node_type)
-
-    def edges_from_single_or_id_query_result(
-        self, got, edge_type: Type[Edge] = Edge, include=None
-    ):
-        return self.read.edges_from_single_or_id_query_result(
-            got,
-            edge_type=edge_type,
-            include=include,
+        return cast(
+            list[TNode],
+            self.read.nodes_from_single_or_id_query_result(got, node_type=node_type),
         )
 
-    def nodes_from_query_result(self, gots, node_type: Type[Node] = Node):
-        return self.read.nodes_from_query_result(gots, node_type=node_type)
+    def edges_from_single_or_id_query_result(
+        self,
+        got: Mapping[str, JsonValue],
+        edge_type: type[TEdge] = Edge,
+        include: Sequence[str] | None = None,
+    ) -> list[TEdge]:
+        return cast(
+            list[TEdge],
+            self.read.edges_from_single_or_id_query_result(
+                got,
+                edge_type=edge_type,
+                include=include,
+            ),
+        )
 
-    def edges_from_query_result(self, gots, edge_type: Type[Edge] = Edge):
-        return self.read.edges_from_query_result(gots, edge_type=edge_type)
+    def nodes_from_query_result(
+        self,
+        gots: Mapping[str, JsonValue],
+        node_type: type[TNode] = Node,
+    ) -> list[list[TNode]]:
+        return cast(
+            list[list[TNode]],
+            self.read.nodes_from_query_result(gots, node_type=node_type),
+        )
+
+    def edges_from_query_result(
+        self,
+        gots: Mapping[str, JsonValue],
+        edge_type: type[TEdge] = Edge,
+    ) -> list[list[TEdge]]:
+        return cast(
+            list[list[TEdge]],
+            self.read.edges_from_query_result(gots, edge_type=edge_type),
+        )
 
     def _where_update_from_resolve_mode(
         self, resolve_mode: Literal["active_only", "redirect", "include_tombstones"]
-    ):
+    ) -> dict[str, str]:
         return self.read.where_update_from_resolve_mode(resolve_mode)
 
     def get_edges(
         self,
         ids: Sequence[str] | None = None,
-        edge_type: Type[Edge] | None = None,
-        where=None,
+        edge_type: type[Edge] | None = None,
+        where: object = None,
         limit: int | None = 400,
         include: None | list[str] = None,
         resolve_mode: Literal[
             "active_only", "redirect", "include_tombstones"
         ] = "active_only",
-    ) -> List[Edge]:
-        return self.read.get_edges(
+    ) -> list[Edge]:
+        return list(self.read.get_edges(
             ids=ids,
             edge_type=edge_type,
             where=where,
             limit=limit,
             include=include,
             resolve_mode=resolve_mode,
-        )
+        ))
 
-    def get_edge_acl_checked(
-        self,
-        edge_id: str,
-        *,
-        principal_id: str,
-        principal_groups: Sequence[str] = (),
-        security_scope: str | None = None,
-        edge_type: Type[Edge] | None = None,
-        include: None | list[str] = None,
-        resolve_mode: Literal[
-            "active_only", "redirect", "include_tombstones"
-        ] = "active_only",
-    ) -> Edge:
-        edges = self.read.get_edges(
-            ids=[edge_id],
-            edge_type=edge_type,
-            include=include,
-            resolve_mode=resolve_mode,
-        )
-        if not edges:
-            raise ValueError(f"no edge found for id = {edge_id}")
-        decision = self.acl.decide_acl(
-            grain="edge",
-            truth_graph=self.kg_graph_type,
-            entity_id=edge_id,
-            principal_id=principal_id,
-            principal_groups=tuple(principal_groups),
-            security_scope=security_scope,
-        )
-        if not decision.visible:
-            raise PermissionError(
-                f"ACL denied edge {edge_id}: {decision.reason}"
-            )
-        return edges[0]
-
-    def all_nodes_for_doc(self, doc_id: str) -> List[Node]:
+    def all_nodes_for_doc(self, doc_id: str) -> list[Node]:
         return self.get_nodes(self._nodes_by_doc(doc_id))
 
-    def all_edges_for_doc(self, doc_id: str) -> List[Edge]:
+    def all_edges_for_doc(self, doc_id: str) -> list[Edge]:
         return self.get_edges(self._edge_ids_by_doc(doc_id))
 
     def _delete_edge_ref_rows(self, edge_id: str) -> None:
@@ -949,50 +988,56 @@ class GraphKnowledgeEngine:
             payload_json=payload_json,
         )
 
-    def enqueue_index_job(self, *args, **kwargs) -> str:
+    def enqueue_index_job(self, *args: object, **kwargs: object) -> str:
         return self.indexing.enqueue_index_job(*args, **kwargs)
 
-    def send_lane_message(self, *args, **kwargs):
+    def send_lane_message(self, *args: object, **kwargs: object) -> LaneMessageSendResult:
         from kogwistar.messaging import LaneMessagingService
 
         return LaneMessagingService(self).send_message(*args, **kwargs)
 
-    def update_lane_message_status(self, *args, **kwargs) -> None:
+    def update_lane_message_status(self, *args: object, **kwargs: object) -> None:
         from kogwistar.messaging import LaneMessagingService
 
         return LaneMessagingService(self).update_message_status(*args, **kwargs)
 
-    def claim_projected_lane_messages(self, *args, **kwargs):
+    def claim_projected_lane_messages(
+        self, *args: object, **kwargs: object
+    ) -> list[ProjectedLaneMessageRow]:
         from kogwistar.messaging import LaneMessagingService
 
         return LaneMessagingService(self).claim_pending(*args, **kwargs)
 
-    def ack_projected_lane_message(self, *args, **kwargs) -> None:
+    def ack_projected_lane_message(self, *args: object, **kwargs: object) -> None:
         from kogwistar.messaging import LaneMessagingService
 
         return LaneMessagingService(self).ack(*args, **kwargs)
 
-    def requeue_projected_lane_message(self, *args, **kwargs) -> None:
+    def requeue_projected_lane_message(self, *args: object, **kwargs: object) -> None:
         from kogwistar.messaging import LaneMessagingService
 
         return LaneMessagingService(self).requeue(*args, **kwargs)
 
-    def dead_letter_projected_lane_message(self, *args, **kwargs) -> None:
+    def dead_letter_projected_lane_message(self, *args: object, **kwargs: object) -> None:
         from kogwistar.messaging import LaneMessagingService
 
         return LaneMessagingService(self).dead_letter(*args, **kwargs)
 
-    def list_projected_lane_messages(self, *args, **kwargs):
+    def list_projected_lane_messages(
+        self, *args: object, **kwargs: object
+    ) -> list[ProjectedLaneMessageRow]:
         from kogwistar.messaging import LaneMessagingService
 
         return LaneMessagingService(self).list_projected(*args, **kwargs)
 
-    def find_lane_messages(self, *args, **kwargs):
+    def find_lane_messages(self, *args: object, **kwargs: object) -> list[Node]:
         from kogwistar.messaging import LaneMessagingService
 
         return LaneMessagingService(self).find_messages(*args, **kwargs)
 
-    def repair_lane_message_projection(self, *args, **kwargs):
+    def repair_lane_message_projection(
+        self, *args: object, **kwargs: object
+    ) -> LaneMessageProjectionRepairResult:
         from kogwistar.messaging import LaneMessagingService
 
         return LaneMessagingService(self).repair_projection(*args, **kwargs)
@@ -1027,7 +1072,7 @@ class GraphKnowledgeEngine:
         lease_seconds: int = 60,
         max_jobs_per_tick: int = 200,
         namespace: str | None = None,
-    ) -> "IndexJobWorker":
+    ) -> IndexJobWorker:
         return self.indexing.make_index_job_worker(
             max_inflight=max_inflight,
             batch_size=batch_size,
@@ -1044,18 +1089,18 @@ class GraphKnowledgeEngine:
     #     return _default_ref(doc_id, excerpt)
     #     pass
     @staticmethod
-    def chroma_sanitize_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
+    def chroma_sanitize_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
         """Drop keys whose values are None. ChromaDB metadata rejects None values."""
         return _strip_none(
             metadata
         )  # {k: v for k, v in metadata.items() if v is not None}
 
     @staticmethod
-    def _strip_none(d: dict):
+    def _strip_none(d: dict[str, JsonValue | None]) -> dict[str, JsonValue]:
         return _strip_none(d)
 
     @staticmethod
-    def _json_or_none(obj: Any) -> Optional[str]:
+    def _json_or_none(obj: object) -> str | None:
         return json.dumps(obj) if obj is not None else None
 
     def _exists_node(self, rid: str) -> bool:
@@ -1069,7 +1114,7 @@ class GraphKnowledgeEngine:
 
     def _select_doc_context(
         self, doc_id: str, max_nodes: int = 200, max_edges: int = 400
-    ):
+    ) -> DocumentContext:
         return self.persist.select_doc_context(
             doc_id, max_nodes=max_nodes, max_edges=max_edges
         )
@@ -1079,16 +1124,20 @@ class GraphKnowledgeEngine:
         parsed: LLMGraphExtraction | PureGraph | GraphExtractionWithIDs,
         alias_key: str,
         alias_book: AliasBook | None = None,
-    ):
+    ) -> tuple[set[str], set[str]]:
         return self.persist.preflight_validate(parsed, alias_key, alias_book=alias_book)
 
-    def _assert_endpoints_exist(self, edge: Edge | PureChromaEdge):
+    def _assert_endpoints_exist(self, edge: Edge | PureChromaEdge) -> None:
         return self.persist.assert_endpoints_exist(edge)
 
-    def _build_deps(self, parsed):
+    def _build_deps(
+        self, parsed: ParsedExtraction
+    ) -> tuple[list[str], dict[str, str], dict[str, PersistedGraphObject]]:
         return self.persist.build_deps(parsed)
 
-    def ingest_with_toposort(self, parsed, *, doc_id: str):
+    def ingest_with_toposort(
+        self, parsed: ParsedExtraction, *, doc_id: str
+    ) -> dict[str, object]:
         return self.persist.ingest_with_toposort(parsed, doc_id=doc_id)
 
     def _resolve_llm_ids(
@@ -1100,8 +1149,11 @@ class GraphKnowledgeEngine:
         return self.persist.resolve_llm_ids(doc_id, parsed, alias_book=alias_book)
 
     def _aliasify_for_prompt(
-        self, doc_id: str, ctx_nodes: list[dict], ctx_edges: list[dict]
-    ):
+        self,
+        doc_id: str,
+        ctx_nodes: list[dict[str, Any]],
+        ctx_edges: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str, str]:
         return self.extract.aliasify_for_prompt(doc_id, ctx_nodes, ctx_edges)
 
     def _resolve_extraction_schema_mode(
@@ -1113,10 +1165,14 @@ class GraphKnowledgeEngine:
     def _schema_prompt_rules(self, mode: ResolvedExtractionSchemaMode) -> str:
         return self.extract.schema_prompt_rules(mode)
 
-    def _structured_schema_for_mode(self, mode: ResolvedExtractionSchemaMode):
+    def _structured_schema_for_mode(
+        self, mode: ResolvedExtractionSchemaMode
+    ) -> tuple[type[BaseModel], bool]:
         return self.extract.structured_schema_for_mode(mode)
 
-    def _build_structured_output_for_mode(self, mode: ResolvedExtractionSchemaMode):
+    def _build_structured_output_for_mode(
+        self, mode: ResolvedExtractionSchemaMode
+    ) -> tuple[type[BaseModel], bool]:
         # Back-compat shim: structured-output construction moved into llm task providers.
         return self.extract.structured_schema_for_mode(mode)
 
@@ -1133,7 +1189,7 @@ class GraphKnowledgeEngine:
         return ExtractSubsystem._find_all_exact_occurrences(content, excerpt)
 
     @staticmethod
-    def _coerce_offset_score(raw_score: Any) -> float:
+    def _coerce_offset_score(raw_score: object) -> float:
         return ExtractSubsystem._coerce_offset_score(raw_score)
 
     def _default_offset_repair_scorer(self, candidate: str, excerpt: str) -> float:
@@ -1210,7 +1266,7 @@ class GraphKnowledgeEngine:
         self,
         *,
         mode: ResolvedExtractionSchemaMode,
-        parsed: Any,
+        parsed: object,
         content: str,
         offset_mismatch_policy: OffsetMismatchPolicy = "exact_fuzzy",
         offset_repair_scorer: OffsetRepairScorer | None = None,
@@ -1229,11 +1285,11 @@ class GraphKnowledgeEngine:
         alias_nodes_str: str,
         alias_edges_str: str,
         instruction_for_node_edge_contents_parsing_inclusion: None | str = None,
-        last_iteration_result: dict | None = None,
+        last_iteration_result: dict[str, Any] | None = None,
         extraction_schema_mode: ExtractionSchemaMode | None = None,
         offset_mismatch_policy: OffsetMismatchPolicy = "exact_fuzzy",
         offset_repair_scorer: OffsetRepairScorer | None = None,
-    ):
+    ) -> tuple[object | None, LLMGraphExtraction | None, str | None]:
         return self.extract.extract_graph_with_llm_aliases(
             content=content,
             alias_nodes_str=alias_nodes_str,
@@ -1253,9 +1309,7 @@ class GraphKnowledgeEngine:
     def _alias_book(self, key: str) -> AliasBook:
         return self.alias_books.get(key)
 
-    def _coerce_pages(
-        self, content_or_pages
-    ):  # -> list[tuple[int, str]] | list[Any] | Any:
+    def _coerce_pages(self, content_or_pages: object) -> list[PageText]:
         return self.extract.coerce_pages(content_or_pages)
 
     # ----------------------------
@@ -1267,10 +1321,10 @@ class GraphKnowledgeEngine:
         persist_directory: str | None = None,
         embedding_function: EmbeddingFunctionLike | None = None,
         embedding_cache_path: str | None = None,
-        proposer=None,  # callable(pairs) -> List[LLMMergeAdjudication]
-        adjudicator=None,  # callable(left: Node, right: Node) -> AdjudicationVerdict
-        merge_policy=None,  # callable(left, right, verdict) -> str (canonical_id)
-        verifier=None,  # callable(extracted, full_text, ref, **kw) -> ReferenceSession
+        proposer: MergeCandidateProposer | None = None,
+        adjudicator: IAdjudicator | None = None,
+        merge_policy: MergePolicy | None = None,
+        verifier: Verifier | None = None,
         kg_graph_type: EngineType = "knowledge",
         debug_dir: pathlib.Path | None = None,
         backend: str | StorageBackend | None = None,
@@ -1280,14 +1334,14 @@ class GraphKnowledgeEngine:
         offset_repair_scorer: OffsetRepairScorer | None = None,
         llm_tasks: LLMTaskSet | None = None,
         default_task_provider_config: DefaultTaskProviderConfig | None = None,
-        cache_dir: os.PathLike|str|None = None,
+        cache_dir: os.PathLike[str] | str | None = None,
         acl_enabled: bool = False,
         acl_cache_enabled: bool = True,
         acl_startup_repair_limit: int = 0,
         persistence_mode: str = "single_stage",
         embedding_profile: EmbeddingProfile | None = None,
         embedding_profile_mode: str = "enforce",
-    ):
+    ) -> None:
         """
         embedding_function: callable(texts: List[str]) -> List[List[float]].
           If None, defaults to SentenceTransformerEmbeddingFunction with model:
@@ -1343,7 +1397,7 @@ class GraphKnowledgeEngine:
         self._oplog = None
         if debug_dir is not None:
             self._oplog = OplogWriter(debug_dir / "changes.jsonl", fsync=False)
-        self.tool_call_id_factory: Callable[[], str] | None = None
+        self.tool_call_id_factory: ToolCallIdFactory | None = None
 
         self._disable_event_log = False
         self.query = GraphQuery(self)
@@ -1355,29 +1409,26 @@ class GraphKnowledgeEngine:
         # to do- refractor via composition. protocol template in strategies.py, strategies helper in ./strategies/
         # strategies now are function objects
         from ..strategies import (
-            VectorProposer,
+            Adjudicator,
             DefaultVerifier,
             PreferExistingCanonical,
-            Adjudicator,
-            VerifierConfig
+            VectorProposer,
+            VerifierConfig,
         )
 
         # from .strategies.adjudicators import LLMPairAdjudicatorImpl, LLMBatchAdjudicatorImpl
-        from ..strategies.types import Verifier
-        from kogwistar.strategies import IAdjudicator
-
         self.proposer = proposer or VectorProposer(self)
         self.adjudicator: IAdjudicator = adjudicator or Adjudicator(self)
         self.verifier: Verifier = verifier or DefaultVerifier(
             self, VerifierConfig(use_embeddings=False)
         )
         self.merge_policy = merge_policy or PreferExistingCanonical(self)
-        self._metadata: EngineSQLite | EnginePostgresMetaStore
+        self._metadata: EngineSQLite | EnginePostgresMetaStore | RustEngineSQLite | RustEnginePostgresMetaStore
 
         self.alias_books = AliasBookStore()
-        self.pre_add_node_hooks: list[Callable[[Node], None]] = []
-        self.pre_add_edge_hooks: list[Callable[[Edge], bool]] = []
-        self.pre_add_pure_edge_hooks: list[Callable[[Edge], bool]] = []
+        self.pre_add_node_hooks: list[NodePreAddHook] = []
+        self.pre_add_edge_hooks: list[EdgePreAddHook] = []
+        self.pre_add_pure_edge_hooks: list[EdgePreAddHook] = []
         self.allow_missing_doc_id_on_endpoint_rows_hooks: list[
             Callable[[Edge], bool]
         ] = []
@@ -1390,7 +1441,7 @@ class GraphKnowledgeEngine:
 
         # Keep a 1-string convenience to reuse in cosine checks
         # convenience: single-string embed for verifiers
-        def _embed_one(text: str):
+        def _embed_one(text: str) -> list[float] | None:
             vecs = run_sync_or_awaitable(
                 self._ef([text])
             )  # DefaultEmbeddingFunction is callable(texts: List[str]) -> List[List[float]]
@@ -1398,6 +1449,7 @@ class GraphKnowledgeEngine:
 
         self._embed_one = _embed_one
         embedding_profile_checked = False
+        postgres_authority_mode: str | None = None
         if backend_factory is not None:
             if backend is not None:
                 raise ValueError("Backend factory and backend can only either be specified")
@@ -1418,21 +1470,21 @@ class GraphKnowledgeEngine:
                 )
 
                 if self.backend.__class__.__name__ == "AsyncChromaBackend":
-                    self.backend.two_stage_projection_capability = (
+                    projection_capability_backend(self.backend).two_stage_projection_capability = (
                         async_transient_two_stage_capability(
                             "async SQLite Stage-1 with async Chroma Stage-2"
                         )
                     )
-                    self.backend.async_two_stage_projection_adapter = (
+                    projection_capability_backend(self.backend).async_two_stage_projection_adapter = (
                         AsyncChromaTwoStageProjectionAdapter(self)
                     )
                 elif getattr(self.backend, "_is_async_engine", False):
-                    self.backend.two_stage_projection_capability = (
+                    projection_capability_backend(self.backend).two_stage_projection_capability = (
                         async_transient_two_stage_capability(
                             "async PostgreSQL transient Stage-1 and pgvector Stage-2"
                         )
                     )
-                    self.backend.async_two_stage_projection_adapter = (
+                    projection_capability_backend(self.backend).async_two_stage_projection_adapter = (
                         AsyncPostgresTwoStageProjectionAdapter(self)
                     )
         elif backend is None or (type(backend) is str and backend == "chroma"):
@@ -1544,12 +1596,12 @@ class GraphKnowledgeEngine:
                 )
 
                 if isinstance(self.backend, PgVectorBackend):
-                    self.backend.two_stage_projection_capability = (
+                    projection_capability_backend(self.backend).two_stage_projection_capability = (
                         async_transient_two_stage_capability(
                             "async PostgreSQL transient Stage-1 and pgvector Stage-2"
                         )
                     )
-                    self.backend.async_two_stage_projection_adapter = (
+                    projection_capability_backend(self.backend).async_two_stage_projection_adapter = (
                         AsyncPostgresTwoStageProjectionAdapter(self)
                     )
                 elif self.backend.__class__.__name__ == "AsyncChromaBackend":
@@ -1579,19 +1631,20 @@ class GraphKnowledgeEngine:
                     SQLiteChromaTwoStageProjectionAdapter(self)
                 )
         elif _is_pgvector_backend_instance(backend):
-            from .engine_postgres_meta import EnginePostgresMetaStore
-            from .rust_postgres_session import RustEnginePostgresMetaStore
             from kogwistar._rust_bridge import (
                 graph_store_implementation_mode,
                 meta_store_implementation_mode,
                 postgres_authority_implementation_mode,
             )
 
+            from .engine_postgres_meta import EnginePostgresMetaStore
+            from .rust_postgres_session import RustEnginePostgresMetaStore
+
             if type(backend) is str:
                 raise Exception("unreacheable")
             else:
-                backend2: PgVectorBackend = backend  # let static checker happy
-            self.backend: StorageBackend = backend
+                backend2: PgVectorBackend = cast(PgVectorBackend, backend)
+            self.backend: StorageBackend = cast(StorageBackend, backend2)
             meta_mode = meta_store_implementation_mode()
             graph_mode = graph_store_implementation_mode()
             postgres_authority_mode = postgres_authority_implementation_mode()
@@ -1621,21 +1674,26 @@ class GraphKnowledgeEngine:
                 if postgres_authority_mode == "rust":
                     from .two_stage_rust_postgres import (
                         RustPostgresTwoStageProjectionAdapter,
+                        _RustProjectionEngine,
+                        _RustProjectionMeta,
                         rust_postgres_two_stage_capability,
                     )
 
-                    self.backend.two_stage_projection_capability = (
+                    projection_capability_backend(self.backend).two_stage_projection_capability = (
                         rust_postgres_two_stage_capability()
                     )
-                    self.backend.two_stage_projection_adapter = (
-                        RustPostgresTwoStageProjectionAdapter(self, meta_postgre)
+                    projection_capability_backend(self.backend).two_stage_projection_adapter = (
+                        RustPostgresTwoStageProjectionAdapter(
+                            cast(_RustProjectionEngine, self),
+                            cast(_RustProjectionMeta, meta_postgre),
+                        )
                     )
                     if not sync_postgres:
                         from .two_stage_async import (
                             AsyncRustPostgresTwoStageProjectionAdapter,
                         )
 
-                        self.backend.async_two_stage_projection_adapter = (
+                        projection_capability_backend(self.backend).async_two_stage_projection_adapter = (
                             AsyncRustPostgresTwoStageProjectionAdapter(self, meta_postgre)
                         )
                 elif not sync_postgres:
@@ -1644,12 +1702,12 @@ class GraphKnowledgeEngine:
                         async_transient_two_stage_capability,
                     )
 
-                    self.backend.two_stage_projection_capability = (
+                    projection_capability_backend(self.backend).two_stage_projection_capability = (
                         async_transient_two_stage_capability(
                             "async PostgreSQL transient Stage-1 and pgvector Stage-2"
                         )
                     )
-                    self.backend.async_two_stage_projection_adapter = (
+                    projection_capability_backend(self.backend).async_two_stage_projection_adapter = (
                         AsyncPostgresTwoStageProjectionAdapter(self)
                     )
                 else:
@@ -1658,10 +1716,10 @@ class GraphKnowledgeEngine:
                         postgres_two_stage_capability,
                     )
 
-                    self.backend.two_stage_projection_capability = (
+                    projection_capability_backend(self.backend).two_stage_projection_capability = (
                         postgres_two_stage_capability()
                     )
-                    self.backend.two_stage_projection_adapter = (
+                    projection_capability_backend(self.backend).two_stage_projection_adapter = (
                         PostgresTwoStageProjectionAdapter(self)
                     )
         else:
@@ -1675,7 +1733,7 @@ class GraphKnowledgeEngine:
                 "Expected None/'chroma' or a PgVectorBackend instance."
             )
         if self.embedding_profile is not None and not embedding_profile_checked:
-            inspector = self.backend
+            inspector = cast(EmbeddingStorageInspector, self.backend)
             if not all(
                 callable(getattr(inspector, name, None))
                 for name in ("embedding_storage_scope", "inspect_embedding_storage")
@@ -1700,9 +1758,7 @@ class GraphKnowledgeEngine:
                 )
 
         # Backend UoW: in Postgres mode this becomes a real SQL transaction.
-        self._backend_uow = _build_postgres_uow_if_needed(
-            getattr(self, "backend", None)
-        )
+        self._backend_uow = _build_postgres_uow_if_needed(self.backend)
         self.atomic_mutation_capability: AtomicMutationCapability = (
             get_atomic_mutation_capability(getattr(self, "backend", None))
         )
@@ -1710,13 +1766,15 @@ class GraphKnowledgeEngine:
         if getattr(getattr(self, "backend", None), "_is_async_engine", False):
             from .postgres_backend import AsyncPostgresUnitOfWork
 
-            self._async_backend_uow = AsyncPostgresUnitOfWork(
-                engine=self.backend.engine
-            )
+            from sqlalchemy.ext.asyncio import AsyncEngine
+
+            async_engine = getattr(self.backend, "engine", None)
+            if not isinstance(async_engine, AsyncEngine):
+                raise TypeError("async PostgreSQL UoW requires an AsyncEngine")
+            self._async_backend_uow = AsyncPostgresUnitOfWork(engine=async_engine)
         if (
             self.persistence_mode == "two_stage"
             and _is_pgvector_backend_instance(getattr(self, "backend", None))
-            and "postgres_authority_mode" in locals()
             and postgres_authority_mode == "rust"
         ):
             # The native adapter writes through this same Rust-owned UoW.
@@ -1772,19 +1830,24 @@ class GraphKnowledgeEngine:
         # Fast path may attempt to apply immediately; correctness relies on reconciliation.
         self._phase1_enable_index_jobs: bool = True
         self._phase1_enable_validation_cache: bool = True
-        self.embeddings: Optional[Callable[[str], Optional[List[float]]]] = (
+        self.embeddings: Callable[[str], list[float] | None] | None = (
             build_azure_embedding_fn_from_env()
         )
 
-        self.memory = Memory(location=self.cache_dir or os.path.join(".", ".kg_cache"))
+        cache_location = (
+            str(self.cache_dir)
+            if self.cache_dir is not None
+            else os.path.join(".", ".kg_cache")
+        )
+        self.memory = Memory(location=cache_location)
         self._cached_extract_graph_with_llm = self.memory.cache( # engine owned, use engine cache
             self.extract_graph_with_llm, ignore=["self"]
         )
-        self.cached_embed: Optional[Callable[[str], Iterable[float]]] = None
+        self.cached_embed: Callable[[str], Iterable[float]] | None = None
         if embedding_cache_path:
             self.embedding_cache = Memory(location=embedding_cache_path)
 
-            def cached_embed(query, model_name):
+            def cached_embed(query: str, model_name: str) -> Iterable[float]:
 
                 return self._iterative_defensive_emb(query)
 
@@ -1812,8 +1875,14 @@ class GraphKnowledgeEngine:
         self.extract = ExtractSubsystem(self)
         self.acl = ACLSubsystem(self)
         if self.acl_enabled:
-            self.read = cast(ReadLike, ACLAwareReadSubsystem(self, self.raw_read))
-            self.write = cast(WriteLike, ACLAwareWriteSubsystem(self, self.raw_write))
+            self.read = cast(
+                ReadLike,
+                ACLAwareReadSubsystem(self, cast(ReadLike, self.raw_read)),
+            )
+            self.write = cast(
+                WriteLike,
+                ACLAwareWriteSubsystem(self, cast(WriteLike, self.raw_write)),
+            )
             require_acl_protocols(policy=self.acl, read=self.read, write=self.write)
         self.persist = PersistSubsystem(self)
         self.rollback = RollbackSubsystem(self)
@@ -1829,11 +1898,7 @@ class GraphKnowledgeEngine:
         idx_db_path = ":memory:"
         if persist_directory:
             idx_db_path = str(pathlib.Path(persist_directory) / "index.db")
-        elif (
-            hasattr(self, "_metadata")
-            and hasattr(self.metadata, "conn_str")
-            and self.metadata.conn_str != ":memory:"
-        ):
+        elif getattr(self.metadata, "conn_str", None) not in (None, ":memory:"):
             # PG setup might not have persist_directory in kwargs but might store sqlite locally
             pass  # fall back to memory or consider handling PG specifically if index.db isn't used there
 
@@ -1843,7 +1908,7 @@ class GraphKnowledgeEngine:
     def __enter__(self) -> Self:
         return self
 
-    def __exit__(self, exc_type, exc, tb) -> None:
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
         self.close()
 
     def close(self) -> None:
@@ -1863,45 +1928,213 @@ class GraphKnowledgeEngine:
             if callable(close):
                 close()
 
-    def acl_entity_ids_for_target_item(self, **kwargs):
-        return self.acl.acl_entity_ids_for_target_item(**kwargs)
+    def acl_entity_ids_for_target_item(
+        self,
+        *,
+        truth_graph: str,
+        grain: str,
+        target_item_id: str,
+    ) -> tuple[str, ...]:
+        return self.acl.acl_entity_ids_for_target_item(
+            truth_graph=truth_graph,
+            grain=grain,
+            target_item_id=target_item_id,
+        )
 
-    def record_acl(self, **kwargs):
-        return self.acl.record_acl(**kwargs)
+    def record_acl(
+        self,
+        *,
+        grain: str = "node",
+        truth_graph: str,
+        entity_id: str,
+        target_item_id: str | None = None,
+        version: int,
+        mode: str,
+        created_by: str | None = None,
+        owner_id: str | None = None,
+        security_scope: str | None = None,
+        shared_with_principals: Sequence[str] = (),
+        shared_with_groups: Sequence[str] = (),
+        source_ids: Sequence[str] = (),
+        derivation_type: str | None = None,
+        derivation_audit: dict[str, JsonValue] | None = None,
+        supersedes_version: int | None = None,
+        tombstoned: bool = False,
+    ) -> ACLRecord:
+        return self.acl.record_acl(
+            grain=grain,
+            truth_graph=truth_graph,
+            entity_id=entity_id,
+            target_item_id=target_item_id,
+            version=version,
+            mode=mode,
+            created_by=created_by,
+            owner_id=owner_id,
+            security_scope=security_scope,
+            shared_with_principals=shared_with_principals,
+            shared_with_groups=shared_with_groups,
+            source_ids=source_ids,
+            derivation_type=derivation_type,
+            derivation_audit=derivation_audit,
+            supersedes_version=supersedes_version,
+            tombstoned=tombstoned,
+        )
 
-    def decide_acl(self, **kwargs):
-        return self.acl.decide_acl(**kwargs)
+    def decide_acl(
+        self,
+        *,
+        grain: str | None = None,
+        truth_graph: str,
+        entity_id: str,
+        target_item_id: str | None = None,
+        principal_id: str,
+        principal_groups: Sequence[str] = (),
+        security_scope: str | None = None,
+    ) -> ACLDecision:
+        return self.acl.decide_acl(
+            grain=grain,
+            truth_graph=truth_graph,
+            entity_id=entity_id,
+            target_item_id=target_item_id,
+            principal_id=principal_id,
+            principal_groups=principal_groups,
+            security_scope=security_scope,
+        )
 
-    def decide_acl_usage(self, **kwargs):
-        return self.acl.decide_acl_usage(**kwargs)
+    def decide_acl_usage(
+        self,
+        *,
+        item_grain: str,
+        truth_graph: str,
+        entity_id: str,
+        target_item_id: str,
+        principal_id: str,
+        principal_groups: Sequence[str] = (),
+        security_scope: str | None = None,
+    ) -> ACLUsageDecision:
+        return self.acl.decide_acl_usage(
+            item_grain=item_grain,
+            truth_graph=truth_graph,
+            entity_id=entity_id,
+            target_item_id=target_item_id,
+            principal_id=principal_id,
+            principal_groups=principal_groups,
+            security_scope=security_scope,
+        )
 
-    def decide_acl_node_read(self, **kwargs):
-        return self.acl.decide_acl_node_read(**kwargs)
+    def decide_acl_node_read(
+        self,
+        *,
+        item_grain: str,
+        truth_graph: str,
+        entity_id: str,
+        target_item_ids: Sequence[str],
+        principal_id: str,
+        grounding_item_ids: Sequence[str] = (),
+        principal_groups: Sequence[str] = (),
+        security_scope: str | None = None,
+    ) -> ACLNodeReadDecision:
+        return self.acl.decide_acl_node_read(
+            item_grain=item_grain,
+            truth_graph=truth_graph,
+            entity_id=entity_id,
+            target_item_ids=target_item_ids,
+            principal_id=principal_id,
+            grounding_item_ids=grounding_item_ids,
+            principal_groups=principal_groups,
+            security_scope=security_scope,
+        )
 
-    def get_node_acl_checked(self, *args, **kwargs):
-        return self.acl.get_node_acl_checked(*args, **kwargs)
+    def get_node_acl_checked(
+        self,
+        node_id: str,
+        *,
+        grounding_item_ids: Sequence[str] = (),
+        target_item_ids: Sequence[str] = (),
+        principal_id: str,
+        principal_groups: Sequence[str] = (),
+        security_scope: str | None = None,
+        node_type: type[Node] | None = None,
+        include: list[str] | None = None,
+        resolve_mode: Literal["active_only", "redirect", "include_tombstones"] = "active_only",
+    ) -> Node:
+        return self.acl.get_node_acl_checked(
+            node_id,
+            grounding_item_ids=grounding_item_ids,
+            target_item_ids=target_item_ids,
+            principal_id=principal_id,
+            principal_groups=principal_groups,
+            security_scope=security_scope,
+            node_type=node_type,
+            include=include,
+            resolve_mode=resolve_mode,
+        )
 
-    def get_edge_acl_checked(self, *args, **kwargs):
-        return self.acl.get_edge_acl_checked(*args, **kwargs)
+    def get_edge_acl_checked(
+        self,
+        edge_id: str,
+        *,
+        principal_id: str,
+        principal_groups: Sequence[str] = (),
+        security_scope: str | None = None,
+        edge_type: type[Edge] | None = None,
+        include: list[str] | None = None,
+        resolve_mode: Literal["active_only", "redirect", "include_tombstones"] = "active_only",
+    ) -> Edge:
+        return self.acl.get_edge_acl_checked(
+            edge_id,
+            principal_id=principal_id,
+            principal_groups=principal_groups,
+            security_scope=security_scope,
+            edge_type=edge_type,
+            include=include,
+            resolve_mode=resolve_mode,
+        )
 
-    def rebuild_acl_graph_from_truth(self, **kwargs):
-        return self.acl.rebuild_acl_graph_from_truth(**kwargs)
+    def rebuild_acl_graph_from_truth(
+        self, *, truth_graph: str | None = None
+    ) -> dict[str, Any]:
+        return self.acl.rebuild_acl_graph_from_truth(truth_graph=truth_graph)
 
-    def prefetch_acl_neighborhood(self, **kwargs):
-        return self.acl.prefetch_acl_neighborhood(**kwargs)
+    def prefetch_acl_neighborhood(
+        self,
+        *,
+        truth_graph: str,
+        entity_id: str,
+        item_grain: ACLGrain = "span",
+        grounding_item_ids: Sequence[str] = (),
+        target_item_ids: Sequence[str] = (),
+        max_items: int = 32,
+    ) -> dict[str, tuple[str, ...]]:
+        return self.acl.prefetch_acl_neighborhood(
+            truth_graph=truth_graph,
+            entity_id=entity_id,
+            item_grain=item_grain,
+            grounding_item_ids=grounding_item_ids,
+            target_item_ids=target_item_ids,
+            max_items=max_items,
+        )
 
-    def repair_missing_default_acls(self, **kwargs):
-        return self.acl.repair_missing_default_acls(**kwargs)
+    def repair_missing_default_acls(
+        self, *, truth_graph: str | None = None, limit: int = 10_000
+    ) -> dict[str, Any]:
+        return self.acl.repair_missing_default_acls(
+            truth_graph=truth_graph, limit=limit
+        )
 
-    def repair_acl_records_from_events(self, **kwargs):
-        return self.acl.repair_acl_records_from_events(**kwargs)
+    def repair_acl_records_from_events(
+        self, *, truth_graph: str | None = None, limit: int = 10_000
+    ) -> dict[str, Any]:
+        return self.acl.repair_acl_records_from_events(
+            truth_graph=truth_graph, limit=limit
+        )
 
     def _emit_change(
         self,
         *,
         op: Op,
         entity: EntityRefModel,
-        payload: object,
+        payload: JsonValue,
         run_id: str | None = None,
         step_id: str | None = None,
     ) -> None:
@@ -1924,11 +2157,11 @@ class GraphKnowledgeEngine:
 
     # ... existing methods ...
     @staticmethod
-    def _node_doc_and_meta(n: "Node") -> tuple[str, dict]:
+    def _node_doc_and_meta(n: Node) -> tuple[str, dict]:
         return _node_doc_and_meta(n)
 
     @staticmethod
-    def _edge_doc_and_meta(e: "Edge") -> tuple[str, dict]:
+    def _edge_doc_and_meta(e: Edge) -> tuple[str, dict]:
         return _edge_doc_and_meta(e)
 
     def _maybe_reindex_edge_refs(self, edge: Edge, *, force: bool = False) -> None:
@@ -1954,25 +2187,32 @@ class GraphKnowledgeEngine:
     ) -> Grounding:
         return self.extract.dealias_one_grounding(grounding, real_doc_id)
 
-    def _dealias_span(self, mentions: List[Grounding] | None, real_doc_id: str):
+    def _dealias_span(
+        self, mentions: list[Grounding] | None, real_doc_id: str
+    ) -> list[Grounding] | None:
         return self.extract.dealias_span(mentions, real_doc_id)
 
-    def _target_from_node(self, n: "Node") -> "AdjudicationTarget":
+    def _target_from_node(self, n: Node) -> AdjudicationTarget:
         return self.adjudicate.target_from_node(n)
 
-    def _target_from_edge(self, e: "Edge") -> "AdjudicationTarget":
+    def _target_from_edge(self, e: Edge) -> AdjudicationTarget:
         return self.adjudicate.target_from_edge(e)
 
-    def check_document_exist(self, document_id: str | list[str]):
-        doc_ids = [document_id] if type(document_id) is str else document_id
+    def check_document_exist(self, document_id: str | list[str]) -> set[str]:
+        doc_ids = [document_id] if isinstance(document_id, str) else list(document_id)
         got = run_awaitable_blocking(self.backend.document_get(ids=doc_ids, include=[]))
-        return set(got["ids"]).union(set(document_id))
+        if not isinstance(got, Mapping):
+            return set(doc_ids)
+        stored_ids = got.get("ids", [])
+        if not isinstance(stored_ids, list):
+            return set(doc_ids)
+        return {value for value in stored_ids if isinstance(value, str)}.union(doc_ids)
 
     def _fetch_document_text(self, document_id: str) -> str:
         return self.extract.fetch_document_text(document_id)
 
     @staticmethod
-    def _cosine(u: List[float], v: List[float]) -> Optional[float]:
+    def _cosine(u: list[float], v: list[float]) -> float | None:
         if not u or not v or len(u) != len(v):
             return None
         dot = sum(a * b for a, b in zip(u, v))
@@ -1985,21 +2225,21 @@ class GraphKnowledgeEngine:
     # ----------------------------
     # Chroma-style api adders
     # ----------------------------
-    def add_pure_node(self, node: PureChromaNode):
+    def add_pure_node(self, node: PureChromaNode) -> None:
         return self.write.add_pure_node(node)
 
-    def add_pure_edge(self, edge: PureChromaEdge):
+    def add_pure_edge(self, edge: PureChromaEdge) -> None:
         return self.write.add_pure_edge(edge)
 
     # ---- Unit of Work (meta-store transaction boundary) ----
-    def _ensure_uow_ctxvars(self):
+    def _ensure_uow_ctxvars(self) -> None:
 
         if not hasattr(self, "_uow_ctx_conn"):
             self._uow_ctx_conn = contextvars.ContextVar("gke_uow_conn", default=None)
             self._uow_ctx_depth = contextvars.ContextVar("gke_uow_depth", default=0)
 
     @contextmanager
-    def uow(self):
+    def uow(self) -> Iterator[object | None]:
         """Nest-safe Unit of Work for meta-store writes.
 
         This context manager ensures atomic transactions across the primary SQL meta-store
@@ -2036,7 +2276,7 @@ class GraphKnowledgeEngine:
         finally:
             self._uow_ctx_depth.set(0)
 
-    def get_collection_lock(self, collection_name):
+    def get_collection_lock(self, collection_name: str) -> object:
         """Return the lock for a given collection name.
 
         Note: callers should not depend on the raw Chroma collection object; use backend methods instead.
@@ -2046,24 +2286,28 @@ class GraphKnowledgeEngine:
         return self.collection_lock[collection_name]
 
     @engine_context
-    def add_node(self, node: Node, doc_id: Optional[str] = None) -> None:
+    def add_node(self, node: Node, doc_id: str | None = None) -> None:
         return self.write.add_node(node, doc_id=doc_id)
 
-    def _fanout_endpoints_rows(self, edge: Edge, doc_id: str | None):
-        return self.write.fanout_endpoints_rows(edge, doc_id)
+    def _fanout_endpoints_rows(
+        self, edge: Edge, doc_id: str | None
+    ) -> list[dict[str, Any]]:
+        return cast(
+            list[dict[str, Any]], self.write.fanout_endpoints_rows(edge, doc_id)
+        )
 
-    def enrich_edge_meta(self, edge):
+    def enrich_edge_meta(self, edge: Edge) -> dict[str, Any]:
         return self.write.enrich_edge_meta(edge)
 
     @engine_context
-    def add_edge(self, edge: Edge, doc_id: Optional[str] = None) -> None:
+    def add_edge(self, edge: Edge, doc_id: str | None = None) -> None:
         return self.write.add_edge(edge, doc_id=doc_id)
 
-    async def async_add_node(self, node: Node, doc_id: Optional[str] = None) -> None:
+    async def async_add_node(self, node: Node, doc_id: str | None = None) -> None:
         """Use the async projection arrangement without sync IO fallback."""
         return await self.write.add_node_async(node, doc_id=doc_id)
 
-    async def async_add_edge(self, edge: Edge, doc_id: Optional[str] = None) -> None:
+    async def async_add_edge(self, edge: Edge, doc_id: str | None = None) -> None:
         """Use the async projection arrangement without sync IO fallback."""
         return await self.write.add_edge_async(edge, doc_id=doc_id)
 
@@ -2078,12 +2322,12 @@ class GraphKnowledgeEngine:
         return self.write.index_node_docs(node)
 
     def _nodes_by_doc(
-        self, doc_id: str, insertion_method: Optional[str] = None
+        self, doc_id: str, insertion_method: str | None = None
     ) -> list[str]:
         return self.read.node_ids_by_doc(doc_id, insertion_method=insertion_method)
 
     def _edge_ids_by_doc(
-        self, doc_id: str, insertion_method: Optional[str] = None
+        self, doc_id: str, insertion_method: str | None = None
     ) -> list[str]:
         return self.read.edge_ids_by_doc(doc_id, insertion_method=insertion_method)
 
@@ -2096,7 +2340,7 @@ class GraphKnowledgeEngine:
     def rebuild_all_edge_refs(self) -> int:
         return self.write.rebuild_all_edge_refs()
 
-    def edges_by_doc(self, doc_id: str, where: Optional[dict] = None) -> list[str]:
+    def edges_by_doc(self, doc_id: str, where: dict | None = None) -> list[str]:
         return self.read.edges_by_doc(doc_id, where=where)
 
     def list_edges_with_ref_filter(
@@ -2104,17 +2348,17 @@ class GraphKnowledgeEngine:
     ) -> list[Edge]:
         return self.read.list_edges_with_ref_filter(doc_id, where=where)
 
-    def nodes_by_ids(self, node_ids):
+    def nodes_by_ids(self, node_ids: Sequence[str]) -> object:
         return run_awaitable_blocking(self.backend.node_get(ids=node_ids))
 
-    def edges_by_ids(self, edge_ids):
+    def edges_by_ids(self, edge_ids: Sequence[str]) -> object:
         return run_awaitable_blocking(self.backend.edge_get(ids=edge_ids))
 
-    def nodes_by_doc(self, doc_id: str, *, where: Optional[dict] = None) -> list[str]:
+    def nodes_by_doc(self, doc_id: str, *, where: dict | None = None) -> list[str]:
         return self.read.nodes_by_doc(doc_id, where=where)
 
     def list_nodes_with_ref_filter(
-        self, doc_id: str, *, where: Optional[dict] = None
+        self, doc_id: str, *, where: dict | None = None
     ) -> list[Node]:
         return self.read.list_nodes_with_ref_filter(doc_id, where=where)
 
@@ -2128,18 +2372,18 @@ class GraphKnowledgeEngine:
     # helpers for rollback
     # ----------------------------
 
-    def _delete_edges_by_ids(self, edge_ids: list[str]):
+    def _delete_edges_by_ids(self, edge_ids: list[str]) -> object:
         return self.write.delete_edges_by_ids(edge_ids)
 
     # ----------------------------
     # Vector queries
     # ----------------------------
-    def vector_search_nodes(self, embedding: List[float], top_k: int = 5):
+    def vector_search_nodes(self, embedding: list[float], top_k: int = 5) -> object:
         return run_awaitable_blocking(
             self.backend.node_query(query_embeddings=[embedding], n_results=top_k)
         )
 
-    def vector_search_edges(self, embedding: List[float], top_k: int = 5):
+    def vector_search_edges(self, embedding: list[float], top_k: int = 5) -> object:
         return run_awaitable_blocking(
             self.backend.edge_query(query_embeddings=[embedding], n_results=top_k)
         )
@@ -2181,17 +2425,17 @@ class GraphKnowledgeEngine:
         *,
         content: str,
         doc_type: str,
-        alias_nodes_str="[Empty]",
-        alias_edges_str="[Empty]",
-        with_parsed=True,
+        alias_nodes_str: str = "[Empty]",
+        alias_edges_str: str = "[Empty]",
+        with_parsed: bool = True,
         instruction_for_node_edge_contents_parsing_inclusion: None | str = None,
-        validate=True,
+        validate: bool = True,
         autofix: bool | str = True,
-        last_iteration_result=None,
+        last_iteration_result: dict[str, Any] | None = None,
         extraction_schema_mode: ExtractionSchemaMode | None = None,
         offset_mismatch_policy: OffsetMismatchPolicy = "exact_fuzzy",
         offset_repair_scorer: OffsetRepairScorer | None = None,
-    ):
+    ) -> dict[str, object]:
         return self.extract.extract_graph_with_llm(
             content=content,
             doc_type=doc_type,
@@ -2207,7 +2451,7 @@ class GraphKnowledgeEngine:
             offset_repair_scorer=offset_repair_scorer,
         )
 
-    def get_document(self, doc_id: str):
+    def get_document(self, doc_id: str) -> Document:
         return self.read.get_document(doc_id)
 
     def get_span_validator_of_doc_type(
@@ -2248,12 +2492,12 @@ class GraphKnowledgeEngine:
         document: Document,
         *,
         mode: str = "append",
-        instruction_for_node_edge_contents_parsing_inclusion=None,
-        raw_with_parsed=None,
+        instruction_for_node_edge_contents_parsing_inclusion: str | None = None,
+        raw_with_parsed: object | None = None,
         extraction_schema_mode: ExtractionSchemaMode | None = None,
         offset_mismatch_policy: OffsetMismatchPolicy = "exact_fuzzy",
         offset_repair_scorer: OffsetRepairScorer | None = None,
-    ):
+    ) -> object:
         return self.ingest.ingest_document_with_llm(
             document,
             mode=mode,
@@ -2266,7 +2510,7 @@ class GraphKnowledgeEngine:
 
     def _extract_graph_with_llm(
         self, content: str, doc: Document
-    ) -> Tuple[Any, Optional[LLMGraphExtraction], Optional[str]]:
+    ) -> tuple[Any, LLMGraphExtraction | None, str | None]:
         return self.ingest.extract_graph_with_llm_internal(content, doc)
 
     def _ingest_text_with_llm(
@@ -2278,7 +2522,7 @@ class GraphKnowledgeEngine:
         extraction_schema_mode: ExtractionSchemaMode | None = None,
         offset_mismatch_policy: OffsetMismatchPolicy = "exact_fuzzy",
         offset_repair_scorer: OffsetRepairScorer | None = None,
-    ):
+    ) -> object:
         return self.ingest.ingest_text_with_llm(
             doc_id=doc_id,
             content=content,
@@ -2288,13 +2532,13 @@ class GraphKnowledgeEngine:
             offset_repair_scorer=offset_repair_scorer,
         )
 
-    def prune_node_from_edges(self, node_id: str):
+    def prune_node_from_edges(self, node_id: str) -> object:
         return self.rollback.prune_node_from_edges(node_id)
 
-    def rollback_document(self, document_id: str):
+    def rollback_document(self, document_id: str) -> object:
         return self.rollback.rollback_document(document_id)
 
-    def rollback_many_documents(self, document_ids: list[str]):
+    def rollback_many_documents(self, document_ids: list[str]) -> object:
         return self.rollback.rollback_many_documents(document_ids)
 
     # ----------------------------
@@ -2314,7 +2558,7 @@ class GraphKnowledgeEngine:
 
     def add_edge_with_endpoint_docs(
         self, edge: Edge, endpoint_doc_ids: dict[str, str | None]
-    ):
+    ) -> None:
         # Add the main edge row (neutral doc_id)
         doc = edge.model_dump_json(field_mode="backend")
         self.backend.edge_add(
@@ -2412,14 +2656,17 @@ class GraphKnowledgeEngine:
     def generate_merge_candidates_doc_brute_force(
         self,
         kind: str = "node",
-        scope_doc_id: Optional[str] = None,
+        scope_doc_id: str | None = None,
         top_k: int = 200,
         *,
         # NEW optional knobs:
-        allowed_docs: Optional[List[str]] = None,
-        anchor_doc_id: Optional[str] = None,
+        allowed_docs: list[str] | None = None,
+        anchor_doc_id: str | None = None,
         cross_doc_only: bool = False,
         anchor_only: bool = True,
+    ) -> (
+        dict[tuple[str, str], tuple[Node | Edge, Node | Edge, float]]
+        | list[tuple[Node | Edge, Node | Edge]]
     ):
         """
         Back-compat:
@@ -2452,15 +2699,15 @@ class GraphKnowledgeEngine:
 
     def generate_cross_kind_candidates(
         self,
-        scope_doc_id: Optional[str] = None,
+        scope_doc_id: str | None = None,
         limit_per_bucket: int = 200,
         *,
         # NEW optional knobs:
-        allowed_docs: Optional[List[str]] = None,
-        anchor_doc_id: Optional[str] = None,
+        allowed_docs: list[str] | None = None,
+        anchor_doc_id: str | None = None,
         cross_doc_only: bool = False,
         anchor_only: bool = True,
-    ) -> List[AdjudicationCandidate]:
+    ) -> list[AdjudicationCandidate]:
         """
         Back-compat:
         - Without new knobs and with scope_doc_id set, behave as before (same-doc only).
@@ -2479,14 +2726,17 @@ class GraphKnowledgeEngine:
                 engine=self, doc_id=scope_doc_id, limit_per_bucket=limit_per_bucket
             )
         else:
-            pairs = self.proposer.propose_any_kind_any_doc(
-                engine=self,
-                pair_kind="node_edge",
-                allowed_docs=allowed_docs,
-                anchor_doc_id=anchor_doc_id,
-                cross_doc_only=cross_doc_only,
-                anchor_only=anchor_only,
-                limit_per_bucket=limit_per_bucket,
+            pairs = cast(
+                list[tuple[Node, Edge]],
+                self.proposer.propose_any_kind_any_doc(
+                    engine=self,
+                    pair_kind="node_edge",
+                    allowed_docs=allowed_docs,
+                    anchor_doc_id=anchor_doc_id,
+                    cross_doc_only=cross_doc_only,
+                    anchor_only=anchor_only,
+                    limit_per_bucket=limit_per_bucket,
+                ),
             )
 
         return [
@@ -2500,15 +2750,15 @@ class GraphKnowledgeEngine:
 
     def generate_merge_candidates(
         self,
-        new_node: Union[Node, str, Sequence[Union[Node, str]]],
+        new_node: Node | str | Sequence[Node | str],
         top_k: int = 10,
         *,
         # NEW optional knobs (post-filtering on vector hits):
-        allowed_docs: Optional[List[str]] = None,
-        anchor_doc_id: Optional[str] = None,
+        allowed_docs: list[str] | None = None,
+        anchor_doc_id: str | None = None,
         cross_doc_only: bool = False,
         anchor_only: bool = True,
-    ):
+    ) -> dict[tuple[str, str], tuple[Node | Edge, Node | Edge, float]]:
         out = self.proposer.generate_merge_candidates(
             engine=self,
             new_node=new_node,
@@ -2523,7 +2773,7 @@ class GraphKnowledgeEngine:
 
     def adjudicate_pair(
         self, left: AdjudicationTarget, right: AdjudicationTarget, question: str
-    ):
+    ) -> dict[object, object] | BaseModel:
         """deligate to adjudicator to decide if any nodes/ edges meaning the same"""
         return self.adjudicator.adjudicate_pair(left, right, question)
 
@@ -2533,8 +2783,8 @@ class GraphKnowledgeEngine:
         right: AdjudicationTarget,
         question: str,
         *,
-        cache_dir=None,
-    ):
+        cache_dir: str | os.PathLike[str] | None = None,
+    ) -> object:
         """Return the validated adjudication result plus raw/parsing diagnostics."""
         return self.adjudicator.adjudicate_pair_trace(
             left, right, question, cache_dir=cache_dir
@@ -2542,16 +2792,16 @@ class GraphKnowledgeEngine:
 
     def adjudicate_merge(
         self, left_node: Node | Edge, right_node: Node | Edge
-    ) -> Dict[Any, Any] | BaseModel:
+    ) -> dict[Any, Any] | BaseModel:
         """deligate to adjudicator to commit merge if any nodes/ edges was (supposedly) earlier decided meaning the same.
         The api only join them with reconsidering."""
         return self.adjudicator.adjudicate_merge(left_node, right_node)
 
     def batch_adjudicate_merges(
         self,
-        pairs: List[Tuple["Node", "Node"]],
-        question_code: "AdjudicationQuestionCode" = AdjudicationQuestionCode.SAME_ENTITY,
-    ):
+        pairs: list[tuple[Node, Node]],
+        question_code: AdjudicationQuestionCode = AdjudicationQuestionCode.SAME_ENTITY,
+    ) -> list[object] | tuple[list[object], str] | tuple[list[None], str]:
         if not pairs:
             return []
         return self.adjudicator.batch_adjudicate_merges(pairs, question_code)
@@ -2560,13 +2810,13 @@ class GraphKnowledgeEngine:
         self,
         *,
         document_id: str,
-        page_text: str | List[str] | Dict[str, Any],
+        page_text: str | list[str] | dict[str, Any],
         page_number: int | None = None,
         auto_adjudicate: bool = True,
         extraction_schema_mode: ExtractionSchemaMode | None = None,
         offset_mismatch_policy: OffsetMismatchPolicy = "exact_fuzzy",
         offset_repair_scorer: OffsetRepairScorer | None = None,
-    ):
+    ) -> object:
         return self.ingest.add_page(
             document_id=document_id,
             page_text=page_text,
@@ -2581,16 +2831,16 @@ class GraphKnowledgeEngine:
         self,
         document_id: str,
         *,
-        source_text: Optional[str] = None,
+        source_text: str | None = None,
         min_ngram: int = 5,
         threshold: float = 0.70,
-        weights: Dict[str, float] = {
+        weights: dict[str, float] = {
             "rapidfuzz": 0.5,
             "coverage": 0.3,
             "embedding": 0.2,
         },
         update_edges: bool = True,
-    ) -> Dict[str, int]:
+    ) -> dict[str, int]:
         to_return = self.verifier.verify_mentions_for_doc(
             document_id,
             source_text=source_text,
@@ -2606,8 +2856,8 @@ class GraphKnowledgeEngine:
         *,
         kind: str,  # "node" | "edge"
         insertion_method: str,
-        ids: Optional[Iterable[str]] = None,  # optionally restrict to this set
-        doc_id: Optional[str] = None,  # optionally restrict to a document
+        ids: Iterable[str] | None = None,  # optionally restrict to this set
+        doc_id: str | None = None,  # optionally restrict to a document
     ) -> list[str]:
         return self.read.ids_with_insertion_method(
             kind=kind,
@@ -2623,7 +2873,7 @@ class GraphKnowledgeEngine:
         ref: Span,
         *,
         min_ngram: int = 5,
-        weights: Dict[str, float] = {
+        weights: dict[str, float] = {
             "rapidfuzz": 0.5,
             "coverage": 0.3,
             "embedding": 0.2,
@@ -2641,17 +2891,17 @@ class GraphKnowledgeEngine:
 
     def verify_mentions_for_items(
         self,
-        items: List[Tuple[str, str]],  # list of ("node"|"edge", id)
+        items: list[tuple[str, str]],  # list of ("node"|"edge", id)
         *,
-        source_text_by_doc: Optional[Dict[str, str]] = None,
+        source_text_by_doc: dict[str, str] | None = None,
         min_ngram: int = 5,
         threshold: float = 0.70,
-        weights: Dict[str, float] = {
+        weights: dict[str, float] = {
             "rapidfuzz": 0.5,
             "coverage": 0.3,
             "embedding": 0.2,
         },
-    ) -> Dict[str, int]:
+    ) -> dict[str, int]:
         """
         Targeted verification for a mixed set of nodes/edges.
         source_text_by_doc lets you pass pre-fetched doc text keyed by doc_id.
@@ -2666,7 +2916,7 @@ class GraphKnowledgeEngine:
         )
         return to_return
 
-    def _iterative_defensive_emb(self, emb_text0):
+    def _iterative_defensive_emb(self, emb_text0: str) -> list[float]:
         return self.embed.iterative_defensive_emb_internal(emb_text0)
 
 
@@ -2716,13 +2966,15 @@ def _install_legacy_shims() -> None:
 
         def _make_shim(
             *,
-            original_method: Callable[..., Any],
+            original_method: Callable[..., object],
             old_name: str,
             ns_name: str,
             ns_method: str,
-        ):
+        ) -> Callable[..., object]:
             @wraps(original_method)
-            def _shim(self, *args, **kwargs):
+            def _shim(
+                self: GraphKnowledgeEngine, *args: object, **kwargs: object
+            ) -> object:
                 warnings.warn(
                     (
                         f"GraphKnowledgeEngine.{old_name} is deprecated; "

@@ -1,9 +1,16 @@
-from __future__ import annotations
-
 """Reusable maintenance templates."""
 
-from typing import Any, Callable
+from __future__ import annotations
 
+from collections.abc import Mapping
+
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.maintenance.contracts import (
+    BeforeWrite,
+    GroupedArtifactNodeBuilder,
+    GroupKeyForNode,
+    MatchWhereForGroup,
+)
 from kogwistar.maintenance.grouped_artifacts import (
     write_grouped_versioned_artifacts,
 )
@@ -11,17 +18,17 @@ from kogwistar.maintenance.models import MaintenanceTemplateResult
 
 
 def run_grouped_maintenance_template(
-    source_engine: Any,
+    source_engine: GraphKnowledgeEngine,
     *,
-    target_engine: Any,
+    target_engine: GraphKnowledgeEngine,
     source_namespace: str,
     target_namespace: str,
-    source_where: dict[str, Any],
-    group_key_for_node: Callable[[Any], str],
-    build_node_for_group: Callable[[str, list[Any], list[Any], int], Any],
-    match_where_for_group: Callable[[str], dict[str, Any]],
+    source_where: Mapping[str, object],
+    group_key_for_node: GroupKeyForNode,
+    build_node_for_group: GroupedArtifactNodeBuilder,
+    match_where_for_group: MatchWhereForGroup,
     replace_existing: bool = True,
-    before_write: Callable[[str], None] | None = None,
+    before_write: BeforeWrite[str] | None = None,
 ) -> MaintenanceTemplateResult:
     grouped_results = write_grouped_versioned_artifacts(
         source_engine,

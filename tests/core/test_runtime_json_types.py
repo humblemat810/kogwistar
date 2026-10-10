@@ -4,7 +4,6 @@ import pytest
 
 from kogwistar.runtime.serialize import JsonValue, to_jsonable
 
-
 pytestmark = [pytest.mark.ci, pytest.mark.core, pytest.mark.unit]
 
 

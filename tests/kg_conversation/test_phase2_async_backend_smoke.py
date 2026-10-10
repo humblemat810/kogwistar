@@ -6,26 +6,26 @@ import pytest
 
 pytest_plugins = ["tests.core._async_chroma_real"]
 
-from kogwistar.conversation.conversation_orchestrator import (# noqa: E402
+from kogwistar.conversation.conversation_orchestrator import (  # noqa: E402
     ConversationOrchestrator,
     get_id_for_conversation_turn,
 )
-from kogwistar.conversation.models import (# noqa: E402
+from kogwistar.conversation.models import (  # noqa: E402
     ConversationNode,
     MetaFromLastSummary,
 )
-from kogwistar.engine_core.engine import GraphKnowledgeEngine# noqa: E402
-from kogwistar.engine_core.models import Grounding# noqa: E402
-from kogwistar.engine_core.postgres_backend import PgVectorBackend# noqa: E402
-from kogwistar.id_provider import stable_id# noqa: E402
-from kogwistar.llm_tasks.contracts import SummarizeContextTaskResult# noqa: E402
+from kogwistar.engine_core.engine import GraphKnowledgeEngine  # noqa: E402
+from kogwistar.engine_core.models import Grounding  # noqa: E402
+from kogwistar.engine_core.postgres_backend import PgVectorBackend  # noqa: E402
+from kogwistar.id_provider import stable_id  # noqa: E402
+from kogwistar.llm_tasks.contracts import SummarizeContextTaskResult  # noqa: E402
 from tests._helpers.graph_builders import mk_conversation_span as _mk_span  # noqa: E402
 from tests.conftest import (  # noqa: E402
     _install_conversation_policy,
     _is_missing_pgvector_extension,
     _run_async_windows_safe,
 )
-from tests.core._async_chroma_real import make_real_async_chroma_backend # noqa: E402
+from tests.core._async_chroma_real import make_real_async_chroma_backend  # noqa: E402
 
 pytestmark = pytest.mark.ci_full
 

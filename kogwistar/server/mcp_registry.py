@@ -6,22 +6,26 @@ protocol framing and transports to the official MCP Python SDK.
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
-import asyncio
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Any, get_type_hints
+from typing import Any, ParamSpec, TypeVar, cast, get_type_hints, overload
 
 from mcp import types
 from mcp.server.lowlevel import Server
-from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError, create_model
+from pydantic import BaseModel, ConfigDict, TypeAdapter, create_model
 from starlette.applications import Starlette
 from starlette.routing import Mount
+from starlette.types import Receive, Scope, Send
+
+P = ParamSpec("P")
+R = TypeVar("R")
 
 
-def _inline_refs(value: Any, definitions: dict[str, Any]) -> Any:
+def _inline_refs(value: object, definitions: dict[str, object]) -> object:
     if isinstance(value, dict):
         reference = value.get("$ref")
         if isinstance(reference, str) and reference.startswith("#/$defs/"):
@@ -37,7 +41,7 @@ def _inline_refs(value: Any, definitions: dict[str, Any]) -> Any:
     return value
 
 
-def _input_model(name: str, function: Callable[..., Any]) -> type[BaseModel]:
+def _input_model(name: str, function: Callable[..., object]) -> type[BaseModel]:
     hints = get_type_hints(function)
     fields: dict[str, tuple[Any, Any]] = {}
     for parameter in inspect.signature(function).parameters.values():
@@ -53,69 +57,53 @@ def _input_model(name: str, function: Callable[..., Any]) -> type[BaseModel]:
             else parameter.default
         )
         fields[parameter.name] = (annotation, default)
-    return create_model(
+    field_kwargs: Any = fields
+    return cast(
+        type[BaseModel],
+        create_model(
         f"{name.replace('.', '_').replace('-', '_')}Input",
         __config__=ConfigDict(extra="forbid"),
-        **fields,
+        **field_kwargs,
+        ),
     )
 
 
-def _schema_for_model(model: type[BaseModel]) -> dict[str, Any]:
+def _schema_for_model(model: type[BaseModel]) -> dict[str, object]:
     raw = model.model_json_schema()
-    return _inline_refs(raw, raw.get("$defs", {}))
+    return cast(dict[str, object], _inline_refs(raw, raw.get("$defs", {})))
 
 
-def _output_schema(function: Callable[..., Any]) -> dict[str, Any] | None:
+def _output_schema(function: Callable[..., object]) -> dict[str, object] | None:
     annotation = get_type_hints(function).get("return")
     if annotation is None or annotation is type(None):
         return None
     raw = TypeAdapter(annotation).json_schema()
     if not raw:
         return None
-    return _inline_refs(raw, raw.get("$defs", {}))
+    return cast(dict[str, object], _inline_refs(raw, raw.get("$defs", {})))
 
 
 @dataclass(frozen=True, slots=True)
 class _ToolRecord:
     name: str
-    function: Callable[..., Any]
+    function: Callable[..., object]
     input_model: type[BaseModel]
     tool: types.Tool
-
-
-class _CompatTool(types.Tool):
-    """Expose historical snake-case schema access on newer MCP SDK models."""
-
-    @property
-    def input_schema(self) -> dict[str, Any]:
-        return self.inputSchema
-
-    @property
-    def output_schema(self) -> dict[str, Any] | None:
-        return self.outputSchema
 
 
 def _make_tool(
     *,
     name: str,
     description: str | None,
-    input_schema: dict[str, Any],
-    output_schema: dict[str, Any] | None,
+    input_schema: dict[str, object],
+    output_schema: dict[str, object] | None,
 ) -> types.Tool:
-    try:
-        return types.Tool(
-            name=name,
-            description=description,
-            input_schema=input_schema,
-            output_schema=output_schema,
-        )
-    except (TypeError, ValidationError):
-        return _CompatTool(
-            name=name,
-            description=description,
-            inputSchema=input_schema,
-            outputSchema=output_schema,
-        )
+    return types.Tool(
+        name=name,
+        description=description,
+        input_schema=input_schema,
+        output_schema=output_schema,
+    )
 
 
 class McpRegistry:
@@ -134,13 +122,13 @@ class McpRegistry:
         except TypeError:
             self.server = Server(name)
 
-            @self.server.list_tools()
-            async def _list_tools(_request: Any) -> types.ListToolsResult:
+            @getattr(self.server, "list_tools")()
+            async def _list_tools(_request: object) -> types.ListToolsResult:
                 return await self._handle_list_tools(None, _request)
 
-            @self.server.call_tool()
+            @getattr(self.server, "call_tool")()
             async def _call_tool(
-                tool_name: str, arguments: dict[str, Any]
+                tool_name: str, arguments: dict[str, object]
             ) -> types.CallToolResult:
                 params = types.CallToolRequestParams(name=tool_name, arguments=arguments)
                 return await self._handle_call_tool(None, params)
@@ -150,20 +138,40 @@ class McpRegistry:
         self._records: dict[str, _ToolRecord] = {}
         self._children: list[McpRegistry] = []
 
+    @overload
     def tool(
         self,
-        function: Callable[..., Any] | None = None,
+        function: Callable[P, R],
         *,
         name: str | None = None,
         description: str | None = None,
         structured_output: bool | None = None,
-    ) -> Callable[..., Any]:
+    ) -> Callable[P, R]: ...
+
+    @overload
+    def tool(
+        self,
+        function: None = None,
+        *,
+        name: str | None = None,
+        description: str | None = None,
+        structured_output: bool | None = None,
+    ) -> Callable[[Callable[P, R]], Callable[P, R]]: ...
+
+    def tool(
+        self,
+        function: Callable[P, R] | None = None,
+        *,
+        name: str | None = None,
+        description: str | None = None,
+        structured_output: bool | None = None,
+    ) -> Callable[[Callable[P, R]], Callable[P, R]] | Callable[P, R]:
         # Keep the historical decorator contract used by server_mcp.py. The
         # The official SDK receives the explicit schemas from the registry and
         # structured content is emitted by _execute().
         del structured_output
 
-        def register(fn: Callable[..., Any]) -> Callable[..., Any]:
+        def register(fn: Callable[P, R]) -> Callable[P, R]:
             tool_name = name or getattr(fn, "name", None) or fn.__name__
             input_model = _input_model(tool_name, fn)
             record = _ToolRecord(
@@ -185,7 +193,7 @@ class McpRegistry:
 
         return register(function) if function is not None else register
 
-    def mount(self, child: "McpRegistry") -> None:
+    def mount(self, child: McpRegistry) -> None:
         self._children.append(child)
 
     def _record_for(self, name: str) -> _ToolRecord | None:
@@ -198,11 +206,13 @@ class McpRegistry:
                 return record
         return None
 
-    async def _handle_list_tools(self, _context: Any, _params: Any) -> types.ListToolsResult:
+    async def _handle_list_tools(
+        self, _context: object, _params: object
+    ) -> types.ListToolsResult:
         return types.ListToolsResult(tools=await self._visible_tools())
 
     async def _handle_call_tool(
-        self, _context: Any, params: types.CallToolRequestParams
+        self, _context: object, params: types.CallToolRequestParams
     ) -> types.CallToolResult:
         try:
             return await self._execute(
@@ -242,8 +252,11 @@ class McpRegistry:
     async def _visible_tools(self) -> list[types.Tool]:
         if not self._filter_tools:
             return await self.list_tools()
+        from kogwistar.server.auth_middleware import (
+            get_current_namespaces,
+            get_current_role,
+        )
         from kogwistar.server.mcp_tools import _tool_allowed
-        from kogwistar.server.auth_middleware import get_current_namespaces, get_current_role
 
         role = get_current_role()
         namespaces = get_current_namespaces()
@@ -256,12 +269,15 @@ class McpRegistry:
     async def _execute(
         self,
         name: str,
-        arguments: dict[str, Any],
+        arguments: dict[str, object],
         *,
         enforce_visibility: bool = False,
     ) -> types.CallToolResult:
+        from kogwistar.server.auth_middleware import (
+            get_current_namespaces,
+            get_current_role,
+        )
         from kogwistar.server.mcp_tools import _tool_allowed
-        from kogwistar.server.auth_middleware import get_current_namespaces, get_current_role
 
         record = self._record_for(name)
         if record is None:
@@ -297,7 +313,7 @@ class McpRegistry:
         )
 
     async def call_tool(
-        self, name: str, arguments: dict[str, Any] | None = None
+        self, name: str, arguments: dict[str, object] | None = None
     ) -> types.CallToolResult:
         return await self._execute(name, arguments or {})
 
@@ -309,7 +325,7 @@ class McpRegistry:
         manager_holder: dict[str, StreamableHTTPSessionManager] = {}
 
         @asynccontextmanager
-        async def lifespan(app: Any):
+        async def lifespan(_app: object) -> AsyncIterator[None]:
             manager = StreamableHTTPSessionManager(self.server)
             manager_holder["manager"] = manager
             async with manager.run():
@@ -318,7 +334,7 @@ class McpRegistry:
                 finally:
                     manager_holder.pop("manager", None)
 
-        async def scoped_handler(scope: Any, receive: Any, send: Any) -> None:
+        async def scoped_handler(scope: Scope, receive: Receive, send: Send) -> None:
             if scope.get("type") == "http":
                 request_path = str(scope.get("path") or "")
                 if request_path not in {endpoint, endpoint + "/"}:

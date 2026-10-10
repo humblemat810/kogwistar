@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from typing import Any, cast
+from typing import cast
 
 from kogwistar.conversation.models import ConversationNode
+from kogwistar.json_types import JsonValue
 
 from .chat_service_shared import _BaseComponent
 
@@ -10,13 +11,17 @@ from .chat_service_shared import _BaseComponent
 class _ConversationQueryService(_BaseComponent):
     """Owns conversation creation and transcript/query helpers."""
 
+    @staticmethod
+    def _json_int(value: JsonValue) -> int:
+        return int(value) if isinstance(value, (int, float, str)) else 0
+
     def create_conversation(
         self,
         *,
         user_id: str,
         conversation_id: str | None = None,
         start_node_id: str | None = None,
-    ) -> dict[str, Any]:
+    ) -> dict[str, JsonValue]:
         svc = self._conversation_service()
         conv_id, start_id = svc.create_conversation(
             user_id=user_id, conv_id=conversation_id, node_id=start_node_id
@@ -48,7 +53,9 @@ class _ConversationQueryService(_BaseComponent):
         starts.sort(key=lambda node: int(getattr(node, "turn_index", -1) or -1))
         return str(getattr(starts[0], "user_id", None) or "")
 
-    def list_conversations_for_user(self, user_id: str) -> list[dict[str, Any]]:
+    def list_conversations_for_user(
+        self, user_id: str
+    ) -> list[dict[str, JsonValue]]:
         starts = cast(
             list[ConversationNode],
             self._conversation_engine().read.get_nodes(
@@ -63,7 +70,7 @@ class _ConversationQueryService(_BaseComponent):
             ),
         )
 
-        results = []
+        results: list[dict[str, JsonValue]] = []
         for start in starts:
             conv_id = getattr(start, "conversation_id", None)
             if conv_id:
@@ -78,10 +85,15 @@ class _ConversationQueryService(_BaseComponent):
                         "turn_count": len(self.list_transcript(str(conv_id))),
                     }
                 )
-        results.sort(key=lambda x: x["turn_count"], reverse=True)
+        results.sort(
+            key=lambda item: (
+                self._json_int(item.get("turn_count"))
+            ),
+            reverse=True,
+        )
         return results
 
-    def get_conversation(self, conversation_id: str) -> dict[str, Any]:
+    def get_conversation(self, conversation_id: str) -> dict[str, JsonValue]:
         nodes = self._conversation_nodes(conversation_id)
         svc = self._conversation_service()
         tail = svc.get_conversation_tail(conversation_id=conversation_id)
@@ -104,16 +116,16 @@ class _ConversationQueryService(_BaseComponent):
             "turn_count": len(turns),
         }
 
-    def list_transcript(self, conversation_id: str) -> list[dict[str, Any]]:
+    def list_transcript(self, conversation_id: str) -> list[dict[str, JsonValue]]:
         nodes = self._conversation_nodes(conversation_id)
-        turns: list[dict[str, Any]] = []
+        turns: list[dict[str, JsonValue]] = []
         for node in nodes:
             metadata = getattr(node, "metadata", {}) or {}
             entity_type = str(metadata.get("entity_type") or "")
             if entity_type not in {"conversation_turn", "assistant_turn"}:
                 continue
             turn_index = getattr(node, "turn_index", None)
-            if turn_index is None:
+            if not isinstance(turn_index, (int, float, str)):
                 continue
             turns.append(
                 {
@@ -124,7 +136,12 @@ class _ConversationQueryService(_BaseComponent):
                     "entity_type": entity_type,
                 }
             )
-        turns.sort(key=lambda item: (int(item["turn_index"]), str(item["node_id"])))
+        turns.sort(
+            key=lambda item: (
+                self._json_int(item.get("turn_index")),
+                str(item.get("node_id") or ""),
+            )
+        )
         return turns
 
     def latest_snapshot(
@@ -133,7 +150,7 @@ class _ConversationQueryService(_BaseComponent):
         *,
         run_id: str | None = None,
         stage: str | None = None,
-    ) -> dict[str, Any]:
+    ) -> dict[str, JsonValue]:
         svc = self._conversation_service()
         snap = svc.latest_context_snapshot_node(
             conversation_id=conversation_id, run_id=run_id, stage=stage

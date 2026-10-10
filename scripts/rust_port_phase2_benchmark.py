@@ -8,15 +8,15 @@ from __future__ import annotations
 
 import argparse
 import ctypes
-from ctypes import wintypes
 import hashlib
 import json
 import math
 import os
-from pathlib import Path
 import subprocess
 import sys
 import time
+from ctypes import wintypes
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 

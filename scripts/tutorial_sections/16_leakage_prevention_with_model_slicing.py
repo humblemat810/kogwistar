@@ -4,11 +4,13 @@
 # to prevent internal system metadata from leaking into LLM prompts.
 
 # %%
-from typing import Annotated
-from pydantic import BaseModel, Field, ValidationError
-from pydantic_extension.model_slicing import ModeSlicingMixin, use_mode, LLMField
-from pydantic_extension.model_slicing.mixin import ExcludeMode
 import json
+from typing import Annotated
+
+from pydantic import BaseModel, Field, ValidationError
+from pydantic_extension.model_slicing import LLMField, ModeSlicingMixin, use_mode
+from pydantic_extension.model_slicing.mixin import ExcludeMode
+
 
 # Define a model that represents a Knowledge Graph Node,
 # but contains sensitive internal fields that should NEVER be sent to an LLM.

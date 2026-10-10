@@ -1,14 +1,20 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from types import MappingProxyType
-from typing import Any, Dict, Mapping, List
+from typing import Any
 
 import pytest
 
+from kogwistar.conversation.conversation_orchestrator import (
+    get_id_for_conversation_turn,
+    get_id_for_conversation_turn_edge,
+)
 from kogwistar.conversation.models import (
     ConversationEdge,
     ConversationNode,
 )
+from kogwistar.conversation.resolvers import default_resolver
 from kogwistar.llm_tasks import (
     AdjudicateBatchTaskResult,
     AdjudicatePairTaskResult,
@@ -19,12 +25,7 @@ from kogwistar.llm_tasks import (
     RepairCitationsTaskResult,
     SummarizeContextTaskResult,
 )
-from kogwistar.conversation.resolvers import default_resolver
 from kogwistar.runtime.models import RunSuccess
-from kogwistar.conversation.conversation_orchestrator import (
-    get_id_for_conversation_turn,
-    get_id_for_conversation_turn_edge,
-)
 
 pytestmark = [
     pytest.mark.ci,
@@ -37,8 +38,8 @@ class FakeConversationEngine:
     """Minimal conversation engine stub for resolver unit tests."""
 
     def __init__(self) -> None:
-        self.nodes: Dict[str, Any] = {}
-        self.edges: Dict[str, Any] = {}
+        self.nodes: dict[str, Any] = {}
+        self.edges: dict[str, Any] = {}
         self.read = _ReadShim(self)
         self.write = _WriteShim(self)
 
@@ -46,12 +47,12 @@ class FakeConversationEngine:
         return [0.0, 0.1]
 
     def add_node(self, node: Any) -> None:
-        self.nodes[str(getattr(node, "id"))] = node
+        self.nodes[str(node.id)] = node
 
     def add_edge(self, edge: Any) -> None:
-        self.edges[str(getattr(edge, "id"))] = edge
+        self.edges[str(edge.id)] = edge
 
-    def get_nodes(self, ids: List[str]) -> List[Any]:
+    def get_nodes(self, ids: list[str]) -> list[Any]:
         return [self.nodes[str(i)] for i in ids]
 
 
@@ -59,7 +60,7 @@ class _ReadShim:
     def __init__(self, engine: FakeConversationEngine) -> None:
         self._engine = engine
 
-    def get_nodes(self, ids: List[str], **kwargs) -> List[Any]:
+    def get_nodes(self, ids: list[str], **kwargs) -> list[Any]:
         return self._engine.get_nodes(ids)
 
 
@@ -75,7 +76,7 @@ class _WriteShim:
 
 
 class FakeStepContext:
-    def __init__(self, state: Dict[str, Any]) -> None:
+    def __init__(self, state: dict[str, Any]) -> None:
         self._state = state
 
     @property
@@ -91,7 +92,7 @@ class _StateWriteTxn:
     def __init__(self, ctx: FakeStepContext) -> None:
         self._ctx = ctx
 
-    def __enter__(self) -> Dict[str, Any]:
+    def __enter__(self) -> dict[str, Any]:
         return self._ctx._state
 
     def __exit__(self, exc_type, exc, tb) -> None:

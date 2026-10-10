@@ -3,22 +3,22 @@ from __future__ import annotations
 import functools
 import inspect
 import json
-from typing import Any, Callable, ParamSpec, Type, TypeVar, cast, overload
+from collections.abc import Callable
+from typing import Any, ParamSpec, TypeVar, cast, overload
+
+from pydantic import BaseModel
 
 from .cache_backend import Memory
-from pydantic import BaseModel
 
 P = ParamSpec("P")
 M = TypeVar("M")
 
 
-def _stable_json(obj: Any) -> str:
+def _stable_json(obj: object) -> str:
     return json.dumps(
         obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str
     )
 
-
-from typing import TypeVar, ParamSpec
 
 P = ParamSpec("P")
 R = TypeVar("R")
@@ -26,16 +26,29 @@ TNode = TypeVar("TNode", bound=BaseModel)
 BaseM = TypeVar("BaseM", bound=BaseModel)
 
 
-def cached(memory: Memory, fn: Callable[P, R], *args, **kwargs) -> Callable[P, R]:
-    return cast(Callable[P, R], memory.cache(fn, *args, **kwargs))
+def cached(
+    memory: Memory,
+    fn: Callable[P, R],
+    **options: object,
+) -> Callable[P, R]:
+    return cast(Callable[P, R], memory.cache(fn, **options))
 
 
 @overload
 def cache_pydantic_structured(
     *,
     memory: Memory,
-    model: Type[BaseM],
+    model: type[BaseM],
     fn: Callable[P, BaseM],
+    ignore: list[str] | None = None,
+    dump_exclude: set[str] | None = None,
+) -> Callable[P, BaseM]: ...
+@overload
+def cache_pydantic_structured(
+    *,
+    memory: Memory,
+    model: type[BaseM],
+    fn: Callable[P, Any],
     ignore: list[str] | None = None,
     dump_exclude: set[str] | None = None,
 ) -> Callable[P, BaseM]: ...
@@ -51,7 +64,7 @@ def cache_pydantic_structured(
 def cache_pydantic_structured(
     *,
     memory: Memory,
-    model: Type[BaseM] | None,
+    model: type[BaseM] | None,
     fn: Callable[P, BaseM],
     ignore: list[str] | None = None,
     dump_exclude: set[str] | None = None,
@@ -131,11 +144,13 @@ def cache_pydantic_structured(
 
 
 if __name__ == "__main__":
-    from pathlib import Path
-    from .cache_backend import Memory
-    from pydantic import BaseModel
     import shutil
     import tempfile
+    from pathlib import Path
+
+    from pydantic import BaseModel
+
+    from .cache_backend import Memory
 
     # ----------------------------
     # Fake Pydantic output model
@@ -149,11 +164,11 @@ if __name__ == "__main__":
     # Fake agent (no LLM involved)
     # ----------------------------
     class FakeAgent:
-        def __init__(self):
+        def __init__(self) -> None:
             self.calls = 0
 
         def _select_used_evidence(
-            self, question: str, candidates: list[dict], out_model: Type[BaseM]
+            self, question: str, candidates: list[dict], out_model: type[BaseM]
         ) -> BaseM:
             # simulate "LLM" work
             self.calls += 1
@@ -165,11 +180,11 @@ if __name__ == "__main__":
 
         @staticmethod
         def entry(
-            agent: "FakeAgent",
+            agent: FakeAgent,
             question: str,
             candidates: list[dict],
-            out_schema,
-            out_model: Type[BaseM],
+            out_schema: object,
+            out_model: type[BaseM],
         ) -> BaseM:
             return agent._select_used_evidence(
                 question=question, candidates=candidates, out_model=out_model
@@ -254,7 +269,13 @@ if __name__ == "__main__":
             ignore=["agent"],
         )
 
-        out4 = cached_entry_v2(agent=agent, question="hi", candidates=candidates)
+        out4 = cached_entry_v2(
+            agent=agent,
+            question="hi",
+            candidates=candidates,
+            out_schema=FakeSelectionV2.model_json_schema,
+            out_model=FakeSelectionV2,
+        )
         print("out4 (v2):", out4)
         print("agent.calls after schema change:", agent.calls)
         assert agent.calls == 3  # schema hash forces miss

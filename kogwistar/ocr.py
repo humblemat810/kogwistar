@@ -7,37 +7,48 @@ retry_failed_refine = False
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 ocr_json_version = "0.1"
-import time
 import base64
-from kogwistar.engine_core.models import (
-    NonText_box_2d,
-    OCRClusterResponse,
-    SplitPage,
-    NonTextCluster,
-    TextCluster,
-)
-from typing import (
-    TYPE_CHECKING,
-    cast,
-    Optional,
-    Literal,
-    TypeAlias,
-)
 import json
-from pydantic_extension.model_slicing import (
-    ModeSlicingMixin,
-    DtoType,
-)
-from pydantic_extension.model_slicing.mixin import DtoField
+import time
+from collections.abc import Mapping, MutableMapping, Sequence
+from os import PathLike
+from typing import Any, Literal, Protocol, Self, TypeAlias, cast
+
 from pydantic import (
     BaseModel,
     Field,
     model_validator,
 )
-from .llm_structured_output import build_structured_output_runnable
+from pydantic_extension.model_slicing import (
+    DtoType,
+    ModeSlicingMixin,
+)
+from pydantic_extension.model_slicing.mixin import DtoField
 
-if TYPE_CHECKING:
-    from langchain_core.language_models import BaseChatModel
+from kogwistar.engine_core.models import (
+    NonText_box_2d,
+    NonTextCluster,
+    OCRClusterResponse,
+    SplitPage,
+    TextCluster,
+)
+from kogwistar.llm_tasks.providers import SupportsStructuredOutput
+
+from .llm_structured_output import build_structured_output_runnable
+from .utils.langchain import GeminiCostCallbackHandler
+
+class _StructuredStep(Protocol):
+    def invoke(self, messages: object, config: object | None = None) -> object: ...
+
+
+class _StructuredChainWithSteps(Protocol):
+    steps: Sequence[_StructuredStep]
+
+
+class _SystemMessageLike(Protocol):
+    content: str
+
+    def model_copy(self, *, deep: bool = False) -> Self: ...
 
 _OCR_OPTIONAL_DEPENDENCY_MESSAGE = (
     "OCR helpers require optional dependency group 'ingestion-gemini'. "
@@ -68,13 +79,13 @@ except Exception:  # pragma: no cover - depends on optional env
 PastCompatibleSplitPage: TypeAlias = SplitPage
 
 
-def get_page_json(folder_path, page_num):
+def get_page_json(folder_path: str | PathLike[str], page_num: int) -> dict[str, Any]:
     with open(os.path.join(folder_path, "page_" + str(page_num) + ".json"), "r") as f:
         file_json_raw = json.load(f)
     return file_json_raw
 
 
-def regen_page(file_json_raw, use_raw):
+def regen_page(file_json_raw: dict[str, Any], use_raw: bool) -> object:
     # add compatible to union if want to compatible with past models
     """regen from json returned by SplitPage.to_doc(), can be view as SplitPage.FromJson(filepath)"""
     p = PastCompatibleSplitPage(**file_json_raw)
@@ -87,7 +98,9 @@ def regen_page(file_json_raw, use_raw):
     return res
 
 
-def regen_doc(folder_path, use_raw=False):
+def regen_doc(
+    folder_path: str | PathLike[str], use_raw: bool = False
+) -> list[Any]:
     pages_nums = sorted(
         (
             int(i.rsplit(".json", 1)[0].split("page_", 1)[1])
@@ -102,7 +115,6 @@ def regen_doc(folder_path, use_raw=False):
             pages.append(get_page_json(folder_path, pn))
             split_pages.append(regen_page(pages[-1], use_raw=use_raw))
         except Exception:
-            folder_path, pn
             print(f"error at page {pn}")
             print(f"in file {folder_path}")
             logger.error(f"error at page {pn}")
@@ -130,11 +142,11 @@ class RawOCRResponse(BaseModel):
     non_text_objects: DtoType[list[NonText_box_2d]] = Field(
         description="the non-OCR object results. Share cluster number uniqueness with OCR texts. "
     )
-    is_empty_page: DtoType[Optional[bool]] = Field(
+    is_empty_page: DtoType[bool | None] = Field(
         default=False,
         description="true if the whole page is empty without recognisable text.",
     )
-    printed_page_number: DtoType[Optional[str]] = Field(
+    printed_page_number: DtoType[str | None] = Field(
         description='the page number identified from OCR texts, can be in form of roman numerals such as "i", "ii", "iii", "iv"...; '
         'Arabic numeral such as 1, 2, 3... or letter such as "a", "b", "c"...\n'
         'Sometimes the are surrounded by symbols such as "- 1 -", "- 2 -"'
@@ -180,7 +192,7 @@ class RawOCRResponse(BaseModel):
     #                                                         "Share id uniqueness with OCR text boxes_2d. ")
 
     @model_validator(mode="after")
-    def check_cluster_meaningful_ordering_agreement(self):
+    def check_cluster_meaningful_ordering_agreement(self) -> Self:
         assert bool(self.is_empty_page) ^ (len(self.boxes_2d) > 0), (
             f"is_empty_page value {self.is_empty_page} disagree with OCR_text_clusters len={len(self.boxes_2d)}"
         )
@@ -205,7 +217,7 @@ class RawOCRResponse(BaseModel):
 class OCRMetaResponse(BaseModel):
     "meatada of an OCR page"
 
-    printed_page_number: DtoType[Optional[str]] = Field(
+    printed_page_number: DtoType[str | None] = Field(
         description='the page number identified from OCR texts, can be in form of roman numerals such as "i", "ii", "iii", "iv"...; '
         'Arabic numeral such as 1, 2, 3... or letter such as "a", "b", "c"...\n'
         'Sometimes the are surrounded by symbols such as "- 1 -", "- 2 -"'
@@ -253,7 +265,7 @@ class OCRClusterResponseMetaless(ModeSlicingMixin, BaseModel):
     non_text_objects: DtoType[list[NonTextCluster]] = Field(
         description="the non-OCR object results. Share cluster number uniqueness with OCR texts. "
     )
-    printed_page_number: DtoType[Optional[str]] = Field(
+    printed_page_number: DtoType[str | None] = Field(
         description='the page number identified from OCR texts, can be in form of roman numerals such as "i", "ii", "iii", "iv"...; '
         'Arabic numeral such as 1, 2, 3... or letter such as "a", "b", "c"...\n'
         'Sometimes the are surrounded by symbols such as "- 1 -", "- 2 -"'
@@ -271,7 +283,7 @@ class RawOCRResponseMetaless(ModeSlicingMixin, BaseModel):
     non_text_objects: DtoType[list[NonText_box_2d]] = Field(
         description="the non-OCR object results. Share cluster number uniqueness with OCR texts. "
     )
-    printed_page_number: DtoType[Optional[str]] = Field(
+    printed_page_number: DtoType[str | None] = Field(
         "",
         description='the page number identified from OCR texts, can be in form of roman numerals such as "i", "ii", "iii", "iv"...; '
         'Arabic numeral such as 1, 2, 3... or letter such as "a", "b", "c"...\n'
@@ -284,29 +296,31 @@ class RawOCRResponseMetaless(ModeSlicingMixin, BaseModel):
 
 
 def get_first_round_response(
-    draft_responses,
-    llm,
-    model_name,
-    cb,
-    messages,
-    sys_message,
-    img_message,
-    usage_metadata,
-):
+    draft_responses: MutableMapping[str, str],
+    llm: SupportsStructuredOutput,
+    model_name: str,
+    cb: GeminiCostCallbackHandler,
+    messages: Sequence[Any],
+    sys_message: _SystemMessageLike,
+    img_message: object,
+    usage_metadata: list[object],
+) -> OCRClusterResponse | None:
 
-    chain = build_structured_output_runnable(llm, RawOCRResponse, include_raw=True)
+    chain = cast(
+        _StructuredChainWithSteps,
+        build_structured_output_runnable(llm, RawOCRResponse, include_raw=True),
+    )
     before_parse = chain.steps[0]
     after_parse = chain.steps[1]
     raw_response = before_parse.invoke(messages, config={"callbacks": [cb]})
 
     if hasattr(raw_response, "usage_metadata"):
-        usage_metadata.append(raw_response.usage_metadata)
+        usage_metadata.append(getattr(raw_response, "usage_metadata"))
     else:
         usage_metadata.append(None)
-    response_with_raw: dict[str, RawOCRResponse] = after_parse.invoke(raw_response)
+    response_with_raw = cast(dict[str, object], after_parse.invoke(raw_response))
     response: RawOCRResponse | OCRClusterResponse | None
-    response1: RawOCRResponse | None = response_with_raw.get("parsed")
-    raw = response_with_raw.get("raw")
+    response1 = cast(RawOCRResponse | None, response_with_raw.get("parsed"))
     parsing_error = response_with_raw.get("parsing_error")
     if response1 is not None:
         response = RawOCRResponse_to_OCRClusterResponse(response1)
@@ -343,18 +357,17 @@ def get_first_round_response(
         raw_ocr_response = cast(RawOCRResponse, response_with_raw.get("parsed"))
         if raw_ocr_response is not None:
             response = RawOCRResponse_to_OCRClusterResponse(raw_ocr_response)
-        raw = response_with_raw.get("raw")
         parsing_error = response_with_raw.get("parsing_error")
     return response
 
 
 def validate_response(
     response: OCRClusterResponse | None,
-    response_dict: dict,
-    image_file_path,
-    model_name,
-    page_file_name,
-):
+    response_dict: MutableMapping[str, object],
+    image_file_path: str | PathLike[str],
+    model_name: str,
+    page_file_name: str,
+) -> SplitPage:
 
     if response is None:
         logger.error(
@@ -398,7 +411,6 @@ def validate_response(
         try:
             sp.to_doc()
             response_dict.update(response_dict_local)
-            ok = True
         except Exception as e:
             logger.error(
                 f"Generated json fail to reproduce doc, file name = {image_file_path}, {model_name=}"
@@ -473,8 +485,12 @@ def RawOCRResponse_to_OCRClusterResponse(
 
 
 def final_resort(
-    draft_responses: dict, messages, page_file_name, model_name, image_file_path
-):
+    draft_responses: Mapping[str, str],
+    messages: list[Any],
+    page_file_name: str,
+    model_name: str,
+    image_file_path: str | PathLike[str],
+) -> None:
     """
     One day gemini suddenly cannot run but return a totally different schema, ad hoc code fix to fit the transformed schema and
     break down document reading into 2 tasks, namely meta and ocr and non ocr recognition
@@ -482,7 +498,6 @@ def final_resort(
     max_v = ""
     for k, v in draft_responses.items():
         if len(v) > len(max_v):
-            max_k = (k,)
             max_v = v
     earlier_partial_ocr = (
         draft_responses.get("gemini-2.5-pro")
@@ -500,7 +515,9 @@ def final_resort(
 
     ocr_meta_response: OCRMetaResponse | None = cast(
         OCRMetaResponse | None,
-        build_structured_output_runnable(llm, OCRMetaResponse, include_raw=True).invoke(messages[:2]),
+        build_structured_output_runnable(
+            cast(SupportsStructuredOutput, llm), OCRMetaResponse, include_raw=True
+        ).invoke(messages[:2]),
     )
     if ocr_meta_response is None:
         raise Exception(
@@ -516,7 +533,11 @@ def final_resort(
     try:
         response2: RawOCRResponseMetaless | None = cast(
             RawOCRResponseMetaless | None,
-            build_structured_output_runnable(llm, RawOCRResponseMetaless, include_raw=True).invoke(
+            build_structured_output_runnable(
+                cast(SupportsStructuredOutput, llm),
+                RawOCRResponseMetaless,
+                include_raw=True,
+            ).invoke(
                 messages[:2] + metadata
             ),
         )
@@ -531,7 +552,11 @@ def final_resort(
         try:
             response3: TextBoxResponse | None = cast(
                 TextBoxResponse | None,
-                build_structured_output_runnable(llm, TextBoxResponse, include_raw=True).invoke(messages[:2]),
+                build_structured_output_runnable(
+                    cast(SupportsStructuredOutput, llm),
+                    TextBoxResponse,
+                    include_raw=True,
+                ).invoke(messages[:2]),
             )
             if response3 is None:
                 has_error = True
@@ -596,7 +621,6 @@ def final_resort(
                     sp = SplitPage(**response_dict)
                 try:
                     sp.to_doc()
-                    ok = True
                 except Exception:
                     raise Exception(
                         "Validation error response_dict cannot be validate into SplitPage"
@@ -632,17 +656,14 @@ def TextBoxResponse_to_OCRClusterResponse(
     return OCRClusterResponse.model_validate(temp)
 
 
-from .utils.langchain import GeminiCostCallbackHandler
-
-
 def refine_image_response(
-    ok2,
-    response_dict,
-    outfile_name,
-    image_file_path,
-    model_names,
+    ok2: bool,
+    response_dict: MutableMapping[str, Any],
+    outfile_name: str | PathLike[str],
+    image_file_path: str | PathLike[str],
+    model_names: Sequence[str],
     cb: GeminiCostCallbackHandler,
-):
+) -> bool:
 
     # if allow_page_refine and (not preexisting):
     if not response_dict:
@@ -688,7 +709,10 @@ def refine_image_response(
             )
 
             refined = refine_table_ocr(
-                response_dict, llm=llm, cb=cb, error_messages=error_messages
+                response_dict,
+                llm=cast(SupportsStructuredOutput, llm),
+                cb=cb,
+                error_messages=error_messages,
             )
             ok2 = True
         except Exception as e:
@@ -721,7 +745,7 @@ def refine_image_response(
     return refined
 
 
-def get_messages(image_file_path):
+def get_messages(image_file_path: str | PathLike[str]) -> tuple[Any, Any]:
 
     # Open the image in binary mode and read its content.
     with open(image_file_path, "rb") as image_file:
@@ -756,11 +780,11 @@ def get_messages(image_file_path):
 
 def ocr_single_image(
     gemini_key: str,
-    page_file_name,
-    file_name,
-    folder,  # out folder
+    page_file_name: str,
+    file_name: str,
+    folder: str | PathLike[str],  # out folder
     exist_behavior: Literal["ok", "skip", "raise", "rerun"] = "skip",
-):
+) -> None:
     ok2 = False  # stage 2 ok
     outfile_name = os.path.join(
         folder, file_name, page_file_name.rsplit(".", 1)[0] + ".json"
@@ -793,7 +817,7 @@ def ocr_single_image(
     ok = False
     i_model = 0
     usage_metadata = []
-    from utils.langchain import get_gemini_callback_cost
+    from kogwistar.utils.langchain import get_gemini_callback_cost
 
     response_dict: dict = {}
     image_file_path: str = os.path.join(folder, file_name, page_file_name)
@@ -817,7 +841,7 @@ def ocr_single_image(
                     )
                     response = get_first_round_response(
                         draft_responses,
-                        llm,
+                        cast(SupportsStructuredOutput, llm),
                         model_name,
                         cb,
                         messages,
@@ -825,7 +849,7 @@ def ocr_single_image(
                         img_message,
                         usage_metadata,
                     )
-                    sp = validate_response(
+                    validate_response(
                         response,
                         response_dict,
                         image_file_path,
@@ -878,7 +902,12 @@ def ocr_single_image(
 OCRRefineResponse: TypeAlias = OCRClusterResponse[DtoField]
 
 
-def refine_table_ocr(response_dict, llm: BaseChatModel, cb, error_messages):
+def refine_table_ocr(
+    response_dict: MutableMapping[str, Any],
+    llm: SupportsStructuredOutput,
+    cb: GeminiCostCallbackHandler,
+    error_messages: list[Any],
+) -> bool:
     if response_dict.get("refined_version"):
         return False
     else:
@@ -905,7 +934,6 @@ def refine_table_ocr(response_dict, llm: BaseChatModel, cb, error_messages):
     for i in range(max_attempt):
         try:
             oc_refined_result: OCRRefineResponse
-            raw: str
             parsing_error: Exception
 
             temp: dict = cast(
@@ -914,7 +942,7 @@ def refine_table_ocr(response_dict, llm: BaseChatModel, cb, error_messages):
                     llm, OCRRefineResponse, include_raw=True
                 ).invoke(messages, config={"callbacks": [cb]}),
             )
-            (raw, oc_refined_result, parsing_error) = (
+            (_raw, oc_refined_result, parsing_error) = (
                 temp["raw"],
                 temp["parsed"],
                 temp["parsing_error"],
@@ -925,7 +953,7 @@ def refine_table_ocr(response_dict, llm: BaseChatModel, cb, error_messages):
             text_after = " ".join([i.text for i in oc_refined_result.OCR_text_clusters])
             from rapidfuzz import fuzz
 
-            def get_threshold(text_before):
+            def get_threshold(text_before: str) -> int:
                 if len(text_before) < 30:
                     threshold = 100
                 elif len(text_before) < 60:

@@ -12,33 +12,37 @@ import contextlib
 import json
 import threading
 import time
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
-from typing import Any, cast, Callable, Iterator, Protocol, runtime_checkable
+from typing import ClassVar, Protocol, cast, runtime_checkable
 
-from kogwistar.conversation.models import MetaFromLastSummary
-from kogwistar.conversation.models import ConversationNode
+from kogwistar.conversation.models import ConversationNode, MetaFromLastSummary
 from kogwistar.conversation.service import ConversationService
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.json_types import JsonValue
 from kogwistar.server.auth_middleware import claims_ctx
 
 from .run_registry import RunRegistry
+
+JsonObject = dict[str, JsonValue]
+PublishPayload = Mapping[str, object] | JsonObject | None
 
 
 class RunCancelledError(RuntimeError):
     """Raised when a submitted chat run is cancelled cooperatively."""
 
 
-def capture_auth_claims(principal_id: str | None = None) -> dict[str, Any] | None:
+def capture_auth_claims(principal_id: str | None = None) -> JsonObject | None:
     """Capture request identity before work crosses a background-thread boundary."""
     claims = claims_ctx.get()
     if isinstance(claims, dict):
-        return dict(claims)
+        return cast(JsonObject, dict(claims))
     principal = str(principal_id or "").strip()
     return {"agent_id": principal} if principal else None
 
 
 @contextlib.contextmanager
-def bind_auth_claims(claims: dict[str, Any] | None):
+def bind_auth_claims(claims: JsonObject | None) -> Iterator[None]:
     """Bind captured identity only for the lifetime of one background run."""
     token = claims_ctx.set(dict(claims) if isinstance(claims, dict) else None)
     try:
@@ -62,16 +66,16 @@ class RunSchedulerLike(Protocol):
         start_fn: Callable[[], None],
         retry_count: int = 0,
         max_retries: int = 3,
-        external_hook: Callable[[dict[str, Any]], dict[str, Any] | None] | None = None,
-    ) -> dict[str, Any]: ...
+        external_hook: Callable[[JsonObject], JsonObject | None] | None = None,
+    ) -> JsonObject: ...
 
-    def snapshot(self) -> dict[str, Any]: ...
+    def snapshot(self) -> JsonObject: ...
 
-    def dead_letter(self) -> list[dict[str, Any]]: ...
+    def dead_letter(self) -> list[JsonObject]: ...
 
-    def resume(self, run_id: str) -> dict[str, Any]: ...
+    def resume(self, run_id: str) -> JsonObject: ...
 
-    def timeline(self, *, run_id: str | None = None, limit: int = 200) -> list[dict[str, Any]]: ...
+    def timeline(self, *, run_id: str | None = None, limit: int = 200) -> list[JsonObject]: ...
 
 
 @dataclass
@@ -87,9 +91,9 @@ class AnswerRunRequest:
     workflow_engine: GraphKnowledgeEngine
     prev_turn_meta_summary: MetaFromLastSummary
     registry: RunRegistry
-    publish: Callable[[str, dict[str, Any] | None], dict[str, Any]]
+    publish: Callable[[str, JsonObject | None], JsonObject]
     is_cancel_requested: Callable[[], bool]
-    auth_claims: dict[str, Any] | None = None
+    auth_claims: JsonObject | None = None
 
 
 @dataclass
@@ -99,12 +103,12 @@ class RuntimeRunRequest:
     conversation_id: str
     turn_node_id: str
     user_id: str | None
-    initial_state: dict[str, Any]
+    initial_state: JsonObject
     knowledge_engine: GraphKnowledgeEngine
     conversation_engine: GraphKnowledgeEngine
     workflow_engine: GraphKnowledgeEngine
     registry: RunRegistry
-    publish: Callable[[str, dict[str, Any] | None], dict[str, Any]]
+    publish: Callable[[str, JsonObject | None], JsonObject]
     is_cancel_requested: Callable[[], bool]
     priority_class: str = "foreground"
     token_budget: int | None = None
@@ -112,7 +116,7 @@ class RuntimeRunRequest:
     capabilities: tuple[str, ...] = ()
     capability_subject: str | None = None
     runtime_kind: str = "sync"
-    auth_claims: dict[str, Any] | None = None
+    auth_claims: JsonObject | None = None
 
 
 @dataclass
@@ -120,7 +124,7 @@ class RuntimeResumeRequest:
     run_id: str
     suspended_node_id: str
     suspended_token_id: str
-    client_result: dict[str, Any]
+    client_result: JsonObject
     workflow_id: str
     conversation_id: str
     turn_node_id: str
@@ -129,16 +133,16 @@ class RuntimeResumeRequest:
     conversation_engine: GraphKnowledgeEngine
     workflow_engine: GraphKnowledgeEngine
     registry: RunRegistry
-    publish: Callable[[str, dict[str, Any] | None], dict[str, Any]]
+    publish: Callable[[str, JsonObject | None], JsonObject]
     is_cancel_requested: Callable[[], bool]
     token_budget: int | None = None
     time_budget_ms: int | None = None
     capabilities: tuple[str, ...] = ()
     capability_subject: str | None = None
-    auth_claims: dict[str, Any] | None = None
+    auth_claims: JsonObject | None = None
 
 
-def json_safe(value: Any) -> Any:
+def json_safe(value: object) -> JsonValue:
     return json.loads(json.dumps(value, ensure_ascii=False, default=str))
 
 
@@ -152,22 +156,23 @@ def workflow_namespace(workflow_id: str) -> str:
 
 @runtime_checkable
 class ChatRunServiceOwner(Protocol):
-    _DESIGN_CONTROL_KIND: str
-    _CTRL_UNDO_APPLIED: str
-    _CTRL_REDO_APPLIED: str
-    _CTRL_BRANCH_DROPPED: str
-    _CTRL_MUTATION_COMMITTED: str
-    _PROJECTION_SCHEMA_VERSION: int
-    _SNAPSHOT_SCHEMA_VERSION: int
-    _DELTA_SCHEMA_VERSION: int
-    _SNAPSHOT_INTERVAL: int
+    _DESIGN_CONTROL_KIND: ClassVar[str]
+    _CTRL_UNDO_APPLIED: ClassVar[str]
+    _CTRL_REDO_APPLIED: ClassVar[str]
+    _CTRL_BRANCH_DROPPED: ClassVar[str]
+    _CTRL_MUTATION_COMMITTED: ClassVar[str]
+    _PROJECTION_SCHEMA_VERSION: ClassVar[int]
+    _SNAPSHOT_SCHEMA_VERSION: ClassVar[int]
+    _DELTA_SCHEMA_VERSION: ClassVar[int]
+    _SNAPSHOT_INTERVAL: ClassVar[int]
 
     run_registry: RunRegistry
-    answer_runner: Callable[[AnswerRunRequest], dict[str, Any]]
-    runtime_runner: Callable[[RuntimeRunRequest], dict[str, Any]]
-    resume_runner: Callable[[RuntimeResumeRequest], dict[str, Any]]
+    answer_runner: Callable[[AnswerRunRequest], JsonObject]
+    runtime_runner: Callable[[RuntimeRunRequest], JsonObject]
+    resume_runner: Callable[[RuntimeResumeRequest], JsonObject]
     default_runtime_kind: str
-    scheduler: RunSchedulerLike
+    @property
+    def scheduler(self) -> RunSchedulerLike: ...
     _workflow_history_lock: threading.Lock
 
     def _knowledge_engine(self) -> GraphKnowledgeEngine: ...
@@ -182,15 +187,19 @@ class ChatRunServiceOwner(Protocol):
 
     def _conversation_service(self) -> ConversationService: ...
 
+    def _effective_capabilities(self) -> tuple[str, ...]: ...
+
+    def _capability_subject(self) -> str: ...
+
     def _assert_workflow_projection_not_rebuilding(
         self, *, workflow_id: str
     ) -> None: ...
 
-    def list_steps(self, run_id: str) -> list[dict[str, Any]]: ...
+    def list_steps(self, run_id: str) -> list[JsonObject]: ...
 
     def _publish(
-        self, run_id: str, event_type: str, payload: dict[str, Any] | None = None
-    ) -> dict[str, Any]: ...
+        self, run_id: str, event_type: str, payload: PublishPayload = None
+    ) -> JsonObject: ...
 
     @contextlib.contextmanager
     def _workflow_namespace_scope(
@@ -209,11 +218,11 @@ class _BaseComponent:
         return self._owner.run_registry
 
     @property
-    def answer_runner(self) -> Callable[[AnswerRunRequest], dict[str, Any]]:
+    def answer_runner(self) -> Callable[[AnswerRunRequest], JsonObject]:
         return self._owner.answer_runner
 
     @property
-    def runtime_runner(self) -> Callable[[RuntimeRunRequest], dict[str, Any]]:
+    def runtime_runner(self) -> Callable[[RuntimeRunRequest], JsonObject]:
         return self._owner.runtime_runner
 
     @property
@@ -279,16 +288,16 @@ class _BaseComponent:
             workflow_id=workflow_id
         )
 
-    def list_steps(self, run_id: str) -> list[dict[str, Any]]:
+    def list_steps(self, run_id: str) -> list[JsonObject]:
         return self._owner.list_steps(run_id)
 
     def _publish(
-        self, run_id: str, event_type: str, payload: dict[str, Any] | None = None
-    ) -> dict[str, Any]:
+        self, run_id: str, event_type: str, payload: PublishPayload = None
+    ) -> JsonObject:
         return self._owner._publish(run_id, event_type, payload)
 
     @staticmethod
-    def _json_safe(value: Any) -> Any:
+    def _json_safe(value: object) -> JsonValue:
         return json_safe(value)
 
     @staticmethod

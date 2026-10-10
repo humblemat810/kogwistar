@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import MutableMapping
+from collections.abc import MutableMapping
 
 TEST_JWT_SECRET = "dev-secret"
 TEST_JWT_ALG = "HS256"

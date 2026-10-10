@@ -1,25 +1,27 @@
 from __future__ import annotations
 
 import uuid
-from typing import List, Optional, cast
+from typing import Any, cast
 
-from kogwistar.llm_tasks import LLMTaskSet
-
-from .models import RetrievalResult
-from .callbacks import RetrievalFilteringCallback
-
-from .models import ConversationEdge
 from kogwistar.conversation.agentic_answering import snapshot_hash
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
-from .models import KnowledgeRetrievalResult
 from kogwistar.id_provider import stable_id
+from kogwistar.llm_tasks import LLMTaskSet
 from kogwistar.logical_refs import (
     LogicalRef,
     build_reference_node_payload,
 )
 
-from .models import ConversationNode, FilteringResult, MetaFromLastSummary
 from ..engine_core.models import Grounding, Span
+from .callbacks import RetrievalFilteringCallback
+from .models import (
+    ConversationEdge,
+    ConversationNode,
+    FilteringResult,
+    KnowledgeRetrievalResult,
+    MetaFromLastSummary,
+    RetrievalResult,
+)
 
 
 class KnowledgeRetriever:
@@ -37,8 +39,8 @@ class KnowledgeRetriever:
     def __init__(
         self,
         *,
-        conversation_engine,
-        ref_knowledge_engine,
+        conversation_engine: GraphKnowledgeEngine,
+        ref_knowledge_engine: GraphKnowledgeEngine,
         llm_tasks: LLMTaskSet,
         filtering_callback: RetrievalFilteringCallback,
         max_retrieval_level: int = 2,
@@ -56,7 +58,7 @@ class KnowledgeRetriever:
         self.deep_seed_limit = deep_seed_limit
 
     def _shallow_query(
-        self, *, query_embedding: List[float], max_retrieval_level
+        self, *, query_embedding: list[float], max_retrieval_level: int
     ) -> RetrievalResult:
         node_batches = self.ref_knowledge_engine.read.query_nodes(
             query_embeddings=[query_embedding],
@@ -80,7 +82,7 @@ class KnowledgeRetriever:
             include=["metadatas", "documents", "embeddings"],
         )
         edges = edge_batches[0] if edge_batches else []
-        return RetrievalResult(nodes, edges)
+        return RetrievalResult(list(nodes), list(edges))
         # nodes = self.ref_knowledge_engine.query_nodes(query_embeddings=[query_embedding],
         #     n_results=self.shallow_n_results,
         #     where={"level_from_root": {"$lte": self.max_retrieval_level}},
@@ -89,7 +91,11 @@ class KnowledgeRetriever:
         # return (rows.get("ids") or [[]])[0] or []
 
     def _deep_seeded_semantic(
-        self, *, user_text: str, seed_kg_node_ids: List[str], max_retrieval_level=2
+        self,
+        *,
+        user_text: str,
+        seed_kg_node_ids: list[str],
+        max_retrieval_level: int = 2,
     ) -> RetrievalResult:
         seed_ids = seed_kg_node_ids[: self.deep_seed_limit]
         # out: List[str] = []
@@ -102,10 +108,10 @@ class KnowledgeRetriever:
             edges.extend(list(layer["edges"]))
         return RetrievalResult(
             nodes=self.ref_knowledge_engine.nodes_from_single_or_id_query_result(
-                self.ref_knowledge_engine.nodes_by_ids(nodes)
+                cast(dict[str, Any], self.ref_knowledge_engine.nodes_by_ids(nodes))
             ),
             edges=self.ref_knowledge_engine.edges_from_single_or_id_query_result(
-                self.ref_knowledge_engine.edges_by_ids(edges)
+                cast(dict[str, Any], self.ref_knowledge_engine.edges_by_ids(edges))
             ),
         )
 
@@ -114,8 +120,8 @@ class KnowledgeRetriever:
         *,
         user_text: str,
         context_text: str,
-        query_embedding: List[float],
-        seed_kg_node_ids: Optional[List[str]] = None,
+        query_embedding: list[float],
+        seed_kg_node_ids: list[str] | None = None,
         max_retrieval_level: int = 2,
     ) -> KnowledgeRetrievalResult:
         shallow_results = self._shallow_query(
@@ -166,14 +172,30 @@ class KnowledgeRetriever:
                 user_text,
                 cand_node_list_str,
                 cand_edge_list_str,
-                [i.id for i in candidates.nodes],
-                [i.id for i in candidates.edges],
+                [node_id for i in candidates.nodes if (node_id := i.safe_get_id())],
+                [edge_id for i in candidates.edges if (edge_id := i.safe_get_id())],
                 context_text,
+            )
+            selected_filter = (
+                selected
+                if isinstance(selected, FilteringResult)
+                else FilteringResult(
+                    node_ids=[
+                        node_id
+                        for node in selected.nodes
+                        if (node_id := node.safe_get_id())
+                    ],
+                    edge_ids=[
+                        edge_id
+                        for edge in selected.edges
+                        if (edge_id := edge.safe_get_id())
+                    ],
+                )
             )
             return KnowledgeRetrievalResult(
                 node_id_entry=None,
                 candidate=candidates,
-                selected=selected,
+                selected=selected_filter,
                 reasoning=reasoning,
             )
         else:
@@ -192,12 +214,12 @@ class KnowledgeRetriever:
         turn_node_id: str,
         turn_index: int,
         self_span: Span,
-        selected_knowledge: Optional[FilteringResult],
-        selected_knowledge_nodes: Optional[RetrievalResult] = None,
+        selected_knowledge: FilteringResult | None,
+        selected_knowledge_nodes: RetrievalResult | None = None,
         prev_turn_meta_summary: MetaFromLastSummary | None = None,
-    ) -> tuple[List[str], List[str]]:
-        pinned_pointer_node_ids: List[str] = []
-        pinned_edge_ids: List[str] = []
+    ) -> tuple[list[str], list[str]]:
+        pinned_pointer_node_ids: list[str] = []
+        pinned_edge_ids: list[str] = []
 
         # ref_kg_engine: GraphKnowledgeEngine
         # ref_kg_engine = self.ref_knowledge_engine
@@ -249,13 +271,17 @@ class KnowledgeRetriever:
             }
             sh = snapshot_hash(snap)
             # Phase-1 invariant: do NOT mutate tail_turn_index for sidecar pins
-            pointer_id = str(stable_id("knowledge_pin_node", turn_node_id, kg.safe_get_id()))
-            ptr_node = ConversationNode(
-                **build_reference_node_payload(
+            knowledge_id = kg.safe_get_id()
+            if knowledge_id is None:
+                raise ValueError("knowledge node must have an id before pinning")
+            pointer_id = str(stable_id("knowledge_pin_node", turn_node_id, knowledge_id))
+            node_payload = cast(
+                dict[str, Any],
+                build_reference_node_payload(
                     logical_ref=LogicalRef(
                         target_namespace="kg",
                         target_kind="node",
-                        target_id=str(kg.id),
+                        target_id=knowledge_id,
                     ),
                     pointer_kind="kg_node",
                     pointer_id=pointer_id,
@@ -272,6 +298,9 @@ class KnowledgeRetriever:
                         "in_conversation_chain": False,
                     },
                 ),
+            )
+            ptr_node = ConversationNode(
+                **node_payload,
                 doc_id=None,
                 role="system",  # type: ignore
                 turn_index=turn_index,
@@ -283,6 +312,8 @@ class KnowledgeRetriever:
             )
 
             ptr_id = ptr_node.safe_get_id()
+            if ptr_id is None:
+                raise ValueError("knowledge pointer node must have an id")
             self.conversation_engine.write.add_node(ptr_node)
             pinned_pointer_node_ids.append(ptr_id)
 
@@ -314,7 +345,10 @@ class KnowledgeRetriever:
                 target_edge_ids=[],
             )
             self.conversation_engine.write.add_edge(edge)
-            pinned_edge_ids.append(edge.id)
+            edge_id_value = edge.safe_get_id()
+            if edge_id_value is None:
+                raise ValueError("knowledge pin edge must have an id")
+            pinned_edge_ids.append(edge_id_value)
             prev_turn_meta_summary.prev_node_char_distance_from_last_summary += len(
                 summary
             )
@@ -326,8 +360,9 @@ class KnowledgeRetriever:
 
             # ptr_id = str(uuid.uuid4())
             # Phase-1 invariant: do NOT mutate tail_turn_index for sidecar pins
-            ptr_node = ConversationNode(
-                **build_reference_node_payload(
+            edge_node_payload = cast(
+                dict[str, Any],
+                build_reference_node_payload(
                     logical_ref=LogicalRef(
                         target_namespace="kg",
                         target_kind="edge",
@@ -345,6 +380,9 @@ class KnowledgeRetriever:
                         "in_conversation_chain": False,
                     },
                 ),
+            )
+            ptr_node = ConversationNode(
+                **edge_node_payload,
                 doc_id=None,
                 role="system",  # type: ignore
                 turn_index=turn_index,

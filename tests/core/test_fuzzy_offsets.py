@@ -4,7 +4,7 @@ from difflib import SequenceMatcher
 
 import pytest
 
-import kogwistar.fuzzy_offsets as fuzzy_offsets
+from kogwistar import fuzzy_offsets
 from kogwistar.fuzzy_offsets import (
     default_offset_repair_scorer,
     find_best_fuzzy_span,

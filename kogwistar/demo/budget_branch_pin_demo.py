@@ -5,13 +5,20 @@ import pathlib
 import threading
 import uuid
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, MutableMapping, cast
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.json_types import JsonValue
 from kogwistar.engine_core.in_memory_backend import build_in_memory_backend
 from kogwistar.engine_core.models import Grounding, MentionVerification, Span
 from kogwistar.runtime.budget import RateBudgetWindow
-from kogwistar.runtime.models import RunSuccess, RunSuspended, WorkflowEdge, WorkflowNode
+from kogwistar.runtime.models import (
+    RunSuccess,
+    RunSuspended,
+    StepRunResult,
+    WorkflowEdge,
+    WorkflowNode,
+)
 from kogwistar.runtime.runtime import StepContext, WorkflowRuntime
 
 
@@ -57,9 +64,9 @@ class FakeTokenWindow:
 
 
 class _TinyEmbeddingFunction:
-    def __call__(self, texts: list[str]) -> list[list[float]]:
+    def __call__(self, documents_or_texts: list[str]) -> list[list[float]]:
         out: list[list[float]] = []
-        for text in texts:
+        for text in documents_or_texts:
             seed = sum(ord(ch) for ch in str(text))
             out.append([(seed % 13) / 13.0, (seed % 17) / 17.0, (seed % 19) / 19.0])
         return out
@@ -138,9 +145,16 @@ def _add_edge(engine: GraphKnowledgeEngine, wf_id: str, src: str, dst: str) -> N
             domain_id=None,
             canonical_entity_id=None,
             embedding=None,
-            level_from_root=0,
         )
     )
+
+
+def _append_op_log(state: MutableMapping[str, object], value: str) -> None:
+    log = state.get("op_log")
+    if not isinstance(log, list):
+        log = []
+        state["op_log"] = log
+    log.append(value)
 
 
 def _build_branch_workflow(engine: GraphKnowledgeEngine) -> None:
@@ -178,7 +192,7 @@ def _latest_checkpoint_state(conv_engine: GraphKnowledgeEngine, run_id: str) -> 
     state_json = latest.metadata.get("state_json", {})
     if isinstance(state_json, str):
         state_json = json.loads(state_json)
-    return dict(state_json or {})
+    return cast(dict[str, Any], state_json) if isinstance(state_json, dict) else {}
 
 
 def run_budget_branch_pin_demo() -> dict[str, Any]:
@@ -191,7 +205,7 @@ def run_budget_branch_pin_demo() -> dict[str, Any]:
     light_done = threading.Event()
     heavy_done = threading.Event()
 
-    def _record(event: str, **extra: Any) -> None:
+    def _record(event: str, **extra: JsonValue) -> None:
         with lock:
             timeline.append(
                 {
@@ -202,17 +216,17 @@ def run_budget_branch_pin_demo() -> dict[str, Any]:
                 }
             )
 
-    def _heavy_1(ctx: StepContext):
+    def _heavy_1(ctx: StepContext) -> StepRunResult:
         if not gate.consume(2):
             raise AssertionError("heavy branch should have enough tokens at step 1")
         with ctx.state_write as state:
-            state.setdefault("op_log", []).append("heavy_1")
+            _append_op_log(state, "heavy_1")
         _record("heavy.1.finished")
         order.append("heavy_1")
         heavy_ready.set()
         return RunSuccess(conversation_node_id=None, state_update=[("u", {"heavy_1": True})])
 
-    def _heavy_2(ctx: StepContext):
+    def _heavy_2(ctx: StepContext) -> StepRunResult:
         _record("heavy.2.started")
         if not gate.consume(1):
             _record("heavy.2.paused")
@@ -231,23 +245,23 @@ def run_budget_branch_pin_demo() -> dict[str, Any]:
                 },
             )
         with ctx.state_write as state:
-            state.setdefault("op_log", []).append("heavy_2")
+            _append_op_log(state, "heavy_2")
         _record("heavy.2.finished")
         order.append("heavy_2")
         heavy_done.set()
         return RunSuccess(conversation_node_id=None, state_update=[("u", {"heavy_2": True})])
 
-    def _light(ctx: StepContext):
+    def _light(ctx: StepContext) -> StepRunResult:
         with ctx.state_write as state:
-            state.setdefault("op_log", []).append("light")
+            _append_op_log(state, "light")
         _record("light.finished")
         order.append("light")
         light_done.set()
         return RunSuccess(conversation_node_id=None, state_update=[("u", {"light": True})])
 
-    def _join(ctx: StepContext):
+    def _join(ctx: StepContext) -> StepRunResult:
         with ctx.state_write as state:
-            state.setdefault("op_log", []).append("join")
+            _append_op_log(state, "join")
         _record("join.finished")
         return RunSuccess(conversation_node_id=None, state_update=[("u", {"joined": True})])
 

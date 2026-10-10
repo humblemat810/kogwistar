@@ -3,12 +3,13 @@ from __future__ import annotations
 import argparse
 import json
 import warnings
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Mapping, Sequence
+from typing import Any, Protocol, cast
 
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.runtime import MappingStepResolver, StepContext, WorkflowRuntime
 from kogwistar.runtime.models import RunSuccess
-
 
 warnings.filterwarnings(
     "ignore",
@@ -25,12 +26,59 @@ warnings.filterwarnings(
 JsonValue = Any
 
 
-def _jsonable_copy(value: Any) -> Any:
+class _DemoRunResult(Protocol):
+    @property
+    def final_state(self) -> Mapping[str, object]: ...
+
+    @property
+    def run_id(self) -> str: ...
+
+    @property
+    def status(self) -> object: ...
+
+
+class _TraceStore(Protocol):
+    def get_nodes(
+        self,
+        where: dict[str, Any] | None = None,
+        limit: int = 5000,
+        ids: Sequence[str] | None = None,
+        **kwargs: object,
+    ) -> list[object]: ...
+
+
+class _WorkflowFramework(Protocol):
+    workflow_id: str
+
+    @property
+    def step_order(self) -> Sequence[str]: ...
+
+    def build_runtime(self) -> tuple[WorkflowRuntime, DemoGraphStore, DemoGraphStore]: ...
+
+    def transition_summary(self) -> dict[str, dict[str, str]]: ...
+
+
+def _state_deps(ctx: StepContext) -> dict[str, Any]:
+    value = ctx.state_view.get("_deps")
+    return dict(value) if isinstance(value, Mapping) else {}
+
+
+def _state_list(ctx: StepContext, key: str) -> list[Any]:
+    value = ctx.state_view.get(key)
+    return list(value) if isinstance(value, list) else []
+
+
+def _state_note(ctx: StepContext, key: str = "current_note") -> Mapping[str, Any] | None:
+    value = ctx.state_view.get(key)
+    return value if isinstance(value, Mapping) else None
+
+
+def _jsonable_copy(value: object) -> object:
     return json.loads(json.dumps(value, default=str))
 
 
-def _history_event(step: str, **payload: Any) -> dict[str, Any]:
-    event = {"step": step}
+def _history_event(step: str, **payload: object) -> dict[str, object]:
+    event: dict[str, object] = {"step": step}
     event.update(payload)
     return event
 
@@ -49,15 +97,15 @@ def _collect_run_result(
     framework_name: str,
     step_order: list[str],
     transition_map: dict[str, dict[str, str]],
-    run_result: Any,
-    trace_sink: Any,
+    run_result: _DemoRunResult,
+    trace_sink: _TraceStore,
 ) -> dict[str, Any]:
     clean_state = {
         key: value
         for key, value in run_result.final_state.items()
         if key not in {"_deps", "_rt_join"}
     }
-    final_state = _jsonable_copy(clean_state)
+    final_state = cast(dict[str, Any], _jsonable_copy(clean_state))
 
     step_execs = trace_sink.get_nodes(
         where={
@@ -164,31 +212,32 @@ class DemoGraphStore:
     """Tiny in-memory graph store used for workflow design and runtime traces."""
 
     def __init__(self) -> None:
-        self._nodes: list[Any] = []
-        self._edges: list[Any] = []
+        self._nodes: list[object] = []
+        self._edges: list[object] = []
         self.read = self
         self.write = self
 
-    def add_node(self, node: Any) -> Any:
+    def add_node(self, node: object) -> object:
         self._nodes.append(node)
         return node
 
-    def add_edge(self, edge: Any) -> Any:
+    def add_edge(self, edge: object) -> object:
         self._edges.append(edge)
         return edge
 
     @staticmethod
-    def _metadata(entity: Any) -> dict[str, Any]:
+    def _metadata(entity: object) -> dict[str, Any]:
         metadata = getattr(entity, "metadata", None)
         return metadata if isinstance(metadata, dict) else {}
 
     @staticmethod
-    def _entity_id(entity: Any) -> str:
-        if hasattr(entity, "safe_get_id"):
-            return str(entity.safe_get_id())
+    def _entity_id(entity: object) -> str:
+        getter = getattr(entity, "safe_get_id", None)
+        if callable(getter):
+            return str(getter())
         return str(getattr(entity, "id", ""))
 
-    def _matches(self, entity: Any, where: dict[str, Any] | None) -> bool:
+    def _matches(self, entity: object, where: dict[str, Any] | None) -> bool:
         if where is None:
             return True
         if "$and" in where:
@@ -219,12 +268,12 @@ class DemoGraphStore:
 
     def _select(
         self,
-        entities: list[Any],
+        entities: list[object],
         *,
         where: dict[str, Any] | None = None,
         ids: Sequence[str] | None = None,
         limit: int = 5000,
-    ) -> list[Any]:
+    ) -> list[object]:
         selected = list(entities)
         if ids is not None:
             wanted = {str(item) for item in ids}
@@ -238,8 +287,8 @@ class DemoGraphStore:
         where: dict[str, Any] | None = None,
         limit: int = 5000,
         ids: Sequence[str] | None = None,
-        **_: Any,
-    ) -> list[Any]:
+        **_: object,
+    ) -> list[object]:
         return self._select(self._nodes, where=where, ids=ids, limit=limit)
 
     def get_edges(
@@ -247,8 +296,8 @@ class DemoGraphStore:
         where: dict[str, Any] | None = None,
         limit: int = 5000,
         ids: Sequence[str] | None = None,
-        **_: Any,
-    ) -> list[Any]:
+        **_: object,
+    ) -> list[object]:
         return self._select(self._edges, where=where, ids=ids, limit=limit)
 
 
@@ -402,9 +451,8 @@ class PlanActObserveFramework:
         )
 
         @resolver.register("plan")
-        def _plan(ctx: StepContext):
-            deps = dict(ctx.state_view.get("_deps") or {})
-            pending = list(ctx.state_view.get("pending_notes") or [])
+        def _plan(ctx: StepContext) -> RunSuccess:
+            pending = _state_list(ctx, "pending_notes")
             next_note = dict(pending[0]) if pending else None
             event = _history_event(
                 "plan",
@@ -429,9 +477,9 @@ class PlanActObserveFramework:
             )
 
         @resolver.register("approve")
-        def _approve(ctx: StepContext):
-            deps = dict(ctx.state_view.get("_deps") or {})
-            note = ctx.state_view.get("current_note")
+        def _approve(ctx: StepContext) -> RunSuccess:
+            deps = _state_deps(ctx)
+            note = _state_note(ctx)
             approval_policy = deps.get("approval_policy")
             approved = bool(approval_policy(note, ctx.state_view)) if callable(approval_policy) else False
             event = _history_event(
@@ -455,16 +503,16 @@ class PlanActObserveFramework:
             )
 
         @resolver.register("act")
-        def _act(ctx: StepContext):
-            deps = dict(ctx.state_view.get("_deps") or {})
-            note = ctx.state_view.get("current_note")
+        def _act(ctx: StepContext) -> RunSuccess:
+            deps = _state_deps(ctx)
+            note = _state_note(ctx)
             classify_note = deps.get("classify_note")
             bucket = (
                 str(classify_note(note, ctx.state_view))
                 if callable(classify_note)
                 else "archive/"
             )
-            pending = list(ctx.state_view.get("pending_notes") or [])
+            pending = _state_list(ctx, "pending_notes")
             remaining = pending[1:] if pending else []
             move = {
                 "note_id": (note or {}).get("id") if isinstance(note, dict) else None,
@@ -493,8 +541,8 @@ class PlanActObserveFramework:
             )
 
         @resolver.register("observe")
-        def _observe(ctx: StepContext):
-            pending = list(ctx.state_view.get("pending_notes") or [])
+        def _observe(ctx: StepContext) -> RunSuccess:
+            pending = _state_list(ctx, "pending_notes")
             event = _history_event("observe", remaining_count=len(pending))
             return RunSuccess(
                 conversation_node_id=None,
@@ -504,9 +552,9 @@ class PlanActObserveFramework:
             )
 
         @resolver.register("end")
-        def _end(ctx: StepContext):
+        def _end(ctx: StepContext) -> RunSuccess:
             blocked = bool(ctx.state_view.get("blocked"))
-            pending = list(ctx.state_view.get("pending_notes") or [])
+            pending = _state_list(ctx, "pending_notes")
             completed = (not blocked) and len(pending) == 0
             event = _history_event(
                 "end",
@@ -534,13 +582,13 @@ class PlanActObserveFramework:
         resolver = self.build_resolver()
 
         runtime = WorkflowRuntime(
-            workflow_engine=workflow_engine,
-            conversation_engine=trace_sink,
+            workflow_engine=cast(GraphKnowledgeEngine, workflow_engine),
+            conversation_engine=cast(GraphKnowledgeEngine, trace_sink),
             step_resolver=resolver,
             predicate_registry={
-                "approved": lambda _e, state, _r: bool(state.get("approval_granted")),
-                "denied": lambda _e, state, _r: not bool(state.get("approval_granted")),
-                "has_more": lambda _e, state, _r: len(list(state.get("pending_notes") or [])) > 0,
+                "approved": lambda edge, state, result: bool(state.get("approval_granted")),
+                "denied": lambda edge, state, result: not bool(state.get("approval_granted")),
+                "has_more": lambda edge, state, result: isinstance(state.get("pending_notes"), list) and bool(state["pending_notes"]),
             },
             checkpoint_every_n_steps=1,
             max_workers=1,
@@ -633,8 +681,8 @@ class PlanActObserveNoApprovalFramework(PlanActObserveFramework):
         )
 
         @resolver.register("plan")
-        def _plan(ctx: StepContext):
-            pending = list(ctx.state_view.get("pending_notes") or [])
+        def _plan(ctx: StepContext) -> RunSuccess:
+            pending = _state_list(ctx, "pending_notes")
             next_note = dict(pending[0]) if pending else None
             event = _history_event(
                 "plan",
@@ -659,16 +707,16 @@ class PlanActObserveNoApprovalFramework(PlanActObserveFramework):
             )
 
         @resolver.register("act")
-        def _act(ctx: StepContext):
-            deps = dict(ctx.state_view.get("_deps") or {})
-            note = ctx.state_view.get("current_note")
+        def _act(ctx: StepContext) -> RunSuccess:
+            deps = _state_deps(ctx)
+            note = _state_note(ctx)
             classify_note = deps.get("classify_note")
             bucket = (
                 str(classify_note(note, ctx.state_view))
                 if callable(classify_note)
                 else "archive/"
             )
-            pending = list(ctx.state_view.get("pending_notes") or [])
+            pending = _state_list(ctx, "pending_notes")
             remaining = pending[1:] if pending else []
             move = {
                 "note_id": (note or {}).get("id") if isinstance(note, dict) else None,
@@ -693,8 +741,8 @@ class PlanActObserveNoApprovalFramework(PlanActObserveFramework):
             )
 
         @resolver.register("observe")
-        def _observe(ctx: StepContext):
-            pending = list(ctx.state_view.get("pending_notes") or [])
+        def _observe(ctx: StepContext) -> RunSuccess:
+            pending = _state_list(ctx, "pending_notes")
             event = _history_event("observe", remaining_count=len(pending))
             return RunSuccess(
                 conversation_node_id=None,
@@ -702,8 +750,8 @@ class PlanActObserveNoApprovalFramework(PlanActObserveFramework):
             )
 
         @resolver.register("end")
-        def _end(ctx: StepContext):
-            pending = list(ctx.state_view.get("pending_notes") or [])
+        def _end(ctx: StepContext) -> RunSuccess:
+            pending = _state_list(ctx, "pending_notes")
             completed = len(pending) == 0
             event = _history_event("end", final_status="completed")
             return RunSuccess(
@@ -722,12 +770,12 @@ class PlanActObserveNoApprovalFramework(PlanActObserveFramework):
         resolver = self.build_resolver()
 
         runtime = WorkflowRuntime(
-            workflow_engine=workflow_engine,
-            conversation_engine=trace_sink,
+            workflow_engine=cast(GraphKnowledgeEngine, workflow_engine),
+            conversation_engine=cast(GraphKnowledgeEngine, trace_sink),
             step_resolver=resolver,
             predicate_registry={
-                "has_more": lambda _e, state, _r: len(list(state.get("pending_notes") or []))
-                > 0,
+                "has_more": lambda edge, state, result: isinstance(state.get("pending_notes"), list)
+                and bool(state["pending_notes"]),
             },
             checkpoint_every_n_steps=1,
             max_workers=1,
@@ -745,7 +793,7 @@ class PlanActObserveNoApprovalFramework(PlanActObserveFramework):
 class BatchNotesOrganizerAdapter:
     """Adapter that makes the same notes-organizer usable by a batch-style framework."""
 
-    agent: "MockNotesOrganizerAgent"
+    agent: MockNotesOrganizerAgent
 
     def batch_notes(self) -> list[dict[str, str]]:
         return [dict(note) for note in self.agent.notes]
@@ -835,7 +883,7 @@ class BatchClassifyThenApplyFramework:
         )
 
         @resolver.register("collect")
-        def _collect(ctx: StepContext):
+        def _collect(ctx: StepContext) -> RunSuccess:
             notes = [dict(note) for note in adapter.batch_notes()]
             event = _history_event("collect", note_count=len(notes))
             return RunSuccess(
@@ -847,8 +895,8 @@ class BatchClassifyThenApplyFramework:
             )
 
         @resolver.register("classify_batch")
-        def _classify(ctx: StepContext):
-            notes = list(ctx.state_view.get("batch_notes") or [])
+        def _classify(ctx: StepContext) -> RunSuccess:
+            notes = _state_list(ctx, "batch_notes")
             plan = adapter.classify_batch(notes)
             event = _history_event("classify_batch", plan_count=len(plan))
             return RunSuccess(
@@ -860,8 +908,8 @@ class BatchClassifyThenApplyFramework:
             )
 
         @resolver.register("apply_batch")
-        def _apply(ctx: StepContext):
-            plan = list(ctx.state_view.get("classification_plan") or [])
+        def _apply(ctx: StepContext) -> RunSuccess:
+            plan = _state_list(ctx, "classification_plan")
             applied = adapter.apply_batch(plan)
             event = _history_event("apply_batch", applied_count=len(applied))
             return RunSuccess(
@@ -882,7 +930,7 @@ class BatchClassifyThenApplyFramework:
             )
 
         @resolver.register("end")
-        def _end(ctx: StepContext):
+        def _end(ctx: StepContext) -> RunSuccess:
             event = _history_event(
                 "end",
                 final_status=str(ctx.state_view.get("final_status") or "completed"),
@@ -902,11 +950,12 @@ class BatchClassifyThenApplyFramework:
         resolver = self.build_resolver(adapter)
 
         runtime = WorkflowRuntime(
-            workflow_engine=workflow_engine,
-            conversation_engine=trace_sink,
+            workflow_engine=cast(GraphKnowledgeEngine, workflow_engine),
+            conversation_engine=cast(GraphKnowledgeEngine, trace_sink),
             step_resolver=resolver,
             predicate_registry={
-                "has_plan": lambda _e, state, _r: bool(state.get("classification_plan")),
+                "has_plan": lambda edge, state, result: isinstance(state.get("classification_plan"), list)
+                and bool(state["classification_plan"]),
             },
             checkpoint_every_n_steps=1,
             max_workers=1,
@@ -919,7 +968,7 @@ class BatchClassifyThenApplyFramework:
         _engine, transition_map = self.build_workflow()
         return transition_map
 
-    def run(self, agent: "MockNotesOrganizerAgent") -> dict[str, Any]:
+    def run(self, agent: MockNotesOrganizerAgent) -> dict[str, Any]:
         adapter = BatchNotesOrganizerAdapter(agent)
         runtime, _workflow_engine, trace_sink = self.build_runtime(adapter)
         with warnings.catch_warnings():
@@ -1014,9 +1063,11 @@ class MockNotesOrganizerAgent:
             "staged_moves": [],
         }
 
-    def run(self, framework: Any | None = None) -> dict[str, Any]:
-        framework = framework or self.framework
-        runtime, _workflow_engine, trace_sink = framework.build_runtime()
+    def run(self, framework: _WorkflowFramework | None = None) -> dict[str, Any]:
+        active_framework = self.framework if framework is None else framework
+        if active_framework is None:
+            raise RuntimeError("demo framework is required")
+        runtime, _workflow_engine, trace_sink = active_framework.build_runtime()
         with warnings.catch_warnings():
             warnings.filterwarnings(
                 "ignore",
@@ -1024,15 +1075,15 @@ class MockNotesOrganizerAgent:
                 category=RuntimeWarning,
             )
             run_result = runtime.run(
-                workflow_id=self.framework.workflow_id,
+                workflow_id=active_framework.workflow_id,
                 conversation_id="demo-conversation",
                 turn_node_id="demo-turn",
                 initial_state=self.initial_state(),
             )
         return _collect_run_result(
-            framework_name=framework.__class__.__name__,
-            step_order=list(framework.step_order),
-            transition_map=framework.transition_summary(),
+            framework_name=active_framework.__class__.__name__,
+            step_order=list(active_framework.step_order),
+            transition_map=active_framework.transition_summary(),
             run_result=run_result,
             trace_sink=trace_sink,
         )

@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Protocol
 
+from kogwistar.json_types import JsonObject
 from kogwistar.wisdom.proposals import ProposalEvaluation, WisdomRevisionProposal
 
 from .skills import (
@@ -36,10 +37,18 @@ class DistillationResult:
     error: str | None = None
 
 
+class WisdomSubmitter(Protocol):
+    """Submit one distillation request to the owning wisdom workflow."""
+
+    def __call__(
+        self, request: DistillationRequest
+    ) -> WisdomRevisionProposal | None: ...
+
+
 class BestEffortDistiller:
     """Submit a request without allowing learning failure to affect a run."""
 
-    def __init__(self, submit: Callable[[DistillationRequest], WisdomRevisionProposal | None]) -> None:
+    def __init__(self, submit: WisdomSubmitter) -> None:
         self._submit = submit
 
     def submit(self, request: DistillationRequest) -> DistillationResult:
@@ -133,7 +142,7 @@ def record_skill_use_observation(
     outcome: str,
     evidence_refs: tuple[str, ...] = (),
     feedback: tuple[str, ...] = (),
-) -> dict[str, Any]:
+) -> JsonObject:
     """Return memory-like observation; never mutates skill approval/projection."""
 
     return {
@@ -150,6 +159,7 @@ __all__ = [
     "BestEffortDistiller",
     "DistillationRequest",
     "DistillationResult",
+    "WisdomSubmitter",
     "compile_approved_proposal_to_skill",
     "record_skill_use_observation",
 ]

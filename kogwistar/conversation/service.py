@@ -5,10 +5,11 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
-from typing import TYPE_CHECKING, Any, Callable, Optional, Type
+from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import BaseModel
 
+from kogwistar.conversation.callbacks import RetrievalFilteringCallback
 from kogwistar.conversation.conversation_context import (
     ContextItem,
     ContextRenderer,
@@ -20,6 +21,7 @@ from kogwistar.conversation.conversation_context import (
 )
 from kogwistar.conversation.conversation_orchestrator import (
     ConversationOrchestrator,
+    TokenEstimator,
 )
 from kogwistar.conversation.models import (
     AddTurnResult,
@@ -27,9 +29,7 @@ from kogwistar.conversation.models import (
     ConversationAIResponse,
     ConversationEdge,
     ConversationNode,
-    FilteringResult,
     MetaFromLastSummary,
-    RetrievalResult,
 )
 from kogwistar.conversation.policy import (
     get_chat_tail,
@@ -39,19 +39,29 @@ from kogwistar.conversation.policy import (
     normalize_edge_metadata,
     validate_edge_add,
 )
-from kogwistar.llm_tasks import LLMTaskSet
 from kogwistar.engine_core.models import (
     ContextCost,
     Grounding,
     MentionVerification,
+    Role,
     Span,
 )
 from kogwistar.id_provider import stable_id
+from kogwistar.llm_tasks import LLMTaskSet
 from kogwistar.runtime import WorkflowRuntime
 from kogwistar.server.auth_middleware import get_current_agent_id, get_security_scope
 
 if TYPE_CHECKING:
     from kogwistar.engine_core.engine import GraphKnowledgeEngine
+
+
+def _backend_map(value: object) -> dict[str, Any]:
+    """Narrow backend JSON responses at the storage boundary."""
+    return cast(dict[str, Any], value)
+
+
+def _json_int(value: object, default: int = 0) -> int:
+    return value if type(value) is int else default
 
 
 class _ApproxTokenizer:
@@ -65,9 +75,9 @@ class ConversationService:
     def __init__(
         self,
         *,
-        conversation_engine: "GraphKnowledgeEngine",
-        knowledge_engine: "GraphKnowledgeEngine",
-        workflow_engine: Optional["GraphKnowledgeEngine"] = None,
+        conversation_engine: GraphKnowledgeEngine,
+        knowledge_engine: GraphKnowledgeEngine,
+        workflow_engine: GraphKnowledgeEngine | None = None,
         llm_tasks: LLMTaskSet | None = None,
         runtime_cls: type[WorkflowRuntime] = WorkflowRuntime,
     ) -> None:
@@ -83,22 +93,25 @@ class ConversationService:
             ref_knowledge_engine=knowledge_engine,
             workflow_engine=workflow_engine,
             llm_tasks=self.llm_tasks,
-            tool_call_id_factory=stable_id,
+            tool_call_id_factory=lambda *parts: str(stable_id(*parts)),
         )
 
     @classmethod
     def from_engine(
         cls,
-        conversation_engine: "GraphKnowledgeEngine",
+        conversation_engine: GraphKnowledgeEngine,
         *,
-        knowledge_engine: "GraphKnowledgeEngine | None" = None,
-        workflow_engine: "GraphKnowledgeEngine | None" = None,
+        knowledge_engine: GraphKnowledgeEngine | None = None,
+        workflow_engine: GraphKnowledgeEngine | None = None,
         llm_tasks: LLMTaskSet | None = None,
-    ) -> "ConversationService":
-        cache = getattr(conversation_engine, "_conversation_service_cache", None)
+    ) -> ConversationService:
+        cache = cast(
+            dict[tuple[int, int | None, int], ConversationService] | None,
+            getattr(conversation_engine, "_conversation_service_cache", None),
+        )
         if cache is None:
             cache = {}
-            conversation_engine._conversation_service_cache = cache
+            setattr(conversation_engine, "_conversation_service_cache", cache)
 
         ke = knowledge_engine or conversation_engine
         we = workflow_engine
@@ -120,9 +133,9 @@ class ConversationService:
     @classmethod
     def orchestrator_for_engine(
         cls,
-        conversation_engine: "GraphKnowledgeEngine",
+        conversation_engine: GraphKnowledgeEngine,
         *,
-        ref_knowledge_engine: "GraphKnowledgeEngine",
+        ref_knowledge_engine: GraphKnowledgeEngine,
     ) -> ConversationOrchestrator:
         svc = cls.from_engine(
             conversation_engine,
@@ -131,7 +144,7 @@ class ConversationService:
         )
         return svc.orchestrator
 
-    def max_node_seq_present(self, conversation_id):
+    def max_node_seq_present(self, conversation_id: str) -> int:
         return self.conversation_engine.meta_sqlite.current_user_seq(conversation_id)
 
     def persist_workflow_cancel_request(
@@ -145,7 +158,7 @@ class ConversationService:
     ) -> str:
         eng = self.conversation_engine
         node_id = f"wf_cancel_req|{run_id}"
-        got = eng.backend.node_get(ids=[node_id], include=[])
+        got = _backend_map(eng.backend.node_get(ids=[node_id], include=[]))
         if got.get("ids"):
             return node_id
 
@@ -156,6 +169,7 @@ class ConversationService:
             summary=f"workflow cancel requested for run_id={run_id}",
             doc_id=f"conv:{conversation_id}",
             conversation_id=conversation_id,
+            user_id=requested_by,
             role="system",
             turn_index=None,
             level_from_root=0,
@@ -180,7 +194,7 @@ class ConversationService:
         eng.write.add_node(node)
 
         run_node_id = f"wf_run|{run_id}"
-        run_got = eng.backend.node_get(ids=[run_node_id], include=[])
+        run_got = _backend_map(eng.backend.node_get(ids=[run_node_id], include=[]))
         if run_got.get("ids"):
             content = f"{run_node_id} cancel_requested {node_id}"
             span = Span(
@@ -206,7 +220,7 @@ class ConversationService:
             edge_id = str(
                 stable_id("workflow.edge", "cancel_request", run_node_id, node_id)
             )
-            existing_edge = eng.backend.edge_get(ids=[edge_id], include=[])
+            existing_edge = _backend_map(eng.backend.edge_get(ids=[edge_id], include=[]))
             if not existing_edge.get("ids"):
                 edge = ConversationEdge(
                     id=edge_id,
@@ -248,7 +262,7 @@ class ConversationService:
     ) -> str:
         eng = self.conversation_engine
         node_id = f"wf_cancelled|{run_id}"
-        got = eng.backend.node_get(ids=[node_id], include=[])
+        got = _backend_map(eng.backend.node_get(ids=[node_id], include=[]))
         if got.get("ids"):
             return node_id
 
@@ -259,6 +273,7 @@ class ConversationService:
             summary=f"workflow cancelled run_id={run_id}",
             doc_id=f"conv:{conversation_id}",
             conversation_id=conversation_id,
+            user_id=None,
             role="system",
             turn_index=None,
             level_from_root=0,
@@ -287,10 +302,10 @@ class ConversationService:
         eng.write.add_node(node)
 
         run_node_id = f"wf_run|{run_id}"
-        run_got = eng.backend.node_get(ids=[run_node_id], include=[])
+        run_got = _backend_map(eng.backend.node_get(ids=[run_node_id], include=[]))
         if run_got.get("ids"):
             edge_id = str(stable_id("workflow.edge", "cancelled", run_node_id, node_id))
-            existing_edge = eng.backend.edge_get(ids=[edge_id], include=[])
+            existing_edge = _backend_map(eng.backend.edge_get(ids=[edge_id], include=[]))
             if not existing_edge.get("ids"):
                 edge = ConversationEdge(
                     id=edge_id,
@@ -326,7 +341,7 @@ class ConversationService:
                     node_id,
                 )
             )
-            existing_edge = eng.backend.edge_get(ids=[edge_id], include=[])
+            existing_edge = _backend_map(eng.backend.edge_get(ids=[edge_id], include=[]))
             if not existing_edge.get("ids"):
                 edge = ConversationEdge(
                     id=edge_id,
@@ -362,7 +377,7 @@ class ConversationService:
                     str(last_processed_node_id),
                 )
             )
-            existing_edge = eng.backend.edge_get(ids=[edge_id], include=[])
+            existing_edge = _backend_map(eng.backend.edge_get(ids=[edge_id], include=[]))
             if not existing_edge.get("ids"):
                 edge = ConversationEdge(
                     id=edge_id,
@@ -390,7 +405,9 @@ class ConversationService:
                 eng.write.add_edge(edge)
         return node_id
 
-    def get_last_seq_node(self, conversation_id, buffer=5):
+    def get_last_seq_node(
+        self, conversation_id: str, buffer: int = 5
+    ) -> ConversationNode | None:
         _ = buffer
         return self._get_last_seq_node(conversation_id)
 
@@ -402,8 +419,8 @@ class ConversationService:
 
     def _create_conversation_primitive(
         self,
-        user_id,
-        conv_id=None,
+        user_id: str,
+        conv_id: str | None = None,
         node_id: str | None | uuid.UUID = None,
     ) -> tuple[str, str]:
         from kogwistar.conversation.conversation_orchestrator import (
@@ -463,14 +480,19 @@ class ConversationService:
         return conv_id, str(node_id)
 
     def create_conversation(
-        self, user_id, conv_id=None, node_id: str | None | uuid.UUID = None
+        self,
+        user_id: str,
+        conv_id: str | None = None,
+        node_id: str | uuid.UUID | None = None,
     ) -> tuple[str, str]:
         conv_out, node_out = self._create_conversation_primitive(
             user_id, conv_id, node_id
         )
         return str(conv_out), str(node_out)
 
-    def _get_last_seq_node(self, conversation_id, min_seq=None):
+    def _get_last_seq_node(
+        self, conversation_id: str, min_seq: int | None = None
+    ) -> ConversationNode | None:
         return get_last_seq_node(
             self.conversation_engine, conversation_id, min_seq=min_seq
         )
@@ -485,7 +507,7 @@ class ConversationService:
             "conversation_summary",
             "assistant_turn",
         ],
-    ) -> Optional[ConversationNode]:
+    ) -> ConversationNode | None:
         return get_chat_tail(
             self.conversation_engine,
             conversation_id=conversation_id,
@@ -493,15 +515,18 @@ class ConversationService:
             tail_search_includes=tail_search_includes,
         )
 
-    def last_summary_of_node(self, node: ConversationNode):
-        return last_summary_of_node(self.conversation_engine, node)
+    def last_summary_of_node(self, node: ConversationNode) -> list[ConversationNode]:
+        return cast(
+            list[ConversationNode],
+            last_summary_of_node(self.conversation_engine, node),
+        )
 
     def get_conversation_tail(
         self,
         conversation_id: str,
         min_turn_index: int | None = None,
         tail_search_includes: list[str] | None = None,
-    ) -> Optional[ConversationNode]:
+    ) -> ConversationNode | None:
         return self._get_conversation_tail(
             conversation_id=conversation_id,
             min_turn_index=min_turn_index,
@@ -514,8 +539,35 @@ class ConversationService:
             ],
         )
 
-    def add_turn(self, *args, **kwargs):
-        return self.orchestrator.add_conversation_turn(*args, **kwargs)
+    def add_turn(
+        self,
+        user_id: str,
+        conversation_id: str,
+        turn_id: str,
+        mem_id: str,
+        role: str,
+        content: str,
+        ref_knowledge_engine: GraphKnowledgeEngine,
+        filtering_callback: RetrievalFilteringCallback,
+        max_retrieval_level: int = 2,
+        summary_char_threshold: int = 12000,
+        prev_turn_meta_summary: MetaFromLastSummary = MetaFromLastSummary(0, 0),
+        add_turn_only: bool | None = None,
+    ) -> AddTurnResult:
+        return self.add_conversation_turn(
+            user_id=user_id,
+            conversation_id=conversation_id,
+            turn_id=turn_id,
+            mem_id=mem_id,
+            role=role,
+            content=content,
+            ref_knowledge_engine=ref_knowledge_engine,
+            filtering_callback=filtering_callback,
+            max_retrieval_level=max_retrieval_level,
+            summary_char_threshold=summary_char_threshold,
+            prev_turn_meta_summary=prev_turn_meta_summary,
+            add_turn_only=add_turn_only,
+        )
 
     def add_conversation_turn(
         self,
@@ -525,14 +577,12 @@ class ConversationService:
         mem_id: str,
         role: str,
         content: str,
-        ref_knowledge_engine: "GraphKnowledgeEngine",
-        filtering_callback: Callable[
-            ..., tuple[FilteringResult | RetrievalResult, str]
-        ],
+        ref_knowledge_engine: GraphKnowledgeEngine,
+        filtering_callback: RetrievalFilteringCallback,
         max_retrieval_level: int = 2,
-        summary_char_threshold=12000,
+        summary_char_threshold: int = 12000,
         prev_turn_meta_summary: MetaFromLastSummary = MetaFromLastSummary(0, 0),
-        add_turn_only=None,
+        add_turn_only: bool | None = None,
     ) -> AddTurnResult:
         if ref_knowledge_engine is not self.knowledge_engine:
             self.knowledge_engine = ref_knowledge_engine
@@ -547,7 +597,7 @@ class ConversationService:
             conversation_id=conversation_id,
             turn_id=turn_id,
             mem_id=mem_id,
-            role=role,
+            role=cast(Role, role),
             content=content,
             filtering_callback=filtering_callback,
             max_retrieval_level=max_retrieval_level,
@@ -556,13 +606,71 @@ class ConversationService:
             add_turn_only=add_turn_only,
         )
 
-    def add_turn_workflow_v2(self, *args, **kwargs):
-        return self.orchestrator.add_conversation_turn_workflow_v2(*args, **kwargs)
+    def add_turn_workflow_v2(
+        self,
+        *,
+        run_id: str,
+        user_id: str,
+        conversation_id: str,
+        turn_id: str,
+        mem_id: str,
+        role: Role,
+        content: str,
+        filtering_callback: RetrievalFilteringCallback,
+        workflow_id: str,
+        max_retrieval_level: int = 2,
+        summary_char_threshold: int = 12000,
+        summary_token_threshold: int | None = None,
+        summary_turn_threshold: int = 5,
+        token_estimator: TokenEstimator | None = None,
+        in_conv: bool = True,
+        prev_turn_meta_summary: MetaFromLastSummary | None = None,
+        add_turn_only: bool | None = None,
+        max_workers: int = 4,
+        strict_answer_failure: bool = False,
+        force_answer_only: bool | None = None,
+        cache_dir: str | None = None,
+    ) -> AddTurnResult:
+        return self.orchestrator.add_conversation_turn_workflow_v2(
+            run_id=run_id,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            turn_id=turn_id,
+            mem_id=mem_id,
+            role=role,
+            content=content,
+            filtering_callback=filtering_callback,
+            workflow_id=workflow_id,
+            max_retrieval_level=max_retrieval_level,
+            summary_char_threshold=summary_char_threshold,
+            summary_token_threshold=summary_token_threshold,
+            summary_turn_threshold=summary_turn_threshold,
+            token_estimator=token_estimator,
+            in_conv=in_conv,
+            prev_turn_meta_summary=prev_turn_meta_summary,
+            add_turn_only=add_turn_only,
+            max_workers=max_workers,
+            strict_answer_failure=strict_answer_failure,
+            force_answer_only=force_answer_only,
+            cache_dir=cache_dir,
+        )
 
-    def answer_only(self, *args, **kwargs):
-        return self.orchestrator.answer_only(*args, **kwargs)
+    def answer_only(
+        self,
+        *,
+        conversation_id: str,
+        model_names: list[str] | None = None,
+        prev_turn_meta_summary: MetaFromLastSummary = MetaFromLastSummary(0, 0),
+        cache_dir: str | None = None,
+    ) -> ConversationAIResponse:
+        return self.orchestrator.answer_only(
+            conversation_id=conversation_id,
+            model_names=model_names,
+            prev_turn_meta_summary=prev_turn_meta_summary,
+            cache_dir=cache_dir,
+        )
 
-    def get_conversation(self, conversation_id):
+    def get_conversation(self, conversation_id: str) -> None:
         _ = conversation_id
         return None
 
@@ -570,7 +678,7 @@ class ConversationService:
         _ = conversation_id
         return "You are a helpful assistant. Answer the user using the conversation and any provided evidence."
 
-    def get_response_model(self, conversation_id) -> Type[BaseModel]:
+    def get_response_model(self, conversation_id: str) -> type[BaseModel]:
         _ = conversation_id
         return ConversationAIResponse
 
@@ -586,7 +694,7 @@ class ConversationService:
         include_memory_context: bool = True,
         include_pinned_kg_refs: bool = True,
         ordering_strategy: str | None = None,
-    ):
+    ) -> PromptContext:
         """Assemble a token-budgeted prompt view from conversation context sources.
 
         The view is built from summaries, memory context, pinned KG references, and
@@ -692,7 +800,9 @@ class ConversationService:
 
             non_turn_kept = [i for i in kept if i.kind != "tail_turn"]
             turn_kept = [i for i in kept if i.kind == "tail_turn"]
-            turn_kept.sort(key=lambda x: int((x.extra or {}).get("turn_index", 10**9)))
+            turn_kept.sort(
+                key=lambda x: _json_int((x.extra or {}).get("turn_index"), 10**9)
+            )
             kept = non_turn_kept + turn_kept
         else:
             iter_items = apply_ordering(
@@ -755,7 +865,9 @@ class ConversationService:
 
         non_turn_kept = [i for i in kept if i.kind != "tail_turn"]
         turn_kept = [i for i in kept if i.kind == "tail_turn"]
-        turn_kept.sort(key=lambda x: int((x.extra or {}).get("turn_index", 10**9)))
+        turn_kept.sort(
+            key=lambda x: _json_int((x.extra or {}).get("turn_index"), 10**9)
+        )
         kept = non_turn_kept + turn_kept
 
         renderer = ContextRenderer()
@@ -797,7 +909,7 @@ class ConversationService:
             pinned_kg_ref_ids=pinned_kg_ref_ids,
         )
 
-    def make_conversation_span(self, conversation_id):
+    def make_conversation_span(self, conversation_id: str) -> Span:
         return Span.from_dummy_for_conversation(conversation_id)
 
     def persist_context_snapshot(
@@ -812,7 +924,7 @@ class ConversationService:
         model_name: str = "",
         budget_tokens: int = 0,
         tail_turn_index: int = 0,
-        extra_hash_payload=None,
+        extra_hash_payload: dict[str, Any] | None = None,
         llm_input_payload: dict[str, Any] | None = None,
         evidence_pack_digest: dict[str, Any] | None = None,
     ) -> str:
@@ -825,12 +937,12 @@ class ConversationService:
         """
         eng = self.conversation_engine
 
-        def _stable_json(obj: Any) -> str:
+        def _stable_json(obj: object) -> str:
             return json.dumps(
                 obj, ensure_ascii=False, sort_keys=True, separators=(",", ":")
             )
 
-        def _snapshot_hash(payload: Any) -> str:
+        def _snapshot_hash(payload: object) -> str:
             h = hashlib.sha256()
             h.update(_stable_json(payload).encode("utf-8"))
             return h.hexdigest()
@@ -870,6 +982,7 @@ class ConversationService:
         )
 
         meta_model = ContextSnapshotMetadata(
+            level_from_root=0,
             run_id=run_id,
             run_step_seq=int(run_step_seq),
             attempt_seq=int(attempt_seq),
@@ -893,7 +1006,7 @@ class ConversationService:
             )
         )
 
-        existing = eng.backend.node_get(ids=[sid], include=[])
+        existing = _backend_map(eng.backend.node_get(ids=[sid], include=[]))
         if not existing.get("ids"):
             node = ConversationNode(
                 id=sid,
@@ -932,7 +1045,7 @@ class ConversationService:
                     "conversation.edge", scope, "depends_on", sid, nid, str(ordinal)
                 )
             )
-            ex = eng.backend.edge_get(ids=[eid], include=[])
+            ex = _backend_map(eng.backend.edge_get(ids=[eid], include=[]))
             if ex.get("ids"):
                 continue
             doc_id = scope
@@ -986,16 +1099,16 @@ class ConversationService:
             limit=10_000,
         )
         snaps = [
-            n
+            cast(ConversationNode, n)
             for n in snaps
             if str(getattr(n, "conversation_id", "") or "") == conversation_id
         ]
         if not snaps:
             return None
 
-        def _k(n: ConversationNode):
+        def _k(n: ConversationNode) -> int:
             try:
-                return int((n.metadata or {}).get("run_step_seq", 0))
+                return _json_int((n.metadata or {}).get("run_step_seq"))
             except Exception:
                 return 0
 
@@ -1006,8 +1119,10 @@ class ConversationService:
         *,
         snapshot_node_id: str,
     ) -> dict[str, Any]:
-        got = self.conversation_engine.backend.node_get(
-            ids=[snapshot_node_id], include=["documents", "metadatas"]
+        got = _backend_map(
+            self.conversation_engine.backend.node_get(
+                ids=[snapshot_node_id], include=["documents", "metadatas"]
+            )
         )
         ids = got.get("ids") or []
         if not ids:
@@ -1048,7 +1163,10 @@ class ConversationService:
             return None
 
     def get_ai_conversation_response(
-        self, conversation_id, ref_knowledge_engine=None, model_names=None
+        self,
+        conversation_id: str,
+        ref_knowledge_engine: GraphKnowledgeEngine | None = None,
+        model_names: list[str] | None = None,
     ) -> ConversationAIResponse:
         if (
             ref_knowledge_engine is not None
@@ -1062,5 +1180,7 @@ class ConversationService:
                 llm_tasks=self.llm_tasks,
             )
         return self.answer_only(
-            conversation_id=conversation_id, model_names=model_names
+            conversation_id=conversation_id,
+            model_names=model_names,
+            prev_turn_meta_summary=MetaFromLastSummary(0, 0),
         )

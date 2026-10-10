@@ -1,12 +1,17 @@
 from __future__ import annotations
 
-from typing import Any, Optional, TypedDict, cast
-from typing_extensions import NotRequired
+from typing import NotRequired, TypedDict, cast
+
 from pydantic import BaseModel, ConfigDict, Field
 
 from ..engine_core.models import Span
-
-Json = Any
+from ..json_types import JsonValue
+from .models import (
+    ConversationAIResponse,
+    KnowledgeRetrievalResult,
+    MemoryPinResult,
+    MemoryRetrievalResult,
+)
 
 
 class PrevTurnMetaSummaryModel(BaseModel):
@@ -18,7 +23,7 @@ class PrevTurnMetaSummaryModel(BaseModel):
 class SummaryStateModel(BaseModel):
     should_summarize: bool = False
     did_summarize: bool = False
-    summary_node_id: Optional[str] = None
+    summary_node_id: str | None = None
 
 
 class BudgetStateModel(BaseModel):
@@ -44,17 +49,17 @@ class WorkflowStateModel(BaseModel):
 
     role: str
     user_text: str
-    embedding: Any
+    embedding: list[float] | None = None
 
-    memory: Optional[Any] = None
-    # memory_raw: Optional[Any] = None # not serializable, not used
-    kg: Optional[Any] = None
-    # kg_raw: Optional[Any] = None # not serializable, not used
-    memory_pin: Optional[Any] = None
-    # memory_pin_raw: Optional[Any] = None # not serializable, not used
-    kg_pin: Optional[Any] = None
-    answer: Optional[Any] = None
-    # answer_raw: Optional[Any] = None # not serializable, not used
+    memory: MemoryRetrievalResult | None = None
+    memory_raw: object | None = None
+    kg: KnowledgeRetrievalResult | None = None
+    kg_raw: object | None = None
+    memory_pin: MemoryPinResult | None = None
+    memory_pin_raw: object | None = None
+    kg_pin: JsonValue | None = None
+    answer: ConversationAIResponse | None = None
+    answer_raw: object | None = None
 
     summary: SummaryStateModel = Field(default_factory=SummaryStateModel)
     budget: BudgetStateModel = Field(default_factory=BudgetStateModel)
@@ -76,7 +81,7 @@ class ConversationPrevTurnMetaSummaryDict(TypedDict):
 class ConversationSummaryStateDict(TypedDict):
     should_summarize: bool
     did_summarize: bool
-    summary_node_id: Optional[str]
+    summary_node_id: str | None
 
 
 class ConversationBudgetStateDict(TypedDict):
@@ -94,7 +99,7 @@ class ConversationBudgetStateDict(TypedDict):
 class ConversationWorkflowState(TypedDict):
     """Narrow JSON-friendly persisted shape for conversation workflows.
 
-    Generic runtime state is intentionally an open ``dict[str, Any]`` because
+    Generic runtime state is intentionally an open ``dict[str, object]`` because
     user workflows may define arbitrary state keys.  This TypedDict describes
     only conversation's persisted/checkpointed contract.
     """
@@ -107,14 +112,14 @@ class ConversationWorkflowState(TypedDict):
     user_text: NotRequired[str]
     mem_id: NotRequired[str]
     self_span: NotRequired[Span]
-    embedding: NotRequired[Any]
-    memory: NotRequired[Any]
-    memory_raw: NotRequired[Any]
-    kg: NotRequired[Any]
-    memory_pin: NotRequired[Any]
-    kg_pin: NotRequired[Any]
-    answer: NotRequired[Any]
-    _rt_join: NotRequired[dict[str, Any]]
+    embedding: NotRequired[list[float] | None]
+    memory: NotRequired[JsonValue | None]
+    memory_raw: NotRequired[object]
+    kg: NotRequired[JsonValue | None]
+    memory_pin: NotRequired[JsonValue | None]
+    kg_pin: NotRequired[JsonValue | None]
+    answer: NotRequired[JsonValue | None]
+    _rt_join: NotRequired[dict[str, JsonValue]]
 
     # identity
     # conversation_id: str
@@ -127,19 +132,6 @@ class ConversationWorkflowState(TypedDict):
     # # required for pinning + tools
     # mem_id: str
     # self_span: Span
-    # embedding: Any  # List[float] ideally, but keep as Any if your embeddings vary
-
-    # # step outputs (mirrors your step handlers)
-    # memory: Optional[Json]
-    # memory_raw: Optional[Any]  # not JSON; only safe if you accept non-serializable checkpoints
-    # kg: Optional[Json]
-    # # kg_raw: Optional[Any]
-    # memory_pin: Optional[Json]
-    # # memory_pin_raw: Optional[Any]
-    # kg_pin: Optional[Json]
-    # answer: Optional[Json]
-    # # answer_raw: Optional[Any]
-
     summary: ConversationSummaryStateDict
     budget: ConversationBudgetStateDict
     prev_turn_meta_summary: ConversationPrevTurnMetaSummaryDict

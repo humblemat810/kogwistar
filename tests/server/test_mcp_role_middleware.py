@@ -11,6 +11,7 @@ from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 from jose import jwt
 
+import kogwistar.server_mcp_with_admin as server
 from kogwistar.server.auth_middleware import (
     JWTProtectMiddleware,
     claims_ctx,
@@ -19,7 +20,6 @@ from kogwistar.server.auth_middleware import (
     set_auth_app,
 )
 from kogwistar.server.mcp_tools import MCPRoleMiddleware
-import kogwistar.server_mcp_with_admin as server
 
 pytestmark = pytest.mark.ci
 

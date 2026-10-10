@@ -1,64 +1,65 @@
 from __future__ import annotations
-from os import PathLike
 
-import time
 import json
-import uuid
+import logging
+import pathlib
 import queue
+import time
+import uuid
+from collections.abc import Callable, Iterator, Mapping
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass
+from os import PathLike
+from types import TracebackType
 from typing import (
     TYPE_CHECKING,
     Any,
-    Callable,
-    Dict,
-    List,
-    Mapping,
-    Optional,
     Protocol,
-    Tuple,
+    TypedDict,
     cast,
 )
-from concurrent.futures import ThreadPoolExecutor
-import pathlib
-import logging
-from contextlib import contextmanager, nullcontext
 
-from kogwistar.id_provider import stable_id
-from kogwistar.utils.log import bind_log_context
-from kogwistar.runtime.models import StateUpdate
 from kogwistar.engine_core.models import MentionVerification
 from kogwistar.engine_core.sqlite_context import sqlite_execution_bound
+from kogwistar.id_provider import stable_id
+from kogwistar.json_types import JsonObject
+from kogwistar.runtime.budget import BudgetAttribution, StateBackedBudgetLedger
+from kogwistar.runtime.budget_adapters import adapt_budget_events
 from kogwistar.runtime.models import (
     RunFailure,
+    StateUpdate,
     WorkflowCancelledNode,
     WorkflowCheckpointNode,
     WorkflowCompletedNode,
-    WorkflowFailedNode,
-    WorkflowEdge,
     WorkflowDesignArtifact,
-    WorkflowNode,
+    WorkflowEdge,
+    WorkflowFailedNode,
     WorkflowInvocationRequest,
+    WorkflowNode,
     WorkflowRunNode,
     WorkflowRuntimeEdge,
     WorkflowState,
     WorkflowStepExecNode,
 )
-from kogwistar.runtime.budget import BudgetAttribution, StateBackedBudgetLedger
-from kogwistar.runtime.budget_adapters import adapt_budget_events
+from kogwistar.utils.log import bind_log_context
 
-from .design import validate_workflow_design, Predicate
-from .serialize import JsonValue, try_serialize_with_ref
+from ..engine_core.async_compat import run_awaitable_blocking
+from .base_runtime import (
+    BaseRuntime,
+    _ChildRunResult,
+    apply_state_update_inplace,
+    validate_initial_state,
+)
+from .contract import CancellationChecker, Predicate
+from .design import validate_workflow_design
+from .native_contracts import join_arrival_result, successor_plan
 from .projections import (
     WORKFLOW_RUNTIME_PROJECTION_SCHEMA_VERSION,
     workflow_checkpoint_latest_projection_namespace,
     workflow_run_status_projection_namespace,
 )
-from ..engine_core.async_compat import run_awaitable_blocking
-from .base_runtime import (
-    BaseRuntime,
-    apply_state_update_inplace,
-    validate_initial_state,
-)
+from .serialize import JsonValue, try_serialize_with_ref
 
 if TYPE_CHECKING:
     from ..engine_core.engine import GraphKnowledgeEngine
@@ -74,6 +75,32 @@ class LaneMessageEventSinkLike(Protocol):
     """Structural contract for best-effort lifecycle event mirroring."""
 
     def __call__(self, event: dict[str, Json]) -> object: ...
+
+
+class ConversationBackendLike(Protocol):
+    """Minimal backend lookup surface used by terminal-run idempotency checks."""
+
+    def node_get(self, **kwargs: object) -> Mapping[str, object]: ...
+
+    def edge_get(self, **kwargs: object) -> Mapping[str, object]: ...
+
+
+class TraceSpanPayload(TypedDict):
+    """Typed payload used to construct workflow trace evidence spans."""
+
+    collection_page_url: str
+    document_page_url: str
+    doc_id: str
+    insertion_method: str
+    page_number: int
+    start_char: int
+    end_char: int
+    excerpt: str
+    context_before: str
+    context_after: str
+    chunk_id: str | None
+    source_cluster_id: str | None
+    verification: MentionVerification
 
 
 # ------------------------------------------------------------------
@@ -133,7 +160,7 @@ def _tarjan_scc(n: int, succ: list[list[int]]) -> tuple[list[int], list[list[int
 def _compute_may_reach_join_bitsets_python(
     *,
     node_ids: list[str],
-    adj: dict[str, list["WorkflowEdge"]],
+    adj: dict[str, list[WorkflowEdge]],
     join_ids: list[str],
 ) -> dict[str, int]:
     """
@@ -206,7 +233,7 @@ def _compute_may_reach_join_bitsets_python(
 def _compute_may_reach_join_bitsets(
     *,
     node_ids: list[str],
-    adj: dict[str, list["WorkflowEdge"]],
+    adj: dict[str, list[WorkflowEdge]],
     join_ids: list[str],
 ) -> dict[str, int]:
     """Select static join lineage implementation without changing call shape.
@@ -214,7 +241,10 @@ def _compute_may_reach_join_bitsets(
     Python remains the independent oracle in ``python`` and ``shadow`` modes.
     Rust is canonical in ``rust`` mode; dynamic workflow routing stays Python.
     """
-    from kogwistar._rust_bridge import runtime_implementation_mode, runtime_workflow_may_reach_join
+    from kogwistar._rust_bridge import (
+        runtime_implementation_mode,
+        runtime_workflow_may_reach_join,
+    )
 
     mode = runtime_implementation_mode()
     edges = [
@@ -244,7 +274,7 @@ def _compute_may_reach_join_bitsets(
     return selected if selected is not None else python_value
 
 
-def _iter_bits(mask: int):
+def _iter_bits(mask: int) -> Iterator[int]:
     """Yield bit positions (0-based) for an int bitset."""
     # 2's complement tricks to get the first set least significant bit in binary embedding
     while mask:
@@ -255,7 +285,7 @@ def _iter_bits(mask: int):
 
 RunID = uuid.UUID | str
 Json = JsonValue
-State = Dict[str, Json]
+State = dict[str, Json]
 # Result = Json
 
 
@@ -280,7 +310,7 @@ def derive_child_authority_context(
     return MappingProxyType(context)
 
 
-def sink_observes_otel(sink: Any) -> bool:
+def sink_observes_otel(sink: object) -> bool:
     """Detect an explicitly supplied OTel sink without importing OTel."""
 
     if sink is None:
@@ -288,8 +318,7 @@ def sink_observes_otel(sink: Any) -> bool:
     if type(sink).__module__ == "kogwistar.runtime.telemetry_otel":
         return True
     return any(sink_observes_otel(item) for item in getattr(sink, "_sinks", ()))
-from typing import TypeAlias, Any
-
+from typing import TypeAlias
 
 from kogwistar.engine_core.models import Grounding, Span
 
@@ -303,23 +332,22 @@ class StepResolver(Protocol):
 
     def __call__(self, op: str) -> StepFn: ...
 
-from dataclasses import field
-from typing import Dict
-from types import MappingProxyType
 import threading
+from dataclasses import field
+from types import MappingProxyType
 
 
 @dataclass
 class RunResult:
     run_id: str
     final_state: WorkflowState
-    mq: queue.Queue[Dict[str, Json]]
+    mq: queue.Queue[dict[str, Json]]
     status: str = "succeeded"
     errors: list[str] = field(default_factory=list)
 
 
 class _StateWriteTxn:
-    def __init__(self, ctx: "StepContext"):
+    def __init__(self, ctx: StepContext) -> None:
         self._ctx = ctx
 
     def __enter__(self) -> WorkflowState:
@@ -328,23 +356,28 @@ class _StateWriteTxn:
         # self._ctx.publish({"type": "state_write_start", "op": self._ctx.op})
         return self._ctx._state
 
-    def __exit__(self, exc_type, exc, tb) -> None:
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
         # optional:
         # self._ctx.publish({"type": "state_write_end", "op": self._ctx.op, "ok": exc is None})
         self._ctx._state_lock.release()
 
 
-from dataclasses import dataclass, InitVar
-from typing import Dict
+from dataclasses import InitVar, dataclass
+
+from kogwistar.cdc.sqlite_sink import _get_shared_sqlite_sink
 
 from .telemetry import (
-    TraceContext,
-    EventSink,
-    EventEmitter,
-    bind_logger,
     BoundLoggerAdapter,
+    EventEmitter,
+    EventSink,
+    TraceContext,
+    bind_logger,
 )
-from kogwistar.cdc.sqlite_sink import _get_shared_sqlite_sink
 
 
 @dataclass
@@ -355,8 +388,8 @@ class RouteDecision:
     selected:  list of (edge_id, to_node_id, reason) entries for chosen edges.
     """
 
-    evaluated: List[Tuple[str, bool]]
-    selected: List[Tuple[str, str, str]]
+    evaluated: list[tuple[str, bool]]
+    selected: list[tuple[str, str, str]]
 
 
 @dataclass
@@ -380,7 +413,7 @@ class StepContext:
     )
 
     # --- runtime capabilities ---
-    message_queue: "queue.Queue[Dict[str, Json]]" = field(
+    message_queue: queue.Queue[dict[str, Json]] = field(
         repr=False, default_factory=queue.Queue
     )
     lane_message_sender: LaneMessageSenderLike | None = field(repr=False, default=None)
@@ -390,29 +423,29 @@ class StepContext:
     events: EventEmitter | None = field(repr=False, default=None)
 
     # Accept `state=` in __init__ but don't store it as a field
-    state: InitVar["WorkflowState"] = None  # type: ignore[assignment]
+    state: InitVar[WorkflowState] = None  # type: ignore[assignment]
 
     # real storage
-    _state: "WorkflowState" = field(init=False, repr=False)
+    _state: WorkflowState = field(init=False, repr=False)
     _state_lock: threading.RLock = field(
         default_factory=threading.RLock, init=False, repr=False
     )
     log: BoundLoggerAdapter = field(init=False, repr=False)
     
-    def __post_init__(self, state: "WorkflowState") -> None:
+    def __post_init__(self, state: WorkflowState) -> None:
         self._state = state
         # bind a correlated logger for resolver-level details
         self.log = bind_logger(logging.getLogger("workflow.resolver"), self.trace_ctx)
 
     @property
-    def state_view(self) -> Mapping[str, Json]:
+    def state_view(self) -> Mapping[str, object]:
         return MappingProxyType(self._state)
 
     @property
-    def state_write(self) -> "_StateWriteTxn":
+    def state_write(self) -> _StateWriteTxn:
         return _StateWriteTxn(self)
 
-    def publish(self, msg: Dict[str, Json]) -> None:
+    def publish(self, msg: dict[str, Json]) -> None:
         self.message_queue.put(msg)
 
     def send_lane_message(self, **kwargs: Json) -> object:
@@ -462,7 +495,7 @@ class StepContext:
             )
         sink(event)
 
-    def drain(self, max_items: int = 200) -> List[Dict[str, Json]]:
+    def drain(self, max_items: int = 200) -> list[dict[str, Json]]:
         raise Exception(
             "current design does not allow mq drained in context, but only by orchestrator"
         )
@@ -492,7 +525,9 @@ def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
-def _make_trace_span(*, conversation_id: str, excerpt: str, doc_id: str) -> Any:
+def _make_trace_span(
+    *, conversation_id: str, excerpt: str, doc_id: str
+) -> TraceSpanPayload:
     # We avoid importing models here to keep the runtime module lightweight.
     # The orchestrator will pass in a ready Span via a hook, OR we can create a minimal span-like dict.
     # In your repo, you already have Span model and Grounding/MentionVerification.
@@ -509,12 +544,12 @@ def _make_trace_span(*, conversation_id: str, excerpt: str, doc_id: str) -> Any:
         "context_after": "",
         "chunk_id": None,
         "source_cluster_id": None,
-        "verification": {
-            "method": "human",
-            "is_verified": True,
-            "score": 1.0,
-            "notes": "workflow trace",
-        },
+        "verification": MentionVerification(
+            method="human",
+            is_verified=True,
+            score=1.0,
+            notes="workflow trace",
+        ),
     }
 
 
@@ -532,7 +567,7 @@ def _make_runtime_edge(
     run_id: str | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> WorkflowRuntimeEdge:
-    edge_metadata = {
+    edge_metadata: dict[str, JsonValue] = {
         "entity_type": "conversation_edge",
         "relation": relation,
         "conversation_id": conversation_id,
@@ -564,7 +599,7 @@ def _make_runtime_edge(
 from threading import Lock
 
 
-class WorkflowRuntime(BaseRuntime):
+class WorkflowRuntime(BaseRuntime[StepResolver]):
     CHECKPOINT_SCHEMA_VERSION = 1
     """
     Core engine for executing graph-based **workflow designs**.
@@ -590,7 +625,7 @@ class WorkflowRuntime(BaseRuntime):
         workflow_engine: GraphKnowledgeEngine,
         conversation_engine: GraphKnowledgeEngine,
         step_resolver: StepResolver,
-        predicate_registry: Dict[str, Predicate],
+        predicate_registry: dict[str, Predicate],
         checkpoint_every_n_steps: int = 1,
         max_workers: int = 4,
         transaction_mode: str | None = None,  # "step" | "run" | "none" (default auto)
@@ -599,7 +634,7 @@ class WorkflowRuntime(BaseRuntime):
         events: EventEmitter | None = None,
         sink: EventSink | None = None,
         otel_enabled: bool = False,
-        cancel_requested: Callable[[str], bool] | None = None,
+        cancel_requested: CancellationChecker | None = None,
         lane_message_sender: LaneMessageSenderLike | None = None,
         lane_message_event_sink: LaneMessageEventSinkLike | None = None,
         fast_trace_persistence: bool | None = None,
@@ -668,10 +703,10 @@ class WorkflowRuntime(BaseRuntime):
             else:
                 self.sink = None
                 if getattr(workflow_engine, "persist_directory", None) is not None:
-                    db_path = str(
-                        pathlib.Path(workflow_engine.persist_directory)
-                        / "wf_trace.sqlite"
-                    )
+                    persist_directory = workflow_engine.persist_directory
+                    if persist_directory is None:
+                        raise RuntimeError("trace persistence directory disappeared")
+                    db_path = str(pathlib.Path(persist_directory) / "wf_trace.sqlite")
                     # Share a single sink per db_path in this process to reduce SQLite contention.
                     self.sink = _get_shared_sqlite_sink(db_path, drop_when_full=True)
             if otel_enabled:
@@ -716,7 +751,7 @@ class WorkflowRuntime(BaseRuntime):
             )
 
     @contextmanager
-    def _trace_write_mode(self):
+    def _trace_write_mode(self) -> Iterator[None]:
         eng = self.conversation_engine
         if not self.fast_trace_persistence:
             yield
@@ -728,7 +763,7 @@ class WorkflowRuntime(BaseRuntime):
         finally:
             eng._phase1_enable_index_jobs = prev_idx
 
-    def _maybe_step_uow(self):
+    def _maybe_step_uow(self) -> AbstractContextManager[object]:
         """Open a UoW transaction only when transaction_mode=='step'.
 
         This keeps callsites clean:
@@ -955,7 +990,7 @@ class WorkflowRuntime(BaseRuntime):
         *,
         state: WorkflowState,
         invocation: WorkflowInvocationRequest,
-        child_result: RunResult,
+        child_result: _ChildRunResult,
     ) -> None:
         super()._apply_workflow_invocation_result(
             state=state,
@@ -1000,7 +1035,7 @@ class WorkflowRuntime(BaseRuntime):
         mute_state: WorkflowState,
         state_update: list[tuple[str, dict[str, Any]]] | list[StateUpdate],
         update: dict | None = None,
-    ):
+    ) -> None:
         apply_state_update_inplace(
             mute_state,
             state_update,
@@ -1018,7 +1053,7 @@ class WorkflowRuntime(BaseRuntime):
         workflow_id: str,
         conversation_id: str,
         turn_node_id: str,
-        cache_dir = None,
+        cache_dir: str | PathLike[str] | None = None,
         _parent_trace_context: TraceContext | None = None,
     ) -> RunResult:
         """
@@ -1091,17 +1126,33 @@ class WorkflowRuntime(BaseRuntime):
             if candidate.has_valid_w3c_ids:
                 resume_trace_context = candidate
 
+        lifecycle_run_id = str(run_id)
+        lifecycle_conversation_id = str(conversation_id)
+        lifecycle_turn_node_id = str(turn_node_id)
+
         def _resume_lifecycle_trace_context(
-            *, token_id: str, step_seq: int, node_id: str, attempt: int = 1
+            *,
+            token_id: str,
+            step_seq: int,
+            node_id: str,
+            attempt: int = 1,
+            run_id: str | None = None,
+            conversation_id: str | None = None,
+            turn_node_id: str | None = None,
         ) -> TraceContext:
+            effective_run_id = str(run_id or lifecycle_run_id)
+            effective_conversation_id = str(
+                conversation_id or lifecycle_conversation_id
+            )
+            effective_turn_node_id = str(turn_node_id or lifecycle_turn_node_id)
             base = resume_trace_context or TraceContext(
-                run_id=str(run_id),
+                run_id=effective_run_id,
                 token_id=str(token_id),
                 step_seq=int(step_seq),
                 node_id=str(node_id),
                 attempt=int(attempt),
-                conversation_id=str(conversation_id),
-                turn_node_id=str(turn_node_id),
+                conversation_id=effective_conversation_id,
+                turn_node_id=effective_turn_node_id,
             )
             return base.child_span(
                 token_id=str(token_id),
@@ -1158,7 +1209,8 @@ class WorkflowRuntime(BaseRuntime):
             next_nodes, route_decision = self._route_next(
                 edges, initial_state, client_result, wn.fanout, nodes
             )
-        rt_join = initial_state.get("_rt_join", {})
+        rt_join_value = initial_state.get("_rt_join", {})
+        rt_join = rt_join_value if isinstance(rt_join_value, dict) else {}
         pending = rt_join.get("pending", [])
         suspended = rt_join.get("suspended", [])
 
@@ -1183,7 +1235,7 @@ class WorkflowRuntime(BaseRuntime):
             )
             previous_exec_node = fallback_exec_nodes[0] if fallback_exec_nodes else None
 
-        def _extract(items, keep):
+        def _extract(items: list[object], keep: list[object]) -> None:
             nonlocal token_found, mask_to_distribute, parent_token_id
             for item in items:
                 norm = None
@@ -1274,11 +1326,11 @@ class WorkflowRuntime(BaseRuntime):
         _join_pos = {jid: i for i, jid in enumerate(join_node_ids)}
         jo = rt_join.get("join_outstanding", [0 for _ in join_node_ids])
 
-        def _inc(m: int):
+        def _inc(m: int) -> None:
             for bi in _iter_bits(m):
                 jo[bi] += 1
 
-        def _dec(m: int):
+        def _dec(m: int) -> None:
             for bi in _iter_bits(m):
                 jo[bi] = max(0, jo[bi] - 1)
 
@@ -1345,7 +1397,10 @@ class WorkflowRuntime(BaseRuntime):
             token_id=suspended_token_id,
             parent_token_id=parent_token_id,
             join_mask=mask_to_distribute,
-            last_exec_node=previous_exec_node,
+            last_exec_node=cast(
+                WorkflowStepExecNode | WorkflowRunNode | None,
+                previous_exec_node,
+            ),
         )
         if (step_seq_current % self.checkpoint_every_n_steps) == 0:
             self._persist_checkpoint(
@@ -1403,7 +1458,7 @@ class WorkflowRuntime(BaseRuntime):
             return self.run(
                 workflow_id=workflow_id,
                 conversation_id=conversation_id,
-                turn_node_id=turn_node_id,
+                turn_node_id=str(turn_node_id or ""),
                 initial_state=initial_state,
                 run_id=run_id,
                 cache_dir=cache_dir,
@@ -1500,7 +1555,7 @@ class WorkflowRuntime(BaseRuntime):
         workflow_id: str,
         conversation_id: str,
         turn_node_id: str,
-        cache_dir=None,
+        cache_dir: str | PathLike[str] | None = None,
         _parent_trace_context: TraceContext | None = None,
         _parent_authority_context: Mapping[str, Any] | None = None,
     ) -> RunResult:
@@ -1574,8 +1629,8 @@ class WorkflowRuntime(BaseRuntime):
         conversation_id: str,
         turn_node_id: str | None = None,  # parent run may trigger another run in a node
         initial_state: WorkflowState,
-        run_id: Optional[str] = None,
-        cache_dir = None,
+        run_id: str | None = None,
+        cache_dir: str | PathLike[str] | None = None,
         _resume_step_seq: int | None = None,
         _resume_last_exec_node: WorkflowStepExecNode | WorkflowRunNode | None = None,
         _run_metadata: Mapping[str, Any] | None = None,
@@ -1641,7 +1696,7 @@ class WorkflowRuntime(BaseRuntime):
             self.state_lock[str(run_id)] = Lock()
 
             # an interworker, orchestrator message channel
-            mq: queue.Queue[Dict[str, Json]] = queue.Queue(maxsize=10000)
+            mq: queue.Queue[dict[str, Json]] = queue.Queue(maxsize=10000)
 
             start, nodes, adj = validate_workflow_design(
                 workflow_engine=self.workflow_engine,
@@ -1705,7 +1760,7 @@ class WorkflowRuntime(BaseRuntime):
                 return (1 << bi) if bi is not None else 0
 
             def _normalize_join_waiter(
-                item: Any,
+                item: object,
             ) -> tuple[int, str, str | None] | None:
                 if not isinstance(item, (list, tuple)):
                     return None
@@ -1727,7 +1782,7 @@ class WorkflowRuntime(BaseRuntime):
                 state["_rt_join"] = payload
 
             def _normalize_rt_token(
-                item: Any,
+                item: object,
             ) -> tuple[str, int, str, str | None] | None:
                 if not isinstance(item, (list, tuple)):
                     return None
@@ -1886,22 +1941,34 @@ class WorkflowRuntime(BaseRuntime):
                 )
             )
 
+            self_run_id = str(run_id)
+            self_conversation_id = str(conversation_id)
+            self_turn_node_id = str(turn_node_id)
+
             def _lifecycle_trace_context(
-                *, token_id: str, step_seq: int, node_id: str, attempt: int = 1
+                *,
+                token_id: str,
+                step_seq: int,
+                node_id: str,
+                attempt: int = 1,
+                run_id: str | None = None,
+                conversation_id: str | None = None,
+                turn_node_id: str | None = None,
             ) -> TraceContext:
                 """Keep lifecycle events in this run's trace across all choke points."""
+                effective_run_id = str(run_id or self_run_id)
+                effective_conversation_id = str(
+                    conversation_id or self_conversation_id
+                )
+                effective_turn_node_id = str(turn_node_id or self_turn_node_id)
                 base = run_trace_context or TraceContext(
-                    run_id=str(run_id),
-                    token_id=str(run_id),
+                    run_id=effective_run_id,
+                    token_id=effective_run_id,
                     step_seq=0,
                     node_id=str(getattr(start, "id", "start")),
                     attempt=1,
-                    conversation_id=str(conversation_id)
-                    if conversation_id is not None
-                    else None,
-                    turn_node_id=str(turn_node_id)
-                    if turn_node_id is not None
-                    else None,
+                    conversation_id=effective_conversation_id,
+                    turn_node_id=effective_turn_node_id,
                 )
                 return base.child_span(
                     token_id=str(token_id),
@@ -1915,7 +1982,7 @@ class WorkflowRuntime(BaseRuntime):
                 conversation_id=conversation_id,
                 workflow_id=workflow_id,
                 run_id=run_id,
-                turn_node_id=turn_node_id,
+                turn_node_id=str(turn_node_id or ""),
                 status="running",
                 run_metadata=_run_metadata,
                 trace_context=run_trace_context,
@@ -1936,14 +2003,14 @@ class WorkflowRuntime(BaseRuntime):
             except Exception:
                 pass
             # state_mutex_lock: threading.Lock = threading.Lock()
-            scheduled_q: queue.Queue[Tuple[str, int, str, str | None]] = (
+            scheduled_q: queue.Queue[tuple[str, int, str, str | None]] = (
                 queue.Queue()
             )  # (node_id, mask, token_id, parent_token_id)
             pending_tokens: set[tuple[str, int, str, str | None]] = set()
             inflight_tokens: set[tuple[str, int, str, str | None]] = set()
             suspended_tokens: dict[str, tuple[str, int, str, str | None]] = {}
             done_q: queue.Queue[
-                Tuple[str, StepRunResult, int, str, str | None, str, int]
+                tuple[str, StepRunResult, int, str, str | None, str, int]
             ] = queue.Queue()  # (node_id, result, duration_ms, token_id, parent_token_id, status, mask)
             cancel_pending = False
             cancel_info: dict[str, Any] | None = None
@@ -1952,7 +2019,7 @@ class WorkflowRuntime(BaseRuntime):
             run_errors: list[str] = []
 
             graveyard: queue.Queue[
-                Tuple[str, StepRunResult, int, str, str | None, str, int]
+                tuple[str, StepRunResult, int, str, str | None, str, int]
             ] = queue.Queue()
 
             # Tiny scheduler-only critical section:
@@ -2280,7 +2347,7 @@ class WorkflowRuntime(BaseRuntime):
                 finally:
                     t.name = old_name
 
-            inflight: Dict[tuple[str, int, str], Any] = {}
+            inflight: dict[tuple[str, int, str], Any] = {}
             last_exec_node = (
                 _resume_last_exec_node
                 if _resume_last_exec_node is not None
@@ -2501,7 +2568,7 @@ class WorkflowRuntime(BaseRuntime):
                             runtime_mode = runtime_implementation_mode()
                             native_join = None
                             if runtime_mode in {"shadow", "rust"} and join_idx is not None:
-                                native_join = runtime_apply_join_arrival(
+                                native_join = join_arrival_result(runtime_apply_join_arrival(
                                     payload={
                                         "join_index": int(join_idx),
                                         "join_outstanding": list(_join_outstanding),
@@ -2520,7 +2587,7 @@ class WorkflowRuntime(BaseRuntime):
                                         },
                                         "merge": bool(_join_is_merge[nid]),
                                     }
-                                )
+                                ))
                             if runtime_mode == "rust" and native_join is not None:
                                 _join_outstanding[:] = [
                                     int(value) for value in native_join["join_outstanding"]
@@ -2858,7 +2925,7 @@ class WorkflowRuntime(BaseRuntime):
                     # persist step exec trace node (same transaction as state update when possible)
                     with self._maybe_step_uow():
                         last_exec_node = self._persist_step_exec(
-                            conversation_id=conversation_id,
+                            conversation_id=str(conversation_id or ""),
                             workflow_id=workflow_id,
                             run_id=run_id,
                             step_seq=step_seq,
@@ -2891,7 +2958,7 @@ class WorkflowRuntime(BaseRuntime):
                         if (step_seq_current % self.checkpoint_every_n_steps) == 0:
                             with self._maybe_step_uow():
                                 self._persist_checkpoint(
-                                    conversation_id=conversation_id,
+                                    conversation_id=str(conversation_id or ""),
                                     workflow_id=workflow_id,
                                     run_id=run_id,
                                     step_seq=step_seq_current,
@@ -2935,7 +3002,7 @@ class WorkflowRuntime(BaseRuntime):
                                         step_seq=int(step_seq_current),
                                         node_id=str(node_id),
                                     ),
-                                    payload=getattr(run_result, "resume_payload"),
+                                     payload=getattr(run_result, "resume_payload"),
                                 )
                             except Exception:
                                 pass
@@ -3046,7 +3113,7 @@ class WorkflowRuntime(BaseRuntime):
                         if (step_seq_current % self.checkpoint_every_n_steps) == 0:
                             with self._maybe_step_uow():
                                 self._persist_checkpoint(
-                                    conversation_id=conversation_id,
+                                    conversation_id=str(conversation_id or ""),
                                     workflow_id=workflow_id,
                                     run_id=run_id,
                                     step_seq=step_seq_current,
@@ -3126,17 +3193,21 @@ class WorkflowRuntime(BaseRuntime):
                             )
                         runtime_plan_successors(
                             payload=successor_payload,
-                            python_value={
-                                "tokens": oracle_tokens,
-                                "join_outstanding": oracle_outstanding,
-                            },
+                            python_value=cast(
+                                JsonObject,
+                                {
+                                    "tokens": cast(Json, oracle_tokens),
+                                    "join_outstanding": cast(
+                                        Json, oracle_outstanding
+                                    ),
+                                },
+                            ),
                         )
                     elif runtime_mode == "rust":
                         native_plan = runtime_plan_successors(payload=successor_payload)
-                        _join_outstanding[:] = [
-                            int(value) for value in native_plan["join_outstanding"]
-                        ]
-                        for planned in native_plan["tokens"]:
+                        native_tokens, native_join_outstanding = successor_plan(native_plan)
+                        _join_outstanding[:] = native_join_outstanding
+                        for planned in native_tokens:
                             nxt = str(planned["node_id"])
                             nxt_mask = int(planned["join_mask"])
                             planned_token_id = str(planned["token_id"])
@@ -3282,12 +3353,12 @@ class WorkflowRuntime(BaseRuntime):
 
     def _route_next(
         self,
-        edges: List[WorkflowEdge],
+        edges: list[WorkflowEdge],
         state: WorkflowState,
         last_result: StepRunResult,
         fanout: bool,
-        nodes: Optional[dict[str, WorkflowNode]] = None,
-    ) -> tuple[List[str], RouteDecision]:
+        nodes: Mapping[str, WorkflowNode] | None = None,
+    ) -> tuple[list[str], RouteDecision]:
         """
         Waterfall routing:
 
@@ -3327,7 +3398,7 @@ class WorkflowRuntime(BaseRuntime):
         self, *, where: dict, limit: int = 1000
     ) -> list[Any]:
         try:
-            return self.conversation_engine.read.get_nodes(where=where, limit=limit)
+            return list(self.conversation_engine.read.get_nodes(where=where, limit=limit))
         except Exception as exc:
             msg = str(exc)
             if "Nothing found on disk" in msg or "hnsw segment reader" in msg:
@@ -3386,8 +3457,9 @@ class WorkflowRuntime(BaseRuntime):
                 }
         return req_best
 
-    def _conversation_backend(self) -> Any | None:
-        return getattr(self.conversation_engine, "backend", None)
+    def _conversation_backend(self) -> ConversationBackendLike | None:
+        backend = getattr(self.conversation_engine, "backend", None)
+        return cast(ConversationBackendLike, backend) if backend is not None else None
 
     def _terminal_run_result(
         self, *, conversation_id: str, run_id: str
@@ -3477,7 +3549,9 @@ class WorkflowRuntime(BaseRuntime):
                 workflow_checkpoint_latest_projection_namespace(conversation_id),
                 str(run_id),
             )
-            payload = dict((row or {}).get("payload") or {}) if row else {}
+            row_map = row if isinstance(row, Mapping) else {}
+            payload_value = row_map.get("payload")
+            payload = dict(payload_value) if isinstance(payload_value, Mapping) else {}
             node_id = str(payload.get("node_id") or "")
             if node_id:
                 nodes = self.conversation_engine.read.get_nodes(ids=[node_id], limit=1)
@@ -3518,14 +3592,16 @@ class WorkflowRuntime(BaseRuntime):
         latest = getattr(meta, "get_latest_entity_event_seq", None)
         if callable(latest):
             try:
-                latest_seq = int(
-                    latest(
-                        namespace=str(
-                            getattr(self.conversation_engine, "namespace", "default")
-                            or "default"
-                        )
+                latest_value = latest(
+                    namespace=str(
+                        getattr(self.conversation_engine, "namespace", "default")
+                        or "default"
                     )
-                    or 0
+                )
+                latest_seq = (
+                    int(latest_value)
+                    if isinstance(latest_value, (int, float, str))
+                    else 0
                 )
             except Exception:
                 latest_seq = 0
@@ -4031,7 +4107,7 @@ class WorkflowRuntime(BaseRuntime):
         token_id: str | None = None,
         parent_token_id: str | None = None,
         join_mask: int | None = None,
-        last_exec_node: Optional[WorkflowStepExecNode | WorkflowRunNode] = None,
+        last_exec_node: WorkflowStepExecNode | WorkflowRunNode | None = None,
     ) -> WorkflowStepExecNode:
         # from kogwistar.models import WorkflowStepExecNode, Grounding, Span  # adjust import path
 
@@ -4216,7 +4292,7 @@ class WorkflowRuntime(BaseRuntime):
         run_id: str,
         step_seq: int,
         state: WorkflowState,
-        last_exec_node: Optional[WorkflowStepExecNode | WorkflowRunNode] = None,
+        last_exec_node: WorkflowStepExecNode | WorkflowRunNode | None = None,
         trace_context: TraceContext | None = None,
     ) -> None:
         from kogwistar.engine_core.models import (

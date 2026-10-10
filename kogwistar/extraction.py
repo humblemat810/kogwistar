@@ -1,19 +1,22 @@
+from collections.abc import Callable, Iterable
+
 from kogwistar.engine_core.models import (
-    Span,
     Document,
     MentionVerification,
+    Span,
 )
 from kogwistar.fuzzy_offsets import (
     FuzzySpanHit as FuzzyHit,
+)
+from kogwistar.fuzzy_offsets import (
     find_fuzzy_spans,
 )
 from kogwistar.typing_interfaces import EngineLike
-from typing import Optional, List, Iterable, Callable
 
 # ---------- exact matching ----------
 
 
-def find_all_exact(text: str, needle: str) -> List[int]:
+def find_all_exact(text: str, needle: str) -> list[int]:
     if not needle:
         return []
     out = []
@@ -24,7 +27,7 @@ def find_all_exact(text: str, needle: str) -> List[int]:
     return out
 
 
-def pick_nearest(starts: Iterable[int], origin: int) -> Optional[int]:
+def pick_nearest(starts: Iterable[int], origin: int) -> int | None:
     starts = list(starts)
     if not starts:
         return None
@@ -51,7 +54,7 @@ def _get_doc(
     doc_id: str | None = None,
     doc: Document | None = None,
     engine: EngineLike | None = None,
-):
+) -> Document:
     if (doc is not None) and doc_id is not None:
         if doc.id == doc_id:
             pass  # ok they agree
@@ -100,8 +103,8 @@ def fuzzy_find_best_spans(
     orig_start: int,
     *,
     max_hits: int = 20,
-    scan_band: Optional[int] = None,
-) -> List[FuzzyHit]:
+    scan_band: int | None = None,
+) -> list[FuzzyHit]:
     """
     Return up to `max_hits` candidate spans (start,end,score) with score >= threshold,
     preferring hits near orig_start.
@@ -255,14 +258,14 @@ class BaseDocValidator:
         doc_id: str | None = None,
         doc: Document | None = None,
         engine: EngineLike | None = None,
-        nodes_edges=None,
-        source_map=None,
-    ):
+        nodes_edges: object | None = None,
+        source_map: object | None = None,
+    ) -> dict[str, object]:
         # must coerce plain text into Document for processing
         # TO-DO fix logic start
         # 1) Validate existing coordinates quickly
         doc = _get_doc(doc_id, doc, engine)
-        text = doc.content
+        text = str(doc.content or "")
         origin = max(0, span.start_char)
         excerpt = span.excerpt or ""
         # --- preserve the LLM-provided evidence for scoring + audit ---
@@ -374,7 +377,7 @@ class BaseDocValidator:
         doc_id: str | None = None,
         doc: Document | None = None,
         engine: EngineLike | None = None,
-    ):
+    ) -> dict[str, object]:
 
         if not doc:
             raise RuntimeError("fail to resolve document")
@@ -393,7 +396,7 @@ class PlainTextDocSpanValidator(BaseDocValidator):
         doc_id: str | None = None,
         doc: Document | None = None,
         engine: EngineLike | None = None,
-    ):
+    ) -> dict[str, object]:
         return super().validate_span(span=span, doc_id=doc_id, doc=doc, engine=engine)
         if (doc is not None) and doc_id is not None:
             raise ValueError("Either doc or doc_id can be non None")
@@ -423,7 +426,7 @@ class ChunkedDocValidator:
         doc_id: str | None = None,
         doc: Document | None = None,
         engine: EngineLike | None = None,
-    ):
+    ) -> dict[str, object]:
         raise NotImplementedError
 
 
@@ -434,7 +437,7 @@ class OcrDocSpanValidator(BaseDocValidator):
         doc_id: str | None = None,
         doc: Document | None = None,
         engine: EngineLike | None = None,
-    ):
+    ) -> dict[str, object]:
         if doc is None:
             if doc_id is None:
                 raise ValueError("Either doc or doc_id must be provided")

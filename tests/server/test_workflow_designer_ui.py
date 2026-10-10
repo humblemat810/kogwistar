@@ -1,11 +1,10 @@
 from pathlib import Path
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from kogwistar.server.runtime_api import create_runtime_router
-
-import pytest
 
 pytestmark = [pytest.mark.integration]
 

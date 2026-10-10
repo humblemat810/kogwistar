@@ -23,58 +23,130 @@ The orchestrator should populate `_deps` in the workflow initial_state.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, NotRequired, Protocol, TypedDict, cast
+
 from .models import (
     ConversationEdge,
     ConversationNode,
     KnowledgeRetrievalResult,
     MemoryRetrievalResult,
     MetaFromLastSummary,
+    RetrievalResult,
 )
-
-from typing import TYPE_CHECKING
+from .conversation_context import PromptContext
 
 if TYPE_CHECKING:
     from kogwistar.runtime.models import StateUpdate
 
 import os
 import time
+from collections.abc import Callable, MutableMapping
+from typing import TYPE_CHECKING, Any
+
+from kogwistar.json_types import JsonValue
 
 from ..utils.embedding_vectors import normalize_embedding_vector
-from typing import TYPE_CHECKING, Any, Callable, Dict, Union
 
 # Best-effort self-inspection for state schema inference
 
-Json = Any
+Json = JsonValue
+
+
+class ContextSnapshotCostReader(Protocol):
+    """Optional engine capability used by summary policy."""
+
+    def latest_context_snapshot_cost(
+        self, *, conversation_id: str, stage: str
+    ) -> object | None: ...
+
+
+class ConversationState(TypedDict):
+    """Known workflow-state fields used by conversation resolvers.
+
+    The runtime state remains an extensible JSON mapping.  This view documents
+    the fields owned by this module without changing the runtime wire format.
+    Opaque provider/dependency results stay behind their existing model types.
+    """
+
+    user_id: str
+    conversation_id: str
+    user_text: str
+    turn_node_id: str
+    embedding: list[float]
+    turn_index: int
+    self_span: Span
+    mem_id: str
+    role: NotRequired[str]
+    turn_id: NotRequired[str]
+    prev_turn_id: NotRequired[str]
+    prev_node_id: NotRequired[str]
+    prev_turn_meta_summary: NotRequired[MetaFromLastSummary | dict[str, JsonValue]]
+    memory_raw: NotRequired[MemoryRetrievalResult]
+    memory: NotRequired[dict[str, JsonValue]]
+    kg_raw: NotRequired[KnowledgeRetrievalResult]
+    kg: NotRequired[dict[str, JsonValue]]
+    answer: NotRequired[dict[str, JsonValue]]
+    evidence_pack_digest: NotRequired[dict[str, JsonValue]]
+    memory_context_text: NotRequired[str]
+    done: NotRequired[bool]
+    _rt: NotRequired[dict[str, object]]
+
+
+def _state(ctx: StepContext) -> ConversationState:
+    """Expose the known conversation fields in the dynamic runtime state."""
+
+    return cast(ConversationState, ctx.state_view)
+
+
+def _set_runtime_state(ctx: StepContext, key: str, value: object) -> None:
+    """Store a non-checkpointed resolver value in the runtime-only bucket."""
+
+    with ctx.state_write as raw_state:
+        state = cast(MutableMapping[str, object], raw_state)
+        runtime_state = state.get("_rt")
+        if not isinstance(runtime_state, dict):
+            runtime_state = {}
+            state["_rt"] = runtime_state
+        runtime_state[key] = value
+
+
+def _coerce_int(value: object, default: int = 0) -> int:
+    return value if type(value) is int else default
+
+
+def _as_evidence_pack(value: object) -> dict[str, Any]:
+    """Narrow the opaque runtime evidence payload before provider calls."""
+
+    return cast(dict[str, Any], value) if isinstance(value, dict) else {}
+
+
 if TYPE_CHECKING:
+    from kogwistar.runtime.runtime import StepContext, StepRunResult
+
+    from .agentic_answering import AgenticAnsweringAgent
+    from .service import ConversationService
     from .tool_runner import ToolRunner
-    from kogwistar.runtime.runtime import StepContext
-    from kogwistar.runtime.runtime import StepRunResult
 
-    RawStepFn = Callable[[StepContext], Union[Json, StepRunResult]]
-
-from kogwistar.runtime.models import RunSuccess  # noqa: E402
+    RawStepFn = Callable[[StepContext], Json | StepRunResult]
 
 # Import your real RunResult types from kogwistar.runtime/models
-
-
 from kogwistar.engine_core.models import Span  # noqa: E402
-
+from kogwistar.runtime.models import RunSuccess  # noqa: E402
+from kogwistar.runtime.resolvers import MappingStepResolver  # noqa: E402
 
 # Agentic answering helper types
 from .agentic_answering import (  # noqa: E402
     AgenticAnsweringAgent,
-    snapshot_hash,
-    AnswerWithCitations,
     AnswerEvaluation,
+    AnswerWithCitations,
+    snapshot_hash,
 )
-
-from kogwistar.runtime.resolvers import MappingStepResolver  # noqa: E402
 
 default_resolver = MappingStepResolver()
 conversation_default_resolver = default_resolver
 
 
-def _deps(ctx: StepContext) -> Dict[str, Any]:
+def _deps(ctx: StepContext) -> dict[str, Any]:
     deps = ctx.state_view.get("_deps")
     if not isinstance(deps, dict):
         raise RuntimeError(
@@ -83,7 +155,19 @@ def _deps(ctx: StepContext) -> Dict[str, Any]:
     return deps
 
 
-def _chat_service(deps: Dict[str, Any]):
+def _append_op_log(state: object, entry: str) -> None:
+    """Append a conversation operation to the JSON-like workflow state."""
+
+    if not isinstance(state, MutableMapping):
+        raise TypeError("workflow state must be a mutable mapping")
+    current = state.get("op_log")
+    if isinstance(current, list):
+        current.append(entry)
+    else:
+        state["op_log"] = [entry]
+
+
+def _chat_service(deps: dict[str, Any]) -> ConversationService:
     from .service import ConversationService
 
     ce = deps["conversation_engine"]
@@ -92,7 +176,7 @@ def _chat_service(deps: Dict[str, Any]):
     return ConversationService.from_engine(ce, knowledge_engine=ke, workflow_engine=we)
 
 
-def _aa_agent(ctx: StepContext):
+def _aa_agent(ctx: StepContext) -> AgenticAnsweringAgent:
     deps = _deps(ctx)
     agent: AgenticAnsweringAgent | None = deps.get("agent")
     if agent is None:
@@ -105,7 +189,7 @@ def _aa_agent(ctx: StepContext):
 @default_resolver.register("start")
 def _start(ctx: StepContext) -> StepRunResult:
     with ctx.state_write as state:
-        state.setdefault("op_log", []).append("start")
+        _append_op_log(state, "start")
         state["started"] = True
     result = RunSuccess(
         conversation_node_id=None,
@@ -117,7 +201,7 @@ def _start(ctx: StepContext) -> StepRunResult:
 @default_resolver.register("noop")
 def _noop(ctx: StepContext) -> StepRunResult:
     with ctx.state_write as state:
-        state.setdefault("op_log", []).append("noop")
+        _append_op_log(state, "noop")
         turn_index = state.get("turn_index")
 
     mts = _get_prev_turn_meta_summary_from_state_or_deps(ctx)
@@ -138,7 +222,7 @@ def _noop(ctx: StepContext) -> StepRunResult:
 
 
 def _get_prev_turn_meta_summary_from_state_or_deps(
-    ctx: "StepContext",
+    ctx: StepContext,
 ) -> MetaFromLastSummary:
     """Return the shared core previous-summary model.
 
@@ -148,23 +232,46 @@ def _get_prev_turn_meta_summary_from_state_or_deps(
     deps = _deps(ctx)
     mts = deps.get("prev_turn_meta_summary")
     if mts is not None:
-        return mts
-    d = ctx.state_view.get("prev_turn_meta_summary") or {}
+        return cast(MetaFromLastSummary, mts)
+    d = _state(ctx).get("prev_turn_meta_summary") or {}
 
     values = dict(d) if isinstance(d, dict) else {}
+    def _int_value(value: object) -> int:
+        return value if type(value) is int else 0
+
     return MetaFromLastSummary(
-        prev_node_char_distance_from_last_summary=int(
+        prev_node_char_distance_from_last_summary=_int_value(
             values.get("prev_node_char_distance_from_last_summary", 0)
         ),
-        prev_node_distance_from_last_summary=int(
+        prev_node_distance_from_last_summary=_int_value(
             values.get("prev_node_distance_from_last_summary", 0)
         ),
-        tail_turn_index=int(values.get("tail_turn_index", 0)),
+        tail_turn_index=_int_value(values.get("tail_turn_index", 0)),
     )
 
 
+def _memory_result_from_state(state: ConversationState) -> MemoryRetrievalResult | None:
+    """Rehydrate the persisted JSON mirror at the workflow boundary."""
+
+    payload = state.get("memory")
+    if not isinstance(payload, dict):
+        return None
+    return MemoryRetrievalResult(**cast(dict[str, Any], payload))
+
+
+def _knowledge_result_from_state(
+    state: ConversationState,
+) -> KnowledgeRetrievalResult | None:
+    """Rehydrate the persisted KG JSON mirror at the workflow boundary."""
+
+    payload = state.get("kg")
+    if not isinstance(payload, dict):
+        return None
+    return KnowledgeRetrievalResult(**cast(dict[str, Any], payload))
+
+
 @default_resolver.register("add_user_turn")
-def _add_user_turn(ctx: "StepContext") -> "StepRunResult":
+def _add_user_turn(ctx: StepContext) -> StepRunResult:
     """Create/persist the user turn node (workflow primitive).
 
     Expected state (best-effort):
@@ -178,7 +285,7 @@ def _add_user_turn(ctx: "StepContext") -> "StepRunResult":
     """
     deps = _deps(ctx)
     ce = deps["conversation_engine"]
-    sv = ctx.state_view
+    sv = _state(ctx)
 
     user_id = str(sv["user_id"])
     conversation_id = str(sv["conversation_id"])
@@ -283,7 +390,7 @@ def _add_user_turn(ctx: "StepContext") -> "StepRunResult":
     mts.prev_node_distance_from_last_summary += 1
 
     with ctx.state_write as state:
-        state.setdefault("op_log", []).append("add_user_turn")
+        _append_op_log(state, "add_user_turn")
 
     mts_json = None
     # if we synthesized mts (duck type), mirror it back as json so runtime can checkpoint it
@@ -314,7 +421,7 @@ def _add_user_turn(ctx: "StepContext") -> "StepRunResult":
 
 
 @default_resolver.register("link_prev_turn")
-def _link_prev_turn(ctx: "StepContext") -> "StepRunResult":
+def _link_prev_turn(ctx: StepContext) -> StepRunResult:
     """Link prev tail turn -> current turn via next_turn edge."""
     deps = _deps(ctx)
     ce = deps["conversation_engine"]
@@ -324,7 +431,7 @@ def _link_prev_turn(ctx: "StepContext") -> "StepRunResult":
             "deps['add_link_to_new_turn'] must be callable for link_prev_turn"
         )
 
-    sv = ctx.state_view
+    sv = _state(ctx)
     prev_turn_id = sv.get("prev_turn_id") or sv.get("prev_node_id")
     if not prev_turn_id:
         # nothing to link
@@ -370,7 +477,7 @@ def _link_prev_turn(ctx: "StepContext") -> "StepRunResult":
     )
 
     with ctx.state_write as state:
-        state.setdefault("op_log", []).append("link_prev_turn")
+        _append_op_log(state, "link_prev_turn")
 
     return RunSuccess(
         conversation_node_id=edge_id,
@@ -379,7 +486,7 @@ def _link_prev_turn(ctx: "StepContext") -> "StepRunResult":
 
 
 @default_resolver.register("link_assistant_turn")
-def _link_assistant_turn(ctx: "StepContext") -> "StepRunResult":
+def _link_assistant_turn(ctx: StepContext) -> StepRunResult:
     """Link user turn -> assistant response turn via next_turn edge."""
     deps = _deps(ctx)
     ce = deps["conversation_engine"]
@@ -389,7 +496,7 @@ def _link_assistant_turn(ctx: "StepContext") -> "StepRunResult":
             "deps['add_link_to_new_turn'] must be callable for link_assistant_turn"
         )
 
-    sv = ctx.state_view
+    sv = _state(ctx)
     ans = sv.get("answer") or {}
     response_node_id = None
     if isinstance(ans, dict):
@@ -443,7 +550,7 @@ def _link_assistant_turn(ctx: "StepContext") -> "StepRunResult":
     )
 
     with ctx.state_write as state:
-        state.setdefault("op_log", []).append("link_assistant_turn")
+        _append_op_log(state, "link_assistant_turn")
 
     return RunSuccess(
         conversation_node_id=edge_id,
@@ -473,7 +580,7 @@ def _context_snapshot(ctx: StepContext) -> StepRunResult:
     deps = _deps(ctx)
     svc = _chat_service(deps)
     llm_tasks = deps.get("llm_tasks")
-    sv = ctx.state_view
+    sv = _state(ctx)
 
     conversation_id = str(sv["conversation_id"])
     run_id = str(sv.get("run_id") or deps.get("run_id") or f"run_{conversation_id}")
@@ -525,10 +632,10 @@ def _memory_retrieve(ctx: StepContext) -> StepRunResult:
     """
     deps = _deps(ctx)
     with ctx.state_write as state:
-        state.setdefault("op_log", []).append("memory_retrieve")
+        _append_op_log(state, "memory_retrieve")
 
-    from .memory_retriever import MemoryRetriever
     from ..runtime.serialize import to_jsonable
+    from .memory_retriever import MemoryRetriever
 
     mem_retriever = MemoryRetriever(
         conversation_engine=deps["conversation_engine"],
@@ -536,11 +643,11 @@ def _memory_retrieve(ctx: StepContext) -> StepRunResult:
         filtering_callback=deps["filtering_callback"],
     )
     tool_runner: ToolRunner | None = deps.get("tool_runner")
-    prev_turn_meta_summary = deps.get("prev_turn_meta_summary")
-    state_view = ctx.state_view
+    prev_turn_meta_summary = _get_prev_turn_meta_summary_from_state_or_deps(ctx)
+    state_view = _state(ctx)
     if tool_runner is None:
         # Fallback: run directly without tool recording.
-        mem, call_node_id = mem_retriever.retrieve(
+        mem = mem_retriever.retrieve(
             user_id=state_view["user_id"],
             current_conversation_id=state_view["conversation_id"],
             query_embedding=state_view["embedding"],
@@ -548,6 +655,7 @@ def _memory_retrieve(ctx: StepContext) -> StepRunResult:
             context_text="",
             n_results=12,
         )
+        call_node_id = None
     else:
         mem, call_node_id = tool_runner.run_tool(
             conversation_id=state_view["conversation_id"],
@@ -556,21 +664,23 @@ def _memory_retrieve(ctx: StepContext) -> StepRunResult:
             turn_index=state_view["turn_index"],
             tool_name="memory_retrieve",
             args=[],  # {"n_results": getattr(mem_retriever, "n_results", 12)},
-            kwargs=dict(
+            kwargs=cast(dict[str, JsonValue], dict(
                 user_id=state_view["user_id"],
                 current_conversation_id=state_view["conversation_id"],
                 query_embedding=state_view["embedding"],
                 user_text=state_view["user_text"],
                 context_text="",
                 n_results=12,
-            ),
+            )),
             handler=mem_retriever.retrieve,
             render_result=lambda r: getattr(r, "reasoning", "")[:800],
             prev_turn_meta_summary=prev_turn_meta_summary,
         )
 
     memj = to_jsonable(mem)
-    state_update: list[StateUpdate] = [("u", {"memory": memj})]
+    state_update: list[StateUpdate] = cast(
+        list[StateUpdate], [("u", {"memory": memj})]
+    )
     result = RunSuccess(conversation_node_id=call_node_id, state_update=state_update)
     return result
 
@@ -580,10 +690,10 @@ def _kg_retrieve(ctx: StepContext) -> StepRunResult:
     """Retrieve KG facts/links based on query and memory seed ids."""
     deps = _deps(ctx)
     with ctx.state_write as state:
-        state.setdefault("op_log", []).append("kg_retrieve")
+        _append_op_log(state, "kg_retrieve")
 
-    from .knowledge_retriever import KnowledgeRetriever
     from ..runtime.serialize import to_jsonable
+    from .knowledge_retriever import KnowledgeRetriever
 
     max_retrieval_level = int(deps.get("max_retrieval_level", 2))
 
@@ -594,23 +704,24 @@ def _kg_retrieve(ctx: StepContext) -> StepRunResult:
         filtering_callback=deps["filtering_callback"],
         max_retrieval_level=max_retrieval_level,
     )
-    state_view = ctx.state_view
+    state_view = _state(ctx)
     mem_raw = state_view.get("memory_raw")
     seed_ids = (
         list(getattr(mem_raw, "seed_kg_node_ids", []) or [])
         if mem_raw is not None
         else []
     )
-    tool_runner: ToolRunner = deps.get("tool_runner")
-    prev_turn_meta_summary = deps.get("prev_turn_meta_summary")
-    state = ctx.state_view
+    tool_runner: ToolRunner | None = deps.get("tool_runner")
+    prev_turn_meta_summary = _get_prev_turn_meta_summary_from_state_or_deps(ctx)
+    state = _state(ctx)
     if tool_runner is None:
-        kg, call_node_id = kg_retriever.retrieve(
+        kg = kg_retriever.retrieve(
             user_text=state_view["user_text"],
             context_text="",
             query_embedding=state_view["embedding"],
             seed_kg_node_ids=seed_ids,
         )
+        call_node_id = None
     else:
         kw_args = {
             "max_retrieval_level": max_retrieval_level,
@@ -630,10 +741,7 @@ def _kg_retrieve(ctx: StepContext) -> StepRunResult:
             turn_node_id=state["turn_node_id"],
             turn_index=state["turn_index"],
             tool_name="kg_retrieve",
-            args={
-                "max_retrieval_level": max_retrieval_level,
-                "seed_kg_node_ids": seed_ids,
-            },
+            args=[],
             kwargs=kw_args,
             handler=kg_retriever.retrieve,
             render_result=lambda r: getattr(r, "reasoning", "")[:800],
@@ -641,7 +749,7 @@ def _kg_retrieve(ctx: StepContext) -> StepRunResult:
         )
     # ctx.state["kg_raw"] = kg
     kgj = to_jsonable(kg)
-    state_update = [("u", {"kg": kgj})]
+    state_update: list[StateUpdate] = cast(list[StateUpdate], [("u", {"kg": kgj})])
     return RunSuccess(conversation_node_id=call_node_id, state_update=state_update)
 
 
@@ -650,13 +758,13 @@ def _memory_pin(ctx: StepContext) -> StepRunResult:
     """Pin selected memory into the conversation graph."""
     deps = _deps(ctx)
     with ctx.state_write as state:
-        state.setdefault("op_log", []).append("memory_pin")
+        _append_op_log(state, "memory_pin")
 
     from .memory_retriever import MemoryRetriever
 
-    prev_turn_meta_summary = deps.get("prev_turn_meta_summary")
-    state = ctx.state_view
-    mem_rehydrated = MemoryRetrievalResult(**state.get("memory"))
+    prev_turn_meta_summary = _get_prev_turn_meta_summary_from_state_or_deps(ctx)
+    state = _state(ctx)
+    mem_rehydrated = _memory_result_from_state(state)
     mem_retriever = MemoryRetriever(
         conversation_engine=deps["conversation_engine"],
         llm_tasks=deps["llm_tasks"],
@@ -664,10 +772,12 @@ def _memory_pin(ctx: StepContext) -> StepRunResult:
     )
 
     out = None
-    if (
-        mem_rehydrated is not None
-        and getattr(mem_rehydrated, "selected", None)
-        and getattr(mem_rehydrated, "memory_context_text", None)
+    selected_memory = mem_rehydrated.selected if mem_rehydrated else None
+    memory_context_text = (
+        mem_rehydrated.memory_context_text if mem_rehydrated else None
+    )
+    if isinstance(selected_memory, RetrievalResult) and isinstance(
+        memory_context_text, str
     ):
         out = mem_retriever.pin_selected(
             user_id=state["user_id"],
@@ -676,8 +786,8 @@ def _memory_pin(ctx: StepContext) -> StepRunResult:
             mem_id=state["mem_id"],
             turn_index=state["turn_index"],
             self_span=state["self_span"],
-            selected_memory=getattr(mem_rehydrated, "selected"),
-            memory_context_text=getattr(mem_rehydrated, "memory_context_text"),
+            selected_memory=selected_memory,
+            memory_context_text=memory_context_text,
             prev_turn_meta_summary=prev_turn_meta_summary,
         )
 
@@ -693,7 +803,9 @@ def _memory_pin(ctx: StepContext) -> StepRunResult:
         else [],
     }
     # ctx.state["memory_pin"] = outj
-    state_update = [("u", {"memory_pin": outj})]
+    state_update: list[StateUpdate] = cast(
+        list[StateUpdate], [("u", {"memory_pin": outj})]
+    )
     return RunSuccess(conversation_node_id=None, state_update=state_update)
 
 
@@ -702,11 +814,11 @@ def _kg_pin(ctx: StepContext) -> StepRunResult:
     """Pin selected KG nodes/edges (as pointers) into the conversation graph."""
     deps = _deps(ctx)
     with ctx.state_write as state:
-        state.setdefault("op_log", []).append("kg_pin")
-    state = ctx.state_view
+        _append_op_log(state, "kg_pin")
+    state = _state(ctx)
     from .knowledge_retriever import KnowledgeRetriever
 
-    prev_turn_meta_summary = deps.get("prev_turn_meta_summary")
+    prev_turn_meta_summary = _get_prev_turn_meta_summary_from_state_or_deps(ctx)
     max_retrieval_level = int(deps.get("max_retrieval_level", 2))
 
     kg_retriever = KnowledgeRetriever(
@@ -717,14 +829,11 @@ def _kg_pin(ctx: StepContext) -> StepRunResult:
         max_retrieval_level=max_retrieval_level,
     )
 
-    kg_rehydrated = KnowledgeRetrievalResult(**state.get("kg"))
+    kg_rehydrated = _knowledge_result_from_state(state)
     pinned_ptrs: list[str] = []
     pinned_edges: list[str] = []
-    if kg_rehydrated is not None and getattr(kg_rehydrated, "selected", None):
-        from .models import FilteringResult
-
-        # todo change model into pydantic if possible
-        selected = FilteringResult(**kg_rehydrated.selected)
+    if kg_rehydrated is not None and kg_rehydrated.selected is not None:
+        selected = kg_rehydrated.selected
         pinned_ptrs, pinned_edges = kg_retriever.pin_selected(
             user_id=state["user_id"],
             conversation_id=state["conversation_id"],
@@ -739,7 +848,9 @@ def _kg_pin(ctx: StepContext) -> StepRunResult:
         "pinned_pointer_node_ids": list(pinned_ptrs),
         "pinned_edge_ids": list(pinned_edges),
     }
-    state_update = [("u", {"kg_pin": outj})]
+    state_update: list[StateUpdate] = cast(
+        list[StateUpdate], [("u", {"kg_pin": outj})]
+    )
     # ctx.state["kg_pin"] = outj
     return RunSuccess(conversation_node_id=None, state_update=state_update)
 
@@ -764,8 +875,8 @@ def _answer(ctx: StepContext) -> StepRunResult:
     deps = _deps(ctx)
     cache_dir = getattr(ctx, "cache_dir", None)
     with ctx.state_write as state:
-        state.setdefault("op_log", []).append("answer")
-    state = ctx.state_view
+        _append_op_log(state, "answer")
+    state = _state(ctx)
     mts = _get_prev_turn_meta_summary_from_state_or_deps(ctx)
     answer_only = deps.get("answer_only")
     force_answer_only = bool(deps.get("force_answer_only", False))
@@ -861,13 +972,14 @@ def _answer(ctx: StepContext) -> StepRunResult:
         ce = deps.get("conversation_engine")
         if ce is not None:
             try:
-                from .models import ConversationNode
-                from .conversation_orchestrator import get_id_for_conversation_turn
                 from kogwistar.engine_core.models import (
                     Grounding,
                     MentionVerification,
                     Span,
                 )
+
+                from .conversation_orchestrator import get_id_for_conversation_turn
+                from .models import ConversationNode
 
                 conversation_id = str(state["conversation_id"])
                 user_id = str(state.get("user_id") or "")
@@ -978,8 +1090,8 @@ def _decide_summarize(ctx: StepContext) -> StepRunResult:
     """
     deps = _deps(ctx)
     with ctx.state_write as state:
-        state.setdefault("op_log", []).append("decide_summarize")
-    st = ctx.state_view
+        _append_op_log(state, "decide_summarize")
+    st = _state(ctx)
     mts = _get_prev_turn_meta_summary_from_state_or_deps(ctx)
 
     summary_char_threshold = int(deps.get("summary_char_threshold", 12000))
@@ -994,12 +1106,16 @@ def _decide_summarize(ctx: StepContext) -> StepRunResult:
 
     # 1) Snapshot-first
     snap_cost = None
-    from kogwistar.engine_core.engine import GraphKnowledgeEngine
-
-    ce: GraphKnowledgeEngine = deps.get("conversation_engine")
-    if ce is not None and hasattr(ce, "latest_context_snapshot_cost"):
+    ce = deps.get("conversation_engine")
+    snapshot_reader = (
+        cast(ContextSnapshotCostReader, ce)
+        if ce is not None
+        and callable(getattr(ce, "latest_context_snapshot_cost", None))
+        else None
+    )
+    if snapshot_reader is not None:
         try:
-            snap_cost = ce.latest_context_snapshot_cost(
+            snap_cost = snapshot_reader.latest_context_snapshot_cost(
                 conversation_id=st["conversation_id"], stage=stage
             )
         except Exception:
@@ -1033,7 +1149,7 @@ def _decide_summarize(ctx: StepContext) -> StepRunResult:
                 # best-effort token estimate
                 if callable(token_estimator):
                     tok = (
-                        int(token_estimator("a" * min(4096, char_dist)))
+                        _coerce_int(token_estimator("a" * min(4096, char_dist)))
                         if char_dist > 0
                         else 0
                     )
@@ -1069,19 +1185,19 @@ def _summarize(ctx: StepContext) -> StepRunResult:
     """Summarize last batch and reset distances (legacy behavior)."""
     deps = _deps(ctx)
     with ctx.state_write as state:
-        state.setdefault("op_log", []).append("summarize")
-    state = ctx.state_view
-    prev_turn_meta_summary: MetaFromLastSummary = deps.get("prev_turn_meta_summary")
+        _append_op_log(state, "summarize")
+    state = _state(ctx)
+    prev_turn_meta_summary = _get_prev_turn_meta_summary_from_state_or_deps(ctx)
     summarize_batch = deps.get("summarize_batch")
     if not callable(summarize_batch):
         raise RuntimeError("deps['summarize_batch'] must be callable")
     cache_dir = ctx.cache_dir
-    added_id = summarize_batch(
+    added_id = str(summarize_batch(
         state["conversation_id"],
         int(state["turn_index"]) + 1,
         prev_turn_meta_summary=prev_turn_meta_summary,
         cache_dir=cache_dir
-    )
+    ))
 
     # Legacy resets after summarization.
     try:
@@ -1122,7 +1238,7 @@ def _summarize(ctx: StepContext) -> StepRunResult:
 @default_resolver.register("end")
 def _end(ctx: StepContext) -> StepRunResult:
     with ctx.state_write as state:
-        state.setdefault("op_log", []).append("end")
+        _append_op_log(state, "end")
     result = RunSuccess(conversation_node_id=None, state_update=[("u", {"done": True})])
     return result
 
@@ -1135,7 +1251,7 @@ def _end(ctx: StepContext) -> StepRunResult:
 @default_resolver.register("aa_prepare")
 def _aa_prepare(ctx: StepContext) -> StepRunResult:
     agent = _aa_agent(ctx)
-    sv = ctx.state_view
+    sv = _state(ctx)
     conversation_id = str(sv["conversation_id"])
 
     # Keep these aligned with agentic_answering.answer() defaults.
@@ -1178,7 +1294,7 @@ def _aa_prepare(ctx: StepContext) -> StepRunResult:
 def _aa_get_view_and_question(ctx: StepContext) -> StepRunResult:
     agent = _aa_agent(ctx)
     deps = _deps(ctx)
-    sv = ctx.state_view
+    sv = _state(ctx)
     conversation_id = str(sv["conversation_id"])
     user_id = sv.get("user_id")
     svc = _chat_service(deps)
@@ -1205,8 +1321,7 @@ def _aa_get_view_and_question(ctx: StepContext) -> StepRunResult:
         )
 
     # Store view runtime-only (may not be jsonable).
-    with ctx.state_write as state:
-        state.setdefault("_rt", {})["view"] = view
+    _set_runtime_state(ctx, "view", view)
 
     state_update: list[StateUpdate] = [
         ("u", {"system_prompt": system_prompt, "question": question}),
@@ -1218,7 +1333,7 @@ def _aa_get_view_and_question(ctx: StepContext) -> StepRunResult:
 @default_resolver.register("aa_retrieve_candidates")
 def _aa_retrieve_candidates(ctx: StepContext) -> StepRunResult:
     agent = _aa_agent(ctx)
-    sv = ctx.state_view
+    sv = _state(ctx)
     question = str(sv.get("question") or "")
     max_candidates = int(sv.get("max_candidates") or agent.config.max_candidates)
 
@@ -1235,7 +1350,7 @@ def _aa_select_used_evidence(ctx: StepContext) -> StepRunResult:
     agent = _aa_agent(ctx)
     deps = _deps(ctx)
     svc = _chat_service(deps)
-    sv = ctx.state_view
+    sv = _state(ctx)
 
     conversation_id = str(sv["conversation_id"])
     run_id = str(sv.get("run_id") or "")
@@ -1247,13 +1362,12 @@ def _aa_select_used_evidence(ctx: StepContext) -> StepRunResult:
     candidates = list(sv.get("candidates") or [])
 
     # Pull view for snapshots.
-    view = (sv.get("_rt") or {}).get("view")
+    view = cast(PromptContext | None, (sv.get("_rt") or {}).get("view"))
     if view is None:
         view = svc.get_conversation_view(
             conversation_id=conversation_id, purpose="answer"
         )
-        with ctx.state_write as state:
-            state.setdefault("_rt", {})["view"] = view
+        _set_runtime_state(ctx, "view", view)
 
     if (agent.config.evidence_selector or "llm").lower() == "bm25":
         selection = agent._select_used_evidence_bm25(
@@ -1328,19 +1442,19 @@ def _aa_select_used_evidence(ctx: StepContext) -> StepRunResult:
 @default_resolver.register("aa_materialize_evidence_pack")
 def _aa_materialize_evidence_pack(ctx: StepContext) -> StepRunResult:
     agent = _aa_agent(ctx)
-    sv = ctx.state_view
+    sv = _state(ctx)
     used_node_ids = list(sv.get("used_node_ids") or [])
     used_edge_ids = list(sv.get("used_edge_ids") or [])
     materialize_depth = str(
         sv.get("materialize_depth") or agent.config.materialize_depth
     )
 
-    from ..utils.pydanic_model_consumer_wrapper import cache_pydantic_structured
     from ..utils.cache_backend import Memory
+    from ..utils.pydanic_model_consumer_wrapper import cache_pydantic_structured
     from .models import EvidencePackDigest
 
     mem = Memory(
-        location=os.path.join(agent.cache_dir, "_materialize_evidence_pack")
+        location=os.path.join(str(agent.cache_dir or "."), "_materialize_evidence_pack")
     )
     cached_call = cache_pydantic_structured(
         fn=agent._materialize_evidence_pack,
@@ -1367,8 +1481,7 @@ def _aa_materialize_evidence_pack(ctx: StepContext) -> StepRunResult:
         evidence_pack_hash=str(evidence_pack_hash),
     ).model_dump(mode="python")
 
-    with ctx.state_write as state:
-        state.setdefault("_rt", {})["evidence_pack"] = evidence_pack
+    _set_runtime_state(ctx, "evidence_pack", evidence_pack)
 
     state_update: list[StateUpdate] = [
         ("u", {"evidence_pack_digest": evidence_digest}),
@@ -1382,7 +1495,7 @@ def _aa_generate_answer_with_citations(ctx: StepContext) -> StepRunResult:
     agent = _aa_agent(ctx)
     deps = _deps(ctx)
     svc = _chat_service(deps)
-    sv = ctx.state_view
+    sv = _state(ctx)
 
     conversation_id = str(sv["conversation_id"])
     run_id = str(sv.get("run_id") or "")
@@ -1398,23 +1511,24 @@ def _aa_generate_answer_with_citations(ctx: StepContext) -> StepRunResult:
     if evidence_pack is None:
         re = agent.rehydrate_evidence_pack_from_digest(digest=evidence_digest or {})
         evidence_pack = re.get("evidence_pack")
-        with ctx.state_write as state:
-            state.setdefault("_rt", {})["evidence_pack"] = evidence_pack
+        _set_runtime_state(ctx, "evidence_pack", evidence_pack)
+    evidence_pack = _as_evidence_pack(evidence_pack)
 
     # Pull view for snapshots.
-    view = (sv.get("_rt") or {}).get("view")
+    view = cast(PromptContext | None, (sv.get("_rt") or {}).get("view"))
     if view is None:
         view = svc.get_conversation_view(
             conversation_id=conversation_id, purpose="answer"
         )
-        with ctx.state_write as state:
-            state.setdefault("_rt", {})["view"] = view
+        _set_runtime_state(ctx, "view", view)
 
-    from ..utils.pydanic_model_consumer_wrapper import cache_pydantic_structured
     from ..utils.cache_backend import Memory
+    from ..utils.pydanic_model_consumer_wrapper import cache_pydantic_structured
 
     mem = Memory(
-        location=os.path.join(agent.cache_dir, "_generate_answer_with_citations")
+        location=os.path.join(
+            str(agent.cache_dir or "."), "_generate_answer_with_citations"
+        )
     )
     cached_call = cache_pydantic_structured(
         fn=agent._generate_answer_with_citations,
@@ -1423,7 +1537,7 @@ def _aa_generate_answer_with_citations(ctx: StepContext) -> StepRunResult:
         ignore=["agent"],
     )
 
-    prev_turn_meta_summary = deps.get("prev_turn_meta_summary")
+    prev_turn_meta_summary = _get_prev_turn_meta_summary_from_state_or_deps(ctx)
     agent._persist_context_snapshot(
         conversation_id=conversation_id,
         run_id=run_id,
@@ -1477,7 +1591,7 @@ def _aa_validate_or_repair_citations(ctx: StepContext) -> StepRunResult:
     agent = _aa_agent(ctx)
     deps = _deps(ctx)
     svc = _chat_service(deps)
-    sv = ctx.state_view
+    sv = _state(ctx)
 
     conversation_id = str(sv["conversation_id"])
     run_id = str(sv.get("run_id") or "")
@@ -1494,22 +1608,23 @@ def _aa_validate_or_repair_citations(ctx: StepContext) -> StepRunResult:
     if evidence_pack is None:
         re = agent.rehydrate_evidence_pack_from_digest(digest=evidence_digest or {})
         evidence_pack = re.get("evidence_pack")
-        with ctx.state_write as state:
-            state.setdefault("_rt", {})["evidence_pack"] = evidence_pack
+        _set_runtime_state(ctx, "evidence_pack", evidence_pack)
+    evidence_pack = _as_evidence_pack(evidence_pack)
 
-    view = (sv.get("_rt") or {}).get("view")
+    view = cast(PromptContext | None, (sv.get("_rt") or {}).get("view"))
     if view is None:
         view = svc.get_conversation_view(
             conversation_id=conversation_id, purpose="answer"
         )
-        with ctx.state_write as state:
-            state.setdefault("_rt", {})["view"] = view
+        _set_runtime_state(ctx, "view", view)
 
-    from ..utils.pydanic_model_consumer_wrapper import cache_pydantic_structured
     from ..utils.cache_backend import Memory
+    from ..utils.pydanic_model_consumer_wrapper import cache_pydantic_structured
 
     mem = Memory(
-        location=os.path.join(agent.cache_dir, "_generate_answer_with_citations")
+        location=os.path.join(
+            str(agent.cache_dir or "."), "_generate_answer_with_citations"
+        )
     )
     cached_call = cache_pydantic_structured(
         fn=agent._validate_or_repair_citations,
@@ -1573,7 +1688,7 @@ def _aa_evaluate_answer(ctx: StepContext) -> StepRunResult:
     agent = _aa_agent(ctx)
     deps = _deps(ctx)
     svc = _chat_service(deps)
-    sv = ctx.state_view
+    sv = _state(ctx)
 
     conversation_id = str(sv["conversation_id"])
     run_id = str(sv.get("run_id") or "")
@@ -1590,18 +1705,17 @@ def _aa_evaluate_answer(ctx: StepContext) -> StepRunResult:
     if evidence_pack is None:
         re = agent.rehydrate_evidence_pack_from_digest(digest=evidence_digest or {})
         evidence_pack = re.get("evidence_pack")
-        with ctx.state_write as state:
-            state.setdefault("_rt", {})["evidence_pack"] = evidence_pack
+        _set_runtime_state(ctx, "evidence_pack", evidence_pack)
+    evidence_pack = _as_evidence_pack(evidence_pack)
 
-    view = (sv.get("_rt") or {}).get("view")
+    view = cast(PromptContext | None, (sv.get("_rt") or {}).get("view"))
     if view is None:
         view = svc.get_conversation_view(
             conversation_id=conversation_id, purpose="answer"
         )
-        with ctx.state_write as state:
-            state.setdefault("_rt", {})["view"] = view
+        _set_runtime_state(ctx, "view", view)
 
-    prev_turn_meta_summary = deps.get("prev_turn_meta_summary")
+    prev_turn_meta_summary = _get_prev_turn_meta_summary_from_state_or_deps(ctx)
     agent._persist_context_snapshot(
         conversation_id=conversation_id,
         run_id=run_id,
@@ -1674,7 +1788,7 @@ def _aa_evaluate_answer(ctx: StepContext) -> StepRunResult:
 @default_resolver.register("aa_project_pointers")
 def _aa_project_pointers(ctx: StepContext) -> StepRunResult:
     agent = _aa_agent(ctx)
-    sv = ctx.state_view
+    sv = _state(ctx)
     conversation_id = str(sv["conversation_id"])
     run_node_id = str(sv.get("run_node_id") or "")
     used_node_ids = list(sv.get("used_node_ids") or [])
@@ -1703,7 +1817,7 @@ def _aa_project_pointers(ctx: StepContext) -> StepRunResult:
 @default_resolver.register("aa_debug_select_top_candidates")
 def _aa_debug_select_top_candidates(ctx: StepContext) -> StepRunResult:
     agent = _aa_agent(ctx)
-    sv = ctx.state_view
+    sv = _state(ctx)
     candidates = list(sv.get("candidates") or [])
     max_used = max(1, min(int(getattr(agent.config, "max_used", 3) or 3), 5))
     selected_candidates = [
@@ -1731,7 +1845,7 @@ def _aa_debug_select_top_candidates(ctx: StepContext) -> StepRunResult:
 
 @default_resolver.register("aa_debug_answer_from_nodes")
 def _aa_debug_answer_from_nodes(ctx: StepContext) -> StepRunResult:
-    sv = ctx.state_view
+    sv = _state(ctx)
     question = str(sv.get("question") or "")
     selected_candidates = list(sv.get("selected_candidates") or [])
     if not selected_candidates:
@@ -1778,7 +1892,7 @@ def _aa_debug_answer_from_nodes(ctx: StepContext) -> StepRunResult:
 
 @default_resolver.register("aa_maybe_iterate")
 def _aa_maybe_iterate(ctx: StepContext) -> StepRunResult:
-    sv = ctx.state_view
+    sv = _state(ctx)
     evaluation = sv.get("evaluation") or {}
     iter_idx = int(sv.get("iter_idx") or 0)
     max_iter = int(sv.get("max_iter") or 1)
@@ -1799,8 +1913,7 @@ def _aa_maybe_iterate(ctx: StepContext) -> StepRunResult:
 @default_resolver.register("aa_persist_response")
 def _aa_persist_response(ctx: StepContext) -> StepRunResult:
     agent = _aa_agent(ctx)
-    deps = _deps(ctx)
-    sv = ctx.state_view
+    sv = _state(ctx)
 
     conversation_id = str(sv["conversation_id"])
     run_node_id = str(sv.get("run_node_id") or "")
@@ -1809,7 +1922,7 @@ def _aa_persist_response(ctx: StepContext) -> StepRunResult:
     answer = sv.get("answer") or {}
     evaluation = sv.get("evaluation") or {}
 
-    prev_turn_meta_summary = deps.get("prev_turn_meta_summary")
+    prev_turn_meta_summary = _get_prev_turn_meta_summary_from_state_or_deps(ctx)
     tail_turn_index = int(getattr(prev_turn_meta_summary, "tail_turn_index", 0) or 0)
 
     assistant_text = str(answer.get("text") or "")

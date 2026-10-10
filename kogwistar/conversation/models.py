@@ -1,12 +1,6 @@
-from dataclasses import asdict, dataclass, field
 import json
-
-from kogwistar.engine_core.models import (
-    BaseNodeMetadata,
-    ContextCost,
-    Edge,
-    Node,
-)
+from dataclasses import asdict, dataclass, field
+from typing import ClassVar, Literal, Self, cast
 
 from pydantic import (
     BaseModel,
@@ -16,11 +10,26 @@ from pydantic import (
     field_validator,
     model_validator,
 )
-from typing import Any, ClassVar, Dict, List, Literal, Self, Tuple
+
+from kogwistar.engine_core.models import (
+    BaseNodeMetadata,
+    ContextCost,
+    Edge,
+    Node,
+)
+from kogwistar.json_types import JsonValue
 
 # Public compatibility re-export used by agentic_answering at runtime.
 from kogwistar.provenance import EvidencePackDigest as EvidencePackDigest  # noqa: F401
 
+def _metadata_int(value: JsonValue | None, default: int = 0) -> int:
+    """Coerce a scalar metadata value without accepting structured JSON."""
+
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (int, float, str)):
+        return int(value or default)
+    return default
 
 # --- Phase 1: chat-edge intent classification (causality) ---
 
@@ -49,7 +58,7 @@ class MetaFromLastSummary:
     tail_turn_index: int = 0  # works more like a node seq number
 
     # Back-compat shim: parts of the workflow/test stack treat this like a Pydantic model.
-    def model_dump(self, *_args, **_kwargs) -> dict[str, int]:
+    def model_dump(self, *_args: object, **_kwargs: object) -> dict[str, int]:
         return asdict(self)
 
 
@@ -69,7 +78,7 @@ class ContextSnapshotMetadata(BaseModel):
     tail_turn_index: int = Field(0, ge=0)
 
     # Determinism + audit
-    used_node_ids: List[str] = Field(default_factory=list)
+    used_node_ids: list[str] = Field(default_factory=list)
     rendered_context_hash: str
     cost: ContextCost = Field(default_factory=ContextCost)
 
@@ -77,7 +86,7 @@ class ContextSnapshotMetadata(BaseModel):
 
     # ---- Storage helpers for Chroma / flat metadata ----
 
-    def to_chroma_metadata(self) -> Dict[str, Any]:
+    def to_chroma_metadata(self) -> dict[str, JsonValue]:
         """
         Flatten to Chroma-friendly metadata (primitives only).
         Keeps all extra fields too, but flattens `cost`.
@@ -89,7 +98,9 @@ class ContextSnapshotMetadata(BaseModel):
         return d
 
     @classmethod
-    def from_chroma_metadata(cls, meta: Dict[str, Any]) -> "ContextSnapshotMetadata":
+    def from_chroma_metadata(
+        cls, meta: dict[str, JsonValue]
+    ) -> "ContextSnapshotMetadata":
         """
         Reconstruct from flat Chroma metadata. Accepts either:
         - flattened cost keys (cost.char_count / cost.token_count), or
@@ -101,11 +112,11 @@ class ContextSnapshotMetadata(BaseModel):
         cost_val = data.pop("cost", None)
         if isinstance(cost_val, dict):
             cost = ContextCost(
-                char_count=int(cost_val.get("char_count", 0) or 0),
+                char_count=_metadata_int(cost_val.get("char_count")),
                 token_count=(
                     None
                     if cost_val.get("token_count", None) is None
-                    else int(cost_val["token_count"])
+                    else _metadata_int(cost_val.get("token_count"))
                 ),
             )
         else:
@@ -115,12 +126,12 @@ class ContextSnapshotMetadata(BaseModel):
         data.pop("cost.char_count", None)
         data.pop("cost.token_count", None)
 
-        obj = cls(**data, cost=cost)
+        obj = cls.model_validate({**data, "cost": cost})
         return obj
 
     @model_validator(mode="before")
     @classmethod
-    def _accept_flat_cost_on_direct_init(cls, values: Any) -> Any:
+    def _accept_flat_cost_on_direct_init(cls, values: object) -> object:
         """
         Optional: allows ContextSnapshotMetadata(**meta_from_chroma) directly,
         without calling from_chroma_metadata().
@@ -154,7 +165,7 @@ class AddTurnResult:
     memory_context_node_id: str | None = None
     memory_context_edge_ids: list[str] = field(default_factory=list)
     prev_turn_meta_summary: MetaFromLastSummary = field(
-        default_factory=MetaFromLastSummary
+        default_factory=lambda: MetaFromLastSummary(0, 0)
     )
 
 
@@ -234,7 +245,7 @@ class ConversationRoleMixin(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def sync_conversation_metadata(cls, data: Any, info: ValidationInfo) -> Any:
+    def sync_conversation_metadata(cls, data: object, info: ValidationInfo) -> object:
         if isinstance(data, dict):
             metadata = data.get("metadata", {}) or {}
             for field in ["role", "turn_index", "conversation_id", "user_id"]:
@@ -265,13 +276,13 @@ class ConversationAIResponse(BaseModel):
         default=False, description="If True, request summarization this turn."
     )
 
-    used_kg_node_ids: List[str] = Field(default_factory=list)
-    used_memory_node_ids: List[str] = Field(default_factory=list)
-    projected_conversation_node_ids: List[str] = Field(default_factory=list)
-    projected_conversation_edge_ids: List[str] = Field(default_factory=list)
+    used_kg_node_ids: list[str] = Field(default_factory=list)
+    used_memory_node_ids: list[str] = Field(default_factory=list)
+    projected_conversation_node_ids: list[str] = Field(default_factory=list)
+    projected_conversation_edge_ids: list[str] = Field(default_factory=list)
     run_trace_node_id: None | str = None
     response_node_id: str | None = None
-    meta: Dict[str, Any] = Field(default_factory=dict)
+    meta: dict[str, JsonValue] = Field(default_factory=dict)
 
 
 class ConversationEdge(Edge):
@@ -282,12 +293,14 @@ class ConversationEdge(Edge):
     Inherits provenance features from `Edge`.
     """
 
-    metadata: dict  # ConversationNodeMetadata
+    metadata: dict[str, JsonValue] = Field(
+        default_factory=dict, description="conversation edge metadata"
+    )
     id_kind: ClassVar[str] = "conversation.edge"
     # id_policy: ClassVar[Literal["event", "canonical"]] = "canonical"
     # id_kind: ClassVar[str] = "model"  # override per subclass if you want stable separation
 
-    def identity_key(self) -> Tuple[str, ...]:
+    def identity_key(self) -> tuple[str, ...]:
         """
         Subclasses with id_policy="canonical" MUST override this.
         Should return stable, minimal identity parts.
@@ -303,7 +316,7 @@ class ConversationEdge(Edge):
         )
 
     @field_validator("metadata")
-    def check_fields(cls, v):
+    def check_fields(cls, v: dict[str, JsonValue]) -> dict[str, JsonValue]:
         # convertible to ConversationNodeMetadata but never materialize the conversion. just a checker model
         try:
             ConversationEdgeMetadata.model_validate(v)
@@ -334,7 +347,7 @@ class ConversationNode(ConversationRoleMixin, Node):
     # id_kind: ClassVar[str] = "model"  # override per subclass if you want stable separation
     id_kind: ClassVar[str] = "conversation.node"
 
-    def identity_key(self) -> Tuple[str, ...]:
+    def identity_key(self) -> tuple[str, ...]:
         # from conversation_orchestrator import get_id_for_conversation_turn
         """
         Subclasses with id_policy="canonical" MUST override this.
@@ -366,10 +379,12 @@ class ConversationNode(ConversationRoleMixin, Node):
     #     self.node_id = stable_id(self.id_kind, *key)
     #     return self
 
-    metadata: dict  # ConversationNodeMetadata
+    metadata: dict[str, JsonValue] = Field(
+        default_factory=dict, description="conversation node metadata"
+    )
 
     @field_validator("metadata")
-    def check_fields(cls, v):
+    def check_fields(cls, v: dict[str, JsonValue]) -> dict[str, JsonValue]:
         # convertible to ConversationNodeMetadata but never materialize the conversion. just a checker model
         try:
             ConversationNodeMetadata.model_validate(v)
@@ -377,15 +392,17 @@ class ConversationNode(ConversationRoleMixin, Node):
             raise
         return v
 
-    def get_incoming_turn_edge(self, engine) -> "ConversationEdge | None":
+    def get_incoming_turn_edge(
+        self, engine: object
+    ) -> "ConversationEdge | None":
         from kogwistar.engine_core.engine import GraphKnowledgeEngine
 
-        engine2: GraphKnowledgeEngine = engine
+        engine2: GraphKnowledgeEngine = cast(GraphKnowledgeEngine, engine)
         edges = engine2.query_edges(
             where={"relation": "next_turn", "target_id": self.id}
         )
         assert len(edges) <= 1
-        return edges[0] if edges else None
+        return cast(ConversationEdge, edges[0]) if edges else None
 
     def get_extra_update(self) -> dict:
         try:
@@ -399,8 +416,8 @@ class ConversationNode(ConversationRoleMixin, Node):
 
 @dataclass
 class RetrievalResult:
-    nodes: List[Node]
-    edges: List[Edge]
+    nodes: list[Node]
+    edges: list[Edge]
 
 
 @dataclass
@@ -419,13 +436,13 @@ class MemoryRetrievalResult(BaseToolResult):
 
     # Derived artifacts
     memory_context_text: None | str
-    seed_kg_node_ids: List[str]
+    seed_kg_node_ids: list[str]
 
 
 @dataclass(kw_only=True)
 class MemoryPinResult(BaseToolResult):
     memory_context_node: ConversationNode
-    pinned_edges: List[ConversationEdge]
+    pinned_edges: list[ConversationEdge]
     visibility: str = "private"
     security_scope: str | None = None
     shared_with: tuple[str, ...] = ()
@@ -449,7 +466,7 @@ class KnowledgeRetrievalResult(BaseToolResult):
     selected: FilteringResult | None
     reasoning: str
 
-    def get_filtered_candidate(self):
+    def get_filtered_candidate(self) -> RetrievalResult:
         if self.selected:
             set_node_ids = set(self.selected.node_ids)
             set_edge_ids = set(self.selected.node_ids)

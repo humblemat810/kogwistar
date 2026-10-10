@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """ test_chat_server_manual_e2e.py
 """
 import json
@@ -17,11 +18,15 @@ from kogwistar.conversation.agentic_answering_design import (
     build_agentic_answering_frontend_payload,
 )
 from kogwistar.runtime.models import WorkflowDesignArtifact
-from tests._helpers.server_http_helpers import auth_header_from_token
-from tests._helpers.server_http_helpers import decode_token_subject
-from tests._helpers.server_http_helpers import mint_dev_token_http
+from tests._helpers.server_http_helpers import (
+    auth_header_from_token,
+    decode_token_subject,
+    mint_dev_token_http,
+)
 from tests._helpers.server_wait_helpers import wait_for_health as _wait_for_health
-from tests._helpers.server_wait_helpers import wait_for_run_terminal as _wait_for_run_terminal
+from tests._helpers.server_wait_helpers import (
+    wait_for_run_terminal as _wait_for_run_terminal,
+)
 from tests._helpers.span_consistent_seed import build_span_consistent_debug_rag_seed
 
 pytest.importorskip("fastapi")

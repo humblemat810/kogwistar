@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import json
 import shutil
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, cast
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
-from kogwistar.engine_core.models import Grounding, Span
-from kogwistar.runtime import MappingStepResolver, WorkflowRuntime
+from kogwistar.engine_core.models import Grounding, Node, Span
+from kogwistar.runtime import MappingStepResolver, StepContext, WorkflowRuntime
 from kogwistar.runtime.design import load_workflow_design
 from kogwistar.runtime.models import (
     RunSuccess,
@@ -21,7 +22,7 @@ from kogwistar.runtime.models import (
 class _DemoEmbeddingFunction:
     _name = "nested-workflow-demo-embedding-v1"
 
-    def name(self):
+    def name(self) -> str:
         return self._name
 
     def __call__(self, input: Sequence[str]) -> list[list[float]]:
@@ -128,7 +129,12 @@ def _build_design_from_rows(
         )
         for item in list(rows.get("edges") or [])
     ]
-    start_node_id = next(node.id for node in nodes if bool(node.metadata.get("wf_start")))
+    start_node_id = next(
+        (node.id for node in nodes if bool(node.metadata.get("wf_start"))),
+        None,
+    )
+    if start_node_id is None:
+        raise ValueError(f"workflow {workflow_id!r} has no start node")
     return WorkflowDesignArtifact(
         workflow_id=workflow_id,
         workflow_version="v_demo",
@@ -189,7 +195,7 @@ def _persist_design(
 def _build_engines(
     *,
     data_dir: Path,
-    backend_factory: Any | None = None,
+    backend_factory: Callable[..., object] | None = None,
 ) -> tuple[GraphKnowledgeEngine, GraphKnowledgeEngine]:
     embedding = _DemoEmbeddingFunction()
     kwargs: dict[str, Any] = {
@@ -214,7 +220,7 @@ def run_nested_workflow_invocation_demo(
     *,
     data_dir: str | Path | None = None,
     reset_data: bool = True,
-    backend_factory: Any | None = None,
+    backend_factory: Callable[..., object] | None = None,
     workflow_engine: GraphKnowledgeEngine | None = None,
     conversation_engine: GraphKnowledgeEngine | None = None,
 ) -> dict[str, Any]:
@@ -356,7 +362,7 @@ def run_nested_workflow_invocation_demo(
     resolver = MappingStepResolver()
 
     @resolver.register("start")
-    def _start(ctx):
+    def _start(ctx: StepContext) -> RunSuccess:
         return RunSuccess(
             conversation_node_id=None,
             state_update=[
@@ -374,7 +380,7 @@ def run_nested_workflow_invocation_demo(
         )
 
     @resolver.register("invoke_predesigned")
-    def _invoke_predesigned(ctx):
+    def _invoke_predesigned(ctx: StepContext) -> RunSuccess:
         return RunSuccess(
             conversation_node_id=None,
             state_update=[("u", {"predesigned_requested": True})],
@@ -388,8 +394,16 @@ def run_nested_workflow_invocation_demo(
         )
 
     @resolver.register("invoke_dynamic")
-    def _invoke_dynamic(ctx):
-        planner_payload = dict(ctx.state_view.get("planner_payload") or {})
+    def _invoke_dynamic(ctx: StepContext) -> RunSuccess:
+        planner_payload = cast(
+            dict[str, Any],
+            dict(
+                cast(
+                    Mapping[str, object],
+                    ctx.state_view.get("planner_payload") or {},
+                )
+            ),
+        )
         return RunSuccess(
             conversation_node_id=None,
             state_update=[
@@ -414,7 +428,7 @@ def run_nested_workflow_invocation_demo(
         )
 
     @resolver.register("predesigned_body")
-    def _predesigned_body(ctx):
+    def _predesigned_body(ctx: StepContext) -> RunSuccess:
         return RunSuccess(
             conversation_node_id=None,
             state_update=[
@@ -429,8 +443,16 @@ def run_nested_workflow_invocation_demo(
         )
 
     @resolver.register("dynamic_materialize")
-    def _dynamic_materialize(ctx):
-        planner_payload = dict(ctx.state_view.get("planner_payload") or {})
+    def _dynamic_materialize(ctx: StepContext) -> RunSuccess:
+        planner_payload = cast(
+            dict[str, Any],
+            dict(
+                cast(
+                    Mapping[str, object],
+                    ctx.state_view.get("planner_payload") or {},
+                )
+            ),
+        )
         return RunSuccess(
             conversation_node_id=None,
             state_update=[
@@ -448,7 +470,7 @@ def run_nested_workflow_invocation_demo(
         )
 
     @resolver.register("end")
-    def _end(ctx):
+    def _end(ctx: StepContext) -> RunSuccess:
         return RunSuccess(
             conversation_node_id=None,
             state_update=[("u", {"completed": True})],
@@ -483,11 +505,14 @@ def run_nested_workflow_invocation_demo(
             "start_node_id": start.id,
             "node_ids": sorted(nodes.keys()),
             "edge_ids": sorted(
-                edge.id for edges in adj.values() for edge in list(edges or [])
+                edge.id
+                for edges in adj.values()
+                for edge in list(edges or [])
+                if edge.id is not None
             ),
         }
 
-    def _step_execs(run_id_value: str) -> list[Any]:
+    def _step_execs(run_id_value: str) -> list[Node]:
         nodes = conversation_engine.read.get_nodes(
             where={"$and": [{"entity_type": "workflow_step_exec"}, {"run_id": run_id_value}]},
             limit=10_000,
@@ -497,10 +522,17 @@ def run_nested_workflow_invocation_demo(
             key=lambda node: int((getattr(node, "metadata", {}) or {}).get("step_seq", -1)),
         )
 
-    def _workflow_runs(run_id_value: str) -> list[Any]:
-        return conversation_engine.read.get_nodes(
-            where={"$and": [{"entity_type": "workflow_run"}, {"run_id": run_id_value}]},
-            limit=10_000,
+    def _workflow_runs(run_id_value: str) -> list[Node]:
+        return list(
+            conversation_engine.read.get_nodes(
+                where={
+                    "$and": [
+                        {"entity_type": "workflow_run"},
+                        {"run_id": run_id_value},
+                    ]
+                },
+                limit=10_000,
+            )
         )
 
     parent_steps = _step_execs(run_id)

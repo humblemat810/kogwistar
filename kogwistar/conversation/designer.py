@@ -1,12 +1,13 @@
 from ..engine_core.models import Grounding, Span
+from ..json_types import JsonValue
 from ..runtime.design import BaseWorkflowDesigner
 from ..runtime.models import WorkflowEdge, WorkflowNode
 from .agentic_answering_design import (
+    DEBUG_RAG_WORKFLOW_ID,
     agentic_answering_expected_ops,
     build_agentic_answering_workflow_design,
     build_debug_rag_workflow_design,
     debug_rag_expected_ops,
-    DEBUG_RAG_WORKFLOW_ID,
     materialize_workflow_design_artifact,
 )
 
@@ -65,9 +66,10 @@ class AgenticAnsweringWorkflowDesigner(BaseWorkflowDesigner):
                 pass
 
         if mode == "backbone":
-            from ..engine_core.models import Span, Grounding
+            from ..engine_core.models import Grounding, Span
 
-            wid = lambda suffix: f"wf:{workflow_id}:{suffix}"
+            def wid(suffix: str) -> str:
+                return f"wf:{workflow_id}:{suffix}"
             sp = Span.from_dummy_for_workflow(workflow_id)
 
             def add_node(
@@ -78,7 +80,7 @@ class AgenticAnsweringWorkflowDesigner(BaseWorkflowDesigner):
                 start: bool = False,
                 terminal: bool = False,
                 fanout: bool = False,
-            ):
+            ) -> None:
                 n = WorkflowNode(
                     id=node_id,
                     label=label,
@@ -96,6 +98,10 @@ class AgenticAnsweringWorkflowDesigner(BaseWorkflowDesigner):
                         "wf_fanout": fanout,
                         "wf_version": "v2",
                     },
+                    domain_id=None,
+                    canonical_entity_id=None,
+                    embedding=None,
+                    level_from_root=0,
                 )
                 self.workflow_engine.write.add_node(n)
 
@@ -104,12 +110,12 @@ class AgenticAnsweringWorkflowDesigner(BaseWorkflowDesigner):
                 edge_id: str,
                 src: str,
                 dst: str,
-                relation,
+                relation: str,
                 pred: str | None,
                 priority: int = 100,
                 is_default: bool = False,
                 multiplicity: str = "one",
-            ):
+            ) -> None:
                 e = WorkflowEdge(
                     id=edge_id,
                     label="wf_next",
@@ -132,6 +138,9 @@ class AgenticAnsweringWorkflowDesigner(BaseWorkflowDesigner):
                         "wf_is_default": is_default,
                         "wf_multiplicity": multiplicity,
                     },
+                    domain_id=None,
+                    canonical_entity_id=None,
+                    embedding=None,
                 )
                 self.workflow_engine.write.add_edge(e)
 
@@ -209,7 +218,7 @@ class ConversationWorkflowDesigner(BaseWorkflowDesigner):
             # Lazy import to avoid circular deps for model classes.
             from ..runtime.models import WorkflowEdge
 
-            def wf_node_id(workflow_id, suffix):
+            def wf_node_id(workflow_id: str, suffix: str) -> str:
                 return f"wf:{workflow_id}:{suffix}"
 
             import functools
@@ -224,9 +233,9 @@ class ConversationWorkflowDesigner(BaseWorkflowDesigner):
                 start: bool = False,
                 terminal: bool = False,
                 fanout: bool = False,
-                metadata=None,
-                wf_join=False,
-            ):
+                metadata: dict[str, JsonValue] | None = None,
+                wf_join: bool = False,
+            ) -> None:
                 if metadata is None:
                     metadata = {}
                 metadata_final = {
@@ -256,6 +265,10 @@ class ConversationWorkflowDesigner(BaseWorkflowDesigner):
                         "wf_version": "v2",
                         "wf_join": wf_join,
                     },
+                    domain_id=None,
+                    canonical_entity_id=None,
+                    embedding=None,
+                    level_from_root=0,
                     mentions=[
                         Grounding(spans=[Span.from_dummy_for_workflow(workflow_id)])
                     ],
@@ -271,8 +284,8 @@ class ConversationWorkflowDesigner(BaseWorkflowDesigner):
                 priority: int = 100,
                 is_default: bool = False,
                 multiplicity: str = "one",
-                metadata=None,
-            ):
+                metadata: dict[str, JsonValue] | None = None,
+            ) -> None:
                 if metadata is None:
                     metadata = {}
                 metadata_final = {
@@ -298,6 +311,9 @@ class ConversationWorkflowDesigner(BaseWorkflowDesigner):
                     source_edge_ids=[],
                     target_edge_ids=[],
                     metadata=metadata_final,
+                    domain_id=None,
+                    canonical_entity_id=None,
+                    embedding=None,
                     mentions=[
                         Grounding(spans=[Span.from_dummy_for_workflow(workflow_id)])
                     ],
@@ -521,7 +537,7 @@ class ConversationWorkflowDesigner(BaseWorkflowDesigner):
                 pred=None,
                 is_default=True,
             )
-            if allow_branch := False:
+            if False:
                 add_node(
                     node_id=wid("start"),
                     label="Start",
@@ -735,7 +751,7 @@ class ConversationWorkflowDesigner(BaseWorkflowDesigner):
             workflow_id=workflow_id, mode="backbone", include_context_snapshot=False
         )
 
-    def _print_to_do(self):
+    def _print_to_do(self) -> None:
         print("""_summary_
         to dos
         1. if multiple node target is another node, the add edge should have an arg to say target change to wait join

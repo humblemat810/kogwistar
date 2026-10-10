@@ -3,8 +3,8 @@ from __future__ import annotations
 import copy
 import logging
 import warnings
-from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any, TypeAlias
+from collections.abc import Iterable, Mapping
+from typing import TYPE_CHECKING, Any, Generic, Protocol, TypeAlias, TypeVar, cast
 
 from .._rust_bridge import (
     RustParityError,
@@ -16,18 +16,43 @@ from .._rust_bridge import (
     runtime_scheduler_tick,
 )
 from ..id_provider import stable_id
+from ..json_types import JsonObject, JsonValue
 from .budget import StateBackedBudgetLedger
-from .models import StateUpdate, WorkflowDesignArtifact, WorkflowInvocationRequest, WorkflowState
+from .contract import Predicate
+from .models import (
+    StateUpdate,
+    WorkflowDesignArtifact,
+    WorkflowInvocationRequest,
+    WorkflowState,
+)
 from .routing import RouteComputation, compute_route_next
 
 if TYPE_CHECKING:
     from ..engine_core.engine import GraphKnowledgeEngine
-    from .runtime import StepResolver
 
 
 RuntimePayload: TypeAlias = dict[str, object]
 StateSchema: TypeAlias = dict[str, str]
 RuntimeStateUpdate: TypeAlias = list[tuple[str, dict[str, object]]] | list[StateUpdate]
+ResolverT = TypeVar("ResolverT")
+
+
+class _ChildRunResult(Protocol):
+    final_state: WorkflowState
+    run_id: str
+    status: str
+
+
+def _state_list(state: WorkflowState, key: str) -> list[object]:
+    # Preserve the established public behavior: a non-list existing value is
+    # allowed to fail at the list operation with AttributeError.
+    return cast(list[object], state.setdefault(key, []))
+
+
+def _extend_values(value: object, *, key: str) -> Iterable[object]:
+    if not isinstance(value, Iterable):
+        raise TypeError(f"state key {key!r} requires an iterable for an extend update")
+    return value
 
 
 class RuntimeContractError(RuntimeError):
@@ -56,14 +81,28 @@ def _native_state_update_payload(
     state_update: RuntimeStateUpdate,
     update: RuntimePayload | None,
     state_schema: StateSchema | None,
-) -> RuntimePayload:
+) -> JsonObject:
     """JSON transport form; state-update pairs are tuples in public Python API."""
     return {
-        "state": copy.deepcopy(state),
-        "state_update": [list(item) for item in state_update],
-        "update": update,
-        "state_schema": state_schema or {},
+        "state": cast(JsonValue, copy.deepcopy(state)),
+        "state_update": cast(JsonValue, [list(item) for item in state_update]),
+        "update": cast(JsonValue, update),
+        "state_schema": cast(JsonValue, state_schema or {}),
     }
+
+
+def _text_result(value: JsonObject, *, fields: tuple[str, ...]) -> dict[str, str]:
+    """Validate a native result whose public contract is a string map."""
+    result: dict[str, str] = {}
+    for field in fields:
+        item = value.get(field)
+        if not isinstance(item, str):
+            raise RuntimeContractError(
+                f"runtime native result field {field!r} must be a string",
+                code="KOGWISTAR_RUNTIME_NATIVE_RESULT_INVALID",
+            )
+        result[field] = item
+    return result
 
 
 def _native_state_update_safe(
@@ -97,7 +136,7 @@ def _native_state_update_safe(
     return True
 
 
-def validate_initial_state(initial_state: WorkflowState):
+def validate_initial_state(initial_state: WorkflowState) -> None:
     """Validate user-provided initial workflow state.
 
     Workflow state is user-land except for a small set of underscore-prefixed
@@ -154,19 +193,21 @@ def apply_state_update_inplace(
     json_compatible = json_contract_compatible(native_transport) and _native_state_update_safe(
         mute_state, state_update, update, state_schema
     )
-    native_state: RuntimePayload | None = None
+    native_state: JsonObject | None = None
     if mode != "python" and json_compatible:
         native_payload = _native_state_update_payload(
             mute_state, state_update, update, state_schema
         )
-        native_state = runtime_apply_state_update(payload=native_payload)
+        native_state = cast(
+            JsonObject, runtime_apply_state_update(payload=native_payload)
+        )
 
     for update_item in state_update:
         update_item: tuple[str, dict[str, Any]] | StateUpdate
         if update_item[0] == "a":
             append_dict: dict = update_item[1]
             for k, v in append_dict.items():
-                mute_state.setdefault(k, []).append(v)
+                _state_list(mute_state, k).append(v)
         elif update_item[0] == "u":
             update_dict: dict = update_item[1]
             for k, v in update_dict.items():
@@ -174,7 +215,7 @@ def apply_state_update_inplace(
         elif update_item[0] == "e":
             update_dict: dict = update_item[1]
             for k, v in update_dict.items():
-                mute_state.setdefault(k, []).extend(v)
+                _state_list(mute_state, k).extend(_extend_values(v, key=k))
     if update:
         schema = state_schema or {}
         for k, v in update.items():
@@ -183,7 +224,7 @@ def apply_state_update_inplace(
             else:
                 op = "u"
             if op == "a":
-                mute_state.setdefault(k, []).extend(v)
+                _state_list(mute_state, k).extend(_extend_values(v, key=k))
             else:
                 mute_state[k] = v
 
@@ -205,7 +246,7 @@ def checkpointable_state_copy(state: WorkflowState) -> WorkflowState:
     }
 
 
-class BaseRuntime:
+class BaseRuntime(Generic[ResolverT]):
     """Pure shared runtime helpers.
 
     Keep only logic that is scheduler-agnostic and backend-agnostic so sync and
@@ -213,8 +254,8 @@ class BaseRuntime:
     """
 
     workflow_engine: GraphKnowledgeEngine
-    step_resolver: StepResolver
-    predicate_registry: dict[str, Any]
+    step_resolver: ResolverT
+    predicate_registry: dict[str, Predicate]
 
     validate_initial_state = staticmethod(validate_initial_state)
     apply_state_update_inplace = staticmethod(apply_state_update_inplace)
@@ -259,7 +300,7 @@ class BaseRuntime:
         return ledger
 
     @staticmethod
-    def _edge_priority(edge: Any) -> int:
+    def _edge_priority(edge: object) -> int:
         md = getattr(edge, "metadata", {}) or {}
         try:
             return int(md.get("wf_priority", 100))
@@ -269,12 +310,12 @@ class BaseRuntime:
     @staticmethod
     def _compute_route_next_shared(
         *,
-        edges: list[Any],
+        edges: list[object],
         state: WorkflowState,
-        last_result: Any,
+        last_result: object,
         fanout: bool,
-        predicate_registry: dict[str, Any],
-        nodes: dict[str, Any] | None = None,
+        predicate_registry: dict[str, Predicate],
+        nodes: Mapping[str, object] | None = None,
         sort_edges: bool = False,
     ) -> RouteComputation:
         route_edges = list(edges)
@@ -315,7 +356,9 @@ class BaseRuntime:
         invocation: WorkflowInvocationRequest,
     ) -> WorkflowState:
         child_state: WorkflowState = dict(parent_state)  # type: ignore[arg-type]
-        path = [str(item) for item in (parent_state.get("_wf_invocation_path") or [])]
+        raw_path = parent_state.get("_wf_invocation_path")
+        path_values = raw_path if isinstance(raw_path, (list, tuple)) else ()
+        path = [str(item) for item in path_values]
         child_workflow = str(invocation.workflow_id)
         if child_workflow in path:
             raise ValueError(
@@ -368,7 +411,8 @@ class BaseRuntime:
             "result_state_key": invocation.result_state_key
             or f"workflow_result::{invocation.workflow_id}",
         }
-        return runtime_plan_nested_invocation(
+        return _text_result(
+            runtime_plan_nested_invocation(
             payload={
                 "parent_run_id": parent_run_id,
                 "workflow_id": invocation.workflow_id,
@@ -380,7 +424,9 @@ class BaseRuntime:
                 "parent_turn_node_id": turn_node_id,
                 "turn_node_id": invocation.turn_node_id,
             },
-            python_value=python_value,
+            python_value=cast(JsonObject, python_value),
+            ),
+            fields=("child_run_id", "conversation_id", "turn_node_id", "result_state_key"),
         )
 
     @staticmethod
@@ -444,13 +490,16 @@ class BaseRuntime:
             ),
         }
         return runtime_scheduler_tick(
-            payload={
-                "pending": payload_pending,
-                "inflight": int(inflight),
-                "max_workers": int(max_workers),
-                "cancelling": bool(cancelling),
-            },
-            python_value=python_value,
+            payload=cast(
+                JsonObject,
+                {
+                    "pending": cast(JsonValue, payload_pending),
+                    "inflight": int(inflight),
+                    "max_workers": int(max_workers),
+                    "cancelling": bool(cancelling),
+                },
+            ),
+            python_value=cast(JsonObject, python_value),
         )
 
     def _apply_workflow_invocation_result(
@@ -458,7 +507,7 @@ class BaseRuntime:
         *,
         state: WorkflowState,
         invocation: WorkflowInvocationRequest,
-        child_result: Any,
+        child_result: _ChildRunResult,
     ) -> None:
         result_key = (
             invocation.result_state_key or f"workflow_result::{invocation.workflow_id}"

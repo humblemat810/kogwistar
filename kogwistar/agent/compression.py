@@ -9,13 +9,30 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Callable, Mapping, Sequence
+from typing import Protocol
 
 from kogwistar.conversation.models import ConversationEdge, ConversationNode
 from kogwistar.engine_core.models import Grounding, MentionVerification, Span
 from kogwistar.id_provider import stable_id
+from kogwistar.json_types import JsonValue
+from kogwistar.typing_interfaces import WriteLike
+from kogwistar.runtime.models import WorkflowDesignArtifact
+
 from .workflows import build_normal_workflow
+
+
+class CompressionEngineLike(Protocol):
+    """Minimal graph write surface required by summary projection."""
+
+    write: WriteLike
+
+
+class CompressionAuthorizer(Protocol):
+    """Authorize one JSON source item for context compression."""
+
+    def __call__(self, item: Mapping[str, JsonValue], /) -> bool: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,7 +62,7 @@ POLICIES: dict[str, CompressionPolicy] = {
 @dataclass(frozen=True, slots=True)
 class CompressionRequest:
     conversation_id: str
-    source_items: tuple[dict[str, Any], ...]
+    source_items: tuple[dict[str, JsonValue], ...]
     policy: CompressionPolicy
     cross_conversation: bool = False
     requested_by_run_id: str | None = None
@@ -54,7 +71,7 @@ class CompressionRequest:
 @dataclass(frozen=True, slots=True)
 class CompressionDecision:
     requested: bool
-    selected_items: tuple[dict[str, Any], ...]
+    selected_items: tuple[dict[str, JsonValue], ...]
     source_refs: tuple[str, ...]
     estimated_chars: int
     reason: str
@@ -62,7 +79,7 @@ class CompressionDecision:
 
 
 def should_request_compression(
-    items: Sequence[Mapping[str, Any]],
+    items: Sequence[Mapping[str, JsonValue]],
     *,
     policy: CompressionPolicy,
     max_source_chars: int | None = None,
@@ -89,7 +106,9 @@ def policy_for(name: str) -> CompressionPolicy:
         raise ValueError(f"unknown compression policy: {name}") from exc
 
 
-def build_compression_workflow(*, workflow_id: str = "agent.context-compression.v1"):
+def build_compression_workflow(
+    *, workflow_id: str = "agent.context-compression.v1"
+) -> WorkflowDesignArtifact:
     """Return an ordinary audited workflow design for compression execution."""
 
     return build_normal_workflow(
@@ -99,10 +118,10 @@ def build_compression_workflow(*, workflow_id: str = "agent.context-compression.
 
 
 def select_for_compression(
-    items: Sequence[Mapping[str, Any]],
+    items: Sequence[Mapping[str, JsonValue]],
     *,
     policy: CompressionPolicy,
-    authorize: Callable[[Mapping[str, Any]], bool] | None = None,
+    authorize: CompressionAuthorizer | None = None,
 ) -> CompressionDecision:
     """Select newest authorized items without mutating source history."""
 
@@ -116,7 +135,7 @@ def select_for_compression(
             branch_items = [
                 item for item in branch_items if item.get("branch_id") == newest_branch
             ]
-    selected: list[dict[str, Any]] = []
+    selected: list[dict[str, JsonValue]] = []
     chars = 0
     for raw in reversed(branch_items):
         item = dict(raw)
@@ -145,11 +164,11 @@ def select_for_compression(
 def build_compression_request(
     *,
     conversation_id: str,
-    items: Sequence[Mapping[str, Any]],
+    items: Sequence[Mapping[str, JsonValue]],
     policy: CompressionPolicy | str = "medium",
     allow_cross_conversation: bool = False,
     requested_by_run_id: str | None = None,
-    authorize: Callable[[Mapping[str, Any]], bool] | None = None,
+    authorize: CompressionAuthorizer | None = None,
 ) -> tuple[CompressionRequest, CompressionDecision]:
     selected_policy = policy_for(policy) if isinstance(policy, str) else policy
     if not allow_cross_conversation:
@@ -183,7 +202,7 @@ def _summary_span(conversation_id: str, summary_id: str, excerpt: str) -> Span:
 
 
 def persist_summary_projection(
-    engine: Any,
+    engine: CompressionEngineLike,
     *,
     conversation_id: str,
     source_refs: Sequence[str],
@@ -254,11 +273,13 @@ def persist_summary_projection(
 
 
 __all__ = [
+    "POLICIES",
+    "CompressionAuthorizer",
     "CompressionDecision",
+    "CompressionEngineLike",
     "CompressionPolicy",
     "CompressionRequest",
     "CompressionResult",
-    "POLICIES",
     "build_compression_request",
     "build_compression_workflow",
     "persist_summary_projection",

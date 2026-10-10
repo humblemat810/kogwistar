@@ -1,21 +1,16 @@
-from typing import (
-    List,
-    Tuple,
-    Any,
-    Dict,
-    runtime_checkable,
-    Protocol,
-    Optional,
-)
 from os import PathLike
+from collections.abc import Sequence
+from typing import Any, Literal, Protocol, runtime_checkable
+
 from pydantic import BaseModel
+
 from ..engine_core.models import (
-    Node,
-    Edge,
     AdjudicationQuestionCode,
-    AdjudicationVerdict,
     AdjudicationTarget,
+    AdjudicationVerdict,
+    Edge,
     LLMMergeAdjudication,
+    Node,
     Span,
 )
 from ..typing_interfaces import StrategyEngineLike as EngineLike
@@ -33,26 +28,77 @@ class MergeCandidateProposer(Protocol):
         new_node: Node,
         top_k: int = 5,
         similarity_threshold: float = 0.85,
-    ) -> List[Tuple[Node, Node]]: ...
+    ) -> list[tuple[Node, Node]]: ...
 
     # Batch proposal within a document: same-kind pairs (node↔node & edge↔edge)
     def same_kind_in_doc(
-        self, engine: "EngineLike", doc_id: str, kind: str
-    ) -> List[Tuple[Any, Any]]: ...
+        self,
+        *,
+        engine: "EngineLike",
+        doc_id: str,
+        kind: str = "node",
+    ) -> list[tuple[Any, Any]]: ...
 
     # Batch proposal within a document: cross-kind pairs (node↔edge)
     def cross_kind_in_doc(
         self,
+        *,
         engine: "EngineLike",
         doc_id: str,
-    ) -> List[Tuple[Any, Any]]: ...
+        limit_per_bucket: int = 200,
+    ) -> list[tuple[Any, Any]]: ...
+
+    def propose_any_kind_any_doc(
+        self,
+        *,
+        engine: "EngineLike",
+        pair_kind: Literal[
+            "node_node",
+            "edge_edge",
+            "node_edge",
+            "any_any",
+            "any_node",
+            "any_edge",
+            "node_any",
+            "edge_any",
+        ],
+        allowed_docs: list[str] | None = None,
+        anchor_doc_id: str | None = None,
+        cross_doc_only: bool = False,
+        anchor_only: bool = True,
+        limit_per_bucket: int | None = None,
+    ) -> list[tuple[Node | Edge, Node | Edge]]: ...
+
+    def generate_merge_candidates(
+        self,
+        engine: "EngineLike",
+        new_node: Node | Edge | str | Sequence[Node | Edge | str] | None,
+        new_edge: Node | Edge | str | Sequence[Node | Edge | str] | None = None,
+        top_k: int = 10,
+        *,
+        allowed_docs: list[str] | None = None,
+        anchor_doc_id: str | None = None,
+        cross_doc_only: bool = False,
+        anchor_only: bool = True,
+        score_mode: Literal["distance", "similarity"] = "distance",
+        max_distance: float = 0.25,
+        min_similarity: float = 0.85,
+        include_nodes: bool = True,
+        include_edges: bool = True,
+        where: dict[str, Any] | None = None,
+    ) -> dict[tuple[str, str], tuple[Node | Edge, Node | Edge, float]]: ...
 
 
 # ---------- Adjudicator ----------
 @runtime_checkable
 class IPairAdjudicationTrace(Protocol):
+    @property
     def adjudication(self) -> LLMMergeAdjudication | None: ...
+
+    @property
     def raw(self) -> object | None: ...
+
+    @property
     def parsing_error(self) -> str | None: ...
 
 
@@ -60,15 +106,15 @@ class IPairAdjudicationTrace(Protocol):
 class IAdjudicator(Protocol):
     def batch_adjudicate_merges(
         self,
-        pairs: List[Tuple["Node", "Node"]],
+        pairs: list[tuple["Node", "Node"]],
         question_code: "AdjudicationQuestionCode" = AdjudicationQuestionCode.SAME_ENTITY,
     ) -> list[Any] | tuple[list[Any], str] | tuple[list[None], str]: ...  #
     def adjudicate_pair(
         self, left: AdjudicationTarget, right: AdjudicationTarget, question: str
-    ) -> Dict[Any, Any] | BaseModel: ...
+    ) -> dict[Any, Any] | BaseModel: ...
     def adjudicate_merge(
         self, left_node: Node | Edge, right_node: Node | Edge
-    ) -> Dict[Any, Any] | BaseModel: ...
+    ) -> dict[Any, Any] | BaseModel: ...
     def adjudicate_pair_trace(
         self,
         left: AdjudicationTarget,
@@ -82,7 +128,10 @@ class IAdjudicator(Protocol):
 @runtime_checkable
 class PairAdjudicator(Protocol):
     def adjudicate(
-        self, engine: "EngineLike", left: Any, right: Any
+        self,
+        engine: "EngineLike",
+        left: AdjudicationTarget,
+        right: AdjudicationTarget,
     ) -> AdjudicationVerdict: ...
 
 
@@ -91,14 +140,29 @@ class BatchAdjudicator(Protocol):
     def batch_adjudicate(
         self,
         engine: "EngineLike",
-        pairs: List[Tuple[Any, Any]],
+        pairs: list[tuple[Any, Any]],
         question_code: AdjudicationQuestionCode = AdjudicationQuestionCode.SAME_ENTITY,
-    ) -> Tuple[List[LLMMergeAdjudication], str]: ...
+    ) -> tuple[list[LLMMergeAdjudication], str]: ...
 
 
 # ---------- Merge policy ----------
 @runtime_checkable
 class MergePolicy(Protocol):
+    def commit_merge(
+        self,
+        left: Node,
+        right: Node,
+        verdict: AdjudicationVerdict,
+        method: str = "unspecified",
+    ) -> str: ...
+
+    def commit_any_kind(
+        self,
+        node_or_edge_l: AdjudicationTarget,
+        node_or_edge_r: AdjudicationTarget,
+        verdict: AdjudicationVerdict,
+    ) -> str: ...
+
     def commit_merge_target(
         self,
         left: AdjudicationTarget,
@@ -120,8 +184,8 @@ class CrossKindPolicy(Protocol):
 
 # ---------- Verifier ----------
 class VerificationReport(BaseModel):
-    updated_node_ids: List[str] = []
-    updated_edge_ids: List[str] = []
+    updated_node_ids: list[str] = []
+    updated_edge_ids: list[str] = []
 
 
 @runtime_checkable
@@ -134,7 +198,7 @@ class Verifier(Protocol):
         ref: Span,
         *,
         min_ngram: int = 5,
-        weights: Dict[str, float] = {
+        weights: dict[str, float] = {
             "rapidfuzz": 0.5,
             "coverage": 0.3,
             "embedding": 0.2,
@@ -145,26 +209,26 @@ class Verifier(Protocol):
         self,
         document_id: str,
         *,
-        source_text: Optional[str] = None,
+        source_text: str | None = None,
         min_ngram: int = 5,
         threshold: float = 0.70,
-        weights: Dict[str, float] = {
+        weights: dict[str, float] = {
             "rapidfuzz": 0.5,
             "coverage": 0.3,
             "embedding": 0.2,
         },
         update_edges: bool = True,
-    ) -> Dict[str, int]: ...
+    ) -> dict[str, int]: ...
     def verify_mentions_for_items(
         self,
-        items: List[Tuple[str, str]],  # list of ("node"|"edge", id)
+        items: list[tuple[str, str]],  # list of ("node"|"edge", id)
         *,
-        source_text_by_doc: Optional[Dict[str, str]] = None,
+        source_text_by_doc: dict[str, str] | None = None,
         min_ngram: int = 5,
         threshold: float = 0.70,
-        weights: Dict[str, float] = {
+        weights: dict[str, float] = {
             "rapidfuzz": 0.5,
             "coverage": 0.3,
             "embedding": 0.2,
         },
-    ) -> Dict[str, int]: ...
+    ) -> dict[str, int]: ...

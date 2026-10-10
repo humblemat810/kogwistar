@@ -1,18 +1,24 @@
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Callable, Literal, Mapping, Protocol, Sequence
+from typing import Literal, Protocol
 
 try:
     from typing import TypeAlias
 except ImportError:  # pragma: no cover - py<3.10 compatibility
-    from typing_extensions import TypeAlias
+    from typing import TypeAlias
 
 from pydantic import BaseModel
 
+from ..json_types import JsonValue
 from .errors import MissingTaskError
 
-ProviderKind: TypeAlias = Literal["gemini", "openai", "custom", "unknown"]
+JsonObject = dict[str, JsonValue]
+
+ProviderKind: TypeAlias = Literal[
+    "gemini", "openai", "ollama", "custom", "unknown"
+]
 ExtractionSchemaMode: TypeAlias = Literal[
     "full", "lean", "flattened_lean", "flattened_full"
 ]
@@ -38,40 +44,40 @@ class ExtractGraphTaskRequest:
     instruction: str
     prompt_rules: str
     schema_mode: ExtractionSchemaMode
-    last_parsed: Mapping[str, object] | None = None
+    last_parsed: Mapping[str, JsonValue] | None = None
     last_error: str | None = None
 
 
 @dataclass(frozen=True)
 class ExtractGraphTaskResult:
     raw: object | None
-    parsed_payload: Mapping[str, object] | None
+    parsed_payload: JsonObject | None
     parsing_error: str | None
 
 
 @dataclass(frozen=True)
 class AdjudicatePairTaskRequest:
     question: str
-    left: Mapping[str, object]
-    right: Mapping[str, object]
+    left: Mapping[str, JsonValue]
+    right: Mapping[str, JsonValue]
 
 
 @dataclass(frozen=True)
 class AdjudicatePairTaskResult:
-    verdict_payload: Mapping[str, object] | None
+    verdict_payload: JsonObject | None
     raw: object | None
     parsing_error: str | None
 
 
 @dataclass(frozen=True)
 class AdjudicateBatchTaskRequest:
-    mapping: Sequence[Mapping[str, object]]
-    pairs: Sequence[Mapping[str, object]]
+    mapping: Sequence[Mapping[str, JsonValue]]
+    pairs: Sequence[Mapping[str, JsonValue]]
 
 
 @dataclass(frozen=True)
 class AdjudicateBatchTaskResult:
-    verdict_payloads: Sequence[Mapping[str, object]]
+    verdict_payloads: Sequence[JsonObject]
     raw: object | None
     parsing_error: str | None
 
@@ -116,7 +122,7 @@ class AnswerWithCitationsTaskRequest:
 
 @dataclass(frozen=True)
 class AnswerWithCitationsTaskResult:
-    answer_payload: Mapping[str, object] | None
+    answer_payload: JsonObject | None
     raw: object | None
     parsing_error: str | None
 
@@ -132,7 +138,7 @@ class RepairCitationsTaskRequest:
 
 @dataclass(frozen=True)
 class RepairCitationsTaskResult:
-    answer_payload: Mapping[str, object] | None
+    answer_payload: JsonObject | None
     raw: object | None
     parsing_error: str | None
 

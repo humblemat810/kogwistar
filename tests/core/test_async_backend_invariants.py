@@ -9,8 +9,8 @@ from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.engine_postgres_meta import EnginePostgresMetaStore
 from kogwistar.engine_core.models import Node
 from kogwistar.server.run_registry import RunRegistry
-from tests._kg_factories import kg_document
 from tests._helpers.graph_builders import build_entity_node
+from tests._kg_factories import kg_document
 from tests.core._async_chroma_real import (
     make_real_async_chroma_backend,
     make_real_async_chroma_uow,

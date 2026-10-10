@@ -1,11 +1,3 @@
-from __future__ import annotations
-import functools
-import warnings
-
-from kogwistar.utils.log import bind_log_context
-
-from typing import TYPE_CHECKING
-
 """Workflow step resolvers.
 
 This module provides a registry-based step resolver that can be used by
@@ -29,14 +21,20 @@ Handlers are expected to retrieve dependencies from `ctx.state["_deps"]`, e.g.:
 The orchestrator should populate `_deps` in the workflow initial_state.
 """
 
-from dataclasses import dataclass
-from typing import Any, Callable, Dict, Mapping, Optional, Protocol, Union
+from __future__ import annotations
 
-# Best-effort self-inspection for state schema inference
 import ast
+import functools
 import inspect
+import warnings
+from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
+from kogwistar.runtime.models import RunFailure, RunSuccess, RunSuspended, StepRunResult
+from kogwistar.runtime.sandbox import SandboxRequest
 from kogwistar.runtime.serialize import JsonValue
+from kogwistar.utils.log import bind_log_context
 
 Json = JsonValue
 if TYPE_CHECKING:
@@ -47,12 +45,7 @@ if TYPE_CHECKING:
 class RawStepFn(Protocol):
     """Callable contract for one runtime workflow step."""
 
-    def __call__(self, context: "StepContext", /) -> Union[Json, StepRunResult]: ...
-
-from kogwistar.runtime.models import RunFailure, RunSuccess, RunSuspended, StepRunResult
-from kogwistar.runtime.sandbox import SandboxRequest
-
-# Import your real RunResult types from kogwistar.runtime/models
+    def __call__(self, context: StepContext, /) -> Json | StepRunResult: ...
 
 
 
@@ -68,8 +61,8 @@ _LEGACY_UPDATE_WARNING_EMITTED = False
 
 @dataclass
 class MappingStepResolver(BaseResolver):
-    handlers: Dict[str, RawStepFn]
-    default: Optional[RawStepFn] = None
+    handlers: dict[str, RawStepFn]
+    default: RawStepFn | None = None
 
     @property
     def ops(self) -> set[str]:
@@ -77,9 +70,9 @@ class MappingStepResolver(BaseResolver):
 
     def __init__(
         self,
-        handlers: Optional[Mapping[str, RawStepFn]] = None,
+        handlers: Mapping[str, RawStepFn] | None = None,
         *,
-        default: Optional[RawStepFn] = None,
+        default: RawStepFn | None = None,
     ) -> None:
         self.handlers = dict(handlers or {})
         self.default = default
@@ -91,9 +84,9 @@ class MappingStepResolver(BaseResolver):
         # Preferred merge mode per state key: 'u' overwrite, 'a' append, 'e' extend
         self._state_schema: dict[str, str] = {}
         # The sandbox to use
-        self._sandbox: Optional["Sandbox"] = None
+        self._sandbox: Sandbox | None = None
 
-    def set_sandbox(self, sandbox: "Sandbox"):
+    def set_sandbox(self, sandbox: Sandbox) -> None:
         self._sandbox = sandbox
 
     def close_sandbox_run(self, run_id: str) -> None:
@@ -109,15 +102,17 @@ class MappingStepResolver(BaseResolver):
     ) -> Callable[[RawStepFn], RawStepFn]:
         def _decorator(fn: RawStepFn) -> RawStepFn:
             @functools.wraps(fn)
-            def wrapped_fun(*arg, **kwarg):
-                ctx: StepContext = arg[0]
+            def wrapped_fun(
+                ctx: StepContext, /, *args: object, **kwargs: object
+            ) -> Json | StepRunResult:
                 with bind_log_context(
                     op=op,
                     conversation_id=ctx.conversation_id,
                     workflow_run_id=f"{ctx.workflow_id}--{ctx.run_id}",
                     step_id=ctx.workflow_node_id,
                 ):
-                    return fn(*arg, **kwarg)
+                    handler = cast(Callable[..., Json | StepRunResult], fn)
+                    return handler(ctx, *args, **kwargs)
 
             self.handlers[op] = fn  # wrapped_fun
             if is_nested:
@@ -156,7 +151,7 @@ class MappingStepResolver(BaseResolver):
                 import traceback
 
                 return RunFailure(
-                    conversation_node_id=ctx.state_view.get("workflow_node_id"),
+                    conversation_node_id=cast(str | None, ctx.state_view.get("workflow_node_id")),
                     state_update=[("a", {"op_log": str(e)})],
                     errors=[str(e), traceback.format_exc()],
                 )
@@ -164,7 +159,7 @@ class MappingStepResolver(BaseResolver):
         return _wrapped
 
     def _maybe_execute_sandboxed(
-        self, *, op: str, ctx: "StepContext", out: JsonValue | StepRunResult
+        self, *, op: str, ctx: StepContext, out: JsonValue | StepRunResult
     ) -> JsonValue | StepRunResult:
         if op not in self.sandboxed_ops:
             return out
@@ -189,7 +184,7 @@ class MappingStepResolver(BaseResolver):
         return self._sandbox.run(req.code, sandbox_state, sandbox_context)
 
     @staticmethod
-    def _coerce_sandbox_request(out: Any) -> SandboxRequest | None:
+    def _coerce_sandbox_request(out: object) -> SandboxRequest | None:
         if isinstance(out, SandboxRequest):
             return out
         if isinstance(out, str):
@@ -208,7 +203,7 @@ class MappingStepResolver(BaseResolver):
         return None
 
     @staticmethod
-    def _sandbox_context(ctx: "StepContext") -> dict[str, Any]:
+    def _sandbox_context(ctx: StepContext) -> dict[str, Any]:
         return {
             "run_id": ctx.run_id,
             "workflow_id": ctx.workflow_id,
@@ -312,7 +307,7 @@ class MappingStepResolver(BaseResolver):
         return self.resolve(op)
 
 
-def _deps(ctx: StepContext) -> Dict[str, Any]:
+def _deps(ctx: StepContext) -> dict[str, Any]:
     deps = ctx.state_view.get("_deps")
     if not isinstance(deps, dict):
         raise RuntimeError(
@@ -330,7 +325,9 @@ class AsyncMappingStepResolver(MappingStepResolver):
       itself chooses to spawn threads.
     """
 
-    def resolve_async(self, op: str):
+    def resolve_async(
+        self, op: str
+    ) -> Callable[[StepContext], Awaitable[StepRunResult]]:
         raw = self.handlers.get(op) or self.default
         if raw is None:
             raise KeyError(f"No step handler registered for op={op!r}")
@@ -358,7 +355,7 @@ class AsyncMappingStepResolver(MappingStepResolver):
                 import traceback
 
                 return RunFailure(
-                    conversation_node_id=ctx.state_view.get("workflow_node_id"),
+                    conversation_node_id=cast(str | None, ctx.state_view.get("workflow_node_id")),
                     state_update=[("a", {"op_log": str(e)})],
                     errors=[str(e), traceback.format_exc()],
                 )

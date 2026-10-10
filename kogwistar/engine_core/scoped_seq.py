@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Protocol, cast
+from typing import TYPE_CHECKING, Protocol, cast
 
 if TYPE_CHECKING:
     from kogwistar.engine_core.engine import GraphKnowledgeEngine
@@ -10,13 +10,13 @@ if TYPE_CHECKING:
 class ScopedSeqPredicate(Protocol):
     """Decide whether a graph subject receives a scoped sequence."""
 
-    def __call__(self, engine: "GraphKnowledgeEngine", subject: Any, /) -> bool: ...
+    def __call__(self, engine: GraphKnowledgeEngine, subject: object, /) -> bool: ...
 
 
 class ScopedSeqScopeIdGetter(Protocol):
     """Resolve the sequence scope for a graph subject."""
 
-    def __call__(self, engine: "GraphKnowledgeEngine", subject: Any, /) -> str | None: ...
+    def __call__(self, engine: GraphKnowledgeEngine, subject: object, /) -> str | None: ...
 
 
 class ScopedSeqAllocator(Protocol):
@@ -36,7 +36,7 @@ class ScopedSeqHookConfig:
     scope_id_for_edge: ScopedSeqScopeIdGetter | None = None
 
 
-def _next_scoped_seq(engine: "GraphKnowledgeEngine", scope_id: str) -> int:
+def _next_scoped_seq(engine: GraphKnowledgeEngine, scope_id: str) -> int:
     meta = getattr(engine, "meta_sqlite", None)
     alloc = getattr(meta, "next_scoped_seq", None)
     if not callable(alloc):
@@ -50,8 +50,8 @@ def _next_scoped_seq(engine: "GraphKnowledgeEngine", scope_id: str) -> int:
 
 
 def _maybe_assign_subject_scoped_seq(
-    engine: "GraphKnowledgeEngine",
-    subject: Any,
+    engine: GraphKnowledgeEngine,
+    subject: object,
     *,
     metadata_field: str,
     predicate: ScopedSeqPredicate | None,
@@ -74,13 +74,13 @@ def _maybe_assign_subject_scoped_seq(
         pass
 
     md[metadata_field] = _next_scoped_seq(engine, str(scope_id))
-    subject.metadata = md
+    setattr(subject, "metadata", md)
     return True
 
 
 def maybe_assign_node_scoped_seq(
-    engine: "GraphKnowledgeEngine",
-    node: Any,
+    engine: GraphKnowledgeEngine,
+    node: object,
     *,
     config: ScopedSeqHookConfig,
 ) -> bool:
@@ -94,8 +94,8 @@ def maybe_assign_node_scoped_seq(
 
 
 def maybe_assign_edge_scoped_seq(
-    engine: "GraphKnowledgeEngine",
-    edge: Any,
+    engine: GraphKnowledgeEngine,
+    edge: object,
     *,
     config: ScopedSeqHookConfig,
 ) -> bool:
@@ -109,7 +109,7 @@ def maybe_assign_edge_scoped_seq(
 
 
 def install_scoped_seq_hooks(
-    engine: "GraphKnowledgeEngine",
+    engine: GraphKnowledgeEngine,
     config: ScopedSeqHookConfig,
     *,
     ready_attr: str = "_scoped_seq_hooks_ready",
@@ -121,7 +121,7 @@ def install_scoped_seq_hooks(
 
     if config.scope_id_for_node is not None:
 
-        def _node_hook(node: Any) -> None:
+        def _node_hook(node: object) -> None:
             maybe_assign_node_scoped_seq(engine, node, config=config)
 
         node_hooks = getattr(engine, "pre_add_node_hooks", None)
@@ -130,7 +130,7 @@ def install_scoped_seq_hooks(
 
     if config.scope_id_for_edge is not None:
 
-        def _edge_hook(edge: Any) -> bool:
+        def _edge_hook(edge: object) -> bool:
             maybe_assign_edge_scoped_seq(engine, edge, config=config)
             return False
 

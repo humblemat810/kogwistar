@@ -1,15 +1,15 @@
 from __future__ import annotations
+
 import pytest
+
 pytestmark = pytest.mark.ci_full
 
 import json
 import os
-from dataclasses import dataclass
-from typing import Dict, List, Set
-
 
 # Make local modules importable when tests are run from repo root.
 import sys
+from dataclasses import dataclass
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -23,7 +23,7 @@ class FakeDerivedStore:
     This stands in for join tables/collections like node_docs.
     """
 
-    node_docs: Dict[str, Set[str]]
+    node_docs: dict[str, set[str]]
 
     def __init__(self) -> None:
         self.node_docs = {}
@@ -31,7 +31,7 @@ class FakeDerivedStore:
     def node_docs_delete(self, node_id: str) -> None:
         self.node_docs.pop(node_id, None)
 
-    def node_docs_add(self, node_id: str, doc_ids: List[str]) -> None:
+    def node_docs_add(self, node_id: str, doc_ids: list[str]) -> None:
         self.node_docs[node_id] = set(doc_ids)
 
 
@@ -50,7 +50,7 @@ class SimpleIndexJobDrainer:
         self.meta = meta
         self.derived = derived
         # failure injection: job_id set triggers exactly one injected failure
-        self.fail_after_delete_once: Set[str] = set()
+        self.fail_after_delete_once: set[str] = set()
 
     def drain(self, *, limit: int = 50, lease_seconds: int = 1) -> int:
         jobs = self.meta.claim_index_jobs(limit=limit, lease_seconds=lease_seconds)

@@ -1,21 +1,24 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
 import hashlib
 import json
 import os
-from pathlib import Path
 import statistics
 import subprocess
 import sys
 import time
-from typing import Any, Callable, Final, cast
+from collections.abc import Callable
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Final, cast
 
 try:
     # Direct script execution places this file's directory on sys.path.
     # The package fallback keeps importlib-based test loading supported.
-    from source_fingerprint import candidate_source_fingerprint  # type: ignore[import-not-found]
+    from source_fingerprint import (
+        candidate_source_fingerprint,  # type: ignore[import-not-found]
+    )
 except ModuleNotFoundError:
     from scripts.source_fingerprint import candidate_source_fingerprint
 

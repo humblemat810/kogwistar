@@ -7,15 +7,19 @@ import inspect
 import threading
 from collections.abc import Awaitable, Mapping
 from dataclasses import dataclass
-from typing import Any, Literal, Protocol
+from typing import Literal, Protocol, cast
 
+from kogwistar.json_types import JsonValue
 
 HookFailureMode = Literal["fail_open", "fail_closed"]
 HookEffect = Literal["observe", "annotate"]
+JsonObject = dict[str, JsonValue]
+
+
 class HookCallback(Protocol):
     """Observe or annotate one bounded hook payload."""
 
-    def __call__(self, payload: Mapping[str, Any], /) -> object: ...
+    def __call__(self, payload: Mapping[str, JsonValue], /) -> object: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,7 +47,7 @@ class HookSpec:
 class HookResult:
     hook_id: str
     status: Literal["applied", "failed", "skipped"]
-    annotations: dict[str, Any]
+    annotations: JsonObject
     error: str | None = None
 
 
@@ -77,14 +81,14 @@ class HookRegistry:
     def _allowed(spec: HookSpec, capabilities: set[str]) -> bool:
         return set(spec.required_capabilities) <= capabilities
 
-    def _run_sync(self, spec: HookSpec, payload: Mapping[str, Any]) -> Any:
+    def _run_sync(self, spec: HookSpec, payload: Mapping[str, JsonValue]) -> object:
         """Run sync hooks with a bounded caller wait.
 
         Python cannot safely kill an arbitrary callback.  A timed-out callback
         therefore finishes in a daemon thread, while the agent path returns
         according to the hook failure policy and never holds a worker hostage.
         """
-        result_box: list[Any] = []
+        result_box: list[object] = []
         error_box: list[BaseException] = []
         finished = threading.Event()
         if not self._callback_slots.acquire(blocking=False):
@@ -120,7 +124,7 @@ class HookRegistry:
 
     async def arun(
         self,
-        payload: Mapping[str, Any],
+        payload: Mapping[str, JsonValue],
         *,
         effective_capabilities: tuple[str, ...] = (),
     ) -> tuple[HookResult, ...]:
@@ -158,7 +162,7 @@ class HookRegistry:
 
     def run(
         self,
-        payload: Mapping[str, Any],
+        payload: Mapping[str, JsonValue],
         *,
         effective_capabilities: tuple[str, ...] = (),
     ) -> tuple[HookResult, ...]:
@@ -187,9 +191,9 @@ class HookRegistry:
         return tuple(results)
 
 
-async def _await_value(value: Any) -> Any:
+async def _await_value(value: object) -> object:
     if isinstance(value, Awaitable):
-        return await value
+        return await cast(Awaitable[object], value)
     return value
 
 
@@ -201,15 +205,15 @@ def _is_async_callable(callback: HookCallback) -> bool:
 
 async def _run_sync_async(
     spec: HookSpec,
-    payload: Mapping[str, Any],
+    payload: Mapping[str, JsonValue],
     *,
     callback_slots: threading.BoundedSemaphore,
-) -> Any:
+) -> object:
     """Run sync callback in a daemon thread without executor shutdown waits."""
 
     import asyncio
 
-    result_box: list[Any] = []
+    result_box: list[object] = []
     error_box: list[BaseException] = []
     finished = threading.Event()
     if not callback_slots.acquire(blocking=False):
@@ -244,4 +248,4 @@ async def _run_sync_async(
     return result_box[0] if result_box else None
 
 
-__all__ = ["HookFailureMode", "HookEffect", "HookSpec", "HookResult", "HookRegistry"]
+__all__ = ["HookEffect", "HookFailureMode", "HookRegistry", "HookResult", "HookSpec"]

@@ -4,11 +4,11 @@ from types import SimpleNamespace
 
 from kogwistar.policy import (
     DefaultArtifactVisibilityPolicy,
-    DefaultDreamLoopPolicy,
     DefaultDerivedKnowledgePolicy,
+    DefaultDreamLoopPolicy,
     DefaultKnowledgeLifecyclePolicy,
-    DefaultPromotionPolicy,
     DefaultProjectionEligibilityPolicy,
+    DefaultPromotionPolicy,
     DefaultWisdomPolicy,
     PromotionContext,
     SourceQueryDecision,

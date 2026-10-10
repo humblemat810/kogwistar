@@ -4,13 +4,12 @@ import argparse
 import json
 import sys
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, Optional
+from typing import Any
 
 import requests
-
-
 
 
 @dataclass(frozen=True, slots=True)
@@ -20,7 +19,7 @@ class ReplayStats:
     failed: int = 0
 
 
-def _iter_jsonl_events(path: Path) -> Iterable[Dict[str, Any]]:
+def _iter_jsonl_events(path: Path) -> Iterable[dict[str, Any]]:
     """
     Minimal JSONL reader that ignores non-JSON lines.
     Works even if your oplog has a header line.
@@ -42,9 +41,9 @@ def replay_oplog_to_bridge(
     oplog_path: Path,
     bridge_url: str,
     since_seq: int = 0,
-    until_seq: Optional[int] = None,
-    kg_graph_type: Optional[str] = None,
-    max_events: Optional[int] = None,
+    until_seq: int | None = None,
+    kg_graph_type: str | None = None,
+    max_events: int | None = None,
     sleep_ms: int = 0,
     timeout_s: float = 1.0,
     stop_on_error: bool = False,

@@ -7,7 +7,6 @@ import pytest
 
 from scripts.rust_port_benchmark import DATASET_VERSION, run_benchmarks
 
-
 pytestmark = [pytest.mark.ci, pytest.mark.core]
 ROOT = Path(__file__).resolve().parents[2]
 

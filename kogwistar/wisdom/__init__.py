@@ -16,14 +16,11 @@ if TYPE_CHECKING:
         dream_workflow_expected_ops,
         materialize_dream_workflow_design,
     )
-    from kogwistar.wisdom.models import ExecutionWisdomTemplateResult
-    from kogwistar.wisdom.proposals import ProposalEvaluation, WisdomRevisionProposal
-    from kogwistar.wisdom.resolvers import dream_default_resolver
     from kogwistar.wisdom.dream_loop import (
         DreamLoopDecision,
         DreamLoopEvidence,
-        DreamLoopSelection,
         DreamLoopRunResult,
+        DreamLoopSelection,
         DreamLoopSignal,
         build_wisdom_revision_proposals,
         build_wisdom_revision_proposals_for_signals,
@@ -33,16 +30,19 @@ if TYPE_CHECKING:
         run_dream_loop_cycle,
         select_dream_loop_signals,
     )
+    from kogwistar.wisdom.models import ExecutionWisdomTemplateResult
+    from kogwistar.wisdom.proposals import ProposalEvaluation, WisdomRevisionProposal
+    from kogwistar.wisdom.resolvers import dream_default_resolver
     from kogwistar.wisdom.template import write_execution_wisdom_artifacts
 
 __all__ = [
-    "ExecutionWisdomTemplateResult",
     "DREAM_MAINTENANCE_WORKFLOW_ID",
     "DreamLoopDecision",
     "DreamLoopEvidence",
-    "DreamLoopSelection",
     "DreamLoopRunResult",
+    "DreamLoopSelection",
     "DreamLoopSignal",
+    "ExecutionWisdomTemplateResult",
     "ProposalEvaluation",
     "WisdomRevisionProposal",
     "build_dream_maintenance_workflow_design",
@@ -84,7 +84,7 @@ _EXPORTS = {
 }
 
 
-def __getattr__(name: str):
+def __getattr__(name: str) -> object:
     module_name = _EXPORTS.get(name)
     if module_name is None:
         raise AttributeError(name)

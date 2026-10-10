@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import contextvars
-from contextlib import contextmanager
-from typing import Any, Iterator
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
+from typing import NoReturn, cast
 
 from kogwistar._rust_bridge import store_postgres
-from kogwistar.engine_core.rust_meta_sqlite import RustEngineSQLite
+from kogwistar.json_types import JsonObject, JsonValue
+from kogwistar.engine_core.rust_meta_sqlite import (
+    RustEngineSQLite,
+    _TransactionToken,
+)
 
 
 class RustPostgresConnectionUnavailable(RuntimeError):
@@ -17,7 +22,7 @@ class _RustPostgresTransactionToken:
     def __init__(self, value: str) -> None:
         self.value = value
 
-    def execute(self, *args: Any, **kwargs: Any) -> Any:
+    def execute(self, *args: object, **kwargs: object) -> NoReturn:
         raise RustPostgresConnectionUnavailable(
             "raw SQL is unavailable inside a Rust PostgreSQL transaction; "
             "use a native capability method"
@@ -41,7 +46,7 @@ class RustPostgresSession:
             )
         )
 
-    def call(self, kind: str, **values: Any) -> Any:
+    def call(self, kind: str, **values: JsonValue) -> JsonValue:
         return store_postgres(
             dsn=self.dsn,
             schema=self.schema,
@@ -108,47 +113,58 @@ class RustEnginePostgresMetaStore(RustEngineSQLite):
         self.session = RustPostgresSession(dsn=dsn, schema=schema)
         self.schema = schema
 
-    def _call(self, kind: str, **values: Any) -> Any:
+    def _call(self, kind: str, **values: JsonValue) -> JsonValue:
         return self.session.call(kind, **values)
 
     @property
     def transaction_active(self) -> bool:
         return self.session.transaction_active
 
-    def apply_graph_mutation(self, **values: Any) -> dict[str, Any]:
-        return dict(self._call("graph_mutation", **values))
+    def apply_graph_mutation(self, **values: JsonValue) -> JsonObject:
+        result = self._call("graph_mutation", **values)
+        if not isinstance(result, dict):
+            raise RuntimeError("native graph mutation returned a non-object")
+        return result
 
     def apply_graph_metadata_patch_mutation(
-        self, **values: Any
-    ) -> dict[str, Any] | None:
+        self, **values: JsonValue
+    ) -> JsonObject | None:
         result = self._call("graph_metadata_patch_mutation", **values)
-        return None if result is None else dict(result)
+        if result is None:
+            return None
+        if not isinstance(result, dict):
+            raise RuntimeError("native graph metadata patch returned a non-object")
+        return result
 
-    def apply_graph_delete_mutation(self, **values: Any) -> dict[str, Any] | None:
+    def apply_graph_delete_mutation(self, **values: JsonValue) -> JsonObject | None:
         result = self._call("graph_delete_mutation", **values)
-        return None if result is None else dict(result)
+        if result is None:
+            return None
+        if not isinstance(result, dict):
+            raise RuntimeError("native graph delete returned a non-object")
+        return result
 
-    def upsert_graph_projection(self, **values: Any) -> None:
+    def upsert_graph_projection(self, **values: JsonValue) -> None:
         self._call("upsert_graph_projection", **values)
 
-    def patch_graph_projection_metadata(self, **values: Any) -> bool:
+    def patch_graph_projection_metadata(self, **values: JsonValue) -> bool:
         return bool(self._call("patch_graph_projection_metadata", **values))
 
-    def graph_projection_records(self, **values: Any) -> list[dict[str, Any]]:
+    def graph_projection_records(self, **values: JsonValue) -> list[JsonObject]:
         result = self._call("graph_projection_records", **values)
         if not isinstance(result, list) or not all(
             isinstance(record, dict) for record in result
         ):
             raise RuntimeError("native graph projection read returned invalid records")
-        return [dict(record) for record in result]
+        return [record for record in result if isinstance(record, dict)]
 
-    def graph_projection_vector_query(self, **values: Any) -> list[dict[str, Any]]:
+    def graph_projection_vector_query(self, **values: JsonValue) -> list[JsonObject]:
         result = self._call("graph_projection_vector_query", **values)
         if not isinstance(result, list) or not all(
             isinstance(match, dict) for match in result
         ):
             raise RuntimeError("native graph vector query returned invalid matches")
-        return [dict(match) for match in result]
+        return [match for match in result if isinstance(match, dict)]
 
     def ensure_initialized(self) -> None:
         self.session.ensure_initialized()
@@ -170,13 +186,15 @@ class RustEnginePostgresMetaStore(RustEngineSQLite):
         with self.session.transaction() as token:
             yield token
 
-    def _require_token(self, conn: _RustPostgresTransactionToken) -> None:
-        self.session.require_token(conn)
+    def _require_token(self, conn: _TransactionToken) -> None:
+        if not isinstance(conn, _RustPostgresTransactionToken):
+            raise RustPostgresConnectionUnavailable("invalid Rust PostgreSQL transaction token")
+        self.session.require_token(cast(_RustPostgresTransactionToken, conn))
 
     def next_scoped_seq(self, scope_id: str) -> int:
         return self.next_user_seq(scope_id)
 
-    def next_global_seq_conn(self, conn: _RustPostgresTransactionToken) -> int:
+    def next_global_seq_conn(self, conn: _TransactionToken) -> int:
         self._require_token(conn)
         return self.next_global_seq()
 
@@ -187,21 +205,21 @@ class RustEnginePostgresMetaStore(RustEngineSQLite):
         self.set_user_seq(scope_id, value)
 
     def next_user_seq_conn(
-        self, conn: _RustPostgresTransactionToken, user_id: str
+        self, conn: _TransactionToken, user_id: str
     ) -> int:
         self._require_token(conn)
         return self.next_user_seq(user_id)
 
     def set_user_seq_conn(
-        self, conn: _RustPostgresTransactionToken, user_id: str, value: int
+        self, conn: _TransactionToken, user_id: str, value: int
     ) -> None:
         self._require_token(conn)
         self.set_user_seq(user_id, value)
 
-    def get_projected_lane_message(self, message_id: str) -> Any:
+    def get_projected_lane_message(self, message_id: str) -> JsonValue:
         return self._call("get_projected_lane_message", message_id=message_id)
 
-    def dead_letter_projected_lane_message(self, **values: Any) -> None:
+    def dead_letter_projected_lane_message(self, **values: JsonValue) -> None:
         self._call("dead_letter_projected_lane_message", **values)
 
 

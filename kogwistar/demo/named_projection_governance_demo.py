@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import json
 import shutil
+from collections.abc import Iterable, Sequence
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, cast
 
-from kogwistar.engine_core.engine import GraphKnowledgeEngine
-
+from kogwistar.engine_core.engine import GraphKnowledgeEngine, StorageBackendFactory
+from kogwistar.json_types import JsonObject
 
 HISTORY_NAMESPACE = "bridge_governance_history"
 PROJECTION_NAMESPACE = "bridge_governance"
@@ -64,7 +65,7 @@ PREDEFINED_GOVERNANCE_EVENTS: list[dict[str, Any]] = [
 class _DemoEmbeddingFunction:
     _name = "named-projection-governance-demo-embedding-v1"
 
-    def name(self):
+    def name(self) -> str:
         return self._name
 
     def __call__(self, input: Sequence[str]) -> list[list[float]]:
@@ -83,7 +84,7 @@ class _DemoEmbeddingFunction:
 def _build_engine(
     *,
     data_dir: Path,
-    backend_factory: Any | None = None,
+    backend_factory: StorageBackendFactory | None = None,
 ) -> GraphKnowledgeEngine:
     kwargs: dict[str, Any] = {"embedding_function": _DemoEmbeddingFunction()}
     if backend_factory is not None:
@@ -188,7 +189,7 @@ class BridgeGovernanceProjectionService:
         self._meta.replace_named_projection(
             PROJECTION_NAMESPACE,
             interaction_key,
-            rebuilding_payload,
+            cast(JsonObject, rebuilding_payload),
             last_authoritative_seq=latest_authoritative_seq,
             last_materialized_seq=int(
                 (existing or {}).get("last_materialized_seq") or 0
@@ -199,13 +200,18 @@ class BridgeGovernanceProjectionService:
         statuses = ["rebuilding"]
 
         relevant_events: list[dict[str, Any]] = []
-        for seq, _entity_kind, entity_id, _op, payload_json in self._meta.iter_entity_events(
-            namespace=HISTORY_NAMESPACE,
-            from_seq=1,
-        ):
+        events = cast(
+            Iterable[tuple[int, str, str, str, str]],
+            self._meta.iter_entity_events(
+                namespace=HISTORY_NAMESPACE,
+                from_seq=1,
+            ),
+        )
+        for seq, _entity_kind, entity_id, _op, payload_json in events:
             if str(entity_id) != interaction_key:
                 continue
-            payload = json.loads(str(payload_json))
+            payload_raw = json.loads(str(payload_json))
+            payload = cast(dict[str, Any], payload_raw) if isinstance(payload_raw, dict) else {}
             relevant_events.append(
                 {
                     "seq": int(seq),
@@ -241,7 +247,7 @@ class BridgeGovernanceProjectionService:
 def run_named_projection_governance_demo(
     *,
     data_dir: str | Path,
-    backend_factory: Any | None = None,
+    backend_factory: StorageBackendFactory | None = None,
     reset_data: bool = True,
 ) -> dict[str, Any]:
     root = Path(data_dir)

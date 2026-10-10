@@ -2,13 +2,12 @@ from __future__ import annotations
 
 import argparse
 import ast
-from collections import defaultdict
 import json
 import os
-from pathlib import Path
 import subprocess
-from typing import Iterable
-
+from collections import defaultdict
+from collections.abc import Iterable
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST_PATH = ROOT / "contracts" / "rust-port-v1.json"

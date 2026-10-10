@@ -3,7 +3,10 @@ from __future__ import annotations
 import pytest
 
 from kogwistar.runtime.budget import BudgetAttribution, BudgetEvent
-from kogwistar.runtime.budget_adapters import adapt_budget_events, summarize_budget_events
+from kogwistar.runtime.budget_adapters import (
+    adapt_budget_events,
+    summarize_budget_events,
+)
 
 pytestmark = [pytest.mark.ci, pytest.mark.runtime]
 

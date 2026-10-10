@@ -4,9 +4,9 @@
 # The public payload is derived from the model slice helper, not manual field stripping.
 
 # %%
-from kogwistar.demo import run_build_artifact_governance_demo
-
 from _helpers import banner, reset_data_dir, show
+
+from kogwistar.demo import run_build_artifact_governance_demo
 
 data_dir = reset_data_dir("19_build_artifact_governance_workflow")
 banner("Running the artifact-governance workflow with a fixed resettable data directory.")

@@ -4,30 +4,41 @@ import json
 import uuid
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from graphlib import TopologicalSorter
+from pydantic import BaseModel
 from typing import TYPE_CHECKING, Any, cast
 
+from ..async_compat import run_awaitable_blocking
 from ..models import (
     Document,
     Edge,
     GraphExtractionWithIDs,
     Grounding,
     LLMGraphExtraction,
+    LLMEdge,
+    LLMNode,
     Node,
     PureChromaEdge,
     PureChromaNode,
     PureGraph,
     Span,
 )
-from ..async_compat import run_awaitable_blocking
-from ..utils.aliasing import _is_alias, _is_new_edge, _is_new_node, _is_uuid
+from ...json_types import JsonObject
+from ..utils.aliasing import AliasBook, _is_alias, _is_new_edge, _is_new_node, _is_uuid
 from .base import NamespaceProxy
 
 if TYPE_CHECKING:
     from ..engine import GraphKnowledgeEngine
 
 
+def _backend_mapping(value: object) -> dict[str, Any]:
+    """Narrow optional backend responses before consuming JSON-like fields."""
+    if not isinstance(value, Mapping):
+        return {}
+    return dict(value)
+
+
 class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
-    def __init__(self, engine: "GraphKnowledgeEngine") -> None:
+    def __init__(self, engine: GraphKnowledgeEngine) -> None:
         super().__init__(engine)
 
     @staticmethod
@@ -72,8 +83,11 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         return merged, payload
 
     @staticmethod
-    def _promote_llm_entity_payload(obj, *, insertion_method: str) -> dict[str, Any]:
-        payload = obj.model_dump(field_mode="llm")
+    def _promote_llm_entity_payload(
+        obj: BaseModel, *, insertion_method: str
+    ) -> dict[str, Any]:
+        model_dump = cast(Callable[..., dict[str, Any]], obj.model_dump)
+        payload = model_dump(field_mode="llm")
         payload["mentions"] = [
             grounding.model_dump(field_mode="backend")
             for grounding in (getattr(obj, "mentions", None) or [])
@@ -85,8 +99,11 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         return payload
 
     @staticmethod
-    def _alloc_real_ids(parsed):
-        nn2id, ne2id = {}, {}
+    def _alloc_real_ids(
+        parsed: LLMGraphExtraction | PureGraph | GraphExtractionWithIDs,
+    ) -> tuple[dict[str, str], dict[str, str]]:
+        nn2id: dict[str, str] = {}
+        ne2id: dict[str, str] = {}
 
         def map_id(x: str) -> str:
             if x.startswith("nn:"):
@@ -115,8 +132,8 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         self,
         parsed: LLMGraphExtraction | PureGraph | GraphExtractionWithIDs,
         alias_key: str,
-        alias_book=None,
-    ):
+        alias_book: AliasBook | None = None,
+    ) -> tuple[set[str], set[str]]:
         self.resolve_llm_ids(alias_key, parsed, alias_book=alias_book)
 
         batch_node_ids = {str(n.id) for n in parsed.nodes if n.id is not None}
@@ -141,8 +158,10 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         missing_nodes, missing_edges = set(), set()
         if need_nodes:
             got = set(
-                run_awaitable_blocking(
-                    self._e.backend.node_get(ids=list(need_nodes))
+                _backend_mapping(
+                    run_awaitable_blocking(
+                        self._e.backend.node_get(ids=list(need_nodes))
+                    )
                 ).get("ids")
                 or []
             )
@@ -150,8 +169,10 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             missing_nodes = need_nodes - got
         if need_edges:
             got = set(
-                run_awaitable_blocking(
-                    self._e.backend.edge_get(ids=list(need_edges))
+                _backend_mapping(
+                    run_awaitable_blocking(
+                        self._e.backend.edge_get(ids=list(need_edges))
+                    )
                 ).get("ids")
                 or []
             )
@@ -168,7 +189,7 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         self,
         doc_id: str,
         parsed: LLMGraphExtraction | PureGraph | GraphExtractionWithIDs,
-        alias_book=None,
+        alias_book: AliasBook | None = None,
     ) -> None:
         """Resolve graph-extraction identifiers into persisted backend IDs.
 
@@ -280,9 +301,18 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             e.source_edge_ids = _res(getattr(e, "source_edge_ids", None), kind="edge")
             e.target_edge_ids = _res(getattr(e, "target_edge_ids", None), kind="edge")
 
-    def build_deps(self, parsed):
+    def build_deps(
+        self, parsed: LLMGraphExtraction | PureGraph | GraphExtractionWithIDs
+    ) -> tuple[
+        list[str],
+        dict[str, str],
+        dict[str, Node | Edge | LLMNode | LLMEdge | PureChromaNode | PureChromaEdge],
+    ]:
         ts = TopologicalSorter()
-        id2kind, id2obj = {}, {}
+        id2kind: dict[str, str] = {}
+        id2obj: dict[
+            str, Node | Edge | LLMNode | LLMEdge | PureChromaNode | PureChromaEdge
+        ] = {}
 
         for n in parsed.nodes or []:
             rid = n.id or str(uuid.uuid4())
@@ -291,9 +321,11 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
 
         new_ids = set(id2obj.keys())
 
-        def deps_for_edge(e):
-            deps = set()
-            for x in (e.source_ids or []) + (e.target_ids or []):
+        def deps_for_edge(e: BaseModel) -> set[str]:
+            deps: set[str] = set()
+            for x in (getattr(e, "source_ids", None) or []) + (
+                getattr(e, "target_ids", None) or []
+            ):
                 if x in new_ids and not self.exists_any(x):
                     deps.add(x)
             for x in getattr(e, "source_edge_ids", []) or []:
@@ -356,7 +388,7 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 return False
         return True
 
-    def assert_endpoints_exist(self, edge: Edge | PureChromaEdge):
+    def assert_endpoints_exist(self, edge: Edge | PureChromaEdge) -> None:
         """Enforce the structural ingest contract for edge writes.
 
         All referenced node and edge endpoints must already exist in the backend
@@ -367,8 +399,10 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         need_nodes = set((edge.source_ids or []) + (edge.target_ids or []))
         if need_nodes:
             got = set(
-                run_awaitable_blocking(
-                    self._e.backend.node_get(ids=list(need_nodes))
+                _backend_mapping(
+                    run_awaitable_blocking(
+                        self._e.backend.node_get(ids=list(need_nodes))
+                    )
                 ).get("ids")
                 or []
             )
@@ -384,9 +418,9 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             ids = getattr(edge, attr, None) or []
             if ids:
                 got = set(
-                    run_awaitable_blocking(self._e.backend.edge_get(ids=ids)).get(
-                        "ids"
-                    )
+                    _backend_mapping(
+                        run_awaitable_blocking(self._e.backend.edge_get(ids=ids))
+                    ).get("ids")
                     or []
                 )
                 if got != set(ids):
@@ -399,7 +433,9 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                         f"Missing edge endpoints in {attr}: {sorted(set(ids) - got)}"
                     )
 
-    async def assert_endpoints_exist_async(self, edge: Edge | PureChromaEdge):
+    async def assert_endpoints_exist_async(
+        self, edge: Edge | PureChromaEdge
+    ) -> None:
         """Async equivalent; consult async Stage-1 reads without sync SQL."""
         import inspect
 
@@ -469,55 +505,55 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 )
 
     def exists_node(self, rid: str) -> bool:
-        g = run_awaitable_blocking(self._e.backend.node_get(ids=[rid]))
+        g = _backend_mapping(run_awaitable_blocking(self._e.backend.node_get(ids=[rid])))
         return (g.get("ids") or [None])[0] == rid
 
     def exists_edge(self, rid: str) -> bool:
-        g = run_awaitable_blocking(self._e.backend.edge_get(ids=[rid]))
+        g = _backend_mapping(run_awaitable_blocking(self._e.backend.edge_get(ids=[rid])))
         return (g.get("ids") or [None])[0] == rid
 
     def exists_any(self, rid: str) -> bool:
         return self.exists_node(rid) or self.exists_edge(rid)
 
-    def dealias_span(self, *args, **kwargs):
-        return self._e.extract.dealias_span(*args, **kwargs)
+    def dealias_span(
+        self, mentions: list[Grounding] | None, real_doc_id: str
+    ) -> list[Grounding]:
+        return self._e.extract.dealias_span(mentions, real_doc_id)
 
     def select_doc_context(
         self, doc_id: str, max_nodes: int = 200, max_edges: int = 400
-    ):
-        nodes = run_awaitable_blocking(self._e.backend.node_get(
+    ) -> tuple[list[JsonObject], list[JsonObject]]:
+        nodes = _backend_mapping(run_awaitable_blocking(self._e.backend.node_get(
             where={"doc_id": doc_id}, include=["documents"]
-        ))
-        edges = run_awaitable_blocking(self._e.backend.edge_get(
+        )))
+        edges = _backend_mapping(run_awaitable_blocking(self._e.backend.edge_get(
             where={"doc_id": doc_id}, include=["documents"]
-        ))
+        )))
 
-        node_items = []
+        node_items: list[JsonObject] = []
         for i, (nid, ndoc) in enumerate(
             zip(nodes.get("ids", []) or [], nodes.get("documents", []) or [])
         ):
             if i >= max_nodes:
                 break
             n = Node.model_validate_json(ndoc)
-            node_items.append(
-                {"id": nid, "label": n.label, "type": n.type, "summary": n.summary}
-            )
+            node_items.append(cast(JsonObject, {
+                "id": nid, "label": n.label, "type": n.type, "summary": n.summary
+            }))
 
-        edge_items = []
+        edge_items: list[JsonObject] = []
         for i, (eid, edoc) in enumerate(
             zip(edges.get("ids", []) or [], edges.get("documents", []) or [])
         ):
             if i >= max_edges:
                 break
             e = Edge.model_validate_json(edoc)
-            edge_items.append(
-                {
+            edge_items.append(cast(JsonObject, {
                     "id": eid,
                     "relation": e.relation,
                     "source_ids": e.source_ids or [],
                     "target_ids": e.target_ids or [],
-                }
-            )
+                }))
 
         return node_items, edge_items
 
@@ -535,9 +571,11 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         for rid in order:
             kind, obj = id2kind[rid], id2obj[rid]
             if kind == "node":
-                ln: Node = obj
+                ln = cast(Node, obj)
                 if mode == "skip-if-exists":
-                    got = run_awaitable_blocking(self._e.backend.node_get(ids=[ln.id]))
+                    got = _backend_mapping(
+                        run_awaitable_blocking(self._e.backend.node_get(ids=[ln.id]))
+                    )
                     if got.get("ids"):
                         node_ids.append(ln.id)
                         continue
@@ -559,9 +597,11 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 self._e.write.add_pure_node(n)
                 node_ids.append(n.id)
             elif kind == "edge":
-                le: Edge = obj
+                le = cast(Edge, obj)
                 if mode == "skip-if-exists":
-                    got = run_awaitable_blocking(self._e.backend.edge_get(ids=[le.id]))
+                    got = _backend_mapping(
+                        run_awaitable_blocking(self._e.backend.edge_get(ids=[le.id]))
+                    )
                     if got.get("ids"):
                         edge_ids.append(le.id)
                         continue
@@ -627,7 +667,9 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 )
                 ln.mentions = self.dealias_span(ln.mentions, document.id)
                 if mode == "skip-if-exists":
-                    got = run_awaitable_blocking(self._e.backend.node_get(ids=[ln.id]))
+                    got = _backend_mapping(
+                        run_awaitable_blocking(self._e.backend.node_get(ids=[ln.id]))
+                    )
                     if got.get("ids"):
                         node_ids.append(ln.id)
                         continue
@@ -661,7 +703,9 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 )
                 le.mentions = self.dealias_span(le.mentions, document.id)
                 if mode == "skip-if-exists":
-                    got = run_awaitable_blocking(self._e.backend.edge_get(ids=[le.id]))
+                    got = _backend_mapping(
+                        run_awaitable_blocking(self._e.backend.edge_get(ids=[le.id]))
+                    )
                     if got.get("ids"):
                         edge_ids.append(le.id)
                         continue
@@ -712,7 +756,7 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         for rid in order:
             kind, obj = id2kind[rid], id2obj[rid]
             if kind == "node":
-                ln: Node = obj
+                ln = cast(Node, obj)
                 ln.mentions = self.dealias_span(ln.mentions, doc_id)
                 for g in ln.mentions:
                     for sp in g.spans:
@@ -729,7 +773,9 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                                 f"Incorrect span occur in grounding {str(g)} span {str(sp)}"
                             )
                 if mode == "skip-if-exists":
-                    got = run_awaitable_blocking(self._e.backend.node_get(ids=[ln.id]))
+                    got = _backend_mapping(
+                        run_awaitable_blocking(self._e.backend.node_get(ids=[ln.id]))
+                    )
                     if got.get("ids"):
                         node_ids.append(ln.id)
                         continue
@@ -739,7 +785,7 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 self._e.write.add_node(n, doc_id=doc_id)
                 node_ids.append(n.id)
             elif kind == "edge":
-                le: Edge = obj
+                le = cast(Edge, obj)
                 le.mentions = self.dealias_span(le.mentions, doc_id)
                 for g in le.mentions:
                     for sp in g.spans:
@@ -756,7 +802,9 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                                 f"Incorrect span occur in grounding {str(g)} span {str(sp)}"
                             )
                 if mode == "skip-if-exists":
-                    got = run_awaitable_blocking(self._e.backend.edge_get(ids=[le.id]))
+                    got = _backend_mapping(
+                        run_awaitable_blocking(self._e.backend.edge_get(ids=[le.id]))
+                    )
                     if got.get("ids"):
                         edge_ids.append(le.id)
                         continue
@@ -774,7 +822,12 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             "edges_added": len(edge_ids),
         }
 
-    def ingest_with_toposort(self, parsed, *, doc_id: str):
+    def ingest_with_toposort(
+        self,
+        parsed: LLMGraphExtraction | PureGraph | GraphExtractionWithIDs,
+        *,
+        doc_id: str,
+    ) -> dict[str, object]:
         self._alloc_real_ids(parsed)
         order, id2kind, id2obj = self.build_deps(parsed)
         node_ids_added = set()
@@ -785,12 +838,14 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             kind, obj = id2kind[rid], id2obj[rid]
 
             if kind == "node":
-                ln: Node = obj
+                ln = cast(Node, obj)
                 if self.exists_node(rid):
                     if ln.mentions:
-                        prior = run_awaitable_blocking(self._e.backend.node_get(
-                            ids=[rid], include=["documents", "metadatas"]
-                        ))
+                        prior = _backend_mapping(
+                            run_awaitable_blocking(self._e.backend.node_get(
+                                ids=[rid], include=["documents", "metadatas"]
+                            ))
+                        )
                         prior_meta = (prior.get("metadatas") or [None])[0] or {}
                         prior_mentions = cast(str, prior_meta.get("mentions"))
                         mentions, merged_json = self._merge_groundings(
@@ -832,12 +887,14 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 nodes_added += 1
                 node_ids_added.add(node.id)
             else:
-                le: Edge = obj
+                le = cast(Edge, obj)
                 if self.exists_edge(rid):
                     if le.mentions:
-                        prior = run_awaitable_blocking(self._e.backend.edge_get(
-                            ids=[rid], include=["documents", "metadatas"]
-                        ))
+                        prior = _backend_mapping(
+                            run_awaitable_blocking(self._e.backend.edge_get(
+                                ids=[rid], include=["documents", "metadatas"]
+                            ))
+                        )
                         prior_meta = (prior.get("metadatas") or [None])[0] or {}
                         prior_mentions = cast(str, prior_meta.get("references"))
                         mentions, merged_json = self._merge_groundings(

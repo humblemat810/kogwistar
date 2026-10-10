@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-from kogwistar.engine_core.models import MentionVerification
-from kogwistar.engine_core.models import Span
+from kogwistar.engine_core.models import MentionVerification, Span
 
 
-def from_dummy_for_conversation(doc_id: str = "_conv:_dummy"):
+def from_dummy_for_conversation(doc_id: str = "_conv:_dummy") -> Span:
     if doc_id.startswith("_conv:"):
         pass
     else:

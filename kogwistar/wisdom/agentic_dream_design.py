@@ -1,7 +1,16 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Protocol
+
 from kogwistar.engine_core.models import Grounding, Span
 from kogwistar.runtime.models import WorkflowDesignArtifact, WorkflowEdge, WorkflowNode
+
+if TYPE_CHECKING:
+    from kogwistar.typing_interfaces import WriteLike
+
+
+class _WorkflowEngineLike(Protocol):
+    write: WriteLike
 
 DREAM_MAINTENANCE_WORKFLOW_ID = "dream.maintenance.v1"
 
@@ -87,7 +96,9 @@ def dream_workflow_expected_ops() -> tuple[str, ...]:
 def build_dream_maintenance_workflow_design(
     *, workflow_id: str = DREAM_MAINTENANCE_WORKFLOW_ID
 ) -> WorkflowDesignArtifact:
-    wid = lambda suffix: f"wf:{workflow_id}:{suffix}"
+    def wid(suffix: str) -> str:
+        return f"wf:{workflow_id}:{suffix}"
+
     ops = dream_workflow_expected_ops()
     nodes = [
         _node(workflow_id=workflow_id, node_id=wid("start"), label="Dream Start", op=ops[0], start=True),
@@ -117,7 +128,9 @@ def build_dream_maintenance_workflow_design(
     )
 
 
-def materialize_dream_workflow_design(workflow_engine, design: WorkflowDesignArtifact) -> None:
+def materialize_dream_workflow_design(
+    workflow_engine: _WorkflowEngineLike, design: WorkflowDesignArtifact
+) -> None:
     for node in design.nodes:
         workflow_engine.write.add_node(node)
     for edge in design.edges:

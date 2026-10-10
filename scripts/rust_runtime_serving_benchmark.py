@@ -9,18 +9,18 @@ from __future__ import annotations
 import argparse
 import json
 import math
-from pathlib import Path
 import sqlite3
 import statistics
 import sys
 import time
-from typing import Any, Callable
+from collections.abc import Callable
+from pathlib import Path
+from typing import Any
 
 from kogwistar.runtime.rust_runtime_adapter import (
     apply_recorded_transition,
     read_recorded_runtime_state,
 )
-
 
 DATASET = "rust-runtime-serving-v1"
 SMALL_HISTORY = 100

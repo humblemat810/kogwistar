@@ -11,7 +11,6 @@ import pytest
 
 from kogwistar.runtime.telemetry import EventEmitter, TraceContext
 
-
 pytestmark = [pytest.mark.integration, pytest.mark.e2e, pytest.mark.slow]
 
 
@@ -23,9 +22,11 @@ def test_otel_otlp_receiver_smoke() -> None:
     collector is not part of the normal unit-test process.
     """
     try:
+        from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
+            OTLPSpanExporter,
+        )
         from opentelemetry.sdk.trace import TracerProvider
         from opentelemetry.sdk.trace.export import BatchSpanProcessor
-        from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
     except ImportError as exc:
         pytest.skip(f"OTLP HTTP exporter is not installed: {exc}")
 

@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Optional, Tuple
+from collections.abc import Mapping, Sequence
+from typing import TYPE_CHECKING, TypedDict, cast
 
-from ..async_compat import run_awaitable_blocking
 from ...llm_tasks import ExtractGraphTaskRequest
-
+from ..async_compat import run_awaitable_blocking
 from ..models import (
     AdjudicationVerdict,
     Document,
@@ -19,8 +19,14 @@ if TYPE_CHECKING:
     from ..engine import GraphKnowledgeEngine
 
 
+class IngestTextResult(TypedDict, total=False):
+    nodes_added: int
+    edges_added: int
+    raw: object
+
+
 class IngestSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
-    def __init__(self, engine: "GraphKnowledgeEngine") -> None:
+    def __init__(self, engine: GraphKnowledgeEngine) -> None:
         super().__init__(engine)
 
     def ingest_document_with_llm(
@@ -28,25 +34,31 @@ class IngestSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         document: Document,
         *,
         mode: str = "append",
-        instruction_for_node_edge_contents_parsing_inclusion=None,
-        raw_with_parsed=None,
+        instruction_for_node_edge_contents_parsing_inclusion: str | None = None,
+        raw_with_parsed: object | None = None,
         extraction_schema_mode: ExtractionSchemaMode | None = None,
         offset_mismatch_policy: OffsetMismatchPolicy = "exact_fuzzy",
         offset_repair_scorer: OffsetRepairScorer | None = None,
-    ):
+    ) -> dict[str, object]:
         if raw_with_parsed is None:
-            raw_with_parsed = {}
+            raw_payload: dict[str, object] = {}
+        elif isinstance(raw_with_parsed, dict):
+            raw_payload = raw_with_parsed
+        else:
+            raw_payload = {}
         self._e.write.add_document(document)
         extracted = self._e.extract_graph_with_llm(
             content=str(document.content),
             doc_type=document.type,
             instruction_for_node_edge_contents_parsing_inclusion=instruction_for_node_edge_contents_parsing_inclusion,
-            last_iteration_result=raw_with_parsed,
+            last_iteration_result=raw_payload,
             extraction_schema_mode=extraction_schema_mode,
             offset_mismatch_policy=offset_mismatch_policy,
             offset_repair_scorer=offset_repair_scorer,
         )
         parsed = extracted["parsed"]
+        if not isinstance(parsed, LLMGraphExtraction):
+            parsed = LLMGraphExtraction.model_validate(parsed)
         self._e.persist.preflight_validate(parsed, document.id)
         return self._e.persist.persist_graph_extraction(
             document=document,
@@ -63,7 +75,7 @@ class IngestSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         extraction_schema_mode: ExtractionSchemaMode | None = None,
         offset_mismatch_policy: OffsetMismatchPolicy = "exact_fuzzy",
         offset_repair_scorer: OffsetRepairScorer | None = None,
-    ):
+    ) -> IngestTextResult:
         ctx_nodes, ctx_edges = self._e.persist.select_doc_context(doc_id)
         _, _, alias_nodes_str, alias_edges_str = self._e.extract.aliasify_for_prompt(
             doc_id,
@@ -90,9 +102,10 @@ class IngestSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         res["raw"] = raw
 
         if auto_adjudicate:
-            data = run_awaitable_blocking(
+            data_value = run_awaitable_blocking(
                 self._e.backend.node_get(where={"doc_id": doc_id}, include=["documents"])
             )
+            data = dict(data_value) if isinstance(data_value, Mapping) else {}
             buckets = {}
             for ndoc in data.get("documents") or []:
                 n = Node.model_validate_json(ndoc)
@@ -105,18 +118,23 @@ class IngestSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                             pairs.append((bucket[i], bucket[j]))
             if pairs:
                 verdicts, _ = self._e.batch_adjudicate_merges(pairs)  # type: ignore
-                verdicts = verdicts  # help type checker for getattr fallback below
+                verdicts = cast(Sequence[object], verdicts)
                 for (left, right), out in zip(pairs, verdicts):
-                    verdict: AdjudicationVerdict = getattr(out, "verdict", out)
+                    verdict_value = getattr(out, "verdict", out)
+                    verdict = (
+                        verdict_value
+                        if isinstance(verdict_value, AdjudicationVerdict)
+                        else AdjudicationVerdict.model_validate(verdict_value)
+                    )
                     if verdict.same_entity:
                         self._e.commit_merge(left, right, verdict)
-        return res
+        return cast(IngestTextResult, res)
 
     def extract_graph_with_llm_internal(
         self,
         content: str,
         doc: Document,
-    ) -> Tuple[Any, Optional[LLMGraphExtraction], Optional[str]]:
+    ) -> tuple[object, LLMGraphExtraction | None, str | None]:
         result = self._e.llm_tasks.extract_graph(
             ExtractGraphTaskRequest(
                 content=content,
@@ -142,13 +160,13 @@ class IngestSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         self,
         *,
         document_id: str,
-        page_text: str | list[str] | dict[str, Any],
+        page_text: str | list[str] | dict[str, object],
         page_number: int | None = None,
         auto_adjudicate: bool = True,
         extraction_schema_mode: ExtractionSchemaMode | None = None,
         offset_mismatch_policy: OffsetMismatchPolicy = "exact_fuzzy",
         offset_repair_scorer: OffsetRepairScorer | None = None,
-    ):
+    ) -> dict[str, object]:
         pages = coerce_pages(
             {"pages": [{"page_number": page_number, "text": page_text}]}
             if isinstance(page_text, str)
@@ -161,16 +179,16 @@ class IngestSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         raw_by_page = []
         for pg in pages:
             # Keep legacy seam so tests/callers monkeypatching engine._ingest_text_with_llm still work.
-            res = self._e._ingest_text_with_llm(
+            res = cast(IngestTextResult, self._e._ingest_text_with_llm(
                 doc_id=document_id,
                 content=pg["text"],
                 auto_adjudicate=auto_adjudicate,
                 extraction_schema_mode=extraction_schema_mode,
                 offset_mismatch_policy=offset_mismatch_policy,
                 offset_repair_scorer=offset_repair_scorer,
-            )
-            total_nodes += res["nodes_added"]
-            total_edges += res["edges_added"]
+            ))
+            total_nodes += res.get("nodes_added", 0)
+            total_edges += res.get("edges_added", 0)
             raw_by_page.append({"page": pg["page_number"], "raw": res.get("raw")})
 
         return {

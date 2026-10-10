@@ -1,4 +1,5 @@
 import pytest
+
 pytest.importorskip("sqlalchemy")
 
 import sqlalchemy as sa

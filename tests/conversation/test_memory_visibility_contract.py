@@ -9,13 +9,16 @@ import pytest
 from kogwistar.conversation.conversation_context import ContextSources
 from kogwistar.conversation.conversation_state_contracts import PrevTurnMetaSummaryModel
 from kogwistar.conversation.memory_retriever import MemoryRetriever
-from kogwistar.conversation.models import ConversationEdge, ConversationNode, RetrievalResult
+from kogwistar.conversation.models import (
+    ConversationEdge,
+    ConversationNode,
+    RetrievalResult,
+)
 from kogwistar.conversation.service import ConversationService
 from kogwistar.engine_core.engine import GraphKnowledgeEngine, scoped_namespace
 from kogwistar.engine_core.models import Grounding, Span
 from kogwistar.server.auth_middleware import claims_ctx
 from tests._helpers.fake_backend import build_fake_backend
-
 
 pytestmark = pytest.mark.core
 

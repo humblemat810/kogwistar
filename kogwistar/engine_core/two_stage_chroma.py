@@ -8,11 +8,52 @@ their revision fingerprint decide whether a promotion is still current.
 from __future__ import annotations
 
 import json
-from typing import Any
+from collections.abc import Iterable, Mapping, Sequence
+from typing import Any, Protocol, cast
 
 from .async_compat import run_awaitable_blocking
 from .edge_endpoint_rows import edge_endpoint_rows
+from .engine import GraphKnowledgeEngine
+from .models import Edge, Node
 from .storage_backend import TwoStageProjectionCapability
+
+
+class _Stage1MetaStore(Protocol):
+    def replace_stage1_node_projection(self, **kwargs: object) -> object: ...
+
+    def query_stage1_node_projections(
+        self, *args: object, **kwargs: object
+    ) -> Iterable[Mapping[str, object]]: ...
+
+    def clear_stage1_node_projection(self, *args: object, **kwargs: object) -> object: ...
+
+    def get_stage1_node_projection(
+        self, *args: object, **kwargs: object
+    ) -> Mapping[str, object] | None: ...
+
+
+def _mapping(value: object) -> dict[str, object]:
+    return dict(value) if isinstance(value, Mapping) else {}
+
+
+def _objects(value: object) -> list[object]:
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return list(value)
+    return []
+
+
+def _embedding(value: object) -> list[float] | None:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        return None
+    if not all(isinstance(item, (int, float)) for item in value):
+        return None
+    return [float(item) for item in value]
+
+
+def _job_value(job: object, name: str) -> object:
+    if isinstance(job, Mapping):
+        return job.get(name)
+    return getattr(job, name, None)
 
 
 def chroma_two_stage_capability() -> TwoStageProjectionCapability:
@@ -35,11 +76,11 @@ def chroma_two_stage_capability() -> TwoStageProjectionCapability:
 class SQLiteChromaTwoStageProjectionAdapter:
     """Concrete Chroma arrangement using the existing SQLite Stage-1 table."""
 
-    def __init__(self, engine: Any) -> None:
+    def __init__(self, engine: GraphKnowledgeEngine) -> None:
         self.engine = engine
 
-    def _meta(self) -> Any:
-        return self.engine.meta_sqlite
+    def _meta(self) -> _Stage1MetaStore:
+        return cast(_Stage1MetaStore, self.engine.meta_sqlite)
 
     def _namespace(self) -> str:
         return str(getattr(self.engine, "namespace", "default"))
@@ -48,12 +89,15 @@ class SQLiteChromaTwoStageProjectionAdapter:
     def _stage1_key(entity_kind: str, entity_id: str) -> str:
         return f"{entity_kind}:{entity_id}"
 
-    def _stage1_payload(self, *, entity_kind: str, entity: Any) -> dict[str, Any]:
+    def _stage1_payload(
+        self, *, entity_kind: str, entity: Node | Edge
+    ) -> dict[str, Any]:
         if entity_kind == "node":
-            document, metadata = self.engine.write.node_doc_and_meta(entity)
+            document, metadata = self.engine.write.node_doc_and_meta(cast(Node, entity))
         else:
-            document = entity.model_dump_json(field_mode="backend", exclude=["embedding"])
-            metadata = self.engine.write.enrich_edge_meta(entity)
+            edge = cast(Edge, entity)
+            document = edge.model_dump_json(field_mode="backend", exclude=["embedding"])
+            metadata = self.engine.write.enrich_edge_meta(edge)
         revision_payload = self.engine.indexing.canonical_revision_payload(
             entity_kind=entity_kind, entity_id=entity.safe_get_id()
         )
@@ -66,7 +110,7 @@ class SQLiteChromaTwoStageProjectionAdapter:
             "source_fingerprint": str(fingerprint or ""),
         }
 
-    def _stage1_upsert(self, *, entity_kind: str, entity: Any) -> None:
+    def _stage1_upsert(self, *, entity_kind: str, entity: Node | Edge) -> None:
         payload = self._stage1_payload(entity_kind=entity_kind, entity=entity)
         revision = self.engine.indexing.canonical_entity_revision(
             entity_kind=entity_kind, entity_id=entity.safe_get_id()
@@ -98,7 +142,7 @@ class SQLiteChromaTwoStageProjectionAdapter:
 
     enqueue_embedding_job = _enqueue
 
-    def add_node(self, node: Any, *, doc_id: str | None = None) -> None:
+    def add_node(self, node: Node, *, doc_id: str | None = None) -> None:
         if doc_id is not None:
             node.doc_id = doc_id
         # Remove any older semantic projection before exposing the new
@@ -107,20 +151,25 @@ class SQLiteChromaTwoStageProjectionAdapter:
         self._stage1_upsert(entity_kind="node", entity=node)
         self._enqueue(entity_kind="node", entity_id=node.safe_get_id(), op="UPSERT")
 
-    def add_edge(self, edge: Any, *, doc_id: str | None = None) -> None:
+    def add_edge(self, edge: Edge, *, doc_id: str | None = None) -> None:
         if doc_id is not None:
             edge.doc_id = doc_id
         self.remove_stage2_or_invalidate(entity_kind="edge", entity_id=edge.safe_get_id())
         self._stage1_upsert(entity_kind="edge", entity=edge)
         self._enqueue(entity_kind="edge", entity_id=edge.safe_get_id(), op="UPSERT")
 
-    def stage1_query(self, **kwargs: Any) -> list[dict[str, Any]]:
+    def stage1_query(self, **kwargs: object) -> list[dict[str, Any]]:
         query = getattr(self._meta(), "query_stage1_node_projections", None)
         if not callable(query):
             raise RuntimeError("Chroma two-stage arrangement lacks Stage-1 query")
-        return list(query(self._namespace(), **kwargs))
+        return list(
+            cast(
+                Iterable[dict[str, Any]],
+                query(self._namespace(), **kwargs),
+            )
+        )
 
-    def remove_stage1(self, *, entity_kind: str, entity_id: str, **_: Any) -> None:
+    def remove_stage1(self, *, entity_kind: str, entity_id: str, **_: object) -> None:
         if entity_kind not in {"node", "edge"}:
             raise ValueError(f"unsupported Stage-1 entity kind: {entity_kind!r}")
         clear = getattr(self._meta(), "clear_stage1_node_projection", None)
@@ -128,15 +177,17 @@ class SQLiteChromaTwoStageProjectionAdapter:
             raise RuntimeError("Chroma two-stage arrangement lacks Stage-1 cleanup")
         clear(self._namespace(), self._stage1_key(entity_kind, entity_id))
 
-    def _collection_call(self, entity_kind: str, method: str, **kwargs: Any) -> Any:
+    def _collection_call(
+        self, entity_kind: str, method: str, **kwargs: object
+    ) -> Mapping[str, object]:
         fn = getattr(self.engine.backend, f"{entity_kind}_{method}")
-        return run_awaitable_blocking(fn(**kwargs))
+        return cast(Mapping[str, object], run_awaitable_blocking(fn(**kwargs)))
 
-    def _edge_endpoint_rows(self, edge: Any) -> list[dict[str, Any]]:
+    def _edge_endpoint_rows(self, edge: Edge) -> list[dict[str, Any]]:
         return edge_endpoint_rows(edge)
 
     def _promote_edge_endpoints(
-        self, edge: Any, embedding: list[float] | None = None
+        self, edge: Edge, embedding: list[float] | None = None
     ) -> None:
         rows = self._edge_endpoint_rows(edge)
         if not rows:
@@ -158,7 +209,7 @@ class SQLiteChromaTwoStageProjectionAdapter:
         )
 
     def remove_stage2_or_invalidate(
-        self, *, entity_kind: str, entity_id: str, **_: Any
+        self, *, entity_kind: str, entity_id: str, **_: object
     ) -> None:
         self._collection_call(entity_kind, "delete", ids=[entity_id])
         if entity_kind == "edge":
@@ -197,12 +248,12 @@ class SQLiteChromaTwoStageProjectionAdapter:
         )
         if not row:
             raise RuntimeError("current Stage-1 projection is missing")
-        staged = row.get("payload") or {}
+        staged = _mapping(row.get("payload"))
         if expected and str(staged.get("source_fingerprint") or "") != expected:
             return
         document = str(staged.get("document") or "")
         embedding = self.engine.embed.iterative_defensive_emb(document)
-        metadata = dict(staged.get("metadata") or {})
+        metadata = cast(dict[str, Any], staged.get("metadata") or {})
         metadata["_kogwistar_stage2_ready"] = True
         metadata["_kogwistar_source_fingerprint"] = expected or self._current_fingerprint(
             entity_kind=entity_kind, entity_id=entity_id
@@ -222,23 +273,18 @@ class SQLiteChromaTwoStageProjectionAdapter:
         self.remove_stage1(entity_kind=entity_kind, entity_id=entity_id)
 
     def apply_embedding_jobs_batch(
-        self, jobs: list[Any]
+        self, jobs: Sequence[object]
     ) -> dict[str, BaseException | None]:
         """Best-effort batch embedding with per-job promotion and failures."""
-        prepared: list[tuple[str, str, str, str, str | None, dict[str, Any]]] = []
+        prepared: list[tuple[str, str, str, str, str | None, dict[str, object]]] = []
         outcomes: dict[str, BaseException | None] = {}
 
         for job in jobs:
-            value = (
-                (lambda name: job.get(name))
-                if isinstance(job, dict)
-                else (lambda name: getattr(job, name, None))
-            )
-            job_id = str(value("job_id") or "")
-            entity_kind = str(value("entity_kind") or "")
-            entity_id = str(value("entity_id") or "")
-            op = str(value("op") or "UPSERT")
-            payload_json = value("payload_json")
+            job_id = str(_job_value(job, "job_id") or "")
+            entity_kind = str(_job_value(job, "entity_kind") or "")
+            entity_id = str(_job_value(job, "entity_id") or "")
+            op = str(_job_value(job, "op") or "UPSERT")
+            payload_json = cast(str | None, _job_value(job, "payload_json"))
             try:
                 if op.upper() == "DELETE":
                     self.apply_embedding_job(
@@ -274,7 +320,7 @@ class SQLiteChromaTwoStageProjectionAdapter:
                 )
                 if not row:
                     raise RuntimeError("current Stage-1 projection is missing")
-                staged = row.get("payload") or {}
+                staged = _mapping(row.get("payload"))
                 if expected and str(staged.get("source_fingerprint") or "") != expected:
                     outcomes[job_id] = None
                     continue
@@ -293,7 +339,7 @@ class SQLiteChromaTwoStageProjectionAdapter:
             if not callable(provider):
                 raise RuntimeError("embedding provider has no batch interface")
             raw_embeddings = run_awaitable_blocking(provider(documents))
-            embeddings = list(raw_embeddings)
+            embeddings = list(cast(Sequence[list[float]], raw_embeddings))
             if len(embeddings) != len(prepared):
                 raise RuntimeError("embedding provider returned wrong batch length")
         except BaseException:
@@ -324,7 +370,7 @@ class SQLiteChromaTwoStageProjectionAdapter:
                     entity_kind=entity_kind, entity_id=entity_id
                 ):
                     continue
-                metadata = dict(staged.get("metadata") or {})
+                metadata = cast(dict[str, Any], staged.get("metadata") or {})
                 metadata["_kogwistar_stage2_ready"] = True
                 metadata["_kogwistar_source_fingerprint"] = expected or self._current_fingerprint(
                     entity_kind=entity_kind, entity_id=entity_id
@@ -341,7 +387,7 @@ class SQLiteChromaTwoStageProjectionAdapter:
                     from .models import Edge
 
                     self._promote_edge_endpoints(
-                        Edge.model_validate_json(staged["document"]), embedding
+                        Edge.model_validate_json(str(staged["document"])), embedding
                     )
                 self.remove_stage1(entity_kind=entity_kind, entity_id=entity_id)
                 outcomes[job_id] = None
@@ -349,13 +395,25 @@ class SQLiteChromaTwoStageProjectionAdapter:
                 outcomes[job_id] = exc
         return outcomes
 
-    def promote_stage2(self, **kwargs: Any) -> None:
-        self.apply_embedding_job(**kwargs)
+    def promote_stage2(
+        self,
+        *,
+        entity_kind: str,
+        entity_id: str,
+        op: str,
+        payload_json: str | None,
+    ) -> None:
+        self.apply_embedding_job(
+            entity_kind=entity_kind,
+            entity_id=entity_id,
+            op=op,
+            payload_json=payload_json,
+        )
 
-    def reconcile_projection(self, **_: Any) -> int:
+    def reconcile_projection(self, **_: object) -> int:
         removed = 0
         for row in self.stage1_query():
-            payload = row.get("payload") or {}
+            payload = _mapping(row.get("payload"))
             entity_id = str(payload.get("id") or row.get("key") or "")
             entity_kind = str(payload.get("entity_kind") or "node")
             current = self.engine.indexing.canonical_entity_revision(
@@ -378,18 +436,19 @@ class SQLiteChromaTwoStageProjectionAdapter:
                 entity_kind, "get", ids=[entity_id],
                 include=["documents", "metadatas", "embeddings"]
             )
-            metadata = (got.get("metadatas") or [None])[0]
-            if isinstance(metadata, dict) and metadata.get("_kogwistar_source_fingerprint") == current_fp:
+            metadata_values = _objects(got.get("metadatas"))
+            metadata = _mapping(metadata_values[0]) if metadata_values else {}
+            if metadata.get("_kogwistar_source_fingerprint") == current_fp:
                 if entity_kind == "edge":
                     from .models import Edge
 
-                    document = (got.get("documents") or [None])[0]
-                    if document:
-                        embeddings = got.get("embeddings") or []
+                    documents = _objects(got.get("documents"))
+                    document = documents[0] if documents else None
+                    if isinstance(document, str):
+                        embeddings = _objects(got.get("embeddings"))
                         self._promote_edge_endpoints(
                             Edge.model_validate_json(document),
-                            list(embeddings[0])
-                            if embeddings and embeddings[0] is not None else None,
+                            _embedding(embeddings[0]) if embeddings else None,
                         )
                 self.remove_stage1(entity_kind=entity_kind, entity_id=entity_id)
                 removed += 1

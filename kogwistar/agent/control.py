@@ -10,15 +10,17 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Literal, cast
 
+from kogwistar.json_types import JsonValue
+from kogwistar.messaging.models import ProjectedLaneMessageRow
 from kogwistar.messaging.service import LaneMessagingService
-from kogwistar.runtime.models import RunFailure, RunSuccess
+from kogwistar.runtime.models import RunFailure, RunSuccess, StateUpdate, WorkflowState
 from kogwistar.runtime.resolvers import MappingStepResolver
 from kogwistar.runtime.runtime import StepContext
 
-
 ControlPolicy = Literal["steer", "queue", "cancel_and_replace"]
+JsonObject = dict[str, JsonValue]
 _TERMINAL_MESSAGE_STATUSES = {"completed", "failed", "cancelled", "dead-letter"}
 
 
@@ -64,29 +66,49 @@ def _failure(message: str) -> RunFailure:
     return RunFailure(conversation_node_id=None, state_update=[], errors=[message])
 
 
-def _payload(row: Any) -> dict[str, Any]:
-    raw = getattr(row, "payload_json", None)
+def _payload(row: ProjectedLaneMessageRow) -> dict[str, JsonValue]:
+    raw = row.payload_json
     if isinstance(raw, Mapping):
-        return dict(raw)
+        payload: dict[str, JsonValue] = {}
+        for key, item in raw.items():
+            if isinstance(key, str):
+                payload[key] = cast(JsonValue, item)
+        return payload
     if not isinstance(raw, str) or not raw:
         return {}
     try:
         value = json.loads(raw)
     except Exception:
         return {}
-    return dict(value) if isinstance(value, Mapping) else {}
+    return cast(dict[str, JsonValue], value) if isinstance(value, Mapping) else {}
 
 
-def _claims(state: Mapping[str, Any], key: str) -> list[dict[str, Any]]:
+def _claims(state: Mapping[str, object], key: str) -> list[JsonObject]:
     raw = state.get(key, [])
     if not isinstance(raw, list):
         return []
-    return [dict(item) for item in raw if isinstance(item, Mapping)]
+    return [cast(JsonObject, dict(item)) for item in raw if isinstance(item, Mapping)]
+
+
+def _state_int(state: WorkflowState, key: str) -> int:
+    value = state.get(key)
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (int, float, str)):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            pass
+    return 0
+
+
+def _overwrite(update: Mapping[str, object]) -> StateUpdate:
+    return ("u", dict(update))
 
 
 def _ack_claims(
     messaging: LaneMessagingService,
-    claims: list[dict[str, Any]],
+    claims: list[JsonObject],
 ) -> None:
     for claim in claims:
         message_id = str(claim.get("message_id") or "").strip()
@@ -150,10 +172,10 @@ def register_control_point(
         elif accepted:
             accepted = [accepted[0]]
 
-        high_water = int(state.get(spec.high_water_key) or 0)
+        high_water = _state_int(state, spec.high_water_key)
         candidate = accepted[0] if accepted else None
         if candidate is None:
-            empty_update: dict[str, Any] = {
+            empty_update: JsonObject = {
                 spec.pending_claims_key: [],
                 "agent_control_received": False,
                 "agent_control_policy": spec.policy,
@@ -164,7 +186,7 @@ def register_control_point(
             if not prior_claims:
                 empty_update[spec.output_key] = None
             return RunSuccess(
-                state_update=[("u", empty_update)]
+                state_update=[_overwrite(empty_update)]
             )
 
         message_id = str(getattr(candidate, "message_id", ""))
@@ -187,7 +209,7 @@ def register_control_point(
             if not prior_claims:
                 empty_update[spec.output_key] = None
             return RunSuccess(
-                state_update=[("u", empty_update)]
+                state_update=[_overwrite(empty_update)]
             )
         row = claimed[0]
         seq = int(getattr(row, "seq", 0) or 0)
@@ -204,7 +226,7 @@ def register_control_point(
             "step_id": getattr(row, "step_id", None),
             "run_id": str(getattr(row, "run_id", "") or ""),
         }
-        update: dict[str, Any] = {
+        update: JsonObject = {
             spec.output_key: None if duplicate else _payload(row),
             spec.pending_claims_key: [claim_record],
             spec.high_water_key: next_high_water,
@@ -216,7 +238,7 @@ def register_control_point(
             update["agent_control_action"] = "cancel_and_replace"
         else:
             update["agent_control_action"] = "steer" if not duplicate else "duplicate"
-        return RunSuccess(state_update=[("u", update)])
+        return RunSuccess(state_update=[_overwrite(update)])
 
 
 def register_control_ack_step(
@@ -235,7 +257,7 @@ def register_control_ack_step(
             _ack_claims(messaging, claims)
         except Exception as exc:
             return _failure(f"control acknowledgement failed: {exc}")
-        return RunSuccess(state_update=[("u", {pending_claims_key: []})])
+        return RunSuccess(state_update=[_overwrite({pending_claims_key: []})])
 
 
 def terminalize_control_messages(
@@ -264,7 +286,7 @@ def terminalize_control_messages(
 __all__ = [
     "ControlPointSpec",
     "ControlPolicy",
-    "register_control_point",
     "register_control_ack_step",
+    "register_control_point",
     "terminalize_control_messages",
 ]

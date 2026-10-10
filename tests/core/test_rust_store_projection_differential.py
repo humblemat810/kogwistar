@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
-from typing import Any, Callable
 import uuid
+from collections.abc import Callable
+from pathlib import Path
+from typing import Any
 
 import pytest
 import sqlalchemy as sa
@@ -13,7 +14,6 @@ pytest.importorskip("sqlalchemy")
 from kogwistar._rust_bridge import RustParityError, store_postgres, store_sqlite
 from kogwistar.engine_core.engine_postgres_meta import EnginePostgresMetaStore
 from kogwistar.engine_core.engine_sqlite import EngineSQLite
-
 
 pytestmark = [pytest.mark.ci_full, pytest.mark.core]
 

@@ -3,9 +3,8 @@
 # This companion stays close to the runtime tutorial ladder and reuses its public helpers.
 
 # %%
-from runtime_tutorial_ladder import level0_runtime_basics, reset_data
-
 from _helpers import banner, reset_data_dir, show
+from runtime_tutorial_ladder import level0_runtime_basics, reset_data
 
 data_dir = reset_data_dir("06_first_workflow")
 show("reset", reset_data(data_dir))

@@ -1,12 +1,16 @@
 from __future__ import annotations
 
-from typing import Any, Callable, ParamSpec, Protocol, TypeVar
+from collections.abc import Callable
+from typing import Any, ParamSpec, Protocol, TypeVar
 
 from kogwistar.server.mcp_registry import McpRegistry
 
+from .auth_middleware import NameSpace, Role
+from .chat_service import ChatRunService
 
 _P = ParamSpec("_P")
 _R = TypeVar("_R")
+_TMetadata = TypeVar("_TMetadata", contravariant=True)
 
 
 class ToolDecorator(Protocol):
@@ -17,20 +21,20 @@ class ToolDecorator(Protocol):
     ) -> Callable[_P, _R]: ...
 
 
-class RoleDecoratorFactory(Protocol):
+class RoleDecoratorFactory(Protocol[_TMetadata]):
     """Create a decorator that applies role or namespace metadata."""
 
-    def __call__(self, values: Any, /) -> ToolDecorator: ...
+    def __call__(self, values: _TMetadata, /) -> ToolDecorator: ...
 
 
 def build_conversation_mcp(
     *,
-    get_service: Callable[[], Any],
-    tool_roles: RoleDecoratorFactory,
-    require_ns: RoleDecoratorFactory,
-    role_ro: Any,
-    role_rw: Any,
-    ns_conversation: Any,
+    get_service: Callable[[], ChatRunService],
+    tool_roles: RoleDecoratorFactory[set[Role] | Role],
+    require_ns: RoleDecoratorFactory[set[NameSpace] | NameSpace],
+    role_ro: Role,
+    role_rw: Role,
+    ns_conversation: NameSpace,
 ) -> McpRegistry:
     mcp = McpRegistry("Conversation MCP")
 
@@ -90,12 +94,12 @@ def build_conversation_mcp(
 
 def build_workflow_mcp(
     *,
-    get_service: Callable[[], Any],
-    tool_roles: RoleDecoratorFactory,
-    require_ns: RoleDecoratorFactory,
-    role_ro: Any,
-    role_rw: Any,
-    ns_workflow: Any,
+    get_service: Callable[[], ChatRunService],
+    tool_roles: RoleDecoratorFactory[set[Role] | Role],
+    require_ns: RoleDecoratorFactory[set[NameSpace] | NameSpace],
+    role_ro: Role,
+    role_rw: Role,
+    ns_workflow: NameSpace,
     get_subject: Callable[[], str | None] | None = None,
     get_user_id: Callable[[], str | None] | None = None,
     require_workflow_access: Callable[[str, str], None] | None = None,

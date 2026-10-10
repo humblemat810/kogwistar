@@ -1,19 +1,25 @@
 from __future__ import annotations
 
 import contextvars
+import uuid
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import fields
 from pathlib import Path
-from typing import Any, Iterator
-from .event_envelope import EntityEventEnvelope
-import uuid
+from typing import Any, NoReturn, Protocol, TYPE_CHECKING, TypeVar, cast
 
 from kogwistar._rust_bridge import store_sqlite
 from kogwistar.engine_core.engine_sqlite import IndexJobRow, ProjectedLaneMessageSqlRow
+from kogwistar.json_types import JsonObject, JsonValue
 
+from .event_envelope import EntityEventEnvelope
+
+if TYPE_CHECKING:
+    from .engine_sqlite import EngineSQLite
 
 _INDEX_JOB_FIELDS = {field.name for field in fields(IndexJobRow)}
 _LANE_MESSAGE_FIELDS = {field.name for field in fields(ProjectedLaneMessageSqlRow)}
+_RustResultT = TypeVar("_RustResultT")
 
 
 def _index_job_row(value: dict[str, Any]) -> IndexJobRow:
@@ -30,11 +36,15 @@ class RustSQLiteConnectionUnavailable(RuntimeError):
     """Raised when Rust authority code asks for a raw Python SQLite writer."""
 
 
+class _TransactionToken(Protocol):
+    value: str
+
+
 class _RustTransactionToken:
     def __init__(self, value: str) -> None:
         self.value = value
 
-    def execute(self, *args: Any, **kwargs: Any) -> Any:
+    def execute(self, *args: object, **kwargs: object) -> NoReturn:
         raise RustSQLiteConnectionUnavailable(
             "raw SQL is unavailable while KOGWISTAR_IMPL_META_STORE=rust; "
             "use a meta-store capability method"
@@ -53,12 +63,22 @@ class RustEngineSQLite:
             f"kogwistar_rust_sqlite_transaction_{id(self)}", default=None
         )
 
-    def _call(self, kind: str, **values: Any) -> Any:
-        return store_sqlite(
+    def _call(self, kind: str, **values: JsonValue) -> _RustResultT:  # pyright: ignore[reportInvalidTypeVarUse]
+        """Call the Rust JSON boundary with an explicit caller result type.
+
+        The native bridge returns decoded JSON whose concrete shape is defined
+        by ``kind``.  Keeping the boundary generic lets each facade method
+        state its existing result contract without leaking an untyped ``Any``
+        through the whole meta-store facade.
+        """
+        return cast(
+            _RustResultT,
+            store_sqlite(
             path=self.db_path,
             operation={"kind": kind, **values},
             transaction_id=self._transaction_id.get(),
             reuse_session=self._transaction_id.get() is not None,
+            ),
         )
 
     def ensure_initialized(self) -> None:
@@ -76,7 +96,7 @@ class RustEngineSQLite:
         )
 
     @contextmanager
-    def transaction(self, *, immediate: bool = True) -> Iterator[_RustTransactionToken]:
+    def transaction(self, *, immediate: bool = True) -> Iterator[_TransactionToken]:
         from .sqlite_context import sqlite_execution_context
 
         del immediate
@@ -105,7 +125,7 @@ class RustEngineSQLite:
     def next_global_seq(self) -> int:
         return int(self._call("next_global_seq"))
 
-    def next_global_seq_conn(self, conn: _RustTransactionToken) -> int:
+    def next_global_seq_conn(self, conn: _TransactionToken) -> int:
         self._require_token(conn)
         return self.next_global_seq()
 
@@ -118,7 +138,7 @@ class RustEngineSQLite:
     def next_scoped_seq(self, scope_id: str) -> int:
         return int(self._call("next_scoped_seq", scope_id=scope_id))
 
-    def next_user_seq_conn(self, conn: _RustTransactionToken, user_id: str) -> int:
+    def next_user_seq_conn(self, conn: _TransactionToken, user_id: str) -> int:
         self._require_token(conn)
         return self.next_user_seq(user_id)
 
@@ -135,17 +155,17 @@ class RustEngineSQLite:
         self._call("set_scoped_seq", scope_id=scope_id, value=int(value))
 
     def set_user_seq_conn(
-        self, conn: _RustTransactionToken, user_id: str, value: int
+        self, conn: _TransactionToken, user_id: str, value: int
     ) -> None:
         self._require_token(conn)
         self.set_user_seq(user_id, value)
 
-    def _require_token(self, conn: _RustTransactionToken) -> None:
+    def _require_token(self, conn: _TransactionToken) -> None:
         active = self._transaction_id.get()
         if not isinstance(conn, _RustTransactionToken) or conn.value != active:
             raise RustSQLiteConnectionUnavailable("stale Rust SQLite transaction token")
 
-    def enqueue_index_job(self, **values: Any) -> str:
+    def enqueue_index_job(self, **values: JsonValue) -> str:
         return str(self._call("enqueue_index_job", **values))
 
     def claim_index_jobs(
@@ -289,7 +309,7 @@ class RustEngineSQLite:
     def alloc_event_seq(self, namespace: str = "default") -> int:
         return int(self._call("alloc_event_seq", namespace=namespace))
 
-    def append_entity_event(self, **values: Any) -> int:
+    def append_entity_event(self, **values: JsonValue) -> int:
         return int(self._call("raw_append", **values)["seq"])
 
     def append_entity_event_envelope(self, event: EntityEventEnvelope) -> int:
@@ -391,7 +411,7 @@ class RustEngineSQLite:
         return self._call("get_named_projection", namespace=namespace, key=key)
 
     def replace_named_projection(
-        self, namespace: str, key: str, payload: dict[str, Any], **values: Any
+        self, namespace: str, key: str, payload: dict[str, Any], **values: JsonValue
     ) -> None:
         self._call(
             "replace_named_projection",
@@ -402,7 +422,7 @@ class RustEngineSQLite:
         )
 
     def compare_and_swap_named_projection(
-        self, namespace: str, key: str, payload: dict[str, Any], **values: Any
+        self, namespace: str, key: str, payload: dict[str, Any], **values: JsonValue
     ) -> bool:
         return bool(
             self._call(
@@ -415,10 +435,16 @@ class RustEngineSQLite:
         )
 
     def compare_and_swap_named_projections(
-        self, updates: list[dict[str, Any]]
+        self, updates: list[JsonObject]
     ) -> bool:
         """Atomically CAS several named projections in one Rust transaction."""
-        return bool(self._call("compare_and_swap_named_projections", updates=updates))
+        updates_payload: JsonValue = cast(JsonValue, updates)
+        return bool(
+            self._call(
+                "compare_and_swap_named_projections",
+                updates=updates_payload,
+            )
+        )
 
     def list_named_projections(self, namespace: str) -> list[dict[str, Any]]:
         return list(self._call("list_named_projections", namespace=namespace))
@@ -446,7 +472,7 @@ class RustEngineSQLite:
         namespace: str,
         node_id: str,
         payload: dict[str, Any],
-        **values: Any,
+        **values: JsonValue,
     ) -> None:
         self._call(
             "replace_stage1_node_projection",
@@ -548,36 +574,68 @@ class RustEngineSQLite:
     def clear_workflow_design_projection(self, *, workflow_id: str) -> None:
         self.clear_named_projection("workflow_design", workflow_id)
 
-    def put_workflow_design_snapshot(self, **values: Any) -> None:
+    def put_workflow_design_snapshot(self, **values: JsonValue) -> None:
         self._call("put_workflow_design_snapshot", **values)
 
-    def get_workflow_design_snapshot(self, **values: Any) -> dict[str, Any] | None:
+    def get_workflow_design_snapshot(self, **values: JsonValue) -> dict[str, Any] | None:
         return self._call("get_workflow_design_snapshot", **values)
 
     def clear_workflow_design_snapshots(self, *, workflow_id: str) -> None:
         self._call("clear_workflow_design_snapshots", workflow_id=workflow_id)
 
-    def put_workflow_design_delta(self, **values: Any) -> None:
+    def put_workflow_design_delta(self, **values: JsonValue) -> None:
         self._call("put_workflow_design_delta", **values)
 
-    def get_workflow_design_delta(self, **values: Any) -> dict[str, Any] | None:
+    def get_workflow_design_delta(self, **values: JsonValue) -> dict[str, Any] | None:
         return self._call("get_workflow_design_delta", **values)
 
     def clear_workflow_design_deltas(self, *, workflow_id: str) -> None:
         self._call("clear_workflow_design_deltas", workflow_id=workflow_id)
 
-    def create_server_run(self, **values: Any) -> None:
-        self._call("create_server_run", **values)
+    def create_server_run(
+        self,
+        *,
+        run_id: str,
+        conversation_id: str,
+        workflow_id: str,
+        user_id: str | None,
+        user_turn_node_id: str,
+        status: str = "queued",
+    ) -> None:
+        self._call(
+            "create_server_run",
+            run_id=run_id,
+            conversation_id=conversation_id,
+            workflow_id=workflow_id,
+            user_id=user_id,
+            user_turn_node_id=user_turn_node_id,
+            status=status,
+        )
 
-    def get_server_run(self, run_id: str) -> dict[str, Any] | None:
+    def get_server_run(self, run_id: str) -> JsonObject | None:
         return self._call("get_server_run", run_id=run_id)
 
-    def list_server_runs(self, **values: Any) -> list[dict[str, Any]]:
-        return list(self._call("list_server_runs", **values))
+    def list_server_runs(
+        self,
+        *,
+        status: str | None = None,
+        workflow_id: str | None = None,
+        conversation_id: str | None = None,
+        limit: int = 100,
+    ) -> list[JsonObject]:
+        return list(
+            self._call(
+                "list_server_runs",
+                status=status,
+                workflow_id=workflow_id,
+                conversation_id=conversation_id,
+                limit=limit,
+            )
+        )
 
     def list_server_run_events(
         self, run_id: str, *, after_seq: int = 0, limit: int = 500
-    ) -> list[dict[str, Any]]:
+    ) -> list[JsonObject]:
         return list(
             self._call(
                 "list_server_run_events",
@@ -589,7 +647,7 @@ class RustEngineSQLite:
 
     def append_server_run_event(
         self, run_id: str, event_type: str, payload_json: str
-    ) -> dict[str, Any]:
+    ) -> JsonObject:
         return dict(
             self._call(
                 "append_server_run_event",
@@ -599,37 +657,58 @@ class RustEngineSQLite:
             )
         )
 
-    def update_server_run(self, **values: Any) -> None:
-        self._call("update_server_run", **values)
+    def update_server_run(
+        self,
+        *,
+        run_id: str,
+        status: str,
+        assistant_turn_node_id: str | None,
+        result_json: str | None,
+        error_json: str | None,
+        started_at_ms: int | None,
+        finished_at_ms: int | None,
+        cancel_requested: bool | None = None,
+    ) -> None:
+        self._call(
+            "update_server_run",
+            run_id=run_id,
+            status=status,
+            assistant_turn_node_id=assistant_turn_node_id,
+            result_json=result_json,
+            error_json=error_json,
+            started_at_ms=started_at_ms,
+            finished_at_ms=finished_at_ms,
+            cancel_requested=cancel_requested,
+        )
 
     def request_server_run_cancel(self, *, run_id: str) -> None:
         self._call("request_server_run_cancel", run_id=run_id)
 
-    def project_lane_message(self, **values: Any) -> None:
+    def project_lane_message(self, **values: JsonValue) -> None:
         self._call("project_lane_message", **values)
 
-    def update_projected_lane_message_status(self, **values: Any) -> None:
+    def update_projected_lane_message_status(self, **values: JsonValue) -> None:
         self._call("update_projected_lane_message_status", **values)
 
-    def update_projected_lane_message_links(self, **values: Any) -> None:
+    def update_projected_lane_message_links(self, **values: JsonValue) -> None:
         self._call("update_projected_lane_message_links", **values)
 
-    def claim_projected_lane_messages(self, **values: Any) -> list[ProjectedLaneMessageSqlRow]:
+    def claim_projected_lane_messages(self, **values: JsonValue) -> list[ProjectedLaneMessageSqlRow]:
         return [
             _lane_message_row(row)
             for row in self._call("claim_projected_lane_messages", **values)
         ]
 
-    def ack_projected_lane_message(self, **values: Any) -> None:
+    def ack_projected_lane_message(self, **values: JsonValue) -> None:
         self._call("ack_projected_lane_message", **values)
 
-    def requeue_projected_lane_message(self, **values: Any) -> None:
+    def requeue_projected_lane_message(self, **values: JsonValue) -> None:
         self._call("requeue_projected_lane_message", **values)
 
     def clear_projected_lane_messages(self, namespace: str) -> int:
         return int(self._call("clear_projected_lane_messages", namespace=namespace))
 
-    def list_projected_lane_messages(self, **values: Any) -> list[ProjectedLaneMessageSqlRow]:
+    def list_projected_lane_messages(self, **values: JsonValue) -> list[ProjectedLaneMessageSqlRow]:
         return [
             _lane_message_row(row)
             for row in self._call("list_projected_lane_messages", **values)
@@ -638,7 +717,7 @@ class RustEngineSQLite:
 
 def build_sqlite_meta_store(
     persistent_directory: Path, filename: str = "engine.db"
-) -> RustEngineSQLite | Any:
+) -> RustEngineSQLite | EngineSQLite:
     from kogwistar._rust_bridge import meta_store_implementation_mode
     from kogwistar.engine_core.engine_sqlite import EngineSQLite
 

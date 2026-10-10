@@ -1,4 +1,5 @@
 import pytest
+
 pytestmark = pytest.mark.ci_full
 
 pytest.importorskip("chromadb")
@@ -9,9 +10,9 @@ from kogwistar.conversation.conversation_orchestrator import (
 )
 from kogwistar.conversation.models import ConversationAIResponse, FilteringResult
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
-from tests.conftest import _make_engine_pair
 from tests._helpers.embeddings import build_test_embedding_function
 from tests._helpers.fake_backend import build_fake_backend
+from tests.conftest import _make_engine_pair
 
 
 class FakeConversationEngine:

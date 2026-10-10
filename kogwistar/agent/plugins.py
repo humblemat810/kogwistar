@@ -4,41 +4,68 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Mapping, Protocol
+from typing import Protocol
+
+from kogwistar.json_types import JsonValue
 
 from .catalog import CatalogStore
-from .providers import ProviderInactiveError, ProviderRegistration, ProviderRegistry
+from .providers import (
+    ProviderCleanup,
+    ProviderInactiveError,
+    ProviderRegistration,
+    ProviderRegistry,
+)
 from .skills import (
-    SkillGraphArtifact,
-    SkillGraphEdge,
     DurableCatalogStore,
     DurableSkillCatalogMaterializer,
     DurableSkillProjectionStore,
+    SkillGraphArtifact,
+    SkillGraphEdge,
     SkillProjectionStore,
     catalog_entries_from_artifact,
     parse_skill_text,
     validate_skill_artifact,
 )
 
+JsonObject = dict[str, JsonValue]
+
+
+def _json_object(value: Mapping[str, object]) -> JsonObject:
+    decoded = json.loads(json.dumps(dict(value), default=str))
+    if not isinstance(decoded, dict):
+        raise TypeError("plugin payload must be a JSON object")
+    return decoded
+
+
+def _optional_text(value: object) -> str | None:
+    return value if isinstance(value, str) else None
+
+
+def _string_values(value: object) -> list[str]:
+    if not isinstance(value, (list, tuple, set, frozenset)):
+        return []
+    return [str(item) for item in value]
+
 
 class McpInvoker(Protocol):
     """Invoke one discovered MCP operation at an explicitly named boundary."""
 
-    def __call__(self, provider_local_id: str, **kwargs: Any) -> object: ...
+    def __call__(self, provider_local_id: str, **kwargs: JsonValue) -> JsonValue: ...
 
 
 class DescriptorLoader(Protocol):
     """Load bounded provider descriptors without granting execution authority."""
 
-    def __call__(self) -> list[Mapping[str, object]]: ...
+    def __call__(self) -> list[Mapping[str, JsonValue]]: ...
 
 
 class McpSchemaDescriber(Protocol):
     """Describe one already-discovered MCP operation."""
 
-    def __call__(self, provider_local_id: str, /) -> Mapping[str, object]: ...
+    def __call__(self, provider_local_id: str, /) -> Mapping[str, JsonValue]: ...
 
 
 class McpSchemaAuthorizer(Protocol):
@@ -50,19 +77,19 @@ class McpSchemaAuthorizer(Protocol):
 class SkillAuthorizer(Protocol):
     """Authorize one external skill or project record."""
 
-    def __call__(self, payload: Mapping[str, Any], /) -> bool: ...
+    def __call__(self, payload: Mapping[str, JsonValue], /) -> bool: ...
 
 
 class SkillParser(Protocol):
     """Convert an authorized external payload into a validated skill artifact."""
 
-    def __call__(self, source: Mapping[str, Any], /) -> SkillGraphArtifact: ...
+    def __call__(self, source: Mapping[str, JsonValue], /) -> SkillGraphArtifact: ...
 
 
 class KnowledgeWriter(Protocol):
     """Persist one scoped knowledge record and return its stable reference."""
 
-    def __call__(self, record: Mapping[str, Any], /) -> str: ...
+    def __call__(self, record: Mapping[str, JsonValue], /) -> str: ...
 
 
 class FilesystemSkillProvider:
@@ -76,8 +103,8 @@ class FilesystemSkillProvider:
         if not self.root.is_dir():
             raise ValueError("skill provider root must be a directory")
 
-    def descriptors(self) -> list[Mapping[str, object]]:
-        values: list[Mapping[str, object]] = []
+    def descriptors(self) -> list[Mapping[str, JsonValue]]:
+        values: list[Mapping[str, JsonValue]] = []
         for path in sorted(self.root.rglob("*.md")):
             if not path.is_file():
                 continue
@@ -125,15 +152,15 @@ class McpDiscoveryProvider:
         self._describe = describe
         self._invoke = invoke
 
-    def descriptors(self) -> list[Mapping[str, object]]:
+    def descriptors(self) -> list[Mapping[str, JsonValue]]:
         return [dict(item) for item in self._descriptors()]
 
-    def describe(self, provider_local_id: str) -> Mapping[str, object]:
+    def describe(self, provider_local_id: str) -> Mapping[str, JsonValue]:
         if self._describe is None:
             raise LookupError("MCP schema loading is unavailable")
         return dict(self._describe(provider_local_id))
 
-    def invoke(self, provider_local_id: str, **kwargs: Any) -> object:
+    def invoke(self, provider_local_id: str, **kwargs: JsonValue) -> JsonValue:
         if self._invoke is None:
             raise PermissionError("MCP invocation is not configured")
         return self._invoke(provider_local_id, **kwargs)
@@ -149,14 +176,14 @@ def select_mcp_schemas(
     authorize: McpSchemaAuthorizer | None = None,
     max_schemas: int = 16,
     max_bytes: int = 64 * 1024,
-) -> dict[str, Mapping[str, object]]:
+) -> dict[str, Mapping[str, JsonValue]]:
     """Load only selected, authorized, bounded schemas for one model call."""
 
     if authorize is None:
         raise PermissionError("MCP schema selection requires an authorization callback")
     if len(provider_local_ids) > max_schemas:
         raise ValueError("selected MCP schema count exceeds bound")
-    selected: dict[str, Mapping[str, object]] = {}
+    selected: dict[str, Mapping[str, JsonValue]] = {}
     total_bytes = 0
     for local_id in provider_local_ids:
         key = str(local_id)
@@ -254,7 +281,7 @@ def materialize_skill_artifact(
         if materializer is not None:
             if materializer.projections is not projection or materializer.catalog is not catalog:
                 raise ValueError("materializer must own supplied projection and catalog stores")
-            guard_updates: list[dict[str, Any]] = []
+            guard_updates: list[JsonObject] = []
             if provider_registry is not None and provider_registry._metadata is not None:
                 registration = provider_registration
                 if registration is None:
@@ -301,7 +328,7 @@ def make_skill_projection_cleanup(
     projection: SkillProjectionStore,
     catalog: CatalogStore | None = None,
     materializer: DurableSkillCatalogMaterializer | None = None,
-) -> Callable[[str], None]:
+) -> ProviderCleanup:
     """Return provider-unload cleanup for only derived skill/catalog views."""
 
     if (
@@ -359,16 +386,16 @@ class LlmWikiIngestionAdapter:
         self._authorize = authorize
         self._max_source_bytes = max(1, int(max_source_bytes))
 
-    def parse(self, source: Mapping[str, Any]) -> SkillGraphArtifact:
-        request = dict(source)
+    def parse(self, source: Mapping[str, object]) -> SkillGraphArtifact:
+        request = _json_object(source)
         if self._authorize is None or not self._authorize(request):
             raise PermissionError("LLM-Wiki skill ingestion requires authorization")
         encoded = json.dumps(request, sort_keys=True, default=str).encode("utf-8")
         if len(encoded) > self._max_source_bytes:
             raise ValueError("LLM-Wiki skill source exceeds byte bound")
         artifact = self._parse(request)
-        requested_tenant = request.get("tenant_id")
-        requested_project = request.get("project_id")
+        requested_tenant = _optional_text(request.get("tenant_id"))
+        requested_project = _optional_text(request.get("project_id"))
         validate_skill_artifact(
             artifact,
             tenant_id=requested_tenant,
@@ -448,14 +475,14 @@ class ProjectGlossaryProvider:
 
     provider_version = "v1"
 
-    def __init__(self, manifest: ProjectPluginManifest, terms: list[Mapping[str, Any]]) -> None:
+    def __init__(self, manifest: ProjectPluginManifest, terms: list[Mapping[str, object]]) -> None:
         self.provider_id = manifest.provider_id
         self.project_id = manifest.project_id
         self.tenant_id = manifest.tenant_id
-        self._terms = tuple(dict(term) for term in terms)
+        self._terms = tuple(_json_object(term) for term in terms)
 
-    def descriptors(self) -> list[Mapping[str, Any]]:
-        result: list[Mapping[str, Any]] = []
+    def descriptors(self) -> list[Mapping[str, JsonValue]]:
+        result: list[Mapping[str, JsonValue]] = []
         for term in self._terms:
             item = dict(term)
             item.setdefault("provider_id", self.provider_id)
@@ -473,13 +500,13 @@ class ProjectGlossaryProvider:
         tenant_id: str | None = None,
         project_id: str | None = None,
         limit: int = 20,
-    ) -> list[Mapping[str, Any]]:
+    ) -> list[Mapping[str, JsonValue]]:
         if authorize is None:
             raise PermissionError("project glossary search requires ACL callback")
         needle = str(query).strip().casefold()
         if not needle or limit < 1:
             return []
-        results: list[Mapping[str, Any]] = []
+        results: list[Mapping[str, JsonValue]] = []
         for term in self.descriptors():
             if tenant_id is not None and term.get("tenant_id") not in (None, tenant_id):
                 continue
@@ -488,7 +515,7 @@ class ProjectGlossaryProvider:
             if not authorize(term):
                 continue
             haystack = " ".join(
-                [str(term.get("term", "")), *(str(item) for item in term.get("aliases", ())), str(term.get("definition", ""))]
+                [str(term.get("term", "")), *_string_values(term.get("aliases", ())), str(term.get("definition", ""))]
             ).casefold()
             if needle in haystack:
                 results.append(term)
@@ -513,7 +540,7 @@ def ingest_project_glossary_to_knowledge(
             "entity_id": str(term.get("id") or f"{provider.provider_id}:{term.get('term', '')}"),
             "kind": "project_glossary_term",
             "term": str(term.get("term", "")),
-            "aliases": [str(value) for value in term.get("aliases", ())],
+            "aliases": _string_values(term.get("aliases", ())),
             "definition": str(term.get("definition", "")),
             "source": term.get("source"),
             "valid_from": term.get("valid_from"),
@@ -531,11 +558,11 @@ __all__ = [
     "FilesystemSkillProvider",
     "LlmWikiIngestionAdapter",
     "McpDiscoveryProvider",
-    "ingest_filesystem_skill",
-    "mark_inferred_edges_as_candidates",
-    "deduplicate_inferred_edges",
     "ProjectGlossaryProvider",
     "ProjectPluginManifest",
-    "select_mcp_schemas",
+    "deduplicate_inferred_edges",
+    "ingest_filesystem_skill",
     "ingest_project_glossary_to_knowledge",
+    "mark_inferred_edges_as_candidates",
+    "select_mcp_schemas",
 ]

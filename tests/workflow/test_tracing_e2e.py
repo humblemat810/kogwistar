@@ -1,21 +1,18 @@
 import json
 import sqlite3
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any
 
 import pytest
-
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.models import (
     Grounding,
-    Span,
     MentionVerification,
+    Span,
 )
-
+from kogwistar.runtime.models import RunSuccess, WorkflowEdge, WorkflowNode
 from kogwistar.runtime.runtime import WorkflowRuntime
-from kogwistar.runtime.models import RunSuccess
-from kogwistar.runtime.models import WorkflowEdge, WorkflowNode
 
 pytestmark = [pytest.mark.e2e, pytest.mark.ci_full]
 
@@ -118,7 +115,7 @@ def _trace_db_path(conversation_engine: GraphKnowledgeEngine) -> Path:
     return Path(conversation_engine.persist_directory) / "wf_trace.sqlite"
 
 
-def _fetch_events(db_path: Path, *, run_id: str) -> List[Dict[str, Any]]:
+def _fetch_events(db_path: Path, *, run_id: str) -> list[dict[str, Any]]:
     assert db_path.exists(), f"Trace DB not found at {db_path}"
     con = sqlite3.connect(str(db_path))
     try:
@@ -133,7 +130,7 @@ def _fetch_events(db_path: Path, *, run_id: str) -> List[Dict[str, Any]]:
             (run_id,),
         )
         rows = cur.fetchall()
-        out: List[Dict[str, Any]] = []
+        out: list[dict[str, Any]] = []
         for (
             ts_ms,
             typ,
@@ -165,15 +162,15 @@ def _fetch_events(db_path: Path, *, run_id: str) -> List[Dict[str, Any]]:
         con.close()
 
 
-def _events_of(events: List[Dict[str, Any]], typ: str) -> List[Dict[str, Any]]:
+def _events_of(events: list[dict[str, Any]], typ: str) -> list[dict[str, Any]]:
     return [e for e in events if e["type"] == typ]
 
 
 def _group_by_step(
-    events: List[Dict[str, Any]], typ: str
-) -> Dict[Tuple[int, str], List[Dict[str, Any]]]:
+    events: list[dict[str, Any]], typ: str
+) -> dict[tuple[int, str], list[dict[str, Any]]]:
     # key: (step_seq, node_id)
-    out: Dict[Tuple[int, str], List[Dict[str, Any]]] = {}
+    out: dict[tuple[int, str], list[dict[str, Any]]] = {}
     for e in events:
         if e["type"] != typ:
             continue
@@ -182,7 +179,7 @@ def _group_by_step(
     return out
 
 
-def _assert_started_completed_pairing(events: List[Dict[str, Any]]) -> None:
+def _assert_started_completed_pairing(events: list[dict[str, Any]]) -> None:
     started = _group_by_step(events, "step_attempt_started")
     completed = _group_by_step(events, "step_attempt_completed")
 

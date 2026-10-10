@@ -14,9 +14,8 @@ import pytest
 # them available for explicit slow/nightly validation, outside deterministic CI.
 pytestmark = pytest.mark.slow
 
-import scripts.runtime_tutorial_ladder as runtime_tutorial_ladder
-import scripts.tutorial_ladder as tutorial_ladder
 from kogwistar.runtime.design import validate_workflow_design
+from scripts import runtime_tutorial_ladder, tutorial_ladder
 
 pytest.importorskip("chromadb")
 

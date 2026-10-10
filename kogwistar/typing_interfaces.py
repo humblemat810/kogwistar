@@ -1,34 +1,45 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import AbstractContextManager
+from datetime import datetime
 from typing import (
+    TYPE_CHECKING,
     Any,
-    Dict,
-    List,
-    Mapping,
-    Optional,
+    Literal,
     Protocol,
-    Sequence,
     TypeAlias,
     TypeVar,
-    Union,
     runtime_checkable,
-    TYPE_CHECKING,
 )
 
 try:
     from typing import TypeAlias
 except ImportError:  # pragma: no cover - py<3.10 compatibility
-    from typing_extensions import TypeAlias
+    from typing import TypeAlias
 
-from .json_types import JsonValue
+from .json_types import JsonObject, JsonValue
 
 if TYPE_CHECKING:
     from .engine_core.models import (
         AdjudicationTarget as GraphAdjudicationTarget,
+    )
+    from .engine_core.models import (
         AdjudicationVerdict,
+        PureChromaEdge,
+        PureChromaNode,
+    )
+    from .engine_core.models import (
         Document as EngineDoc,
+    )
+    from .engine_core.models import (
+        Domain as GraphDomain,
+    )
+    from .engine_core.models import (
         Edge as GraphEdge,
+    )
+    from .engine_core.models import (
         Node as GraphNode,
     )
     from .engine_core.storage_backend import StorageBackend
@@ -49,34 +60,34 @@ Image: TypeAlias = object
 URI: TypeAlias = str
 ID: TypeAlias = str
 Include: TypeAlias = list[str]
-QueryResult: TypeAlias = Dict[str, JsonValue]
-Where: TypeAlias = Dict[str, JsonValue]
-WhereDocument: TypeAlias = Dict[str, JsonValue]
-IDs: TypeAlias = List[str]
+QueryResult: TypeAlias = dict[str, JsonValue]
+Where: TypeAlias = dict[str, JsonValue]
+WhereDocument: TypeAlias = dict[str, JsonValue]
+IDs: TypeAlias = list[str]
 _TCollectionValue = TypeVar("_TCollectionValue")
 OneOrMany: TypeAlias = _TCollectionValue | Sequence[_TCollectionValue]
-GetResult: TypeAlias = Dict[str, JsonValue]
-Metadata: TypeAlias = Dict[str, ChromaScalar]
+GetResult: TypeAlias = dict[str, JsonValue]
+Metadata: TypeAlias = dict[str, ChromaScalar]
 
 
 class CollectionLike(Protocol):
     def add(
         self,
         ids: OneOrMany[ID],
-        embeddings: Any = None,
+        embeddings: OneOrMany[Embedding] | None = None,
         metadatas: OneOrMany[Metadata] | None = None,
         documents: OneOrMany[ChromaDocument] | None = None,
-        images: Any = None,
+        images: OneOrMany[Image] | None = None,
         uris: OneOrMany[URI] | None = None,
     ) -> None: ...
 
     def update(
         self,
         ids: OneOrMany[ID],
-        embeddings: Any = None,
+        embeddings: OneOrMany[Embedding] | None = None,
         metadatas: OneOrMany[Metadata] | None = None,
         documents: OneOrMany[ChromaDocument] | None = None,
-        images: Any = None,
+        images: OneOrMany[Image] | None = None,
         uris: OneOrMany[URI] | None = None,
     ) -> None: ...
 
@@ -128,8 +139,72 @@ class ProjectionBackendLike(Protocol):
     nodes: NamedCollectionLike
     edges: NamedCollectionLike
     documents: NamedCollectionLike
+    domains: NamedCollectionLike
     embedding_dim: int
     distance: str
+
+
+class SqlAlchemyEngineLike(Protocol):
+    """Minimal lifecycle surface shared by optional SQLAlchemy adapters."""
+
+    def begin(self) -> AbstractContextManager[object]: ...
+
+    def connect(self) -> AbstractContextManager[object]: ...
+
+    def dispose(self) -> None: ...
+
+
+class SqlAlchemyScalarResultLike(Protocol):
+    """Small scalar-result surface used by optional SQLAlchemy adapters."""
+
+    def all(self) -> Sequence[object]: ...
+
+
+class SqlAlchemyMappingResultLike(Protocol):
+    def first(self) -> Mapping[str, object] | None: ...
+
+    def all(self) -> Sequence[Mapping[str, object]]: ...
+
+
+class SqlAlchemyResultLike(Protocol):
+    """Dependency-light result surface for typed SQLAlchemy integration."""
+
+    def scalar_one(self) -> object: ...
+
+    def scalar_one_or_none(self) -> object | None: ...
+
+    def scalars(self) -> SqlAlchemyScalarResultLike: ...
+
+    def mappings(self) -> SqlAlchemyMappingResultLike: ...
+
+    def first(self) -> Sequence[Any] | None: ...
+
+    @property
+    def rowcount(self) -> int: ...
+
+    def fetchone(self) -> Sequence[Any] | None: ...
+
+    def fetchall(self) -> Sequence[Any]: ...
+
+    def __iter__(self) -> Iterator[Any]: ...
+
+
+class SqlAlchemyConnectionLike(Protocol):
+    """Minimal connection operations used without importing SQLAlchemy types."""
+
+    def execute(
+        self,
+        statement: object,
+        *args: object,
+        **kwargs: object,
+    ) -> SqlAlchemyResultLike: ...
+
+    def exec_driver_sql(
+        self,
+        statement: str,
+        *args: object,
+        **kwargs: object,
+    ) -> SqlAlchemyResultLike: ...
 
 
 if TYPE_CHECKING:
@@ -155,24 +230,24 @@ class NodeLike(Protocol):
     def summary(self) -> str: ...
 
     @property
-    def domain_id(self) -> Optional[str]: ...
+    def domain_id(self) -> str | None: ...
 
     @property
-    def canonical_entity_id(self) -> Optional[str]: ...
+    def canonical_entity_id(self) -> str | None: ...
 
     @property
-    def properties(self) -> Optional[Mapping[str, object]]: ...
+    def properties(self) -> Mapping[str, object] | None: ...
 
     @property
-    def mentions(self) -> Optional[Sequence[object]]: ...
+    def mentions(self) -> Sequence[object] | None: ...
 
     @property
-    def embedding(self) -> Optional[Sequence[float]]: ...
+    def embedding(self) -> Sequence[float] | None: ...
 
     @property
-    def doc_id(self) -> Optional[str]: ...
+    def doc_id(self) -> str | None: ...
 
-    def model_dump(self) -> Dict[str, Any]: ...
+    def model_dump(self) -> dict[str, object]: ...
     def model_dump_json(self) -> str: ...
 
 
@@ -182,19 +257,19 @@ class EdgeLike(NodeLike, Protocol):
     def relation(self) -> str: ...
 
     @property
-    def source_ids(self) -> Optional[Sequence[str]]: ...
+    def source_ids(self) -> Sequence[str] | None: ...
 
     @property
-    def target_ids(self) -> Optional[Sequence[str]]: ...
+    def target_ids(self) -> Sequence[str] | None: ...
 
     @property
-    def source_edge_ids(self) -> Optional[Sequence[str]]: ...
+    def source_edge_ids(self) -> Sequence[str] | None: ...
 
     @property
-    def target_edge_ids(self) -> Optional[Sequence[str]]: ...
+    def target_edge_ids(self) -> Sequence[str] | None: ...
 
 
-AdjudicationTarget: TypeAlias = Union[NodeLike, EdgeLike]
+AdjudicationTarget: TypeAlias = NodeLike | EdgeLike
 
 # -------------------------
 # Shared engine surface
@@ -204,44 +279,123 @@ class EmbeddingFunctionLike(Protocol):
     def __call__(self, documents_or_texts: list[str]) -> list[list[float]]: ...
 
 
+QueryEmbeddingInput: TypeAlias = Sequence[float] | Sequence[Sequence[float]]
+
+
 class ReadLike(Protocol):
-    def get_nodes(self, *args: Any, **kwargs: Any) -> Sequence[GraphNode]: ...
-    def get_edges(self, *args: Any, **kwargs: Any) -> Sequence[GraphEdge]: ...
-    def query_nodes(self, *args: Any, **kwargs: Any) -> Sequence[Sequence[GraphNode]]: ...
-    def query_edges(self, *args: Any, **kwargs: Any) -> Sequence[Sequence[GraphEdge]]: ...
-    def search_nodes_as_of(self, *args: Any, **kwargs: Any) -> Sequence[GraphNode]: ...
+    def load_node_map(
+        self,
+        ids: Sequence[str],
+        *,
+        node_type: type[GraphNode] | None = None,
+        include: list[str] | None = None,
+    ) -> dict[str, GraphNode]: ...
+
+    def load_edge_map(
+        self,
+        ids: Sequence[str],
+        *,
+        edge_type: type[GraphEdge] | None = None,
+        include: list[str] | None = None,
+    ) -> dict[str, GraphEdge]: ...
+
+    def get_nodes(
+        self,
+        ids: Sequence[str] | None = None,
+        node_type: type[GraphNode] | None = None,
+        include: list[str] | None = None,
+        where: object = None,
+        limit: int | None = 200,
+        resolve_mode: Literal["active_only", "redirect", "include_tombstones"] = "active_only",
+    ) -> Sequence[GraphNode]: ...
+
+    def get_edges(
+        self,
+        ids: Sequence[str] | None = None,
+        edge_type: type[GraphEdge] | None = None,
+        where: object = None,
+        limit: int | None = 400,
+        include: list[str] | None = None,
+        resolve_mode: Literal["active_only", "redirect", "include_tombstones"] = "active_only",
+    ) -> Sequence[GraphEdge]: ...
+    def query_nodes(
+        self,
+        *args: object,
+        query: str | None = None,
+        query_embeddings: QueryEmbeddingInput | None = None,
+        include: list[str] = ["documents", "embeddings", "metadatas"],
+        node_type: type[GraphNode] | None = None,
+        **kwargs: object,
+    ) -> Sequence[Sequence[GraphNode]]: ...
+
+    def query_edges(
+        self,
+        *args: object,
+        query: str | None = None,
+        query_embeddings: QueryEmbeddingInput | None = None,
+        include: list[str] = ["documents", "embeddings", "metadatas"],
+        edge_type: type[GraphEdge] | None = None,
+        **kwargs: object,
+    ) -> Sequence[Sequence[GraphEdge]]: ...
+    def search_nodes_as_of(
+        self,
+        *,
+        query: str | None = None,
+        query_embeddings: Sequence[float] | Sequence[Sequence[float]] | None = None,
+        as_of_ts: datetime | str,
+        where: dict[str, JsonValue] | None = None,
+        n_results: int = 20,
+        follow_redirects: bool = True,
+        node_type: type[GraphNode] = ...,
+        include: list[str] | None = None,
+        max_redirect_hops: int = 16,
+        similarity_threshold: float | None = None,
+        **kwargs: object,
+    ) -> Sequence[GraphNode]: ...
 
     def search_nodes_as_of_scored(
-        self, *args: Any, **kwargs: Any
-    ) -> list["VectorSearchHit[GraphNode]"]: ...
+        self,
+        *,
+        query: str | None = None,
+        query_embeddings: Sequence[float] | Sequence[Sequence[float]] | None = None,
+        as_of_ts: datetime | str,
+        where: dict[str, JsonValue] | None = None,
+        n_results: int = 20,
+        follow_redirects: bool = True,
+        node_type: type[GraphNode] = ...,
+        include: list[str] | None = None,
+        max_redirect_hops: int = 16,
+        similarity_threshold: float | None = None,
+        **kwargs: object,
+    ) -> list[VectorSearchHit[GraphNode]]: ...
 
     def get_document(self, doc_id: str) -> EngineDoc: ...
 
     def node_exists(
         self,
         ids: Sequence[str] | None = None,
-        where: Dict[str, Any] | None = None,
+        where: dict[str, JsonValue] | None = None,
     ) -> bool: ...
 
     def edge_exists(
         self,
         ids: Sequence[str] | None = None,
-        where: Dict[str, Any] | None = None,
+        where: dict[str, JsonValue] | None = None,
     ) -> bool: ...
 
     def get_node_metadatas(
         self,
         ids: Sequence[str] | None = None,
-        where: Dict[str, Any] | None = None,
+        where: dict[str, JsonValue] | None = None,
         limit: int | None = 200,
-    ) -> list[dict[str, Any]]: ...
+    ) -> list[dict[str, JsonValue]]: ...
 
     def get_edge_metadatas(
         self,
         ids: Sequence[str] | None = None,
-        where: Dict[str, Any] | None = None,
+        where: dict[str, JsonValue] | None = None,
         limit: int | None = 400,
-    ) -> list[dict[str, Any]]: ...
+    ) -> list[dict[str, JsonValue]]: ...
 
     def node_ids_by_doc(
         self,
@@ -255,6 +409,31 @@ class ReadLike(Protocol):
         insertion_method: str | None = None,
     ) -> list[str]: ...
 
+    def edges_by_doc(
+        self, doc_id: str, where: dict[str, JsonValue] | None = None
+    ) -> list[str]: ...
+
+    def list_edges_with_ref_filter(
+        self, doc_id: str, where: dict[str, JsonValue] | None = None
+    ) -> list[GraphEdge]: ...
+
+    def nodes_by_doc(
+        self, doc_id: str, *, where: dict[str, JsonValue] | None = None
+    ) -> list[str]: ...
+
+    def list_nodes_with_ref_filter(
+        self, doc_id: str, *, where: dict[str, JsonValue] | None = None
+    ) -> list[GraphNode]: ...
+
+    def ids_with_insertion_method(
+        self,
+        *,
+        kind: str,
+        insertion_method: str,
+        ids: Sequence[str] | None = None,
+        doc_id: str | None = None,
+    ) -> list[str]: ...
+
     def extract_reference_contexts(
         self,
         node_or_id: GraphNode | GraphEdge | str,
@@ -262,16 +441,46 @@ class ReadLike(Protocol):
         window_chars: int = 120,
         max_contexts: int | None = None,
         prefer_label_fallback: bool = True,
-    ) -> list[dict[str, Any]]: ...
+    ) -> list[dict[str, object]]: ...
+
+    def nodes_from_single_or_id_query_result(
+        self,
+        got: Mapping[str, JsonValue],
+        node_type: type[GraphNode] = ...,
+    ) -> list[GraphNode]: ...
+
+    def edges_from_single_or_id_query_result(
+        self,
+        got: Mapping[str, JsonValue],
+        edge_type: type[GraphEdge] = ...,
+        include: Sequence[str] | None = None,
+    ) -> list[GraphEdge]: ...
+
+    def nodes_from_query_result(
+        self,
+        gots: Mapping[str, JsonValue],
+        node_type: type[GraphNode] = ...,
+    ) -> list[list[GraphNode]]: ...
+
+    def edges_from_query_result(
+        self,
+        gots: Mapping[str, JsonValue],
+        edge_type: type[GraphEdge] = ...,
+    ) -> list[list[GraphEdge]]: ...
+
+    def where_update_from_resolve_mode(
+        self,
+        resolve_mode: Literal["active_only", "redirect", "include_tombstones"],
+    ) -> dict[str, str]: ...
 
 
 class LifecycleLike(Protocol):
     """Stable lifecycle mutation surface shared by engine implementations."""
 
-    def tombstone_node(self, node_id: str, **kwargs: object) -> bool: ...
-    def redirect_node(self, from_id: str, to_id: str, **kwargs: object) -> bool: ...
-    def tombstone_edge(self, edge_id: str, **kwargs: object) -> bool: ...
-    def redirect_edge(self, from_id: str, to_id: str, **kwargs: object) -> bool: ...
+    def tombstone_node(self, node_id: str, **kwargs: JsonValue) -> bool: ...
+    def redirect_node(self, from_id: str, to_id: str, **kwargs: JsonValue) -> bool: ...
+    def tombstone_edge(self, edge_id: str, **kwargs: JsonValue) -> bool: ...
+    def redirect_edge(self, from_id: str, to_id: str, **kwargs: JsonValue) -> bool: ...
 
 
 class WriteLike(Protocol):
@@ -280,15 +489,65 @@ class WriteLike(Protocol):
     def add_node(self, node: GraphNode, doc_id: str | None = None) -> None: ...
     def add_edge(self, edge: GraphEdge, doc_id: str | None = None) -> None: ...
 
-    def node_doc_and_meta(self, node: GraphNode) -> tuple[str, dict[str, Any]]: ...
-    def edge_doc_and_meta(self, edge: GraphEdge) -> tuple[str, dict[str, Any]]: ...
+    async def add_node_async(
+        self, node: GraphNode, doc_id: str | None = None
+    ) -> None: ...
 
-    def strip_none(self, data: dict[str, Any]) -> dict[str, Any]: ...
-    def json_or_none(self, value: Any) -> str | None: ...
+    async def add_edge_async(
+        self, edge: GraphEdge, doc_id: str | None = None
+    ) -> None: ...
+
+    def add_pure_node(self, node: PureChromaNode) -> None: ...
+    def add_pure_edge(self, edge: PureChromaEdge) -> None: ...
+    def add_domain(self, domain: GraphDomain) -> None: ...
+    def enrich_edge_meta(self, edge: GraphEdge) -> dict[str, object]: ...
+    def fanout_endpoints_rows(
+        self, edge: GraphEdge, doc_id: str | None
+    ) -> object: ...
+
+    def node_doc_and_meta(self, node: GraphNode) -> tuple[str, JsonObject]: ...
+    def edge_doc_and_meta(self, edge: GraphEdge) -> tuple[str, JsonObject]: ...
+
+    def strip_none(self, data: dict[str, JsonValue]) -> dict[str, JsonValue]: ...
+    def json_or_none(self, value: object) -> str | None: ...
 
     def index_node_docs(self, node: GraphNode) -> list[str]: ...
     def index_node_refs(self, node: GraphNode) -> list[str]: ...
     def index_edge_refs(self, edge: GraphEdge) -> list[str]: ...
+
+    def delete_edge_ref_rows(self, edge_id: str) -> None: ...
+    def delete_node_ref_rows(self, node_id: str) -> None: ...
+
+    def maybe_reindex_edge_refs(
+        self, edge: GraphEdge, *, force: bool = False
+    ) -> None: ...
+
+    def maybe_reindex_node_refs(
+        self, node: GraphNode, *, force: bool = False
+    ) -> None: ...
+
+    def prune_node_refs_for_doc(self, node_id: str, doc_id: str) -> bool: ...
+    def rebuild_edge_refs_for_doc(self, doc_id: str) -> int: ...
+    def rebuild_all_edge_refs(self) -> int: ...
+    def rebuild_node_refs_for_doc(self, doc_id: str) -> int: ...
+    def rebuild_all_node_refs(self) -> int: ...
+    def delete_edges_by_ids(self, edge_ids: list[str]) -> None: ...
+
+    def rust_postgres_delete_existing(
+        self, *, entity_kind: str, entity_ids: list[str]
+    ) -> bool: ...
+
+    def rust_postgres_replace_existing(
+        self,
+        *,
+        entity_kind: str,
+        entity_id: str,
+        document: str,
+        metadata_patch: JsonObject,
+        payload: JsonObject,
+    ) -> bool: ...
+
+    def uses_rust_postgres_authority(self) -> bool: ...
 
 
 class ExtractLike(Protocol):
@@ -354,7 +613,7 @@ class StrategyEngineLike(EngineLike, Protocol):
     def lifecycle(self) -> LifecycleLike: ...
 
     @property
-    def llm_tasks(self) -> "LLMTaskSet": ...
+    def llm_tasks(self) -> LLMTaskSet: ...
     allow_cross_kind_adjudication: bool
     cross_kind_strategy: str
 

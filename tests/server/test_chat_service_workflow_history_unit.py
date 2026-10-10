@@ -6,10 +6,10 @@ from unittest.mock import MagicMock
 import pytest
 
 from kogwistar.engine_core.models import Grounding, MentionVerification, Span
+from kogwistar.runtime.models import WorkflowEdge, WorkflowNode
 from kogwistar.server.chat_service_workflow_history import (
     _WorkflowDesignHistoryMixin,
 )
-from kogwistar.runtime.models import WorkflowEdge, WorkflowNode
 
 pytestmark = pytest.mark.ci
 

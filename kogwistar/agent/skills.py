@@ -2,22 +2,24 @@
 
 from __future__ import annotations
 
+import asyncio
+import copy
 import hashlib
 import json
 import re
 import shlex
-import copy
-import asyncio
 from collections.abc import Mapping
-from typing import Any, Literal, Protocol, runtime_checkable
+from typing import Literal, Protocol, cast, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from .catalog import CatalogEntry, DurableCatalogStore, scoped_projection_namespace
 from kogwistar.engine_core.embedding_profile import (
     AsyncNamedProjectionStore,
     NamedProjectionStore,
 )
+from kogwistar.json_types import JsonValue
+
+from .catalog import CatalogEntry, DurableCatalogStore, scoped_projection_namespace
 
 SkillStepKind = Literal[
     "instruction",
@@ -29,10 +31,43 @@ SkillStepKind = Literal[
     "check",
 ]
 
+JsonObject = dict[str, JsonValue]
+
+
+def _json_object(value: object) -> JsonObject:
+    """Narrow a persisted JSON value before reading projection fields."""
+
+    if isinstance(value, dict):
+        return cast(JsonObject, value)
+    return {}
+
+
+def _json_object_list(value: object) -> list[JsonObject]:
+    if not isinstance(value, list):
+        return []
+    return [_json_object(item) for item in value if isinstance(item, dict)]
+
+
+def _json_string_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if isinstance(item, str)]
+
+
+def _json_int(value: object, default: int = 0) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (int, float, str)):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+    return default
+
 class SkillProjectionAcl(Protocol):
     """Authorize one skill projection artifact for a principal."""
 
-    def __call__(self, artifact: "SkillGraphArtifact", principal: str, /) -> bool: ...
+    def __call__(self, artifact: SkillGraphArtifact, principal: str, /) -> bool: ...
 
 _SAFE_COMMAND_CHARS = re.compile(r"[;&|<>`$]|\n")
 _SHELL_WRAPPERS = {"sh", "bash", "zsh", "fish", "cmd", "cmd.exe", "powershell", "pwsh"}
@@ -70,10 +105,10 @@ class SkillGraphNode(BaseModel):
     required_capabilities: list[str] = Field(default_factory=list)
     binding_status: Literal["unbound", "validated"] = "unbound"
     invocable: bool = False
-    metadata: dict[str, object] = Field(default_factory=dict)
+    metadata: JsonObject = Field(default_factory=dict)
 
     @model_validator(mode="after")
-    def _safe_invocation(self) -> "SkillGraphNode":
+    def _safe_invocation(self) -> SkillGraphNode:
         if self.invocable and self.binding_status != "validated":
             raise ValueError("only validated skill bindings may be invocable")
         if self.kind in {"script_call", "command_template"} and not self.required_capabilities:
@@ -90,7 +125,7 @@ class SkillGraphEdge(BaseModel):
     target_ids: list[str]
     source_ref: str | None = None
     status: Literal["active", "candidate", "rejected"] = "active"
-    metadata: dict[str, object] = Field(default_factory=dict)
+    metadata: JsonObject = Field(default_factory=dict)
 
 
 class SkillGraphArtifact(BaseModel):
@@ -110,10 +145,10 @@ class SkillGraphArtifact(BaseModel):
     edges: list[SkillGraphEdge] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     unsupported: list[str] = Field(default_factory=list)
-    provenance: dict[str, object] = Field(default_factory=dict)
+    provenance: JsonObject = Field(default_factory=dict)
 
     @model_validator(mode="after")
-    def _bounded_graph(self) -> "SkillGraphArtifact":
+    def _bounded_graph(self) -> SkillGraphArtifact:
         if len(self.nodes) > 256 or len(self.edges) > 512:
             raise ValueError("skill graph exceeds deterministic ingestion bounds")
         node_ids = {node.node_id for node in self.nodes}
@@ -153,7 +188,7 @@ class SkillProjectionRequest(BaseModel):
     lane_id: str = ""
 
     @model_validator(mode="after")
-    def _derive_lane(self) -> "SkillProjectionRequest":
+    def _derive_lane(self) -> SkillProjectionRequest:
         self.lane_id = f"ws:{self.tenant_id}:{self.project_id}:g:projection:lane:skills"
         return self
 
@@ -169,7 +204,7 @@ class SkillExecutionPlan(BaseModel):
     evidence_refs: list[str] = Field(default_factory=list)
     source_fingerprint: str
     projection_revision: int
-    execution_policy: "SkillExecutionPolicy | None" = None
+    execution_policy: SkillExecutionPolicy | None = None
 
 
 class SkillExecutionPolicy(BaseModel):
@@ -189,7 +224,7 @@ class SkillExecutionPolicy(BaseModel):
     allow_network: bool = False
 
     @model_validator(mode="after")
-    def _safe_policy(self) -> "SkillExecutionPolicy":
+    def _safe_policy(self) -> SkillExecutionPolicy:
         if self.cwd is not None:
             validate_package_relative_path(self.cwd)
         if any(not str(key).strip() or "=" in str(key) for key in self.environment_keys):
@@ -219,7 +254,7 @@ class SkillExecutionEvidence(BaseModel):
     result_ref: str | None = None
     outcome: Literal["success", "failure", "cancelled"]
 
-    def state_patch(self) -> dict[str, object]:
+    def state_patch(self) -> JsonObject:
         """Return JSON-compatible state for ordinary checkpoint/evidence writes."""
         return {"skill_execution_evidence": self.model_dump(mode="json")}
 
@@ -232,7 +267,7 @@ class SemanticSkillIngestionProvider(Protocol):
     parser_id: str
     parser_version: str
 
-    def parse(self, source: Mapping[str, Any]) -> SkillGraphArtifact: ...
+    def parse(self, source: Mapping[str, JsonValue]) -> SkillGraphArtifact: ...
 
 
 def validate_skill_artifact(
@@ -460,21 +495,23 @@ class DurableSkillProjectionStore(SkillProjectionStore):
         return f"skill-graph-{kind}:{cls._storage_id(key)}:{item_hash}"
 
     @staticmethod
-    def _cas_values(row: dict[str, Any] | None) -> tuple[int | None, int | None]:
+    def _cas_values(row: JsonObject | None) -> tuple[int | None, int | None]:
         if row is None:
             return None, None
-        return int(row.get("last_authoritative_seq", 0)), int(row.get("last_materialized_seq", 0))
+        return _json_int(row.get("last_authoritative_seq")), _json_int(
+            row.get("last_materialized_seq")
+        )
 
     @staticmethod
     def _update(
         *,
         namespace: str,
         key: str,
-        payload: dict[str, Any],
-        row: dict[str, Any] | None,
+        payload: JsonObject,
+        row: JsonObject | None,
         revision: int,
         status: str = "ready",
-    ) -> dict[str, Any]:
+    ) -> JsonObject:
         expected_a, expected_m = DurableSkillProjectionStore._cas_values(row)
         return {
             "namespace": namespace,
@@ -495,7 +532,7 @@ class DurableSkillProjectionStore(SkillProjectionStore):
         pointers: dict[str, int] = {}
         legacy_current: dict[str, SkillGraphArtifact] = {}
         for row in self._metadata.list_named_projections(self.namespace):
-            payload = row.get("payload") or {}
+            payload = _json_object(row.get("payload"))
             artifact_data = payload.get("artifact")
             key = str(row.get("key"))
             if isinstance(artifact_data, dict):
@@ -509,13 +546,13 @@ class DurableSkillProjectionStore(SkillProjectionStore):
                     revisions.setdefault(logical_key, []).append(artifact)
                 else:  # Legacy current/history blob; retain read compatibility.
                     legacy_current[logical_key] = artifact
-            history_data = payload.get("history") or []
+            history_data = _json_object_list(payload.get("history"))
             if history_data:
                 self._history[key] = [SkillGraphArtifact.model_validate(item) for item in history_data]
             if payload.get("record_kind") == "skill_current" and row.get(
                 "materialization_status"
             ) != "retired":
-                pointers[str(payload["logical_key"])] = int(payload["current_revision"])
+                pointers[str(payload["logical_key"])] = _json_int(payload["current_revision"])
         for key, values in revisions.items():
             self._history[key] = sorted(
                 values, key=lambda artifact: artifact.projection_revision
@@ -535,7 +572,7 @@ class DurableSkillProjectionStore(SkillProjectionStore):
 
     def prepare_upsert_update(
         self, artifact: SkillGraphArtifact
-    ) -> tuple[SkillGraphArtifact, list[dict[str, Any]]]:
+    ) -> tuple[SkillGraphArtifact, list[JsonObject]]:
         """Build immutable revision/current-pointer CAS updates without applying."""
 
         validate_skill_artifact(
@@ -561,7 +598,7 @@ class DurableSkillProjectionStore(SkillProjectionStore):
                     return latest.model_copy(deep=True), []
         revision_key = self._revision_key(key, artifact.projection_revision)
         revision_row = self._metadata.get_named_projection(self.namespace, revision_key)
-        updates: list[dict[str, Any]] = []
+        updates: list[JsonObject] = []
         if revision_row is None:
             updates.append(
                 self._update(
@@ -593,7 +630,7 @@ class DurableSkillProjectionStore(SkillProjectionStore):
         )
         return artifact.model_copy(deep=True), updates
 
-    def apply_prepared_updates(self, updates: list[dict[str, Any]]) -> None:
+    def apply_prepared_updates(self, updates: list[JsonObject]) -> None:
         """Apply same-store updates atomically through existing metadata CAS."""
 
         if not updates:
@@ -605,7 +642,7 @@ class DurableSkillProjectionStore(SkillProjectionStore):
             raise ValueError("skill projection changed concurrently")
         self._refresh()
 
-    def prepare_graph_updates(self, artifact: SkillGraphArtifact) -> list[dict[str, Any]]:
+    def prepare_graph_updates(self, artifact: SkillGraphArtifact) -> list[JsonObject]:
         """Prepare current graph-node/edge projections for one artifact revision."""
 
         validate_skill_artifact(
@@ -617,18 +654,21 @@ class DurableSkillProjectionStore(SkillProjectionStore):
         logical_key = self._key(artifact.provider_id, artifact.provider_local_id)
         pointer_key = self._graph_pointer_key(logical_key)
         pointer_row = self._metadata.get_named_projection(self.namespace, pointer_key)
-        previous = (pointer_row or {}).get("payload") or {}
-        previous_keys = set(previous.get("node_keys", ())) | set(previous.get("edge_keys", ()))
-        node_keys = [
+        previous = _json_object((pointer_row or {}).get("payload"))
+        previous_keys = set(_json_string_list(previous.get("node_keys"))) | set(
+            _json_string_list(previous.get("edge_keys"))
+        )
+        node_keys: list[JsonValue] = [
             self._graph_item_key(logical_key, "node", node.node_id)
             for node in artifact.nodes
         ]
-        edge_keys = [
+        edge_keys: list[JsonValue] = [
             self._graph_item_key(logical_key, "edge", edge.edge_id)
             for edge in artifact.edges
         ]
-        updates: list[dict[str, Any]] = []
+        updates: list[JsonObject] = []
         for node, row_key in zip(artifact.nodes, node_keys):
+            row_key = str(row_key)
             row = self._metadata.get_named_projection(self.namespace, row_key)
             updates.append(
                 self._update(
@@ -646,6 +686,7 @@ class DurableSkillProjectionStore(SkillProjectionStore):
                 )
             )
         for edge, row_key in zip(artifact.edges, edge_keys):
+            row_key = str(row_key)
             row = self._metadata.get_named_projection(self.namespace, row_key)
             updates.append(
                 self._update(
@@ -670,7 +711,7 @@ class DurableSkillProjectionStore(SkillProjectionStore):
                     self._update(
                         namespace=self.namespace,
                         key=row_key,
-                        payload=dict(row.get("payload") or {}),
+                        payload=_json_object(row.get("payload")),
                         row=row,
                         revision=artifact.projection_revision,
                         status="retired",
@@ -697,46 +738,47 @@ class DurableSkillProjectionStore(SkillProjectionStore):
         self,
         provider_id: str,
         provider_local_id: str,
-        **kwargs: Any,
-    ) -> dict[str, Any] | None:
+        *,
+        principal: str = "system",
+        tenant_id: str | None = None,
+        project_id: str | None = None,
+    ) -> JsonObject | None:
         """Read current graph-native rows, excluding retired projections."""
 
-        if not self._matches_store_scope(
-            tenant_id=kwargs.get("tenant_id"), project_id=kwargs.get("project_id")
-        ):
+        if not self._matches_store_scope(tenant_id=tenant_id, project_id=project_id):
             return None
         self._refresh()
         logical_key = self._key(provider_id, provider_local_id)
         artifact = super().get(
             provider_id,
             provider_local_id,
-            principal=str(kwargs.get("principal", "system")),
-            tenant_id=kwargs.get("tenant_id"),
-            project_id=kwargs.get("project_id"),
+            principal=principal,
+            tenant_id=tenant_id,
+            project_id=project_id,
         )
         if artifact is None:
             return None
         pointer = self._metadata.get_named_projection(
             self.namespace, self._graph_pointer_key(logical_key)
         )
-        payload = (pointer or {}).get("payload") or {}
-        nodes: list[dict[str, Any]] = []
-        edges: list[dict[str, Any]] = []
-        for row_key in payload.get("node_keys", ()):
+        payload = _json_object((pointer or {}).get("payload"))
+        nodes: list[JsonValue] = []
+        edges: list[JsonValue] = []
+        for row_key in _json_string_list(payload.get("node_keys")):
             row = self._metadata.get_named_projection(self.namespace, str(row_key))
             if row and row.get("materialization_status") != "retired":
-                item = (row.get("payload") or {}).get("node")
+                item = _json_object(row.get("payload")).get("node")
                 if isinstance(item, dict):
                     nodes.append(item)
-        for row_key in payload.get("edge_keys", ()):
+        for row_key in _json_string_list(payload.get("edge_keys")):
             row = self._metadata.get_named_projection(self.namespace, str(row_key))
             if row and row.get("materialization_status") != "retired":
-                item = (row.get("payload") or {}).get("edge")
+                item = _json_object(row.get("payload")).get("edge")
                 if isinstance(item, dict):
                     edges.append(item)
         return {
             "logical_key": logical_key,
-            "revision": int(payload.get("revision", 0) or 0),
+            "revision": _json_int(payload.get("revision")),
             "nodes": nodes,
             "edges": edges,
         }
@@ -750,27 +792,41 @@ class DurableSkillProjectionStore(SkillProjectionStore):
         self,
         provider_id: str,
         provider_local_id: str,
-        **kwargs: Any,
+        *,
+        principal: str = "system",
+        tenant_id: str | None = None,
+        project_id: str | None = None,
     ) -> SkillGraphArtifact | None:
-        if not self._matches_store_scope(
-            tenant_id=kwargs.get("tenant_id"), project_id=kwargs.get("project_id")
-        ):
+        if not self._matches_store_scope(tenant_id=tenant_id, project_id=project_id):
             return None
         self._refresh()
-        return super().get(provider_id, provider_local_id, **kwargs)
+        return super().get(
+            provider_id,
+            provider_local_id,
+            principal=principal,
+            tenant_id=tenant_id,
+            project_id=project_id,
+        )
 
     def history(
         self,
         provider_id: str,
         provider_local_id: str,
-        **kwargs: Any,
+        *,
+        principal: str = "system",
+        tenant_id: str | None = None,
+        project_id: str | None = None,
     ) -> tuple[SkillGraphArtifact, ...]:
-        if not self._matches_store_scope(
-            tenant_id=kwargs.get("tenant_id"), project_id=kwargs.get("project_id")
-        ):
+        if not self._matches_store_scope(tenant_id=tenant_id, project_id=project_id):
             return ()
         self._refresh()
-        return super().history(provider_id, provider_local_id, **kwargs)
+        return super().history(
+            provider_id,
+            provider_local_id,
+            principal=principal,
+            tenant_id=tenant_id,
+            project_id=project_id,
+        )
 
     def remove(self, provider_id: str, provider_local_id: str) -> None:
         self._refresh()
@@ -778,7 +834,7 @@ class DurableSkillProjectionStore(SkillProjectionStore):
         pointer_key = self._pointer_key(key)
         row = self._metadata.get_named_projection(self.namespace, pointer_key)
         if row is not None:
-            payload = dict(row.get("payload") or {})
+            payload = _json_object(row.get("payload"))
             payload.update(
                 {
                     "record_kind": "skill_current",
@@ -802,7 +858,7 @@ class DurableSkillProjectionStore(SkillProjectionStore):
         else:
             legacy_row = self._metadata.get_named_projection(self.namespace, key)
             if legacy_row is not None:
-                payload = dict(legacy_row.get("payload") or {})
+                payload = _json_object(legacy_row.get("payload"))
                 payload["artifact"] = None
                 expected_a, expected_m = self._cas_values(legacy_row)
                 if not self._metadata.compare_and_swap_named_projection(
@@ -875,11 +931,11 @@ class DurableSkillCatalogMaterializer:
         self,
         artifact: SkillGraphArtifact,
         *,
-        guard_updates: list[dict[str, Any]] | None = None,
+        guard_updates: list[JsonObject] | None = None,
     ) -> SkillGraphArtifact:
         projected, artifact_updates = self.projections.prepare_upsert_update(artifact)
         graph_updates = self.projections.prepare_graph_updates(projected)
-        catalog_updates: list[dict[str, Any]] = []
+        catalog_updates: list[JsonObject] = []
         for entry in catalog_entries_from_artifact(projected):
             _entry, updates = self.catalog.prepare_upsert_update(entry)
             catalog_updates.extend(updates)
@@ -929,14 +985,14 @@ class DurableSkillCatalogMaterializer:
                 or entry.metadata.get("provider_lifecycle_token") == lifecycle_token
             )
         )
-        updates: list[dict[str, Any]] = []
+        updates: list[JsonObject] = []
         for logical_key in skill_keys:
             pointer_key = self.projections._pointer_key(logical_key)
             pointer = self.projections._metadata.get_named_projection(
                 self.projections.namespace, pointer_key
             )
             if pointer is not None:
-                payload = dict(pointer.get("payload") or {})
+                payload = _json_object(pointer.get("payload"))
                 payload.update({"current_revision": None})
                 updates.append(
                     self.projections._update(
@@ -944,7 +1000,7 @@ class DurableSkillCatalogMaterializer:
                         key=pointer_key,
                         payload=payload,
                         row=pointer,
-                        revision=int(pointer.get("last_authoritative_seq", 1) or 1),
+                revision=_json_int(pointer.get("last_authoritative_seq"), 1),
                         status="retired",
                     )
                 )
@@ -953,11 +1009,11 @@ class DurableSkillCatalogMaterializer:
                 self.projections.namespace, graph_pointer_key
             )
             if graph_pointer is not None:
-                graph_payload = dict(graph_pointer.get("payload") or {})
-                graph_keys = set(graph_payload.get("node_keys", ())) | set(
-                    graph_payload.get("edge_keys", ())
+                graph_payload = _json_object(graph_pointer.get("payload"))
+                graph_keys = set(_json_string_list(graph_payload.get("node_keys"))) | set(
+                    _json_string_list(graph_payload.get("edge_keys"))
                 )
-                revision = int(graph_pointer.get("last_authoritative_seq", 1) or 1)
+                revision = _json_int(graph_pointer.get("last_authoritative_seq"), 1)
                 for graph_key in graph_keys:
                     graph_row = self.projections._metadata.get_named_projection(
                         self.projections.namespace, str(graph_key)
@@ -967,7 +1023,7 @@ class DurableSkillCatalogMaterializer:
                             self.projections._update(
                                 namespace=self.projections.namespace,
                                 key=str(graph_key),
-                                payload=dict(graph_row.get("payload") or {}),
+                                payload=_json_object(graph_row.get("payload")),
                                 row=graph_row,
                                 revision=revision,
                                 status="retired",
@@ -986,14 +1042,12 @@ class DurableSkillCatalogMaterializer:
                 )
         for logical_id in catalog_keys:
             pointer_key = self.catalog._pointer_key(logical_id)
-            metadata = self.catalog._metadata
-            if metadata is None:
-                raise RuntimeError("catalog metadata is not configured")
+            metadata = self.catalog._durable_metadata
             pointer = metadata.get_named_projection(
                 self.catalog._projection_namespace, pointer_key
             )
             if pointer is not None:
-                payload = dict(pointer.get("payload") or {})
+                payload = _json_object(pointer.get("payload"))
                 payload.update({"current_revision": None})
                 updates.append(
                     self.catalog._update(
@@ -1001,7 +1055,7 @@ class DurableSkillCatalogMaterializer:
                         key=pointer_key,
                         payload=payload,
                         row=pointer,
-                        revision=int(pointer.get("last_authoritative_seq", 1) or 1),
+                        revision=_json_int(pointer.get("last_authoritative_seq"), 1),
                         status="retired",
                     )
                 )
@@ -1020,7 +1074,7 @@ class DurableSkillCatalogMaterializer:
 
         self.projections._refresh()
         self.catalog._refresh()
-        updates: list[dict[str, Any]] = []
+        updates: list[JsonObject] = []
         repaired: set[str] = set()
         for logical_key, history in self.projections._history.items():
             pointer = self.projections._metadata.get_named_projection(
@@ -1062,18 +1116,18 @@ class _AsyncProjectionSnapshot:
     native async I/O; it never bridges backend calls through a worker thread.
     """
 
-    def __init__(self, rows: list[dict[str, Any]]) -> None:
+    def __init__(self, rows: list[JsonObject]) -> None:
         self._rows = {
             (str(row["namespace"]), str(row["key"])): copy.deepcopy(row)
             for row in rows
         }
-        self.pending: list[dict[str, Any]] = []
+        self.pending: list[JsonObject] = []
 
-    def get_named_projection(self, namespace: str, key: str) -> dict[str, Any] | None:
+    def get_named_projection(self, namespace: str, key: str) -> JsonObject | None:
         row = self._rows.get((str(namespace), str(key)))
         return copy.deepcopy(row) if row is not None else None
 
-    def list_named_projections(self, namespace: str) -> list[dict[str, Any]]:
+    def list_named_projections(self, namespace: str) -> list[JsonObject]:
         return [
             copy.deepcopy(row)
             for (row_namespace, _), row in sorted(self._rows.items())
@@ -1081,13 +1135,33 @@ class _AsyncProjectionSnapshot:
         ]
 
     def compare_and_swap_named_projection(
-        self, namespace: str, key: str, payload: dict[str, Any], **values: Any
+        self,
+        namespace: str,
+        key: str,
+        payload: JsonObject,
+        *,
+        expected_last_authoritative_seq: int | None,
+        expected_last_materialized_seq: int | None,
+        last_authoritative_seq: int,
+        last_materialized_seq: int,
+        projection_schema_version: int,
+        materialization_status: str,
     ) -> bool:
         return self.compare_and_swap_named_projections(
-            [{"namespace": namespace, "key": key, "payload": payload, **values}]
+            [{
+                "namespace": namespace,
+                "key": key,
+                "payload": payload,
+                "expected_last_authoritative_seq": expected_last_authoritative_seq,
+                "expected_last_materialized_seq": expected_last_materialized_seq,
+                "last_authoritative_seq": last_authoritative_seq,
+                "last_materialized_seq": last_materialized_seq,
+                "projection_schema_version": projection_schema_version,
+                "materialization_status": materialization_status,
+            }]
         )
 
-    def compare_and_swap_named_projections(self, updates: list[dict[str, Any]]) -> bool:
+    def compare_and_swap_named_projections(self, updates: list[JsonObject]) -> bool:
         for item in updates:
             identity = (str(item["namespace"]), str(item["key"]))
             current = self._rows.get(identity)
@@ -1098,8 +1172,8 @@ class _AsyncProjectionSnapshot:
                     return False
             elif (
                 current is None
-                or int(current.get("last_authoritative_seq", 0)) != int(expected_a or 0)
-                or int(current.get("last_materialized_seq", 0)) != int(expected_m or 0)
+                or _json_int(current.get("last_authoritative_seq")) != _json_int(expected_a)
+                or _json_int(current.get("last_materialized_seq")) != _json_int(expected_m)
             ):
                 return False
         for item in updates:
@@ -1107,9 +1181,9 @@ class _AsyncProjectionSnapshot:
                 "namespace": str(item["namespace"]),
                 "key": str(item["key"]),
                 "payload": copy.deepcopy(item["payload"]),
-                "last_authoritative_seq": int(item.get("last_authoritative_seq", 0)),
-                "last_materialized_seq": int(item.get("last_materialized_seq", 0)),
-                "projection_schema_version": int(item.get("projection_schema_version", 1)),
+                "last_authoritative_seq": _json_int(item.get("last_authoritative_seq")),
+                "last_materialized_seq": _json_int(item.get("last_materialized_seq")),
+                "projection_schema_version": _json_int(item.get("projection_schema_version"), 1),
                 "materialization_status": str(item.get("materialization_status", "ready")),
                 "updated_at_ms": 0,
             }
@@ -1180,7 +1254,7 @@ class AsyncDurableSkillCatalogMaterializer:
         self,
         artifact: SkillGraphArtifact,
         *,
-        guard_updates: list[dict[str, Any]] | None = None,
+        guard_updates: list[JsonObject] | None = None,
     ) -> SkillGraphArtifact:
         snapshot, materializer = await self._prepare()
         result = materializer.materialize(artifact, guard_updates=guard_updates)
@@ -1402,7 +1476,7 @@ def parse_skill_text(
                                 summary=command,
                                 source_ref=f"{provider_id}:{provider_local_id}#L{command_line}",
                                 required_capabilities=["process.execute"],
-                                metadata={"argv": argv},
+                                metadata={"argv": cast(list[JsonValue], list(argv))},
                             )
                         )
                         edges.append(
@@ -1472,7 +1546,10 @@ def parse_skill_text(
         edges=edges,
         warnings=warnings,
         unsupported=unsupported,
-        provenance={"source_kind": "provider_native_skill", "frontmatter": metadata},
+        provenance=cast(
+            JsonObject,
+            {"source_kind": "provider_native_skill", "frontmatter": metadata},
+        ),
     )
 
 

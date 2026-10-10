@@ -1,19 +1,19 @@
 import os
 import pathlib
-from typing import List, cast
+from typing import cast
 
 import pytest
-from kogwistar.utils.cache_backend import Memory
 from pydantic import BaseModel
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.models import (
+    QUESTION_KEY,
     AdjudicationQuestionCode,
     AdjudicationVerdict,
     LLMMergeAdjudication,
     Node,
-    QUESTION_KEY,
 )
+from kogwistar.utils.cache_backend import Memory
 from tests._kg_factories import kg_document, kg_grounding
 
 pytestmark = [pytest.mark.ci_full, pytest.mark.llm_real]
@@ -36,7 +36,7 @@ def engine(tmp_path):
 
 
 class BatchAdjudications(BaseModel):
-    items: List[LLMMergeAdjudication]
+    items: list[LLMMergeAdjudication]
 
 
 @pytest.mark.skipif(_skip, reason="Azure OpenAI env not set for real LLM adjudication")

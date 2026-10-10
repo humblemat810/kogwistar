@@ -6,16 +6,19 @@ import threading
 import pytest
 
 from kogwistar.acl.graph import ACLGraph, ACLRecord, ACLTarget
+from kogwistar.conversation.agentic_answering import _engine_get_nodes
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
-from kogwistar.engine_core.subsystems import ACLAwareReadSubsystem, ACLAwareWriteSubsystem
-from kogwistar.engine_core.subsystems.acl import ACLSubsystem
 from kogwistar.engine_core.models import Edge, Grounding, Node, Span
+from kogwistar.engine_core.subsystems import (
+    ACLAwareReadSubsystem,
+    ACLAwareWriteSubsystem,
+)
+from kogwistar.engine_core.subsystems.acl import ACLSubsystem
 from kogwistar.server.auth_middleware import claims_ctx
 from kogwistar.server.chat_service_shared import bind_auth_claims, capture_auth_claims
-from kogwistar.conversation.agentic_answering import _engine_get_nodes
-from tests.conftest import _make_engine_pair
 from tests._helpers.embeddings import build_test_embedding_function
 from tests._helpers.fake_backend import build_fake_backend
+from tests.conftest import _make_engine_pair
 
 
 def _mk_span(doc_id: str) -> Span:

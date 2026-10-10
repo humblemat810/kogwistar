@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import time
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
@@ -112,15 +113,14 @@ def _request_approval(service: ChatRunService, args: dict[str, Any]) -> dict[str
 
 def create_syscall_router(
     *,
-    get_service: Callable[[], Any],
+    get_service: Callable[[], ChatRunService],
     require_role: Callable[[str], None],
-    require_namespace: Callable[[Any], None],
-    conversation_namespace: Any,
-    workflow_namespaces: Any,
+    require_namespace: Callable[[object], None],
+    conversation_namespace: object,
+    workflow_namespaces: object,
     get_user_id: Callable[[], str | None] | None = None,
-):
+) -> APIRouter:
     router = APIRouter(prefix="/api/syscall", tags=["syscall"])
-    get_service_r = lambda: get_service()  # noqa: E731
     audit_log: list[dict[str, Any]] = []
 
     @router.get("/v1")
@@ -148,8 +148,8 @@ def create_syscall_router(
         return {"version": "v1", "events": audit_log[-max(0, int(limit)) :]}
 
     @router.post("/v1/{op}")
-    def dispatch(op: str, inp: SyscallRequest):
-        service: ChatRunService = get_service_r()
+    def dispatch(op: str, inp: SyscallRequest) -> SyscallResponse:
+        service = get_service()
         version = str(inp.version or "v1")
         op = str(op or inp.op or "").strip().lower()
         started_at = int(time.time() * 1000)

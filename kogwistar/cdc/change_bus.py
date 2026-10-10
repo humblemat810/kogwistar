@@ -1,16 +1,26 @@
 # knowledge_graph_engine/changes/change_bus.py
 from __future__ import annotations
-from typing import Any
-import threading
+
 import queue
+import threading
+from collections.abc import Mapping
+from typing import Protocol, cast
+
+import requests
+
+from kogwistar.json_types import JsonValue
 from kogwistar.utils import log as logmod
 from kogwistar.utils.log import bind_log_context
-from typing import Protocol
+
 from .change_event import ChangeEvent
 
 
 class ChangeSink(Protocol):
     def publish(self, event: ChangeEvent) -> None: ...
+
+
+def _context_text(value: JsonValue) -> str | None:
+    return value if isinstance(value, str) else None
 
 
 class ChangeBus:
@@ -61,15 +71,12 @@ class ChangeBus:
         self._sinks.clear()
 
 
-import requests
-
-
 class FastAPIChangeSink:
     _STOP = object()
 
     def __init__(
         self, endpoint: str, *, max_queue: int = 5000, name: str = "fastapi sink"
-    ):
+    ) -> None:
         self.endpoint = endpoint.rstrip("/")
         # The queue also carries the private stop sentinel used by ``close``.
         self.q: queue.Queue[object] = queue.Queue(maxsize=max_queue)
@@ -81,7 +88,7 @@ class FastAPIChangeSink:
         if self._closed.is_set():
             return
         try:
-            payload = event.to_jsonable()
+            payload: dict[str, JsonValue] = dict(event.to_jsonable())
             # Capture current logging context (from the caller thread)
             payload["_log_ctx"] = {
                 "engine_type": logmod._ctx_engine_type.get(),
@@ -104,15 +111,18 @@ class FastAPIChangeSink:
                     return
                 if not isinstance(item, dict):
                     continue
-                ev: dict[str, Any] = item
-                ctx = ev.pop("_log_ctx", None) or {}
+                ev = cast(dict[str, JsonValue], item)
+                raw_context = ev.pop("_log_ctx", None)
+                ctx: Mapping[str, JsonValue] = (
+                    raw_context if isinstance(raw_context, Mapping) else {}
+                )
                 try:
                     with bind_log_context(
-                        engine_type=ctx.get("engine_type"),
-                        engine_id=ctx.get("engine_id"),
-                        conversation_id=ctx.get("conversation_id"),
-                        workflow_run_id=ctx.get("workflow_run_id"),
-                        step_id=ctx.get("step_id"),
+                        engine_type=_context_text(ctx.get("engine_type")),
+                        engine_id=_context_text(ctx.get("engine_id")),
+                        conversation_id=_context_text(ctx.get("conversation_id")),
+                        workflow_run_id=_context_text(ctx.get("workflow_run_id")),
+                        step_id=_context_text(ctx.get("step_id")),
                     ):
                         session.post(url, json=ev, timeout=2.5)
                 except (

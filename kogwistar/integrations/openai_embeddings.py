@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 import os
-from typing import Callable, Optional
+from collections.abc import Callable
 
 
-def build_azure_embedding_fn_from_env() -> Optional[
-    Callable[[str], Optional[list[float]]]
-]:
+def build_azure_embedding_fn_from_env() -> Callable[[str], list[float] | None] | None:
     """Build an optional Azure OpenAI embedding callable from environment vars.
 
     Returns None when dependency/config is unavailable, mirroring the engine's
@@ -31,7 +29,7 @@ def build_azure_embedding_fn_from_env() -> Optional[
         openai_api_version=emb_api_ver,  # type: ignore[arg-type]
     )
 
-    def _embed_fn(text: str) -> Optional[list[float]]:
+    def _embed_fn(text: str) -> list[float] | None:
         try:
             return emb.embed_query(text)
         except Exception:

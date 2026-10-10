@@ -6,17 +6,19 @@ import argparse
 import hashlib
 import json
 import os
-from pathlib import Path
 import shutil
 import subprocess
 import tempfile
 import time
+from pathlib import Path
 from typing import Final
 
 try:
     # Direct script execution places this file's directory on sys.path.
     # The package fallback keeps importlib-based test loading supported.
-    from source_fingerprint import candidate_source_fingerprint  # type: ignore[import-not-found]
+    from source_fingerprint import (
+        candidate_source_fingerprint,  # type: ignore[import-not-found]
+    )
 except ModuleNotFoundError:
     from scripts.source_fingerprint import candidate_source_fingerprint
 

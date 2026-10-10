@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 
 from kogwistar.engine_core.models import Grounding, Span
+from kogwistar.typing_interfaces import StrategyEngineLike
 from kogwistar.runtime.models import WorkflowDesignArtifact, WorkflowEdge, WorkflowNode
 
 AGENTIC_ANSWERING_WORKFLOW_ID = "agentic_answering.v2"
@@ -125,7 +126,8 @@ def debug_rag_expected_ops() -> tuple[str, ...]:
 def build_agentic_answering_workflow_design(
     *, workflow_id: str = AGENTIC_ANSWERING_WORKFLOW_ID
 ) -> WorkflowDesignArtifact:
-    wid = lambda suffix: f"wf:{workflow_id}:{suffix}"
+    def wid(suffix: str) -> str:
+        return f"wf:{workflow_id}:{suffix}"
 
     nodes = [
         _node(workflow_id=workflow_id, node_id=wid("start"), label="Start", op="start", start=True),
@@ -356,7 +358,8 @@ def build_agentic_answering_workflow_design(
 def build_debug_rag_workflow_design(
     *, workflow_id: str = DEBUG_RAG_WORKFLOW_ID
 ) -> WorkflowDesignArtifact:
-    wid = lambda suffix: f"wf:{workflow_id}:{suffix}"
+    def wid(suffix: str) -> str:
+        return f"wf:{workflow_id}:{suffix}"
 
     nodes = [
         _node(
@@ -521,7 +524,7 @@ def build_debug_rag_workflow_design(
 
 
 def materialize_workflow_design_artifact(
-    workflow_engine, design: WorkflowDesignArtifact
+    workflow_engine: StrategyEngineLike, design: WorkflowDesignArtifact
 ) -> None:
     for node in design.nodes:
         workflow_engine.write.add_node(node)
@@ -529,7 +532,7 @@ def materialize_workflow_design_artifact(
         workflow_engine.write.add_edge(edge)
 
 
-def _inject_span_insertion_method(value, *, insertion_method: str) -> None:
+def _inject_span_insertion_method(value: object, *, insertion_method: str) -> None:
     if isinstance(value, dict):
         spans = value.get("spans")
         if isinstance(spans, list):

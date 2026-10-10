@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import sys
 import pathlib
+import sys
 
 if __name__ == "__main__":
     sys.path.insert(0, str(pathlib.Path(__file__).absolute().parent.parent.parent))
@@ -10,9 +10,9 @@ import argparse
 import asyncio
 import json
 import logging
-
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Optional
+from typing import cast
 
 import uvicorn
 from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
@@ -21,6 +21,7 @@ from fastapi.responses import FileResponse, HTMLResponse
 # Canonical ChangeEvent type (used by engine).
 from kogwistar.cdc.change_event import ChangeEvent
 from kogwistar.cdc.oplog import OplogReader, OplogWriter
+from kogwistar.json_types import JsonValue
 
 logger = logging.getLogger(__name__)
 log_path = Path(".cdc_debug") / "cdc_bridge.log"
@@ -44,23 +45,26 @@ logger.propagate = False
 logger.info("CDC bridge started")
 
 
-def _event_graph_type(evj: dict[str, Any]) -> Optional[str]:
+def _event_graph_type(evj: Mapping[str, JsonValue]) -> str | None:
     """Best-effort extraction of graph type from a ChangeEvent jsonable dict.
 
     We primarily rely on `evj["entity"]["kg_graph_type"]` (the canonical field
     used across the repo), but keep fallbacks for older / custom emitters.
     """
-    ent = (evj.get("entity") or {}) if isinstance(evj, dict) else {}
-    g = (
-        ent.get("kg_graph_type")
-        or ent.get("graph_type")
-        or evj.get("kg_graph_type")
-        or evj.get("graph_type")
-    )
-    return str(g) if g is not None else None
+    entity = evj.get("entity")
+    ent = entity if isinstance(entity, Mapping) else {}
+    for value in (
+        ent.get("kg_graph_type"),
+        ent.get("graph_type"),
+        evj.get("kg_graph_type"),
+        evj.get("graph_type"),
+    ):
+        if isinstance(value, str):
+            return value
+    return None
 
 
-def _stream_match(evj: dict[str, Any], stream: Optional[str]) -> bool:
+def _stream_match(evj: Mapping[str, JsonValue], stream: str | None) -> bool:
     """Return True if event should be sent to a subscriber with `stream` filter.
 
     Backward compatible behavior:
@@ -97,7 +101,7 @@ def create_app(*, oplog_file: Path, fsync: bool = False) -> FastAPI:
     oplog_reader = OplogReader(oplog_file)
 
     # Each subscriber can optionally request a stream filter.
-    subscribers: dict[WebSocket, Optional[str]] = {}
+    subscribers: dict[WebSocket, str | None] = {}
     subs_lock = asyncio.Lock()
     ingest_lock = asyncio.Lock()
 
@@ -164,7 +168,7 @@ def create_app(*, oplog_file: Path, fsync: bool = False) -> FastAPI:
             (templates_dir / "cdc_event_forge.html").read_text(encoding="utf-8")
         )
 
-    async def _broadcast_jsonable(evj: dict[str, Any]) -> None:
+    async def _broadcast_jsonable(evj: Mapping[str, JsonValue]) -> None:
         # Snapshot subscriber list to avoid holding lock across network I/O.
         async with subs_lock:
             targets = list(subscribers.items())
@@ -186,7 +190,7 @@ def create_app(*, oplog_file: Path, fsync: bool = False) -> FastAPI:
                     subscribers.pop(ws, None)
 
     @app.post("/ingest")
-    async def ingest(body: dict) -> dict[str, Any]:
+    async def ingest(body: dict[str, JsonValue]) -> dict[str, JsonValue]:
         """Ingest a single event or a batch.
 
         Accepts either:
@@ -199,12 +203,18 @@ def create_app(*, oplog_file: Path, fsync: bool = False) -> FastAPI:
 
         events = body.get("events")
         if isinstance(events, list):
-            ev_dicts = events
+            ev_dicts = [
+                cast(Mapping[str, object], event)
+                for event in events
+                if isinstance(event, Mapping)
+            ]
+            if len(ev_dicts) != len(events):
+                raise TypeError("events must contain only JSON objects")
         else:
-            ev_dicts = [body]
+            ev_dicts = [cast(Mapping[str, object], body)]
 
         accepted = 0
-        last_seq: Optional[int] = None
+        last_seq: int | None = None
 
         # Serialize ingest to preserve oplog ordering.
         async with ingest_lock:
@@ -229,7 +239,7 @@ def create_app(*, oplog_file: Path, fsync: bool = False) -> FastAPI:
             default=0,
             description="Replay events with seq > since before switching to live tail.",
         ),
-        stream: Optional[str] = Query(
+        stream: str | None = Query(
             default=None,
             description="Optional graph-type filter (conversation/workflow/knowledge). Backward compatible when omitted.",
         ),
@@ -298,7 +308,7 @@ def reset_oplog(oplog_file: Path) -> None:
         logger.exception("reset_oplog failed for %s: %s", oplog_file, e)
 
 
-def main(argv: Optional[list[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
     p = argparse.ArgumentParser(description="CDC change bridge launcher")

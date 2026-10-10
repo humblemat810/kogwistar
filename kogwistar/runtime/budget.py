@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 import math
 from collections.abc import Mapping
-from typing import Any
+from dataclasses import dataclass, field
+from typing import Any, cast
+
+from kogwistar.json_types import JsonObject, JsonValue
 
 
 class BudgetExhaustedError(RuntimeError):
@@ -23,7 +25,7 @@ class BudgetAttribution:
     provider: str | None = None
     model: str | None = None
 
-    def as_dict(self) -> dict[str, str]:
+    def as_dict(self) -> JsonObject:
         return {
             key: value
             for key, value in {
@@ -49,15 +51,15 @@ class BudgetEvent:
     unit: str
     scope: str = "run"
     ts_ms: int | None = None
-    meta: dict[str, object] = field(default_factory=dict)
+    meta: dict[str, JsonValue] = field(default_factory=dict)
     event_id: str | None = None
     attribution: BudgetAttribution | None = None
 
 
-def budget_event_to_dict(event: BudgetEvent) -> dict[str, object]:
+def budget_event_to_dict(event: BudgetEvent) -> dict[str, JsonValue]:
     """Serialize a budget event without exposing dataclass implementation details."""
 
-    payload: dict[str, object] = {
+    payload: dict[str, JsonValue] = {
         "event_id": event.event_id,
         "run_id": event.run_id,
         "source": event.source,
@@ -73,16 +75,24 @@ def budget_event_to_dict(event: BudgetEvent) -> dict[str, object]:
     return payload
 
 
-def budget_event_from_dict(payload: Mapping[str, object]) -> BudgetEvent:
+def budget_event_from_dict(payload: Mapping[str, JsonValue]) -> BudgetEvent:
     """Deserialize the stable event envelope used by raw usage projections."""
 
     raw_attribution = payload.get("attribution")
-    attribution = (
-        BudgetAttribution(**dict(raw_attribution))
-        if isinstance(raw_attribution, dict)
-        else None
-    )
-    amount = float(payload.get("amount") or 0.0)
+    attribution = None
+    if isinstance(raw_attribution, Mapping):
+        attribution = BudgetAttribution(
+            workspace_id=_json_text(raw_attribution.get("workspace_id")),
+            source_document_id=_json_text(raw_attribution.get("source_document_id")),
+            operation_id=_json_text(raw_attribution.get("operation_id")),
+            operation_kind=_json_text(raw_attribution.get("operation_kind")),
+            maintenance_job_id=_json_text(raw_attribution.get("maintenance_job_id")),
+            dream_job_id=_json_text(raw_attribution.get("dream_job_id")),
+            provider=_json_text(raw_attribution.get("provider")),
+            model=_json_text(raw_attribution.get("model")),
+        )
+    amount = _json_float(payload.get("amount"), 0.0)
+    raw_meta = payload.get("meta")
     if not math.isfinite(amount) or amount < 0:
         raise ValueError("budget event amount must be finite and >= 0")
     return BudgetEvent(
@@ -93,10 +103,46 @@ def budget_event_from_dict(payload: Mapping[str, object]) -> BudgetEvent:
         amount=amount,
         unit=str(payload.get("unit") or ""),
         scope=str(payload.get("scope") or "run"),
-        ts_ms=int(payload["ts_ms"]) if payload.get("ts_ms") is not None else None,
-        meta=dict(payload.get("meta") or {}),
+        ts_ms=_json_int(payload.get("ts_ms")),
+        meta=(
+            cast(JsonObject, dict(raw_meta))
+            if isinstance(raw_meta, Mapping)
+            else {}
+        ),
         attribution=attribution,
     )
+
+
+def _json_text(value: JsonValue | None) -> str | None:
+    return value if isinstance(value, str) else None
+
+
+def _json_float(value: JsonValue | None, default: float = 0.0) -> float:
+    if isinstance(value, bool):
+        return float(value)
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return default
+    return default
+
+
+def _json_int(value: JsonValue | None) -> int | None:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return None
+    return None
 
 
 @dataclass
@@ -145,7 +191,7 @@ class BudgetLedger:
 
     def debit(
         self,
-        amount: int | float,
+        amount: float,
         *,
         reason: str = "step",
         source: str = "runtime",
@@ -153,7 +199,7 @@ class BudgetLedger:
         unit: str = "token",
         attribution: BudgetAttribution | None = None,
         event_id: str | None = None,
-        meta: dict[str, Any] | None = None,
+        meta: Mapping[str, JsonValue] | None = None,
     ) -> None:
         amount = int(amount or 0)
         if amount < 0:
@@ -167,7 +213,7 @@ class BudgetLedger:
                     amount=float(amount),
                     unit=unit,
                     scope="run",
-                    meta={"reason": reason, **(meta or {})},
+                    meta={"reason": reason, **dict(meta or {})},
                     event_id=event_id,
                     attribution=attribution,
                 )
@@ -182,7 +228,7 @@ class BudgetLedger:
                 amount=float(amount),
                 unit=unit,
                 scope="run",
-                meta={"reason": reason, **(meta or {})},
+                meta={"reason": reason, **dict(meta or {})},
                 event_id=event_id,
                 attribution=attribution,
             )
@@ -231,7 +277,7 @@ class StateBackedBudgetLedger:
             current = self.ceilings.get(key)
             self.ceilings[key] = value if current is None else min(current, value)
 
-    def _bounded_limit(self, key: str, default: int | float = 0) -> int | float:
+    def _bounded_limit(self, key: str, default: float = 0) -> int | float:
         raw = self.state.get(key, default)
         raw_value = float(raw or 0) if key == "cost_budget" else int(raw or 0)
         ceiling = self.ceilings.get(key)
@@ -368,7 +414,7 @@ class StateBackedBudgetLedger:
 
     def debit(
         self,
-        amount: int | float,
+        amount: float,
         *,
         reason: str = "step",
         source: str = "runtime",
@@ -376,7 +422,7 @@ class StateBackedBudgetLedger:
         unit: str | None = None,
         attribution: BudgetAttribution | None = None,
         event_id: str | None = None,
-        meta: dict[str, Any] | None = None,
+        meta: Mapping[str, JsonValue] | None = None,
     ) -> None:
         amount = int(amount or 0)
         if amount < 0:
@@ -391,7 +437,7 @@ class StateBackedBudgetLedger:
                     amount=float(amount),
                     unit=unit or str(self.state.get("budget_kind") or "token"),
                     scope=str(self.state.get("budget_scope") or "run"),
-                    meta={"reason": reason, **(meta or {})},
+                    meta={"reason": reason, **dict(meta or {})},
                     event_id=event_id,
                     attribution=attribution,
                 )
@@ -419,7 +465,7 @@ class StateBackedBudgetLedger:
                 amount=float(amount),
                 unit=unit or str(self.state.get("budget_kind") or "token"),
                 scope=str(self.state.get("budget_scope") or "run"),
-                meta={"reason": reason, **(meta or {})},
+                meta={"reason": reason, **dict(meta or {})},
                 event_id=event_id,
                 attribution=attribution,
             )
@@ -459,14 +505,14 @@ class StateBackedBudgetLedger:
 
     def debit_time(
         self,
-        amount_ms: int | float,
+        amount_ms: float,
         *,
         reason: str = "step",
         source: str = "runtime",
         run_id: str = "",
         attribution: BudgetAttribution | None = None,
         event_id: str | None = None,
-        meta: dict[str, Any] | None = None,
+        meta: Mapping[str, JsonValue] | None = None,
     ) -> None:
         amount_ms = int(amount_ms or 0)
         if amount_ms < 0:
@@ -481,7 +527,7 @@ class StateBackedBudgetLedger:
                     amount=float(amount_ms),
                     unit="ms",
                     scope=str(self.state.get("budget_scope") or "run"),
-                    meta={"reason": reason, **(meta or {})},
+                    meta={"reason": reason, **dict(meta or {})},
                     event_id=event_id,
                     attribution=attribution,
                 )
@@ -498,7 +544,7 @@ class StateBackedBudgetLedger:
                 amount=float(amount_ms),
                 unit="ms",
                 scope=str(self.state.get("budget_scope") or "run"),
-                meta={"reason": reason, **(meta or {})},
+                meta={"reason": reason, **dict(meta or {})},
                 event_id=event_id,
                 attribution=attribution,
             )

@@ -49,7 +49,7 @@ class ComposedOntologyView(BaseModel):
     composition_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
     @model_validator(mode="after")
-    def _unique_qualified_descriptors(self) -> "ComposedOntologyView":
+    def _unique_qualified_descriptors(self) -> ComposedOntologyView:
         qualified_ids = [item.qualified_id for item in self.descriptors]
         if len(qualified_ids) != len(set(qualified_ids)):
             raise ValueError("composed descriptors must have unique qualified IDs")

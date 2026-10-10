@@ -10,9 +10,9 @@ from __future__ import annotations
 
 import argparse
 import json
-from pathlib import Path
 import subprocess
 import sys
+from pathlib import Path
 from typing import Any
 
 
@@ -36,8 +36,9 @@ def _store_for(mode: str, directory: Path):
 
 
 def _worker(*, step: str, database: Path) -> int:
-    import kogwistar
     import kogwistar._rust as native
+
+    import kogwistar
 
     directory = database.parent
     if step == "rust-write":

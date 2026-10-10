@@ -10,10 +10,14 @@ import pytest
 from kogwistar.conversation.resolvers import default_resolver
 from kogwistar.engine_core import GraphKnowledgeEngine
 from kogwistar.engine_core.in_memory_backend import build_in_memory_backend
-from kogwistar.runtime import AsyncMappingStepResolver, AsyncWorkflowRuntime, MappingStepResolver
+from kogwistar.runtime import (
+    AsyncMappingStepResolver,
+    AsyncWorkflowRuntime,
+    MappingStepResolver,
+)
 from kogwistar.runtime.async_runtime import _SyncResolverAdapter
-from kogwistar.runtime.replay import _apply_state_update
 from kogwistar.runtime.models import RunFailure, RunSuccess
+from kogwistar.runtime.replay import _apply_state_update
 from kogwistar.runtime.runtime import RunResult, StepContext, WorkflowRuntime
 from kogwistar.server.run_registry import RunRegistry, RunRegistryLaneMessageEventSink
 

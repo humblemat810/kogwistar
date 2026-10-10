@@ -1,7 +1,8 @@
 import pytest
 
 pytestmark = pytest.mark.ci_full
-from typing import Any, Type, TypeVar
+from typing import Any, TypeVar
+
 from pydantic import BaseModel
 
 from kogwistar.conversation.conversation_context import (
@@ -17,18 +18,17 @@ from kogwistar.conversation.service import ConversationService
 from kogwistar.id_provider import stable_id
 
 BaseM = TypeVar("BaseM", bound=BaseModel)
-from kogwistar.engine_core.models import Span, Grounding
+from kogwistar.conversation.agentic_answering import (
+    AgentConfig,
+    AgenticAnsweringAgent,
+    AnswerEvaluation,
+    AnswerWithCitations,
+)
 from kogwistar.conversation.conversation_orchestrator import (
     ConversationOrchestrator,
     get_id_for_conversation_turn,
 )
-from kogwistar.conversation.agentic_answering import (
-    AgentConfig,
-    AgenticAnsweringAgent,
-    AnswerWithCitations,
-    AnswerEvaluation,
-)
-
+from kogwistar.engine_core.models import Grounding, Span
 from tests.conftest import _make_engine_pair
 
 
@@ -224,7 +224,7 @@ def test_answer_flow_creates_context_snapshots_and_edges(
         evidence_pack: dict[str, Any],
         used_node_ids: list[str],
         out_model_schema: dict[str, Any],
-        out_model: Type[BaseM],
+        out_model: type[BaseM],
     ):
         # keep signature? ideally match your real one too, but this one may not be inspected by joblib
         return AnswerWithCitations(
@@ -241,7 +241,7 @@ def test_answer_flow_creates_context_snapshots_and_edges(
         evidence_pack: dict[str, Any],
         used_node_ids: list[str],
         answer: dict | list,
-        answer_in_model: Type[AnswerWithCitations],
+        answer_in_model: type[AnswerWithCitations],
     ):
         return AnswerWithCitations(
             text="ok",

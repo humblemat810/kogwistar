@@ -9,7 +9,9 @@ from typing import Any
 
 try:
     # Script entry point imports its sibling without package qualification.
-    from source_fingerprint import candidate_source_fingerprint  # type: ignore[import-not-found]
+    from source_fingerprint import (
+        candidate_source_fingerprint,  # type: ignore[import-not-found]
+    )
 except ModuleNotFoundError:  # imported as a repository module in unit tests
     from scripts.source_fingerprint import candidate_source_fingerprint
 

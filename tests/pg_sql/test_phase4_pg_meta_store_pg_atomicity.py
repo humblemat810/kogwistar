@@ -3,17 +3,18 @@ import threading
 import uuid
 
 import pytest
+
 pytestmark = pytest.mark.ci_full
 pytest.importorskip("sqlalchemy")
 import sqlalchemy as sa
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
-from kogwistar.engine_core.postgres_backend import PgVectorBackend
 
 # New meta-store introduced by the patch
 from kogwistar.engine_core.engine_postgres_meta import (
     EnginePostgresMetaStore,
 )
+from kogwistar.engine_core.postgres_backend import PgVectorBackend
 
 
 def _require_postgres(sa_engine, pg_schema) -> None:

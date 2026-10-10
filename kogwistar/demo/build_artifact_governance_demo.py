@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import json
 import shutil
+from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Annotated, Any, Literal, Sequence
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field
 from pydantic_extension.model_slicing import ModeSlicingMixin
@@ -11,7 +12,7 @@ from pydantic_extension.model_slicing.mixin import ExcludeMode
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.models import Grounding, Node, Span
-from kogwistar.runtime import MappingStepResolver, WorkflowRuntime
+from kogwistar.runtime import MappingStepResolver, RunResult, StepContext, WorkflowRuntime
 from kogwistar.runtime.design import load_workflow_design
 from kogwistar.runtime.models import (
     RunFailure,
@@ -20,7 +21,6 @@ from kogwistar.runtime.models import (
     WorkflowNode,
 )
 from kogwistar.runtime.replay import replay_to
-
 
 PUBLIC_MODE = "public"
 
@@ -79,7 +79,7 @@ PREDEFINED_ARTIFACT_BLUEPRINT: dict[str, Any] = {
 class _DemoEmbeddingFunction:
     _name = "artifact-governance-demo-embedding-v1"
 
-    def name(self):
+    def name(self) -> str:
         return self._name
 
     def __call__(self, input: Sequence[str]) -> list[list[float]]:
@@ -179,7 +179,7 @@ def _persist_design(
 def _build_engines(
     *,
     data_dir: Path,
-    backend_factory: Any | None = None,
+    backend_factory: Callable[..., object] | None = None,
 ) -> tuple[GraphKnowledgeEngine, GraphKnowledgeEngine]:
     embedding = _DemoEmbeddingFunction()
     kwargs: dict[str, Any] = {"embedding_function": embedding}
@@ -198,7 +198,7 @@ def _build_engines(
     return workflow_engine, conversation_engine
 
 
-def _collect_string_leaks(value: Any, *, prefix: str = "") -> list[str]:
+def _collect_string_leaks(value: object, *, prefix: str = "") -> list[str]:
     leaks: list[str] = []
     if isinstance(value, dict):
         for key, inner in value.items():
@@ -356,7 +356,7 @@ def _classify_sensitive_components(artifact: BuildArtifact) -> list[dict[str, An
     return classification
 
 
-def _diff_payload(before: Any, after: Any, *, prefix: str = "") -> list[dict[str, Any]]:
+def _diff_payload(before: object, after: object, *, prefix: str = "") -> list[dict[str, Any]]:
     diffs: list[dict[str, Any]] = []
     if isinstance(before, dict) and isinstance(after, dict):
         keys = sorted(set(before.keys()) | set(after.keys()))
@@ -406,6 +406,20 @@ def _artifact_payload_for_event(
     if event_type == "artifact_rejected" and isinstance(state.get("public_artifact"), dict):
         return dict(state.get("public_artifact") or {})
     return dict(state.get("artifact_internal") or {})
+
+
+def _state_mapping(value: object) -> dict[str, Any]:
+    """Narrow opaque workflow state before treating it as JSON object data."""
+    if not isinstance(value, dict):
+        return {}
+    return {str(key): item for key, item in value.items()}
+
+
+def _state_list(value: object) -> list[Any]:
+    """Narrow opaque workflow state before treating it as a JSON list."""
+    if not isinstance(value, list):
+        return []
+    return list(value)
 
 
 def _emit_governance_event(
@@ -464,6 +478,7 @@ def _workflow_shape(
         "node_ids": sorted(nodes.keys()),
         "edge_ids": sorted(
             edge.id for edges in adj.values() for edge in list(edges or [])
+            if edge.id is not None
         ),
     }
 
@@ -519,7 +534,7 @@ def _workflow_run_result(
     turn_node_id: str,
     run_id: str,
     artifact_blueprint: dict[str, Any],
-) -> Any:
+) -> RunResult:
     return runtime.run(
         workflow_id=workflow_id,
         conversation_id=conversation_id,
@@ -623,7 +638,7 @@ def run_build_artifact_governance_demo(
     *,
     data_dir: str | Path | None = None,
     reset_data: bool = True,
-    backend_factory: Any | None = None,
+    backend_factory: Callable[..., object] | None = None,
     workflow_engine: GraphKnowledgeEngine | None = None,
     conversation_engine: GraphKnowledgeEngine | None = None,
 ) -> dict[str, Any]:
@@ -680,7 +695,7 @@ def run_build_artifact_governance_demo(
     resolver = MappingStepResolver()
 
     @resolver.register("start")
-    def _start(ctx):
+    def _start(ctx: StepContext) -> RunSuccess:
         return RunSuccess(
             conversation_node_id=None,
             state_update=[
@@ -700,7 +715,7 @@ def run_build_artifact_governance_demo(
         )
 
     @resolver.register("build_artifact")
-    def _build_artifact(ctx):
+    def _build_artifact(ctx: StepContext) -> RunSuccess:
         artifact = BuildArtifact.model_validate(ctx.state_view.get("artifact_blueprint"))
         return RunSuccess(
             conversation_node_id=None,
@@ -725,7 +740,7 @@ def run_build_artifact_governance_demo(
         )
 
     @resolver.register("classify_artifact")
-    def _classify_artifact(ctx):
+    def _classify_artifact(ctx: StepContext) -> RunSuccess:
         artifact = BuildArtifact.model_validate(ctx.state_view.get("artifact_internal"))
         classification = _classify_sensitive_components(artifact)
         next_step = "apply_public_mode"
@@ -748,7 +763,7 @@ def run_build_artifact_governance_demo(
         )
 
     @resolver.register("apply_public_mode")
-    def _apply_public_mode(ctx):
+    def _apply_public_mode(ctx: StepContext) -> RunSuccess:
         artifact = BuildArtifact.model_validate(ctx.state_view.get("artifact_internal"))
         public_payload, projection_strategy = _project_public_artifact(artifact)
         filter_diff = _diff_payload(_dump_backend(artifact), public_payload)
@@ -768,7 +783,7 @@ def run_build_artifact_governance_demo(
             _route_next=["emit_artifact_filtered_event"],
         )
 
-    def _emit_named_event(ctx, event_type: str) -> RunSuccess:
+    def _emit_named_event(ctx: StepContext, event_type: str) -> RunSuccess:
         artifact_payload = _artifact_payload_for_event(
             state=dict(ctx.state_view), event_type=event_type
         )
@@ -780,7 +795,7 @@ def run_build_artifact_governance_demo(
             step_seq=int(ctx.step_seq),
             event_type=event_type,
             artifact_payload=artifact_payload,
-            filter_diff=list(ctx.state_view.get("filter_diff") or []),
+            filter_diff=_state_list(ctx.state_view.get("filter_diff")),
             projection_strategy=str(
                 ctx.state_view.get("public_projection_strategy") or ""
             )
@@ -814,11 +829,10 @@ def run_build_artifact_governance_demo(
         )
 
     @resolver.register("validate_artifact")
-    def _validate_artifact(ctx):
-        payload = dict(
+    def _validate_artifact(ctx: StepContext) -> RunFailure | RunSuccess:
+        payload = _state_mapping(
             ctx.state_view.get("public_artifact")
             or ctx.state_view.get("artifact_internal")
-            or {}
         )
         errors = _public_artifact_violations(payload)
         if errors:
@@ -830,7 +844,7 @@ def run_build_artifact_governance_demo(
                 step_seq=int(ctx.step_seq),
                 event_type="artifact_rejected",
                 artifact_payload=payload,
-                filter_diff=list(ctx.state_view.get("filter_diff") or []),
+                filter_diff=_state_list(ctx.state_view.get("filter_diff")),
                 projection_strategy=str(
                     ctx.state_view.get("public_projection_strategy") or ""
                 )
@@ -871,7 +885,7 @@ def run_build_artifact_governance_demo(
         )
 
     @resolver.register("before_publish")
-    def _before_publish(ctx):
+    def _before_publish(ctx: StepContext) -> RunFailure | RunSuccess:
         if not bool(ctx.state_view.get("validation_passed")):
             return RunFailure(
                 conversation_node_id=None,
@@ -895,11 +909,10 @@ def run_build_artifact_governance_demo(
         )
 
     @resolver.register("publish_artifact")
-    def _publish_artifact(ctx):
-        payload = dict(
+    def _publish_artifact(ctx: StepContext) -> RunFailure | RunSuccess:
+        payload = _state_mapping(
             ctx.state_view.get("validated_artifact")
             or ctx.state_view.get("public_artifact")
-            or {}
         )
         errors = _public_artifact_violations(payload)
         if errors:
@@ -931,7 +944,7 @@ def run_build_artifact_governance_demo(
         )
 
     @resolver.register("end")
-    def _end(ctx):
+    def _end(ctx: StepContext) -> RunSuccess:
         return RunSuccess(
             conversation_node_id=None,
             state_update=[("u", {"completed": True})],
@@ -979,14 +992,16 @@ def run_build_artifact_governance_demo(
     safe_steps = _step_execs(conversation_engine, run_id=safe_run_id)
     unsafe_steps = _step_execs(conversation_engine, run_id=unsafe_run_id)
 
-    safe_published = dict(safe_result.final_state.get("published_artifact") or {})
+    safe_published = _state_mapping(safe_result.final_state.get("published_artifact"))
     safe_public_validation = _public_artifact_violations(safe_published)
-    unsafe_published = dict(unsafe_result.final_state.get("published_artifact") or {})
+    unsafe_published = _state_mapping(
+        unsafe_result.final_state.get("published_artifact")
+    )
     safe_projection_strategy = str(
         safe_result.final_state.get("public_projection_strategy") or ""
     )
     safe_projection_matches_public = (
-        safe_published == dict(safe_result.final_state.get("public_artifact") or {})
+        safe_published == _state_mapping(safe_result.final_state.get("public_artifact"))
     )
 
     return {

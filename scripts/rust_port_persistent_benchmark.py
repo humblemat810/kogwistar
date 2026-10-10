@@ -11,16 +11,16 @@ import hashlib
 import json
 import math
 import os
-from pathlib import Path
 import statistics
 import subprocess
 import sys
 import time
-from typing import Any, Callable
+from collections.abc import Callable
+from pathlib import Path
+from typing import Any
 
 from kogwistar._rust_bridge import store_sqlite
 from kogwistar.engine_core.engine_sqlite import EngineSQLite
-
 
 ROOT = Path(__file__).resolve().parents[1]
 BENCHMARK_VERSION = 1

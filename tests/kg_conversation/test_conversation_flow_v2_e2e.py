@@ -2,31 +2,32 @@ import json
 from pathlib import Path
 
 import pytest
+
 # Both parameter variants exercise provider-backed Gemini/Ollama workflow paths.
 # Keep them for slow model validation; ci_full has deterministic v2 parity cases.
 pytestmark = pytest.mark.slow
 
 pytest.importorskip("chromadb")
 
-from kogwistar.utils.cache_backend import Memory
-from typing import Callable, ParamSpec, TypeVar, cast
+from collections.abc import Callable
+from typing import ParamSpec, TypeVar, cast
 
+from kogwistar.cdc.oplog import OplogWriter
 from kogwistar.conversation.models import (
     ConversationAIResponse,
     FilteringResult,
     MetaFromLastSummary,
 )
 from kogwistar.conversation.service import ConversationService
-from kogwistar.cdc.oplog import OplogWriter
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.models import (
-    Node,
-    Span,
     Grounding,
     MentionVerification,
+    Node,
+    Span,
 )
 from kogwistar.id_provider import stable_id
-
+from kogwistar.utils.cache_backend import Memory
 
 # -----------------------
 # Minimal embedding func

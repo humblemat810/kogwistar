@@ -11,7 +11,12 @@
 import asyncio
 
 from _helpers import banner, show
-from kogwistar.runtime import AsyncMappingStepResolver, AsyncWorkflowRuntime, StepContext
+
+from kogwistar.runtime import (
+    AsyncMappingStepResolver,
+    AsyncWorkflowRuntime,
+    StepContext,
+)
 from kogwistar.runtime.models import RunSuccess
 
 # %%

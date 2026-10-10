@@ -11,9 +11,10 @@
 # Adjust the import below to your module name.
 
 import pytest
+
 pytestmark = pytest.mark.ci
-import sys
 import pathlib
+import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 from kogwistar.splitter import split_doc_deterministic

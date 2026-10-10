@@ -4,11 +4,11 @@
 # The authoritative history stays append-only in the entity event log; the latest-state projection lives in meta/sql with freshness watermarks.
 
 # %%
+from _helpers import banner, reset_data_dir, show
+
 from kogwistar.demo.named_projection_governance_demo import (
     run_named_projection_governance_demo,
 )
-
-from _helpers import banner, reset_data_dir, show
 
 data_dir = reset_data_dir("20_generic_named_projection_meta_layer")
 banner("Running the generic named-projection demo with a fixed resettable data directory.")

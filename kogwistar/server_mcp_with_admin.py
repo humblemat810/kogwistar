@@ -8,19 +8,27 @@ import json
 import logging
 import os
 import time
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import IO, Any, cast
 
 try:
     from dotenv import load_dotenv
 except ModuleNotFoundError:
-    def load_dotenv(*args, **kwargs):
+    def load_dotenv(
+        dotenv_path: str | os.PathLike[str] | None = None,
+        stream: IO[str] | None = None,
+        verbose: bool = False,
+        override: bool = False,
+        interpolate: bool = True,
+        encoding: str | None = "utf-8",
+    ) -> bool:
         return False
 
 from fastapi import APIRouter, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from jose import jwt
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
@@ -39,20 +47,28 @@ from kogwistar.runtime.models import (
 from kogwistar.server.auth_middleware import (
     # Compatibility exports consumed by auth clients and tests.
     JWT_ALG as JWT_ALG,  # noqa: F401
+)
+from kogwistar.server.auth_middleware import (
     JWT_AUD as JWT_AUD,  # noqa: F401
+)
+from kogwistar.server.auth_middleware import (
     JWT_ISS as JWT_ISS,  # noqa: F401
+)
+from kogwistar.server.auth_middleware import (
     JWT_SECRET as JWT_SECRET,  # noqa: F401
+)
+from kogwistar.server.auth_middleware import (
     ROLE_ORDER,
     DevStreamGuardMiddleware,
     JWTProtectMiddleware,
     NameSpace,
+    get_app_jwt_settings,
+    get_current_subject,
+    get_current_user_id,
     get_jwt_alg,
     get_jwt_aud,
     get_jwt_iss,
     get_jwt_secret,
-    get_app_jwt_settings,
-    get_current_subject,
-    get_current_user_id,
     require_capability,
     require_namespace,
     require_role,
@@ -60,10 +76,9 @@ from kogwistar.server.auth_middleware import (
     set_auth_app,
 )
 from kogwistar.server.chat_api import create_chat_router
-from kogwistar.server.syscall_api import create_syscall_router
 from kogwistar.server.error_reporting import internal_http_error
-from kogwistar.server.mcp_tools import MCPRoleMiddleware, mcp
 from kogwistar.server.mcp_tools import *  # noqa: F401,F403
+from kogwistar.server.mcp_tools import MCPRoleMiddleware, mcp
 from kogwistar.server.resources import (
     auth_engine_resource,
     chat_service,
@@ -79,12 +94,21 @@ from kogwistar.server.resources import (
     workflow_persist_directory,
 )
 from kogwistar.server.runtime_api import create_runtime_router
+from kogwistar.server.syscall_api import create_syscall_router
 from kogwistar.visualization.graph_viz import to_cytoscape, to_d3_force
 
 load_dotenv()
 
 logger = logging.getLogger(__name__)
 request_logger = logging.getLogger("kogwistar.request")
+
+
+def _string_list(value: object) -> list[str]:
+    return [str(item) for item in value] if isinstance(value, list) else []
+
+
+def _int_value(value: object) -> int:
+    return int(value) if isinstance(value, (int, float)) else 0
 
 
 def _ensure_windows_selector_event_loop_policy() -> None:
@@ -146,7 +170,10 @@ def _configure_console_logging() -> None:
 
 def _install_request_logging(app: FastAPI) -> None:
     @app.middleware("http")
-    async def _log_requests(request: Request, call_next):
+    async def _log_requests(
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
         started_at = time.perf_counter()
         status_code = 500
         try:
@@ -199,7 +226,7 @@ except ModuleNotFoundError as exc:
 mcp_app = mcp.http_app(path="/mcp")
 
 @asynccontextmanager
-async def combined_lifespan(app: FastAPI):
+async def combined_lifespan(app: FastAPI) -> AsyncIterator[None]:
     _configure_console_logging()
     if (
         get_session is not None
@@ -256,7 +283,7 @@ async def combined_lifespan(app: FastAPI):
                     if config.allowed
                 }
 
-    async with mcp_app.lifespan(app):
+    async with cast(Any, mcp_app).lifespan(app):
         yield
 
 app = FastAPI(title="KnowledgeEngine + MCP + Admin", lifespan=combined_lifespan)
@@ -280,7 +307,7 @@ app.include_router(
     create_chat_router(
         get_service=lambda: chat_service.get(),
         require_role=require_role,
-        require_namespace=require_namespace,
+        require_namespace=cast(Callable[[object], None], require_namespace),
         conversation_namespace=NameSpace.CONVERSATION.value,
         workflow_namespaces={NameSpace.CONVERSATION.value, NameSpace.WORKFLOW.value},
         get_user_id=get_current_user_id,
@@ -290,7 +317,7 @@ app.include_router(
     create_runtime_router(
         get_service=lambda: chat_service.get(),
         require_role=require_role,
-        require_namespace=require_namespace,
+        require_namespace=cast(Callable[[object], None], require_namespace),
         require_workflow_access=require_workflow_access,
         runtime_namespaces={NameSpace.WORKFLOW.value},
         get_subject=get_current_subject,
@@ -301,7 +328,7 @@ app.include_router(
     create_syscall_router(
         get_service=lambda: chat_service.get(),
         require_role=require_role,
-        require_namespace=require_namespace,
+        require_namespace=cast(Callable[[object], None], require_namespace),
         conversation_namespace=NameSpace.CONVERSATION.value,
         workflow_namespaces={NameSpace.CONVERSATION.value, NameSpace.WORKFLOW.value},
         get_user_id=get_current_user_id,
@@ -317,7 +344,7 @@ class DevTokenInp(BaseModel):
 
     @field_validator("ns", mode="before")
     @classmethod
-    def _normalize_ns(cls, value):
+    def _normalize_ns(cls, value: object) -> object:
         allowed = {item.value for item in NameSpace}
         if value is None or value == "":
             return "docs"
@@ -337,7 +364,7 @@ class DevTokenInp(BaseModel):
 
     @field_validator("capabilities", mode="before")
     @classmethod
-    def _normalize_caps(cls, value):
+    def _normalize_caps(cls, value: object) -> object:
         if value is None or value == "":
             return None
         if isinstance(value, str):
@@ -349,7 +376,7 @@ class DevTokenInp(BaseModel):
         return parts[0] if len(parts) == 1 else parts
 
 @app.post("/auth/dev-token")
-async def dev_token(request: Request):
+async def dev_token(request: Request) -> object:
     inp = DevTokenInp.model_validate((await request.json()))
     if inp.role not in ROLE_ORDER:
         raise HTTPException(400, f"role must be one of {list(ROLE_ORDER)}")
@@ -374,11 +401,11 @@ async def dev_token(request: Request):
     token = jwt.encode(payload, jwt_secret, algorithm=str(jwt_settings.get("alg") or "HS256"))
     return {"token": token}
 
-def _designer_resolver_candidates(service: Any) -> list[Any]:
-    candidates: list[Any] = []
+def _designer_resolver_candidates(service: object) -> list[object]:
+    candidates: list[object] = []
     seen: set[int] = set()
 
-    def _add(value: Any) -> None:
+    def _add(value: object) -> None:
         if value is None:
             return
         ident = id(value)
@@ -490,8 +517,10 @@ def _designer_runtime_capabilities() -> dict[str, Any]:
         try:
             describe_state = getattr(resolver, "describe_state", None)
             if callable(describe_state):
+                state = describe_state()
+                state_mapping = state if isinstance(state, Mapping) else {}
                 state_schema.update(
-                    {str(k): str(v) for k, v in (describe_state() or {}).items()}
+                    {str(k): str(v) for k, v in state_mapping.items()}
                 )
         except (AttributeError, TypeError, ValueError) as exc:
             logger.warning(
@@ -521,7 +550,7 @@ def _designer_runtime_capabilities() -> dict[str, Any]:
     }
 
 @app.get("/designer/capabilities")
-def designer_capabilities():
+def designer_capabilities() -> object:
     require_role("ro")
     require_namespace({NameSpace.WORKFLOW})
     require_capability("workflow.design.inspect")
@@ -575,7 +604,7 @@ def designer_capabilities():
 
 
 @app.get("/health")
-def health():
+def health() -> object:
     python_value = {
         "ok": True,
         "backend": storage_settings.backend,
@@ -593,7 +622,7 @@ def health():
 
 # DELETE /admin/doc/{doc_id}  (non-MCP utility)
 @app.delete("/admin/doc/{doc_id}")
-def admin_delete_doc(doc_id: str):
+def admin_delete_doc(doc_id: str) -> object:
     require_role("rw")
     eng = engine.get()
     try:
@@ -606,7 +635,7 @@ def admin_delete_doc(doc_id: str):
             detail=f"Failed to inspect document {doc_id!r} before deletion",
         ) from exc
 
-    def _delete_step(step_name: str, fn) -> None:
+    def _delete_step(step_name: str, fn: Callable[[], object]) -> None:
         try:
             fn()
         except Exception as exc:
@@ -662,11 +691,11 @@ def admin_delete_doc(doc_id: str):
 # http://localhost:28110/api/viz/d3.json?doc_id=&mode=reify
 @app.get("/api/viz/cytoscape.json")
 def api_viz_cytoscape(
-    doc_id: Optional[str] = None,
+    doc_id: str | None = None,
     mode: str = "reify",
-    insertion_method: Optional[str] = None,  # NEW
+    insertion_method: str | None = None,  # NEW
     graph_type: str = "knowledge",
-):
+) -> object:
     gt = (graph_type or "knowledge").lower()
     if gt == "conversation":
         use_engine = conversation_engine
@@ -684,11 +713,11 @@ def api_viz_cytoscape(
 @app.get("/viz/d3.bundle", response_class=HTMLResponse)
 def viz_d3_bundle(
     request: Request,
-    doc_id: Optional[str] = None,
+    doc_id: str | None = None,
     mode: str = "reify",
-    insertion_method: Optional[str] = None,
+    insertion_method: str | None = None,
     graph_type: str = "knowledge",  # knowledge|conversation|workflow|wisdom
-):
+) -> object:
     gt = (graph_type or "knowledge").lower()
     if gt == "conversation":
         use_engine = conversation_engine
@@ -712,9 +741,9 @@ def viz_d3_bundle(
     }
 
     return templates.TemplateResponse(
-        "d3.html",
-        {
-            "request": request,
+        request=request,
+        name="d3.html",
+        context={
             "doc_id": doc_id,
             "mode": mode,
             "insertion_method": insertion_method,
@@ -726,11 +755,11 @@ def viz_d3_bundle(
 
 @app.get("/api/viz/d3.json")
 def api_viz_d3(
-    doc_id: Optional[str] = None,
+    doc_id: str | None = None,
     mode: str = "reify",
-    insertion_method: Optional[str] = None,
-    graph_type: Optional[str] = None,  # NEW: knowledge|conversation|workflow|wisdom
-):
+    insertion_method: str | None = None,
+    graph_type: str | None = None,  # NEW: knowledge|conversation|workflow|wisdom
+) -> object:
     graph_type = (graph_type or "knowledge").lower()
     if graph_type == "conversation":
         use_engine = conversation_engine
@@ -749,20 +778,20 @@ def api_viz_d3(
 class DocumentGraphProposal(BaseModel):
     doc_id: str
     insertion_method: str = "document_parser_v1"
-    nodes: List[Dict[str, Any]]
-    edges: List[Dict[str, Any]] = []
+    nodes: list[dict[str, Any]]
+    edges: list[dict[str, Any]] = []
 
 class DocumentGraphValidationResult(BaseModel):
     ok: bool
-    node_errors: Dict[str, str] = {}
-    edge_errors: Dict[str, str] = {}
+    node_errors: dict[str, str] = {}
+    edge_errors: dict[str, str] = {}
 
 @app.post("/api/document.validate_graph", response_model=DocumentGraphValidationResult)
-async def document_validate_graph(payload: DocumentGraphProposal):
+async def document_validate_graph(payload: DocumentGraphProposal) -> object:
     # inp =await request.json()
     # payload = documentGraphProposal.model_validate(inp['payload'])
-    node_errors: Dict[str, str] = {}
-    edge_errors: Dict[str, str] = {}
+    node_errors: dict[str, str] = {}
+    edge_errors: dict[str, str] = {}
 
     # try to coerce nodes
     for n in payload.nodes:
@@ -818,29 +847,29 @@ class GraphUpsertLLMIn(BaseModel):
     """
 
     doc_id: str = Field(..., description="Document id to scope persistence")
-    content: Optional[str] = Field(
+    content: str | None = Field(
         None, description="If provided and doc is new, store this as document content"
     )
     doc_type: str = Field("text", description="Document type")
     insertion_method: str = Field(
         "api_upsert", description="Provenance tag copied into each ReferenceSession"
     )
-    nodes: List[Dict[str, Any]] = Field(
+    nodes: list[dict[str, Any]] = Field(
         default_factory=list, description="LLMNode['llm']-shaped dicts"
     )
-    edges: List[Dict[str, Any]] = Field(
+    edges: list[dict[str, Any]] = Field(
         default_factory=list, description="LLMEdge['llm']-shaped dicts"
     )
 
 class DocumentGraphUpsertOut(BaseModel):
     document_id: str
-    node_ids: List[str]
-    edge_ids: List[str]
+    node_ids: list[str]
+    edge_ids: list[str]
     nodes_added: int
     edges_added: int
 
 @app.post("/api/graph/upsert", response_model=DocumentGraphUpsertOut)
-def api_graph_upsert_llm(inp: GraphUpsertLLMIn):
+def api_graph_upsert_llm(inp: GraphUpsertLLMIn) -> object:
     """
     Upsert a (hyper)graph in one shot:
     - High level api with less control and more defaults
@@ -874,7 +903,7 @@ def api_graph_upsert_llm(inp: GraphUpsertLLMIn):
             eng.write.add_document(
                 Document(
                     id=inp.doc_id,
-                    content=inp.content,
+                    content=inp.content or "",
                     type=inp.doc_type,
                     metadata={},  # if you want
                     embeddings=None,  # REQUIRED by Pydantic because Field(...)
@@ -909,7 +938,7 @@ def api_graph_upsert_llm(inp: GraphUpsertLLMIn):
         )
 
     # 4) Persist using your first-class persistence path (allocates nn:/ne:, topo-sorts, enforces endpoints)
-    persisted = eng.persist.persist_graph_extraction(
+    persisted = cast(Mapping[str, object], eng.persist.persist_graph_extraction(
         document=Document(
             id=inp.doc_id,
             content=inp.content or eng.extract.fetch_document_text(inp.doc_id) or "",
@@ -922,28 +951,28 @@ def api_graph_upsert_llm(inp: GraphUpsertLLMIn):
         ),
         parsed=parsed,
         mode="append",
-    )
+    ))
 
     return DocumentGraphUpsertOut(
-        document_id=persisted["document_id"],
-        node_ids=persisted["node_ids"],
-        edge_ids=persisted["edge_ids"],
-        nodes_added=persisted["nodes_added"],
-        edges_added=persisted["edges_added"],
+        document_id=str(persisted.get("document_id") or inp.doc_id),
+        node_ids=_string_list(persisted.get("node_ids")),
+        edge_ids=_string_list(persisted.get("edge_ids")),
+        nodes_added=_int_value(persisted.get("nodes_added")),
+        edges_added=_int_value(persisted.get("edges_added")),
     )
 
 class DocumentGraphUpsert(BaseModel):
     doc_id: str
     insertion_method: str = "document_parser_v1"
-    nodes: List[Node]
-    edges: List[Edge] = []
+    nodes: list[Node]
+    edges: list[Edge] = []
 
 
 class DocumentGraphUpsertResult(BaseModel):
     status: str
     inserted_nodes: int
     inserted_edges: int
-    engine_result: Dict[str, Any] | None = None
+    engine_result: dict[str, Any] | None = None
 
 class DocumentUpsert(BaseModel):
     doc_id: str
@@ -955,7 +984,9 @@ class DocumentUpsertResult(BaseModel):
     status: str
 
 @app.post("/api/document")
-def document_upsert(inp: DocumentUpsert, response_model=DocumentUpsertResult):
+def document_upsert(
+    inp: DocumentUpsert, response_model: type[BaseModel] = DocumentUpsertResult
+) -> object:
     try:
         eng = engine.get()
         if inp.doc_type == "text":
@@ -993,7 +1024,7 @@ def document_upsert(inp: DocumentUpsert, response_model=DocumentUpsertResult):
         raise internal_http_error(e)
 
 @app.post("/api/document.upsert_tree", response_model=DocumentGraphUpsertResult)
-def document_upsert_tree(payload: DocumentGraphUpsert):
+def document_upsert_tree(payload: DocumentGraphUpsert) -> object:
     """Persist a newly parsed graph extraction for an existing document.
 
     This endpoint accepts a graph extraction payload that represents nodes and
@@ -1034,43 +1065,17 @@ def document_upsert_tree(payload: DocumentGraphUpsert):
         inserted_edges=len(payload.edges),
         engine_result=res,
     )
-class KGUpsertIn(BaseModel):
-    """
-    Strict LLM-conformant upsert:
-    - nodes / edges must follow LLM* models (including REQUIRED references with spans).
-    - endpoints may use 'nn:*' / 'ne:*' temp ids that resolve in-batch.
-    - references may use document alias token ::DOC:: in URLs; we’ll de-alias to doc_id.
-    """
-
-    content: Optional[str] = Field(
-        None, description="If provided and doc is new, store this as document content"
-    )
-    insertion_method: str = Field(
-        "api_upsert", description="Provenance tag copied into each ReferenceSession"
-    )
-    nodes: List[Dict[str, Any]] = Field(
-        default_factory=list, description="PureNode-shaped dicts"
-    )
-    edges: List[Dict[str, Any]] = Field(
-        default_factory=list, description="PureEdge-shaped dicts"
-    )
-class GraphUpsertOut(BaseModel):
-    node_ids: List[str]
-    edge_ids: List[str]
-    nodes_added: int
-    edges_added: int
-
 @app.get("/viz/cytoscape", response_class=HTMLResponse)
 def viz_cytoscape(
     request: Request,
-    doc_id: Optional[str] = None,
+    doc_id: str | None = None,
     mode: str = "reify",
-    insertion_method: Optional[str] = None,
-):
+    insertion_method: str | None = None,
+) -> object:
     return templates.TemplateResponse(
-        "cytoscape.html",
-        {
-            "request": request,
+        request=request,
+        name="cytoscape.html",
+        context={
             "doc_id": doc_id,
             "mode": mode,
             "insertion_method": insertion_method,
@@ -1080,14 +1085,14 @@ def viz_cytoscape(
 @app.get("/viz/d3", response_class=HTMLResponse)
 def viz_d3(
     request: Request,
-    doc_id: Optional[str] = None,
+    doc_id: str | None = None,
     mode: str = "reify",
-    insertion_method: Optional[str] = None,
-):
+    insertion_method: str | None = None,
+) -> object:
     return templates.TemplateResponse(
-        "d3.html",
-        {
-            "request": request,
+        request=request,
+        name="d3.html",
+        context={
             "doc_id": doc_id,
             "mode": mode,
             "insertion_method": insertion_method,
@@ -1097,14 +1102,14 @@ def viz_d3(
 @app.get("/viz/go", response_class=HTMLResponse)
 def viz_go(
     request: Request,
-    doc_id: Optional[str] = None,
+    doc_id: str | None = None,
     mode: str = "reify",
-    insertion_method: Optional[str] = None,
-):
+    insertion_method: str | None = None,
+) -> object:
     return templates.TemplateResponse(
-        "go.html",
-        {
-            "request": request,
+        request=request,
+        name="go.html",
+        context={
             "doc_id": doc_id,
             "mode": mode,
             "insertion_method": insertion_method,
@@ -1112,21 +1117,25 @@ def viz_go(
     )
 
 from pydantic import BaseModel
+
+
 class IndexingItem(BaseModel):
     node_id: str
     canonical_title: str
-    keywords: List[str]
-    aliases: List[str]
+    keywords: list[str]
+    aliases: list[str]
     provision: str
-    doc_id: Optional[str]
+    doc_id: str | None
 
 @app.post("/api/add_index_entries")
-def add_index_entries(payload: AddIndexEntriesInput):
+def add_index_entries(payload: AddIndexEntriesInput) -> object:
     engine.get().search_index.upsert_entries(payload.index)
     return {"ok": True}
 
 @app.get("/api/search_index_hybrid")
-def search_index_hybrid(q: str, limit: int = 10, resolve_node: bool = False):
+def search_index_hybrid(
+    q: str, limit: int = 10, resolve_node: bool = False
+) -> object:
     return engine.get().search_index.search_hybrid(
         q=q,
         limit=limit,
@@ -1141,6 +1150,7 @@ app.mount("/", mcp_app)
 def main() -> None:
     """Console entrypoint for `knowledge-mcp`."""
     import os
+
     import uvicorn
 
     _configure_console_logging()
