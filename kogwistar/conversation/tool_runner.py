@@ -40,12 +40,19 @@ if TYPE_CHECKING:
     from .models import MetaFromLastSummary
 
 T = TypeVar("T", bound=BaseToolResult)
+T_co = TypeVar("T_co", bound=BaseToolResult, covariant=True)
 
 
 class SubworkflowRunner(Protocol):
     """Invoke a child workflow with its tool-shaped keyword payload."""
 
     def __call__(self, **kwargs: JsonValue) -> object | Awaitable[object]: ...
+
+
+class ToolHandler(Protocol[T_co]):
+    """Execute a conversation tool from its JSON keyword payload."""
+
+    def __call__(self, **kwargs: JsonValue) -> T_co | Awaitable[T_co]: ...
 
 
 def _safe_json(obj: object) -> str:
@@ -328,7 +335,7 @@ class ToolRunner:
         tool_name: str,
         args: list[JsonValue],
         kwargs: dict[str, JsonValue],
-        handler: Callable[..., T | Awaitable[T]],
+        handler: ToolHandler[T],
         prev_turn_meta_summary: MetaFromLastSummary,
         render_result: Callable[[T], str] | None = None,
         prev_node: ConversationNode | None = None,
