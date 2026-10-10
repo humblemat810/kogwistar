@@ -10,6 +10,10 @@ class _PathPattern(Protocol):
     def match(self, path: str) -> object: ...
 
 
+class _FileWalker(Protocol):
+    def __call__(self, root: str, /) -> Iterable[tuple[str, list[str], list[str]]]: ...
+
+
 def nullable_concat(a: list | None, b: list | None) -> list | None:
     if a is None and b is None:
         return None
@@ -31,8 +35,7 @@ class RawFileLoader:
         compare_root: str | None = None,
         include: Iterable[str] | None = None,
         bucket_blob_connection_str: str | None = None,
-        file_walker_callback: Callable[..., Iterable[tuple[str, list[str], list[str]]]]
-        | None = None,
+        file_walker_callback: _FileWalker | None = None,
         pattern: _PathPattern | None = None,
         allow_startwith_relative_paths: bool = False,
         filtering_callbacks: list[Callable[[str], bool]] | None = None,
@@ -55,7 +58,7 @@ class RawFileLoader:
         self.oldest_datetime = oldest_datetime
         self.newest_datetime = newest_datetime
         self.bucket_blob_connection_str = bucket_blob_connection_str
-        self.file_walker_callback: Callable | None = file_walker_callback
+        self.file_walker_callback: _FileWalker | None = file_walker_callback
         if root_folder_name is None:
             root_folder_name = os.getcwd()
         if walk_root is None:

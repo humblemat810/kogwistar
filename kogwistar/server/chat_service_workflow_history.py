@@ -41,7 +41,7 @@ import json
 import logging
 import uuid
 from collections import deque
-from collections.abc import Callable, Generator, Mapping
+from collections.abc import Generator, Mapping
 from typing import NotRequired, Protocol, TypedDict, cast
 
 from kogwistar.runtime.models import WorkflowEdge, WorkflowNode
@@ -59,10 +59,19 @@ class EntityEventRow(Protocol):
 class _WorkflowMetaStore(Protocol):
     """Metadata operations used directly by workflow-history helpers."""
 
-    get_named_projection: Callable[..., JsonObject | None]
-    get_workflow_design_delta: Callable[..., Mapping[str, object] | None]
-    get_workflow_design_snapshot: Callable[..., Mapping[str, object] | None]
-    get_latest_entity_event_seq: Callable[..., int]
+    def get_named_projection(
+        self, *, namespace: str, key: str
+    ) -> JsonObject | None: ...
+
+    def get_workflow_design_delta(
+        self, *, workflow_id: str, version: int, schema_version: int
+    ) -> Mapping[str, object] | None: ...
+
+    def get_workflow_design_snapshot(
+        self, *, workflow_id: str, max_version: int, schema_version: int
+    ) -> Mapping[str, object] | None: ...
+
+    def get_latest_entity_event_seq(self, *, namespace: str = "default") -> int: ...
 
 
 class WorkflowVisibleSnapshot(TypedDict):
