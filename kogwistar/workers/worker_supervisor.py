@@ -54,7 +54,7 @@ def _main(argv: list[str]) -> int:
 
     stop = {"flag": False}
 
-    def _handle(_signum, _frame):
+    def _handle(_signum: int, _frame: object) -> None:
         stop["flag"] = True
 
     try:
