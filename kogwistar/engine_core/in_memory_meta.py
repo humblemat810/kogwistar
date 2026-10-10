@@ -9,7 +9,8 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, cast
+from types import TracebackType
+from typing import cast
 
 from ..json_types import JsonValue
 from ..messaging.models import ProjectedLaneMessageRow
@@ -251,13 +252,13 @@ class _TxnView:
 
 
 class _ResultShim:
-    def __init__(self, rows: list[Any]) -> None:
+    def __init__(self, rows: list[object]) -> None:
         self._rows = list(rows)
 
-    def fetchone(self) -> Any:
+    def fetchone(self) -> object | None:
         return self._rows[0] if self._rows else None
 
-    def fetchall(self) -> list[Any]:
+    def fetchall(self) -> list[object]:
         return list(self._rows)
 
 
@@ -268,7 +269,12 @@ class _InMemoryMetaConnection:
     def __enter__(self) -> _InMemoryMetaConnection:
         return self
 
-    def __exit__(self, exc_type, exc, tb) -> None:
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
         return None
 
     def commit(self) -> None:
@@ -277,7 +283,7 @@ class _InMemoryMetaConnection:
     def rollback(self) -> None:
         return None
 
-    def execute(self, sql: str, params: tuple[Any, ...] = ()) -> _ResultShim:
+    def execute(self, sql: str, params: tuple[object, ...] = ()) -> _ResultShim:
         normalized = " ".join(str(sql).strip().split()).upper()
         if normalized == "UPDATE INDEX_JOBS SET LEASE_UNTIL = 0 WHERE JOB_ID = ?":
             if not params:
@@ -791,7 +797,7 @@ class InMemoryMetaStore(LaneMessageMetaStoreMixin):
         from_seq: int = 1,
         to_seq: int | None = None,
         batch_size: int = 500,
-    ):
+    ) -> Iterator[tuple[int, str, str, str, str]]:
         next_seq = int(from_seq)
         while True:
             with self._lock:
