@@ -3,12 +3,34 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from collections.abc import Callable, Mapping, Sequence
+from typing import Any, Protocol, cast
 
 from ..utils.embedding_vectors import normalize_embedding_vector
 from .async_compat import run_awaitable_blocking
+from .canonical_events import CanonicalEntityRevision
 from .edge_endpoint_rows import edge_endpoint_rows
+from .engine import GraphKnowledgeEngine
+from .models import Edge, Node
 from .storage_backend import TwoStageProjectionCapability
+
+
+class _PostgresProjectionBackend(Protocol):
+    _is_async_engine: bool
+
+    def stage1_projection_upsert(self, **kwargs: object) -> object: ...
+
+    def stage1_projection_query(self, **kwargs: object) -> list[dict[str, Any]]: ...
+
+    def stage1_projection_get(self, **kwargs: object) -> dict[str, Any] | None: ...
+
+    def stage1_projection_delete(self, **kwargs: object) -> object: ...
+
+    def edge_endpoints_delete(self, **kwargs: object) -> object: ...
+
+    def edge_endpoints_upsert(self, **kwargs: object) -> object: ...
+
+    def __getattr__(self, name: str) -> Callable[..., object]: ...
 
 
 def postgres_two_stage_capability() -> TwoStageProjectionCapability:
@@ -31,7 +53,7 @@ def postgres_two_stage_capability() -> TwoStageProjectionCapability:
 class PostgresTwoStageProjectionAdapter:
     """Keep transient metadata rows separate from PostgreSQL vector serving rows."""
 
-    def __init__(self, engine: Any) -> None:
+    def __init__(self, engine: GraphKnowledgeEngine) -> None:
         self.engine = engine
         if getattr(engine.backend, "_is_async_engine", False):
             raise ValueError(
@@ -41,15 +63,17 @@ class PostgresTwoStageProjectionAdapter:
     def _namespace(self) -> str:
         return str(getattr(self.engine, "namespace", "default"))
 
-    def _backend(self) -> Any:
-        return self.engine.backend
+    def _backend(self) -> _PostgresProjectionBackend:
+        return cast(_PostgresProjectionBackend, self.engine.backend)
 
-    def _payload(self, *, entity_kind: str, entity: Any) -> tuple[str, dict[str, Any], str, int]:
+    def _payload(
+        self, *, entity_kind: str, entity: Node | Edge
+    ) -> tuple[str, dict[str, Any], str, int]:
         if entity_kind == "node":
-            document, metadata = self.engine.write.node_doc_and_meta(entity)
+            document, metadata = self.engine.write.node_doc_and_meta(cast(Node, entity))
         elif entity_kind == "edge":
             document = entity.model_dump_json(field_mode="backend", exclude=["embedding"])
-            metadata = self.engine.write.enrich_edge_meta(entity)
+            metadata = self.engine.write.enrich_edge_meta(cast(Edge, entity))
         else:
             raise ValueError(f"unsupported Stage-1 entity kind: {entity_kind!r}")
         revision_payload = self.engine.indexing.canonical_revision_payload(
@@ -79,17 +103,17 @@ class PostgresTwoStageProjectionAdapter:
 
     enqueue_embedding_job = _enqueue
 
-    def add_node(self, node: Any, *, doc_id: str | None = None) -> None:
+    def add_node(self, node: Node, *, doc_id: str | None = None) -> None:
         if doc_id is not None:
             node.doc_id = doc_id
         self._add(entity_kind="node", entity=node)
 
-    def add_edge(self, edge: Any, *, doc_id: str | None = None) -> None:
+    def add_edge(self, edge: Edge, *, doc_id: str | None = None) -> None:
         if doc_id is not None:
             edge.doc_id = doc_id
         self._add(entity_kind="edge", entity=edge)
 
-    def _add(self, *, entity_kind: str, entity: Any) -> None:
+    def _add(self, *, entity_kind: str, entity: Node | Edge) -> None:
         entity_id = entity.safe_get_id()
         document, metadata, fingerprint, revision = self._payload(
             entity_kind=entity_kind, entity=entity
@@ -106,7 +130,7 @@ class PostgresTwoStageProjectionAdapter:
         )
         self._enqueue(entity_kind=entity_kind, entity_id=entity_id, op="UPSERT")
 
-    def stage1_query(self, **kwargs: Any) -> list[dict[str, Any]]:
+    def stage1_query(self, **kwargs: object) -> list[dict[str, Any]]:
         rows = self._backend().stage1_projection_query(
             namespace=self._namespace(),
             entity_kind=str(kwargs.get("entity_kind") or "node"),
@@ -128,12 +152,14 @@ class PostgresTwoStageProjectionAdapter:
             for row in rows
         ]
 
-    def remove_stage1(self, *, entity_kind: str, entity_id: str, **_: Any) -> None:
+    def remove_stage1(self, *, entity_kind: str, entity_id: str, **_: object) -> None:
         self._backend().stage1_projection_delete(
             namespace=self._namespace(), entity_kind=entity_kind, entity_id=entity_id
         )
 
-    def remove_stage2_or_invalidate(self, *, entity_kind: str, entity_id: str, **_: Any) -> None:
+    def remove_stage2_or_invalidate(
+        self, *, entity_kind: str, entity_id: str, **_: object
+    ) -> None:
         getattr(self._backend(), f"{entity_kind}_delete")(ids=[entity_id])
         if entity_kind == "edge":
             self._backend().edge_endpoints_delete(where={"edge_id": entity_id})
@@ -147,10 +173,12 @@ class PostgresTwoStageProjectionAdapter:
             self._backend().edge_endpoints_upsert(
                 ids=[row["id"] for row in rows],
                 documents=[json.dumps(row) for row in rows],
-                metadatas=rows,
+                metadatas=cast(list[dict[str, Any]], rows),
             )
 
-    def _current(self, *, entity_kind: str, entity_id: str) -> Any:
+    def _current(
+        self, *, entity_kind: str, entity_id: str
+    ) -> CanonicalEntityRevision | None:
         return self.engine.indexing.canonical_entity_revision(
             entity_kind=entity_kind, entity_id=entity_id
         )
@@ -218,7 +246,9 @@ class PostgresTwoStageProjectionAdapter:
                 self._promote_edge_endpoints(document)
             self.remove_stage1(entity_kind=entity_kind, entity_id=entity_id)
 
-    def apply_embedding_jobs_batch(self, jobs: list[Any]) -> dict[str, BaseException | None]:
+    def apply_embedding_jobs_batch(
+        self, jobs: list[object]
+    ) -> dict[str, BaseException | None]:
         """Embed compatible pending rows in one provider call when possible.
 
         The worker still owns leases and acknowledgements. A provider batch
@@ -233,7 +263,8 @@ class PostgresTwoStageProjectionAdapter:
             entity_kind = str(value("entity_kind") or "")
             entity_id = str(value("entity_id") or "")
             op = str(value("op") or "UPSERT")
-            payload_json = value("payload_json")
+            raw_payload_json = value("payload_json")
+            payload_json = raw_payload_json if isinstance(raw_payload_json, str) else None
             try:
                 expected = str(json.loads(payload_json or "{}").get("source_fingerprint") or "")
                 current = self._current(entity_kind=entity_kind, entity_id=entity_id)
@@ -306,17 +337,28 @@ class PostgresTwoStageProjectionAdapter:
                 outcomes[job_id] = None
         return outcomes
 
-    def promote_stage2(self, **kwargs: Any) -> None:
-        self.apply_embedding_job(**kwargs)
+    def promote_stage2(self, **kwargs: object) -> None:
+        raw_payload_json = kwargs.get("payload_json")
+        self.apply_embedding_job(
+            entity_kind=str(kwargs.get("entity_kind") or ""),
+            entity_id=str(kwargs.get("entity_id") or ""),
+            op=str(kwargs.get("op") or "UPSERT"),
+            payload_json=raw_payload_json if isinstance(raw_payload_json, str) else None,
+        )
 
-    def reconcile_projection(self, **_: Any) -> int:
+    def reconcile_projection(self, **_: object) -> int:
         removed = 0
-        for row in self._backend().stage1_projection_query(
-            namespace=self._namespace(), entity_kind="node", limit=1000
-        ) + self._backend().stage1_projection_query(
-            namespace=self._namespace(), entity_kind="edge", limit=1000
-        ):
-            kind, entity_id = row["entity_kind"], row["entity_id"]
+        rows = list(
+            self._backend().stage1_projection_query(
+                namespace=self._namespace(), entity_kind="node", limit=1000
+            )
+        ) + list(
+            self._backend().stage1_projection_query(
+                namespace=self._namespace(), entity_kind="edge", limit=1000
+            )
+        )
+        for row in rows:
+            kind, entity_id = str(row["entity_kind"]), str(row["entity_id"])
             current = self._current(entity_kind=kind, entity_id=entity_id)
             if current is None or current.state != "active":
                 with self.engine.uow():
