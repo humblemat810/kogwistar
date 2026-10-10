@@ -5,7 +5,7 @@ import time
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Protocol, cast
 
 from pydantic import BaseModel, Field
 
@@ -26,6 +26,25 @@ SERVICE_TRIGGER_TYPES = {
 }
 
 JsonObject = dict[str, JsonValue]
+
+
+class ServiceRunRegistry(Protocol):
+    def get_run(self, run_id: str) -> Mapping[str, JsonValue] | None: ...
+
+
+class WorkflowRunSpawner(Protocol):
+    def __call__(
+        self,
+        *,
+        workflow_id: str,
+        conversation_id: str,
+        turn_node_id: str | None,
+        user_id: str | None,
+        initial_state: JsonObject,
+        priority_class: str,
+        token_budget: int | None,
+        time_budget_ms: int | None,
+    ) -> JsonObject: ...
 
 
 def _json_object(value: object) -> JsonObject:
@@ -49,6 +68,14 @@ def _int_value(value: object, default: int = 0) -> int:
         except (TypeError, ValueError):
             return default
     return default
+
+
+def _optional_text(value: object) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
+def _optional_int(value: object) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 def _json_text(value: object) -> str:
@@ -139,8 +166,8 @@ class ServiceProjectionRow(BaseModel):
 class ServiceSupervisor:
     get_workflow_engine: Callable[[], GraphKnowledgeEngine]
     get_conversation_engine: Callable[[], GraphKnowledgeEngine]
-    run_registry: Any
-    spawn_workflow_run: Callable[..., dict[str, Any]]
+    run_registry: ServiceRunRegistry
+    spawn_workflow_run: WorkflowRunSpawner
     scope_snapshot: Callable[[], dict[str, str]]
 
     def bootstrap(self) -> None:
@@ -431,8 +458,10 @@ class ServiceSupervisor:
                 or target_cfg.get("conversation_id")
                 or f"svc:{service_id}"
             )
-            turn_node_id = payload.get("turn_node_id") or target_cfg.get("turn_node_id")
-            user_id = payload.get("user_id") or target_cfg.get("user_id")
+            turn_node_id = _optional_text(
+                payload.get("turn_node_id") or target_cfg.get("turn_node_id")
+            )
+            user_id = _optional_text(payload.get("user_id") or target_cfg.get("user_id"))
             initial_state = _json_object(target_cfg.get("initial_state"))
             initial_state.update(_json_object(payload.get("initial_state")))
             run_payload = self.spawn_workflow_run(
@@ -442,8 +471,8 @@ class ServiceSupervisor:
                 user_id=user_id,
                 initial_state=initial_state,
                 priority_class=str(target_cfg.get("priority_class") or "background"),
-                token_budget=target_cfg.get("token_budget"),
-                time_budget_ms=target_cfg.get("time_budget_ms"),
+                token_budget=_optional_int(target_cfg.get("token_budget")),
+                time_budget_ms=_optional_int(target_cfg.get("time_budget_ms")),
             )
             self._append_event(
                 service_id=service_id,

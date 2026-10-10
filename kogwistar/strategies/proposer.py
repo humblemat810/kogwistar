@@ -30,8 +30,8 @@ MergeCandidateMap = dict[tuple[str, str], MergeCandidate]
 
 @dataclass(frozen=True)
 class _Pair:
-    left: Any
-    right: Any
+    left: Node | Edge
+    right: Node | Edge
 
 
 def _and_where(
@@ -451,7 +451,7 @@ class VectorProposer(MergeCandidateProposer):
         cross_doc_only: bool = False,
         anchor_only: bool = True,
         limit_per_bucket: int | None = None,
-    ) -> list[tuple[Any, Any]]:
+    ) -> list[tuple[Node | Edge, Node | Edge]]:
         """Enumerate raw adjudication pairs across one document universe.
 
         The proposer builds per-document pools, applies anchor and cross-doc bucketing
@@ -606,7 +606,7 @@ class VectorProposer(MergeCandidateProposer):
 
         # dedupe symmetric
         seen = set()
-        ordered: list[tuple[Any, Any]] = []
+        ordered: list[tuple[Node | Edge, Node | Edge]] = []
         for p in pairs:
             a = getattr(p.left, "id", None)
             b = getattr(p.right, "id", None)
@@ -627,7 +627,7 @@ class VectorProposer(MergeCandidateProposer):
 
     def same_kind_in_doc(
         self, *, engine: EngineLike, doc_id: str, kind: str = "node"
-    ) -> list[tuple[Any, Any]]:
+    ) -> list[tuple[Node | Edge, Node | Edge]]:
         pk: PairKind = "node_node" if kind == "node" else "edge_edge"
         return self.propose_any_kind_any_doc(
             engine=engine,
@@ -650,7 +650,11 @@ class VectorProposer(MergeCandidateProposer):
             anchor_only=True,
             limit_per_bucket=limit_per_bucket,
         )
-        return [(left, right) for (left, right) in out]
+        return [
+            (left, right)
+            for left, right in out
+            if isinstance(left, Node) and isinstance(right, Edge)
+        ]
 
     def for_new_node(
         self,
@@ -690,7 +694,7 @@ class CompositeProposer(MergeCandidateProposer):
 
     def same_kind_in_doc(
         self, *, engine: EngineLike, doc_id: str, kind: str = "node"
-    ) -> list[tuple[Any, Any]]:
+    ) -> list[tuple[Node | Edge, Node | Edge]]:
         return self._proposer(engine).same_kind_in_doc(
             engine=engine, doc_id=doc_id, kind=kind
         )

@@ -1,5 +1,6 @@
 import json
 from dataclasses import asdict, dataclass, field
+from collections.abc import Mapping
 from typing import ClassVar, Literal, Self, cast
 
 from pydantic import (
@@ -15,6 +16,7 @@ from kogwistar.engine_core.models import (
     BaseNodeMetadata,
     ContextCost,
     Edge,
+    JsonPrimitive,
     Node,
 )
 from kogwistar.json_types import JsonValue
@@ -30,6 +32,15 @@ def _metadata_int(value: JsonValue | None, default: int = 0) -> int:
     if isinstance(value, (int, float, str)):
         return int(value or default)
     return default
+
+
+def _flat_cost_metadata(meta: Mapping[str, JsonValue]) -> dict[str, JsonPrimitive]:
+    result: dict[str, JsonPrimitive] = {}
+    for key in ("cost.char_count", "cost.token_count"):
+        value = meta.get(key)
+        if value is None or isinstance(value, (bool, int, float, str)):
+            result[key] = value
+    return result
 
 # --- Phase 1: chat-edge intent classification (causality) ---
 
@@ -120,7 +131,7 @@ class ContextSnapshotMetadata(BaseModel):
                 ),
             )
         else:
-            cost = ContextCost.from_flat_metadata(data, prefix="cost")
+            cost = ContextCost.from_flat_metadata(_flat_cost_metadata(data), prefix="cost")
 
         # Strip flattened fields so they don't end up as "extra"
         data.pop("cost.char_count", None)

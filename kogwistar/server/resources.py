@@ -5,7 +5,7 @@ import os
 import pathlib
 from collections.abc import Callable
 from threading import Lock
-from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast
+from typing import TYPE_CHECKING, Generic, TypeVar, cast
 
 from fastapi.templating import Jinja2Templates
 
@@ -17,6 +17,11 @@ from kogwistar.server.bootstrap import (
     load_server_storage_settings,
 )
 from kogwistar.server.chat_service import ChatRunService
+from kogwistar.server.chat_service_shared import (
+    AnswerRunRequest,
+    JsonObject,
+    RuntimeRunRequest,
+)
 from kogwistar.server.run_registry import RunRegistry
 
 if TYPE_CHECKING:
@@ -159,7 +164,7 @@ run_registry: _LazyResource[RunRegistry] = _LazyResource(
 )
 
 
-def _import_override_from_env(env_name: str) -> Callable[..., Any] | None:
+def _import_override_from_env(env_name: str) -> Callable[[], object] | None:
     raw = str(os.getenv(env_name) or "").strip()
     if not raw:
         return None
@@ -172,7 +177,7 @@ def _import_override_from_env(env_name: str) -> Callable[..., Any] | None:
     target = getattr(module, attr_name, None)
     if not callable(target):
         raise TypeError(f"{env_name} target is not callable: {raw}")
-    return target
+    return cast(Callable[[], object], target)
 
 
 def _build_chat_service() -> ChatRunService:
@@ -183,8 +188,16 @@ def _build_chat_service() -> ChatRunService:
         "KOGWISTAR_TEST_RUNTIME_RUNNER_IMPORT"
     )
     default_runtime_kind = str(os.getenv("KOGWISTAR_RUNTIME_KIND") or "sync").strip().lower()
-    answer_runner = answer_runner_factory() if answer_runner_factory else None
-    runtime_runner = runtime_runner_factory() if runtime_runner_factory else None
+    answer_runner = (
+        cast(Callable[[AnswerRunRequest], JsonObject], answer_runner_factory())
+        if answer_runner_factory
+        else None
+    )
+    runtime_runner = (
+        cast(Callable[[RuntimeRunRequest], JsonObject], runtime_runner_factory())
+        if runtime_runner_factory
+        else None
+    )
     return ChatRunService(
         get_knowledge_engine=lambda: engine.get(),
         get_conversation_engine=lambda: conversation_engine.get(),

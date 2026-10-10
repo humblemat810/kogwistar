@@ -87,7 +87,7 @@ async def _call_tool_json(
 
 
 async def main() -> None:
-    from langchain_mcp_adapters.client import MultiServerMCPClient
+    from langchain_mcp_adapters.client import MultiServerMCPClient  # pyright: ignore[reportMissingImports]
 
     ap = argparse.ArgumentParser()
     ap.add_argument(

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Literal, Protocol
 
@@ -196,7 +196,7 @@ class LLMTaskSet:
 
 
 def validate_llm_task_set(task_set: LLMTaskSet) -> LLMTaskSet:
-    required: dict[str, Callable[..., object]] = {
+    required: dict[str, object] = {
         "extract_graph": task_set.extract_graph,
         "adjudicate_pair": task_set.adjudicate_pair,
         "adjudicate_batch": task_set.adjudicate_batch,

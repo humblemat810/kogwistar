@@ -4,14 +4,13 @@ import functools
 import inspect
 import json
 from collections.abc import Callable
-from typing import Any, ParamSpec, TypeVar, cast, overload
+from typing import ParamSpec, TypeVar, cast, overload
 
 from pydantic import BaseModel
 
 from .cache_backend import Memory
 
 P = ParamSpec("P")
-M = TypeVar("M")
 
 
 def _stable_json(obj: object) -> str:
@@ -20,7 +19,6 @@ def _stable_json(obj: object) -> str:
     )
 
 
-P = ParamSpec("P")
 R = TypeVar("R")
 TNode = TypeVar("TNode", bound=BaseModel)
 BaseM = TypeVar("BaseM", bound=BaseModel)
@@ -48,7 +46,7 @@ def cache_pydantic_structured(
     *,
     memory: Memory,
     model: type[BaseM],
-    fn: Callable[P, Any],
+    fn: Callable[P, R],
     ignore: list[str] | None = None,
     dump_exclude: set[str] | None = None,
 ) -> Callable[P, BaseM]: ...
@@ -57,18 +55,18 @@ def cache_pydantic_structured(
     *,
     memory: Memory,
     model: None,
-    fn: Callable[P, Any],
+    fn: Callable[P, R],
     ignore: list[str] | None = None,
     dump_exclude: set[str] | None = None,
-) -> Callable[P, Any]: ...
+) -> Callable[P, R]: ...
 def cache_pydantic_structured(
     *,
     memory: Memory,
     model: type[BaseM] | None,
-    fn: Callable[P, BaseM],
+    fn: Callable[P, R],
     ignore: list[str] | None = None,
     dump_exclude: set[str] | None = None,
-) -> Callable[P, BaseM | None]:
+) -> Callable[P, BaseM | R]:
     """
     Cache a function that returns a Pydantic model using joblib, while:
 
@@ -132,7 +130,7 @@ def cache_pydantic_structured(
     cached_entry = cached(memory, fn, ignore=ignore)
 
     @functools.wraps(fn)
-    def wrapped(*args: P.args, **kwargs: P.kwargs) -> BaseM:
+    def wrapped(*args: P.args, **kwargs: P.kwargs) -> BaseM | R:
         # We assume first positional arg is the agent/self (so ignore=["agent"] works)
         # if not args:
         #     raise TypeError("Expected first positional argument to be the agent/self")
