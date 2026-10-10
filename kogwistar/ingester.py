@@ -138,7 +138,7 @@ class BaseDocumentGraphIngestor:
     llm: BaseChatModel
     cache_dir: str | None = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         self.use_uuid = False
         self.memory = Memory(
             self.cache_dir
@@ -330,7 +330,11 @@ class BaseDocumentGraphIngestor:
         }
 
     def _ensure_document_node(
-        self, doc_id: str, *, title: str | None = None, leaves
+        self,
+        doc_id: str,
+        *,
+        title: str | None = None,
+        leaves: Sequence[LeafChunk],
     ) -> str:
         node_id = f"docnode:{doc_id}"
         if not self.engine.persist.exists_node(node_id):
@@ -381,7 +385,7 @@ class BaseDocumentGraphIngestor:
         self,
         text: str,
         max_chars: int,
-        doc_id,
+        doc_id: str,
         *,
         pages: list[str] | None = None,
     ) -> list[LeafChunk]:
@@ -778,9 +782,15 @@ class BaseDocumentGraphIngestor:
             self.engine.write.add_node(self._as_node(doc_id, ch), doc_id=doc_id)
         return nid
 
-    def _persist_layer(self, doc_id: str, *, parents, children):
+    def _persist_layer(
+        self,
+        doc_id: str,
+        *,
+        parents: Sequence[Node | SummaryChunk],
+        children: Sequence[SummaryChunk],
+    ) -> None:
         # Ensure children exist first
-        self._persist_micro_chunks_as_nodes(doc_id, children)
+        self._persist_micro_chunks_as_nodes(doc_id, list(children))
 
         # Ensure parents exist (accept Node or SummaryChunk)
         parent_ids = []
@@ -859,7 +869,9 @@ class BaseDocumentGraphIngestor:
 
         return node_ids
 
-    def _persist_adjacency(self, doc_id: str, ordered_node_ids: Sequence[str]):
+    def _persist_adjacency(
+        self, doc_id: str, ordered_node_ids: Sequence[str]
+    ) -> None:
         """
         Persist asymmetric sibling adjacency:
         a -(precedes)-> b
@@ -872,7 +884,7 @@ class BaseDocumentGraphIngestor:
 
     def _bi_edge(
         self, doc_id: str, *, src: str, tgt: str, relation: str, reverse_relation: str
-    ):
+    ) -> None:
         "this document graph does not enfoce multi headed edge"
 
         span = GroundingSpan.from_dummy_for_document()
