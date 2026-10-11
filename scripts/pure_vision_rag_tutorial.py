@@ -37,7 +37,7 @@ from kogwistar.llm_tasks.contracts import LLMTaskSet
 
 
 DEFAULT_PAYLOAD = ROOT / "examples" / "vision_rag" / "mock_payload.json"
-DEMO_IMAGE_PATH = ROOT.parent / "tests" / "fixtures" / "ovis_multimodal_media" / "sample_diagram.png"
+DEMO_IMAGE_PATH = ROOT / "tests" / "fixtures" / "ovis_multimodal_media" / "sample_diagram.png"
 DEFAULT_CLIP_ENDPOINT = "http://127.0.0.1:8792"
 DEFAULT_QWEN_GPU_ENDPOINT = "http://127.0.0.1:8794"
 DEFAULT_ANSWER_ENDPOINT = "http://127.0.0.1:11434/v1/chat/completions"
