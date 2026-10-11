@@ -1,0 +1,53 @@
+{
+  "profile": {
+    "provider": "precomputed-demo",
+    "model": "vision-demo-4d",
+    "model_revision": "v1",
+    "dimension": 4,
+    "similarity_metric": "cosine",
+    "embedding_kind": "single_vector"
+  },
+  "items": [
+    {
+      "id": "image:rabbit",
+      "label": "Rabbit in an upper-left image region",
+      "resource_id": "media/rabbit.png",
+      "resource_revision_id": "sha256:rabbit-v1",
+      "content_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+      "capture_kind": "webpage_screenshot",
+      "source_url": "https://example.invalid/rabbit-study",
+      "embedding": [0.99, 0.05, 0.0, 0.0],
+      "region": [0.0, 0.0, 0.45, 0.45],
+      "summary": "A rabbit appears in the upper-left region of the image."
+    },
+    {
+      "id": "image:lecture",
+      "label": "Lecture slide about vector databases",
+      "resource_id": "media/lecture-slide.png",
+      "resource_revision_id": "sha256:lecture-v1",
+      "content_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+      "capture_kind": "document_page_screenshot",
+      "source_url": "https://example.invalid/vector-lecture",
+      "embedding": [0.05, 0.99, 0.02, 0.0],
+      "region": [0.0, 0.0, 1.0, 1.0],
+      "summary": "A lecture slide presents vector database architecture."
+    },
+    {
+      "id": "image:chip",
+      "label": "Accelerator chip package",
+      "resource_id": "media/chip-package.png",
+      "resource_revision_id": "sha256:chip-v1",
+      "content_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+      "capture_kind": "webpage_screenshot",
+      "source_url": "https://example.invalid/accelerator",
+      "embedding": [0.02, 0.04, 0.99, 0.0],
+      "region": [0.1, 0.1, 0.8, 0.8],
+      "summary": "A close-up image shows an accelerator chip package."
+    }
+  ],
+  "queries": {
+    "rabbit": [0.98, 0.06, 0.0, 0.0],
+    "lecture": [0.04, 0.98, 0.03, 0.0],
+    "chip": [0.01, 0.03, 0.98, 0.0]
+  }
+}
