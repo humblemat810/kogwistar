@@ -43,6 +43,7 @@ If the README uses terms like `substrate`, `harness`, `projection`, or `replay`,
 20. [20 Generic Named Projection Meta Layer](./tutorials/20_generic_named_projection_meta_layer.md)
 21. [21 Retrieval Approaches Comparison](./tutorials/21_rag_retrieval_comparison.md)
 22. [22 Retrieval Approaches Comparison, KG Semantics Edition](./tutorials/22_rag_retrieval_comparison_kg_semantics.md)
+23. [23 Pure Vision RAG](./tutorials/23_pure_vision_rag.md)
 23. [23 Lane Messaging Contract](./tutorials/23_lane_messaging_contract.md)
 24. [24 ACL Visibility and Auditing](./tutorials/24_acl_visibility_tutorial.md)
 25. [25 Async Runtime Basics](./tutorials/25_async_runtime_tutorial.md)

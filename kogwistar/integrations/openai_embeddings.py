@@ -10,17 +10,20 @@ def build_azure_embedding_fn_from_env() -> Callable[[str], list[float] | None] |
     Returns None when dependency/config is unavailable, mirroring the engine's
     best-effort behavior.
     """
+    # Check configuration before importing the optional LangChain adapter.  A
+    # dependency-light core process should not pay the import cost, or trigger
+    # optional model package discovery, when Azure embeddings are unused.
+    emb_deployment = os.getenv("OPENAI_EMBED_DEPLOYMENT")
+    emb_endpoint = os.getenv("OPENAI_EMBED_ENDPOINT")
+    emb_api_key = os.getenv("OPENAI_API_KEY_GPT4_1") or os.getenv("OPENAI_API_KEY")
+    if not (emb_deployment and emb_endpoint and emb_api_key):
+        return None
     try:
         from langchain_openai import AzureOpenAIEmbeddings
     except Exception:
         return None
 
-    emb_deployment = os.getenv("OPENAI_EMBED_DEPLOYMENT")
-    emb_endpoint = os.getenv("OPENAI_EMBED_ENDPOINT")
-    emb_api_key = os.getenv("OPENAI_API_KEY_GPT4_1") or os.getenv("OPENAI_API_KEY")
     emb_api_ver = os.getenv("OPENAI_EMBED_API_VERSION", "2024-08-01-preview")
-    if not (emb_deployment and emb_endpoint and emb_api_key):
-        return None
 
     emb = AzureOpenAIEmbeddings(
         azure_deployment=emb_deployment,
