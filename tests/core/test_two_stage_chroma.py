@@ -208,6 +208,22 @@ def test_chroma_stage1_edge_remains_traversable_by_id_and_neighbors(tmp_path):
     assert graph.neighbors("e1")["nodes"] == {"n1", "n2"}
 
 
+def test_graph_query_hides_deleted_stage1_edge_before_reconciliation(tmp_path: Path) -> None:
+    engine, adapter = _engine(tmp_path)
+    adapter.add_node(build_entity_node(node_id="n1", doc_id="d1"))
+    adapter.add_node(build_entity_node(node_id="n2", doc_id="d2"))
+    adapter.add_edge(
+        build_relationship_edge(
+            edge_id="e1", src="n1", tgt="n2", doc_id="d-edge", embedding=None
+        )
+    )
+    graph = GraphQuery(engine)
+
+    assert graph.neighbors("n1") == {"nodes": {"n2"}, "edges": {"e1"}}
+    engine.indexing.state = "deleted"
+    assert graph.neighbors("n1") == {"nodes": set(), "edges": set()}
+
+
 @pytest.mark.parametrize("entity_kind", ["node", "edge"])
 def test_stage1_fallback_hides_tombstoned_entity_before_reconciliation(
     tmp_path: Path, entity_kind: str

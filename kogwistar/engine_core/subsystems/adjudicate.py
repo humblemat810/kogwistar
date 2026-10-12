@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any, cast
 
@@ -8,6 +7,7 @@ from ...typing_interfaces import AdjudicateLike
 from ..async_compat import run_awaitable_blocking
 from ..models import AdjudicationTarget, Edge, Node
 from .base import NamespaceProxy
+from .read import stage1_row_is_current
 
 if TYPE_CHECKING:
     from ..engine import GraphKnowledgeEngine
@@ -136,20 +136,19 @@ class AdjudicateSubsystem(NamespaceProxy["GraphKnowledgeEngine"], AdjudicateLike
         payload = _response_mapping(payload_value) if isinstance(payload_value, Mapping) else candidate
         if str(payload.get("id") or entity_id) != str(entity_id):
             return None
-        current_getter = getattr(getattr(self._e, "indexing", None), "canonical_entity_revision", None)
-        if callable(current_getter):
-            current = current_getter(entity_kind=kind, entity_id=entity_id)
-            if current is None or getattr(current, "state", "active") != "active":
-                return None
-        fingerprint_getter = getattr(getattr(self._e, "indexing", None), "canonical_revision_payload", None)
-        expected = str(payload.get("source_fingerprint") or "")
-        if expected and callable(fingerprint_getter):
-            current_payload = _response_mapping(
-                json.loads(str(fingerprint_getter(entity_kind=kind, entity_id=entity_id)))
+        staged_row = {"payload": dict(payload)}
+        staged_payload = staged_row["payload"]
+        if isinstance(staged_payload, dict):
+            staged_payload.setdefault("id", entity_id)
+        return (
+            dict(payload)
+            if stage1_row_is_current(
+                self._e,
+                entity_kind=kind,
+                row=staged_row,
             )
-            if expected != str(current_payload.get("source_fingerprint") or ""):
-                return None
-        return dict(payload)
+            else None
+        )
 
     def classify_endpoint_id(self, rid: str) -> str:
         hit = _response_mapping(run_awaitable_blocking(self._e.backend.node_get(ids=[rid])))
