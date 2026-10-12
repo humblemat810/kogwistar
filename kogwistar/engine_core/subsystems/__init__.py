@@ -6,13 +6,14 @@ from .ingest import IngestSubsystem
 from .persist import PersistSubsystem
 from .read import ReadSubsystem
 from .rollback import RollbackSubsystem
-from .write import WriteSubsystem
+from .write import CreateNodeResult, WriteSubsystem
 
 __all__ = [
     "ACLAwareReadSubsystem",
     "ACLAwareWriteSubsystem",
     "ACLSubsystem",
     "AdjudicateSubsystem",
+    "CreateNodeResult",
     "EmbedSubsystem",
     "ExtractSubsystem",
     "IngestSubsystem",

@@ -95,3 +95,30 @@ def test_indexing_reads_canonical_revision_from_existing_event_store(tmp_path) -
     assert deleted is not None
     assert deleted.revision > active.revision
     assert deleted.is_deleted
+
+
+def test_create_node_if_absent_is_idempotent_and_rejects_payload_conflicts(tmp_path) -> None:
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path),
+        embedding_function=FakeEmbeddingFunction(dim=3),
+        backend_factory=build_fake_backend,
+    )
+    first = build_entity_node(
+        node_id="create-once", doc_id="d1", embedding=[0.1, 0.2, 0.3]
+    )
+    same = first.model_copy(deep=True)
+    different = first.model_copy(update={"summary": "different"}, deep=True)
+
+    created = engine.write.create_node_if_absent(first)
+    repeated = engine.write.create_node_if_absent(same)
+    conflicting = engine.write.create_node_if_absent(different)
+
+    assert created.status == "created"
+    assert repeated.status == "already_exists"
+    assert conflicting.status == "conflict"
+    events = [
+        row
+        for row in engine.meta_sqlite.iter_entity_events(namespace=engine.namespace)
+        if row[1] == "node" and row[2] == "create-once" and row[3] == "ADD"
+    ]
+    assert len(events) == 1

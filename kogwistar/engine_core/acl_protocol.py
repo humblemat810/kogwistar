@@ -76,6 +76,13 @@ class ACLAwareWriteProtocol(Protocol):
     def add_edge(self, *args: object, **kwargs: object) -> None: ...
 
 
+@runtime_checkable
+class CreateOnceWriteProtocol(Protocol):
+    """Optional admission capability for create-once graph mutations."""
+
+    def create_node_if_absent(self, *args: object, **kwargs: object) -> object: ...
+
+
 def require_acl_protocols(*, policy: object, read: object, write: object) -> None:
     """Fail closed if ACL was requested without all required engine seams."""
 
@@ -98,5 +105,6 @@ __all__ = [
     "ACLAwareReadProtocol",
     "ACLAwareWriteProtocol",
     "ACLPolicyProtocol",
+    "CreateOnceWriteProtocol",
     "require_acl_protocols",
 ]

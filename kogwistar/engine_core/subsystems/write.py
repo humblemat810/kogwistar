@@ -5,7 +5,8 @@ import inspect
 import json
 import uuid
 from collections.abc import Mapping, Sequence
-from typing import TYPE_CHECKING, Any, TypeVar, cast
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast
 
 from ...cdc.change_event import EntityRefModel
 from ...json_types import JsonObject
@@ -32,6 +33,20 @@ if TYPE_CHECKING:
 
 
 _T = TypeVar("_T")
+
+
+@dataclass(frozen=True)
+class CreateNodeResult:
+    """Outcome of canonical create-once admission for one node identity."""
+
+    status: Literal["created", "already_exists", "conflict"]
+    entity_id: str
+    revision: int | None = None
+    message: str | None = None
+
+    @property
+    def created(self) -> bool:
+        return self.status == "created"
 
 
 def _required_embedding(value: list[float] | None) -> list[float]:
@@ -95,6 +110,88 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
     # Canonical write API
     def add_node(self, node: Node, doc_id: str | None = None) -> None:
         self._add_node_impl(node, doc_id=doc_id)
+
+    def create_node_if_absent(
+        self, node: Node, doc_id: str | None = None
+    ) -> CreateNodeResult:
+        """Atomically admit a never-before-seen canonical node identity.
+
+        This is intentionally separate from ``add_node``. Existing ingestion
+        callers may rely on projection upsert behavior, while maintenance
+        patches need create-once semantics at the canonical event boundary.
+        A Chroma or other eventual projection is updated only after the
+        identity admission has succeeded.
+        """
+
+        if doc_id is not None:
+            node.doc_id = doc_id
+        entity_id = node.safe_get_id()
+        metadata_store = getattr(self._e, "meta_sqlite", None)
+        iter_events = getattr(metadata_store, "iter_entity_events", None)
+        if not callable(iter_events):
+            raise RuntimeError(
+                "create_node_if_absent requires a canonical event store"
+            )
+
+        payload = node.model_dump(field_mode="backend", exclude=["embedding"])
+        payload_json = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        namespace = str(getattr(self._e, "namespace", "default"))
+
+        with self._e.uow():
+            lock_identity = getattr(metadata_store, "lock_entity_identity", None)
+            if callable(lock_identity):
+                lock_identity(
+                    namespace=namespace,
+                    entity_kind="node",
+                    entity_id=entity_id,
+                )
+
+            current = self._e.indexing.canonical_entity_revision(
+                entity_kind="node", entity_id=entity_id, namespace=namespace
+            )
+            if current is not None:
+                current_json = json.dumps(
+                    current.payload, sort_keys=True, separators=(",", ":")
+                )
+                if current.state == "active" and current_json == payload_json:
+                    return CreateNodeResult(
+                        status="already_exists",
+                        entity_id=entity_id,
+                        revision=current.revision,
+                    )
+                return CreateNodeResult(
+                    status="conflict",
+                    entity_id=entity_id,
+                    revision=current.revision,
+                    message=(
+                        "canonical node identity already has a different payload "
+                        "or has been tombstoned"
+                    ),
+                )
+
+            self._e._append_event_for_entity(
+                namespace=namespace,
+                entity_kind="node",
+                entity_id=entity_id,
+                op="ADD",
+                payload=cast(dict[str, object], payload),
+                required=True,
+            )
+            previous_disable_event_log = getattr(self._e, "_disable_event_log", False)
+            self._e._disable_event_log = True
+            try:
+                self._add_node_impl(node, doc_id=doc_id)
+            finally:
+                self._e._disable_event_log = previous_disable_event_log
+
+            revision = self._e.indexing.canonical_entity_revision(
+                entity_kind="node", entity_id=entity_id, namespace=namespace
+            )
+            return CreateNodeResult(
+                status="created",
+                entity_id=entity_id,
+                revision=revision.revision if revision is not None else None,
+            )
 
     def add_edge(self, edge: Edge, doc_id: str | None = None) -> None:
         self._add_edge_impl(edge, doc_id=doc_id)
