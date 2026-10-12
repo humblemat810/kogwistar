@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+from typing import cast
+
 import pytest
 
+from kogwistar.engine_core.acl_protocol import CreateOnceWriteProtocol
 from kogwistar.engine_core.canonical_events import read_canonical_entity_revision
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from tests._helpers.fake_backend import build_fake_backend
 from tests._helpers.graph_builders import build_entity_node
-from tests.conftest import FakeEmbeddingFunction
+from tests._helpers.engine_factories import FakeEmbeddingFunction
 
 
 def test_canonical_revision_folds_active_delete_and_reactivation() -> None:
@@ -109,9 +112,10 @@ def test_create_node_if_absent_is_idempotent_and_rejects_payload_conflicts(tmp_p
     same = first.model_copy(deep=True)
     different = first.model_copy(update={"summary": "different"}, deep=True)
 
-    created = engine.write.create_node_if_absent(first)
-    repeated = engine.write.create_node_if_absent(same)
-    conflicting = engine.write.create_node_if_absent(different)
+    create_once = cast(CreateOnceWriteProtocol, engine.write).create_node_if_absent
+    created = create_once(first)
+    repeated = create_once(same)
+    conflicting = create_once(different)
 
     assert created.status == "created"
     assert repeated.status == "already_exists"

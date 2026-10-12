@@ -571,7 +571,7 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
         if active is None:
             raise RuntimeError("identity locks require an active metadata transaction")
         key = f"{namespace}\x1f{entity_kind}\x1f{entity_id}"
-        active.execute(
+        cast(SqlAlchemyConnectionLike, active).execute(
             sa.text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
             {"key": key},
         )

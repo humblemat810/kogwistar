@@ -8,11 +8,14 @@ surfaces when ACL is enabled.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from ..acl.graph import ACLDecision, ACLNodeReadDecision
 from .models import Edge, Node
 from .vector_search import VectorSearchHit
+
+if TYPE_CHECKING:
+    from .subsystems.write import CreateNodeResult
 
 
 @runtime_checkable
@@ -80,7 +83,9 @@ class ACLAwareWriteProtocol(Protocol):
 class CreateOnceWriteProtocol(Protocol):
     """Optional admission capability for create-once graph mutations."""
 
-    def create_node_if_absent(self, *args: object, **kwargs: object) -> object: ...
+    def create_node_if_absent(
+        self, *args: object, **kwargs: object
+    ) -> CreateNodeResult: ...
 
 
 def require_acl_protocols(*, policy: object, read: object, write: object) -> None:

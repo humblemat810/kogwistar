@@ -30,6 +30,7 @@ from ...id_provider import stable_id
 from ...json_types import JsonObject, JsonValue
 from ...typing_interfaces import QueryEmbeddingInput, ReadLike, WriteLike
 from .base import NamespaceProxy
+from ..acl_protocol import CreateOnceWriteProtocol
 from .write import CreateNodeResult
 
 if TYPE_CHECKING:
@@ -1721,7 +1722,9 @@ class ACLAwareWriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"], WriteLike):
         """Admit a maintenance node and its default ACL as one command."""
 
         with self._e.uow():
-            result = self._raw.create_node_if_absent(node, doc_id=doc_id)
+            result = cast(CreateOnceWriteProtocol, self._raw).create_node_if_absent(
+                node, doc_id=doc_id
+            )
             if result.created:
                 self._e.acl.record_default_acl_for_item(node, grain="node")
             return result
