@@ -93,13 +93,20 @@ class _Backend:
 class _Indexing:
     def __init__(self) -> None:
         self.fingerprint = "fp-1"
+        self.state = "active"
         self.jobs: list[dict] = []
 
     def canonical_revision_payload(self, *, entity_kind: str, entity_id: str) -> str:
-        return json.dumps({"source_fingerprint": self.fingerprint})
+        return json.dumps(
+            {
+                "source_fingerprint": self.fingerprint,
+                "source_state": self.state,
+                "canonical_revision": 1,
+            }
+        )
 
     def canonical_entity_revision(self, *, entity_kind: str, entity_id: str):
-        return SimpleNamespace(revision=1, state="active")
+        return SimpleNamespace(revision=1, state=self.state)
 
     def enqueue_index_job(self, **kwargs) -> None:
         self.jobs.append(kwargs)
@@ -199,6 +206,50 @@ def test_chroma_stage1_edge_remains_traversable_by_id_and_neighbors(tmp_path):
     assert graph._is_edge("e1") is True
     assert graph.neighbors("n1") == {"nodes": {"n2"}, "edges": {"e1"}}
     assert graph.neighbors("e1")["nodes"] == {"n1", "n2"}
+
+
+@pytest.mark.parametrize("entity_kind", ["node", "edge"])
+def test_stage1_fallback_hides_tombstoned_entity_before_reconciliation(
+    tmp_path: Path, entity_kind: str
+) -> None:
+    engine, adapter = _engine(tmp_path)
+    if entity_kind == "node":
+        adapter.add_node(build_entity_node(node_id="n1", doc_id="d1"))
+        entity_id = "n1"
+        read = engine.read.node_exists
+    else:
+        adapter.add_edge(
+            build_relationship_edge(
+                edge_id="e1", src="n1", tgt="n2", doc_id="d1", embedding=None
+            )
+        )
+        entity_id = "e1"
+        read = engine.read.edge_exists
+
+    assert read(ids=[entity_id]) is True
+    engine.indexing.state = "deleted"
+    assert read(ids=[entity_id]) is False
+
+
+def test_stage1_fallback_hides_stale_revision_before_reconciliation(tmp_path: Path) -> None:
+    engine, adapter = _engine(tmp_path)
+    adapter.add_node(build_entity_node(node_id="n1", doc_id="d1"))
+
+    assert engine.read.node_exists(ids=["n1"]) is True
+    engine.indexing.fingerprint = "fp-2"
+    assert engine.read.node_exists(ids=["n1"]) is False
+
+
+def test_stage1_fallback_requires_canonical_lifecycle_metadata(tmp_path: Path) -> None:
+    engine, adapter = _engine(tmp_path)
+    adapter.add_node(build_entity_node(node_id="n1", doc_id="d1"))
+
+    def incomplete_revision_payload(**_: object) -> str:
+        return json.dumps({"source_fingerprint": "fp-1"})
+
+    engine.indexing.canonical_revision_payload = incomplete_revision_payload
+
+    assert engine.read.node_exists(ids=["n1"]) is False
 
 
 def test_chroma_endpoint_promotion_reuses_edge_vector_not_provider(tmp_path):

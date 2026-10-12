@@ -255,6 +255,14 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         if not isinstance(rows, Iterable):
             return None
         rows = [cast(Mapping[str, object], row) for row in rows if isinstance(row, Mapping)]
+        rows = [
+            row
+            for row in rows
+            if self._stage1_row_is_current(
+                entity_kind=entity_kind,
+                row=row,
+            )
+        ]
         if not rows:
             return None
         payloads = [_json_object(row.get("payload") or {}) for row in rows]
@@ -268,6 +276,45 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         if "embeddings" in include:
             result["embeddings"] = [None for _ in payloads]
         return result
+
+    def _stage1_row_is_current(
+        self,
+        *,
+        entity_kind: str,
+        row: Mapping[str, object],
+    ) -> bool:
+        """Expose Stage-1 data only while it matches canonical active state.
+
+        Stage 1 is intentionally transient for eventual two-stage backends. A
+        tombstone or newer canonical revision can therefore race with the
+        projection worker. Reads must not treat an old transient row as live
+        merely because reconciliation has not removed it yet.
+        """
+        payload = row.get("payload")
+        if not isinstance(payload, Mapping):
+            return False
+        entity_id = payload.get("id") or row.get("key")
+        staged_fingerprint = payload.get("source_fingerprint")
+        if not isinstance(entity_id, str) or not entity_id:
+            return False
+        if not isinstance(staged_fingerprint, str) or not staged_fingerprint:
+            return False
+        indexing = getattr(self._e, "indexing", None)
+        revision_payload = getattr(indexing, "canonical_revision_payload", None)
+        if not callable(revision_payload):
+            return False
+        try:
+            canonical = json.loads(
+                revision_payload(entity_kind=entity_kind, entity_id=entity_id)
+            )
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return False
+        if not isinstance(canonical, Mapping):
+            return False
+        return (
+            canonical.get("source_state") == "active"
+            and canonical.get("source_fingerprint") == staged_fingerprint
+        )
 
     def _node_get_raw(
         self,
