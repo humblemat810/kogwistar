@@ -331,6 +331,13 @@ class InMemoryMetaStore(LaneMessageMetaStoreMixin):
             finally:
                 _active_in_memory_meta_txn.reset(token)
 
+    def lock_entity_identity(
+        self, *, namespace: str, entity_kind: str, entity_id: str
+    ) -> None:
+        """The enclosing transaction already holds the process-local lock."""
+
+        del namespace, entity_kind, entity_id
+
     def _debug_force_job_lease(self, *, job_id: str, lease_until: int | None) -> None:
         with self.transaction() as txn:
             job = txn.state.index_jobs.get(str(job_id))

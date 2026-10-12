@@ -562,6 +562,20 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
             with _set_active_conn(conn):
                 yield cast(SqlAlchemyConnectionLike, conn)
 
+    def lock_entity_identity(
+        self, *, namespace: str, entity_kind: str, entity_id: str
+    ) -> None:
+        """Serialize create-once admission across application processes."""
+
+        active = get_active_conn()
+        if active is None:
+            raise RuntimeError("identity locks require an active metadata transaction")
+        key = f"{namespace}\x1f{entity_kind}\x1f{entity_id}"
+        cast(SqlAlchemyConnectionLike, active).execute(
+            sa.text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+            {"key": key},
+        )
+
     @contextmanager
     def _queue_transaction(
         self, *, job_id: str, namespace: str

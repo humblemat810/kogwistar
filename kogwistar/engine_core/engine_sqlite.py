@@ -644,6 +644,13 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
             finally:
                 conn.close()
 
+    def lock_entity_identity(
+        self, *, namespace: str, entity_kind: str, entity_id: str
+    ) -> None:
+        """The surrounding ``BEGIN IMMEDIATE`` serializes SQLite writers."""
+
+        del namespace, entity_kind, entity_id
+
     # ------------------------------------------------------------------
     # Global sequence
     # ------------------------------------------------------------------

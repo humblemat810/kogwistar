@@ -30,6 +30,8 @@ from ...id_provider import stable_id
 from ...json_types import JsonObject, JsonValue
 from ...typing_interfaces import QueryEmbeddingInput, ReadLike, WriteLike
 from .base import NamespaceProxy
+from ..acl_protocol import CreateOnceWriteProtocol
+from .write import CreateNodeResult
 
 if TYPE_CHECKING:
     from ..engine import GraphKnowledgeEngine
@@ -694,6 +696,14 @@ class ACLSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         tombstoned: bool = False,
     ) -> ACLRecord:
         with self._e.uow():
+            metadata_store = getattr(self._e, "meta_sqlite", None)
+            lock_identity = getattr(metadata_store, "lock_entity_identity", None)
+            if callable(lock_identity):
+                lock_identity(
+                    namespace=str(getattr(self._e, "namespace", "default")),
+                    entity_kind="edge" if grain == "edge" else "node",
+                    entity_id=str(entity_id),
+                )
             previous = self._latest_persisted_acl_record(
                 grain=grain,
                 truth_graph=truth_graph,
@@ -1704,6 +1714,19 @@ class ACLAwareWriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"], WriteLike):
         with self._e.uow():
             result = self._raw.add_node(node, doc_id=doc_id)
             self._e.acl.record_default_acl_for_item(node, grain="node")
+            return result
+
+    def create_node_if_absent(
+        self, node: Node, doc_id: str | None = None
+    ) -> CreateNodeResult:
+        """Admit a maintenance node and its default ACL as one command."""
+
+        with self._e.uow():
+            result = cast(CreateOnceWriteProtocol, self._raw).create_node_if_absent(
+                node, doc_id=doc_id
+            )
+            if result.created:
+                self._e.acl.record_default_acl_for_item(node, grain="node")
             return result
 
     def add_edge(self, edge: Edge, doc_id: str | None = None) -> None:

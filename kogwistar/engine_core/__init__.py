@@ -6,6 +6,7 @@ from kogwistar.engine_core.acl_protocol import (
     ACLAwareReadProtocol,
     ACLAwareWriteProtocol,
     ACLPolicyProtocol,
+    CreateOnceWriteProtocol,
     require_acl_protocols,
 )
 from kogwistar.engine_core.async_named_projection import (
@@ -82,6 +83,7 @@ from kogwistar.engine_core.subsystems import (
     PersistSubsystem,
     ReadSubsystem,
     RollbackSubsystem,
+    CreateNodeResult,
     WriteSubsystem,
 )
 from kogwistar.engine_core.types import (
@@ -152,6 +154,8 @@ __all__ = [
     "ChromaBackend",
     "ChromaStorageInspector",
     "CorruptEmbeddingProfileError",
+    "CreateNodeResult",
+    "CreateOnceWriteProtocol",
     "DaemonHealthState",
     "DeadLetterRecoveryState",
     "EdgePreAddHook",
