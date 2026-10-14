@@ -857,6 +857,12 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
         child_result = self._terminal_run_result(
             conversation_id=plan["conversation_id"], run_id=plan["child_run_id"]
         )
+        # A failed child has a durable checkpoint and is retryable work.  Do
+        # not let parent rehydration treat the failure as an accepted terminal
+        # result; the branch below will resume its latest checkpoint.  Success
+        # and cancellation remain terminal for idempotent parent resumes.
+        if child_result is not None and child_result.status == "failure":
+            child_result = None
         if child_result is None:
             child_checkpoint = self._latest_checkpoint_for_run(
                 conversation_id=plan["conversation_id"],
