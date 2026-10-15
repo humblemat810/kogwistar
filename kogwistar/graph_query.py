@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, TypeAlias, cast
 from .engine_core.async_compat import run_awaitable_blocking
 from .engine_core.models import Edge, Node
 from .engine_core.storage_backend import AsyncStage1ProjectionAdapter
+from .engine_core.subsystems.read import stage1_row_is_current
 
 if TYPE_CHECKING:
     from .engine_core.engine import GraphKnowledgeEngine
@@ -209,6 +210,10 @@ class GraphQuery:
 
         endpoints: list[GraphRow] = []
         for raw_row in cast(Iterable[object], rows or []):
+            if not isinstance(raw_row, Mapping) or not stage1_row_is_current(
+                self.e, entity_kind="edge", row=raw_row
+            ):
+                continue
             row = _as_graph_row(raw_row)
             payload = _as_graph_row(row.get("payload") or row)
             document = payload.get("document")
@@ -256,6 +261,10 @@ class GraphQuery:
         )
         endpoints: list[GraphRow] = []
         for raw_row in cast(Iterable[object], rows or []):
+            if not isinstance(raw_row, Mapping) or not stage1_row_is_current(
+                self.e, entity_kind="edge", row=raw_row
+            ):
+                continue
             row = _as_graph_row(raw_row)
             payload = _as_graph_row(row.get("payload") or row)
             document = payload.get("document")
@@ -369,9 +378,13 @@ class GraphQuery:
         stage1_rows = await self._stage1_endpoint_rows_async(edge_id=rid)
         adapter = getattr(self.e, "async_two_stage_projection_adapter", None)
         stage1_nodes = (
-            await cast(AsyncStage1ProjectionAdapter, adapter).stage1_query(
-                entity_kind="node", ids=[rid], limit=1
-            )
+            [
+                row
+                for row in await cast(AsyncStage1ProjectionAdapter, adapter).stage1_query(
+                    entity_kind="node", ids=[rid], limit=1
+                )
+                if stage1_row_is_current(self.e, entity_kind="node", row=row)
+            ]
             if callable(getattr(adapter, "stage1_query", None))
             else []
         )

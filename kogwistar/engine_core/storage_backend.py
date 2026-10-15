@@ -129,7 +129,13 @@ class TwoStageProjectionAdapter(Protocol):
 
 
 class Stage1ProjectionAdapter(TwoStageProjectionAdapter, Protocol):
-    """Synchronous two-stage adapter with transient Stage-1 traversal."""
+    """Synchronous adapter exposing non-authoritative Stage-1 candidates.
+
+    ``stage1_query`` returns transient projection rows only. Callers must run
+    each row through the core canonical lifecycle/revision fence before using
+    it as an entity, endpoint, or user-visible graph result. The adapter must
+    not be treated as the source of truth.
+    """
 
     def stage1_query(self, **kwargs: object) -> list[dict[str, object]]: ...
 
@@ -158,7 +164,11 @@ class AsyncTwoStageProjectionAdapter(Protocol):
 
 
 class AsyncStage1ProjectionAdapter(AsyncTwoStageProjectionAdapter, Protocol):
-    """Async two-stage adapter with transient Stage-1 traversal."""
+    """Async adapter exposing non-authoritative Stage-1 candidates.
+
+    Async callers have the same obligation as synchronous callers: Stage-1
+    rows require the core canonical lifecycle/revision fence before use.
+    """
 
     async def stage1_query(self, **kwargs: object) -> list[dict[str, object]]: ...
 

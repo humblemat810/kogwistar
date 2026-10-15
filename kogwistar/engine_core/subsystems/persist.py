@@ -25,6 +25,7 @@ from ..models import (
 from ...json_types import JsonObject
 from ..utils.aliasing import AliasBook, _is_alias, _is_new_edge, _is_new_node, _is_uuid
 from .base import NamespaceProxy
+from .read import stage1_row_is_current
 
 if TYPE_CHECKING:
     from ..engine import GraphKnowledgeEngine
@@ -373,20 +374,17 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         row_id = payload.get("id") or row.get("entity_id") or entity_id
         if str(row_id) != str(entity_id):
             return False
-        current_getter = getattr(getattr(self._e, "indexing", None), "canonical_entity_revision", None)
-        if callable(current_getter):
-            current = current_getter(entity_kind=entity_kind, entity_id=entity_id)
-            if current is None or getattr(current, "state", "active") != "active":
-                return False
-        expected = str(payload.get("source_fingerprint") or row.get("source_fingerprint") or "")
-        fingerprint_getter = getattr(getattr(self._e, "indexing", None), "canonical_revision_payload", None)
-        if expected and callable(fingerprint_getter):
-            current_payload = json.loads(
-                str(fingerprint_getter(entity_kind=entity_kind, entity_id=entity_id))
-            )
-            if expected != str(current_payload.get("source_fingerprint") or ""):
-                return False
-        return True
+        normalized_payload = dict(payload)
+        normalized_payload.setdefault("id", entity_id)
+        if "source_fingerprint" not in normalized_payload and row.get(
+            "source_fingerprint"
+        ) is not None:
+            normalized_payload["source_fingerprint"] = row["source_fingerprint"]
+        return stage1_row_is_current(
+            self._e,
+            entity_kind=entity_kind,
+            row={"payload": normalized_payload},
+        )
 
     def assert_endpoints_exist(self, edge: Edge | PureChromaEdge) -> None:
         """Enforce the structural ingest contract for edge writes.
@@ -442,6 +440,20 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         backend = self._e.backend
         adapter = getattr(self._e, "async_two_stage_projection_adapter", None)
 
+        def current_stage1_row(
+            kind: str, entity_id: str, row: Mapping[str, object]
+        ) -> bool:
+            payload_value = row.get("payload")
+            payload = dict(payload_value) if isinstance(payload_value, Mapping) else dict(row)
+            payload.setdefault("id", entity_id)
+            if "source_fingerprint" not in payload and row.get("source_fingerprint") is not None:
+                payload["source_fingerprint"] = row["source_fingerprint"]
+            return stage1_row_is_current(
+                self._e,
+                entity_kind=kind,
+                row={"payload": payload},
+            )
+
         async def existing(kind: str, ids: set[str]) -> set[str]:
             if not ids:
                 return set()
@@ -465,7 +477,7 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                         namespace=str(getattr(self._e, "namespace", "default")),
                         entity_kind=kind, entity_id=entity_id,
                     )
-                    if row is not None:
+                    if row is not None and current_stage1_row(kind, entity_id, row):
                         got.add(entity_id)
             else:
                 stage1_query = (
@@ -488,7 +500,7 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                     payload_value = row.get("payload")
                     payload = payload_value if isinstance(payload_value, Mapping) else row
                     row_id = payload.get("id") or row.get("entity_id")
-                    if row_id is not None:
+                    if row_id is not None and current_stage1_row(kind, str(row_id), row):
                         got.add(str(row_id))
             return got
 
