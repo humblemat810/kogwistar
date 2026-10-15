@@ -4,6 +4,7 @@ import json
 import logging
 import pathlib
 import queue
+import threading
 import time
 import uuid
 from collections.abc import Callable, Iterator, Mapping
@@ -62,6 +63,7 @@ from .projections import (
     workflow_run_status_projection_namespace,
 )
 from .run_ownership import (
+    DEFAULT_RUN_OWNERSHIP_LEASE_MS,
     RunOwnership,
     RunOwnershipConflict,
     RunOwnershipStore,
@@ -653,6 +655,7 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
         lane_message_event_sink: LaneMessageEventSinkLike | None = None,
         fast_trace_persistence: bool | None = None,
         max_nested_workflow_depth: int = 8,
+        run_ownership_lease_ms: int = DEFAULT_RUN_OWNERSHIP_LEASE_MS,
     ) -> None:
         self.workflow_engine: GraphKnowledgeEngine = workflow_engine
         self.conversation_engine: GraphKnowledgeEngine = conversation_engine
@@ -661,6 +664,9 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
         self.checkpoint_every_n_steps = max(1, int(checkpoint_every_n_steps))
         self.max_workers = max_workers
         self.max_nested_workflow_depth = max(0, int(max_nested_workflow_depth))
+        if int(run_ownership_lease_ms) <= 0:
+            raise ValueError("run_ownership_lease_ms must be positive")
+        self.run_ownership_lease_ms = int(run_ownership_lease_ms)
         self.cancel_requested = cancel_requested
         self.lane_message_sender = lane_message_sender
         if self.lane_message_sender is None:
@@ -846,6 +852,7 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
         cache_dir: str | PathLike | None = None,
         parent_trace_context: TraceContext | None = None,
         parent_authority_context: Mapping[str, Any] | None = None,
+        parent_lease_renew: Callable[[], None] | None = None,
     ) -> RunResult:
         if invocation.workflow_design is not None:
             if str(invocation.workflow_design.workflow_id) != str(
@@ -882,9 +889,14 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
                 conversation_id=plan["conversation_id"],
                 run_id=plan["child_run_id"],
             )
-            if child_checkpoint is None:
+            child_run_node_id = f"wf_run|{plan['child_run_id']}"
+            if child_checkpoint is None or not self._conversation_node_exists(
+                child_run_node_id
+            ):
                 # Persist generic intent before entering a new child. A resumed
-                # parent can derive this same child from its invocation key.
+                # parent can derive this same child from its invocation key. If
+                # only the checkpoint survived a process crash, recreate the
+                # run node before the required lineage edge is written.
                 self._persist_workflow_run(
                     conversation_id=plan["conversation_id"],
                     workflow_id=str(invocation.workflow_id),
@@ -914,6 +926,7 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
                     cache_dir=cache_dir,
                     _parent_trace_context=parent_trace_context,
                     _parent_authority_context=child_authority_context,
+                    _parent_lease_renew=parent_lease_renew,
                 )
             else:
                 child_result = self.run(
@@ -930,6 +943,7 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
                     },
                     _trace_context=parent_trace_context,
                     _authority_context=child_authority_context,
+                    _parent_lease_renew=parent_lease_renew,
                 )
         self._persist_workflow_invocation_lineage(
             conversation_id=conversation_id,
@@ -1578,6 +1592,7 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
         cache_dir: str | PathLike[str] | None = None,
         _parent_trace_context: TraceContext | None = None,
         _parent_authority_context: Mapping[str, Any] | None = None,
+        _parent_lease_renew: Callable[[], None] | None = None,
     ) -> RunResult:
         """Continue a run from its latest ordinary workflow checkpoint.
 
@@ -1639,6 +1654,7 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
             _resume_step_seq=step_seq + 1,
             _trace_context=continuation_context,
             _authority_context=_parent_authority_context,
+            _parent_lease_renew=_parent_lease_renew,
         )
 
     @sqlite_execution_bound("workflow_engine", "conversation_engine")
@@ -1656,6 +1672,7 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
         _run_metadata: Mapping[str, Any] | None = None,
         _trace_context: TraceContext | None = None,
         _authority_context: Mapping[str, Any] | None = None,
+        _parent_lease_renew: Callable[[], None] | None = None,
     ) -> RunResult:
         """
         Returns (final_state, run_id).
@@ -1699,7 +1716,9 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
                 existing_terminal = self._terminal_run_result(
                     conversation_id=str(conversation_id), run_id=str(run_id)
                 )
-                if existing_terminal is not None:
+                if existing_terminal is not None and not (
+                    _resume_step_seq is not None and existing_terminal.status == "failure"
+                ):
                     return existing_terminal
                 ownership = self._claim_workflow_run(
                     conversation_id=str(conversation_id),
@@ -2212,6 +2231,7 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
                 mask: int,
                 cache_dir : str | PathLike | None = None
             ) -> None:
+                nonlocal ownership
 
                 t = threading.current_thread()
                 old_name = t.name
@@ -2275,6 +2295,8 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
                                     state_update=[],
                                 )
                             else:
+                                if _parent_lease_renew is not None:
+                                    _parent_lease_renew()
                                 fn: StepFn = self.step_resolver(
                                     op
                                 )
@@ -2299,6 +2321,19 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
                                         getattr(res, "workflow_invocations", []) or []
                                     )
                                     for invocation in invocations:
+                                        ownership = self._renew_workflow_run(
+                                            conversation_id=str(conversation_id),
+                                            run_id=str(run_id),
+                                            ownership=ownership,
+                                        )
+                                        def renew_parent_lease() -> None:
+                                            nonlocal ownership
+                                            ownership = self._renew_workflow_run(
+                                                conversation_id=str(conversation_id),
+                                                run_id=str(run_id),
+                                                ownership=ownership,
+                                            )
+
                                         child_result = self._run_workflow_invocation(
                                             invocation=invocation,
                                             parent_state=state,
@@ -2308,7 +2343,9 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
                                             cache_dir=cache_dir,
                                             parent_trace_context=ctx.trace_ctx,
                                             parent_authority_context=ctx.authority_context,
+                                            parent_lease_renew=renew_parent_lease,
                                         )
+                                        renew_parent_lease()
                                         if child_result.status != "succeeded":
                                             status = "failure"
                                             res = RunFailure(
@@ -2318,7 +2355,8 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
                                                     "Nested workflow "
                                                     f"{invocation.workflow_id!r} "
                                                     f"returned status {child_result.status!r}"
-                                                ],
+                                                ]
+                                                + list(child_result.errors or []),
                                                 state_update=[],
                                             )
                                             break
@@ -3000,12 +3038,12 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
 
                     def _checkpoint_current_step() -> None:
                         nonlocal ownership
+                        ownership = self._renew_workflow_run(
+                            conversation_id=str(conversation_id or ""),
+                            run_id=str(run_id),
+                            ownership=ownership,
+                        )
                         if (step_seq_current % self.checkpoint_every_n_steps) == 0:
-                            ownership = self._renew_workflow_run(
-                                conversation_id=str(conversation_id or ""),
-                                run_id=str(run_id),
-                                ownership=ownership,
-                            )
                             with self._maybe_step_uow():
                                 self._persist_checkpoint(
                                     conversation_id=str(conversation_id or ""),
@@ -3159,13 +3197,13 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
                             _enter_failed()
                         _dec(mask)
                         _persist_rt_join_runtime()
+                        ownership = self._renew_workflow_run(
+                            conversation_id=str(conversation_id or ""),
+                            run_id=str(run_id),
+                            ownership=ownership,
+                        )
 
                         if (step_seq_current % self.checkpoint_every_n_steps) == 0:
-                            ownership = self._renew_workflow_run(
-                                conversation_id=str(conversation_id or ""),
-                                run_id=str(run_id),
-                                ownership=ownership,
-                            )
                             with self._maybe_step_uow():
                                 self._persist_checkpoint(
                                     conversation_id=str(conversation_id or ""),
@@ -3713,6 +3751,7 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
                 workflow_id=workflow_id,
                 conversation_id=conversation_id,
                 allow_resume_takeover=allow_resume_takeover,
+                lease_ms=self.run_ownership_lease_ms,
             )
         except RunOwnershipConflict as exc:
             raise WorkflowRunOwnershipError(str(exc)) from exc
@@ -3735,6 +3774,7 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
                 namespace=workflow_run_ownership_projection_namespace(conversation_id),
                 run_id=run_id,
                 ownership=ownership,
+                lease_ms=self.run_ownership_lease_ms,
             )
         except RunOwnershipConflict as exc:
             raise WorkflowRunOwnershipError(str(exc)) from exc

@@ -63,7 +63,16 @@ def _entity_payload(entity: object) -> dict[str, Any]:
             return cast(dict[str, Any], value)
     model_dump = getattr(entity, "model_dump", None)
     if callable(model_dump):
-        value = model_dump(exclude=["embedding"])
+        try:
+            value = model_dump(
+                field_mode="backend",
+                dump_format="json",
+                exclude=["embedding"],
+            )
+        except TypeError:
+            # Keep compatibility with ordinary Pydantic models that do not
+            # expose Kogwistar's mode-aware dump parameters.
+            value = model_dump(exclude=["embedding"])
         if isinstance(value, dict):
             return cast(dict[str, Any], value)
     return {}
