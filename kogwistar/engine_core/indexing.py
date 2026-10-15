@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from collections.abc import Callable, Iterable, Mapping
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
+from pydantic_extension.model_slicing.mixin import use_mode
+
 from .async_compat import run_awaitable_blocking
 from .canonical_events import CanonicalEntityRevision, read_canonical_entity_revision
 from .models import Edge, Grounding, Node, Span
@@ -591,6 +593,18 @@ class IndexingSubsystem:
         def _emit(label: str, started_s: float) -> None:
             self._profile_step(label, started_s)
 
+        def _parse_node_backend(raw_json: str) -> Node:
+            return Node.model_validate_json(
+                raw_json,
+                context={"modeslice:mode": "backend"},
+            )
+
+        def _parse_edge_backend(raw_json: str) -> Edge:
+            return Edge.model_validate_json(
+                raw_json,
+                context={"modeslice:mode": "backend"},
+            )
+
         def _validated_entity(
             *,
             raw_json: str,
@@ -608,7 +622,8 @@ class IndexingSubsystem:
                     return cast(EntityT, cached)
 
             started = time.perf_counter()
-            obj = parser(raw_json)
+            with use_mode("backend"):
+                obj = parser(raw_json)
             _emit(timing_label, started)
             if isinstance(cache, dict):
                 cache[cache_key] = cast(object, obj)
@@ -761,7 +776,7 @@ class IndexingSubsystem:
                 n = _validated_entity(
                     raw_json=docs[0],
                     cache_key=("node", entity_id, docs[0]),
-                    parser=Node.model_validate_json,
+                    parser=_parse_node_backend,
                     timing_label="apply.node_docs.model_validate",
                 )
 
@@ -842,7 +857,7 @@ class IndexingSubsystem:
                 n = _validated_entity(
                     raw_json=docs[0],
                     cache_key=("node", entity_id, docs[0]),
-                    parser=Node.model_validate_json,
+                    parser=_parse_node_backend,
                     timing_label="apply.node_refs.model_validate",
                 )
 
@@ -943,7 +958,7 @@ class IndexingSubsystem:
                 e = _validated_entity(
                     raw_json=docs[0],
                     cache_key=("edge", entity_id, docs[0]),
-                    parser=Edge.model_validate_json,
+                    parser=_parse_edge_backend,
                     timing_label="apply.edge_refs.model_validate",
                 )
 
@@ -1050,7 +1065,7 @@ class IndexingSubsystem:
                 e = _validated_entity(
                     raw_json=docs[0],
                     cache_key=("edge", entity_id, docs[0]),
-                    parser=Edge.model_validate_json,
+                    parser=_parse_edge_backend,
                     timing_label="apply.edge_endpoints.model_validate",
                 )
 

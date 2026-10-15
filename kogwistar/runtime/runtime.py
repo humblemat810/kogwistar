@@ -4,6 +4,7 @@ import json
 import logging
 import pathlib
 import queue
+import threading
 import time
 import uuid
 from collections.abc import Callable, Iterator, Mapping
@@ -20,7 +21,7 @@ from typing import (
     cast,
 )
 
-from kogwistar.engine_core.models import MentionVerification
+from kogwistar.engine_core.models import Grounding, MentionVerification, Span
 from kogwistar.engine_core.sqlite_context import sqlite_execution_bound
 from kogwistar.id_provider import stable_id
 from kogwistar.json_types import JsonObject
@@ -31,6 +32,7 @@ from kogwistar.runtime.models import (
     StateUpdate,
     WorkflowCancelledNode,
     WorkflowCheckpointNode,
+    WorkflowCheckpointMetadata,
     WorkflowCompletedNode,
     WorkflowDesignArtifact,
     WorkflowEdge,
@@ -57,7 +59,17 @@ from .native_contracts import join_arrival_result, successor_plan
 from .projections import (
     WORKFLOW_RUNTIME_PROJECTION_SCHEMA_VERSION,
     workflow_checkpoint_latest_projection_namespace,
+    workflow_run_ownership_projection_namespace,
     workflow_run_status_projection_namespace,
+)
+from .run_ownership import (
+    DEFAULT_RUN_OWNERSHIP_LEASE_MS,
+    RunOwnership,
+    RunOwnershipConflict,
+    RunOwnershipStore,
+    claim_run_ownership,
+    release_run_ownership_for_resume,
+    renew_run_ownership,
 )
 from .serialize import JsonValue, try_serialize_with_ref
 
@@ -83,6 +95,10 @@ class ConversationBackendLike(Protocol):
     def node_get(self, **kwargs: object) -> Mapping[str, object]: ...
 
     def edge_get(self, **kwargs: object) -> Mapping[str, object]: ...
+
+
+class WorkflowRunOwnershipError(RuntimeError):
+    """Raised when a durable run cannot be safely resumed by this worker."""
 
 
 class TraceSpanPayload(TypedDict):
@@ -639,6 +655,7 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
         lane_message_event_sink: LaneMessageEventSinkLike | None = None,
         fast_trace_persistence: bool | None = None,
         max_nested_workflow_depth: int = 8,
+        run_ownership_lease_ms: int = DEFAULT_RUN_OWNERSHIP_LEASE_MS,
     ) -> None:
         self.workflow_engine: GraphKnowledgeEngine = workflow_engine
         self.conversation_engine: GraphKnowledgeEngine = conversation_engine
@@ -647,6 +664,9 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
         self.checkpoint_every_n_steps = max(1, int(checkpoint_every_n_steps))
         self.max_workers = max_workers
         self.max_nested_workflow_depth = max(0, int(max_nested_workflow_depth))
+        if int(run_ownership_lease_ms) <= 0:
+            raise ValueError("run_ownership_lease_ms must be positive")
+        self.run_ownership_lease_ms = int(run_ownership_lease_ms)
         self.cancel_requested = cancel_requested
         self.lane_message_sender = lane_message_sender
         if self.lane_message_sender is None:
@@ -832,6 +852,7 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
         cache_dir: str | PathLike | None = None,
         parent_trace_context: TraceContext | None = None,
         parent_authority_context: Mapping[str, Any] | None = None,
+        parent_lease_renew: Callable[[], None] | None = None,
     ) -> RunResult:
         if invocation.workflow_design is not None:
             if str(invocation.workflow_design.workflow_id) != str(
@@ -868,9 +889,14 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
                 conversation_id=plan["conversation_id"],
                 run_id=plan["child_run_id"],
             )
-            if child_checkpoint is None:
+            child_run_node_id = f"wf_run|{plan['child_run_id']}"
+            if child_checkpoint is None or not self._conversation_node_exists(
+                child_run_node_id
+            ):
                 # Persist generic intent before entering a new child. A resumed
-                # parent can derive this same child from its invocation key.
+                # parent can derive this same child from its invocation key. If
+                # only the checkpoint survived a process crash, recreate the
+                # run node before the required lineage edge is written.
                 self._persist_workflow_run(
                     conversation_id=plan["conversation_id"],
                     workflow_id=str(invocation.workflow_id),
@@ -900,6 +926,7 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
                     cache_dir=cache_dir,
                     _parent_trace_context=parent_trace_context,
                     _parent_authority_context=child_authority_context,
+                    _parent_lease_renew=parent_lease_renew,
                 )
             else:
                 child_result = self.run(
@@ -916,6 +943,7 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
                     },
                     _trace_context=parent_trace_context,
                     _authority_context=child_authority_context,
+                    _parent_lease_renew=parent_lease_renew,
                 )
         self._persist_workflow_invocation_lineage(
             conversation_id=conversation_id,
@@ -1564,6 +1592,7 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
         cache_dir: str | PathLike[str] | None = None,
         _parent_trace_context: TraceContext | None = None,
         _parent_authority_context: Mapping[str, Any] | None = None,
+        _parent_lease_renew: Callable[[], None] | None = None,
     ) -> RunResult:
         """Continue a run from its latest ordinary workflow checkpoint.
 
@@ -1625,6 +1654,7 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
             _resume_step_seq=step_seq + 1,
             _trace_context=continuation_context,
             _authority_context=_parent_authority_context,
+            _parent_lease_renew=_parent_lease_renew,
         )
 
     @sqlite_execution_bound("workflow_engine", "conversation_engine")
@@ -1642,6 +1672,7 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
         _run_metadata: Mapping[str, Any] | None = None,
         _trace_context: TraceContext | None = None,
         _authority_context: Mapping[str, Any] | None = None,
+        _parent_lease_renew: Callable[[], None] | None = None,
     ) -> RunResult:
         """
         Returns (final_state, run_id).
@@ -1678,7 +1709,23 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
 
             validate_initial_state(initial_state)
 
+            requested_run_id = run_id
             run_id = run_id or f"run|{uuid.uuid4()}"
+            ownership: RunOwnership | None = None
+            if requested_run_id is not None:
+                existing_terminal = self._terminal_run_result(
+                    conversation_id=str(conversation_id), run_id=str(run_id)
+                )
+                if existing_terminal is not None and not (
+                    _resume_step_seq is not None and existing_terminal.status == "failure"
+                ):
+                    return existing_terminal
+                ownership = self._claim_workflow_run(
+                    conversation_id=str(conversation_id),
+                    workflow_id=str(workflow_id),
+                    run_id=str(run_id),
+                    allow_resume_takeover=_resume_step_seq is not None,
+                )
             from .rust_runtime_authority import (
                 run_with_rust_authority,
                 rust_runtime_authority_selected,
@@ -2184,6 +2231,7 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
                 mask: int,
                 cache_dir : str | PathLike | None = None
             ) -> None:
+                nonlocal ownership
 
                 t = threading.current_thread()
                 old_name = t.name
@@ -2247,6 +2295,8 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
                                     state_update=[],
                                 )
                             else:
+                                if _parent_lease_renew is not None:
+                                    _parent_lease_renew()
                                 fn: StepFn = self.step_resolver(
                                     op
                                 )
@@ -2271,6 +2321,19 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
                                         getattr(res, "workflow_invocations", []) or []
                                     )
                                     for invocation in invocations:
+                                        ownership = self._renew_workflow_run(
+                                            conversation_id=str(conversation_id),
+                                            run_id=str(run_id),
+                                            ownership=ownership,
+                                        )
+                                        def renew_parent_lease() -> None:
+                                            nonlocal ownership
+                                            ownership = self._renew_workflow_run(
+                                                conversation_id=str(conversation_id),
+                                                run_id=str(run_id),
+                                                ownership=ownership,
+                                            )
+
                                         child_result = self._run_workflow_invocation(
                                             invocation=invocation,
                                             parent_state=state,
@@ -2280,7 +2343,9 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
                                             cache_dir=cache_dir,
                                             parent_trace_context=ctx.trace_ctx,
                                             parent_authority_context=ctx.authority_context,
+                                            parent_lease_renew=renew_parent_lease,
                                         )
+                                        renew_parent_lease()
                                         if child_result.status != "succeeded":
                                             status = "failure"
                                             res = RunFailure(
@@ -2290,7 +2355,8 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
                                                     "Nested workflow "
                                                     f"{invocation.workflow_id!r} "
                                                     f"returned status {child_result.status!r}"
-                                                ],
+                                                ]
+                                                + list(child_result.errors or []),
                                                 state_update=[],
                                             )
                                             break
@@ -2421,6 +2487,11 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
                         except Exception:
                             pass
                         self._close_sandbox_run(run_id)
+                        self._release_workflow_run_for_resume(
+                            conversation_id=str(conversation_id),
+                            run_id=str(run_id),
+                            ownership=ownership,
+                        )
                         self.state_lock.pop(run_id, None)
                         return RunResult(
                             final_state=state,
@@ -2448,6 +2519,23 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
                                     else None
                                 ),
                             )
+                            # A failed run may still have a durable checkpoint
+                            # that is safe to resume.  Do not leave its lease
+                            # live after returning the failure result, or the
+                            # next worker cannot recover from that checkpoint.
+                            if (
+                                ownership is not None
+                                and self._latest_checkpoint_for_run(
+                                    conversation_id=str(conversation_id),
+                                    run_id=str(run_id),
+                                )
+                                is not None
+                            ):
+                                self._release_workflow_run_for_resume(
+                                    conversation_id=str(conversation_id),
+                                    run_id=str(run_id),
+                                    ownership=ownership,
+                                )
                             try:
                                 tc_done = _lifecycle_trace_context(
                                     token_id=str(run_id), step_seq=int(step_seq), node_id="run"
@@ -2487,6 +2575,11 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
                             except Exception:
                                 pass
                             self._close_sandbox_run(run_id)
+                            self._release_workflow_run_for_resume(
+                                conversation_id=str(conversation_id),
+                                run_id=str(run_id),
+                                ownership=ownership,
+                            )
                             self.state_lock.pop(run_id, None)
                             return RunResult(
                                 final_state=state,
@@ -2961,6 +3054,12 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
                     step_seq += 1
 
                     def _checkpoint_current_step() -> None:
+                        nonlocal ownership
+                        ownership = self._renew_workflow_run(
+                            conversation_id=str(conversation_id or ""),
+                            run_id=str(run_id),
+                            ownership=ownership,
+                        )
                         if (step_seq_current % self.checkpoint_every_n_steps) == 0:
                             with self._maybe_step_uow():
                                 self._persist_checkpoint(
@@ -3115,6 +3214,11 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
                             _enter_failed()
                         _dec(mask)
                         _persist_rt_join_runtime()
+                        ownership = self._renew_workflow_run(
+                            conversation_id=str(conversation_id or ""),
+                            run_id=str(run_id),
+                            ownership=ownership,
+                        )
 
                         if (step_seq_current % self.checkpoint_every_n_steps) == 0:
                             with self._maybe_step_uow():
@@ -3563,6 +3667,14 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
                 nodes = self.conversation_engine.read.get_nodes(ids=[node_id], limit=1)
                 if nodes:
                     return cast(WorkflowCheckpointNode, nodes[0])
+            checkpoint_metadata = payload.get("checkpoint_metadata")
+            if isinstance(checkpoint_metadata, Mapping):
+                return self._checkpoint_node_from_projection(
+                    conversation_id=conversation_id,
+                    run_id=str(run_id),
+                    node_id=node_id,
+                    metadata=checkpoint_metadata,
+                )
 
         ckpts = self.conversation_engine.read.get_nodes(
             where={
@@ -3581,6 +3693,130 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
                 key=lambda c: int(getattr(c, "metadata", {}).get("step_seq", -1)),
             ),
         )
+
+    def _checkpoint_node_from_projection(
+        self,
+        *,
+        conversation_id: str,
+        run_id: str,
+        node_id: str,
+        metadata: Mapping[str, object],
+    ) -> WorkflowCheckpointNode:
+        """Rebuild a checkpoint when the graph projection is not durable.
+
+        The metadata projection is the durable recovery record.  A graph backend
+        may be volatile (for example the in-memory backend used by lightweight
+        deployments), so recovery must not depend on the checkpoint node still
+        being present there.
+        """
+        checkpoint_metadata = dict(metadata)
+        checkpoint_metadata.setdefault("conversation_id", str(conversation_id))
+        checkpoint_metadata.setdefault("level_from_root", 0)
+        checkpoint_metadata.setdefault("checkpoint_schema_version", self.CHECKPOINT_SCHEMA_VERSION)
+        validated = WorkflowCheckpointMetadata.model_validate(checkpoint_metadata)
+        if validated.run_id != str(run_id):
+            raise ValueError("durable checkpoint projection run_id does not match lookup")
+        projected_conversation_id = checkpoint_metadata.get("conversation_id")
+        if projected_conversation_id is not None and str(projected_conversation_id) != str(
+            conversation_id
+        ):
+            raise ValueError(
+                "durable checkpoint projection conversation_id does not match lookup"
+            )
+        checkpoint_id = str(node_id or "")
+        if not checkpoint_id:
+            checkpoint_id = f"wf_ckpt|{validated.run_id}|{validated.step_seq}"
+        excerpt = f"checkpoint step_seq={validated.step_seq}"
+        span = Span(**_make_trace_span(
+            conversation_id=str(conversation_id),
+            excerpt=excerpt,
+            doc_id=f"conv:{conversation_id}",
+        ))
+        return WorkflowCheckpointNode(
+            id=checkpoint_id,
+            label=f"WF checkpoint {validated.step_seq}",
+            type="entity",
+            doc_id=checkpoint_id,
+            summary=excerpt,
+            mentions=[Grounding(spans=[span])],
+            properties={},
+            metadata=checkpoint_metadata,
+            domain_id=None,
+            canonical_entity_id=None,
+            embedding=None,
+            level_from_root=0,
+        )
+
+    def _claim_workflow_run(
+        self,
+        *,
+        conversation_id: str,
+        workflow_id: str,
+        run_id: str,
+        allow_resume_takeover: bool = False,
+    ) -> RunOwnership | None:
+        meta = getattr(self.conversation_engine, "meta_sqlite", None)
+        get_projection = getattr(meta, "get_named_projection", None)
+        compare_and_swap = getattr(meta, "compare_and_swap_named_projection", None)
+        if not callable(get_projection) or not callable(compare_and_swap):
+            return None
+        try:
+            return claim_run_ownership(
+                cast(RunOwnershipStore, meta),
+                namespace=workflow_run_ownership_projection_namespace(conversation_id),
+                run_id=run_id,
+                workflow_id=workflow_id,
+                conversation_id=conversation_id,
+                allow_resume_takeover=allow_resume_takeover,
+                lease_ms=self.run_ownership_lease_ms,
+            )
+        except RunOwnershipConflict as exc:
+            raise WorkflowRunOwnershipError(str(exc)) from exc
+
+    def _renew_workflow_run(
+        self,
+        *,
+        conversation_id: str,
+        run_id: str,
+        ownership: RunOwnership | None,
+    ) -> RunOwnership | None:
+        if ownership is None:
+            return None
+        meta = getattr(self.conversation_engine, "meta_sqlite", None)
+        if not callable(getattr(meta, "get_named_projection", None)):
+            return ownership
+        try:
+            return renew_run_ownership(
+                cast(RunOwnershipStore, meta),
+                namespace=workflow_run_ownership_projection_namespace(conversation_id),
+                run_id=run_id,
+                ownership=ownership,
+                lease_ms=self.run_ownership_lease_ms,
+            )
+        except RunOwnershipConflict as exc:
+            raise WorkflowRunOwnershipError(str(exc)) from exc
+
+    def _release_workflow_run_for_resume(
+        self,
+        *,
+        conversation_id: str,
+        run_id: str,
+        ownership: RunOwnership | None,
+    ) -> None:
+        if ownership is None:
+            return
+        meta = getattr(self.conversation_engine, "meta_sqlite", None)
+        if not callable(getattr(meta, "get_named_projection", None)):
+            return
+        if not release_run_ownership_for_resume(
+            cast(RunOwnershipStore, meta),
+            namespace=workflow_run_ownership_projection_namespace(conversation_id),
+            run_id=run_id,
+            ownership=ownership,
+        ):
+            raise WorkflowRunOwnershipError(
+                f"workflow run {run_id!r} ownership was lost while suspending"
+            )
 
     def _replace_runtime_projection(
         self,
@@ -3629,6 +3865,7 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
         run_id: str,
         step_seq: int,
         node_id: str,
+        checkpoint_metadata: Mapping[str, JsonValue],
     ) -> None:
         self._replace_runtime_projection(
             namespace=workflow_checkpoint_latest_projection_namespace(conversation_id),
@@ -3640,6 +3877,7 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
                 "conversation_id": str(conversation_id),
                 "step_seq": int(step_seq),
                 "node_id": str(node_id),
+                "checkpoint_metadata": dict(checkpoint_metadata),
             },
         )
 
@@ -4395,4 +4633,5 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
                 run_id=run_id,
                 step_seq=step_seq,
                 node_id=str(n.id),
+                checkpoint_metadata=dict(n.metadata),
             )
