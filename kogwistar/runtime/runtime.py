@@ -3554,6 +3554,11 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
             return None
         return cast(RuntimeMetadataStore, metadata)
 
+    def _conversation_namespace(self) -> str:
+        """Read the engine namespace across legacy test and adapter doubles."""
+        namespace = getattr(self.conversation_engine, "namespace", "default")
+        return namespace if isinstance(namespace, str) and namespace else "default"
+
     def _terminal_run_result(
         self, *, conversation_id: str, run_id: str
     ) -> RunResult | None:
@@ -3812,7 +3817,7 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
         latest_seq = 0
         try:
             latest_seq = metadata.get_latest_entity_event_seq(
-                namespace=str(self.conversation_engine.namespace or "default")
+                namespace=self._conversation_namespace()
             )
         except (TypeError, ValueError, RuntimeError):
             latest_seq = 0
