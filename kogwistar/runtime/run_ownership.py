@@ -6,9 +6,9 @@ import time
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Protocol, cast
 
-from kogwistar.json_types import JsonObject
+from kogwistar.json_types import JsonObject, JsonValue
 
 
 class RunOwnershipStore(Protocol):
@@ -75,9 +75,15 @@ def claim_run_ownership(
     now = int(time.time() * 1000) if now_ms is None else int(now_ms)
     if lease_ms <= 0:
         raise ValueError("run ownership lease must be positive")
-    current = store.get_named_projection(namespace, str(run_id))
-    current_payload = current.get("payload") if isinstance(current, Mapping) else None
-    current_payload = current_payload if isinstance(current_payload, Mapping) else {}
+    current: JsonObject | None = store.get_named_projection(namespace, str(run_id))
+    current_payload_value: JsonValue | None = (
+        current.get("payload") if current is not None else None
+    )
+    current_payload: Mapping[str, JsonValue] = (
+        cast(Mapping[str, JsonValue], current_payload_value)
+        if isinstance(current_payload_value, Mapping)
+        else {}
+    )
     current_owner = str(current_payload.get("owner_id") or "")
     current_lease = current_payload.get("lease_until_ms")
     current_lease_ms = _coerce_int(current_lease) or 0
@@ -137,9 +143,15 @@ def release_run_ownership_for_resume(
     ownership: RunOwnership,
 ) -> bool:
     """Make a suspended run immediately claimable without dropping its fence."""
-    current = store.get_named_projection(namespace, str(run_id))
-    current_payload = current.get("payload") if isinstance(current, Mapping) else None
-    current_payload = current_payload if isinstance(current_payload, Mapping) else {}
+    current: JsonObject | None = store.get_named_projection(namespace, str(run_id))
+    current_payload_value: JsonValue | None = (
+        current.get("payload") if current is not None else None
+    )
+    current_payload: Mapping[str, JsonValue] = (
+        cast(Mapping[str, JsonValue], current_payload_value)
+        if isinstance(current_payload_value, Mapping)
+        else {}
+    )
     current_generation = _coerce_int(current_payload.get("generation", -1))
     if (
         str(current_payload.get("owner_id") or "") != ownership.owner_id
@@ -176,9 +188,15 @@ def renew_run_ownership(
 ) -> RunOwnership:
     """Extend a lease only when the caller still owns the current generation."""
     now = int(time.time() * 1000) if now_ms is None else int(now_ms)
-    current = store.get_named_projection(namespace, str(run_id))
-    current_payload = current.get("payload") if isinstance(current, Mapping) else None
-    current_payload = current_payload if isinstance(current_payload, Mapping) else {}
+    current: JsonObject | None = store.get_named_projection(namespace, str(run_id))
+    current_payload_value: JsonValue | None = (
+        current.get("payload") if current is not None else None
+    )
+    current_payload: Mapping[str, JsonValue] = (
+        cast(Mapping[str, JsonValue], current_payload_value)
+        if isinstance(current_payload_value, Mapping)
+        else {}
+    )
     current_generation = _coerce_int(current_payload.get("generation", -1))
     if (
         str(current_payload.get("owner_id") or "") != ownership.owner_id
