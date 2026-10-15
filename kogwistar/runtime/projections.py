@@ -11,3 +11,7 @@ def workflow_checkpoint_latest_projection_namespace(conversation_id: str) -> str
 
 def workflow_run_status_projection_namespace(conversation_id: str) -> str:
     return f"{conversation_id}:workflow_run_status"
+
+
+def workflow_run_ownership_projection_namespace(conversation_id: str) -> str:
+    return f"{conversation_id}:workflow_run_ownership"

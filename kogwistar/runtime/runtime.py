@@ -57,7 +57,16 @@ from .native_contracts import join_arrival_result, successor_plan
 from .projections import (
     WORKFLOW_RUNTIME_PROJECTION_SCHEMA_VERSION,
     workflow_checkpoint_latest_projection_namespace,
+    workflow_run_ownership_projection_namespace,
     workflow_run_status_projection_namespace,
+)
+from .run_ownership import (
+    RunOwnership,
+    RunOwnershipConflict,
+    RunOwnershipStore,
+    claim_run_ownership,
+    release_run_ownership_for_resume,
+    renew_run_ownership,
 )
 from .serialize import JsonValue, try_serialize_with_ref
 
@@ -83,6 +92,10 @@ class ConversationBackendLike(Protocol):
     def node_get(self, **kwargs: object) -> Mapping[str, object]: ...
 
     def edge_get(self, **kwargs: object) -> Mapping[str, object]: ...
+
+
+class WorkflowRunOwnershipError(RuntimeError):
+    """Raised when a durable run cannot be safely resumed by this worker."""
 
 
 class TraceSpanPayload(TypedDict):
@@ -1678,7 +1691,21 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
 
             validate_initial_state(initial_state)
 
+            requested_run_id = run_id
             run_id = run_id or f"run|{uuid.uuid4()}"
+            ownership: RunOwnership | None = None
+            if requested_run_id is not None:
+                existing_terminal = self._terminal_run_result(
+                    conversation_id=str(conversation_id), run_id=str(run_id)
+                )
+                if existing_terminal is not None:
+                    return existing_terminal
+                ownership = self._claim_workflow_run(
+                    conversation_id=str(conversation_id),
+                    workflow_id=str(workflow_id),
+                    run_id=str(run_id),
+                    allow_resume_takeover=_resume_step_seq is not None,
+                )
             from .rust_runtime_authority import (
                 run_with_rust_authority,
                 rust_runtime_authority_selected,
@@ -2421,6 +2448,11 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
                         except Exception:
                             pass
                         self._close_sandbox_run(run_id)
+                        self._release_workflow_run_for_resume(
+                            conversation_id=str(conversation_id),
+                            run_id=str(run_id),
+                            ownership=ownership,
+                        )
                         self.state_lock.pop(run_id, None)
                         return RunResult(
                             final_state=state,
@@ -2487,6 +2519,11 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
                             except Exception:
                                 pass
                             self._close_sandbox_run(run_id)
+                            self._release_workflow_run_for_resume(
+                                conversation_id=str(conversation_id),
+                                run_id=str(run_id),
+                                ownership=ownership,
+                            )
                             self.state_lock.pop(run_id, None)
                             return RunResult(
                                 final_state=state,
@@ -2961,7 +2998,13 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
                     step_seq += 1
 
                     def _checkpoint_current_step() -> None:
+                        nonlocal ownership
                         if (step_seq_current % self.checkpoint_every_n_steps) == 0:
+                            ownership = self._renew_workflow_run(
+                                conversation_id=str(conversation_id or ""),
+                                run_id=str(run_id),
+                                ownership=ownership,
+                            )
                             with self._maybe_step_uow():
                                 self._persist_checkpoint(
                                     conversation_id=str(conversation_id or ""),
@@ -3117,6 +3160,11 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
                         _persist_rt_join_runtime()
 
                         if (step_seq_current % self.checkpoint_every_n_steps) == 0:
+                            ownership = self._renew_workflow_run(
+                                conversation_id=str(conversation_id or ""),
+                                run_id=str(run_id),
+                                ownership=ownership,
+                            )
                             with self._maybe_step_uow():
                                 self._persist_checkpoint(
                                     conversation_id=str(conversation_id or ""),
@@ -3581,6 +3629,75 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
                 key=lambda c: int(getattr(c, "metadata", {}).get("step_seq", -1)),
             ),
         )
+
+    def _claim_workflow_run(
+        self,
+        *,
+        conversation_id: str,
+        workflow_id: str,
+        run_id: str,
+        allow_resume_takeover: bool = False,
+    ) -> RunOwnership | None:
+        meta = getattr(self.conversation_engine, "meta_sqlite", None)
+        get_projection = getattr(meta, "get_named_projection", None)
+        compare_and_swap = getattr(meta, "compare_and_swap_named_projection", None)
+        if not callable(get_projection) or not callable(compare_and_swap):
+            return None
+        try:
+            return claim_run_ownership(
+                cast(RunOwnershipStore, meta),
+                namespace=workflow_run_ownership_projection_namespace(conversation_id),
+                run_id=run_id,
+                workflow_id=workflow_id,
+                conversation_id=conversation_id,
+                allow_resume_takeover=allow_resume_takeover,
+            )
+        except RunOwnershipConflict as exc:
+            raise WorkflowRunOwnershipError(str(exc)) from exc
+
+    def _renew_workflow_run(
+        self,
+        *,
+        conversation_id: str,
+        run_id: str,
+        ownership: RunOwnership | None,
+    ) -> RunOwnership | None:
+        if ownership is None:
+            return None
+        meta = getattr(self.conversation_engine, "meta_sqlite", None)
+        if not callable(getattr(meta, "get_named_projection", None)):
+            return ownership
+        try:
+            return renew_run_ownership(
+                cast(RunOwnershipStore, meta),
+                namespace=workflow_run_ownership_projection_namespace(conversation_id),
+                run_id=run_id,
+                ownership=ownership,
+            )
+        except RunOwnershipConflict as exc:
+            raise WorkflowRunOwnershipError(str(exc)) from exc
+
+    def _release_workflow_run_for_resume(
+        self,
+        *,
+        conversation_id: str,
+        run_id: str,
+        ownership: RunOwnership | None,
+    ) -> None:
+        if ownership is None:
+            return
+        meta = getattr(self.conversation_engine, "meta_sqlite", None)
+        if not callable(getattr(meta, "get_named_projection", None)):
+            return
+        if not release_run_ownership_for_resume(
+            cast(RunOwnershipStore, meta),
+            namespace=workflow_run_ownership_projection_namespace(conversation_id),
+            run_id=run_id,
+            ownership=ownership,
+        ):
+            raise WorkflowRunOwnershipError(
+                f"workflow run {run_id!r} ownership was lost while suspending"
+            )
 
     def _replace_runtime_projection(
         self,
