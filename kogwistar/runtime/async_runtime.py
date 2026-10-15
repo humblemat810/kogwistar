@@ -726,9 +726,10 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
                 return None
 
         def _rt_join_restore() -> list[tuple[str, int, str, str | None]] | None:
-            payload = state.get("_rt_join", {})
-            if not isinstance(payload, dict) or not payload:
+            payload_value: object = state.get("_rt_join", {})
+            if not isinstance(payload_value, Mapping) or not payload_value:
                 return None
+            payload: Mapping[str, object] = payload_value
             if payload.get("join_node_ids") != join_node_ids:
                 return None
             join_outstanding_payload = payload.get("join_outstanding")
@@ -736,19 +737,19 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
             pending_payload = payload.get("pending")
             if (
                 not isinstance(join_outstanding_payload, list)
-                or not isinstance(join_waiters_payload, dict)
+                or not isinstance(join_waiters_payload, Mapping)
                 or not isinstance(pending_payload, list)
             ):
                 return None
+            join_waiters_payload_map: Mapping[str, object] = join_waiters_payload
             for i in range(min(len(join_outstanding), len(join_outstanding_payload))):
                 try:
                     join_outstanding[i] = int(join_outstanding_payload[i])
                 except Exception:
                     join_outstanding[i] = 0
             for join_id in join_node_ids:
-                items = join_waiters_payload.get(join_id, [])
-                if not isinstance(items, list):
-                    continue
+                items_value: object = join_waiters_payload_map.get(join_id, [])
+                items = items_value if isinstance(items_value, list) else []
                 normalized: list[tuple[int, str, str | None]] = []
                 for item in items:
                     norm = _normalize_join_waiter(item)

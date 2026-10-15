@@ -1243,10 +1243,18 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
             next_nodes, route_decision = self._route_next(
                 edges, initial_state, client_result, wn.fanout, nodes
             )
-        rt_join_value = initial_state.get("_rt_join", {})
-        rt_join = rt_join_value if isinstance(rt_join_value, dict) else {}
-        pending = rt_join.get("pending", [])
-        suspended = rt_join.get("suspended", [])
+        rt_join_value: object = initial_state.get("_rt_join", {})
+        rt_join: dict[str, object] = (
+            dict(rt_join_value) if isinstance(rt_join_value, Mapping) else {}
+        )
+        pending_value: object = rt_join.get("pending", [])
+        suspended_value: object = rt_join.get("suspended", [])
+        pending: list[object] = (
+            list(pending_value) if isinstance(pending_value, list) else []
+        )
+        suspended: list[object] = (
+            list(suspended_value) if isinstance(suspended_value, list) else []
+        )
 
         new_pending = []
         new_suspended = []
@@ -1358,7 +1366,25 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
         # Older checkpoints may still have the token in pending, so we accept both for compatibility.
         # Add next tokens
         _join_pos = {jid: i for i, jid in enumerate(join_node_ids)}
-        jo = rt_join.get("join_outstanding", [0 for _ in join_node_ids])
+        join_outstanding_value: object = rt_join.get(
+            "join_outstanding", [0 for _ in join_node_ids]
+        )
+
+        def _join_count(value: object) -> int:
+            if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+                return 0
+            try:
+                return int(value)
+            except (TypeError, ValueError, OverflowError):
+                return 0
+
+        jo: list[int] = (
+            [_join_count(value) for value in join_outstanding_value]
+            if isinstance(join_outstanding_value, list)
+            else [0 for _ in join_node_ids]
+        )
+        jo.extend(0 for _ in range(len(join_node_ids) - len(jo)))
+        jo = jo[: len(join_node_ids)]
 
         def _inc(m: int) -> None:
             for bi in _iter_bits(m):
