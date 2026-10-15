@@ -565,3 +565,31 @@ def test_latest_workflow_checkpoint_rehydrates_from_durable_projection() -> None
     assert checkpoint.safe_get_id() == "wf_ckpt|missing"
     assert checkpoint.metadata["state_json"] == '{"page": 2}'
     assert checkpoint.metadata["conversation_id"] == conversation_id
+
+
+def test_latest_workflow_checkpoint_rejects_projection_lineage_mismatch() -> None:
+    store = _FakeStore()
+    store.projection_row = {
+        "payload": {
+            "node_id": "wf_ckpt|other-run|3",
+            "checkpoint_metadata": {
+                "entity_type": "workflow_checkpoint",
+                "run_id": "other-run",
+                "workflow_id": "workflow-1",
+                "step_seq": 3,
+                "state_json": "{}",
+                "conversation_id": "other-conversation",
+            },
+        }
+    }
+    runtime = object.__new__(WorkflowRuntime)
+    runtime.conversation_engine = SimpleNamespace(
+        meta_sqlite=store,
+        read=SimpleNamespace(get_nodes=lambda **_: []),
+    )
+
+    with pytest.raises(ValueError, match="run_id does not match lookup"):
+        runtime._latest_checkpoint_for_run(
+            conversation_id="conversation-fresh-process",
+            run_id="run-fresh-process",
+        )

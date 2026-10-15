@@ -3616,6 +3616,7 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
             if isinstance(checkpoint_metadata, Mapping):
                 return self._checkpoint_node_from_projection(
                     conversation_id=conversation_id,
+                    run_id=str(run_id),
                     node_id=node_id,
                     metadata=checkpoint_metadata,
                 )
@@ -3642,6 +3643,7 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
         self,
         *,
         conversation_id: str,
+        run_id: str,
         node_id: str,
         metadata: Mapping[str, object],
     ) -> WorkflowCheckpointNode:
@@ -3657,6 +3659,15 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
         checkpoint_metadata.setdefault("level_from_root", 0)
         checkpoint_metadata.setdefault("checkpoint_schema_version", self.CHECKPOINT_SCHEMA_VERSION)
         validated = WorkflowCheckpointMetadata.model_validate(checkpoint_metadata)
+        if validated.run_id != str(run_id):
+            raise ValueError("durable checkpoint projection run_id does not match lookup")
+        projected_conversation_id = checkpoint_metadata.get("conversation_id")
+        if projected_conversation_id is not None and str(projected_conversation_id) != str(
+            conversation_id
+        ):
+            raise ValueError(
+                "durable checkpoint projection conversation_id does not match lookup"
+            )
         checkpoint_id = str(node_id or "")
         if not checkpoint_id:
             checkpoint_id = f"wf_ckpt|{validated.run_id}|{validated.step_seq}"
