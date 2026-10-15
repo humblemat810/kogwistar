@@ -56,6 +56,12 @@ from .base_runtime import (
 from .contract import CancellationChecker, Predicate
 from .design import validate_workflow_design
 from .native_contracts import join_arrival_result, successor_plan
+from .join_state import (
+    JoinToken,
+    JoinWaiter,
+    RuntimeJoinSnapshot,
+    decode_runtime_join_snapshot,
+)
 from .projections import (
     WORKFLOW_RUNTIME_PROJECTION_SCHEMA_VERSION,
     workflow_checkpoint_latest_projection_namespace,
@@ -303,7 +309,6 @@ RunID = uuid.UUID | str
 Json = JsonValue
 State = dict[str, Json]
 # Result = Json
-
 
 def derive_child_authority_context(
     parent: Mapping[str, Any] | None,
@@ -1813,7 +1818,7 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
             _join_outstanding: list[int] = [
                 0 for _ in join_node_ids
             ]  # tokens BEFORE each join
-            _join_waiters: dict[str, list[tuple[int, str, str | None]]] = {
+            _join_waiters: dict[str, list[JoinWaiter]] = {
                 jid: [] for jid in join_node_ids
             }  # store per-token mask at join
 
@@ -1838,57 +1843,19 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
                 bi = _join_pos.get(join_id)
                 return (1 << bi) if bi is not None else 0
 
-            def _normalize_join_waiter(
-                item: object,
-            ) -> tuple[int, str, str | None] | None:
-                if not isinstance(item, (list, tuple)):
-                    return None
-                if len(item) >= 3:
-                    return (
-                        int(item[0]),
-                        str(item[1]),
-                        (str(item[2]) if item[2] is not None else None),
-                    )
-                if len(item) == 1:
-                    return (int(item[0]), uuid.uuid4().hex, None)
-                return None
-
-            def _rt_join_get() -> dict:
-                return cast(dict, state.get("_rt_join", {}))
-
-            def _rt_join_set(payload: dict) -> None:
+            def _rt_join_set(payload: RuntimeJoinSnapshot) -> None:
                 # Stored in workflow state so checkpoints can resume joins.
                 state["_rt_join"] = payload
 
-            def _normalize_rt_token(
-                item: object,
-            ) -> tuple[str, int, str, str | None] | None:
-                if not isinstance(item, (list, tuple)):
-                    return None
-                if len(item) == 4:
-                    return (
-                        str(item[0]),
-                        int(item[1]),
-                        str(item[2]),
-                        (str(item[3]) if item[3] is not None else None),
-                    )
-                if len(item) == 3:
-                    # backward-compat: snapshots without parent_token_id
-                    return (str(item[0]), int(item[1]), str(item[2]), None)
-                if len(item) == 2:
-                    # backward-compat: older snapshots without token_id/parent_token_id
-                    return (str(item[0]), int(item[1]), uuid.uuid4().hex, None)
-                return None
-
             def _rt_join_snapshot(
-                pending: list[tuple[str, int, str, str | None]],
+                pending: list[JoinToken],
                 *,
-                suspended: list[tuple[str, int, str, str | None]] | None = None,
-            ) -> dict:
+                suspended: list[JoinToken] | None = None,
+            ) -> RuntimeJoinSnapshot:
                 # Persist inflight as pending-on-resume by including them in pending list upstream.
                 # Suspended tokens must be kept separately: they are parked at the suspended node
                 # and must NOT be re-scheduled automatically on resume.
-                return {
+                snapshot: RuntimeJoinSnapshot = {
                     "join_node_ids": join_node_ids,
                     "join_outstanding": list(_join_outstanding),
                     "join_waiters": {
@@ -1933,45 +1900,27 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
                         for nid, mask, token_id, parent_token_id in (suspended or [])
                     ],
                 }
+                return snapshot
 
-            def _rt_join_restore() -> list[tuple[str, int, str, str | None]] | None:
-                payload = _rt_join_get()
-                if not payload:
+            def _rt_join_restore() -> list[JoinToken] | None:
+                payload = decode_runtime_join_snapshot(
+                    state.get("_rt_join"),
+                    join_node_ids,
+                    allow_legacy_lengths=True,
+                    allow_single_mask_waiters=True,
+                )
+                if payload is None:
                     return None
                 if payload.get("join_node_ids") != join_node_ids:
                     # Design changed; discard stale join runtime.
                     return None
-                jo = payload.get("join_outstanding")
-                jw = payload.get("join_waiters")
-                pend = payload.get("pending")
-                if (
-                    not isinstance(jo, list)
-                    or not isinstance(jw, dict)
-                    or not isinstance(pend, list)
-                ):
-                    return None
                 # restore counters/waiters
-                for i in range(min(len(_join_outstanding), len(jo))):
-                    try:
-                        _join_outstanding[i] = int(jo[i])
-                    except Exception:
-                        _join_outstanding[i] = 0
+                for i in range(min(len(_join_outstanding), len(payload["join_outstanding"]))):
+                    _join_outstanding[i] = payload["join_outstanding"][i]
                 for jid in join_node_ids:
-                    items = jw.get(jid, [])
-                    if isinstance(items, list):
-                        normalized: list[tuple[int, str, str | None]] = []
-                        for item in items:
-                            norm = _normalize_join_waiter(item)
-                            if norm is not None:
-                                normalized.append(norm)
-                        _join_waiters[jid] = normalized
+                    _join_waiters[jid] = payload["join_waiters"][jid]
                 # pending tokens only; suspended tokens are restored by resume_run
-                out: list[tuple[str, int, str, str | None]] = []
-                for item in pend:
-                    norm = _normalize_rt_token(item)
-                    if norm is not None:
-                        out.append(norm)
-                return out
+                return payload["pending"]
 
             # start, nodes, adj = load_workflow_design(workflow_engine=self.workflow_engine, workflow_id=workflow_id)
 

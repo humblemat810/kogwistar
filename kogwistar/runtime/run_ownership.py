@@ -6,7 +6,7 @@ import time
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Protocol, cast
+from typing import Protocol
 
 from kogwistar.json_types import JsonObject, JsonValue
 
@@ -80,9 +80,7 @@ def claim_run_ownership(
         current.get("payload") if current is not None else None
     )
     current_payload: Mapping[str, JsonValue] = (
-        cast(Mapping[str, JsonValue], current_payload_value)
-        if isinstance(current_payload_value, Mapping)
-        else {}
+        current_payload_value if isinstance(current_payload_value, dict) else {}
     )
     current_owner_value: JsonValue | None = current_payload.get("owner_id")
     current_owner: str = (
@@ -149,9 +147,7 @@ def release_run_ownership_for_resume(
         current.get("payload") if current is not None else None
     )
     current_payload: Mapping[str, JsonValue] = (
-        cast(Mapping[str, JsonValue], current_payload_value)
-        if isinstance(current_payload_value, Mapping)
-        else {}
+        current_payload_value if isinstance(current_payload_value, dict) else {}
     )
     current_owner_value: JsonValue | None = current_payload.get("owner_id")
     current_owner: str = (
@@ -199,9 +195,7 @@ def renew_run_ownership(
         current.get("payload") if current is not None else None
     )
     current_payload: Mapping[str, JsonValue] = (
-        cast(Mapping[str, JsonValue], current_payload_value)
-        if isinstance(current_payload_value, Mapping)
-        else {}
+        current_payload_value if isinstance(current_payload_value, dict) else {}
     )
     current_owner_value: JsonValue | None = current_payload.get("owner_id")
     current_owner: str = (
