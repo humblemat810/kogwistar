@@ -20,7 +20,7 @@ from typing import (
     cast,
 )
 
-from kogwistar.engine_core.models import MentionVerification
+from kogwistar.engine_core.models import Grounding, MentionVerification, Span
 from kogwistar.engine_core.sqlite_context import sqlite_execution_bound
 from kogwistar.id_provider import stable_id
 from kogwistar.json_types import JsonObject
@@ -31,6 +31,7 @@ from kogwistar.runtime.models import (
     StateUpdate,
     WorkflowCancelledNode,
     WorkflowCheckpointNode,
+    WorkflowCheckpointMetadata,
     WorkflowCompletedNode,
     WorkflowDesignArtifact,
     WorkflowEdge,
@@ -3611,6 +3612,13 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
                 nodes = self.conversation_engine.read.get_nodes(ids=[node_id], limit=1)
                 if nodes:
                     return cast(WorkflowCheckpointNode, nodes[0])
+            checkpoint_metadata = payload.get("checkpoint_metadata")
+            if isinstance(checkpoint_metadata, Mapping):
+                return self._checkpoint_node_from_projection(
+                    conversation_id=conversation_id,
+                    node_id=node_id,
+                    metadata=checkpoint_metadata,
+                )
 
         ckpts = self.conversation_engine.read.get_nodes(
             where={
@@ -3628,6 +3636,49 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
                 ckpts,
                 key=lambda c: int(getattr(c, "metadata", {}).get("step_seq", -1)),
             ),
+        )
+
+    def _checkpoint_node_from_projection(
+        self,
+        *,
+        conversation_id: str,
+        node_id: str,
+        metadata: Mapping[str, object],
+    ) -> WorkflowCheckpointNode:
+        """Rebuild a checkpoint when the graph projection is not durable.
+
+        The metadata projection is the durable recovery record.  A graph backend
+        may be volatile (for example the in-memory backend used by lightweight
+        deployments), so recovery must not depend on the checkpoint node still
+        being present there.
+        """
+        checkpoint_metadata = dict(metadata)
+        checkpoint_metadata.setdefault("conversation_id", str(conversation_id))
+        checkpoint_metadata.setdefault("level_from_root", 0)
+        checkpoint_metadata.setdefault("checkpoint_schema_version", self.CHECKPOINT_SCHEMA_VERSION)
+        validated = WorkflowCheckpointMetadata.model_validate(checkpoint_metadata)
+        checkpoint_id = str(node_id or "")
+        if not checkpoint_id:
+            checkpoint_id = f"wf_ckpt|{validated.run_id}|{validated.step_seq}"
+        excerpt = f"checkpoint step_seq={validated.step_seq}"
+        span = Span(**_make_trace_span(
+            conversation_id=str(conversation_id),
+            excerpt=excerpt,
+            doc_id=f"conv:{conversation_id}",
+        ))
+        return WorkflowCheckpointNode(
+            id=checkpoint_id,
+            label=f"WF checkpoint {validated.step_seq}",
+            type="entity",
+            doc_id=checkpoint_id,
+            summary=excerpt,
+            mentions=[Grounding(spans=[span])],
+            properties={},
+            metadata=checkpoint_metadata,
+            domain_id=None,
+            canonical_entity_id=None,
+            embedding=None,
+            level_from_root=0,
         )
 
     def _claim_workflow_run(
@@ -3746,6 +3797,7 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
         run_id: str,
         step_seq: int,
         node_id: str,
+        checkpoint_metadata: Mapping[str, JsonValue],
     ) -> None:
         self._replace_runtime_projection(
             namespace=workflow_checkpoint_latest_projection_namespace(conversation_id),
@@ -3757,6 +3809,7 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
                 "conversation_id": str(conversation_id),
                 "step_seq": int(step_seq),
                 "node_id": str(node_id),
+                "checkpoint_metadata": dict(checkpoint_metadata),
             },
         )
 
@@ -4512,4 +4565,5 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
                 run_id=run_id,
                 step_seq=step_seq,
                 node_id=str(n.id),
+                checkpoint_metadata=dict(n.metadata),
             )

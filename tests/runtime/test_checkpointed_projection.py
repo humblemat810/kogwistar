@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from types import SimpleNamespace
 
 import pytest
 
@@ -13,6 +14,7 @@ from kogwistar.runtime import (
     ProjectionLoadResult,
     refresh_checkpointed_named_projection,
 )
+from kogwistar.runtime.runtime import WorkflowRuntime
 from kogwistar.runtime.budget import budget_event_from_dict, budget_event_to_dict
 
 pytestmark = [pytest.mark.ci, pytest.mark.runtime]
@@ -525,3 +527,41 @@ def test_checkpoint_keeps_only_a_bounded_event_id_tail() -> None:
     assert len(result.checkpoint.processed_event_ids) == 1024
     assert "usage-1" not in result.checkpoint.processed_event_ids
     assert "usage-1099" in result.checkpoint.processed_event_ids
+
+
+def test_latest_workflow_checkpoint_rehydrates_from_durable_projection() -> None:
+    store = _FakeStore()
+    run_id = "run-fresh-process"
+    conversation_id = "conversation-fresh-process"
+    store.projection_row = {
+        "payload": {
+            "entity_type": "workflow_checkpoint",
+            "run_id": run_id,
+            "workflow_id": "workflow-1",
+            "conversation_id": conversation_id,
+            "step_seq": 3,
+            "node_id": "wf_ckpt|missing",
+            "checkpoint_metadata": {
+                "entity_type": "workflow_checkpoint",
+                "run_id": run_id,
+                "workflow_id": "workflow-1",
+                "step_seq": 3,
+                "state_json": '{"page": 2}',
+            },
+        }
+    }
+    runtime = object.__new__(WorkflowRuntime)
+    runtime.conversation_engine = SimpleNamespace(
+        meta_sqlite=store,
+        read=SimpleNamespace(get_nodes=lambda **_: []),
+    )
+
+    checkpoint = runtime._latest_checkpoint_for_run(
+        conversation_id=conversation_id,
+        run_id=run_id,
+    )
+
+    assert checkpoint is not None
+    assert checkpoint.safe_get_id() == "wf_ckpt|missing"
+    assert checkpoint.metadata["state_json"] == '{"page": 2}'
+    assert checkpoint.metadata["conversation_id"] == conversation_id
