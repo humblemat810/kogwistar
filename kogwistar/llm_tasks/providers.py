@@ -28,6 +28,7 @@ TStructuredModel_co = TypeVar(
     "TStructuredModel_co", bound=StructuredModelLike, covariant=True
 )
 JsonSchema = dict[str, JsonValue]
+BridgeMessage = dict[str, JsonValue]
 
 
 class StructuredOutputRunnable(Protocol[TStructuredModel_co]):
@@ -132,16 +133,16 @@ class _StructuredBridgeResponse:
         return {"parsed": parsed, "raw": payload, "parsing_error": None}
 
 
-def bridge_messages(messages: object) -> list[dict[str, str]]:
-    """Convert common chat-message objects without exposing local paths."""
+def bridge_messages(messages: object) -> list[BridgeMessage]:
+    """Convert chat messages while preserving safe multimodal content parts."""
     if not isinstance(messages, (list, tuple)):
         messages = [messages]
-    result: list[dict[str, str]] = []
+    result: list[BridgeMessage] = []
     for message in messages:
         role = str(getattr(message, "type", None) or getattr(message, "role", None) or "user")
         role = {"human": "user", "ai": "assistant"}.get(role, role)
         content = getattr(message, "content", message)
-        if not isinstance(content, str):
+        if not isinstance(content, (str, list)):
             content = json.dumps(content, ensure_ascii=False, default=str)
         result.append({"role": role, "content": content})
     return result

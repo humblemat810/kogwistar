@@ -671,6 +671,7 @@ def test_nested_workflow_failure_short_circuits_parent_routing(engine_pair):
     )
 
     resolver = MappingStepResolver()
+    boom_calls = {"count": 0}
 
     @resolver.register("start")
     def _start(ctx):
@@ -694,7 +695,10 @@ def test_nested_workflow_failure_short_circuits_parent_routing(engine_pair):
 
     @resolver.register("boom")
     def _boom(ctx):
-        raise ValueError("child exploded")
+        boom_calls["count"] += 1
+        if boom_calls["count"] == 1:
+            raise ValueError("child exploded")
+        return RunSuccess(state_update=[("u", {"child_ok": True})], _route_next=["end"])
 
     @resolver.register("end")
     def _end(ctx):
@@ -722,6 +726,16 @@ def test_nested_workflow_failure_short_circuits_parent_routing(engine_pair):
     assert rr.status == "failure"
     assert rr.final_state["spawn_seen"] is True
     assert "ended" not in rr.final_state
+
+    resumed = rt.resume_from_latest_checkpoint(
+        run_id="run_nested_failure",
+        workflow_id=parent_id,
+        conversation_id="conv_nested_failure",
+        turn_node_id="turn_nested_failure",
+    )
+    assert resumed.status == "succeeded"
+    assert resumed.final_state["ended"] is True
+    assert boom_calls["count"] == 2
 
 
 @pytest.mark.e2e
