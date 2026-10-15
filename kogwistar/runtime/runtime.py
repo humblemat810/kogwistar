@@ -16,6 +16,7 @@ from types import TracebackType
 from typing import (
     TYPE_CHECKING,
     Any,
+    Literal,
     Protocol,
     TypedDict,
     cast,
@@ -24,7 +25,7 @@ from typing import (
 from kogwistar.engine_core.models import Grounding, MentionVerification, Span
 from kogwistar.engine_core.sqlite_context import sqlite_execution_bound
 from kogwistar.id_provider import stable_id
-from kogwistar.json_types import JsonObject
+from kogwistar.json_types import JsonObject, JsonValue
 from kogwistar.runtime.budget import BudgetAttribution, StateBackedBudgetLedger
 from kogwistar.runtime.budget_adapters import adapt_budget_events
 from kogwistar.runtime.models import (
@@ -119,6 +120,21 @@ class RuntimeMetadataStore(RunOwnershipStore, Protocol):
     ) -> None: ...
 
     def get_latest_entity_event_seq(self, *, namespace: str = "default") -> int: ...
+
+
+class CurrentUserSequenceStore(Protocol):
+    """Optional metadata capability used to fence cancellation requests."""
+
+    def current_user_seq(self, conversation_id: str) -> int: ...
+
+
+class CancelInfo(TypedDict):
+    """Typed cancellation request selected from callback or graph evidence."""
+
+    source: Literal["callback", "graph"]
+    node_id: str | None
+    seq: int | None
+    watermark: int | None
 
 
 class WorkflowRunOwnershipError(RuntimeError):
@@ -2052,7 +2068,7 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
                 tuple[str, StepRunResult, int, str, str | None, str, int]
             ] = queue.Queue()  # (node_id, result, duration_ms, token_id, parent_token_id, status, mask)
             cancel_pending = False
-            cancel_info: dict[str, Any] | None = None
+            cancel_info: CancelInfo | None = None
             run_suspended = False
             run_failed = False
             run_errors: list[str] = []
@@ -3506,7 +3522,7 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
         *,
         conversation_id: str,
         run_id: str,
-    ) -> dict[str, Any] | None:
+    ) -> CancelInfo | None:
         cancelled_nodes = self._safe_get_conversation_nodes(
             where={"$and": [{"entity_type": "workflow_cancelled"}, {"run_id": run_id}]},
             limit=1,
@@ -3527,27 +3543,39 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
         if not req_nodes:
             return None
 
-        try:
-            watermark = int(
-                self.conversation_engine.meta_sqlite.current_user_seq(conversation_id)
-            )
-        except Exception:
-            watermark = None
+        watermark: int | None = None
+        metadata = self._runtime_metadata_store()
+        current_user_seq = (
+            getattr(metadata, "current_user_seq", None) if metadata is not None else None
+        )
+        if callable(current_user_seq):
+            try:
+                watermark = int(
+                    cast(CurrentUserSequenceStore, metadata).current_user_seq(
+                        conversation_id
+                    )
+                )
+            except (TypeError, ValueError, RuntimeError):
+                watermark = None
 
-        req_best: dict[str, Any] | None = None
+        req_best: CancelInfo | None = None
         for node in req_nodes:
             md = getattr(node, "metadata", {}) or {}
-            try:
-                seq = int(md.get("seq", -1))
-            except Exception:
-                seq = -1
+            if not isinstance(md, Mapping):
+                continue
+            seq = _json_int(md.get("seq"), default=-1)
             if seq < 0:
                 continue
             if watermark is not None and seq > watermark:
                 continue
-            if req_best is None or seq < int(req_best["seq"]):
+            node_id = getattr(node, "id", "")
+            if not isinstance(node_id, str) or not node_id:
+                continue
+            best_seq = req_best["seq"] if req_best is not None else None
+            if req_best is None or best_seq is None or seq < best_seq:
                 req_best = {
-                    "node_id": str(getattr(node, "id", "") or ""),
+                    "source": "graph",
+                    "node_id": node_id,
                     "seq": seq,
                     "watermark": watermark,
                 }
@@ -3564,7 +3592,9 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
         that compatibility discovery at this boundary; recovery code below then
         uses the typed protocol instead of repeatedly reading untyped attributes.
         """
-        metadata = self.conversation_engine.meta_sqlite
+        metadata = getattr(self.conversation_engine, "meta_sqlite", None)
+        if metadata is None:
+            return None
         required = (
             "get_named_projection",
             "compare_and_swap_named_projection",
@@ -3671,16 +3701,18 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
                 workflow_checkpoint_latest_projection_namespace(conversation_id),
                 str(run_id),
             )
-            row_map = row if isinstance(row, Mapping) else {}
+            row_map: Mapping[str, JsonValue] = row if row is not None else {}
             payload_value = row_map.get("payload")
-            payload = dict(payload_value) if isinstance(payload_value, Mapping) else {}
+            payload: JsonObject = (
+                dict(payload_value) if isinstance(payload_value, dict) else {}
+            )
             node_id = str(payload.get("node_id") or "")
             if node_id:
                 nodes = self.conversation_engine.read.get_nodes(ids=[node_id], limit=1)
                 if nodes:
                     return cast(WorkflowCheckpointNode, nodes[0])
             checkpoint_metadata = payload.get("checkpoint_metadata")
-            if isinstance(checkpoint_metadata, Mapping):
+            if isinstance(checkpoint_metadata, dict):
                 return self._checkpoint_node_from_projection(
                     conversation_id=conversation_id,
                     run_id=str(run_id),
@@ -3712,7 +3744,7 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
         conversation_id: str,
         run_id: str,
         node_id: str,
-        metadata: Mapping[str, object],
+        metadata: Mapping[str, JsonValue],
     ) -> WorkflowCheckpointNode:
         """Rebuild a checkpoint when the graph projection is not durable.
 
@@ -3912,7 +3944,7 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
         workflow_id: str,
         run_id: str,
         accepted_step_seq: int,
-        cancel_info: dict[str, Any] | None,
+        cancel_info: CancelInfo | None,
         last_processed_node_id: str | None = None,
     ) -> str:
         node_id = f"wf_cancelled|{run_id}"
