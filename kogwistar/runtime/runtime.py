@@ -2519,6 +2519,23 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
                                     else None
                                 ),
                             )
+                            # A failed run may still have a durable checkpoint
+                            # that is safe to resume.  Do not leave its lease
+                            # live after returning the failure result, or the
+                            # next worker cannot recover from that checkpoint.
+                            if (
+                                ownership is not None
+                                and self._latest_checkpoint_for_run(
+                                    conversation_id=str(conversation_id),
+                                    run_id=str(run_id),
+                                )
+                                is not None
+                            ):
+                                self._release_workflow_run_for_resume(
+                                    conversation_id=str(conversation_id),
+                                    run_id=str(run_id),
+                                    ownership=ownership,
+                                )
                             try:
                                 tc_done = _lifecycle_trace_context(
                                     token_id=str(run_id), step_seq=int(step_seq), node_id="run"
