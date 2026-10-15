@@ -1248,21 +1248,25 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
             next_nodes, route_decision = self._route_next(
                 edges, initial_state, client_result, wn.fanout, nodes
             )
-        rt_join_value: object = initial_state.get("_rt_join", {})
-        rt_join: dict[str, object] = (
-            dict(rt_join_value) if isinstance(rt_join_value, Mapping) else {}
+        rt_join = decode_runtime_join_snapshot(
+            initial_state.get("_rt_join"),
+            join_node_ids,
+            allow_legacy_lengths=True,
+            allow_single_mask_waiters=True,
         )
-        pending_value: object = rt_join.get("pending", [])
-        suspended_value: object = rt_join.get("suspended", [])
-        pending: list[object] = (
-            list(pending_value) if isinstance(pending_value, list) else []
-        )
-        suspended: list[object] = (
-            list(suspended_value) if isinstance(suspended_value, list) else []
-        )
+        if rt_join is None:
+            rt_join = RuntimeJoinSnapshot(
+                join_node_ids=list(join_node_ids),
+                join_outstanding=[0 for _ in join_node_ids],
+                join_waiters={join_id: [] for join_id in join_node_ids},
+                pending=[],
+                suspended=[],
+            )
+        pending: list[JoinToken] = list(rt_join["pending"])
+        suspended: list[JoinToken] = list(rt_join["suspended"])
 
-        new_pending = []
-        new_suspended = []
+        new_pending: list[JoinToken] = []
+        new_suspended: list[JoinToken] = []
         token_found = False
         mask_to_distribute = 0
         parent_token_id = None
@@ -1282,24 +1286,10 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
             )
             previous_exec_node = fallback_exec_nodes[0] if fallback_exec_nodes else None
 
-        def _extract(items: list[object], keep: list[object]) -> None:
+        def _extract(items: list[JoinToken], keep: list[JoinToken]) -> None:
             nonlocal token_found, mask_to_distribute, parent_token_id
             for item in items:
-                norm = None
-                if isinstance(item, (list, tuple)):
-                    if len(item) == 4:
-                        norm = (
-                            str(item[0]),
-                            int(item[1]),
-                            str(item[2]),
-                            (str(item[3]) if item[3] is not None else None),
-                        )
-                    elif len(item) == 3:
-                        norm = (str(item[0]), int(item[1]), str(item[2]), None)
-                if norm is None:
-                    keep.append(item)
-                    continue
-                nid, tok_mask, tok_id, tok_parent = norm
+                nid, tok_mask, tok_id, tok_parent = item
                 if (
                     (not token_found)
                     and nid == str(suspended_node_id)
@@ -1309,7 +1299,7 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
                     mask_to_distribute = int(tok_mask)
                     parent_token_id = tok_parent
                 else:
-                    keep.append(norm)
+                    keep.append(item)
 
         _extract(suspended, new_suspended)
         _extract(pending, new_pending)
