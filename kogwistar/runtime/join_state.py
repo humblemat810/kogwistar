@@ -29,6 +29,23 @@ def _coerce_int(value: object) -> int | None:
         return None
 
 
+def _normalize_join_outstanding(
+    value: object, *, expected_count: int
+) -> list[int] | None:
+    """Decode join counters without turning malformed values into zero."""
+    if not isinstance(value, list):
+        return None
+    counters: list[int] = []
+    for item in value:
+        counter = _coerce_int(item)
+        if counter is None or counter < 0:
+            return None
+        counters.append(counter)
+    if len(counters) < expected_count:
+        counters.extend(0 for _ in range(expected_count - len(counters)))
+    return counters[:expected_count]
+
+
 def normalize_join_waiter(
     value: object, *, allow_single_mask: bool
 ) -> JoinWaiter | None:
@@ -100,10 +117,11 @@ def decode_runtime_join_snapshot(
         or not isinstance(suspended_value, list)
     ):
         return None
-    outstanding = [
-        _coerce_int(item) or 0
-        for item in outstanding_value
-    ]
+    outstanding = _normalize_join_outstanding(
+        outstanding_value, expected_count=len(expected_join_node_ids)
+    )
+    if outstanding is None:
+        return None
     waiters: dict[str, list[JoinWaiter]] = {}
     for join_id in expected_join_node_ids:
         items_value = waiters_value.get(join_id, [])

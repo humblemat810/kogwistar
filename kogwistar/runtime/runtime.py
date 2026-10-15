@@ -1361,25 +1361,7 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
         # Older checkpoints may still have the token in pending, so we accept both for compatibility.
         # Add next tokens
         _join_pos = {jid: i for i, jid in enumerate(join_node_ids)}
-        join_outstanding_value: object = rt_join.get(
-            "join_outstanding", [0 for _ in join_node_ids]
-        )
-
-        def _join_count(value: object) -> int:
-            if isinstance(value, bool) or not isinstance(value, (int, float, str)):
-                return 0
-            try:
-                return int(value)
-            except (TypeError, ValueError, OverflowError):
-                return 0
-
-        jo: list[int] = (
-            [_join_count(value) for value in join_outstanding_value]
-            if isinstance(join_outstanding_value, list)
-            else [0 for _ in join_node_ids]
-        )
-        jo.extend(0 for _ in range(len(join_node_ids) - len(jo)))
-        jo = jo[: len(join_node_ids)]
+        jo: list[int] = list(rt_join["join_outstanding"])
 
         def _inc(m: int) -> None:
             for bi in _iter_bits(m):
