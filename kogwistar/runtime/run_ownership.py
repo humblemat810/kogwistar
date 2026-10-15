@@ -84,26 +84,27 @@ def claim_run_ownership(
         if isinstance(current_payload_value, Mapping)
         else {}
     )
-    current_owner = str(current_payload.get("owner_id") or "")
-    current_lease = current_payload.get("lease_until_ms")
+    current_owner_value: JsonValue | None = current_payload.get("owner_id")
+    current_owner: str = (
+        current_owner_value if isinstance(current_owner_value, str) else ""
+    )
+    current_lease: JsonValue | None = current_payload.get("lease_until_ms")
     current_lease_ms = _coerce_int(current_lease) or 0
+    resumable_value: JsonValue | None = current_payload.get("resumable")
     if (
         current_owner
         and current_owner != owner_id
         and current_lease_ms > now
-        and not (allow_resume_takeover and current_payload.get("resumable") is True)
+        and not (allow_resume_takeover and resumable_value is True)
     ):
         raise RunOwnershipConflict(
             f"workflow run {run_id!r} is owned until {current_lease_ms}"
         )
 
     next_owner = str(owner_id or uuid.uuid4())
-    generation_value = current_payload.get("generation")
-    generation = (
-        int(generation_value) + 1
-        if isinstance(generation_value, (int, float, str))
-        else 1
-    )
+    generation_value: JsonValue | None = current_payload.get("generation")
+    previous_generation: int = _coerce_int(generation_value) or 0
+    generation: int = previous_generation + 1
     latest_authoritative = _row_sequence(current, "last_authoritative_seq")
     latest_materialized = _row_sequence(current, "last_materialized_seq")
     payload: JsonObject = {
@@ -152,9 +153,14 @@ def release_run_ownership_for_resume(
         if isinstance(current_payload_value, Mapping)
         else {}
     )
-    current_generation = _coerce_int(current_payload.get("generation", -1))
+    current_owner_value: JsonValue | None = current_payload.get("owner_id")
+    current_owner: str = (
+        current_owner_value if isinstance(current_owner_value, str) else ""
+    )
+    generation_value: JsonValue | None = current_payload.get("generation", -1)
+    current_generation: int | None = _coerce_int(generation_value)
     if (
-        str(current_payload.get("owner_id") or "") != ownership.owner_id
+        current_owner != ownership.owner_id
         or current_generation is None
         or current_generation != ownership.generation
     ):
@@ -197,9 +203,14 @@ def renew_run_ownership(
         if isinstance(current_payload_value, Mapping)
         else {}
     )
-    current_generation = _coerce_int(current_payload.get("generation", -1))
+    current_owner_value: JsonValue | None = current_payload.get("owner_id")
+    current_owner: str = (
+        current_owner_value if isinstance(current_owner_value, str) else ""
+    )
+    generation_value: JsonValue | None = current_payload.get("generation", -1)
+    current_generation: int | None = _coerce_int(generation_value)
     if (
-        str(current_payload.get("owner_id") or "") != ownership.owner_id
+        current_owner != ownership.owner_id
         or current_generation is None
         or current_generation != ownership.generation
     ):
