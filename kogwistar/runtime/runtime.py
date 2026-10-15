@@ -325,6 +325,27 @@ def _iter_bits(mask: int) -> Iterator[int]:
 
 RunID = uuid.UUID | str
 Json = JsonValue
+
+
+def _json_int(value: object, *, default: int) -> int:
+    """Convert a persisted scalar integer while rejecting structured JSON."""
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, int):
+        return value
+    if isinstance(value, (float, str)):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+    return default
+
+
+def _json_string_list(value: object) -> list[str]:
+    """Decode a persisted string-list field without trusting its shape."""
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value]
 State = dict[str, Json]
 # Result = Json
 
@@ -3603,7 +3624,11 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
             final_state=state,
             mq=queue.Queue(),
             status=status,
-            errors=list((terminal_metadata or {}).get("errors") or []),
+            errors=_json_string_list(
+                terminal_metadata.get("errors")
+                if isinstance(terminal_metadata, Mapping)
+                else None
+            ),
         )
 
     def _conversation_node_exists(self, node_id: str) -> bool:
@@ -3677,7 +3702,7 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
             WorkflowCheckpointNode,
             max(
                 ckpts,
-                key=lambda c: int(c.metadata.get("step_seq", -1)),
+                key=lambda c: _json_int(c.metadata.get("step_seq"), default=-1),
             ),
         )
 
