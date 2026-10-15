@@ -8,6 +8,8 @@
   conflict.
 - Preserves compare-and-swap generation fencing, lease renewal, and exclusive
   ownership for concurrent resume attempts.
+- Narrows persisted runtime-join state to validated mutable containers and
+  typed token/count sequences in both sync and async resume paths.
 
 ## Compatibility
 
