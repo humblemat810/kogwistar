@@ -46,7 +46,17 @@ class RunOwnership:
 
 def _row_sequence(row: Mapping[str, object] | None, key: str) -> int | None:
     value = row.get(key) if row is not None else None
-    return int(value) if isinstance(value, (int, float, str)) else None
+    return _coerce_int(value)
+
+
+def _coerce_int(value: object) -> int | None:
+    """Convert scalar projection values without trusting JSON container types."""
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
 
 
 def claim_run_ownership(
@@ -70,9 +80,7 @@ def claim_run_ownership(
     current_payload = current_payload if isinstance(current_payload, Mapping) else {}
     current_owner = str(current_payload.get("owner_id") or "")
     current_lease = current_payload.get("lease_until_ms")
-    current_lease_ms = (
-        int(current_lease) if isinstance(current_lease, (int, float, str)) else 0
-    )
+    current_lease_ms = _coerce_int(current_lease) or 0
     if (
         current_owner
         and current_owner != owner_id
@@ -132,9 +140,11 @@ def release_run_ownership_for_resume(
     current = store.get_named_projection(namespace, str(run_id))
     current_payload = current.get("payload") if isinstance(current, Mapping) else None
     current_payload = current_payload if isinstance(current_payload, Mapping) else {}
+    current_generation = _coerce_int(current_payload.get("generation", -1))
     if (
         str(current_payload.get("owner_id") or "") != ownership.owner_id
-        or int(current_payload.get("generation", -1)) != ownership.generation
+        or current_generation is None
+        or current_generation != ownership.generation
     ):
         return False
     latest_authoritative = _row_sequence(current, "last_authoritative_seq")
@@ -169,9 +179,11 @@ def renew_run_ownership(
     current = store.get_named_projection(namespace, str(run_id))
     current_payload = current.get("payload") if isinstance(current, Mapping) else None
     current_payload = current_payload if isinstance(current_payload, Mapping) else {}
+    current_generation = _coerce_int(current_payload.get("generation", -1))
     if (
         str(current_payload.get("owner_id") or "") != ownership.owner_id
-        or int(current_payload.get("generation", -1)) != ownership.generation
+        or current_generation is None
+        or current_generation != ownership.generation
     ):
         raise RunOwnershipConflict(f"workflow run {run_id!r} ownership was lost")
     latest_authoritative = _row_sequence(current, "last_authoritative_seq")
