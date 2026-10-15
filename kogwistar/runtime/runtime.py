@@ -103,6 +103,24 @@ class ConversationBackendLike(Protocol):
     def edge_get(self, **kwargs: object) -> Mapping[str, object]: ...
 
 
+class RuntimeMetadataStore(RunOwnershipStore, Protocol):
+    """Typed metadata surface used by workflow recovery and projections."""
+
+    def replace_named_projection(
+        self,
+        namespace: str,
+        key: str,
+        payload: JsonObject,
+        *,
+        last_authoritative_seq: int,
+        last_materialized_seq: int,
+        projection_schema_version: int,
+        materialization_status: str,
+    ) -> None: ...
+
+    def get_latest_entity_event_seq(self, *, namespace: str = "default") -> int: ...
+
+
 class WorkflowRunOwnershipError(RuntimeError):
     """Raised when a durable run cannot be safely resumed by this worker."""
 
@@ -3518,6 +3536,24 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
         backend = getattr(self.conversation_engine, "backend", None)
         return cast(ConversationBackendLike, backend) if backend is not None else None
 
+    def _runtime_metadata_store(self) -> RuntimeMetadataStore | None:
+        """Return the optional metadata adapter after one capability check.
+
+        The engine supports legacy and backend-specific metadata adapters. Keep
+        that compatibility discovery at this boundary; recovery code below then
+        uses the typed protocol instead of repeatedly reading untyped attributes.
+        """
+        metadata = self.conversation_engine.meta_sqlite
+        required = (
+            "get_named_projection",
+            "compare_and_swap_named_projection",
+            "replace_named_projection",
+            "get_latest_entity_event_seq",
+        )
+        if not all(callable(getattr(metadata, name, None)) for name in required):
+            return None
+        return cast(RuntimeMetadataStore, metadata)
+
     def _terminal_run_result(
         self, *, conversation_id: str, run_id: str
     ) -> RunResult | None:
@@ -3527,7 +3563,7 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
             ("workflow_failed", "failure"),
             ("workflow_cancelled", "cancelled"),
         )
-        terminal_metadata: dict[str, Any] | None = None
+        terminal_metadata: JsonObject | None = None
         status: str | None = None
         for entity_type, candidate_status in terminal_types:
             nodes = self.conversation_engine.read.get_nodes(
@@ -3540,7 +3576,7 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
                 limit=1,
             )
             if nodes:
-                terminal_metadata = dict(getattr(nodes[0], "metadata", {}) or {})
+                terminal_metadata = dict(nodes[0].metadata)
                 status = candidate_status
                 break
         if status is None:
@@ -3550,7 +3586,7 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
         )
         state: WorkflowState = {}
         if checkpoint is not None:
-            raw_state = (getattr(checkpoint, "metadata", {}) or {}).get("state_json")
+            raw_state = checkpoint.metadata.get("state_json")
             if isinstance(raw_state, str):
                 loaded = json.loads(raw_state)
                 if isinstance(loaded, dict):
@@ -3599,10 +3635,9 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
         conversation_id: str,
         run_id: str,
     ) -> WorkflowCheckpointNode | None:
-        meta = getattr(self.conversation_engine, "meta_sqlite", None)
-        get_projection = getattr(meta, "get_named_projection", None)
-        if callable(get_projection):
-            row = get_projection(
+        metadata = self._runtime_metadata_store()
+        if metadata is not None:
+            row = metadata.get_named_projection(
                 workflow_checkpoint_latest_projection_namespace(conversation_id),
                 str(run_id),
             )
@@ -3637,7 +3672,7 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
             WorkflowCheckpointNode,
             max(
                 ckpts,
-                key=lambda c: int(getattr(c, "metadata", {}).get("step_seq", -1)),
+                key=lambda c: int(c.metadata.get("step_seq", -1)),
             ),
         )
 
@@ -3702,14 +3737,12 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
         run_id: str,
         allow_resume_takeover: bool = False,
     ) -> RunOwnership | None:
-        meta = getattr(self.conversation_engine, "meta_sqlite", None)
-        get_projection = getattr(meta, "get_named_projection", None)
-        compare_and_swap = getattr(meta, "compare_and_swap_named_projection", None)
-        if not callable(get_projection) or not callable(compare_and_swap):
+        metadata = self._runtime_metadata_store()
+        if metadata is None:
             return None
         try:
             return claim_run_ownership(
-                cast(RunOwnershipStore, meta),
+                metadata,
                 namespace=workflow_run_ownership_projection_namespace(conversation_id),
                 run_id=run_id,
                 workflow_id=workflow_id,
@@ -3729,12 +3762,12 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
     ) -> RunOwnership | None:
         if ownership is None:
             return None
-        meta = getattr(self.conversation_engine, "meta_sqlite", None)
-        if not callable(getattr(meta, "get_named_projection", None)):
+        metadata = self._runtime_metadata_store()
+        if metadata is None:
             return ownership
         try:
             return renew_run_ownership(
-                cast(RunOwnershipStore, meta),
+                metadata,
                 namespace=workflow_run_ownership_projection_namespace(conversation_id),
                 run_id=run_id,
                 ownership=ownership,
@@ -3752,11 +3785,11 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
     ) -> None:
         if ownership is None:
             return
-        meta = getattr(self.conversation_engine, "meta_sqlite", None)
-        if not callable(getattr(meta, "get_named_projection", None)):
+        metadata = self._runtime_metadata_store()
+        if metadata is None:
             return
         if not release_run_ownership_for_resume(
-            cast(RunOwnershipStore, meta),
+            metadata,
             namespace=workflow_run_ownership_projection_namespace(conversation_id),
             run_id=run_id,
             ownership=ownership,
@@ -3770,31 +3803,20 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
         *,
         namespace: str,
         key: str,
-        payload: dict[str, Any],
+        payload: JsonObject,
         materialization_status: str = "ready",
     ) -> None:
-        meta = getattr(self.conversation_engine, "meta_sqlite", None)
-        replace = getattr(meta, "replace_named_projection", None)
-        if not callable(replace):
+        metadata = self._runtime_metadata_store()
+        if metadata is None:
             return
         latest_seq = 0
-        latest = getattr(meta, "get_latest_entity_event_seq", None)
-        if callable(latest):
-            try:
-                latest_value = latest(
-                    namespace=str(
-                        getattr(self.conversation_engine, "namespace", "default")
-                        or "default"
-                    )
-                )
-                latest_seq = (
-                    int(latest_value)
-                    if isinstance(latest_value, (int, float, str))
-                    else 0
-                )
-            except Exception:
-                latest_seq = 0
-        replace(
+        try:
+            latest_seq = metadata.get_latest_entity_event_seq(
+                namespace=str(self.conversation_engine.namespace or "default")
+            )
+        except (TypeError, ValueError, RuntimeError):
+            latest_seq = 0
+        metadata.replace_named_projection(
             namespace=namespace,
             key=str(key),
             payload=payload,
