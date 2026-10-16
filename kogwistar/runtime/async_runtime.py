@@ -32,6 +32,12 @@ from .executor import TerminalStatus, WorkflowExecutor
 from .models import RunFailure, StepRunResult, WorkflowState
 from .models import WorkflowEdge, WorkflowInvocationRequest, WorkflowNode
 from .native_contracts import join_arrival_result, successor_plan
+from .join_state import (
+    JoinToken,
+    JoinWaiter,
+    RuntimeJoinSnapshot,
+    decode_runtime_join_snapshot,
+)
 from .runtime import (
     EventEmitter,
     EventSink,
@@ -647,7 +653,7 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
                 pass
 
         join_merge_nodes: set[str] = set()
-        join_waiters: dict[str, list[tuple[int, str, str | None]]] = {}
+        join_waiters: dict[str, list[JoinWaiter]] = {}
         join_is_merge: dict[str, bool] = {}
         for nid, node in nodes.items():
             md = getattr(node, "metadata", {}) or {}
@@ -698,69 +704,20 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
             bi = join_pos.get(str(join_id))
             return (1 << bi) if bi is not None else 0
 
-        def _normalize_join_waiter(
-            item: object,
-        ) -> tuple[int, str, str | None] | None:
-            if not isinstance(item, (list, tuple)) or len(item) < 3:
+        def _rt_join_restore() -> list[JoinToken] | None:
+            payload = decode_runtime_join_snapshot(
+                state.get("_rt_join"),
+                join_node_ids,
+                allow_legacy_lengths=False,
+                allow_single_mask_waiters=False,
+            )
+            if payload is None:
                 return None
-            try:
-                mask = int(item[0])
-                token_id = str(item[1])
-                parent = None if item[2] is None else str(item[2])
-                return mask, token_id, parent
-            except Exception:
-                return None
-
-        def _normalize_rt_token(
-            item: object,
-        ) -> tuple[str, int, str, str | None] | None:
-            if not isinstance(item, (list, tuple)) or len(item) < 4:
-                return None
-            try:
-                node_id = str(item[0])
-                mask = int(item[1])
-                token_id = str(item[2])
-                parent = None if item[3] is None else str(item[3])
-                return node_id, mask, token_id, parent
-            except Exception:
-                return None
-
-        def _rt_join_restore() -> list[tuple[str, int, str, str | None]] | None:
-            payload = state.get("_rt_join", {})
-            if not isinstance(payload, dict) or not payload:
-                return None
-            if payload.get("join_node_ids") != join_node_ids:
-                return None
-            join_outstanding_payload = payload.get("join_outstanding")
-            join_waiters_payload = payload.get("join_waiters")
-            pending_payload = payload.get("pending")
-            if (
-                not isinstance(join_outstanding_payload, list)
-                or not isinstance(join_waiters_payload, dict)
-                or not isinstance(pending_payload, list)
-            ):
-                return None
-            for i in range(min(len(join_outstanding), len(join_outstanding_payload))):
-                try:
-                    join_outstanding[i] = int(join_outstanding_payload[i])
-                except Exception:
-                    join_outstanding[i] = 0
+            for i in range(min(len(join_outstanding), len(payload["join_outstanding"]))):
+                join_outstanding[i] = payload["join_outstanding"][i]
             for join_id in join_node_ids:
-                items = join_waiters_payload.get(join_id, [])
-                if not isinstance(items, list):
-                    continue
-                normalized: list[tuple[int, str, str | None]] = []
-                for item in items:
-                    norm = _normalize_join_waiter(item)
-                    if norm is not None:
-                        normalized.append(norm)
-                join_waiters[join_id] = normalized
-            restored: list[tuple[str, int, str, str | None]] = []
-            for item in pending_payload:
-                norm = _normalize_rt_token(item)
-                if norm is not None:
-                    restored.append(norm)
-            return restored
+                join_waiters[join_id] = payload["join_waiters"][join_id]
+            return payload["pending"]
 
         sem = asyncio.Semaphore(max(1, int(self.max_workers)))
         restored_pending = _rt_join_restore()
@@ -919,7 +876,7 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
             )
 
         def _persist_rt_join_snapshot() -> None:
-            state["_rt_join"] = {
+            snapshot: RuntimeJoinSnapshot = {
                 "join_node_ids": list(join_node_ids),
                 "join_outstanding": list(join_outstanding),
                 "join_waiters": {
@@ -952,6 +909,7 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
                     for nid, mask, token_id, parent_token_id in suspended_tokens.values()
                 ],
             }
+            state["_rt_join"] = snapshot
 
         def _persist_step_exec_compat(**kwargs: object) -> object | None:
             persist = getattr(self._sync_runtime, "_persist_step_exec", None)

@@ -197,3 +197,30 @@ def test_resume_takeover_uses_cas_fencing() -> None:
             lease_ms=1000,
             allow_resume_takeover=True,
         )
+
+
+def test_malformed_generation_fails_closed_for_renewal() -> None:
+    store = _ProjectionStore()
+    ownership = claim_run_ownership(
+        store,
+        namespace="conversation:ownership",
+        run_id="run-1",
+        workflow_id="ocr",
+        conversation_id="doc-1",
+        owner_id="worker-a",
+        now_ms=100,
+        lease_ms=1000,
+    )
+    payload = store.rows[("conversation:ownership", "run-1")]["payload"]
+    assert isinstance(payload, dict)
+    payload["generation"] = {"unexpected": "container"}
+
+    with pytest.raises(RunOwnershipConflict):
+        renew_run_ownership(
+            store,
+            namespace="conversation:ownership",
+            run_id="run-1",
+            ownership=ownership,
+            now_ms=200,
+            lease_ms=1000,
+        )

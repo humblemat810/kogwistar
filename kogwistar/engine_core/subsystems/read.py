@@ -121,9 +121,10 @@ def stage1_row_is_current(
     if not callable(revision_payload):
         return False
     try:
-        canonical = json.loads(
-            revision_payload(entity_kind=entity_kind, entity_id=entity_id)
-        )
+        serialized = revision_payload(entity_kind=entity_kind, entity_id=entity_id)
+        if not isinstance(serialized, (str, bytes, bytearray)):
+            return False
+        canonical = json.loads(serialized)
     except (TypeError, ValueError, json.JSONDecodeError):
         return False
     if not isinstance(canonical, Mapping):
@@ -496,7 +497,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 resolve_mode=resolve_mode,
             ),
         )
-        return self._e._filter_items_by_resolve_mode(nodes, resolve_mode)
+        return cast(list[Node], self._e._filter_items_by_resolve_mode(nodes, resolve_mode))
 
     def get_edges(
         self,

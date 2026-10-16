@@ -16,6 +16,7 @@ from types import TracebackType
 from typing import (
     TYPE_CHECKING,
     Any,
+    Literal,
     Protocol,
     TypedDict,
     cast,
@@ -24,7 +25,7 @@ from typing import (
 from kogwistar.engine_core.models import Grounding, MentionVerification, Span
 from kogwistar.engine_core.sqlite_context import sqlite_execution_bound
 from kogwistar.id_provider import stable_id
-from kogwistar.json_types import JsonObject
+from kogwistar.json_types import JsonObject, JsonValue
 from kogwistar.runtime.budget import BudgetAttribution, StateBackedBudgetLedger
 from kogwistar.runtime.budget_adapters import adapt_budget_events
 from kogwistar.runtime.models import (
@@ -56,6 +57,12 @@ from .base_runtime import (
 from .contract import CancellationChecker, Predicate
 from .design import validate_workflow_design
 from .native_contracts import join_arrival_result, successor_plan
+from .join_state import (
+    JoinToken,
+    JoinWaiter,
+    RuntimeJoinSnapshot,
+    decode_runtime_join_snapshot,
+)
 from .projections import (
     WORKFLOW_RUNTIME_PROJECTION_SCHEMA_VERSION,
     workflow_checkpoint_latest_projection_namespace,
@@ -95,6 +102,39 @@ class ConversationBackendLike(Protocol):
     def node_get(self, **kwargs: object) -> Mapping[str, object]: ...
 
     def edge_get(self, **kwargs: object) -> Mapping[str, object]: ...
+
+
+class RuntimeMetadataStore(RunOwnershipStore, Protocol):
+    """Typed metadata surface used by workflow recovery and projections."""
+
+    def replace_named_projection(
+        self,
+        namespace: str,
+        key: str,
+        payload: JsonObject,
+        *,
+        last_authoritative_seq: int,
+        last_materialized_seq: int,
+        projection_schema_version: int,
+        materialization_status: str,
+    ) -> None: ...
+
+    def get_latest_entity_event_seq(self, *, namespace: str = "default") -> int: ...
+
+
+class CurrentUserSequenceStore(Protocol):
+    """Optional metadata capability used to fence cancellation requests."""
+
+    def current_user_seq(self, conversation_id: str) -> int: ...
+
+
+class CancelInfo(TypedDict):
+    """Typed cancellation request selected from callback or graph evidence."""
+
+    source: Literal["callback", "graph"]
+    node_id: str | None
+    seq: int | None
+    watermark: int | None
 
 
 class WorkflowRunOwnershipError(RuntimeError):
@@ -301,9 +341,29 @@ def _iter_bits(mask: int) -> Iterator[int]:
 
 RunID = uuid.UUID | str
 Json = JsonValue
+
+
+def _json_int(value: object, *, default: int) -> int:
+    """Convert a persisted scalar integer while rejecting structured JSON."""
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, int):
+        return value
+    if isinstance(value, (float, str)):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+    return default
+
+
+def _json_string_list(value: object) -> list[str]:
+    """Decode a persisted string-list field without trusting its shape."""
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value]
 State = dict[str, Json]
 # Result = Json
-
 
 def derive_child_authority_context(
     parent: Mapping[str, Any] | None,
@@ -1243,13 +1303,25 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
             next_nodes, route_decision = self._route_next(
                 edges, initial_state, client_result, wn.fanout, nodes
             )
-        rt_join_value = initial_state.get("_rt_join", {})
-        rt_join = rt_join_value if isinstance(rt_join_value, dict) else {}
-        pending = rt_join.get("pending", [])
-        suspended = rt_join.get("suspended", [])
+        rt_join = decode_runtime_join_snapshot(
+            initial_state.get("_rt_join"),
+            join_node_ids,
+            allow_legacy_lengths=True,
+            allow_single_mask_waiters=True,
+        )
+        if rt_join is None:
+            rt_join = RuntimeJoinSnapshot(
+                join_node_ids=list(join_node_ids),
+                join_outstanding=[0 for _ in join_node_ids],
+                join_waiters={join_id: [] for join_id in join_node_ids},
+                pending=[],
+                suspended=[],
+            )
+        pending: list[JoinToken] = list(rt_join["pending"])
+        suspended: list[JoinToken] = list(rt_join["suspended"])
 
-        new_pending = []
-        new_suspended = []
+        new_pending: list[JoinToken] = []
+        new_suspended: list[JoinToken] = []
         token_found = False
         mask_to_distribute = 0
         parent_token_id = None
@@ -1269,24 +1341,10 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
             )
             previous_exec_node = fallback_exec_nodes[0] if fallback_exec_nodes else None
 
-        def _extract(items: list[object], keep: list[object]) -> None:
+        def _extract(items: list[JoinToken], keep: list[JoinToken]) -> None:
             nonlocal token_found, mask_to_distribute, parent_token_id
             for item in items:
-                norm = None
-                if isinstance(item, (list, tuple)):
-                    if len(item) == 4:
-                        norm = (
-                            str(item[0]),
-                            int(item[1]),
-                            str(item[2]),
-                            (str(item[3]) if item[3] is not None else None),
-                        )
-                    elif len(item) == 3:
-                        norm = (str(item[0]), int(item[1]), str(item[2]), None)
-                if norm is None:
-                    keep.append(item)
-                    continue
-                nid, tok_mask, tok_id, tok_parent = norm
+                nid, tok_mask, tok_id, tok_parent = item
                 if (
                     (not token_found)
                     and nid == str(suspended_node_id)
@@ -1296,7 +1354,7 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
                     mask_to_distribute = int(tok_mask)
                     parent_token_id = tok_parent
                 else:
-                    keep.append(norm)
+                    keep.append(item)
 
         _extract(suspended, new_suspended)
         _extract(pending, new_pending)
@@ -1358,7 +1416,7 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
         # Older checkpoints may still have the token in pending, so we accept both for compatibility.
         # Add next tokens
         _join_pos = {jid: i for i, jid in enumerate(join_node_ids)}
-        jo = rt_join.get("join_outstanding", [0 for _ in join_node_ids])
+        jo: list[int] = list(rt_join["join_outstanding"])
 
         def _inc(m: int) -> None:
             for bi in _iter_bits(m):
@@ -1787,7 +1845,7 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
             _join_outstanding: list[int] = [
                 0 for _ in join_node_ids
             ]  # tokens BEFORE each join
-            _join_waiters: dict[str, list[tuple[int, str, str | None]]] = {
+            _join_waiters: dict[str, list[JoinWaiter]] = {
                 jid: [] for jid in join_node_ids
             }  # store per-token mask at join
 
@@ -1812,57 +1870,19 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
                 bi = _join_pos.get(join_id)
                 return (1 << bi) if bi is not None else 0
 
-            def _normalize_join_waiter(
-                item: object,
-            ) -> tuple[int, str, str | None] | None:
-                if not isinstance(item, (list, tuple)):
-                    return None
-                if len(item) >= 3:
-                    return (
-                        int(item[0]),
-                        str(item[1]),
-                        (str(item[2]) if item[2] is not None else None),
-                    )
-                if len(item) == 1:
-                    return (int(item[0]), uuid.uuid4().hex, None)
-                return None
-
-            def _rt_join_get() -> dict:
-                return cast(dict, state.get("_rt_join", {}))
-
-            def _rt_join_set(payload: dict) -> None:
+            def _rt_join_set(payload: RuntimeJoinSnapshot) -> None:
                 # Stored in workflow state so checkpoints can resume joins.
                 state["_rt_join"] = payload
 
-            def _normalize_rt_token(
-                item: object,
-            ) -> tuple[str, int, str, str | None] | None:
-                if not isinstance(item, (list, tuple)):
-                    return None
-                if len(item) == 4:
-                    return (
-                        str(item[0]),
-                        int(item[1]),
-                        str(item[2]),
-                        (str(item[3]) if item[3] is not None else None),
-                    )
-                if len(item) == 3:
-                    # backward-compat: snapshots without parent_token_id
-                    return (str(item[0]), int(item[1]), str(item[2]), None)
-                if len(item) == 2:
-                    # backward-compat: older snapshots without token_id/parent_token_id
-                    return (str(item[0]), int(item[1]), uuid.uuid4().hex, None)
-                return None
-
             def _rt_join_snapshot(
-                pending: list[tuple[str, int, str, str | None]],
+                pending: list[JoinToken],
                 *,
-                suspended: list[tuple[str, int, str, str | None]] | None = None,
-            ) -> dict:
+                suspended: list[JoinToken] | None = None,
+            ) -> RuntimeJoinSnapshot:
                 # Persist inflight as pending-on-resume by including them in pending list upstream.
                 # Suspended tokens must be kept separately: they are parked at the suspended node
                 # and must NOT be re-scheduled automatically on resume.
-                return {
+                snapshot: RuntimeJoinSnapshot = {
                     "join_node_ids": join_node_ids,
                     "join_outstanding": list(_join_outstanding),
                     "join_waiters": {
@@ -1907,45 +1927,27 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
                         for nid, mask, token_id, parent_token_id in (suspended or [])
                     ],
                 }
+                return snapshot
 
-            def _rt_join_restore() -> list[tuple[str, int, str, str | None]] | None:
-                payload = _rt_join_get()
-                if not payload:
+            def _rt_join_restore() -> list[JoinToken] | None:
+                payload = decode_runtime_join_snapshot(
+                    state.get("_rt_join"),
+                    join_node_ids,
+                    allow_legacy_lengths=True,
+                    allow_single_mask_waiters=True,
+                )
+                if payload is None:
                     return None
                 if payload.get("join_node_ids") != join_node_ids:
                     # Design changed; discard stale join runtime.
                     return None
-                jo = payload.get("join_outstanding")
-                jw = payload.get("join_waiters")
-                pend = payload.get("pending")
-                if (
-                    not isinstance(jo, list)
-                    or not isinstance(jw, dict)
-                    or not isinstance(pend, list)
-                ):
-                    return None
                 # restore counters/waiters
-                for i in range(min(len(_join_outstanding), len(jo))):
-                    try:
-                        _join_outstanding[i] = int(jo[i])
-                    except Exception:
-                        _join_outstanding[i] = 0
+                for i in range(min(len(_join_outstanding), len(payload["join_outstanding"]))):
+                    _join_outstanding[i] = payload["join_outstanding"][i]
                 for jid in join_node_ids:
-                    items = jw.get(jid, [])
-                    if isinstance(items, list):
-                        normalized: list[tuple[int, str, str | None]] = []
-                        for item in items:
-                            norm = _normalize_join_waiter(item)
-                            if norm is not None:
-                                normalized.append(norm)
-                        _join_waiters[jid] = normalized
+                    _join_waiters[jid] = payload["join_waiters"][jid]
                 # pending tokens only; suspended tokens are restored by resume_run
-                out: list[tuple[str, int, str, str | None]] = []
-                for item in pend:
-                    norm = _normalize_rt_token(item)
-                    if norm is not None:
-                        out.append(norm)
-                return out
+                return payload["pending"]
 
             # start, nodes, adj = load_workflow_design(workflow_engine=self.workflow_engine, workflow_id=workflow_id)
 
@@ -2066,7 +2068,7 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
                 tuple[str, StepRunResult, int, str, str | None, str, int]
             ] = queue.Queue()  # (node_id, result, duration_ms, token_id, parent_token_id, status, mask)
             cancel_pending = False
-            cancel_info: dict[str, Any] | None = None
+            cancel_info: CancelInfo | None = None
             run_suspended = False
             run_failed = False
             run_errors: list[str] = []
@@ -3520,7 +3522,7 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
         *,
         conversation_id: str,
         run_id: str,
-    ) -> dict[str, Any] | None:
+    ) -> CancelInfo | None:
         cancelled_nodes = self._safe_get_conversation_nodes(
             where={"$and": [{"entity_type": "workflow_cancelled"}, {"run_id": run_id}]},
             limit=1,
@@ -3541,27 +3543,39 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
         if not req_nodes:
             return None
 
-        try:
-            watermark = int(
-                self.conversation_engine.meta_sqlite.current_user_seq(conversation_id)
-            )
-        except Exception:
-            watermark = None
+        watermark: int | None = None
+        metadata = self._runtime_metadata_store()
+        current_user_seq = (
+            getattr(metadata, "current_user_seq", None) if metadata is not None else None
+        )
+        if callable(current_user_seq):
+            try:
+                watermark = int(
+                    cast(CurrentUserSequenceStore, metadata).current_user_seq(
+                        conversation_id
+                    )
+                )
+            except (TypeError, ValueError, RuntimeError):
+                watermark = None
 
-        req_best: dict[str, Any] | None = None
+        req_best: CancelInfo | None = None
         for node in req_nodes:
             md = getattr(node, "metadata", {}) or {}
-            try:
-                seq = int(md.get("seq", -1))
-            except Exception:
-                seq = -1
+            if not isinstance(md, Mapping):
+                continue
+            seq = _json_int(md.get("seq"), default=-1)
             if seq < 0:
                 continue
             if watermark is not None and seq > watermark:
                 continue
-            if req_best is None or seq < int(req_best["seq"]):
+            node_id = getattr(node, "id", "")
+            if not isinstance(node_id, str) or not node_id:
+                continue
+            best_seq = req_best["seq"] if req_best is not None else None
+            if req_best is None or best_seq is None or seq < best_seq:
                 req_best = {
-                    "node_id": str(getattr(node, "id", "") or ""),
+                    "source": "graph",
+                    "node_id": node_id,
                     "seq": seq,
                     "watermark": watermark,
                 }
@@ -3570,6 +3584,31 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
     def _conversation_backend(self) -> ConversationBackendLike | None:
         backend = getattr(self.conversation_engine, "backend", None)
         return cast(ConversationBackendLike, backend) if backend is not None else None
+
+    def _runtime_metadata_store(self) -> RuntimeMetadataStore | None:
+        """Return the optional metadata adapter after one capability check.
+
+        The engine supports legacy and backend-specific metadata adapters. Keep
+        that compatibility discovery at this boundary; recovery code below then
+        uses the typed protocol instead of repeatedly reading untyped attributes.
+        """
+        metadata = getattr(self.conversation_engine, "meta_sqlite", None)
+        if metadata is None:
+            return None
+        required = (
+            "get_named_projection",
+            "compare_and_swap_named_projection",
+            "replace_named_projection",
+            "get_latest_entity_event_seq",
+        )
+        if not all(callable(getattr(metadata, name, None)) for name in required):
+            return None
+        return cast(RuntimeMetadataStore, metadata)
+
+    def _conversation_namespace(self) -> str:
+        """Read the engine namespace across legacy test and adapter doubles."""
+        namespace = getattr(self.conversation_engine, "namespace", "default")
+        return namespace if isinstance(namespace, str) and namespace else "default"
 
     def _terminal_run_result(
         self, *, conversation_id: str, run_id: str
@@ -3580,7 +3619,7 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
             ("workflow_failed", "failure"),
             ("workflow_cancelled", "cancelled"),
         )
-        terminal_metadata: dict[str, Any] | None = None
+        terminal_metadata: JsonObject | None = None
         status: str | None = None
         for entity_type, candidate_status in terminal_types:
             nodes = self.conversation_engine.read.get_nodes(
@@ -3593,7 +3632,7 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
                 limit=1,
             )
             if nodes:
-                terminal_metadata = dict(getattr(nodes[0], "metadata", {}) or {})
+                terminal_metadata = dict(nodes[0].metadata)
                 status = candidate_status
                 break
         if status is None:
@@ -3603,7 +3642,7 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
         )
         state: WorkflowState = {}
         if checkpoint is not None:
-            raw_state = (getattr(checkpoint, "metadata", {}) or {}).get("state_json")
+            raw_state = checkpoint.metadata.get("state_json")
             if isinstance(raw_state, str):
                 loaded = json.loads(raw_state)
                 if isinstance(loaded, dict):
@@ -3615,7 +3654,11 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
             final_state=state,
             mq=queue.Queue(),
             status=status,
-            errors=list((terminal_metadata or {}).get("errors") or []),
+            errors=_json_string_list(
+                terminal_metadata.get("errors")
+                if isinstance(terminal_metadata, Mapping)
+                else None
+            ),
         )
 
     def _conversation_node_exists(self, node_id: str) -> bool:
@@ -3652,23 +3695,24 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
         conversation_id: str,
         run_id: str,
     ) -> WorkflowCheckpointNode | None:
-        meta = getattr(self.conversation_engine, "meta_sqlite", None)
-        get_projection = getattr(meta, "get_named_projection", None)
-        if callable(get_projection):
-            row = get_projection(
+        metadata = self._runtime_metadata_store()
+        if metadata is not None:
+            row = metadata.get_named_projection(
                 workflow_checkpoint_latest_projection_namespace(conversation_id),
                 str(run_id),
             )
-            row_map = row if isinstance(row, Mapping) else {}
+            row_map: Mapping[str, JsonValue] = row if row is not None else {}
             payload_value = row_map.get("payload")
-            payload = dict(payload_value) if isinstance(payload_value, Mapping) else {}
+            payload: JsonObject = (
+                dict(payload_value) if isinstance(payload_value, dict) else {}
+            )
             node_id = str(payload.get("node_id") or "")
             if node_id:
                 nodes = self.conversation_engine.read.get_nodes(ids=[node_id], limit=1)
                 if nodes:
                     return cast(WorkflowCheckpointNode, nodes[0])
             checkpoint_metadata = payload.get("checkpoint_metadata")
-            if isinstance(checkpoint_metadata, Mapping):
+            if isinstance(checkpoint_metadata, dict):
                 return self._checkpoint_node_from_projection(
                     conversation_id=conversation_id,
                     run_id=str(run_id),
@@ -3690,7 +3734,7 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
             WorkflowCheckpointNode,
             max(
                 ckpts,
-                key=lambda c: int(getattr(c, "metadata", {}).get("step_seq", -1)),
+                key=lambda c: _json_int(c.metadata.get("step_seq"), default=-1),
             ),
         )
 
@@ -3700,7 +3744,7 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
         conversation_id: str,
         run_id: str,
         node_id: str,
-        metadata: Mapping[str, object],
+        metadata: Mapping[str, JsonValue],
     ) -> WorkflowCheckpointNode:
         """Rebuild a checkpoint when the graph projection is not durable.
 
@@ -3755,14 +3799,12 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
         run_id: str,
         allow_resume_takeover: bool = False,
     ) -> RunOwnership | None:
-        meta = getattr(self.conversation_engine, "meta_sqlite", None)
-        get_projection = getattr(meta, "get_named_projection", None)
-        compare_and_swap = getattr(meta, "compare_and_swap_named_projection", None)
-        if not callable(get_projection) or not callable(compare_and_swap):
+        metadata = self._runtime_metadata_store()
+        if metadata is None:
             return None
         try:
             return claim_run_ownership(
-                cast(RunOwnershipStore, meta),
+                metadata,
                 namespace=workflow_run_ownership_projection_namespace(conversation_id),
                 run_id=run_id,
                 workflow_id=workflow_id,
@@ -3782,12 +3824,12 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
     ) -> RunOwnership | None:
         if ownership is None:
             return None
-        meta = getattr(self.conversation_engine, "meta_sqlite", None)
-        if not callable(getattr(meta, "get_named_projection", None)):
+        metadata = self._runtime_metadata_store()
+        if metadata is None:
             return ownership
         try:
             return renew_run_ownership(
-                cast(RunOwnershipStore, meta),
+                metadata,
                 namespace=workflow_run_ownership_projection_namespace(conversation_id),
                 run_id=run_id,
                 ownership=ownership,
@@ -3805,11 +3847,11 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
     ) -> None:
         if ownership is None:
             return
-        meta = getattr(self.conversation_engine, "meta_sqlite", None)
-        if not callable(getattr(meta, "get_named_projection", None)):
+        metadata = self._runtime_metadata_store()
+        if metadata is None:
             return
         if not release_run_ownership_for_resume(
-            cast(RunOwnershipStore, meta),
+            metadata,
             namespace=workflow_run_ownership_projection_namespace(conversation_id),
             run_id=run_id,
             ownership=ownership,
@@ -3823,31 +3865,20 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
         *,
         namespace: str,
         key: str,
-        payload: dict[str, Any],
+        payload: JsonObject,
         materialization_status: str = "ready",
     ) -> None:
-        meta = getattr(self.conversation_engine, "meta_sqlite", None)
-        replace = getattr(meta, "replace_named_projection", None)
-        if not callable(replace):
+        metadata = self._runtime_metadata_store()
+        if metadata is None:
             return
         latest_seq = 0
-        latest = getattr(meta, "get_latest_entity_event_seq", None)
-        if callable(latest):
-            try:
-                latest_value = latest(
-                    namespace=str(
-                        getattr(self.conversation_engine, "namespace", "default")
-                        or "default"
-                    )
-                )
-                latest_seq = (
-                    int(latest_value)
-                    if isinstance(latest_value, (int, float, str))
-                    else 0
-                )
-            except Exception:
-                latest_seq = 0
-        replace(
+        try:
+            latest_seq = metadata.get_latest_entity_event_seq(
+                namespace=self._conversation_namespace()
+            )
+        except (TypeError, ValueError, RuntimeError):
+            latest_seq = 0
+        metadata.replace_named_projection(
             namespace=namespace,
             key=str(key),
             payload=payload,
@@ -3913,7 +3944,7 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
         workflow_id: str,
         run_id: str,
         accepted_step_seq: int,
-        cancel_info: dict[str, Any] | None,
+        cancel_info: CancelInfo | None,
         last_processed_node_id: str | None = None,
     ) -> str:
         node_id = f"wf_cancelled|{run_id}"
