@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import pytest
 
-from kogwistar.engine_core.chroma_backend import ChromaBackend
+from kogwistar.engine_core.chroma_backend import (
+    ChromaBackend,
+    _chroma_safe_kwargs,
+)
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.storage_backend import (
     TwoStageProjectionCapability,
@@ -13,6 +16,81 @@ from kogwistar.engine_core.storage_backend import (
 from tests._helpers.fake_backend import build_fake_backend
 from tests._helpers.graph_builders import build_entity_node
 from tests.core.two_stage_case_catalog import two_stage_case
+
+
+def test_chroma_safe_kwargs_drops_null_metadata_and_preserves_supported_values() -> None:
+    metadata = {
+        "wf_predicate": None,
+        "wf_priority": 100,
+        "empty_tags": [],
+        "enabled": False,
+    }
+    kwargs: dict[str, object] = {"metadatas": [metadata]}
+
+    safe = _chroma_safe_kwargs(kwargs)
+
+    assert safe == {
+        "metadatas": [
+            {"wf_priority": 100, "empty_tags": "[]", "enabled": False}
+        ]
+    }
+    assert kwargs["metadatas"] == [metadata]
+    assert metadata["wf_predicate"] is None
+
+
+def test_chroma_backend_add_sanitizes_null_metadata_at_collection_boundary() -> None:
+    class _Collection:
+        received: dict[str, object] | None = None
+
+        def count(self) -> int:
+            return 0
+
+        def get(self, **kwargs: object) -> object:
+            del kwargs
+            return {}
+
+        def query(self, **kwargs: object) -> object:
+            del kwargs
+            return {}
+
+        def add(self, **kwargs: object) -> object:
+            self.received = kwargs
+            return None
+
+        def upsert(self, **kwargs: object) -> object:
+            del kwargs
+            return None
+
+        def update(self, **kwargs: object) -> object:
+            del kwargs
+            return None
+
+        def delete(self, **kwargs: object) -> object:
+            del kwargs
+            return None
+
+    collection = _Collection()
+    backend = ChromaBackend(
+        node_index_collection=collection,
+        node_collection=collection,
+        edge_collection=collection,
+        edge_endpoints_collection=collection,
+        document_collection=collection,
+        domain_collection=collection,
+        node_docs_collection=collection,
+        node_refs_collection=collection,
+        edge_refs_collection=collection,
+    )
+
+    backend.node_add(
+        ids=["node-1"],
+        documents=["payload"],
+        metadatas=[{"wf_predicate": None, "wf_priority": 100}],
+        embeddings=[[0.1, 0.2]],
+    )
+
+    assert collection.received is not None
+    assert collection.received["metadatas"] == [{"wf_priority": 100}]
 
 
 def test_two_stage_defaults_to_single_stage_for_existing_backend(tmp_path) -> None:
