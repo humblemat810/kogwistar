@@ -40,3 +40,30 @@ def test_join_state_rejects_malformed_counter_values(value: object) -> None:
         )
         is None
     )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("join_waiters", {"join-a": [[1.5, "waiter", None]], "join-b": []}),
+        ("join_waiters", {"join-a": [[1, object(), None]], "join-b": []}),
+        ("pending", [["node", 1.5, "token", None]]),
+        ("pending", [["node", -1, "token", None]]),
+        ("suspended", [["node", 1, "token", object()]]),
+    ],
+)
+def test_join_state_rejects_malformed_entries_without_dropping_them(
+    field: str, value: object
+) -> None:
+    snapshot = _snapshot([0, 0])
+    snapshot[field] = value
+
+    assert (
+        decode_runtime_join_snapshot(
+            snapshot,
+            ["join-a", "join-b"],
+            allow_legacy_lengths=False,
+            allow_single_mask_waiters=False,
+        )
+        is None
+    )
