@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 
 from kogwistar.provenance import EvidencePackDigest, evidence_pack_digest_hash
 
-__version__ = "0.6.12"
+__version__ = "0.6.13"
 
 if TYPE_CHECKING:
     from kogwistar import shortids

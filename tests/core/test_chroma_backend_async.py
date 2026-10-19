@@ -8,8 +8,50 @@ from tests.core._async_chroma_real import (
     make_real_async_chroma_backend,
     real_chroma_server,  # noqa: F401
 )
+from kogwistar.engine_core.chroma_backend import ChromaBackend
 
 pytestmark = pytest.mark.ci
+
+
+def test_chroma_backend_round_trips_metadata_with_optional_nulls() -> None:
+    import chromadb
+
+    client = chromadb.EphemeralClient()
+    collections = {
+        name: client.get_or_create_collection(name=f"null_meta_{name}")
+        for name in (
+            "node_index",
+            "node",
+            "edge",
+            "edge_endpoints",
+            "document",
+            "domain",
+            "node_docs",
+            "node_refs",
+            "edge_refs",
+        )
+    }
+    backend = ChromaBackend(
+        node_index_collection=collections["node_index"],
+        node_collection=collections["node"],
+        edge_collection=collections["edge"],
+        edge_endpoints_collection=collections["edge_endpoints"],
+        document_collection=collections["document"],
+        domain_collection=collections["domain"],
+        node_docs_collection=collections["node_docs"],
+        node_refs_collection=collections["node_refs"],
+        edge_refs_collection=collections["edge_refs"],
+    )
+
+    backend.node_add(
+        ids=["node-with-optional-null"],
+        documents=["node payload"],
+        metadatas=[{"wf_predicate": None, "wf_priority": 100}],
+        embeddings=[[0.1, 0.2]],
+    )
+
+    result = backend.node_get(ids=["node-with-optional-null"])
+    assert result["metadatas"] == [{"wf_priority": 100}]
 
 
 @pytest.mark.asyncio

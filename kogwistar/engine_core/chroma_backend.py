@@ -127,7 +127,11 @@ class ChromaStorageInspector:
 
 
 def _chroma_safe_kwargs(kwargs: dict[str, object]) -> dict[str, object]:
-    """Encode empty metadata lists rejected by Chroma without changing nodes."""
+    """Adapt null and empty-list metadata for Chroma without mutating inputs.
+
+    Chroma has no null metadata value. Omitting a null-valued optional key
+    preserves its effective ``metadata.get(key)`` value while allowing writes.
+    """
     metadatas = kwargs.get("metadatas")
     if not isinstance(metadatas, (list, tuple)):
         return kwargs
@@ -140,6 +144,7 @@ def _chroma_safe_kwargs(kwargs: dict[str, object]) -> dict[str, object]:
         safe_metadata = {
             key: ("[]" if isinstance(value, list) and not value else value)
             for key, value in metadata.items()
+            if value is not None
         }
         sanitized.append(safe_metadata)
         changed = changed or safe_metadata != metadata
