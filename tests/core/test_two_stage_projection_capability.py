@@ -408,6 +408,36 @@ def test_in_memory_two_stage_promotes_pending_node_via_index_job(tmp_path) -> No
     )["ids"] == [["n1"]]
 
 
+def test_two_stage_write_enqueues_embedding_once(tmp_path, monkeypatch) -> None:
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path),
+        backend_factory=build_fake_backend,
+        persistence_mode="two_stage",
+    )
+    original_enqueue = engine.indexing.enqueue_index_job
+    enqueued: list[tuple[str, str, str]] = []
+
+    def record_enqueue(
+        *, entity_kind: str, entity_id: str, index_kind: str, op: str,
+        payload_json: str | None = None,
+    ) -> object:
+        enqueued.append((entity_kind, entity_id, op))
+        return original_enqueue(
+            entity_kind=entity_kind,
+            entity_id=entity_id,
+            index_kind=index_kind,
+            op=op,
+            payload_json=payload_json,
+        )
+
+    monkeypatch.setattr(engine.indexing, "enqueue_index_job", record_enqueue)
+    node = build_entity_node(node_id="single-enqueue", doc_id="d1", embedding=None)
+
+    engine.write.add_node(node)
+
+    assert enqueued == [("node", "single-enqueue", "UPSERT")]
+
+
 @two_stage_case("batch_embedding")
 def test_in_memory_two_stage_uses_existing_index_job_worker(tmp_path) -> None:
     engine = GraphKnowledgeEngine(

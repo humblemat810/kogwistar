@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+from kogwistar.engine_core.engine import (
+    _is_async_postgres_backend,
+    _is_async_storage_backend,
+)
 from kogwistar.engine_core.storage_backend import (
     AtomicMutationCapability,
     NoopUnitOfWork,
+    StorageBackend,
     get_atomic_mutation_capability,
 )
 
@@ -47,3 +52,24 @@ def test_async_backend_does_not_claim_sync_atomicity() -> None:
 
     assert capability.mode == "none"
     assert capability.supports_atomic_mutation is False
+
+
+def test_async_backend_identity_uses_explicit_capability_protocols() -> None:
+    class AsyncChromaMarker:
+        is_async_backend = True
+
+    assert _is_async_storage_backend(AsyncChromaMarker())
+
+    class AsyncPostgresBackendStub(StorageBackend):
+        vector_distance_kind = "cosine"
+        _is_async_engine = True
+        engine = object()
+        schema = "public"
+
+    postgres_backend = AsyncPostgresBackendStub()
+
+    assert _is_async_postgres_backend(postgres_backend)
+    assert _is_async_storage_backend(postgres_backend)
+
+    postgres_backend._is_async_engine = False
+    assert not _is_async_postgres_backend(postgres_backend)

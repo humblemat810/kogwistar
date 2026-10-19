@@ -4,17 +4,36 @@ import hashlib
 import inspect
 import json
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast
+from typing import (
+    TYPE_CHECKING,
+    Literal,
+    Protocol,
+    TypeAlias,
+    TypedDict,
+    TypeVar,
+    cast,
+    runtime_checkable,
+)
+from pydantic import TypeAdapter
 
 from ...cdc.change_event import EntityRefModel
 from ...json_types import JsonObject
-from ...typing_interfaces import ProjectionBackendLike
+from ...typing_interfaces import EmbeddingFunctionLike, ProjectionBackendLike
 from ...utils.embedding_vectors import normalize_embedding_vector
 from ..async_compat import run_awaitable_blocking
-from ..models import Document, Domain, Edge, Node, PureChromaEdge, PureChromaNode
-from ..storage_backend import AsyncTwoStageProjectionAdapter
+from ..models import (
+    Document,
+    Domain,
+    Edge,
+    Grounding,
+    Node,
+    PureChromaEdge,
+    PureChromaNode,
+    Span,
+)
+from ..storage_backend import AsyncTwoStageProjectionAdapter, StorageBackend
 from ..utils.metadata import json_or_none, strip_none
 from ..utils.refs import (
     edge_doc_and_meta as edge_doc_and_meta_util,
@@ -33,6 +52,162 @@ if TYPE_CHECKING:
 
 
 _T = TypeVar("_T")
+_ProjectionEntityKind: TypeAlias = Literal["node", "edge"]
+_GraphEntityKind: TypeAlias = Literal["node", "edge", "document", "domain"]
+_AsyncBackendCollectionKey: TypeAlias = Literal[
+    "node",
+    "edge",
+    "document",
+    "domain",
+    "edge_endpoints",
+    "edge_refs",
+    "node_docs",
+    "node_refs",
+]
+_AsyncBackendMethod: TypeAlias = Literal["add", "delete", "get", "update", "upsert"]
+_BackendOperation: TypeAlias = Callable[..., object]
+_ReferenceOwnerField: TypeAlias = Literal["node_id", "edge_id"]
+_EndpointRole: TypeAlias = Literal["src", "tgt"]
+
+
+@runtime_checkable
+class _AsyncSemanticUpsertBackend(Protocol):
+    def async_node_upsert(self, **kwargs: object) -> object: ...
+
+    def async_edge_upsert(self, **kwargs: object) -> object: ...
+
+
+@runtime_checkable
+class _AsyncCallBackend(Protocol):
+    def async_call(
+        self,
+        collection_key: _AsyncBackendCollectionKey,
+        method: _AsyncBackendMethod,
+        **kwargs: object,
+    ) -> object: ...
+
+
+class _AsyncCollectionFacade(Protocol):
+    def add(self, **kwargs: object) -> object: ...
+
+    def delete(self, **kwargs: object) -> object: ...
+
+    def get(self, **kwargs: object) -> object: ...
+
+    def update(self, **kwargs: object) -> object: ...
+
+    def upsert(self, **kwargs: object) -> object: ...
+
+
+@runtime_checkable
+class _AsyncFacadeBackend(Protocol):
+    _is_async_engine: bool
+    _nodes_c: _AsyncCollectionFacade
+    _edges_c: _AsyncCollectionFacade
+    _documents_c: _AsyncCollectionFacade
+    _domains_c: _AsyncCollectionFacade
+    _edge_endpoints_c: _AsyncCollectionFacade
+    _edge_refs_c: _AsyncCollectionFacade
+    _node_docs_c: _AsyncCollectionFacade
+    _node_refs_c: _AsyncCollectionFacade
+
+
+def _sync_backend_operation(
+    backend: StorageBackend,
+    collection_key: _AsyncBackendCollectionKey,
+    method: _AsyncBackendMethod,
+) -> _BackendOperation:
+    """Resolve the declared sync backend operation without reflection."""
+    operations: dict[tuple[_AsyncBackendCollectionKey, _AsyncBackendMethod], _BackendOperation] = {
+        ("node", "add"): backend.node_add,
+        ("node", "delete"): backend.node_delete,
+        ("node", "get"): backend.node_get,
+        ("node", "update"): backend.node_update,
+        ("node", "upsert"): backend.node_upsert,
+        ("edge", "add"): backend.edge_add,
+        ("edge", "delete"): backend.edge_delete,
+        ("edge", "get"): backend.edge_get,
+        ("edge", "update"): backend.edge_update,
+        ("edge", "upsert"): backend.edge_upsert,
+        ("document", "add"): backend.document_add,
+        ("document", "delete"): backend.document_delete,
+        ("document", "get"): backend.document_get,
+        ("document", "update"): backend.document_update,
+        ("document", "upsert"): backend.document_upsert,
+        ("domain", "add"): backend.domain_add,
+        ("domain", "delete"): backend.domain_delete,
+        ("domain", "get"): backend.domain_get,
+        ("domain", "update"): backend.domain_update,
+        ("domain", "upsert"): backend.domain_upsert,
+        ("edge_endpoints", "add"): backend.edge_endpoints_add,
+        ("edge_endpoints", "delete"): backend.edge_endpoints_delete,
+        ("edge_endpoints", "get"): backend.edge_endpoints_get,
+        ("edge_endpoints", "update"): backend.edge_endpoints_update,
+        ("edge_endpoints", "upsert"): backend.edge_endpoints_upsert,
+        ("edge_refs", "add"): backend.edge_refs_add,
+        ("edge_refs", "delete"): backend.edge_refs_delete,
+        ("edge_refs", "get"): backend.edge_refs_get,
+        ("edge_refs", "update"): backend.edge_refs_update,
+        ("edge_refs", "upsert"): backend.edge_refs_upsert,
+        ("node_docs", "add"): backend.node_docs_add,
+        ("node_docs", "delete"): backend.node_docs_delete,
+        ("node_docs", "get"): backend.node_docs_get,
+        ("node_docs", "update"): backend.node_docs_update,
+        ("node_docs", "upsert"): backend.node_docs_upsert,
+        ("node_refs", "add"): backend.node_refs_add,
+        ("node_refs", "delete"): backend.node_refs_delete,
+        ("node_refs", "get"): backend.node_refs_get,
+        ("node_refs", "update"): backend.node_refs_update,
+        ("node_refs", "upsert"): backend.node_refs_upsert,
+    }
+    return operations[(collection_key, method)]
+
+
+class _BackendResponse(TypedDict, total=False):
+    ids: list[str]
+    documents: list[str]
+    metadatas: list[dict[str, object] | None]
+
+
+_JSON_OBJECT_ADAPTER = TypeAdapter(JsonObject)
+
+
+def _validated_json_object(value: object) -> JsonObject:
+    """Decode a Python mapping into the recursive JSON contract."""
+
+    return _JSON_OBJECT_ADAPTER.validate_python(value)
+
+
+class _BackendPayloadEntity(Protocol):
+    def model_dump(
+        self,
+        *,
+        field_mode: Iterable[str] | str | None = None,
+        dump_format: Literal["python", "json"] = "python",
+        exclude: list[str] | None = None,
+    ) -> dict[str, object]: ...
+
+
+class _AsyncEmbeddingProvider(Protocol):
+    def __call__(
+        self, documents: list[str], /
+    ) -> Awaitable[list[list[float]]]: ...
+
+
+@runtime_checkable
+class _EmbeddingJobEnqueuer(Protocol):
+    """Optional sync adapter capability for post-commit embedding work."""
+
+    def enqueue_embedding_job(
+        self, *, entity_kind: str, entity_id: str, op: str
+    ) -> None: ...
+
+
+@runtime_checkable
+class _IdentityLockStore(Protocol):
+    def lock_entity_identity(
+        self, *, namespace: str, entity_kind: str, entity_id: str
+    ) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -55,56 +230,90 @@ def _required_embedding(value: list[float] | None) -> list[float]:
     return list(value)
 
 
-def _entity_payload(entity: object) -> dict[str, Any]:
-    to_jsonable = getattr(entity, "to_jsonable", None)
-    if callable(to_jsonable):
-        value = to_jsonable()
-        if isinstance(value, dict):
-            return cast(dict[str, Any], value)
-    model_dump = getattr(entity, "model_dump", None)
-    if callable(model_dump):
-        try:
-            value = model_dump(
-                field_mode="backend",
-                dump_format="json",
-                exclude=["embedding"],
+def _enqueue_embedding_job_if_supported(
+    adapter: object, *, entity_kind: _ProjectionEntityKind, entity_id: str
+) -> None:
+    if isinstance(adapter, _EmbeddingJobEnqueuer):
+        adapter.enqueue_embedding_job(
+            entity_kind=entity_kind, entity_id=entity_id, op="UPSERT"
+        )
+
+
+def _entity_payload(entity: _BackendPayloadEntity) -> JsonObject:
+    try:
+        payload = entity.model_dump(
+            field_mode="backend",
+            dump_format="json",
+            exclude=["embedding"],
+        )
+    except TypeError:
+        # Keep compatibility with ordinary Pydantic models that do not
+        # expose Kogwistar's mode-aware dump parameters.
+        payload = entity.model_dump(exclude=["embedding"])
+    return cast(JsonObject, payload)
+
+
+def _backend_object(value: object) -> _BackendResponse:
+    """Validate the result fields consumed from vector/backend adapters."""
+
+    if not isinstance(value, dict):
+        return {}
+    response: _BackendResponse = {}
+    ids = value.get("ids")
+    if ids is not None:
+        if not isinstance(ids, list) or not all(isinstance(item, str) for item in ids):
+            raise TypeError("backend response field 'ids' must be a list of strings")
+        response["ids"] = ids
+    documents = value.get("documents")
+    if documents is not None:
+        if not isinstance(documents, list) or not all(
+            isinstance(item, str) for item in documents
+        ):
+            raise TypeError("backend response field 'documents' must be a list of strings")
+        response["documents"] = documents
+    metadatas = value.get("metadatas")
+    if metadatas is not None:
+        if not isinstance(metadatas, list) or not all(
+            item is None
+            or (
+                isinstance(item, dict)
+                and all(isinstance(key, str) for key in item)
             )
-        except TypeError:
-            # Keep compatibility with ordinary Pydantic models that do not
-            # expose Kogwistar's mode-aware dump parameters.
-            value = model_dump(exclude=["embedding"])
-        if isinstance(value, dict):
-            return cast(dict[str, Any], value)
-    return {}
+            for item in metadatas
+        ):
+            raise TypeError(
+                "backend response field 'metadatas' must be a list of string-keyed objects"
+            )
+        response["metadatas"] = cast(
+            list[dict[str, object] | None], metadatas
+        )
+    return response
 
 
-def _backend_object(value: object) -> dict[str, Any]:
-    """Narrow an untyped backend response at the adapter boundary."""
-
-    if isinstance(value, dict):
-        return cast(dict[str, Any], value)
-    return {}
-
-
-def _refs_fingerprint(refs: Sequence[object] | None) -> str:
-    payload = [
-        {
-            "doc_id": getattr(r, "doc_id", None),
-            "method": getattr(getattr(r, "verification", None), "method", None),
-            "is_verified": getattr(
-                getattr(r, "verification", None), "is_verified", None
-            ),
-            "score": getattr(getattr(r, "verification", None), "score", None),
-            "sp": getattr(r, "start_page", None),
-            "ep": getattr(r, "end_page", None),
-            "sc": getattr(r, "start_char", None),
-            "ec": getattr(r, "end_char", None),
-            "snip": (getattr(r, "excerpt", None) or "")[:64],
-        }
-        for r in (refs or [])
-    ]
+def _refs_fingerprint(refs: Sequence[Grounding] | None) -> str:
+    payload = [reference.model_dump(dump_format="json") for reference in refs or ()]
     blob = json.dumps(payload, sort_keys=False, separators=(",", ":")).encode("utf-8")
     return hashlib.blake2b(blob, digest_size=16).hexdigest()
+
+
+def _node_reference_spans(node: Node) -> list[tuple[int, int, Span]]:
+    return [
+        (mention_index, span_index, span)
+        for mention_index, mention in enumerate(node.mentions or [])
+        for span_index, span in enumerate(mention.spans)
+    ]
+
+
+def _node_reference_doc_ids(node: Node) -> set[str | None]:
+    return {span.doc_id or node.doc_id for _, _, span in _node_reference_spans(node)}
+
+
+def _edge_reference_spans(edge: Edge) -> list[tuple[int, int, Span]]:
+    return [
+        (mention_index, span_index, span)
+        for mention_index, mention in enumerate(edge.mentions or [])
+        for span_index, span in enumerate(mention.spans)
+    ]
 
 
 class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
@@ -135,21 +344,15 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         if doc_id is not None:
             node.doc_id = doc_id
         entity_id = node.safe_get_id()
-        metadata_store = getattr(self._e, "meta_sqlite", None)
-        iter_events = getattr(metadata_store, "iter_entity_events", None)
-        if not callable(iter_events):
-            raise RuntimeError(
-                "create_node_if_absent requires a canonical event store"
-            )
+        metadata_store = self._e.metadata
 
         payload = node.model_dump(field_mode="backend", exclude=["embedding"])
         payload_json = json.dumps(payload, sort_keys=True, separators=(",", ":"))
-        namespace = str(getattr(self._e, "namespace", "default"))
+        namespace = self._e.namespace
 
         with self._e.uow():
-            lock_identity = getattr(metadata_store, "lock_entity_identity", None)
-            if callable(lock_identity):
-                lock_identity(
+            if isinstance(metadata_store, _IdentityLockStore):
+                metadata_store.lock_entity_identity(
                     namespace=namespace,
                     entity_kind="node",
                     entity_id=entity_id,
@@ -186,7 +389,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 payload=cast(dict[str, object], payload),
                 required=True,
             )
-            previous_disable_event_log = getattr(self._e, "_disable_event_log", False)
+            previous_disable_event_log = self._e._disable_event_log
             self._e._disable_event_log = True
             try:
                 self._add_node_impl(node, doc_id=doc_id)
@@ -209,8 +412,8 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         """Admit a node through the configured async persistence mode."""
         import asyncio
 
-        adapter = getattr(self._e, "async_two_stage_projection_adapter", None)
-        if getattr(self._e, "persistence_mode", "single_stage") == "two_stage":
+        adapter = self._e.async_two_stage_projection_adapter
+        if self._e.persistence_mode == "two_stage":
             if adapter is None:
                 raise RuntimeError("async two-stage projection adapter is unavailable")
             if doc_id is not None:
@@ -219,7 +422,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             payload = node.model_dump(field_mode="backend", exclude=["embedding"])
             await asyncio.to_thread(
                 self._e._append_event_for_entity,
-                namespace=getattr(self._e, "namespace", "default"),
+                namespace=self._e.namespace,
                 entity_kind="node", entity_id=node.safe_get_id(), op="ADD",
                 payload=payload if isinstance(payload, dict) else {}, required=True,
             )
@@ -229,8 +432,8 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
 
     async def add_edge_async(self, edge: Edge, doc_id: str | None = None) -> None:
         """Admit an edge through the configured async persistence mode."""
-        adapter = getattr(self._e, "async_two_stage_projection_adapter", None)
-        if getattr(self._e, "persistence_mode", "single_stage") == "two_stage":
+        adapter = self._e.async_two_stage_projection_adapter
+        if self._e.persistence_mode == "two_stage":
             if adapter is None:
                 raise RuntimeError("async two-stage projection adapter is unavailable")
             return await self._add_edge_async_two_stage(edge, doc_id=doc_id, adapter=adapter)
@@ -252,16 +455,16 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             self._e.adjudicate.split_endpoints, edge.source_ids, edge.target_ids
         )
         edge.source_ids = s_nodes
-        edge.source_edge_ids = (getattr(edge, "source_edge_ids", []) or []) + s_edges
+        edge.source_edge_ids = (edge.source_edge_ids or []) + s_edges
         edge.target_ids = t_nodes
-        edge.target_edge_ids = (getattr(edge, "target_edge_ids", []) or []) + t_edges
+        edge.target_edge_ids = (edge.target_edge_ids or []) + t_edges
         await self._e.persist.assert_endpoints_exist_async(edge)
         if await asyncio.to_thread(self._run_pre_add_edge_hooks, edge, pure=False):
             return
         payload = edge.model_dump(field_mode="backend", exclude=["embedding"])
         await asyncio.to_thread(
             self._e._append_event_for_entity,
-            namespace=getattr(self._e, "namespace", "default"),
+            namespace=self._e.namespace,
             entity_kind="edge", entity_id=edge.safe_get_id(), op="ADD",
             payload=payload if isinstance(payload, dict) else {}, required=True,
         )
@@ -274,100 +477,98 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
 
         from ...utils.embedding_vectors import normalize_embedding_vector
 
-        provider = getattr(self._e, "_ef", None)
-        if provider is None:
-            raw = await asyncio.to_thread(
-                self._e.embed.iterative_defensive_emb, str(document)
-            )
+        provider = self._e._ef
+        is_async = inspect.iscoroutinefunction(provider) or inspect.iscoroutinefunction(
+            provider.__call__
+        )
+        if is_async:
+            vectors: list[list[float]] = await cast(
+                _AsyncEmbeddingProvider, provider
+            )([str(document)])
         else:
-            call = provider if inspect.iscoroutinefunction(provider) else getattr(
-                provider, "__call__", provider
+            vectors = await asyncio.to_thread(
+                cast(EmbeddingFunctionLike, provider), [str(document)]
             )
-            if inspect.iscoroutinefunction(call):
-                raw = await provider([str(document)])
-            else:
-                raw = await asyncio.to_thread(provider, [str(document)])
-        raw = list(raw)[0] if raw else None
+        raw = vectors[0] if vectors else None
         embedding = normalize_embedding_vector(raw, allow_none=False)
         if embedding is None:
             raise RuntimeError("embedding provider returned no vector")
         return list(embedding)
 
     async def _async_semantic_upsert(
-        self, *, entity_kind: str, entity_id: str, document: str,
-        metadata: dict[str, Any], embedding: list[float],
+        self, *, entity_kind: _ProjectionEntityKind, entity_id: str, document: str,
+        metadata: JsonObject, embedding: list[float],
     ) -> None:
         import asyncio
 
         backend = self._e.backend
-        direct = getattr(backend, f"async_{entity_kind}_upsert", None)
         kwargs = {
             "ids": [entity_id], "documents": [document],
             "embeddings": [embedding], "metadatas": [metadata],
         }
-        if callable(direct):
+        if isinstance(backend, _AsyncSemanticUpsertBackend):
+            direct = (
+                backend.async_node_upsert
+                if entity_kind == "node"
+                else backend.async_edge_upsert
+            )
             result = direct(**kwargs)
             if inspect.isawaitable(result):
                 await result
             return
-        if getattr(backend, "_is_async_engine", False):
-            table = getattr(backend, f"{entity_kind}s")
-            upsert_async = getattr(backend, "_upsert_async", None)
-            if not callable(upsert_async):
-                raise RuntimeError("async backend lacks _upsert_async")
-            result = upsert_async(table, **kwargs)
-            if inspect.isawaitable(result):
-                await result
-            return
-        sync_upsert = getattr(backend, f"{entity_kind}_upsert", None)
-        if not callable(sync_upsert):
-            raise RuntimeError(
-                f"async single-stage backend lacks {entity_kind} upsert operation"
-            )
+        sync_upsert = (
+            backend.node_upsert
+            if entity_kind == "node"
+            else backend.edge_upsert
+        )
         await asyncio.to_thread(sync_upsert, **kwargs)
 
     async def _async_backend_call(
-        self, collection_key: str, method: str, **kwargs: object
+        self,
+        collection_key: _AsyncBackendCollectionKey,
+        method: _AsyncBackendMethod,
+        **kwargs: object,
     ) -> object:
         """Call native async backend verbs, with a sync compatibility fallback."""
         import asyncio
         import inspect
 
         backend = self._e.backend
-        async_call = getattr(backend, "async_call", None)
-        if callable(async_call):
-            result = async_call(collection_key, method, **kwargs)
+        if isinstance(backend, _AsyncCallBackend):
+            result = backend.async_call(collection_key, method, **kwargs)
             if inspect.isawaitable(result):
                 return await result
             return result
 
-        if getattr(backend, "_is_async_engine", False):
-            facade_key = {
-                "node": "_nodes_c",
-                "edge": "_edges_c",
-                "document": "_documents_c",
-                "domain": "_domains_c",
-                "edge_endpoints": "_edge_endpoints_c",
-                "edge_refs": "_edge_refs_c",
-                "node_docs": "_node_docs_c",
-                "node_refs": "_node_refs_c",
-            }.get(collection_key)
-            facade = getattr(backend, facade_key, None) if facade_key else None
-            if facade is not None:
-                result = getattr(facade, method)(**kwargs)
-                if inspect.isawaitable(result):
-                    return await result
-                return result
+        if isinstance(backend, _AsyncFacadeBackend) and backend._is_async_engine:
+            facades: dict[_AsyncBackendCollectionKey, _AsyncCollectionFacade] = {
+                "node": backend._nodes_c,
+                "edge": backend._edges_c,
+                "document": backend._documents_c,
+                "domain": backend._domains_c,
+                "edge_endpoints": backend._edge_endpoints_c,
+                "edge_refs": backend._edge_refs_c,
+                "node_docs": backend._node_docs_c,
+                "node_refs": backend._node_refs_c,
+            }
+            facade = facades[collection_key]
+            operations: dict[_AsyncBackendMethod, Callable[..., object]] = {
+                "add": facade.add,
+                "delete": facade.delete,
+                "get": facade.get,
+                "update": facade.update,
+                "upsert": facade.upsert,
+            }
+            result = operations[method](**kwargs)
+            if inspect.isawaitable(result):
+                return await result
+            return result
 
-        operation = getattr(backend, f"{collection_key}_{method}", None)
-        if not callable(operation):
-            raise RuntimeError(
-                f"backend lacks {collection_key}_{method} operation"
-            )
+        operation = _sync_backend_operation(backend, collection_key, method)
         return await asyncio.to_thread(operation, **kwargs)
 
     async def _async_patch_base_projection_metadata(
-        self, *, entity_kind: str, entity_id: str, metadata_patch: dict[str, Any]
+        self, *, entity_kind: _ProjectionEntityKind, entity_id: str, metadata_patch: JsonObject
     ) -> None:
         import asyncio
 
@@ -419,7 +620,12 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             )
         return doc_ids
 
-    async def _async_delete_ref_rows(self, collection_key: str, field: str, entity_id: str) -> None:
+    async def _async_delete_ref_rows(
+        self,
+        collection_key: Literal["node_refs", "edge_refs"],
+        field: _ReferenceOwnerField,
+        entity_id: str,
+    ) -> None:
         got = await self._async_backend_call(
             collection_key, "get", where={field: entity_id}, include=[]
         )
@@ -429,64 +635,69 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
 
     async def _async_index_node_refs(self, node: Node) -> list[str]:
         await self._async_delete_ref_rows("node_refs", "node_id", node.safe_get_id())
-        rows: list[dict[str, Any]] = []
-        for i, mention in enumerate(node.mentions or []):
-            for j, span in enumerate(mention.spans):
-                ver = getattr(span, "verification", None)
-                rows.append(strip_none({
-                    "id": f"{node.id}::mention::{i}::span::{j}",
-                    "node_id": node.id,
-                    "doc_id": getattr(span, "doc_id", None) or node.doc_id,
-                    "insertion_method": getattr(span, "insertion_method", None),
-                    "verification_method": getattr(ver, "method", None),
-                    "is_verified": getattr(ver, "is_verified", None),
-                    "verificication_score": getattr(ver, "score", None),
-                    "page_number": getattr(span, "start_page", None),
-                    "excerpt": getattr(span, "excerpt", None),
-                    "start_char": getattr(span, "start_char", None),
-                    "end_char": getattr(span, "end_char", None),
-                }))
+        rows: list[JsonObject] = []
+        reference_ids: list[str] = []
+        for mention_index, span_index, span in _node_reference_spans(node):
+            verification = span.verification
+            reference_id = f"{node.id}::mention::{mention_index}::span::{span_index}"
+            reference_ids.append(reference_id)
+            rows.append(strip_none({
+                "id": reference_id,
+                "node_id": node.id,
+                "doc_id": span.doc_id or node.doc_id,
+                "insertion_method": span.insertion_method,
+                "verification_method": verification.method if verification else None,
+                "is_verified": verification.is_verified if verification else None,
+                "verificication_score": verification.score if verification else None,
+                "page_number": span.page_number,
+                "excerpt": span.excerpt,
+                "start_char": span.start_char,
+                "end_char": span.end_char,
+            }))
         if rows:
             await self._async_backend_call(
                 "node_refs", "add",
-                ids=[row["id"] for row in rows],
+                ids=reference_ids,
                 documents=[json.dumps(row) for row in rows],
                 metadatas=rows,
                 embeddings=[
                     await self._embedding_async(json.dumps(row)) for row in rows
                 ],
             )
-        return [row["id"] for row in rows]
+        return reference_ids
 
     async def _async_index_edge_refs(self, edge: Edge) -> list[str]:
         await self._async_delete_ref_rows("edge_refs", "edge_id", edge.safe_get_id())
-        rows: list[dict[str, Any]] = []
-        for i, ref in enumerate(edge.mentions or []):
-            ver = getattr(ref, "verification", None)
+        rows: list[JsonObject] = []
+        reference_ids: list[str] = []
+        for mention_index, span_index, span in _edge_reference_spans(edge):
+            verification = span.verification
+            reference_id = f"{edge.id}::mention::{mention_index}::span::{span_index}"
+            reference_ids.append(reference_id)
             rows.append(strip_none({
-                "id": f"{edge.id}::ref::{i}",
+                "id": reference_id,
                 "edge_id": edge.id,
-                "doc_id": getattr(ref, "doc_id", None) or edge.doc_id,
-                "insertion_method": getattr(ref, "insertion_method", None),
-                "verification_method": getattr(ver, "method", None),
-                "is_verified": getattr(ver, "is_verified", None),
-                "verificication_score": getattr(ver, "score", None),
-                "start_page": getattr(ref, "start_page", None),
-                "end_page": getattr(ref, "end_page", None),
-                "start_char": getattr(ref, "start_char", None),
-                "end_char": getattr(ref, "end_char", None),
+                "doc_id": span.doc_id or edge.doc_id,
+                "insertion_method": span.insertion_method,
+                "verification_method": verification.method if verification else None,
+                "is_verified": verification.is_verified if verification else None,
+                "verificication_score": verification.score if verification else None,
+                "page_number": span.page_number,
+                "excerpt": span.excerpt,
+                "start_char": span.start_char,
+                "end_char": span.end_char,
             }))
         if rows:
             await self._async_backend_call(
                 "edge_refs", "add",
-                ids=[row["id"] for row in rows],
+                ids=reference_ids,
                 documents=[json.dumps(row) for row in rows],
                 metadatas=rows,
                 embeddings=[
                     await self._embedding_async(json.dumps(row)) for row in rows
                 ],
             )
-        return [row["id"] for row in rows]
+        return reference_ids
 
     async def _async_maybe_reindex_node_refs(self, node: Node) -> None:
         new_fp = _refs_fingerprint(node.mentions or [])
@@ -500,10 +711,10 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         )
         documents = _backend_object(got).get("documents") or []
         current_doc_ids = {json.loads(doc).get("doc_id") for doc in documents}
-        expected_doc_ids = {getattr(ref, "doc_id", None) for ref in (node.mentions or [])}
+        expected_doc_ids = _node_reference_doc_ids(node)
         if (
             new_fp != old_fp
-            or len(documents) != len(node.mentions or [])
+            or len(documents) != len(_node_reference_spans(node))
             or current_doc_ids != expected_doc_ids
         ):
             await self._async_patch_base_projection_metadata(
@@ -524,10 +735,11 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         )
         documents = _backend_object(got).get("documents") or []
         current_doc_ids = {json.loads(doc).get("doc_id") for doc in documents}
-        expected_doc_ids = {getattr(ref, "doc_id", None) for ref in (edge.mentions or [])}
+        edge_spans = _edge_reference_spans(edge)
+        expected_doc_ids = {span.doc_id or edge.doc_id for _, _, span in edge_spans}
         if (
             new_fp != old_fp
-            or len(documents) != len(edge.mentions or [])
+            or len(documents) != len(edge_spans)
             or current_doc_ids != expected_doc_ids
         ):
             await self._async_patch_base_projection_metadata(
@@ -536,8 +748,10 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             )
             await self._async_index_edge_refs(edge)
 
-    async def _async_fanout_endpoints_rows(self, edge: Edge, doc_id: str | None) -> list[dict[str, Any]]:
-        async def endpoint_doc(endpoint_id: str, endpoint_kind: str) -> str | None:
+    async def _async_fanout_endpoints_rows(self, edge: Edge, doc_id: str | None) -> list[JsonObject]:
+        async def endpoint_doc(
+            endpoint_id: str, endpoint_kind: _ProjectionEntityKind
+        ) -> str | None:
             if doc_id is not None:
                 return doc_id
             result = await self._async_backend_call(
@@ -551,13 +765,16 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 raise Exception("doc_id is not string")
             return None
 
-        rows: list[dict[str, Any]] = []
-        for role, endpoint_ids, endpoint_kind in (
+        rows: list[JsonObject] = []
+        endpoint_specs: tuple[
+            tuple[_EndpointRole, list[str], _ProjectionEntityKind], ...
+        ] = (
             ("src", edge.source_ids or [], "node"),
             ("tgt", edge.target_ids or [], "node"),
-            ("src", getattr(edge, "source_edge_ids", []) or [], "edge"),
-            ("tgt", getattr(edge, "target_edge_ids", []) or [], "edge"),
-        ):
+            ("src", edge.source_edge_ids or [], "edge"),
+            ("tgt", edge.target_edge_ids or [], "edge"),
+        )
+        for role, endpoint_ids, endpoint_kind in endpoint_specs:
             for endpoint_id in endpoint_ids:
                 row = {
                     "id": f"{edge.id}::{role}::{endpoint_kind}::{endpoint_id}",
@@ -574,7 +791,9 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 rows.append({key: value for key, value in row.items() if value is not None})
         return rows
 
-    async def _async_post_write(self, *, entity_kind: str, entity: Node | Edge) -> None:
+    async def _async_post_write(
+        self, *, entity_kind: _ProjectionEntityKind, entity: Node | Edge
+    ) -> None:
         """Keep existing derived-index behavior off the event loop."""
         import asyncio
 
@@ -631,7 +850,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         payload = node.model_dump(field_mode="backend", exclude=["embedding"])
         await asyncio.to_thread(
             self._e._append_event_for_entity,
-            namespace=getattr(self._e, "namespace", "default"),
+            namespace=self._e.namespace,
             entity_kind="node", entity_id=node.safe_get_id(), op="ADD",
             payload=payload if isinstance(payload, dict) else {}, required=True,
         )
@@ -661,9 +880,9 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             self._e.adjudicate.split_endpoints, edge.source_ids, edge.target_ids
         )
         edge.source_ids = s_nodes
-        edge.source_edge_ids = (getattr(edge, "source_edge_ids", []) or []) + s_edges
+        edge.source_edge_ids = (edge.source_edge_ids or []) + s_edges
         edge.target_ids = t_nodes
-        edge.target_edge_ids = (getattr(edge, "target_edge_ids", []) or []) + t_edges
+        edge.target_edge_ids = (edge.target_edge_ids or []) + t_edges
         await asyncio.to_thread(self._e.persist.assert_endpoints_exist, edge)
         if await asyncio.to_thread(self._run_pre_add_edge_hooks, edge, pure=False):
             return None
@@ -678,7 +897,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         payload = edge.model_dump(field_mode="backend", exclude=["embedding"])
         await asyncio.to_thread(
             self._e._append_event_for_entity,
-            namespace=getattr(self._e, "namespace", "default"),
+            namespace=self._e.namespace,
             entity_kind="edge", entity_id=edge.safe_get_id(), op="ADD",
             payload=payload if isinstance(payload, dict) else {}, required=True,
         )
@@ -698,20 +917,22 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         return None
 
     def _run_pre_add_node_hooks(self, node: Node) -> None:
-        for hook in list(getattr(self._e, "pre_add_node_hooks", []) or []):
+        for hook in self._e.pre_add_node_hooks:
             hook(node)
 
     def _run_pre_add_edge_hooks(self, edge: Edge, *, pure: bool) -> bool:
-        hook_name = "pre_add_pure_edge_hooks" if pure else "pre_add_edge_hooks"
-        for hook in list(getattr(self._e, hook_name, []) or []):
+        hooks = (
+            self._e.pre_add_pure_edge_hooks
+            if pure
+            else self._e.pre_add_edge_hooks
+        )
+        for hook in hooks:
             if bool(hook(edge)):
                 return True
         return False
 
     def _allow_missing_doc_id(self, edge: Edge) -> bool:
-        for hook in list(
-            getattr(self._e, "allow_missing_doc_id_on_endpoint_rows_hooks", []) or []
-        ):
+        for hook in self._e.allow_missing_doc_id_on_endpoint_rows_hooks:
             if bool(hook(edge)):
                 return True
         return False
@@ -719,7 +940,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
     def _rust_postgres_meta(self) -> RustEnginePostgresMetaStore | None:
         from ..rust_postgres_session import RustEnginePostgresMetaStore
 
-        meta = getattr(self._e, "meta_sqlite", None)
+        meta = self._e.meta_sqlite
         return (
             cast(RustEnginePostgresMetaStore, meta)
             if isinstance(meta, RustEnginePostgresMetaStore)
@@ -730,7 +951,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         return self._rust_postgres_meta() is not None
 
     def patch_base_projection_metadata(
-        self, *, entity_kind: str, entity_id: str, metadata_patch: dict[str, Any]
+        self, *, entity_kind: _ProjectionEntityKind, entity_id: str, metadata_patch: JsonObject
     ) -> None:
         meta = self._rust_postgres_meta()
         if meta is not None:
@@ -740,7 +961,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 else self._projection_backend().edges.name
             )
             meta.patch_graph_projection_metadata(
-                namespace=getattr(self._e, "namespace", "default"),
+                namespace=self._e.namespace,
                 workspace_id=None,
                 graph_space=None,
                 table=table,
@@ -750,7 +971,11 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 patch_document_metadata=False,
             )
             return
-        update = getattr(self._e.backend, f"{entity_kind}_update")
+        update = (
+            self._e.backend.node_update
+            if entity_kind == "node"
+            else self._e.backend.edge_update
+        )
         run_awaitable_blocking(
             update(ids=[entity_id], metadatas=[metadata_patch])
         )
@@ -758,12 +983,12 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
     def _rust_postgres_add(
         self,
         *,
-        entity_kind: str,
+        entity_kind: _GraphEntityKind,
         entity_id: str,
         document: str,
-        metadata: dict[str, Any],
+        metadata: JsonObject,
         embedding: Sequence[float],
-        payload: dict[str, Any],
+        payload: JsonObject,
         enqueue_index_jobs: bool = True,
     ) -> bool:
         meta = self._rust_postgres_meta()
@@ -780,7 +1005,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         )
         with meta.transaction():
             meta.apply_graph_mutation(
-                namespace=getattr(self._e, "namespace", "default"),
+                namespace=self._e.namespace,
                 workspace_id=metadata.get("workspace_id"),
                 graph_space=metadata.get("graph_space"),
                 table=table,
@@ -805,15 +1030,15 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
     def _rust_postgres_projection_upsert(
         self,
         *,
-        entity_kind: str,
+        entity_kind: _ProjectionEntityKind,
         entity_id: str,
         document: str,
-        metadata: dict[str, Any],
+        metadata: JsonObject,
         embedding: Sequence[float],
         enqueue_index_jobs: bool = True,
     ) -> bool:
         meta = self._rust_postgres_meta()
-        if meta is None or not getattr(self._e, "_disable_event_log", False):
+        if meta is None or not self._e._disable_event_log:
             return False
         table = (
             self._projection_backend().nodes.name
@@ -822,7 +1047,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         )
         with meta.transaction():
             meta.upsert_graph_projection(
-                namespace=getattr(self._e, "namespace", "default"),
+            namespace=self._e.namespace,
                 workspace_id=metadata.get("workspace_id"),
                 graph_space=metadata.get("graph_space"),
                 table=table,
@@ -834,9 +1059,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 },
                 embedding_dim=self._projection_backend().embedding_dim,
             )
-            if enqueue_index_jobs and getattr(
-                self._e, "_phase1_enable_index_jobs", False
-            ):
+            if enqueue_index_jobs and self._e._phase1_enable_index_jobs:
                 if entity_kind == "node":
                     self._e.enqueue_index_jobs_for_node(entity_id, op="UPSERT")
                 else:
@@ -850,7 +1073,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         with meta.transaction():
             for edge_id in edge_ids:
                 result = meta.apply_graph_delete_mutation(
-                    namespace=getattr(self._e, "namespace", "default"),
+                    namespace=self._e.namespace,
                     workspace_id=None,
                     graph_space=None,
                     table=self._projection_backend().edges.name,
@@ -868,7 +1091,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         return True
 
     def rust_postgres_delete_existing(
-        self, *, entity_kind: str, entity_ids: list[str]
+        self, *, entity_kind: _GraphEntityKind, entity_ids: list[str]
     ) -> bool:
         meta = self._rust_postgres_meta()
         if meta is None:
@@ -882,7 +1105,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         with meta.transaction():
             for entity_id in entity_ids:
                 result = meta.apply_graph_delete_mutation(
-                    namespace=getattr(self._e, "namespace", "default"),
+                    namespace=self._e.namespace,
                     workspace_id=None,
                     graph_space=None,
                     table=table,
@@ -907,11 +1130,11 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
     def rust_postgres_replace_existing(
         self,
         *,
-        entity_kind: str,
+        entity_kind: _ProjectionEntityKind,
         entity_id: str,
         document: str,
-        metadata_patch: dict[str, Any],
-        payload: dict[str, Any],
+        metadata_patch: JsonObject,
+        payload: JsonObject,
     ) -> bool:
         meta = self._rust_postgres_meta()
         if meta is None:
@@ -923,7 +1146,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         )
         with meta.transaction():
             result = meta.apply_graph_metadata_patch_mutation(
-                namespace=getattr(self._e, "namespace", "default"),
+                namespace=self._e.namespace,
                 workspace_id=None,
                 graph_space=None,
                 table=table,
@@ -951,12 +1174,12 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
 
     def enrich_edge_meta(self, edge: Edge) -> JsonObject:
         node_endpoint_count = len(edge.source_ids or []) + len(edge.target_ids or [])
-        edge_endpoint_count = len(getattr(edge, "source_edge_ids", []) or []) + len(
-            getattr(edge, "target_edge_ids", []) or []
+        edge_endpoint_count = len(edge.source_edge_ids or []) + len(
+            edge.target_edge_ids or []
         )
         total_endpoint_count = node_endpoint_count + edge_endpoint_count
-        md = dict(getattr(edge, "metadata", None) or {})
-        base_metadata: dict[str, Any] = dict(md)
+        md = dict(edge.metadata or {})
+        base_metadata: JsonObject = dict(md)
         base_metadata.update(
             strip_none(
                 {
@@ -964,8 +1187,8 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                     "relation": edge.relation,
                     "source_ids": json_or_none(edge.source_ids),
                     "target_ids": json_or_none(edge.target_ids),
-                    "source_edge_ids": json_or_none(getattr(edge, "source_edge_ids", None)),
-                    "target_edge_ids": json_or_none(getattr(edge, "target_edge_ids", None)),
+                    "source_edge_ids": json_or_none(edge.source_edge_ids),
+                    "target_edge_ids": json_or_none(edge.target_edge_ids),
                     "type": edge.type,
                     "summary": edge.summary,
                     "domain_id": edge.domain_id,
@@ -974,7 +1197,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                     "references": json_or_none(
                         [
                             r.model_dump(field_mode="backend")
-                            for r in (getattr(edge, "mentions", None) or [])
+                            for r in (edge.mentions or [])
                         ]
                     ),
                     "node_endpoint_count": node_endpoint_count,
@@ -1026,7 +1249,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             payload = node.model_dump(field_mode="backend", exclude=["embedding"])
             with self._e.uow():
                 self._e._append_event_for_entity(
-                    namespace=getattr(self._e, "namespace", "default"),
+                    namespace=self._e.namespace,
                     entity_kind="node",
                     entity_id=node.safe_get_id(),
                     op="ADD",
@@ -1034,9 +1257,9 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                     required=True,
                 )
                 result = adapter.add_node(node, doc_id=doc_id)
-            enqueue = getattr(adapter, "enqueue_embedding_job", None)
-            if callable(enqueue):
-                enqueue(entity_kind="node", entity_id=node.safe_get_id(), op="UPSERT")
+            _enqueue_embedding_job_if_supported(
+                adapter, entity_kind="node", entity_id=node.safe_get_id()
+            )
             return result
         if doc_id is not None:
             node.doc_id = doc_id
@@ -1066,7 +1289,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
 
         if not native_added:
             self._e._append_event_for_entity(
-                namespace=getattr(self._e, "namespace", "default"),
+                namespace=self._e.namespace,
                 entity_kind="node",
                 entity_id=node.safe_get_id(),
                 op="ADD",
@@ -1119,16 +1342,16 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 edge.source_ids, edge.target_ids
             )
             edge.source_ids = s_nodes
-            edge.source_edge_ids = (getattr(edge, "source_edge_ids", []) or []) + s_edges
+            edge.source_edge_ids = (edge.source_edge_ids or []) + s_edges
             edge.target_ids = t_nodes
-            edge.target_edge_ids = (getattr(edge, "target_edge_ids", []) or []) + t_edges
+            edge.target_edge_ids = (edge.target_edge_ids or []) + t_edges
             self._e.persist.assert_endpoints_exist(edge)
             if self._run_pre_add_edge_hooks(edge, pure=False):
                 return
             payload = edge.model_dump(field_mode="backend", exclude=["embedding"])
             with self._e.uow():
                 self._e._append_event_for_entity(
-                    namespace=getattr(self._e, "namespace", "default"),
+                    namespace=self._e.namespace,
                     entity_kind="edge",
                     entity_id=edge.safe_get_id(),
                     op="ADD",
@@ -1136,9 +1359,9 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                     required=True,
                 )
                 result = adapter.add_edge(edge, doc_id=doc_id)
-            enqueue = getattr(adapter, "enqueue_embedding_job", None)
-            if callable(enqueue):
-                enqueue(entity_kind="edge", entity_id=edge.safe_get_id(), op="UPSERT")
+            _enqueue_embedding_job_if_supported(
+                adapter, entity_kind="edge", entity_id=edge.safe_get_id()
+            )
             return result
         if doc_id is not None:
             edge.doc_id = doc_id
@@ -1146,9 +1369,9 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             edge.source_ids, edge.target_ids
         )
         edge.source_ids = s_nodes
-        edge.source_edge_ids = (getattr(edge, "source_edge_ids", []) or []) + s_edges
+        edge.source_edge_ids = (edge.source_edge_ids or []) + s_edges
         edge.target_ids = t_nodes
-        edge.target_edge_ids = (getattr(edge, "target_edge_ids", []) or []) + t_edges
+        edge.target_edge_ids = (edge.target_edge_ids or []) + t_edges
         self._e.persist.assert_endpoints_exist(edge)
         if self._run_pre_add_edge_hooks(edge, pure=False):
             return
@@ -1177,7 +1400,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         )
         if not native_added:
             self._e._append_event_for_entity(
-                namespace=getattr(self._e, "namespace", "default"),
+                namespace=self._e.namespace,
                 entity_kind="edge",
                 entity_id=edge.safe_get_id(),
                 op="ADD",
@@ -1273,9 +1496,9 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             edge.target_ids,
         )
         edge.source_ids = s_nodes
-        edge.source_edge_ids = (getattr(edge, "source_edge_ids", []) or []) + s_edges
+        edge.source_edge_ids = (edge.source_edge_ids or []) + s_edges
         edge.target_ids = t_nodes
-        edge.target_edge_ids = (getattr(edge, "target_edge_ids", []) or []) + t_edges
+        edge.target_edge_ids = (edge.target_edge_ids or []) + t_edges
         self._e.persist.assert_endpoints_exist(edge)
         if self._run_pre_add_edge_hooks(cast(Edge, edge), pure=True):
             return
@@ -1324,14 +1547,16 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         document.embeddings = normalize_embedding_vector(
             document.embeddings, allow_none=False
         )
-        metadata = strip_none(
-            {
+        metadata = _validated_json_object(
+            strip_none(
+                {
                 "doc_id": document.id,
                 "type": document.type,
                 "metadata": json_or_none(document.metadata),
                 "domain_id": document.domain_id,
                 "processed": document.processed,
-            }
+                }
+            )
         )
         payload = document.model_dump(field_mode="backend", exclude=["embeddings"])
         native_added = self._rust_postgres_add(
@@ -1439,29 +1664,27 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         self.delete_node_ref_rows(node.id)
 
         ids, docs, metas = [], [], []
-        for i, mention in enumerate(node.mentions or []):
-            for j, span in enumerate(mention.spans):
-                rid = f"{node.id}::mention::{i}::span::{j}"
-                did = getattr(span, "doc_id", None) or node.doc_id
-                ver = getattr(span, "verification", None)
-                row = strip_none(
-                    {
-                        "id": rid,
-                        "node_id": node.id,
-                        "doc_id": did,
-                        "insertion_method": getattr(span, "insertion_method", None),
-                        "verification_method": getattr(ver, "method", None),
-                        "is_verified": getattr(ver, "is_verified", None),
-                        "verificication_score": getattr(ver, "score", None),
-                        "page_number": getattr(span, "start_page", None),
-                        "excerpt": getattr(span, "excerpt", None),
-                        "start_char": getattr(span, "start_char", None),
-                        "end_char": getattr(span, "end_char", None),
-                    }
-                )
-                ids.append(rid)
-                docs.append(json.dumps(row))
-                metas.append(row)
+        for mention_index, span_index, span in _node_reference_spans(node):
+            rid = f"{node.id}::mention::{mention_index}::span::{span_index}"
+            verification = span.verification
+            row = strip_none(
+                {
+                    "id": rid,
+                    "node_id": node.id,
+                    "doc_id": span.doc_id or node.doc_id,
+                    "insertion_method": span.insertion_method,
+                    "verification_method": verification.method if verification else None,
+                    "is_verified": verification.is_verified if verification else None,
+                    "verificication_score": verification.score if verification else None,
+                    "page_number": span.page_number,
+                    "excerpt": span.excerpt,
+                    "start_char": span.start_char,
+                    "end_char": span.end_char,
+                }
+            )
+            ids.append(rid)
+            docs.append(json.dumps(row))
+            metas.append(row)
 
         if ids:
             run_awaitable_blocking(self._e.backend.node_refs_add(
@@ -1483,23 +1706,22 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         self.delete_edge_ref_rows(edge.id)
 
         ids, docs, metas = [], [], []
-        for i, ref in enumerate(edge.mentions or []):
-            rid = f"{edge.id}::ref::{i}"
-            did = getattr(ref, "doc_id", None) or edge.doc_id
-            ver = getattr(ref, "verification", None)
+        for mention_index, span_index, span in _edge_reference_spans(edge):
+            rid = f"{edge.id}::mention::{mention_index}::span::{span_index}"
+            verification = span.verification
             row = strip_none(
                 {
                     "id": rid,
                     "edge_id": edge.id,
-                    "doc_id": did,
-                    "insertion_method": getattr(ref, "insertion_method", None),
-                    "verification_method": getattr(ver, "method", None),
-                    "is_verified": getattr(ver, "is_verified", None),
-                    "verificication_score": getattr(ver, "score", None),
-                    "start_page": getattr(ref, "start_page", None),
-                    "end_page": getattr(ref, "end_page", None),
-                    "start_char": getattr(ref, "start_char", None),
-                    "end_char": getattr(ref, "end_char", None),
+                    "doc_id": span.doc_id or edge.doc_id,
+                    "insertion_method": span.insertion_method,
+                    "verification_method": verification.method if verification else None,
+                    "is_verified": verification.is_verified if verification else None,
+                    "verificication_score": verification.score if verification else None,
+                    "page_number": span.page_number,
+                    "excerpt": span.excerpt,
+                    "start_char": span.start_char,
+                    "end_char": span.end_char,
                 }
             )
             ids.append(rid)
@@ -1571,8 +1793,8 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 rows.append({k: v for k, v in r.items() if v is not None})
 
         for role, eids in (
-            ("src", getattr(edge, "source_edge_ids", []) or []),
-            ("tgt", getattr(edge, "target_edge_ids", []) or []),
+            ("src", edge.source_edge_ids or []),
+            ("tgt", edge.target_edge_ids or []),
         ):
             for mid in eids:
                 r = {
@@ -1651,8 +1873,9 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         ))
         current_rows = _backend_object(got).get("documents") or []
         current_doc_ids = {json.loads(d).get("doc_id") for d in current_rows}
-        expect_doc_ids = {getattr(r, "doc_id", None) for r in (edge.mentions or [])}
-        count_ok = len(current_rows) == len(edge.mentions or [])
+        edge_spans = _edge_reference_spans(edge)
+        expect_doc_ids = {span.doc_id or edge.doc_id for _, _, span in edge_spans}
+        count_ok = len(current_rows) == len(edge_spans)
         docset_ok = current_doc_ids == expect_doc_ids
 
         if force or (new_fp != old_fp) or (not count_ok) or (not docset_ok):
@@ -1683,8 +1906,8 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         ))
         current_rows = _backend_object(got).get("documents") or []
         current_doc_ids = {json.loads(d).get("doc_id") for d in current_rows}
-        expect_doc_ids = {getattr(r, "doc_id", None) for r in (node.mentions or [])}
-        count_ok = len(current_rows) == len(node.mentions or [])
+        expect_doc_ids = _node_reference_doc_ids(node)
+        count_ok = len(current_rows) == len(_node_reference_spans(node))
         docset_ok = current_doc_ids == expect_doc_ids
 
         if force or (new_fp != old_fp) or (not count_ok) or (not docset_ok):

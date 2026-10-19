@@ -149,14 +149,12 @@ class SQLiteChromaTwoStageProjectionAdapter:
         # transient revision. Promotion is a handoff, never dual residency.
         self.remove_stage2_or_invalidate(entity_kind="node", entity_id=node.safe_get_id())
         self._stage1_upsert(entity_kind="node", entity=node)
-        self._enqueue(entity_kind="node", entity_id=node.safe_get_id(), op="UPSERT")
 
     def add_edge(self, edge: Edge, *, doc_id: str | None = None) -> None:
         if doc_id is not None:
             edge.doc_id = doc_id
         self.remove_stage2_or_invalidate(entity_kind="edge", entity_id=edge.safe_get_id())
         self._stage1_upsert(entity_kind="edge", entity=edge)
-        self._enqueue(entity_kind="edge", entity_id=edge.safe_get_id(), op="UPSERT")
 
     def stage1_query(self, **kwargs: object) -> list[dict[str, Any]]:
         query = getattr(self._meta(), "query_stage1_node_projections", None)

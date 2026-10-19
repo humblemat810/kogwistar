@@ -61,7 +61,7 @@ from .join_state import (
     JoinToken,
     JoinWaiter,
     RuntimeJoinSnapshot,
-    decode_runtime_join_snapshot,
+    restore_runtime_join_snapshot,
 )
 from .projections import (
     WORKFLOW_RUNTIME_PROJECTION_SCHEMA_VERSION,
@@ -1303,8 +1303,8 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
             next_nodes, route_decision = self._route_next(
                 edges, initial_state, client_result, wn.fanout, nodes
             )
-        rt_join = decode_runtime_join_snapshot(
-            initial_state.get("_rt_join"),
+        rt_join = restore_runtime_join_snapshot(
+            initial_state,
             join_node_ids,
             allow_legacy_lengths=True,
             allow_single_mask_waiters=True,
@@ -1930,16 +1930,13 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
                 return snapshot
 
             def _rt_join_restore() -> list[JoinToken] | None:
-                payload = decode_runtime_join_snapshot(
-                    state.get("_rt_join"),
+                payload = restore_runtime_join_snapshot(
+                    state,
                     join_node_ids,
                     allow_legacy_lengths=True,
                     allow_single_mask_waiters=True,
                 )
                 if payload is None:
-                    return None
-                if payload.get("join_node_ids") != join_node_ids:
-                    # Design changed; discard stale join runtime.
                     return None
                 # restore counters/waiters
                 for i in range(min(len(_join_outstanding), len(payload["join_outstanding"]))):

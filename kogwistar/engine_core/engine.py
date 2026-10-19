@@ -16,6 +16,7 @@ from ..acl.graph import (
 )
 from ..acl.graph import ACLGraph
 from ..graph_kinds import normalize_graph_kind
+from ..json_types import JsonObject
 from ..utils.log import bind_log_context
 from ..workers.index_job_worker import IndexJobWorker
 from .acl_protocol import require_acl_protocols
@@ -102,7 +103,17 @@ class _BackendCallBridge:
     # )
     # """
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, TypeVar, cast
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Concatenate,
+    ParamSpec,
+    Protocol,
+    TypeGuard,
+    TypeVar,
+    cast,
+    runtime_checkable,
+)
 
 try:
     from typing import Self, TypeAlias
@@ -118,7 +129,6 @@ from functools import wraps
 from typing import (
     Literal,
     Protocol,
-    Union,
 )
 
 from dotenv import load_dotenv
@@ -176,13 +186,12 @@ try:
 except Exception:
     _HAS_RAPIDFUZZ = False
 
-PageLike = Union[str, dict[str, Any]]
 NodeOrEdge: TypeAlias = Node | Edge
 ParsedExtraction: TypeAlias = LLMGraphExtraction | PureGraph | GraphExtractionWithIDs
 PersistedGraphObject: TypeAlias = (
     Node | Edge | LLMNode | LLMEdge | PureChromaNode | PureChromaEdge
 )
-DocumentContext: TypeAlias = tuple[list[dict[str, Any]], list[dict[str, Any]]]
+DocumentContext: TypeAlias = tuple[list[JsonObject], list[JsonObject]]
 PageText: TypeAlias = tuple[int, str]
 
 
@@ -207,7 +216,14 @@ if TYPE_CHECKING:
 
 P = ParamSpec("P")
 R = TypeVar("R")
-SelfT = TypeVar("SelfT")
+
+
+class _EngineContextState(Protocol):
+    kg_graph_type: str
+    engine_id: str | None
+
+
+SelfT = TypeVar("SelfT", bound=_EngineContextState)
 
 
 def cached(
@@ -242,6 +258,30 @@ def _import_chroma_client() -> tuple[
     )
 
 
+@runtime_checkable
+class _AsyncPostgresBackend(StorageBackend, Protocol):
+    _is_async_engine: bool
+    engine: object
+    schema: str
+
+
+@runtime_checkable
+class _AsyncBackendMarker(Protocol):
+    is_async_backend: bool
+
+
+def _is_async_postgres_backend(
+    backend: StorageBackend,
+) -> TypeGuard[_AsyncPostgresBackend]:
+    return isinstance(backend, _AsyncPostgresBackend) and backend._is_async_engine
+
+
+def _is_async_storage_backend(backend: StorageBackend) -> bool:
+    return _is_async_postgres_backend(backend) or (
+        isinstance(backend, _AsyncBackendMarker) and backend.is_async_backend
+    )
+
+
 def _is_pgvector_backend_instance(backend: object) -> bool:
     try:
         from .postgres_backend import PgVectorBackend  # type: ignore
@@ -254,7 +294,7 @@ def _is_pgvector_backend_instance(backend: object) -> bool:
 def _build_postgres_uow_if_needed(backend: StorageBackend) -> UnitOfWork:
     if not _is_pgvector_backend_instance(backend):
         return NoopUnitOfWork()
-    if getattr(backend, "_is_async_engine", False):
+    if _is_async_postgres_backend(backend):
         # Engine.uow() is a synchronous compatibility surface. Async callers
         # use the separate async UOW installed by GraphKnowledgeEngine.
         return NoopUnitOfWork()
@@ -304,25 +344,25 @@ def _json_or_none(v: object) -> str | None:
     return None if v is None else json.dumps(v)
 
 
-def _node_doc_and_meta(n: Node | PureChromaNode) -> tuple[str, dict]:
+def _node_doc_and_meta(n: Node | PureChromaNode) -> tuple[str, dict[str, JsonValue]]:
     """Return (documents_string, metadata_dict) for Chroma. helper when inserting to backend db,"""
     """Extract and flatten certain fields that can be searched via collection """
     doc = n.model_dump_json(field_mode="backend", exclude=["embedding", "metadata"])
     meta = cast(dict[str, JsonValue], n.metadata)  # user metadata is flattened below
     meta.update(
         {
-            "doc_id": getattr(n, "doc_id", None),
+            "doc_id": n.doc_id,
             "label": n.label,
             "type": n.type,
             "summary": n.summary,
             "domain_id": n.domain_id,
-            "canonical_entity_id": getattr(n, "canonical_entity_id", None),
-            "properties": _json_or_none(getattr(n, "properties", None)),
+            "canonical_entity_id": n.canonical_entity_id,
+            "properties": _json_or_none(n.properties),
         }
     )
     meta.update(cast(dict[str, JsonValue], n.get_extra_update()))
 
-    mentions = getattr(n, "mentions", None)
+    mentions = n.mentions if isinstance(n, Node) else None
     if mentions is not None:
         meta["mentions"] = _json_or_none(
             [r.model_dump(field_mode="backend") for r in mentions]
@@ -331,31 +371,31 @@ def _node_doc_and_meta(n: Node | PureChromaNode) -> tuple[str, dict]:
     return doc, meta
 
 
-def _edge_doc_and_meta(e: Edge | PureChromaEdge) -> tuple[str, dict]:
+def _edge_doc_and_meta(e: Edge | PureChromaEdge) -> tuple[str, dict[str, JsonValue]]:
     """Return (documents_string, metadata_dict) for Chroma."""
     doc = e.model_dump_json(field_mode="backend")
     # Preserve edge metadata in the backend row.  Reads reconstruct metadata
     # from this row, so dropping graph-space, workspace, ACL, or provenance
     # fields here makes backend filtering and authorization lossy.
-    meta = dict(getattr(e, "metadata", None) or {})
+    meta = dict(e.metadata or {})
     meta.update(
         _strip_none(
             {
-                "doc_id": getattr(e, "doc_id", None),
+                "doc_id": e.doc_id,
                 "relation": e.relation,
                 "source_ids": _json_or_none(e.source_ids),
                 "target_ids": _json_or_none(e.target_ids),
                 "type": e.type,
                 "summary": e.summary,
                 "domain_id": e.domain_id,
-                "canonical_entity_id": getattr(e, "canonical_entity_id", None),
-                "properties": _json_or_none(getattr(e, "properties", None)),
+                "canonical_entity_id": e.canonical_entity_id,
+                "properties": _json_or_none(e.properties),
             }
         )
     )
     # if hasattr(e,"mentions"):
     #     meta['mentions'] = _json_or_none([r.model_dump(field_mode = 'backend') for r in (e.mentions or [])])
-    mentions = getattr(e, "mentions", None)
+    mentions = e.mentions if isinstance(e, Edge) else None
     if mentions is not None:
         meta["mentions"] = _json_or_none(
             [r.model_dump(field_mode="backend") for r in mentions]
@@ -478,8 +518,8 @@ def engine_context(
         self: SelfT, *args: P.args, **kwargs: P.kwargs
     ) -> R:
         ctx_kwargs = {
-            "engine_type": getattr(self, "kg_graph_type", None),
-            "engine_id": getattr(self, "engine_id", None),
+            "engine_type": self.kg_graph_type,
+            "engine_id": self.engine_id,
             "workflow_run_id": kwargs.get("workflow_run_id") or kwargs.get("run_id"),
             "step_id": kwargs.get("step_id"),
             "conversation_id": kwargs.get("conv_id"),
@@ -969,7 +1009,7 @@ class GraphKnowledgeEngine:
         visible without its replay authority being durable first. Replay suppresses
         all re-append attempts via ``self._disable_event_log``.
         """
-        if getattr(self, "_disable_event_log", False):
+        if self._disable_event_log:
             return
         append = getattr(self.metadata, "append_entity_event", None)
         if append is None:
@@ -1151,9 +1191,9 @@ class GraphKnowledgeEngine:
     def _aliasify_for_prompt(
         self,
         doc_id: str,
-        ctx_nodes: list[dict[str, Any]],
-        ctx_edges: list[dict[str, Any]],
-    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str, str]:
+        ctx_nodes: list[JsonObject],
+        ctx_edges: list[JsonObject],
+    ) -> tuple[list[JsonObject], list[JsonObject], str, str]:
         return self.extract.aliasify_for_prompt(doc_id, ctx_nodes, ctx_edges)
 
     def _resolve_extraction_schema_mode(
@@ -1363,8 +1403,9 @@ class GraphKnowledgeEngine:
         self.persistence_mode = persistence_mode
         self.embedding_profile = embedding_profile
         self.embedding_profile_mode = embedding_profile_mode
-        self.embedding_profile_report: dict[str, Any] | None = None
+        self.embedding_profile_report: JsonObject | None = None
         self.kg_graph_type = normalize_graph_kind(kg_graph_type)
+        self.engine_id: str | None = None
         self.persist_directory = persist_directory
         self.namespace = namespace
         self.acl_enabled = acl_enabled
@@ -1437,8 +1478,6 @@ class GraphKnowledgeEngine:
         # Third-party embedding functions are runtime-compatible, but their
         # stubs often expose a narrower concrete protocol than our adapter.
         self._ef: EmbeddingFunctionLike = cast(EmbeddingFunctionLike, ef)
-        self.acl_graph = getattr(self, "acl_graph", ACLGraph())
-
         # Keep a 1-string convenience to reuse in cosine checks
         # convenience: single-string embed for verifiers
         def _embed_one(text: str) -> list[float] | None:
@@ -1459,9 +1498,8 @@ class GraphKnowledgeEngine:
                     pathlib.Path(persist_directory or "./chroma_db"), "meta.sqlite"
                 )
             self.metadata.ensure_initialized()
-            if self.persistence_mode == "two_stage" and (
-                getattr(self.backend, "_is_async_engine", False)
-                or getattr(self.backend, "is_async_backend", False)
+            if self.persistence_mode == "two_stage" and _is_async_storage_backend(
+                self.backend
             ):
                 from .two_stage_async import (
                     AsyncChromaTwoStageProjectionAdapter,
@@ -1478,7 +1516,7 @@ class GraphKnowledgeEngine:
                     projection_capability_backend(self.backend).async_two_stage_projection_adapter = (
                         AsyncChromaTwoStageProjectionAdapter(self)
                     )
-                elif getattr(self.backend, "_is_async_engine", False):
+                elif _is_async_postgres_backend(self.backend):
                     projection_capability_backend(self.backend).two_stage_projection_capability = (
                         async_transient_two_stage_capability(
                             "async PostgreSQL transient Stage-1 and pgvector Stage-2"
@@ -1585,9 +1623,8 @@ class GraphKnowledgeEngine:
                 edge_refs_collection=self.edge_refs_collection,
                 persist_directory=persist_directory or "./chroma_db",
             )
-            if self.persistence_mode == "two_stage" and (
-                getattr(self.backend, "_is_async_engine", False)
-                or getattr(self.backend, "is_async_backend", False)
+            if self.persistence_mode == "two_stage" and _is_async_storage_backend(
+                self.backend
             ):
                 from .postgres_backend import PgVectorBackend
                 from .two_stage_async import (
@@ -1615,9 +1652,8 @@ class GraphKnowledgeEngine:
                     self.backend.async_two_stage_projection_adapter = (
                         AsyncChromaTwoStageProjectionAdapter(self)
                     )
-            if self.persistence_mode == "two_stage" and not (
-                getattr(self.backend, "_is_async_engine", False)
-                or getattr(self.backend, "is_async_backend", False)
+            if self.persistence_mode == "two_stage" and not _is_async_storage_backend(
+                self.backend
             ):
                 from .two_stage_chroma import (
                     SQLiteChromaTwoStageProjectionAdapter,
@@ -1648,7 +1684,7 @@ class GraphKnowledgeEngine:
             meta_mode = meta_store_implementation_mode()
             graph_mode = graph_store_implementation_mode()
             postgres_authority_mode = postgres_authority_implementation_mode()
-            sync_postgres = not getattr(backend2, "_is_async_engine", False)
+            sync_postgres = not backend2._is_async_engine
             if postgres_authority_mode == "rust" and (
                 meta_mode != "rust" or graph_mode != "rust"
             ):
@@ -1760,21 +1796,21 @@ class GraphKnowledgeEngine:
         # Backend UoW: in Postgres mode this becomes a real SQL transaction.
         self._backend_uow = _build_postgres_uow_if_needed(self.backend)
         self.atomic_mutation_capability: AtomicMutationCapability = (
-            get_atomic_mutation_capability(getattr(self, "backend", None))
+            get_atomic_mutation_capability(self.backend)
         )
         self._async_backend_uow = None
-        if getattr(getattr(self, "backend", None), "_is_async_engine", False):
+        if _is_async_postgres_backend(self.backend):
             from .postgres_backend import AsyncPostgresUnitOfWork
 
             from sqlalchemy.ext.asyncio import AsyncEngine
 
-            async_engine = getattr(self.backend, "engine", None)
+            async_engine = self.backend.engine
             if not isinstance(async_engine, AsyncEngine):
                 raise TypeError("async PostgreSQL UoW requires an AsyncEngine")
             self._async_backend_uow = AsyncPostgresUnitOfWork(engine=async_engine)
         if (
             self.persistence_mode == "two_stage"
-            and _is_pgvector_backend_instance(getattr(self, "backend", None))
+            and _is_pgvector_backend_instance(self.backend)
             and postgres_authority_mode == "rust"
         ):
             # The native adapter writes through this same Rust-owned UoW.

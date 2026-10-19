@@ -21,7 +21,7 @@ class RuntimeJoinSnapshot(TypedDict):
 
 
 def _coerce_int(value: object) -> int | None:
-    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
         return None
     try:
         return int(value)
@@ -52,14 +52,19 @@ def normalize_join_waiter(
     """Decode one persisted waiter without trusting an external payload shape."""
     if not isinstance(value, (list, tuple)):
         return None
-    if len(value) >= 3:
+    if len(value) == 3:
         mask = _coerce_int(value[0])
-        if mask is None:
+        if (
+            mask is None
+            or mask < 0
+            or not isinstance(value[1], str)
+            or (value[2] is not None and not isinstance(value[2], str))
+        ):
             return None
-        return mask, str(value[1]), None if value[2] is None else str(value[2])
+        return mask, value[1], value[2]
     if allow_single_mask and len(value) == 1:
         mask = _coerce_int(value[0])
-        return (mask, uuid.uuid4().hex, None) if mask is not None else None
+        return (mask, uuid.uuid4().hex, None) if mask is not None and mask >= 0 else None
     return None
 
 
@@ -69,26 +74,39 @@ def normalize_join_token(
     """Decode a persisted token, retaining only a complete known shape."""
     if not isinstance(value, (list, tuple)):
         return None
-    if len(value) >= 4:
+    if len(value) == 4:
         mask = _coerce_int(value[1])
-        if mask is None:
+        if (
+            mask is None
+            or mask < 0
+            or not isinstance(value[0], str)
+            or not isinstance(value[2], str)
+            or (value[3] is not None and not isinstance(value[3], str))
+        ):
             return None
         return (
-            str(value[0]),
+            value[0],
             mask,
-            str(value[2]),
-            None if value[3] is None else str(value[3]),
+            value[2],
+            value[3],
         )
     if not allow_legacy_lengths:
         return None
     if len(value) == 3:
         mask = _coerce_int(value[1])
-        return (str(value[0]), mask, str(value[2]), None) if mask is not None else None
+        return (
+            (value[0], mask, value[2], None)
+            if mask is not None
+            and mask >= 0
+            and isinstance(value[0], str)
+            and isinstance(value[2], str)
+            else None
+        )
     if len(value) == 2:
         mask = _coerce_int(value[1])
         return (
-            (str(value[0]), mask, uuid.uuid4().hex, None)
-            if mask is not None
+            (value[0], mask, uuid.uuid4().hex, None)
+            if mask is not None and mask >= 0 and isinstance(value[0], str)
             else None
         )
     return None
@@ -127,36 +145,31 @@ def decode_runtime_join_snapshot(
         items_value = waiters_value.get(join_id, [])
         if not isinstance(items_value, list):
             return None
-        waiters[join_id] = [
-            normalized
-            for item in items_value
-            if (
-                normalized := normalize_join_waiter(
-                    item, allow_single_mask=allow_single_mask_waiters
-                )
+        decoded_waiters: list[JoinWaiter] = []
+        for item in items_value:
+            waiter = normalize_join_waiter(
+                item, allow_single_mask=allow_single_mask_waiters
             )
-            is not None
-        ]
-    pending = [
-        normalized
-        for item in pending_value
-        if (
-            normalized := normalize_join_token(
-                item, allow_legacy_lengths=allow_legacy_lengths
-            )
+            if waiter is None:
+                return None
+            decoded_waiters.append(waiter)
+        waiters[join_id] = decoded_waiters
+    pending: list[JoinToken] = []
+    for item in pending_value:
+        token = normalize_join_token(
+            item, allow_legacy_lengths=allow_legacy_lengths
         )
-        is not None
-    ]
-    suspended = [
-        normalized
-        for item in suspended_value
-        if (
-            normalized := normalize_join_token(
-                item, allow_legacy_lengths=allow_legacy_lengths
-            )
+        if token is None:
+            return None
+        pending.append(token)
+    suspended: list[JoinToken] = []
+    for item in suspended_value:
+        token = normalize_join_token(
+            item, allow_legacy_lengths=allow_legacy_lengths
         )
-        is not None
-    ]
+        if token is None:
+            return None
+        suspended.append(token)
     return RuntimeJoinSnapshot(
         join_node_ids=list(expected_join_node_ids),
         join_outstanding=outstanding,
@@ -164,3 +177,27 @@ def decode_runtime_join_snapshot(
         pending=pending,
         suspended=suspended,
     )
+
+
+def restore_runtime_join_snapshot(
+    state: Mapping[str, object],
+    expected_join_node_ids: Sequence[str],
+    *,
+    allow_legacy_lengths: bool,
+    allow_single_mask_waiters: bool,
+) -> RuntimeJoinSnapshot | None:
+    """Return absent state as ``None`` and reject present invalid state."""
+    if "_rt_join" not in state:
+        return None
+    snapshot = decode_runtime_join_snapshot(
+        state["_rt_join"],
+        expected_join_node_ids,
+        allow_legacy_lengths=allow_legacy_lengths,
+        allow_single_mask_waiters=allow_single_mask_waiters,
+    )
+    if snapshot is None:
+        raise ValueError(
+            "persisted join snapshot is malformed or incompatible with the "
+            "current workflow design"
+        )
+    return snapshot

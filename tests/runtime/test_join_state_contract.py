@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import pytest
 
-from kogwistar.runtime.join_state import decode_runtime_join_snapshot
+from kogwistar.runtime.join_state import (
+    decode_runtime_join_snapshot,
+    restore_runtime_join_snapshot,
+)
 
 pytestmark = pytest.mark.ci
 
@@ -40,3 +43,62 @@ def test_join_state_rejects_malformed_counter_values(value: object) -> None:
         )
         is None
     )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("join_waiters", {"join-a": [[1.5, "waiter", None]], "join-b": []}),
+        ("join_waiters", {"join-a": [[1, object(), None]], "join-b": []}),
+        ("pending", [["node", 1.5, "token", None]]),
+        ("pending", [["node", -1, "token", None]]),
+        ("suspended", [["node", 1, "token", object()]]),
+    ],
+)
+def test_join_state_rejects_malformed_entries_without_dropping_them(
+    field: str, value: object
+) -> None:
+    snapshot = _snapshot([0, 0])
+    snapshot[field] = value
+
+    assert (
+        decode_runtime_join_snapshot(
+            snapshot,
+            ["join-a", "join-b"],
+            allow_legacy_lengths=False,
+            allow_single_mask_waiters=False,
+        )
+        is None
+    )
+
+
+def test_join_restore_treats_absent_state_as_fresh_run() -> None:
+    assert (
+        restore_runtime_join_snapshot(
+            {},
+            ["join-a", "join-b"],
+            allow_legacy_lengths=False,
+            allow_single_mask_waiters=False,
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    "snapshot",
+    [
+        None,
+        {**_snapshot([0, 0]), "join_node_ids": ["old-join"]},
+        {**_snapshot([0, 0]), "join_waiters": {"join-a": [[1.5, "bad", None]]}},
+    ],
+)
+def test_join_restore_rejects_present_invalid_or_incompatible_state(
+    snapshot: object,
+) -> None:
+    with pytest.raises(ValueError, match="malformed or incompatible"):
+        restore_runtime_join_snapshot(
+            {"_rt_join": snapshot},
+            ["join-a", "join-b"],
+            allow_legacy_lengths=False,
+            allow_single_mask_waiters=False,
+        )
