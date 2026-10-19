@@ -128,7 +128,6 @@ class PostgresTwoStageProjectionAdapter:
             source_fingerprint=fingerprint,
             revision=revision,
         )
-        self._enqueue(entity_kind=entity_kind, entity_id=entity_id, op="UPSERT")
 
     def stage1_query(self, **kwargs: object) -> list[dict[str, Any]]:
         rows = self._backend().stage1_projection_query(

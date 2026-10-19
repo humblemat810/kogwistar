@@ -806,7 +806,6 @@ class _InMemoryTwoStageProjectionAdapter(_InMemoryTwoStageProjectionCommon):
             metadatas=[meta],
             embeddings=[None],
         )
-        self._enqueue(entity_kind="node", entity_id=node.safe_get_id(), op="UPSERT")
 
     def add_edge(self, edge: Edge, *, doc_id: str | None = None) -> None:
         if doc_id is not None:
@@ -820,7 +819,6 @@ class _InMemoryTwoStageProjectionAdapter(_InMemoryTwoStageProjectionCommon):
             metadatas=[meta],
             embeddings=[None],
         )
-        self._enqueue(entity_kind="edge", entity_id=edge.safe_get_id(), op="UPSERT")
 
     def apply_embedding_job(
         self,

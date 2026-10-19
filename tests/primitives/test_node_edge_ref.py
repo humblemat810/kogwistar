@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 pytestmark = pytest.mark.core
@@ -282,6 +284,17 @@ def test_edge_refs_indexing(engine):
     )
     engine.write.add_edge(e, doc_id=doc.id)
     engine._index_edge_refs(e)
+    edge_ref_result = engine.backend.edge_refs_get(
+        where={"edge_id": e.id}, include=["documents"]
+    )
+    edge_ref_documents = edge_ref_result.get("documents", [])
+    assert len(edge_ref_documents) == 2
+    edge_ref_rows = [json.loads(document) for document in edge_ref_documents]
+    assert {row["doc_id"] for row in edge_ref_rows} == {doc.id}
+    assert {row["insertion_method"] for row in edge_ref_rows} == {
+        "pytest-llm",
+        "pytest-manual",
+    }
     doc_eids = engine.edges_by_doc(doc.id)
     assert e.id in doc_eids  # , where={"insertion_method": "pytest-llm"}
     assert list(
