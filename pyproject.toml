@@ -73,7 +73,7 @@ test = [
 ]
 # Pin lint behavior so local and CI runs use the same Ruff release.
 lint = ["ruff==0.16.7"]
-typecheck = ["mypy>=1.8"]
+typecheck = ["mypy>=1.8", "pyright==1.1.411"]
 build = ["build", "twine"]
 rust = ["maturin>=1.7,<2"]
 full = [
@@ -108,7 +108,7 @@ include = ["kogwistar*"]
 exclude = ["*.tests*", "*.test*", "tests*", "examples*", "diagnostic*"]
 
 [tool.setuptools.package-data]
-kogwistar = ["templates/*.html", "templates/*.js", "templates/*.txt"]
+kogwistar = ["py.typed", "templates/*.html", "templates/*.js", "templates/*.txt"]
 
 [tool.setuptools.exclude-package-data]
 kogwistar = [".env", ".env.*", "*.env", "*.env.*", "*.sqlite", "*.db", "*.pem", "*.key", "*.pfx", "*.p12", "*.crt", "*.cer"]
@@ -160,6 +160,8 @@ module-name = "kogwistar._rust"
 python-source = "."
 bindings = "pyo3"
 include = [
+  { path = "kogwistar/py.typed", format = "sdist" },
+  { path = "kogwistar/py.typed", format = "wheel" },
   { path = "contracts/**/*.json", format = "sdist" },
   { path = "kogwistar/templates/*.html", format = "sdist" },
   { path = "kogwistar/templates/*.js", format = "sdist" },

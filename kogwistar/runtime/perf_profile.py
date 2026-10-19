@@ -11,7 +11,7 @@ from collections import defaultdict
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Callable, Protocol, TypeGuard, cast
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.in_memory_backend import build_in_memory_backend
@@ -31,6 +31,43 @@ from kogwistar.runtime.resolvers import MappingStepResolver
 from kogwistar.runtime.runtime import StepContext, WorkflowRuntime
 
 JsonObject = dict[str, JsonValue]
+
+
+class _MonitoringEvents(Protocol):
+    PY_START: int
+    PY_RETURN: int
+    PY_UNWIND: int
+
+
+class _MonitoringAPI(Protocol):
+    PROFILER_ID: int
+    events: _MonitoringEvents
+
+    def use_tool_id(self, tool_id: int, name: str) -> None: ...
+    def register_callback(
+        self, tool_id: int, event: int, callback: Callable[..., None] | None
+    ) -> None: ...
+    def set_events(self, tool_id: int, events: int) -> None: ...
+    def free_tool_id(self, tool_id: int) -> None: ...
+
+
+def _is_monitoring_api(value: object) -> TypeGuard[_MonitoringAPI]:
+    events = getattr(value, "events", None)
+    return (
+        isinstance(getattr(value, "PROFILER_ID", None), int)
+        and isinstance(getattr(events, "PY_START", None), int)
+        and isinstance(getattr(events, "PY_RETURN", None), int)
+        and isinstance(getattr(events, "PY_UNWIND", None), int)
+        and all(
+            callable(getattr(value, name, None))
+            for name in ("use_tool_id", "register_callback", "set_events", "free_tool_id")
+        )
+    )
+
+
+def _monitoring_api() -> _MonitoringAPI | None:
+    value = getattr(sys, "monitoring", None)
+    return value if _is_monitoring_api(value) else None
 
 
 def _as_mapping(value: object) -> Mapping[str, object]:
@@ -289,11 +326,11 @@ class SysMonitoringWallProfiler:
             self._stats[qualname].add(time.perf_counter() - started)
 
     def start(self) -> bool:
-        if not hasattr(sys, "monitoring"):
+        monitoring = _monitoring_api()
+        if monitoring is None:
             return False
         if self._enabled:
             return True
-        monitoring = sys.monitoring
         tool_id = monitoring.PROFILER_ID
         monitoring.use_tool_id(tool_id, "kogwistar.perf_profile")
         monitoring.register_callback(tool_id, monitoring.events.PY_START, self._on_start)
@@ -309,9 +346,9 @@ class SysMonitoringWallProfiler:
         return True
 
     def stop(self) -> None:
-        if not hasattr(sys, "monitoring") or not self._enabled:
+        monitoring = _monitoring_api()
+        if monitoring is None or not self._enabled:
             return
-        monitoring = sys.monitoring
         tool_id = monitoring.PROFILER_ID
         monitoring.set_events(tool_id, 0)
         monitoring.register_callback(tool_id, monitoring.events.PY_START, None)
