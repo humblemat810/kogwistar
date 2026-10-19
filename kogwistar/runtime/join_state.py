@@ -177,3 +177,27 @@ def decode_runtime_join_snapshot(
         pending=pending,
         suspended=suspended,
     )
+
+
+def restore_runtime_join_snapshot(
+    state: Mapping[str, object],
+    expected_join_node_ids: Sequence[str],
+    *,
+    allow_legacy_lengths: bool,
+    allow_single_mask_waiters: bool,
+) -> RuntimeJoinSnapshot | None:
+    """Return absent state as ``None`` and reject present invalid state."""
+    if "_rt_join" not in state:
+        return None
+    snapshot = decode_runtime_join_snapshot(
+        state["_rt_join"],
+        expected_join_node_ids,
+        allow_legacy_lengths=allow_legacy_lengths,
+        allow_single_mask_waiters=allow_single_mask_waiters,
+    )
+    if snapshot is None:
+        raise ValueError(
+            "persisted join snapshot is malformed or incompatible with the "
+            "current workflow design"
+        )
+    return snapshot

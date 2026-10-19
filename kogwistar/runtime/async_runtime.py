@@ -36,7 +36,7 @@ from .join_state import (
     JoinToken,
     JoinWaiter,
     RuntimeJoinSnapshot,
-    decode_runtime_join_snapshot,
+    restore_runtime_join_snapshot,
 )
 from .runtime import (
     EventEmitter,
@@ -705,8 +705,8 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
             return (1 << bi) if bi is not None else 0
 
         def _rt_join_restore() -> list[JoinToken] | None:
-            payload = decode_runtime_join_snapshot(
-                state.get("_rt_join"),
+            payload = restore_runtime_join_snapshot(
+                state,
                 join_node_ids,
                 allow_legacy_lengths=False,
                 allow_single_mask_waiters=False,
