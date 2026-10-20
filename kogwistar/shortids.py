@@ -8,7 +8,8 @@ import re
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from typing import Protocol, TypedDict, cast
+from typing import Protocol, cast
+from typing_extensions import TypedDict
 
 from .json_types import JsonObject, JsonValue
 

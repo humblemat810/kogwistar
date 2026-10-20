@@ -6,7 +6,7 @@ small result protocols at the boundary before the schedulers consume them.
 
 from __future__ import annotations
 
-from typing import TypedDict
+from typing_extensions import TypedDict
 
 from ..json_types import JsonObject, JsonValue
 

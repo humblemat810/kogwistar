@@ -8,7 +8,8 @@ import queue
 import threading
 import time
 from collections.abc import Mapping
-from typing import Any, Protocol, TypedDict, Unpack, cast
+from typing import Any, Protocol, Unpack, cast
+from typing_extensions import TypedDict
 
 
 class _Span(Protocol):

@@ -23,7 +23,8 @@ The orchestrator should populate `_deps` in the workflow initial_state.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, NotRequired, Protocol, TypedDict, cast
+from typing import TYPE_CHECKING, NotRequired, Protocol, cast
+from typing_extensions import TypedDict
 
 from .models import (
     ConversationEdge,

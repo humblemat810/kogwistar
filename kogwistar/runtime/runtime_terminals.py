@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from contextlib import AbstractContextManager
-from typing import Literal, Protocol, TypedDict
+from typing import Literal, Protocol
+from typing_extensions import TypedDict
 
 from kogwistar.engine_core.models import Grounding, Span
 from kogwistar.id_provider import stable_id

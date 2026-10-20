@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Literal, NotRequired, Protocol, TypedDict
+from typing import TYPE_CHECKING, Literal, NotRequired, Protocol
+from typing_extensions import TypedDict
 
 if TYPE_CHECKING:
     from .models import Edge, Node

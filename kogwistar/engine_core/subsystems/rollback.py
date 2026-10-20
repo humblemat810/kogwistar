@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any, Literal, TypedDict, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
+from typing_extensions import TypedDict
 
 from ..async_compat import run_awaitable_blocking
 from ...json_types import JsonObject

@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Literal, TypedDict, cast
+from typing import Literal, cast
+from typing_extensions import TypedDict
 
 from pydantic import BaseModel
 

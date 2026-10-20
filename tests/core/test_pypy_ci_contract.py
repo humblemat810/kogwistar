@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 
 import pytest
@@ -109,6 +110,21 @@ def test_pypy311_profile_pins_the_supported_mcp_contract() -> None:
 
     assert "mcp>=2.2.0,<3" in requirements
     assert "mcp<2" not in requirements
+
+
+def test_first_party_typed_dicts_use_pypy_compatible_typing_extensions() -> None:
+    package_root = ROOT / "kogwistar"
+    violations: list[str] = []
+
+    for path in package_root.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8-sig"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ImportFrom) or node.module != "typing":
+                continue
+            if any(alias.name == "TypedDict" for alias in node.names):
+                violations.append(f"{path.relative_to(ROOT)}:{node.lineno}")
+
+    assert not violations, "Use typing_extensions.TypedDict: " + ", ".join(violations)
 
 
 def test_pypy_rpds_constraint_is_ci_only_and_exact() -> None:

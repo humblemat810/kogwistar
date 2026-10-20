@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import TypedDict
+from typing_extensions import TypedDict
 
 from kogwistar.engine_core.models import Grounding, MentionVerification
 from kogwistar.json_types import JsonValue
