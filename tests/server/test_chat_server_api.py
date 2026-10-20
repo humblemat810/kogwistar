@@ -204,12 +204,42 @@ def test_document_upsert_tree_uses_document_graph_extraction_entrypoint(
     resp.raise_for_status()
     payload = resp.json()
     assert payload["status"] == "ok"
+    assert payload["engine_result"] == {
+        "document_id": "doc::upsert_tree_dispatch",
+        "node_ids": [],
+        "edge_ids": [],
+        "nodes_added": 0,
+        "edges_added": 0,
+    }
     assert captured == {
         "doc_id": "doc::upsert_tree_dispatch",
         "parsed_type": "GraphExtractionWithIDs",
         "mode": "append",
         "node_count": 0,
         "edge_count": 0,
+    }
+
+
+def test_document_graph_upsert_result_serializes_persisted_result_shape():
+    result = server.DocumentGraphUpsertResult(
+        status="ok",
+        inserted_nodes=1,
+        inserted_edges=1,
+        engine_result={
+            "document_id": "doc::typed_result",
+            "node_ids": ["node-a"],
+            "edge_ids": ["edge-a"],
+            "nodes_added": 1,
+            "edges_added": 1,
+        },
+    )
+
+    assert result.model_dump()["engine_result"] == {
+        "document_id": "doc::typed_result",
+        "node_ids": ["node-a"],
+        "edge_ids": ["edge-a"],
+        "nodes_added": 1,
+        "edges_added": 1,
     }
 
 

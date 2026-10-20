@@ -3,7 +3,7 @@
 # outside this lane; native compatibility is tested by the separate PyPy 3.12
 # ABI job.
 pydantic>=2.12.5
-pydantic-extension>=0.0.7
+pydantic-extension>=0.0.8
 anyio>=4.0
 Jinja2>=3.1
 fastapi>=0.111

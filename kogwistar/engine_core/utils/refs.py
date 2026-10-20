@@ -3,10 +3,15 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Callable, Mapping, Sequence
-from typing import TYPE_CHECKING, Protocol, TypeAlias, cast
+from typing import TYPE_CHECKING, TypeAlias, cast
 
 from ..models import Grounding, MentionVerification, Span
 from ...json_types import JsonObject, JsonValue
+from ..lifecycle_projection import (
+    LifecycleKind,
+    LifecycleProjectionBackend,
+    decode_lifecycle_get_result,
+)
 from .metadata import json_or_none, strip_none
 
 if TYPE_CHECKING:
@@ -14,15 +19,6 @@ if TYPE_CHECKING:
 
 
 RefPayload: TypeAlias = JsonObject
-
-
-class _LifecycleBackend(Protocol):
-    """Metadata-only update surface exposed by Chroma-compatible backends."""
-
-    def node_get(self, **kwargs: object) -> Mapping[str, object]: ...
-    def edge_get(self, **kwargs: object) -> Mapping[str, object]: ...
-    def node_update(self, **kwargs: object) -> None: ...
-    def edge_update(self, **kwargs: object) -> None: ...
 
 
 SafeJsonDict: TypeAlias = Callable[[object], JsonObject]
@@ -262,8 +258,8 @@ def merge_refs(
 
 def backend_update_record_lifecycle(
     *,
-    backend: _LifecycleBackend,
-    kind: str,
+    backend: LifecycleProjectionBackend,
+    kind: LifecycleKind,
     record_id: str,
     lifecycle_patch: Mapping[str, object],
     safe_json_dict_fn: SafeJsonDict,
@@ -277,23 +273,19 @@ def backend_update_record_lifecycle(
     unrelated HNSW read.  Content writers must choose their vector policy
     explicitly instead.
     """
-    if kind not in {"node", "edge"}:
+    if kind == "node":
+        get_result = backend.node_get(ids=[record_id], include=["metadatas"])
+        update = backend.node_update
+    elif kind == "edge":
+        get_result = backend.edge_get(ids=[record_id], include=["metadatas"])
+        update = backend.edge_update
+    else:
         raise ValueError(f"unsupported lifecycle record kind: {kind}")
-    get_fn = getattr(backend, f"{kind}_get", None)
-    upd_fn = getattr(backend, f"{kind}_update", None)
-    if get_fn is None or upd_fn is None:
-        raise AttributeError(f"backend missing {kind}_get/{kind}_update")
-    got = get_fn(ids=[record_id], include=["metadatas"])
-    ids_value = got.get("ids")
-    ids = ids_value if isinstance(ids_value, list) else []
+    ids, metadata = decode_lifecycle_get_result(get_result)
     if not ids:
         return False
-
-    metadatas_value = got.get("metadatas")
-    metadatas = metadatas_value if isinstance(metadatas_value, list) else []
-    meta = metadatas[0] if metadatas else None
-    new_meta = merge_meta_fn(meta if isinstance(meta, dict) else {}, lifecycle_patch)
-    upd_fn(
+    new_meta = merge_meta_fn(safe_json_dict_fn(metadata), lifecycle_patch)
+    update(
         ids=[record_id],
         metadatas=[new_meta],
     )

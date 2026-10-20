@@ -11,7 +11,8 @@ from typing import (
 )
 
 from ..engine_core.models import Edge, Node
-from .types import EngineLike, MergeCandidateProposer  # your existing protocol types
+from ..typing_interfaces import StrategyEngineLike as EngineLike
+from .types import MergeCandidateProposer
 
 PairKind = Literal[
     "node_node",

@@ -33,7 +33,7 @@ from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from kogwistar.runtime.models import RunFailure, RunSuccess, RunSuspended, StepRunResult
 from kogwistar.runtime.sandbox import SandboxRequest
-from kogwistar.runtime.serialize import JsonValue
+from kogwistar.json_types import JsonValue
 from kogwistar.utils.log import bind_log_context
 
 Json = JsonValue

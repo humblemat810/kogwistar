@@ -10,11 +10,10 @@ from kogwistar.policy import DefaultDreamLoopPolicy
 from kogwistar.runtime.models import RunSuccess
 from kogwistar.runtime.resolvers import MappingStepResolver
 from kogwistar.runtime.runtime import StepContext
+from kogwistar.wisdom.proposals import ProposalEvaluation, WisdomRevisionProposal
 from kogwistar.wisdom.dream_loop import (
     DreamLoopEvidence,
     DreamLoopSignal,
-    ProposalEvaluation,
-    WisdomRevisionProposal,
     _evaluation_edge_from_evaluation,
     _evaluation_node_from_evaluation,
     _normalize_dream_loop_decision,

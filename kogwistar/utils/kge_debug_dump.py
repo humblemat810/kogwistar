@@ -18,10 +18,8 @@ from markupsafe import Markup
 from kogwistar.json_types import JsonObject, JsonValue
 
 if TYPE_CHECKING:
-    from kogwistar.engine_core.engine import (
-        EngineType,
-        GraphKnowledgeEngine,
-    )
+    from kogwistar.engine_core.engine import GraphKnowledgeEngine
+    from kogwistar.engine_core.types import EngineType
 from kogwistar.visualization.graph_viz import to_d3_force, to_sigma_hypergraph
 
 _GRAPH_TYPE = Literal["knowledge", "conversation", "workflow"]

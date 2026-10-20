@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Literal, Protocol
 
 from .models import WorkflowState
+from .models import WorkflowRunNode, WorkflowStepExecNode
 from .runtime import RunResult
 
 # Public ``RunResult.status`` deliberately says ``failure``.  Durable terminal
@@ -35,7 +36,7 @@ class WorkflowExecutor(Protocol):
         run_id: str | None = None,
         cache_dir: str | None = None,
         _resume_step_seq: int | None = None,
-        _resume_last_exec_node: object | None = None,
+        _resume_last_exec_node: WorkflowStepExecNode | WorkflowRunNode | None = None,
     ) -> RunResult: ...
 
     def run_sync(
@@ -48,5 +49,5 @@ class WorkflowExecutor(Protocol):
         run_id: str | None = None,
         cache_dir: str | None = None,
         _resume_step_seq: int | None = None,
-        _resume_last_exec_node: object | None = None,
+        _resume_last_exec_node: WorkflowStepExecNode | WorkflowRunNode | None = None,
     ) -> RunResult: ...

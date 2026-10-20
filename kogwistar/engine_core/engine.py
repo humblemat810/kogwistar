@@ -6,6 +6,8 @@ import threading
 import time
 import uuid
 from contextlib import contextmanager
+from types import TracebackType
+from typing import Protocol
 
 from ..acl.graph import (
     ACLDecision,
@@ -21,6 +23,12 @@ from ..utils.log import bind_log_context
 from ..workers.index_job_worker import IndexJobWorker
 from .acl_protocol import require_acl_protocols
 from .async_compat import run_awaitable_blocking, run_sync_or_awaitable
+from .backend_payloads import (
+    decode_backend_ids_response as _decode_backend_ids_response,
+    edge_doc_and_meta as _edge_doc_and_meta,
+    node_doc_and_meta as _node_doc_and_meta,
+    strip_none as _strip_none,
+)
 from .chroma_backend import ChromaBackend, ChromaClient, ChromaStorageInspector
 from .embedding_profile import (
     EmbeddingProfile,
@@ -29,6 +37,9 @@ from .embedding_profile import (
 )
 from .indexing import IndexingSubsystem
 from .jobs import JobQueueSubsystem
+from .lifecycle_projection import (
+    backend_update_record_lifecycle as _backend_update_record_lifecycle,
+)
 from .recovery import RecoverySubsystem
 from .rust_meta_sqlite import build_sqlite_meta_store
 from .search_index.service import SearchIndexService
@@ -57,16 +68,46 @@ from .subsystems import (
     RollbackSubsystem,
     WriteSubsystem,
 )
+from .subsystems.rollback import (
+    PrunedNodeEdgesResult,
+    RollbackDocumentExtractionResult,
+    RollbackDocumentResult,
+    RollbackManyDocumentsResult,
+)
 from .types import (
+    AddPageResult,
     EdgePreAddHook,
     EngineType,
     ExtractionSchemaMode,
+    GraphEntityKind,
+    IngestTextResult,
     NodePreAddHook,
     OffsetMismatchPolicy,
     OffsetRepairScorer,
+    PersistedDocumentGraphResult,
+    PersistedGraphResult,
     ResolvedExtractionSchemaMode,
+    ToposortIngestResult,
     ToolCallIdFactory,
 )
+
+
+class CollectionLock(Protocol):
+    """Lock behavior required by engine collection-lock consumers."""
+
+    def acquire(self, blocking: bool = True, timeout: float = -1) -> bool: ...
+
+    def release(self) -> None: ...
+
+    def __enter__(self) -> object: ...
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+        /,
+    ) -> object: ...
 from .utils import AliasBook
 from .utils.aliasing import AliasBookStore
 from .vector_search import VectorSearchHit
@@ -270,6 +311,13 @@ class _AsyncBackendMarker(Protocol):
     is_async_backend: bool
 
 
+@runtime_checkable
+class _BackendTarget(Protocol):
+    """Optional wrapper contract for backends that expose their delegate."""
+
+    _target: object
+
+
 def _is_async_postgres_backend(
     backend: StorageBackend,
 ) -> TypeGuard[_AsyncPostgresBackend]:
@@ -287,8 +335,8 @@ def _is_pgvector_backend_instance(backend: object) -> bool:
         from .postgres_backend import PgVectorBackend  # type: ignore
     except Exception:
         return False
-    backend = getattr(backend, "_target", backend)
-    return isinstance(backend, PgVectorBackend)
+    target = backend._target if isinstance(backend, _BackendTarget) else backend
+    return isinstance(target, PgVectorBackend)
 
 
 def _build_postgres_uow_if_needed(backend: StorageBackend) -> UnitOfWork:
@@ -314,140 +362,6 @@ def _build_postgres_uow_if_needed(backend: StorageBackend) -> UnitOfWork:
     if not isinstance(pg_backend.engine, Engine):
         raise TypeError("synchronous PostgreSQL UoW requires a SQLAlchemy Engine")
     return PostgresUnitOfWork(engine=pg_backend.engine)
-
-
-def _safe_json_dict(doc: object) -> dict[str, JsonValue]:
-    if isinstance(doc, dict):
-        return doc
-    if not isinstance(doc, str):
-        return {}
-    try:
-        x = json.loads(doc)
-        return x if isinstance(x, dict) else {}
-    except Exception:
-        return {}
-
-
-def _merge_meta(
-    base_meta: dict[str, JsonValue] | None, patch: dict[str, JsonValue]
-) -> dict[str, JsonValue]:
-    base_meta = base_meta or {}
-    # flat merge
-    return {**base_meta, **patch}
-
-
-def _strip_none(d: dict[str, JsonValue | None]) -> dict[str, JsonValue]:
-    return {k: v for k, v in d.items() if v is not None}
-
-
-def _json_or_none(v: object) -> str | None:
-    return None if v is None else json.dumps(v)
-
-
-def _node_doc_and_meta(n: Node | PureChromaNode) -> tuple[str, dict[str, JsonValue]]:
-    """Return (documents_string, metadata_dict) for Chroma. helper when inserting to backend db,"""
-    """Extract and flatten certain fields that can be searched via collection """
-    doc = n.model_dump_json(field_mode="backend", exclude=["embedding", "metadata"])
-    meta = cast(dict[str, JsonValue], n.metadata)  # user metadata is flattened below
-    meta.update(
-        {
-            "doc_id": n.doc_id,
-            "label": n.label,
-            "type": n.type,
-            "summary": n.summary,
-            "domain_id": n.domain_id,
-            "canonical_entity_id": n.canonical_entity_id,
-            "properties": _json_or_none(n.properties),
-        }
-    )
-    meta.update(cast(dict[str, JsonValue], n.get_extra_update()))
-
-    mentions = n.mentions if isinstance(n, Node) else None
-    if mentions is not None:
-        meta["mentions"] = _json_or_none(
-            [r.model_dump(field_mode="backend") for r in mentions]
-        )
-    meta = _strip_none(meta)
-    return doc, meta
-
-
-def _edge_doc_and_meta(e: Edge | PureChromaEdge) -> tuple[str, dict[str, JsonValue]]:
-    """Return (documents_string, metadata_dict) for Chroma."""
-    doc = e.model_dump_json(field_mode="backend")
-    # Preserve edge metadata in the backend row.  Reads reconstruct metadata
-    # from this row, so dropping graph-space, workspace, ACL, or provenance
-    # fields here makes backend filtering and authorization lossy.
-    meta = dict(e.metadata or {})
-    meta.update(
-        _strip_none(
-            {
-                "doc_id": e.doc_id,
-                "relation": e.relation,
-                "source_ids": _json_or_none(e.source_ids),
-                "target_ids": _json_or_none(e.target_ids),
-                "type": e.type,
-                "summary": e.summary,
-                "domain_id": e.domain_id,
-                "canonical_entity_id": e.canonical_entity_id,
-                "properties": _json_or_none(e.properties),
-            }
-        )
-    )
-    # if hasattr(e,"mentions"):
-    #     meta['mentions'] = _json_or_none([r.model_dump(field_mode = 'backend') for r in (e.mentions or [])])
-    mentions = e.mentions if isinstance(e, Edge) else None
-    if mentions is not None:
-        meta["mentions"] = _json_or_none(
-            [r.model_dump(field_mode="backend") for r in mentions]
-        )
-    meta = _strip_none(meta)
-    return doc, meta
-
-
-def _backend_update_record_lifecycle(
-    *,
-    backend: StorageBackend,
-    kind: str,
-    record_id: str,
-    lifecycle_patch: dict,
-) -> bool:
-    """Patch lifecycle projection metadata without touching vector payloads.
-
-    Model reads reconstruct their metadata from the backend projection, so
-    lifecycle is metadata-only.  Rewriting a Chroma document without explicitly
-    supplying an embedding would invoke its embedding function; fetching and
-    re-supplying a vector instead would force an unrelated HNSW read.
-
-    Do not "fix" a missing vector by passing the existing document to
-    ``*_update``.  Chroma interprets a document update without an embedding as
-    a request to invoke its configured embedding function.  A real content
-    mutation must instead state and test its vector policy explicitly: preserve
-    a supplied vector, recompute it deliberately, or reject the mutation.
-    """
-    get_fn = getattr(backend, f"{kind}_get", None)
-    upd_fn = getattr(backend, f"{kind}_update", None)
-    if get_fn is None or upd_fn is None:
-        raise AttributeError(f"backend missing {kind}_get/{kind}_update")
-    # Existence plus current projection metadata are sufficient. Never request
-    # documents or embeddings here: Chroma would respectively recompute or read
-    # a vector for an operation that changes neither.  This exact shape is a
-    # performance and semantic contract; see test_lifecycle_read_contract.
-    got = run_awaitable_blocking(
-        get_fn(ids=[record_id], include=["metadatas"])
-    )
-    ids = got.get("ids") or []
-    if not ids:
-        return False
-
-    meta = (got.get("metadatas") or [None])[0]
-    new_meta = _merge_meta(meta if isinstance(meta, dict) else {}, lifecycle_patch)
-    run_awaitable_blocking(
-        upd_fn(
-            ids=[record_id],
-            metadatas=[new_meta],
-        )
-    )
-    return True
 
 
 ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
@@ -488,8 +402,6 @@ except Exception:
             return "default"
 
     Embeddings = list[list[float]]  # type: ignore
-
-from typing import Any
 
 # ---------------------------------------------------------------------------
 # Embedding providers — now in embedding_factory.py
@@ -1177,7 +1089,7 @@ class GraphKnowledgeEngine:
 
     def ingest_with_toposort(
         self, parsed: ParsedExtraction, *, doc_id: str
-    ) -> dict[str, object]:
+    ) -> ToposortIngestResult:
         return self.persist.ingest_with_toposort(parsed, doc_id=doc_id)
 
     def _resolve_llm_ids(
@@ -1569,7 +1481,10 @@ class GraphKnowledgeEngine:
             )
             from threading import Lock
 
-            self.collection_lock = {"node": Lock(), "edge": Lock()}
+            self.collection_lock: dict[str, CollectionLock] = {
+                "node": Lock(),
+                "edge": Lock(),
+            }
 
             self.node_index_collection = self.chroma_client.get_or_create_collection(
                 "nodes_index",
@@ -1694,7 +1609,6 @@ class GraphKnowledgeEngine:
                     "KOGWISTAR_IMPL_GRAPH_STORE=rust so graph/event writes share one "
                     "transaction"
                 )
-            coordinated_rust_postgres = postgres_authority_mode == "rust" and sync_postgres
             if postgres_authority_mode == "rust":
                 dsn = backend2.engine.url.render_as_string(hide_password=False)
                 meta_postgre = RustEnginePostgresMetaStore(
@@ -2193,11 +2107,11 @@ class GraphKnowledgeEngine:
 
     # ... existing methods ...
     @staticmethod
-    def _node_doc_and_meta(n: Node) -> tuple[str, dict]:
+    def _node_doc_and_meta(n: Node) -> tuple[str, JsonObject]:
         return _node_doc_and_meta(n)
 
     @staticmethod
-    def _edge_doc_and_meta(e: Edge) -> tuple[str, dict]:
+    def _edge_doc_and_meta(e: Edge) -> tuple[str, JsonObject]:
         return _edge_doc_and_meta(e)
 
     def _maybe_reindex_edge_refs(self, edge: Edge, *, force: bool = False) -> None:
@@ -2237,12 +2151,10 @@ class GraphKnowledgeEngine:
     def check_document_exist(self, document_id: str | list[str]) -> set[str]:
         doc_ids = [document_id] if isinstance(document_id, str) else list(document_id)
         got = run_awaitable_blocking(self.backend.document_get(ids=doc_ids, include=[]))
-        if not isinstance(got, Mapping):
+        stored_ids = _decode_backend_ids_response(got)
+        if stored_ids is None:
             return set(doc_ids)
-        stored_ids = got.get("ids", [])
-        if not isinstance(stored_ids, list):
-            return set(doc_ids)
-        return {value for value in stored_ids if isinstance(value, str)}.union(doc_ids)
+        return set(stored_ids).union(doc_ids)
 
     def _fetch_document_text(self, document_id: str) -> str:
         return self.extract.fetch_document_text(document_id)
@@ -2312,7 +2224,7 @@ class GraphKnowledgeEngine:
         finally:
             self._uow_ctx_depth.set(0)
 
-    def get_collection_lock(self, collection_name: str) -> object:
+    def get_collection_lock(self, collection_name: str) -> CollectionLock:
         """Return the lock for a given collection name.
 
         Note: callers should not depend on the raw Chroma collection object; use backend methods instead.
@@ -2434,7 +2346,7 @@ class GraphKnowledgeEngine:
 
     def persist_graph(
         self, *, parsed: PureGraph, session_id: str, mode: str | None = None
-    ) -> dict[str, object]:
+    ) -> PersistedGraphResult:
         return self.persist.persist_graph(
             parsed=parsed,
             session_id=session_id,
@@ -2448,7 +2360,7 @@ class GraphKnowledgeEngine:
         parsed: LLMGraphExtraction,
         mode: str = "append",  # "replace" | "append" | "skip-if-exists"
         assign_real_id_in_place: bool = True,
-    ) -> dict[str, object]:
+    ) -> PersistedDocumentGraphResult:
         return self.persist.persist_graph_extraction(
             document=document,
             parsed=parsed,
@@ -2509,7 +2421,7 @@ class GraphKnowledgeEngine:
         doc_id: str,
         parsed: GraphExtractionWithIDs | LLMGraphExtraction,
         mode: str = "append",  # "replace" | "append" | "skip-if-exists"
-    ) -> dict[str, object]:
+    ) -> PersistedDocumentGraphResult:
         return self.persist.persist_document_graph_extraction(
             doc_id=doc_id,
             parsed=parsed,
@@ -2520,7 +2432,7 @@ class GraphKnowledgeEngine:
         self,
         doc_id: str,
         extraction_method: Literal["llm_graph_extraction", "document_ingestion"],
-    ) -> dict:
+    ) -> RollbackDocumentExtractionResult:
         return self.rollback.rollback_document_extraction(doc_id, extraction_method)
 
     def ingest_document_with_llm(
@@ -2533,7 +2445,7 @@ class GraphKnowledgeEngine:
         extraction_schema_mode: ExtractionSchemaMode | None = None,
         offset_mismatch_policy: OffsetMismatchPolicy = "exact_fuzzy",
         offset_repair_scorer: OffsetRepairScorer | None = None,
-    ) -> object:
+    ) -> PersistedDocumentGraphResult:
         return self.ingest.ingest_document_with_llm(
             document,
             mode=mode,
@@ -2558,7 +2470,7 @@ class GraphKnowledgeEngine:
         extraction_schema_mode: ExtractionSchemaMode | None = None,
         offset_mismatch_policy: OffsetMismatchPolicy = "exact_fuzzy",
         offset_repair_scorer: OffsetRepairScorer | None = None,
-    ) -> object:
+    ) -> IngestTextResult:
         return self.ingest.ingest_text_with_llm(
             doc_id=doc_id,
             content=content,
@@ -2568,13 +2480,15 @@ class GraphKnowledgeEngine:
             offset_repair_scorer=offset_repair_scorer,
         )
 
-    def prune_node_from_edges(self, node_id: str) -> object:
+    def prune_node_from_edges(self, node_id: str) -> PrunedNodeEdgesResult:
         return self.rollback.prune_node_from_edges(node_id)
 
-    def rollback_document(self, document_id: str) -> object:
+    def rollback_document(self, document_id: str) -> RollbackDocumentResult:
         return self.rollback.rollback_document(document_id)
 
-    def rollback_many_documents(self, document_ids: list[str]) -> object:
+    def rollback_many_documents(
+        self, document_ids: list[str]
+    ) -> RollbackManyDocumentsResult:
         return self.rollback.rollback_many_documents(document_ids)
 
     # ----------------------------
@@ -2852,7 +2766,7 @@ class GraphKnowledgeEngine:
         extraction_schema_mode: ExtractionSchemaMode | None = None,
         offset_mismatch_policy: OffsetMismatchPolicy = "exact_fuzzy",
         offset_repair_scorer: OffsetRepairScorer | None = None,
-    ) -> object:
+    ) -> AddPageResult:
         return self.ingest.add_page(
             document_id=document_id,
             page_text=page_text,
@@ -2890,7 +2804,7 @@ class GraphKnowledgeEngine:
     def ids_with_insertion_method(
         self,
         *,
-        kind: str,  # "node" | "edge"
+        kind: GraphEntityKind,
         insertion_method: str,
         ids: Iterable[str] | None = None,  # optionally restrict to this set
         doc_id: str | None = None,  # optionally restrict to a document
@@ -2927,7 +2841,7 @@ class GraphKnowledgeEngine:
 
     def verify_mentions_for_items(
         self,
-        items: list[tuple[str, str]],  # list of ("node"|"edge", id)
+        items: Sequence[tuple[GraphEntityKind, str]],
         *,
         source_text_by_doc: dict[str, str] | None = None,
         min_ngram: int = 5,

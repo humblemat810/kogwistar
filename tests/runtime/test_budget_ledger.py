@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from types import MappingProxyType
 
 from kogwistar.conversation.conversation_state_contracts import (
     PrevTurnMetaSummaryModel,
@@ -10,6 +11,7 @@ from kogwistar.runtime.budget import (
     BudgetExhaustedError,
     BudgetLedger,
     StateBackedBudgetLedger,
+    budget_ledger_from_state,
 )
 from kogwistar.runtime.budget_adapters import adapt_budget_events
 from kogwistar.runtime.cost_ledger import CostLedger
@@ -46,6 +48,17 @@ def test_budget_ledger_ingests_canonical_event() -> None:
     ledger.ingest(event)
     assert ledger.used == 4
     assert ledger.events[-1].kind == "debit"
+
+
+def test_budget_ledger_state_decoder_validates_injected_dependency() -> None:
+    ledger = StateBackedBudgetLedger({"token_budget": 5})
+    state = MappingProxyType(
+        {"_deps": MappingProxyType({"budget_ledger": ledger})}
+    )
+
+    assert budget_ledger_from_state(state) is ledger
+    assert budget_ledger_from_state({"_deps": {"budget_ledger": "not a ledger"}}) is None
+    assert budget_ledger_from_state({"_deps": [ledger]}) is None
 
 
 def test_workflow_state_model_carries_budget_shape() -> None:

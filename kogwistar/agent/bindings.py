@@ -7,12 +7,11 @@ from typing import Protocol, cast
 
 from kogwistar.acl.derivation import (
     ACLInput,
-    ACLRecord,
     Declassifier,
     derive_acl,
     normalize_derivation_policy,
 )
-from kogwistar.acl.graph import ACLMode
+from kogwistar.acl.graph import ACLMode, ACLRecord
 from kogwistar.json_types import JsonValue
 from kogwistar.runtime.budget import (
     BudgetEvent,

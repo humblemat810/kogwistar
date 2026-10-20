@@ -1,53 +1,45 @@
 from __future__ import annotations
 
-import json
 import logging
 import pathlib
 import queue
-import threading
 import time
 import uuid
 from collections.abc import Callable, Iterator, Mapping
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import AbstractContextManager, contextmanager, nullcontext
-from dataclasses import dataclass
 from os import PathLike
-from types import TracebackType
+from threading import Lock
 from typing import (
     TYPE_CHECKING,
     Any,
-    Literal,
-    Protocol,
-    TypedDict,
     cast,
 )
 
-from kogwistar.engine_core.models import Grounding, MentionVerification, Span
 from kogwistar.engine_core.sqlite_context import sqlite_execution_bound
+from kogwistar.cdc.sqlite_sink import _get_shared_sqlite_sink
 from kogwistar.id_provider import stable_id
 from kogwistar.json_types import JsonObject, JsonValue
-from kogwistar.runtime.budget import BudgetAttribution, StateBackedBudgetLedger
+from kogwistar.runtime.budget import (
+    BudgetAttribution,
+    budget_ledger_from_state,
+)
 from kogwistar.runtime.budget_adapters import adapt_budget_events
 from kogwistar.runtime.models import (
     RunFailure,
+    RunSuspended,
     StateUpdate,
-    WorkflowCancelledNode,
-    WorkflowCheckpointNode,
-    WorkflowCheckpointMetadata,
-    WorkflowCompletedNode,
     WorkflowDesignArtifact,
-    WorkflowEdge,
-    WorkflowFailedNode,
+    WorkflowEdge as WorkflowEdge,
     WorkflowInvocationRequest,
-    WorkflowNode,
+    WorkflowNode as WorkflowNode,
     WorkflowRunNode,
-    WorkflowRuntimeEdge,
+    StepRunResult as StepRunResult,
     WorkflowState,
     WorkflowStepExecNode,
 )
 from kogwistar.utils.log import bind_log_context
 
-from ..engine_core.async_compat import run_awaitable_blocking
 from .base_runtime import (
     BaseRuntime,
     _ChildRunResult,
@@ -56,335 +48,70 @@ from .base_runtime import (
 )
 from .contract import CancellationChecker, Predicate
 from .design import validate_workflow_design
+from .join_topology import (
+    _compute_may_reach_join_bitsets as _compute_may_reach_join_bitsets,
+    _iter_bits,
+)
 from .native_contracts import join_arrival_result, successor_plan
 from .join_state import (
     JoinToken,
-    JoinWaiter,
     RuntimeJoinSnapshot,
-    restore_runtime_join_snapshot,
 )
-from .projections import (
-    WORKFLOW_RUNTIME_PROJECTION_SCHEMA_VERSION,
-    workflow_checkpoint_latest_projection_namespace,
-    workflow_run_ownership_projection_namespace,
-    workflow_run_status_projection_namespace,
-)
+from .runtime_join_state import RuntimeJoinState
+from .runtime_routing import WorkflowRouteNextMixin
+from .runtime_work_state import RuntimeWorkState
+from .step_worker import CompletedStep, SyncStepWorker
 from .run_ownership import (
     DEFAULT_RUN_OWNERSHIP_LEASE_MS,
     RunOwnership,
-    RunOwnershipConflict,
-    RunOwnershipStore,
-    claim_run_ownership,
-    release_run_ownership_for_resume,
-    renew_run_ownership,
 )
-from .serialize import JsonValue, try_serialize_with_ref
+from .runtime_artifacts import (
+    TraceSpanPayload as TraceSpanPayload,
+)
+from .runtime_checkpoints import (
+    CheckpointRuntimeMixin,
+    RuntimeMetadataStore as RuntimeMetadataStore,
+    WorkflowRunOwnershipError as WorkflowRunOwnershipError,
+)
+from .runtime_terminals import (
+    CancelInfo as CancelInfo,
+    TerminalPersistenceMixin,
+)
+from .runtime_trace_persistence import RuntimeTracePersistenceMixin
+from .runtime_invocations import (
+    WorkflowInvocationMixin,
+    derive_child_authority_context as derive_child_authority_context,
+)
+from .runtime_resume import SuspendedRunResumeMixin
+from .runtime_conversation import (
+    ConversationBackendLike as ConversationBackendLike,
+    ConversationRuntimeMixin,
+    CurrentUserSequenceStore as CurrentUserSequenceStore,
+    _json_int as _json_int,
+    _json_string_list as _json_string_list,
+)
+from .step_context import (
+    LaneMessageEventSinkLike,
+    LaneMessageSenderLike,
+    RouteDecision as RouteDecision,
+    RunResult as RunResult,
+    StepResolver,
+    StepContext as StepContext,
+)
+from .telemetry import (
+    EventEmitter,
+    EventSink,
+    TraceContext,
+)
 
 if TYPE_CHECKING:
     from ..engine_core.engine import GraphKnowledgeEngine
 
 
-class LaneMessageSenderLike(Protocol):
-    """Structural contract for durable cross-lane message submission."""
-
-    def __call__(self, **kwargs: Json) -> object: ...
-
-
-class LaneMessageEventSinkLike(Protocol):
-    """Structural contract for best-effort lifecycle event mirroring."""
-
-    def __call__(self, event: dict[str, Json]) -> object: ...
-
-
-class ConversationBackendLike(Protocol):
-    """Minimal backend lookup surface used by terminal-run idempotency checks."""
-
-    def node_get(self, **kwargs: object) -> Mapping[str, object]: ...
-
-    def edge_get(self, **kwargs: object) -> Mapping[str, object]: ...
-
-
-class RuntimeMetadataStore(RunOwnershipStore, Protocol):
-    """Typed metadata surface used by workflow recovery and projections."""
-
-    def replace_named_projection(
-        self,
-        namespace: str,
-        key: str,
-        payload: JsonObject,
-        *,
-        last_authoritative_seq: int,
-        last_materialized_seq: int,
-        projection_schema_version: int,
-        materialization_status: str,
-    ) -> None: ...
-
-    def get_latest_entity_event_seq(self, *, namespace: str = "default") -> int: ...
-
-
-class CurrentUserSequenceStore(Protocol):
-    """Optional metadata capability used to fence cancellation requests."""
-
-    def current_user_seq(self, conversation_id: str) -> int: ...
-
-
-class CancelInfo(TypedDict):
-    """Typed cancellation request selected from callback or graph evidence."""
-
-    source: Literal["callback", "graph"]
-    node_id: str | None
-    seq: int | None
-    watermark: int | None
-
-
-class WorkflowRunOwnershipError(RuntimeError):
-    """Raised when a durable run cannot be safely resumed by this worker."""
-
-
-class TraceSpanPayload(TypedDict):
-    """Typed payload used to construct workflow trace evidence spans."""
-
-    collection_page_url: str
-    document_page_url: str
-    doc_id: str
-    insertion_method: str
-    page_number: int
-    start_char: int
-    end_char: int
-    excerpt: str
-    context_before: str
-    context_after: str
-    chunk_id: str | None
-    source_cluster_id: str | None
-    verification: MentionVerification
-
-
-# ------------------------------------------------------------------
-# Join/barrier support (capability tracking via MAY-reach bitsets)
-# ------------------------------------------------------------------
-
-
-def _tarjan_scc(n: int, succ: list[list[int]]) -> tuple[list[int], list[list[int]]]:
-    """
-    Tarjan SCC.
-    Returns:
-      comp_of[v] -> component id
-      comps -> list of components (each is list of vertices)
-    """
-    index = 0
-    stack: list[int] = []
-    onstack = [False] * n
-    idxs = [-1] * n
-    low = [0] * n
-    comp_of = [-1] * n
-    comps: list[list[int]] = []
-
-    def strongconnect(v: int) -> None:
-        nonlocal index
-        idxs[v] = index
-        low[v] = index
-        index += 1
-        stack.append(v)
-        onstack[v] = True
-
-        for w in succ[v]:
-            if idxs[w] == -1:
-                strongconnect(w)
-                low[v] = low[v] if low[v] < low[w] else low[w]
-            elif onstack[w]:
-                low[v] = low[v] if low[v] < idxs[w] else idxs[w]
-
-        if low[v] == idxs[v]:
-            comp_id = len(comps)
-            comp: list[int] = []
-            while True:
-                w = stack.pop()
-                onstack[w] = False
-                comp_of[w] = comp_id
-                comp.append(w)
-                if w == v:
-                    break
-            comps.append(comp)
-
-    for v in range(n):
-        if idxs[v] == -1:
-            strongconnect(v)
-
-    return comp_of, comps
-
-
-def _compute_may_reach_join_bitsets_python(
-    *,
-    node_ids: list[str],
-    adj: dict[str, list[WorkflowEdge]],
-    join_ids: list[str],
-) -> dict[str, int]:
-    """
-    Over-approximate: for every node, compute the set of join/barrier nodes it MAY reach,
-    ignoring predicates (static topology only).
-
-    Output is a dict node_id -> bitset (int) where bit i means MAY reach join_ids[i].
-    """
-    n = len(node_ids)
-    id_to_i = {nid: i for i, nid in enumerate(node_ids)}
-    succ: list[list[int]] = [[] for _ in range(n)]
-    for src, edges in adj.items():
-        si = id_to_i.get(src)
-        if si is None:
-            continue
-        for e in edges:
-            for dst in getattr(e, "target_ids", []) or []:
-                di = id_to_i.get(str(dst))
-                if di is not None:
-                    succ[si].append(di)
-
-    comp_of, comps = _tarjan_scc(n, succ)
-    c = len(comps)
-
-    # component join mask
-    join_pos = {jid: p for p, jid in enumerate(join_ids)}
-    comp_join_mask = [0] * c
-    for v_nid in node_ids:
-        p = join_pos.get(v_nid)
-        if p is None:
-            continue
-        v = id_to_i[v_nid]
-        comp_join_mask[comp_of[v]] |= 1 << p
-
-    # condensation DAG
-    comp_succ: list[set[int]] = [set() for _ in range(c)]
-    indeg = [0] * c
-    for v in range(n):
-        cv = comp_of[v]
-        for w in succ[v]:
-            cw = comp_of[w]
-            if cv != cw and cw not in comp_succ[cv]:
-                comp_succ[cv].add(cw)
-                indeg[cw] += 1
-
-    # topo order (Kahn)
-    q = [i for i in range(c) if indeg[i] == 0]
-    topo: list[int] = []
-    while q:
-        x = q.pop()
-        topo.append(x)
-        for y in comp_succ[x]:
-            indeg[y] -= 1
-            if indeg[y] == 0:
-                q.append(y)
-
-    # dp in reverse topo: may_reach[comp] = comp_join | OR succ
-    may = comp_join_mask[:]
-    for x in reversed(topo):
-        m = may[x]
-        for y in comp_succ[x]:
-            m |= may[y]
-        may[x] = m
-    out: dict[str, int] = {}
-    for nid in node_ids:
-        out[nid] = may[comp_of[id_to_i[nid]]]
-    return out
-
-
-def _compute_may_reach_join_bitsets(
-    *,
-    node_ids: list[str],
-    adj: dict[str, list[WorkflowEdge]],
-    join_ids: list[str],
-) -> dict[str, int]:
-    """Select static join lineage implementation without changing call shape.
-
-    Python remains the independent oracle in ``python`` and ``shadow`` modes.
-    Rust is canonical in ``rust`` mode; dynamic workflow routing stays Python.
-    """
-    from kogwistar._rust_bridge import (
-        runtime_implementation_mode,
-        runtime_workflow_may_reach_join,
-    )
-
-    mode = runtime_implementation_mode()
-    edges = [
-        (str(src), str(dst))
-        for src, workflow_edges in adj.items()
-        for edge in workflow_edges
-        for dst in (getattr(edge, "target_ids", []) or [])
-    ]
-    if mode == "rust":
-        rust_value = runtime_workflow_may_reach_join(
-            node_ids=node_ids,
-            edges=edges,
-            join_ids=join_ids,
-        )
-        return rust_value if rust_value is not None else {}
-    python_value = _compute_may_reach_join_bitsets_python(
-        node_ids=node_ids,
-        adj=adj,
-        join_ids=join_ids,
-    )
-    selected = runtime_workflow_may_reach_join(
-        node_ids=node_ids,
-        edges=edges,
-        join_ids=join_ids,
-        python_value=python_value,
-    )
-    return selected if selected is not None else python_value
-
-
-def _iter_bits(mask: int) -> Iterator[int]:
-    """Yield bit positions (0-based) for an int bitset."""
-    # 2's complement tricks to get the first set least significant bit in binary embedding
-    while mask:
-        lsb = mask & -mask
-        yield (lsb.bit_length() - 1)
-        mask ^= lsb
-
-
 RunID = uuid.UUID | str
 Json = JsonValue
-
-
-def _json_int(value: object, *, default: int) -> int:
-    """Convert a persisted scalar integer while rejecting structured JSON."""
-    if isinstance(value, bool):
-        return default
-    if isinstance(value, int):
-        return value
-    if isinstance(value, (float, str)):
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            return default
-    return default
-
-
-def _json_string_list(value: object) -> list[str]:
-    """Decode a persisted string-list field without trusting its shape."""
-    if not isinstance(value, list):
-        return []
-    return [str(item) for item in value]
 State = dict[str, Json]
 # Result = Json
-
-def derive_child_authority_context(
-    parent: Mapping[str, Any] | None,
-    child_state: Mapping[str, Any],
-) -> Mapping[str, Any] | None:
-    """Carry trusted execution authority into a nested run without expansion."""
-
-    if parent is None:
-        return None
-    context = dict(parent)
-    if "effective_capabilities" in context:
-        parent_caps = {str(item) for item in context.get("effective_capabilities", ())}
-        requested = {
-            str(item)
-            for item in child_state.get("effective_capabilities", parent_caps)
-        }
-        context["effective_capabilities"] = tuple(sorted(parent_caps & requested))
-    if "budget_limits" in context:
-        context["budget_limits"] = dict(context["budget_limits"] or {})
-    return MappingProxyType(context)
-
 
 def sink_observes_otel(sink: object) -> bool:
     """Detect an explicitly supplied OTel sink without importing OTel."""
@@ -394,288 +121,20 @@ def sink_observes_otel(sink: object) -> bool:
     if type(sink).__module__ == "kogwistar.runtime.telemetry_otel":
         return True
     return any(sink_observes_otel(item) for item in getattr(sink, "_sinks", ()))
-from typing import TypeAlias
-
-from kogwistar.engine_core.models import Grounding, Span
-
-from .models import StepRunResult
-
-StepFn: TypeAlias = Callable[["StepContext"], StepRunResult]
-
-
-class StepResolver(Protocol):
-    """Resolve a persisted workflow operation to a typed step handler."""
-
-    def __call__(self, op: str) -> StepFn: ...
-
-import threading
-from dataclasses import field
-from types import MappingProxyType
-
-
-@dataclass
-class RunResult:
-    run_id: str
-    final_state: WorkflowState
-    mq: queue.Queue[dict[str, Json]]
-    status: str = "succeeded"
-    errors: list[str] = field(default_factory=list)
-
-
-class _StateWriteTxn:
-    def __init__(self, ctx: StepContext) -> None:
-        self._ctx = ctx
-
-    def __enter__(self) -> WorkflowState:
-        self._ctx._state_lock.acquire()
-        # optional:
-        # self._ctx.publish({"type": "state_write_start", "op": self._ctx.op})
-        return self._ctx._state
-
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc: BaseException | None,
-        tb: TracebackType | None,
-    ) -> None:
-        # optional:
-        # self._ctx.publish({"type": "state_write_end", "op": self._ctx.op, "ok": exc is None})
-        self._ctx._state_lock.release()
-
-
-from dataclasses import InitVar, dataclass
-
-from kogwistar.cdc.sqlite_sink import _get_shared_sqlite_sink
-
-from .telemetry import (
-    BoundLoggerAdapter,
-    EventEmitter,
-    EventSink,
-    TraceContext,
-    bind_logger,
-)
-
-
-@dataclass
-class RouteDecision:
-    """Structured routing outcome used for trace emission.
-
-    evaluated: list of (edge_id_with_predicate, ok) entries for every predicate/base evaluation attempted.
-    selected:  list of (edge_id, to_node_id, reason) entries for chosen edges.
-    """
-
-    evaluated: list[tuple[str, bool]]
-    selected: list[tuple[str, str, str]]
-
-
-@dataclass
-class StepContext:
-    # --- execution identity ---
-    run_id: str
-    workflow_id: str
-    workflow_node_id: str
-    op: str
-    token_id: str
-    attempt: int
-    step_seq: int
-    cache_dir: str | PathLike | None
-
-    # --- optional provenance (may be None for non-conversational workloads) ---
-    conversation_id: str | None = None
-    turn_node_id: str | None = None
-    trace_context: TraceContext | None = field(default=None, repr=False)
-    authority_context: Mapping[str, Any] = field(
-        default_factory=dict, repr=False
-    )
-
-    # --- runtime capabilities ---
-    message_queue: queue.Queue[dict[str, Json]] = field(
-        repr=False, default_factory=queue.Queue
-    )
-    lane_message_sender: LaneMessageSenderLike | None = field(repr=False, default=None)
-    lane_message_event_sink: LaneMessageEventSinkLike | None = field(
-        repr=False, default=None
-    )
-    events: EventEmitter | None = field(repr=False, default=None)
-
-    # Accept `state=` in __init__ but don't store it as a field
-    state: InitVar[WorkflowState] = None  # type: ignore[assignment]
-
-    # real storage
-    _state: WorkflowState = field(init=False, repr=False)
-    _state_lock: threading.RLock = field(
-        default_factory=threading.RLock, init=False, repr=False
-    )
-    log: BoundLoggerAdapter = field(init=False, repr=False)
-    
-    def __post_init__(self, state: WorkflowState) -> None:
-        self._state = state
-        # bind a correlated logger for resolver-level details
-        self.log = bind_logger(logging.getLogger("workflow.resolver"), self.trace_ctx)
-
-    @property
-    def state_view(self) -> Mapping[str, object]:
-        return MappingProxyType(self._state)
-
-    @property
-    def state_write(self) -> _StateWriteTxn:
-        return _StateWriteTxn(self)
-
-    def publish(self, msg: dict[str, Json]) -> None:
-        self.message_queue.put(msg)
-
-    def send_lane_message(self, **kwargs: Json) -> object:
-        sender = self.lane_message_sender
-        if not callable(sender):
-            raise RuntimeError(
-                "lane message sender not configured; durable cross-lane delivery unavailable"
-            )
-        result = sender(**kwargs)
-        sink = self.lane_message_event_sink
-        if callable(sink):
-            message_id = getattr(result, "message_id", None)
-            if not message_id and isinstance(result, dict):
-                message_id = result.get("message_id")
-            try:
-                sink(
-                    {
-                        "event_type": "worker.requested",
-                        "run_id": str(kwargs.get("run_id") or self.run_id),
-                        "message_id": str(message_id or ""),
-                        "conversation_id": str(
-                            kwargs.get("conversation_id") or self.conversation_id or ""
-                        ),
-                        "inbox_id": str(kwargs.get("inbox_id") or ""),
-                        "sender_id": str(kwargs.get("sender_id") or ""),
-                        "recipient_id": str(kwargs.get("recipient_id") or ""),
-                        "msg_type": str(kwargs.get("msg_type") or ""),
-                        "status": "pending",
-                        "correlation_id": kwargs.get("correlation_id"),
-                        "step_id": kwargs.get("step_id"),
-                        "workflow_id": self.workflow_id,
-                        "workflow_node_id": self.workflow_node_id,
-                        "step_seq": int(self.step_seq),
-                    }
-                )
-            except Exception:
-                logging.getLogger(__name__).exception(
-                    "lane message event sink failed: run_id=%s", self.run_id
-                )
-        return result
-
-    def emit_lane_message_event(self, event: dict[str, Json]) -> None:
-        sink = self.lane_message_event_sink
-        if not callable(sink):
-            raise RuntimeError(
-                "lane message event sink not configured; lifecycle mirroring unavailable"
-            )
-        sink(event)
-
-    def drain(self, max_items: int = 200) -> list[dict[str, Json]]:
-        raise Exception(
-            "current design does not allow mq drained in context, but only by orchestrator"
-        )
-
-    @property
-    def trace_ctx(self) -> TraceContext:
-        if self.trace_context is not None:
-            return self.trace_context
-        # generic trace context; conversation_id/turn_node_id may be None
-        return TraceContext(
-            run_id=self.run_id,
-            token_id=self.token_id,
-            step_seq=self.step_seq,
-            node_id=self.workflow_node_id,
-            attempt=self.attempt,
-            conversation_id=self.conversation_id,
-            turn_node_id=self.turn_node_id,
-        )
-
-    # Back-compat alias: older code used conv_trace_ctx
-    @property
-    def conv_trace_ctx(self) -> TraceContext:
-        return self.trace_ctx
-
-
 def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
-def _make_trace_span(
-    *, conversation_id: str, excerpt: str, doc_id: str
-) -> TraceSpanPayload:
-    # We avoid importing models here to keep the runtime module lightweight.
-    # The orchestrator will pass in a ready Span via a hook, OR we can create a minimal span-like dict.
-    # In your repo, you already have Span model and Grounding/MentionVerification.
-    return {
-        "collection_page_url": f"conversation/{conversation_id}",
-        "document_page_url": f"conversation/{conversation_id}",
-        "doc_id": doc_id,
-        "insertion_method": "workflow_trace",
-        "page_number": 1,
-        "start_char": 0,
-        "end_char": len(excerpt),
-        "excerpt": excerpt,
-        "context_before": "",
-        "context_after": "",
-        "chunk_id": None,
-        "source_cluster_id": None,
-        "verification": MentionVerification(
-            method="human",
-            is_verified=True,
-            score=1.0,
-            notes="workflow trace",
-        ),
-    }
-
-
-def _make_runtime_edge(
-    *,
-    edge_id: str,
-    relation: str,
-    label: str,
-    summary: str,
-    doc_id: str,
-    conversation_id: str,
-    source_ids: list[str],
-    target_ids: list[str],
-    mentions: list[Grounding],
-    run_id: str | None = None,
-    metadata: dict[str, Any] | None = None,
-) -> WorkflowRuntimeEdge:
-    edge_metadata: dict[str, JsonValue] = {
-        "entity_type": "conversation_edge",
-        "relation": relation,
-        "conversation_id": conversation_id,
-    }
-    if run_id is not None:
-        edge_metadata["run_id"] = run_id
-    if metadata:
-        edge_metadata.update(metadata)
-    return WorkflowRuntimeEdge(
-        id=edge_id,
-        source_ids=source_ids,
-        target_ids=target_ids,
-        relation=relation,
-        label=label,
-        type="relationship",
-        summary=summary,
-        doc_id=doc_id,
-        mentions=mentions,
-        domain_id=None,
-        canonical_entity_id=None,
-        properties={},
-        embedding=None,
-        metadata=edge_metadata,
-        source_edge_ids=[],
-        target_edge_ids=[],
-    )
-
-
-from threading import Lock
-
-
-class WorkflowRuntime(BaseRuntime[StepResolver]):
+class WorkflowRuntime(
+    CheckpointRuntimeMixin,
+    TerminalPersistenceMixin,
+    RuntimeTracePersistenceMixin,
+    ConversationRuntimeMixin,
+    WorkflowInvocationMixin,
+    SuspendedRunResumeMixin,
+    WorkflowRouteNextMixin,
+    BaseRuntime[StepResolver],
+):
     CHECKPOINT_SCHEMA_VERSION = 1
     """
     Core engine for executing graph-based **workflow designs**.
@@ -901,184 +360,6 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
             invocation=invocation,
         )
 
-    def _run_workflow_invocation(
-        self,
-        *,
-        invocation: WorkflowInvocationRequest,
-        parent_state: WorkflowState,
-        conversation_id: str,
-        turn_node_id: str,
-        parent_run_id: str,
-        cache_dir: str | PathLike | None = None,
-        parent_trace_context: TraceContext | None = None,
-        parent_authority_context: Mapping[str, Any] | None = None,
-        parent_lease_renew: Callable[[], None] | None = None,
-    ) -> RunResult:
-        if invocation.workflow_design is not None:
-            if str(invocation.workflow_design.workflow_id) != str(
-                invocation.workflow_id
-            ):
-                raise ValueError(
-                    "workflow_design.workflow_id must match workflow_id on the invocation"
-                )
-            self._persist_workflow_design_artifact(invocation.workflow_design)
-
-        child_state = self._child_workflow_initial_state(
-            parent_state=parent_state, invocation=invocation
-        )
-        child_authority_context = derive_child_authority_context(
-            parent_authority_context, child_state
-        )
-        plan = self._workflow_invocation_plan(
-            invocation=invocation,
-            conversation_id=conversation_id,
-            turn_node_id=turn_node_id,
-            parent_run_id=parent_run_id,
-        )
-        child_result = self._terminal_run_result(
-            conversation_id=plan["conversation_id"], run_id=plan["child_run_id"]
-        )
-        # A failed child has a durable checkpoint and is retryable work.  Do
-        # not let parent rehydration treat the failure as an accepted terminal
-        # result; the branch below will resume its latest checkpoint.  Success
-        # and cancellation remain terminal for idempotent parent resumes.
-        if child_result is not None and child_result.status == "failure":
-            child_result = None
-        if child_result is None:
-            child_checkpoint = self._latest_checkpoint_for_run(
-                conversation_id=plan["conversation_id"],
-                run_id=plan["child_run_id"],
-            )
-            child_run_node_id = f"wf_run|{plan['child_run_id']}"
-            if child_checkpoint is None or not self._conversation_node_exists(
-                child_run_node_id
-            ):
-                # Persist generic intent before entering a new child. A resumed
-                # parent can derive this same child from its invocation key. If
-                # only the checkpoint survived a process crash, recreate the
-                # run node before the required lineage edge is written.
-                self._persist_workflow_run(
-                    conversation_id=plan["conversation_id"],
-                    workflow_id=str(invocation.workflow_id),
-                    run_id=plan["child_run_id"],
-                    turn_node_id=plan["turn_node_id"],
-                    status="planned",
-                    run_metadata={
-                        "parent_run_id": parent_run_id,
-                        "invocation_key": invocation.invocation_key,
-                        "result_state_key": plan["result_state_key"],
-                    },
-                )
-            self._persist_workflow_invocation_lineage(
-                conversation_id=conversation_id,
-                parent_run_id=parent_run_id,
-                child_run_id=plan["child_run_id"],
-                invocation=invocation,
-                result_state_key=plan["result_state_key"],
-                required=True,
-            )
-            if child_checkpoint is not None:
-                child_result = self.resume_from_latest_checkpoint(
-                    run_id=plan["child_run_id"],
-                    workflow_id=str(invocation.workflow_id),
-                    conversation_id=plan["conversation_id"],
-                    turn_node_id=plan["turn_node_id"],
-                    cache_dir=cache_dir,
-                    _parent_trace_context=parent_trace_context,
-                    _parent_authority_context=child_authority_context,
-                    _parent_lease_renew=parent_lease_renew,
-                )
-            else:
-                child_result = self.run(
-                    workflow_id=invocation.workflow_id,
-                    conversation_id=plan["conversation_id"],
-                    turn_node_id=plan["turn_node_id"],
-                    initial_state=child_state,
-                    run_id=plan["child_run_id"],
-                    cache_dir=cache_dir,
-                    _run_metadata={
-                        "parent_run_id": parent_run_id,
-                        "invocation_key": invocation.invocation_key,
-                        "result_state_key": plan["result_state_key"],
-                    },
-                    _trace_context=parent_trace_context,
-                    _authority_context=child_authority_context,
-                    _parent_lease_renew=parent_lease_renew,
-                )
-        self._persist_workflow_invocation_lineage(
-            conversation_id=conversation_id,
-            parent_run_id=parent_run_id,
-            child_run_id=str(child_result.run_id),
-            invocation=invocation,
-            result_state_key=plan["result_state_key"],
-        )
-        return child_result
-
-    def _persist_workflow_invocation_lineage(
-        self,
-        *,
-        conversation_id: str,
-        parent_run_id: str,
-        child_run_id: str,
-        invocation: WorkflowInvocationRequest,
-        result_state_key: str,
-        required: bool = False,
-    ) -> bool:
-        """Record generic run lineage without making it workflow authority."""
-        from kogwistar.engine_core.models import Grounding, Span
-
-        parent_id = f"wf_run|{parent_run_id}"
-        child_id = f"wf_run|{child_run_id}"
-        content = f"{parent_id} invoked {child_id}"
-        # ``run_subworkflow`` may be called with an external parent that has
-        # no persisted run node. An endpoint-valid lineage edge is impossible
-        # until that parent is durable, so defer it without noisy failure logs.
-        try:
-            parent_exists = self.conversation_engine.read.get_nodes(
-                ids=[parent_id], limit=1
-            )
-        except Exception:
-            parent_exists = []
-        if not parent_exists:
-            return False
-        try:
-            span = Span(
-                **_make_trace_span(
-                    conversation_id=conversation_id,
-                    excerpt=content,
-                    doc_id=f"conv:{conversation_id}",
-                )
-            )
-            edge = _make_runtime_edge(
-                edge_id=f"wf_invoked|{parent_run_id}|{child_run_id}",
-                relation="wf_invoked",
-                label="workflow invocation",
-                summary=content,
-                doc_id=f"wf_invoked|{parent_run_id}|{child_run_id}",
-                conversation_id=conversation_id,
-                source_ids=[parent_id],
-                target_ids=[child_id],
-                mentions=[Grounding(spans=[span])],
-                run_id=parent_run_id,
-                metadata={
-                    "parent_run_id": parent_run_id,
-                    "child_run_id": child_run_id,
-                    "workflow_id": invocation.workflow_id,
-                    "invocation_key": invocation.invocation_key,
-                    "result_state_key": result_state_key,
-                },
-            )
-            with self._trace_write_mode():
-                self.conversation_engine.write.add_edge(edge)
-            return True
-        except Exception:
-            logging.getLogger(__name__).exception(
-                "workflow invocation lineage persistence failed"
-            )
-            if required:
-                raise
-            return False
-
     def _apply_workflow_invocation_result(
         self,
         *,
@@ -1090,38 +371,6 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
             state=state,
             invocation=invocation,
             child_result=child_result,
-        )
-
-    def run_subworkflow(
-        self,
-        *,
-        workflow_id: str,
-        parent_state: WorkflowState,
-        conversation_id: str,
-        turn_node_id: str,
-        parent_run_id: str,
-        result_state_key: str | None = None,
-        workflow_design: WorkflowDesignArtifact | None = None,
-        initial_state: dict[str, Any] | None = None,
-        run_id: str | None = None,
-        cache_dir: str | PathLike | None = None,
-    ) -> RunResult:
-        """Public helper for explicit nested workflow execution."""
-
-        invocation = WorkflowInvocationRequest(
-            workflow_id=workflow_id,
-            initial_state=dict(initial_state or {}),
-            result_state_key=result_state_key,
-            workflow_design=workflow_design,
-            run_id=run_id,
-        )
-        return self._run_workflow_invocation(
-            invocation=invocation,
-            parent_state=parent_state,
-            conversation_id=conversation_id,
-            turn_node_id=turn_node_id,
-            parent_run_id=parent_run_id,
-            cache_dir=cache_dir,
         )
 
     def apply_state_update(
@@ -1137,583 +386,6 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
             state_schema=getattr(self.step_resolver, "_state_schema", None),
         )
 
-    def resume_run(
-        self,
-        *,
-        run_id: str,
-        suspended_node_id: str,
-        suspended_token_id: str,
-        client_result: StepRunResult,
-        workflow_id: str,
-        conversation_id: str,
-        turn_node_id: str,
-        cache_dir: str | PathLike[str] | None = None,
-        _parent_trace_context: TraceContext | None = None,
-    ) -> RunResult:
-        """
-        Resumes a suspended workflow run using the results of an externally executed task
-        (e.g. from a client-side sandbox).
-
-        This assumes that:
-        1. A checkpoint exists for the suspended state.
-        2. The suspended step was saved in _rt_join_snapshot as pending with mask logic intact.
-        """
-        from .rust_runtime_authority import (
-            RustRuntimeAuthority,
-            rust_runtime_authority_url,
-        )
-
-        authority_url = rust_runtime_authority_url()
-        if authority_url is not None:
-            authority = RustRuntimeAuthority(
-                runtime=self,
-                base_url=authority_url,
-                cache_dir=cache_dir,
-            )
-            try:
-                return authority.resume(
-                    run_id=str(run_id),
-                    suspended_node_id=str(suspended_node_id),
-                    suspended_token_id=str(suspended_token_id),
-                    client_result=client_result,
-                    workflow_id=str(workflow_id),
-                    conversation_id=str(conversation_id),
-                    turn_node_id=str(turn_node_id),
-                )
-            finally:
-                authority.close()
-
-        # Load the latest checkpoint for the run to reconstruct initial_state.
-        # Runtime-maintained named projections are the serving path; graph scans
-        # are retained for older stores and projection repair scenarios.
-        latest_ckpt = self._latest_checkpoint_for_run(
-            conversation_id=conversation_id,
-            run_id=str(run_id),
-        )
-        if latest_ckpt is None:
-            raise ValueError(f"Cannot resume run {run_id}: no checkpoints found.")
-
-        initial_state_raw = getattr(latest_ckpt, "metadata", {}).get("state_json", {})
-        initial_state: WorkflowState
-        if isinstance(initial_state_raw, str):
-            # TO-DO add validation
-            initial_state = json.loads(initial_state_raw) 
-        elif isinstance(initial_state_raw, dict):
-            initial_state = dict(initial_state_raw) # type: ignore
-        else:
-            raise ValueError(
-                f"Cannot resume run {run_id}: checkpoint state_json is not a dict/json string."
-            )
-
-        persisted_trace = getattr(latest_ckpt, "metadata", {}).get("trace_id")
-        persisted_span = getattr(latest_ckpt, "metadata", {}).get("run_execution_span_id")
-        resume_trace_context = _parent_trace_context
-        if resume_trace_context is None and persisted_trace and persisted_span:
-            candidate = TraceContext(
-                run_id=str(run_id),
-                token_id=str(suspended_token_id),
-                step_seq=int(getattr(latest_ckpt, "metadata", {}).get("step_seq") or 0),
-                node_id=str(suspended_node_id),
-                trace_id=str(persisted_trace),
-                span_id=str(persisted_span),
-            )
-            if candidate.has_valid_w3c_ids:
-                resume_trace_context = candidate
-
-        lifecycle_run_id = str(run_id)
-        lifecycle_conversation_id = str(conversation_id)
-        lifecycle_turn_node_id = str(turn_node_id)
-
-        def _resume_lifecycle_trace_context(
-            *,
-            token_id: str,
-            step_seq: int,
-            node_id: str,
-            attempt: int = 1,
-            run_id: str | None = None,
-            conversation_id: str | None = None,
-            turn_node_id: str | None = None,
-        ) -> TraceContext:
-            effective_run_id = str(run_id or lifecycle_run_id)
-            effective_conversation_id = str(
-                conversation_id or lifecycle_conversation_id
-            )
-            effective_turn_node_id = str(turn_node_id or lifecycle_turn_node_id)
-            base = resume_trace_context or TraceContext(
-                run_id=effective_run_id,
-                token_id=str(token_id),
-                step_seq=int(step_seq),
-                node_id=str(node_id),
-                attempt=int(attempt),
-                conversation_id=effective_conversation_id,
-                turn_node_id=effective_turn_node_id,
-            )
-            return base.child_span(
-                token_id=str(token_id),
-                step_seq=int(step_seq),
-                node_id=str(node_id),
-                attempt=int(attempt),
-            )
-
-        # Apply the client's state update directly to the initial state for all resumable result types.
-        self.apply_state_update(
-            mute_state=initial_state,
-            state_update=client_result.state_update,
-            update=getattr(client_result, "update", None),
-        )
-
-        # Start the runtime again
-        # The runtime will pick up the `pending` tokens from `_rt_join` stored in `initial_state`
-        # Because the token was parked at `suspended_node_id`, it will try to re-execute it.
-        # But wait! We don't want to re-execute the suspended node. We want to route *from* it.
-
-        # To fix this, we manually route from the suspended node and update the `_rt_join`
-        # pending state before calling run().
-        start, nodes, adj = validate_workflow_design(
-            workflow_engine=self.workflow_engine,
-            workflow_id=workflow_id,
-            predicate_registry=self.predicate_registry,
-            resolver=self.step_resolver,
-        )
-
-        node_ids_list = list(nodes.keys())
-        join_node_ids = []
-        for _nid, _wn in nodes.items():
-            _md = getattr(_wn, "metadata", None) or {}
-            if bool(_md.get("wf_join", False)) or str(getattr(_wn, "op", "")) == "join":
-                join_node_ids.append(str(_nid))
-
-        _may_reach_join = (
-            _compute_may_reach_join_bitsets(
-                node_ids=node_ids_list, adj=adj, join_ids=join_node_ids
-            )
-            if join_node_ids
-            else {nid: 0 for nid in node_ids_list}
-        )
-
-        wn = nodes[suspended_node_id]
-        edges = adj.get(suspended_node_id, [])
-        step_seq_current = (
-            int(getattr(latest_ckpt, "metadata", {}).get("step_seq", 0)) + 1
-        )
-        next_nodes: list[str] = []
-        route_decision = RouteDecision(evaluated=[], selected=[])
-        client_status = str(getattr(client_result, "status", "success"))
-        if client_status != "suspended":
-            next_nodes, route_decision = self._route_next(
-                edges, initial_state, client_result, wn.fanout, nodes
-            )
-        rt_join = restore_runtime_join_snapshot(
-            initial_state,
-            join_node_ids,
-            allow_legacy_lengths=True,
-            allow_single_mask_waiters=True,
-        )
-        if rt_join is None:
-            rt_join = RuntimeJoinSnapshot(
-                join_node_ids=list(join_node_ids),
-                join_outstanding=[0 for _ in join_node_ids],
-                join_waiters={join_id: [] for join_id in join_node_ids},
-                pending=[],
-                suspended=[],
-            )
-        pending: list[JoinToken] = list(rt_join["pending"])
-        suspended: list[JoinToken] = list(rt_join["suspended"])
-
-        new_pending: list[JoinToken] = []
-        new_suspended: list[JoinToken] = []
-        token_found = False
-        mask_to_distribute = 0
-        parent_token_id = None
-        resumed_exec_node = None
-
-        previous_exec_node_id = f"wf_step|{run_id}|{step_seq_current - 1}"
-        previous_exec_nodes = self.conversation_engine.read.get_nodes(
-            ids=[previous_exec_node_id],
-            limit=1,
-        )
-        if previous_exec_nodes:
-            previous_exec_node = previous_exec_nodes[0]
-        else:
-            fallback_exec_nodes = self.conversation_engine.read.get_nodes(
-                ids=[f"wf_run|{run_id}"],
-                limit=1,
-            )
-            previous_exec_node = fallback_exec_nodes[0] if fallback_exec_nodes else None
-
-        def _extract(items: list[JoinToken], keep: list[JoinToken]) -> None:
-            nonlocal token_found, mask_to_distribute, parent_token_id
-            for item in items:
-                nid, tok_mask, tok_id, tok_parent = item
-                if (
-                    (not token_found)
-                    and nid == str(suspended_node_id)
-                    and tok_id == str(suspended_token_id)
-                ):
-                    token_found = True
-                    mask_to_distribute = int(tok_mask)
-                    parent_token_id = tok_parent
-                else:
-                    keep.append(item)
-
-        _extract(suspended, new_suspended)
-        _extract(pending, new_pending)
-
-        if not token_found:
-            raise ValueError(
-                f"Token {suspended_token_id} for node {suspended_node_id} not found in suspended runtime state."
-            )
-        token_id = suspended_token_id
-        node_id = suspended_node_id
-        # Trace routing decision (includes rejections) at orchestration choke point
-        try:
-            tc = _resume_lifecycle_trace_context(
-                run_id=str(run_id),
-                token_id=str(token_id),
-                step_seq=int(step_seq_current),
-                node_id=str(node_id),
-                attempt=1,
-                conversation_id=str(conversation_id),
-                turn_node_id=str(turn_node_id),
-            )
-            self.emitter.emit(
-                type="routing_decision",
-                ctx=tc,
-                payload={
-                    "evaluated": [
-                        (a, bool(b))
-                        for a, b in getattr(route_decision, "evaluated", [])
-                    ],
-                    "selected": [
-                        (e, t, r) for e, t, r in getattr(route_decision, "selected", [])
-                    ],
-                    "next_nodes": [str(x) for x in (next_nodes or [])],
-                },
-            )
-            # Also emit per-evaluation/per-selection events for telemetry consumers
-            for pred_name, ok in getattr(route_decision, "evaluated", []):
-                try:
-                    self.emitter.predicate_evaluated(
-                        tc, predicate=str(pred_name), value=bool(ok)
-                    )
-                except Exception:
-                    pass
-            for edge_id, to_node_id, reason in getattr(route_decision, "selected", []):
-                try:
-                    self.emitter.edge_selected(
-                        tc,
-                        edge_id=str(edge_id),
-                        to_node_id=str(to_node_id),
-                        reason=str(reason),
-                    )
-                except Exception:
-                    pass
-
-            # Tracing must never break execution
-        except Exception:
-            pass
-        # Modify the parked suspended tokens in state["_rt_join"]["suspended"] first.
-        # Older checkpoints may still have the token in pending, so we accept both for compatibility.
-        # Add next tokens
-        _join_pos = {jid: i for i, jid in enumerate(join_node_ids)}
-        jo: list[int] = list(rt_join["join_outstanding"])
-
-        def _inc(m: int) -> None:
-            for bi in _iter_bits(m):
-                jo[bi] += 1
-
-        def _dec(m: int) -> None:
-            for bi in _iter_bits(m):
-                jo[bi] = max(0, jo[bi] - 1)
-
-        first = True
-
-        if client_status == "suspended":
-            new_suspended.append(
-                (
-                    str(suspended_node_id),
-                    int(mask_to_distribute),
-                    str(suspended_token_id),
-                    parent_token_id,
-                )
-            )
-        elif not next_nodes:
-            _dec(mask_to_distribute)
-        else:
-            for i_fanout, nxt in enumerate(next_nodes):
-                nxt = str(nxt)
-                nxt_mask = int(_may_reach_join.get(nxt, 0))
-
-                if first:
-                    t = (nxt, nxt_mask, suspended_token_id, parent_token_id)
-                    leaving = mask_to_distribute & ~nxt_mask
-                    if leaving:
-                        _dec(leaving)
-                    gained = nxt_mask & ~mask_to_distribute
-                    if gained:
-                        _inc(gained)
-                    new_pending.append(t)
-                    first = False
-                else:
-                    child_token_id = stable_id(
-                        "token_id",
-                        f"{suspended_token_id}/{step_seq_current}:{i_fanout}:{nxt}",
-                    ).hex
-                    t = (nxt, nxt_mask, child_token_id, suspended_token_id)
-                    _inc(nxt_mask)
-                    new_pending.append(t)
-
-        rt_join["pending"] = new_pending
-        rt_join["suspended"] = new_suspended
-        rt_join["join_outstanding"] = jo
-        initial_state["_rt_join"] = rt_join
-
-        # Log the step exec for the external execution so it's recorded
-        resumed_exec_node = self._persist_step_exec(
-            conversation_id=conversation_id,
-            workflow_id=workflow_id,
-            run_id=run_id,
-            step_seq=step_seq_current,
-            workflow_node_id=suspended_node_id,
-            op="client_sandbox_resume",
-            status=(
-                "suspended"
-                if client_status == "suspended"
-                else "failure"
-                if client_status == "failure"
-                else "ok"
-            ),
-            duration_ms=0,
-            result=client_result,
-            state=initial_state,
-            token_id=suspended_token_id,
-            parent_token_id=parent_token_id,
-            join_mask=mask_to_distribute,
-            last_exec_node=cast(
-                WorkflowStepExecNode | WorkflowRunNode | None,
-                previous_exec_node,
-            ),
-        )
-        if (step_seq_current % self.checkpoint_every_n_steps) == 0:
-            self._persist_checkpoint(
-                conversation_id=conversation_id,
-                workflow_id=workflow_id,
-                run_id=run_id,
-                step_seq=step_seq_current,
-                state=initial_state,
-                last_exec_node=resumed_exec_node,
-            )
-            try:
-                tc_ck = _resume_lifecycle_trace_context(
-                    run_id=str(run_id),
-                    token_id=str(suspended_token_id),
-                    step_seq=int(step_seq_current),
-                    node_id=str(suspended_node_id),
-                    attempt=1,
-                    conversation_id=str(conversation_id),
-                    turn_node_id=str(turn_node_id),
-                )
-                self.emitter.emit(
-                    type="checkpoint_saved",
-                    ctx=tc_ck,
-                    payload={"step_seq": int(step_seq_current)},
-                )
-            except Exception:
-                pass
-
-        if client_status == "suspended":
-            if hasattr(client_result, "resume_payload"):
-                try:
-                    self.emitter.emit(
-                        type="workflow_step_suspended",
-                        ctx=_resume_lifecycle_trace_context(
-                            run_id=str(run_id),
-                            token_id=str(suspended_token_id),
-                            step_seq=int(step_seq_current),
-                            node_id=str(suspended_node_id),
-                            attempt=1,
-                            conversation_id=str(conversation_id),
-                            turn_node_id=str(turn_node_id),
-                        ),
-                        payload=getattr(client_result, "resume_payload"),
-                    )
-                except Exception:
-                    pass
-            return RunResult(
-                final_state=initial_state,
-                run_id=run_id,
-                mq=queue.Queue(),
-                status="suspended",
-            )
-
-        if new_pending:
-            return self.run(
-                workflow_id=workflow_id,
-                conversation_id=conversation_id,
-                turn_node_id=str(turn_node_id or ""),
-                initial_state=initial_state,
-                run_id=run_id,
-                cache_dir=cache_dir,
-                _resume_step_seq=int(step_seq_current) + 1,
-                _resume_last_exec_node=resumed_exec_node,
-            )
-
-        if new_suspended:
-            return RunResult(
-                final_state=initial_state,
-                run_id=run_id,
-                mq=queue.Queue(),
-                status="suspended",
-            )
-
-        if client_status == "failure":
-            try:
-                self._persist_failed_terminal(
-                    conversation_id=str(conversation_id),
-                    workflow_id=str(workflow_id),
-                    run_id=str(run_id),
-                    accepted_step_seq=int(step_seq_current),
-                    errors=list(getattr(client_result, "errors", []) or []),
-                    last_processed_node_id=str(suspended_node_id),
-                )
-                tc_done = _resume_lifecycle_trace_context(
-                    run_id=str(run_id),
-                    token_id=str(suspended_token_id),
-                    step_seq=int(step_seq_current),
-                    node_id=str(suspended_node_id),
-                    attempt=1,
-                    conversation_id=str(conversation_id),
-                    turn_node_id=str(turn_node_id),
-                )
-                self.emitter.emit(
-                    type="workflow_run_failed",
-                    ctx=tc_done,
-                    payload={
-                        "workflow_id": str(workflow_id),
-                        "errors": [
-                            str(error)[-4_000:]
-                            for error in (getattr(client_result, "errors", []) or [])
-                        ],
-                    },
-                )
-            except Exception:
-                pass
-            return RunResult(
-                final_state=initial_state,
-                run_id=run_id,
-                mq=queue.Queue(),
-                status="failure",
-                errors=[
-                    str(error)
-                    for error in (getattr(client_result, "errors", []) or [])
-                ],
-            )
-
-        self._persist_completed_terminal(
-            conversation_id=str(conversation_id),
-            workflow_id=str(workflow_id),
-            run_id=str(run_id),
-            accepted_step_seq=int(step_seq_current),
-            last_processed_node_id=str(suspended_node_id),
-        )
-        try:
-            tc_done = _resume_lifecycle_trace_context(
-                run_id=str(run_id),
-                token_id=str(suspended_token_id),
-                step_seq=int(step_seq_current),
-                node_id=str(suspended_node_id),
-                attempt=1,
-                conversation_id=str(conversation_id),
-                turn_node_id=str(turn_node_id),
-            )
-            self.emitter.emit(
-                type="workflow_run_completed",
-                ctx=tc_done,
-                payload={"workflow_id": str(workflow_id)},
-            )
-        except Exception:
-            pass
-        return RunResult(
-            final_state=initial_state,
-            run_id=run_id,
-            mq=queue.Queue(),
-            status="succeeded",
-        )
-
-    def resume_from_latest_checkpoint(
-        self,
-        *,
-        run_id: str,
-        workflow_id: str,
-        conversation_id: str,
-        turn_node_id: str,
-        cache_dir: str | PathLike[str] | None = None,
-        _parent_trace_context: TraceContext | None = None,
-        _parent_authority_context: Mapping[str, Any] | None = None,
-        _parent_lease_renew: Callable[[], None] | None = None,
-    ) -> RunResult:
-        """Continue a run from its latest ordinary workflow checkpoint.
-
-        This is for a worker/process interrupted after a normal checkpoint,
-        rather than a suspended client task requiring an external result.
-        The checkpoint contains the serialized state and pending frontier.
-        """
-        latest_ckpt = self._latest_checkpoint_for_run(
-            conversation_id=conversation_id,
-            run_id=str(run_id),
-        )
-        if latest_ckpt is None:
-            raise ValueError(f"Cannot resume run {run_id}: no checkpoints found.")
-        metadata = dict(getattr(latest_ckpt, "metadata", {}) or {})
-        checkpoint_workflow_id = str(metadata.get("workflow_id") or workflow_id)
-        if checkpoint_workflow_id != str(workflow_id):
-            raise ValueError(
-                f"Checkpoint workflow mismatch for {run_id}: "
-                f"stored={checkpoint_workflow_id!r} requested={workflow_id!r}"
-            )
-        state_raw = metadata.get("state_json", {})
-        if isinstance(state_raw, str):
-            state = json.loads(state_raw)
-        elif isinstance(state_raw, dict):
-            state = dict(state_raw)
-        else:
-            raise ValueError(f"Checkpoint state for {run_id} is not a JSON object.")
-        if not isinstance(state, dict):
-            raise ValueError(f"Checkpoint state for {run_id} is not a JSON object.")
-        step_seq = int(metadata.get("step_seq") or 0)
-        continuation_context = None
-        persisted_trace_id = metadata.get("trace_id")
-        persisted_span_id = metadata.get("run_execution_span_id")
-        if persisted_trace_id and persisted_span_id:
-            candidate = TraceContext(
-                run_id=str(run_id),
-                token_id=str(run_id),
-                step_seq=step_seq,
-                node_id="resume",
-                trace_id=str(persisted_trace_id),
-                span_id=str(persisted_span_id),
-            )
-            if candidate.has_valid_w3c_ids:
-                continuation_context = candidate
-        if continuation_context is None and _parent_trace_context is not None:
-            continuation_context = _parent_trace_context.child_run(
-                run_id=str(run_id),
-                token_id=str(run_id),
-                step_seq=step_seq,
-                node_id="resume",
-            )
-        return self.run(
-            workflow_id=workflow_id,
-            conversation_id=conversation_id,
-            turn_node_id=turn_node_id,
-            initial_state=state,
-            run_id=str(run_id),
-            cache_dir=cache_dir,
-            _resume_step_seq=step_seq + 1,
-            _trace_context=continuation_context,
-            _authority_context=_parent_authority_context,
-            _parent_lease_renew=_parent_lease_renew,
-        )
 
     @sqlite_execution_bound("workflow_engine", "conversation_engine")
     def run(
@@ -1727,7 +399,7 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
         cache_dir: str | PathLike[str] | None = None,
         _resume_step_seq: int | None = None,
         _resume_last_exec_node: WorkflowStepExecNode | WorkflowRunNode | None = None,
-        _run_metadata: Mapping[str, Any] | None = None,
+        _run_metadata: Mapping[str, JsonValue] | None = None,
         _trace_context: TraceContext | None = None,
         _authority_context: Mapping[str, Any] | None = None,
         _parent_lease_renew: Callable[[], None] | None = None,
@@ -1815,136 +487,27 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
                 predicate_registry=self.predicate_registry,
                 resolver=self.step_resolver,
             )
+            start_node_id = start.id or "start"
 
-            # ----------------------------
-            # Precompute MAY-reach join/barrier sets (ignoring predicates)
-            # ----------------------------
-            node_ids_list = list(nodes.keys())
-            join_node_ids: list[str] = []
-            _join_is_merge = {}
-            for _nid, _wn in nodes.items():
-                _md = getattr(_wn, "metadata", None) or {}
-                if (
-                    bool(_md.get("wf_join", False))
-                    or str(getattr(_wn, "op", "")) == "join"
-                ):
-                    join_node_ids.append(str(_nid))
-                    _join_is_merge[str(_nid)] = bool(
-                        _md.get("wf_join_is_merge")
-                        if _md.get("wf_join_is_merge") is not None
-                        else True
-                    )
-            _may_reach_join = (
-                _compute_may_reach_join_bitsets(
-                    node_ids=node_ids_list, adj=adj, join_ids=join_node_ids
-                )
-                if join_node_ids
-                else {nid: 0 for nid in node_ids_list}
-            )
-            _join_pos = {jid: i for i, jid in enumerate(join_node_ids)}
-            _join_outstanding: list[int] = [
-                0 for _ in join_node_ids
-            ]  # tokens BEFORE each join
-            _join_waiters: dict[str, list[JoinWaiter]] = {
-                jid: [] for jid in join_node_ids
-            }  # store per-token mask at join
-
-            def _inc(mask: int) -> None:
-                for bi in _iter_bits(mask):
-                    _join_outstanding[bi] += 1
-
-            def _dec(mask: int) -> None:
-                for bi in _iter_bits(mask):
-                    _join_outstanding[bi] -= 1
-                    if _join_outstanding[bi] < 0:
-                        # defensive: never go negative
-                        _join_outstanding[bi] = 0
-
-            def _mask_without_join(mask: int, join_id: str) -> int:
-                bi = _join_pos.get(join_id)
-                if bi is None:
-                    return mask
-                return mask & ~(1 << bi)
-
-            def _bit_for_join(join_id: str) -> int:
-                bi = _join_pos.get(join_id)
-                return (1 << bi) if bi is not None else 0
+            # Keep graph analysis and mutable join counters outside the scheduler
+            # body; the aliases preserve the scheduler's established snapshot path.
+            join_runtime = RuntimeJoinState.for_workflow(nodes=nodes, adjacency=adj)
+            join_node_ids = join_runtime.join_node_ids
+            _join_is_merge = join_runtime.join_is_merge
+            _may_reach_join = join_runtime.may_reach_join
+            _join_pos = join_runtime.join_pos
+            _join_outstanding = join_runtime.join_outstanding
+            _join_waiters = join_runtime.join_waiters
+            _inc = join_runtime.inc
+            _dec = join_runtime.dec
+            _rt_join_snapshot = join_runtime.snapshot
 
             def _rt_join_set(payload: RuntimeJoinSnapshot) -> None:
                 # Stored in workflow state so checkpoints can resume joins.
-                state["_rt_join"] = payload
-
-            def _rt_join_snapshot(
-                pending: list[JoinToken],
-                *,
-                suspended: list[JoinToken] | None = None,
-            ) -> RuntimeJoinSnapshot:
-                # Persist inflight as pending-on-resume by including them in pending list upstream.
-                # Suspended tokens must be kept separately: they are parked at the suspended node
-                # and must NOT be re-scheduled automatically on resume.
-                snapshot: RuntimeJoinSnapshot = {
-                    "join_node_ids": join_node_ids,
-                    "join_outstanding": list(_join_outstanding),
-                    "join_waiters": {
-                        jid: [
-                            (
-                                int(mask),
-                                str(token_id),
-                                (
-                                    str(parent_token_id)
-                                    if parent_token_id is not None
-                                    else None
-                                ),
-                            )
-                            for mask, token_id, parent_token_id in waiters
-                        ]
-                        for jid, waiters in _join_waiters.items()
-                    },
-                    "pending": [
-                        (
-                            nid,
-                            int(mask),
-                            str(token_id),
-                            (
-                                str(parent_token_id)
-                                if parent_token_id is not None
-                                else None
-                            ),
-                        )
-                        for nid, mask, token_id, parent_token_id in pending
-                    ],
-                    "suspended": [
-                        (
-                            nid,
-                            int(mask),
-                            str(token_id),
-                            (
-                                str(parent_token_id)
-                                if parent_token_id is not None
-                                else None
-                            ),
-                        )
-                        for nid, mask, token_id, parent_token_id in (suspended or [])
-                    ],
-                }
-                return snapshot
+                join_runtime.set_snapshot(state, payload)
 
             def _rt_join_restore() -> list[JoinToken] | None:
-                payload = restore_runtime_join_snapshot(
-                    state,
-                    join_node_ids,
-                    allow_legacy_lengths=True,
-                    allow_single_mask_waiters=True,
-                )
-                if payload is None:
-                    return None
-                # restore counters/waiters
-                for i in range(min(len(_join_outstanding), len(payload["join_outstanding"]))):
-                    _join_outstanding[i] = payload["join_outstanding"][i]
-                for jid in join_node_ids:
-                    _join_waiters[jid] = payload["join_waiters"][jid]
-                # pending tokens only; suspended tokens are restored by resume_run
-                return payload["pending"]
+                return join_runtime.restore(state)
 
             # start, nodes, adj = load_workflow_design(workflow_engine=self.workflow_engine, workflow_id=workflow_id)
 
@@ -1967,7 +530,7 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
                         run_id=str(run_id),
                         token_id=str(run_id),
                         step_seq=0,
-                        node_id=str(getattr(start, "id", "start")),
+                        node_id=start_node_id,
                     )
                     if _trace_context is not None
                     and (
@@ -1979,7 +542,7 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
                             run_id=str(run_id),
                             token_id=str(run_id),
                             step_seq=0,
-                            node_id=str(getattr(start, "id", "start")),
+                            node_id=start_node_id,
                             conversation_id=str(conversation_id)
                             if conversation_id is not None
                             else None,
@@ -2017,7 +580,7 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
                     run_id=effective_run_id,
                     token_id=effective_run_id,
                     step_seq=0,
-                    node_id=str(getattr(start, "id", "start")),
+                    node_id=start_node_id,
                     attempt=1,
                     conversation_id=effective_conversation_id,
                     turn_node_id=effective_turn_node_id,
@@ -2061,44 +624,22 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
             pending_tokens: set[tuple[str, int, str, str | None]] = set()
             inflight_tokens: set[tuple[str, int, str, str | None]] = set()
             suspended_tokens: dict[str, tuple[str, int, str, str | None]] = {}
-            done_q: queue.Queue[
-                tuple[str, StepRunResult, int, str, str | None, str, int]
-            ] = queue.Queue()  # (node_id, result, duration_ms, token_id, parent_token_id, status, mask)
+            done_q: queue.Queue[CompletedStep] = queue.Queue()
             cancel_pending = False
             cancel_info: CancelInfo | None = None
             run_suspended = False
             run_failed = False
             run_errors: list[str] = []
 
-            graveyard: queue.Queue[
-                tuple[str, StepRunResult, int, str, str | None, str, int]
-            ] = queue.Queue()
+            graveyard: queue.Queue[CompletedStep] = queue.Queue()
 
-            # Tiny scheduler-only critical section:
-            # keep it on in-memory bookkeeping only. Never hold this across DB I/O,
-            # resolver/user code, queue blocking, or any await-like wait.
-            work_cond = threading.Condition()
-            work_counter = 0
-
-            def _work_add(count: int = 1) -> None:
-                nonlocal work_counter
-                if count <= 0:
-                    return
-                with work_cond:
-                    work_counter += count
-                    work_cond.notify_all()
-
-            def _work_done(count: int = 1) -> None:
-                nonlocal work_counter
-                if count <= 0:
-                    return
-                with work_cond:
-                    work_counter = max(0, work_counter - count)
-                    work_cond.notify_all()
-
-            def _work_snapshot() -> int:
-                with work_cond:
-                    return work_counter
+            # Keep the same scheduler-only condition boundary; never hold it
+            # across storage I/O, resolver code, or queue waits.
+            work_state = RuntimeWorkState()
+            work_cond = work_state.condition
+            _work_add = work_state.add
+            _work_done = work_state.done
+            _work_snapshot = work_state.snapshot
 
             def _persist_rt_join_runtime() -> None:
                 # Persist both pending + inflight as pending-on-resume (idempotent).
@@ -2221,204 +762,46 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
                 _work_add(1)
                 _persist_rt_join_runtime()
 
-            def worker(
-                node_id: str,
-                state: WorkflowState,
-                token_id: str,
-                parent_token_id: str | None,
-                step_seq: int,
-                mask: int,
-                cache_dir : str | PathLike | None = None
-            ) -> None:
+            def renew_run_ownership() -> None:
                 nonlocal ownership
+                ownership = self._renew_workflow_run(
+                    conversation_id=str(conversation_id),
+                    run_id=str(run_id),
+                    ownership=ownership,
+                )
 
-                t = threading.current_thread()
-                old_name = t.name
-                ctx = None
-                try:
-                    t.name = (
-                        f"rt-wf-{workflow_id}-wf-{run_id}-step-{step_seq}-{node_id}"
+            def apply_child_result(
+                state: WorkflowState,
+                invocation: WorkflowInvocationRequest,
+                child_result: RunResult,
+            ) -> None:
+                with self.state_lock[str(run_id)]:
+                    self._apply_workflow_invocation_result(
+                        state=state,
+                        invocation=invocation,
+                        child_result=child_result,
                     )
-                    wn: WorkflowNode
-                    wn = nodes[node_id]
-                    op = nodes[node_id].op
-                    t0 = _now_ms()
-                    status = "ok"
-                    with bind_log_context(step_id=f"{step_seq}-{node_id}", op=op):
-                        try:
-                            ctx = StepContext(
-                                run_id=str(run_id),
-                                workflow_id=str(workflow_id),
-                                workflow_node_id=str(node_id),
-                                op=str(op),
-                                token_id=str(token_id),
-                                attempt=1,
-                                step_seq=int(step_seq),
-                                conversation_id=str(conversation_id)
-                                if conversation_id is not None
-                                else None,
-                                turn_node_id=str(turn_node_id)
-                                if turn_node_id is not None
-                                else None,
-                                trace_context=(
-                                    run_trace_context.child_span(
-                                        token_id=str(token_id),
-                                        step_seq=int(step_seq),
-                                        node_id=str(node_id),
-                                        attempt=1,
-                                    )
-                                    if run_trace_context is not None
-                                    else None
-                                ),
-                                state=state,
-                                message_queue=mq,
-                                lane_message_sender=self.lane_message_sender,
-                                lane_message_event_sink=self.lane_message_event_sink,
-                                events=self.emitter,
-                                cache_dir=cache_dir,
-                                authority_context=(
-                                    _authority_context
-                                    if _authority_context is not None
-                                    else {"effective_capabilities": ()}
-                                ),
-                            )
-                            # step attempt start
-                            self.emitter.step_started(ctx.trace_ctx)
 
-                            if _cancel_requested():
-                                status = "cancelled"
-                                res = RunFailure(
-                                    conversation_node_id=None,
-                                    status="failure",
-                                    errors=["Run cancelled"],
-                                    state_update=[],
-                                )
-                            else:
-                                if _parent_lease_renew is not None:
-                                    _parent_lease_renew()
-                                fn: StepFn = self.step_resolver(
-                                    op
-                                )
+            worker = SyncStepWorker(
+                runtime=self,
+                workflow_id=str(workflow_id),
+                run_id=str(run_id),
+                conversation_id=conversation_id,
+                turn_node_id=turn_node_id,
+                nodes=nodes,
+                trace_context=run_trace_context,
+                message_queue=mq,
+                done_queue=done_q,
+                work_condition=work_cond,
+                authority_context=_authority_context,
+                cancel_requested=_cancel_requested,
+                parent_lease_renew=_parent_lease_renew,
+                renew_run_ownership=renew_run_ownership,
+                apply_child_result=apply_child_result,
+                now_ms=_now_ms,
+            )
 
-                                # Transaction boundary (best-effort): resolver is expected to call
-                                # engine methods; when backed by Postgres this ensures those writes
-                                # are committed or rolled back atomically for this step.
-                                with (
-                                    self.conversation_engine.uow()
-                                    if self._should_step_uow(op, state)
-                                    else __import__("contextlib").nullcontext()
-                                ):
-                                    res = fn(ctx)
-                                if getattr(res, "status", None) == "suspended":
-                                    status = "suspended"
-                                elif getattr(res, "status", None) == "failure":
-                                    status = "failure"
-                                else:
-                                    status = "ok"
-                                if status == "ok":
-                                    invocations = list(
-                                        getattr(res, "workflow_invocations", []) or []
-                                    )
-                                    for invocation in invocations:
-                                        ownership = self._renew_workflow_run(
-                                            conversation_id=str(conversation_id),
-                                            run_id=str(run_id),
-                                            ownership=ownership,
-                                        )
-                                        def renew_parent_lease() -> None:
-                                            nonlocal ownership
-                                            ownership = self._renew_workflow_run(
-                                                conversation_id=str(conversation_id),
-                                                run_id=str(run_id),
-                                                ownership=ownership,
-                                            )
-
-                                        child_result = self._run_workflow_invocation(
-                                            invocation=invocation,
-                                            parent_state=state,
-                                            conversation_id=str(conversation_id),
-                                            turn_node_id=str(turn_node_id),
-                                            parent_run_id=str(run_id),
-                                            cache_dir=cache_dir,
-                                            parent_trace_context=ctx.trace_ctx,
-                                            parent_authority_context=ctx.authority_context,
-                                            parent_lease_renew=renew_parent_lease,
-                                        )
-                                        renew_parent_lease()
-                                        if child_result.status != "succeeded":
-                                            status = "failure"
-                                            res = RunFailure(
-                                                conversation_node_id=None,
-                                                status="failure",
-                                                errors=[
-                                                    "Nested workflow "
-                                                    f"{invocation.workflow_id!r} "
-                                                    f"returned status {child_result.status!r}"
-                                                ]
-                                                + list(child_result.errors or []),
-                                                state_update=[],
-                                            )
-                                            break
-                                        run_state_lock = self.state_lock[str(run_id)]
-                                        with run_state_lock:
-                                            self._apply_workflow_invocation_result(
-                                                state=state,
-                                                invocation=invocation,
-                                                child_result=child_result,
-                                            )
-
-                        except Exception as e:
-                            status = "error"
-                            import traceback
-
-                            res = RunFailure(
-                                conversation_node_id=None,
-                                status="failure",
-                                errors=[str(e) + "\n" + traceback.format_exc()],
-                                state_update=[],
-                            )
-                        try:
-                            mq.put_nowait(res.model_dump())
-                        except queue.Full as _e:
-                            raise
-                        t1 = _now_ms()
-
-                        # step attempt complete (best-effort; never break worker)
-                        try:
-                            if ctx is None:
-                                raise ValueError('ctx is None')
-                            self.emitter.step_completed(
-                                ctx.trace_ctx,
-                                status=str(status),
-                                duration_ms=max(0, t1 - t0),
-                            )
-                        except Exception:
-                            status = "status_report_error"
-                        if status in ["error", "status_report_error"]:
-                            err_message = f"error on {node_id}, {res}"
-                            # to do, emit fail, then raise
-                            if getattr(wn, "fail_actiion", "raise") == "raise":
-                                raise Exception(err_message)
-
-                        done_q.put(
-                            (
-                                node_id,
-                                res,
-                                max(0, t1 - t0),
-                                token_id,
-                                parent_token_id,
-                                status,
-                                mask,
-                            )
-                        )
-                        with work_cond:
-                            work_cond.notify_all()
-                except Exception as _e:
-                    raise
-                finally:
-                    t.name = old_name
-
-            inflight: dict[tuple[str, int, str], Any] = {}
+            inflight: dict[tuple[str, int, str], Future[None]] = {}
             last_exec_node = (
                 _resume_last_exec_node
                 if _resume_last_exec_node is not None
@@ -2654,7 +1037,6 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
                         # If this is a join/barrier node, it doesn't execute immediately.
                         if nid in _join_waiters:
                             join_idx = _join_pos.get(nid)
-                            join_bit = _bit_for_join(nid)
                             released: tuple[int, str, str | None] | None = None
                             collapsed_work_items = 0
                             from kogwistar._rust_bridge import (
@@ -2710,37 +1092,16 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
                                 )
                                 outstanding = int(native_join["outstanding"])
                             else:
-                                if mask & join_bit:
-                                    _dec(join_bit)
-                                    mask = _mask_without_join(mask, nid)
-                                _join_waiters[nid].append(
-                                    (mask, token_id, parent_token_id)
+                                arrival = join_runtime.arrive(
+                                    nid,
+                                    mask,
+                                    token_id,
+                                    parent_token_id,
                                 )
-                                outstanding = (
-                                    int(_join_outstanding[join_idx])
-                                    if join_idx is not None
-                                    else 0
-                                )
-                                if not _join_is_merge[nid]:
-                                    released = (mask, token_id, parent_token_id)
-                                elif outstanding == 0:
-                                    waiters = list(_join_waiters.get(nid, []))
-                                    if waiters:
-                                        merged_mask = int(waiters[0][0])
-                                        for waiter_mask, _tok, _parent in waiters:
-                                            _dec(int(waiter_mask))
-                                        for waiter_mask, _tok, _parent in waiters[1:]:
-                                            merged_mask &= int(waiter_mask)
-                                        _inc(merged_mask)
-                                        released = (
-                                            merged_mask,
-                                            str(waiters[0][1]),
-                                            waiters[0][2],
-                                        )
-                                        collapsed_work_items = max(
-                                            0, len(waiters) - 1
-                                        )
-                                        _join_waiters[nid] = []
+                                mask = arrival.mask
+                                released = arrival.released
+                                collapsed_work_items = arrival.collapsed_work_items
+                                outstanding = arrival.outstanding
                                 if runtime_mode == "shadow" and native_join is not None:
                                     python_join = {
                                         "join_outstanding": list(_join_outstanding),
@@ -2893,10 +1254,9 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
                         status,
                         mask,
                     ) = done_task
-                    if status == "failure":
+                    if status == "failure" and isinstance(run_result, RunFailure):
                         run_errors.extend(
-                            str(error)
-                            for error in (getattr(run_result, "errors", []) or [])
+                            str(error) for error in run_result.errors
                         )
                     graveyard.put_nowait(done_task)
                     run_state_lock: Lock = self.state_lock[str(run_id)]
@@ -2905,14 +1265,11 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
                             self.apply_state_update(
                                 mute_state=state,
                                 state_update=run_result.state_update,
-                                update=getattr(run_result, "update", None),
+                                update=run_result.update,
                             )
 
-                    budget_ledger = None
-                    deps = state.get("_deps")
-                    if isinstance(deps, dict):
-                        budget_ledger = deps.get("budget_ledger")
-                    if isinstance(budget_ledger, StateBackedBudgetLedger):
+                    budget_ledger = budget_ledger_from_state(state)
+                    if budget_ledger is not None:
                         step_attribution = BudgetAttribution(
                             workspace_id=str(state.get("workspace_id") or "") or None,
                             source_document_id=str(
@@ -2975,29 +1332,21 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
                                     budget_ledger.ingest(evt)
                                 except Exception:
                                     pass
-                        if getattr(budget_ledger, "should_suspend_for_budget", None):
-                            try:
-                                if budget_ledger.should_suspend_for_budget():
-                                    budget_state = state.get("budget")
-                                    if isinstance(budget_state, dict):
-                                        ready_ms = getattr(
-                                            budget_ledger,
-                                            "rate_window_ready_ms",
-                                            None,
+                        try:
+                            if budget_ledger.should_suspend_for_budget():
+                                budget_state = state.get("budget")
+                                if isinstance(budget_state, dict):
+                                    ready_ms = budget_ledger.rate_window_ready_ms
+                                    if ready_ms is not None:
+                                        budget_state["budget_wait_until_ms"] = int(
+                                            ready_ms
                                         )
-                                        if ready_ms is not None:
-                                            budget_state["budget_wait_until_ms"] = int(
-                                                ready_ms
-                                            )
-                                            budget_state["budget_wait_reason"] = (
-                                                "rate_window"
-                                            )
-                                    if isinstance(state, dict):
-                                        state["wait_reason"] = "rate_window"
-                                    status = "suspended"
-                                    run_suspended = True
-                            except Exception:
-                                pass
+                                        budget_state["budget_wait_reason"] = "rate_window"
+                                state["wait_reason"] = "rate_window"
+                                status = "suspended"
+                                run_suspended = True
+                        except Exception:
+                            pass
 
                     inflight.pop((node_id, mask, str(token_id)), None)
                     inflight_tokens.discard(
@@ -3088,7 +1437,11 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
                         # When suspended, the token is parked here pending external resume.
                         # We DO NOT decrement the join obligations because the token still exists
                         # and will eventually reach downstream joins once resumed.
-                        wait_reason = getattr(run_result, "wait_reason", None)
+                        wait_reason = (
+                            run_result.wait_reason
+                            if isinstance(run_result, RunSuspended)
+                            else None
+                        )
                         if wait_reason:
                             state["wait_reason"] = str(wait_reason)
                         _persist_rt_join_runtime()
@@ -3097,7 +1450,7 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
                         _work_done(1)
 
                         # Emit specific suspension payload for client ingestion
-                        if hasattr(run_result, "resume_payload"):
+                        if isinstance(run_result, RunSuspended):
                             try:
                                 self.emitter.emit(
                                     type="workflow_step_suspended",
@@ -3106,7 +1459,7 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
                                         step_seq=int(step_seq_current),
                                         node_id=str(node_id),
                                     ),
-                                     payload=getattr(run_result, "resume_payload"),
+                                    payload=run_result.resume_payload,
                                 )
                             except Exception:
                                 pass
@@ -3154,29 +1507,22 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
                             ctx=tc,
                             payload={
                                 "evaluated": [
-                                    (a, bool(b))
-                                    for a, b in getattr(route_decision, "evaluated", [])
+                                    (name, bool(value))
+                                    for name, value in route_decision.evaluated
                                 ],
-                                "selected": [
-                                    (e, t, r)
-                                    for e, t, r in getattr(
-                                        route_decision, "selected", []
-                                    )
-                                ],
+                                "selected": list(route_decision.selected),
                                 "next_nodes": [str(x) for x in (next_nodes or [])],
                             },
                         )
                         # Also emit per-evaluation/per-selection events for telemetry consumers
-                        for pred_name, ok in getattr(route_decision, "evaluated", []):
+                        for pred_name, ok in route_decision.evaluated:
                             try:
                                 self.emitter.predicate_evaluated(
                                     tc, predicate=str(pred_name), value=bool(ok)
                                 )
                             except Exception:
                                 pass
-                        for edge_id, to_node_id, reason in getattr(
-                            route_decision, "selected", []
-                        ):
+                        for edge_id, to_node_id, reason in route_decision.selected:
                             try:
                                 self.emitter.edge_selected(
                                     tc,
@@ -3194,9 +1540,7 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
                     if status == "failure":
                         handled_failure = any(
                             reason in {"predicate", "explicit"}
-                            for _edge_id, _to_node_id, reason in getattr(
-                                route_decision, "selected", []
-                            )
+                            for _edge_id, _to_node_id, reason in route_decision.selected
                         )
                         if not handled_failure:
                             next_nodes = []
@@ -3459,1207 +1803,3 @@ class WorkflowRuntime(BaseRuntime[StepResolver]):
                     )
                     _work_done(1)
             raise Exception("unreacheable")
-
-    def _route_next(
-        self,
-        edges: list[WorkflowEdge],
-        state: WorkflowState,
-        last_result: StepRunResult,
-        fanout: bool,
-        nodes: Mapping[str, WorkflowNode] | None = None,
-    ) -> tuple[list[str], RouteDecision]:
-        """
-        Waterfall routing:
-
-          1) Evaluate explicit edge predicates (e.predicate != None) in order.
-             - Record *all* predicate evaluations (true/false) into RouteDecision.evaluated.
-             - Select the first matching edge unless fanout/multiplicity allows multiple.
-
-          2) If no predicate edges match, evaluate unconditional edges (e.predicate == None)
-             using BasePredicate (node-level "_route_next" decision).
-
-          3) If still nothing matches, pick any is_default edge.
-
-        Returns:
-          (next_node_ids, route_decision)
-
-        NOTE: This function is pure with respect to tracing; the caller is responsible
-        for emitting RouteDecision into the trace sink.
-        """
-        computed = self._compute_route_next_shared(
-            edges=list(edges),
-            state=state,
-            last_result=last_result,
-            fanout=fanout,
-            predicate_registry=self.predicate_registry,
-            nodes=nodes,
-        )
-        return computed.next_node_ids, RouteDecision(
-            evaluated=list(computed.evaluated),
-            selected=list(computed.selected),
-        )
-
-    # --------------------
-    # Persistence helpers (conversation_engine)
-    # --------------------
-
-    def _safe_get_conversation_nodes(
-        self, *, where: dict, limit: int = 1000
-    ) -> list[Any]:
-        try:
-            return list(self.conversation_engine.read.get_nodes(where=where, limit=limit))
-        except Exception as exc:
-            msg = str(exc)
-            if "Nothing found on disk" in msg or "hnsw segment reader" in msg:
-                return []
-            raise
-
-    def _find_eligible_cancel_request(
-        self,
-        *,
-        conversation_id: str,
-        run_id: str,
-    ) -> CancelInfo | None:
-        cancelled_nodes = self._safe_get_conversation_nodes(
-            where={"$and": [{"entity_type": "workflow_cancelled"}, {"run_id": run_id}]},
-            limit=1,
-        )
-        if cancelled_nodes:
-            return None
-
-        req_nodes = self._safe_get_conversation_nodes(
-            where={
-                "$and": [
-                    {"entity_type": "workflow_cancel_request"},
-                    {"run_id": run_id},
-                    {"conversation_id": conversation_id},
-                ]
-            },
-            limit=10_000,
-        )
-        if not req_nodes:
-            return None
-
-        watermark: int | None = None
-        metadata = self._runtime_metadata_store()
-        current_user_seq = (
-            getattr(metadata, "current_user_seq", None) if metadata is not None else None
-        )
-        if callable(current_user_seq):
-            try:
-                watermark = int(
-                    cast(CurrentUserSequenceStore, metadata).current_user_seq(
-                        conversation_id
-                    )
-                )
-            except (TypeError, ValueError, RuntimeError):
-                watermark = None
-
-        req_best: CancelInfo | None = None
-        for node in req_nodes:
-            md = getattr(node, "metadata", {}) or {}
-            if not isinstance(md, Mapping):
-                continue
-            seq = _json_int(md.get("seq"), default=-1)
-            if seq < 0:
-                continue
-            if watermark is not None and seq > watermark:
-                continue
-            node_id = getattr(node, "id", "")
-            if not isinstance(node_id, str) or not node_id:
-                continue
-            best_seq = req_best["seq"] if req_best is not None else None
-            if req_best is None or best_seq is None or seq < best_seq:
-                req_best = {
-                    "source": "graph",
-                    "node_id": node_id,
-                    "seq": seq,
-                    "watermark": watermark,
-                }
-        return req_best
-
-    def _conversation_backend(self) -> ConversationBackendLike | None:
-        backend = getattr(self.conversation_engine, "backend", None)
-        return cast(ConversationBackendLike, backend) if backend is not None else None
-
-    def _runtime_metadata_store(self) -> RuntimeMetadataStore | None:
-        """Return the optional metadata adapter after one capability check.
-
-        The engine supports legacy and backend-specific metadata adapters. Keep
-        that compatibility discovery at this boundary; recovery code below then
-        uses the typed protocol instead of repeatedly reading untyped attributes.
-        """
-        metadata = getattr(self.conversation_engine, "meta_sqlite", None)
-        if metadata is None:
-            return None
-        required = (
-            "get_named_projection",
-            "compare_and_swap_named_projection",
-            "replace_named_projection",
-            "get_latest_entity_event_seq",
-        )
-        if not all(callable(getattr(metadata, name, None)) for name in required):
-            return None
-        return cast(RuntimeMetadataStore, metadata)
-
-    def _conversation_namespace(self) -> str:
-        """Read the engine namespace across legacy test and adapter doubles."""
-        namespace = getattr(self.conversation_engine, "namespace", "default")
-        return namespace if isinstance(namespace, str) and namespace else "default"
-
-    def _terminal_run_result(
-        self, *, conversation_id: str, run_id: str
-    ) -> RunResult | None:
-        """Rehydrate a terminal child result instead of running its action again."""
-        terminal_types = (
-            ("workflow_completed", "succeeded"),
-            ("workflow_failed", "failure"),
-            ("workflow_cancelled", "cancelled"),
-        )
-        terminal_metadata: JsonObject | None = None
-        status: str | None = None
-        for entity_type, candidate_status in terminal_types:
-            nodes = self.conversation_engine.read.get_nodes(
-                where={
-                    "$and": [
-                        {"entity_type": entity_type},
-                        {"run_id": str(run_id)},
-                    ]
-                },
-                limit=1,
-            )
-            if nodes:
-                terminal_metadata = dict(nodes[0].metadata)
-                status = candidate_status
-                break
-        if status is None:
-            return None
-        checkpoint = self._latest_checkpoint_for_run(
-            conversation_id=conversation_id, run_id=str(run_id)
-        )
-        state: WorkflowState = {}
-        if checkpoint is not None:
-            raw_state = checkpoint.metadata.get("state_json")
-            if isinstance(raw_state, str):
-                loaded = json.loads(raw_state)
-                if isinstance(loaded, dict):
-                    state = loaded
-            elif isinstance(raw_state, dict):
-                state = dict(raw_state)
-        return RunResult(
-            run_id=str(run_id),
-            final_state=state,
-            mq=queue.Queue(),
-            status=status,
-            errors=_json_string_list(
-                terminal_metadata.get("errors")
-                if isinstance(terminal_metadata, Mapping)
-                else None
-            ),
-        )
-
-    def _conversation_node_exists(self, node_id: str) -> bool:
-        backend = self._conversation_backend()
-        if backend is not None:
-            existing = run_awaitable_blocking(backend.node_get(ids=[node_id], include=[]))
-            return bool(existing.get("ids"))
-
-        try:
-            return bool(self.conversation_engine.read.node_exists(ids=[node_id]))
-        except Exception:
-            nodes = getattr(self.conversation_engine, "nodes", [])
-            return any(
-                str(getattr(node, "id", "") or "") == node_id for node in (nodes or [])
-            )
-
-    def _conversation_edge_exists(self, edge_id: str) -> bool:
-        backend = self._conversation_backend()
-        if backend is not None:
-            existing = run_awaitable_blocking(backend.edge_get(ids=[edge_id], include=[]))
-            return bool(existing.get("ids"))
-
-        try:
-            return bool(self.conversation_engine.read.edge_exists(ids=[edge_id]))
-        except Exception:
-            edges = getattr(self.conversation_engine, "edges", [])
-            return any(
-                str(getattr(edge, "id", "") or "") == edge_id for edge in (edges or [])
-            )
-
-    def _latest_checkpoint_for_run(
-        self,
-        *,
-        conversation_id: str,
-        run_id: str,
-    ) -> WorkflowCheckpointNode | None:
-        metadata = self._runtime_metadata_store()
-        if metadata is not None:
-            row = metadata.get_named_projection(
-                workflow_checkpoint_latest_projection_namespace(conversation_id),
-                str(run_id),
-            )
-            row_map: Mapping[str, JsonValue] = row if row is not None else {}
-            payload_value = row_map.get("payload")
-            payload: JsonObject = (
-                dict(payload_value) if isinstance(payload_value, dict) else {}
-            )
-            node_id = str(payload.get("node_id") or "")
-            if node_id:
-                nodes = self.conversation_engine.read.get_nodes(ids=[node_id], limit=1)
-                if nodes:
-                    return cast(WorkflowCheckpointNode, nodes[0])
-            checkpoint_metadata = payload.get("checkpoint_metadata")
-            if isinstance(checkpoint_metadata, dict):
-                return self._checkpoint_node_from_projection(
-                    conversation_id=conversation_id,
-                    run_id=str(run_id),
-                    node_id=node_id,
-                    metadata=checkpoint_metadata,
-                )
-
-        ckpts = self.conversation_engine.read.get_nodes(
-            where={
-                "$and": [
-                    {"entity_type": "workflow_checkpoint"},
-                    {"run_id": str(run_id)},
-                ]
-            },
-        )
-        if not ckpts:
-            return None
-        return cast(
-            WorkflowCheckpointNode,
-            max(
-                ckpts,
-                key=lambda c: _json_int(c.metadata.get("step_seq"), default=-1),
-            ),
-        )
-
-    def _checkpoint_node_from_projection(
-        self,
-        *,
-        conversation_id: str,
-        run_id: str,
-        node_id: str,
-        metadata: Mapping[str, JsonValue],
-    ) -> WorkflowCheckpointNode:
-        """Rebuild a checkpoint when the graph projection is not durable.
-
-        The metadata projection is the durable recovery record.  A graph backend
-        may be volatile (for example the in-memory backend used by lightweight
-        deployments), so recovery must not depend on the checkpoint node still
-        being present there.
-        """
-        checkpoint_metadata = dict(metadata)
-        checkpoint_metadata.setdefault("conversation_id", str(conversation_id))
-        checkpoint_metadata.setdefault("level_from_root", 0)
-        checkpoint_metadata.setdefault("checkpoint_schema_version", self.CHECKPOINT_SCHEMA_VERSION)
-        validated = WorkflowCheckpointMetadata.model_validate(checkpoint_metadata)
-        if validated.run_id != str(run_id):
-            raise ValueError("durable checkpoint projection run_id does not match lookup")
-        projected_conversation_id = checkpoint_metadata.get("conversation_id")
-        if projected_conversation_id is not None and str(projected_conversation_id) != str(
-            conversation_id
-        ):
-            raise ValueError(
-                "durable checkpoint projection conversation_id does not match lookup"
-            )
-        checkpoint_id = str(node_id or "")
-        if not checkpoint_id:
-            checkpoint_id = f"wf_ckpt|{validated.run_id}|{validated.step_seq}"
-        excerpt = f"checkpoint step_seq={validated.step_seq}"
-        span = Span(**_make_trace_span(
-            conversation_id=str(conversation_id),
-            excerpt=excerpt,
-            doc_id=f"conv:{conversation_id}",
-        ))
-        return WorkflowCheckpointNode(
-            id=checkpoint_id,
-            label=f"WF checkpoint {validated.step_seq}",
-            type="entity",
-            doc_id=checkpoint_id,
-            summary=excerpt,
-            mentions=[Grounding(spans=[span])],
-            properties={},
-            metadata=checkpoint_metadata,
-            domain_id=None,
-            canonical_entity_id=None,
-            embedding=None,
-            level_from_root=0,
-        )
-
-    def _claim_workflow_run(
-        self,
-        *,
-        conversation_id: str,
-        workflow_id: str,
-        run_id: str,
-        allow_resume_takeover: bool = False,
-    ) -> RunOwnership | None:
-        metadata = self._runtime_metadata_store()
-        if metadata is None:
-            return None
-        try:
-            return claim_run_ownership(
-                metadata,
-                namespace=workflow_run_ownership_projection_namespace(conversation_id),
-                run_id=run_id,
-                workflow_id=workflow_id,
-                conversation_id=conversation_id,
-                allow_resume_takeover=allow_resume_takeover,
-                lease_ms=self.run_ownership_lease_ms,
-            )
-        except RunOwnershipConflict as exc:
-            raise WorkflowRunOwnershipError(str(exc)) from exc
-
-    def _renew_workflow_run(
-        self,
-        *,
-        conversation_id: str,
-        run_id: str,
-        ownership: RunOwnership | None,
-    ) -> RunOwnership | None:
-        if ownership is None:
-            return None
-        metadata = self._runtime_metadata_store()
-        if metadata is None:
-            return ownership
-        try:
-            return renew_run_ownership(
-                metadata,
-                namespace=workflow_run_ownership_projection_namespace(conversation_id),
-                run_id=run_id,
-                ownership=ownership,
-                lease_ms=self.run_ownership_lease_ms,
-            )
-        except RunOwnershipConflict as exc:
-            raise WorkflowRunOwnershipError(str(exc)) from exc
-
-    def _release_workflow_run_for_resume(
-        self,
-        *,
-        conversation_id: str,
-        run_id: str,
-        ownership: RunOwnership | None,
-    ) -> None:
-        if ownership is None:
-            return
-        metadata = self._runtime_metadata_store()
-        if metadata is None:
-            return
-        if not release_run_ownership_for_resume(
-            metadata,
-            namespace=workflow_run_ownership_projection_namespace(conversation_id),
-            run_id=run_id,
-            ownership=ownership,
-        ):
-            raise WorkflowRunOwnershipError(
-                f"workflow run {run_id!r} ownership was lost while suspending"
-            )
-
-    def _replace_runtime_projection(
-        self,
-        *,
-        namespace: str,
-        key: str,
-        payload: JsonObject,
-        materialization_status: str = "ready",
-    ) -> None:
-        metadata = self._runtime_metadata_store()
-        if metadata is None:
-            return
-        latest_seq = 0
-        try:
-            latest_seq = metadata.get_latest_entity_event_seq(
-                namespace=self._conversation_namespace()
-            )
-        except (TypeError, ValueError, RuntimeError):
-            latest_seq = 0
-        metadata.replace_named_projection(
-            namespace=namespace,
-            key=str(key),
-            payload=payload,
-            last_authoritative_seq=latest_seq,
-            last_materialized_seq=latest_seq,
-            projection_schema_version=WORKFLOW_RUNTIME_PROJECTION_SCHEMA_VERSION,
-            materialization_status=materialization_status,
-        )
-
-    def _replace_checkpoint_latest_projection(
-        self,
-        *,
-        conversation_id: str,
-        workflow_id: str,
-        run_id: str,
-        step_seq: int,
-        node_id: str,
-        checkpoint_metadata: Mapping[str, JsonValue],
-    ) -> None:
-        self._replace_runtime_projection(
-            namespace=workflow_checkpoint_latest_projection_namespace(conversation_id),
-            key=str(run_id),
-            payload={
-                "entity_type": "workflow_checkpoint",
-                "run_id": str(run_id),
-                "workflow_id": str(workflow_id),
-                "conversation_id": str(conversation_id),
-                "step_seq": int(step_seq),
-                "node_id": str(node_id),
-                "checkpoint_metadata": dict(checkpoint_metadata),
-            },
-        )
-
-    def _replace_run_status_projection(
-        self,
-        *,
-        conversation_id: str,
-        workflow_id: str,
-        run_id: str,
-        status: str,
-        node_id: str,
-        accepted_step_seq: int,
-    ) -> None:
-        self._replace_runtime_projection(
-            namespace=workflow_run_status_projection_namespace(conversation_id),
-            key=str(run_id),
-            payload={
-                "run_id": str(run_id),
-                "workflow_id": str(workflow_id),
-                "conversation_id": str(conversation_id),
-                "status": str(status),
-                "terminal": str(status) in {"completed", "failed", "cancelled"},
-                "terminal_node_id": str(node_id),
-                "accepted_step_seq": int(accepted_step_seq),
-            },
-            materialization_status=str(status),
-        )
-
-    def _persist_cancelled_terminal(
-        self,
-        *,
-        conversation_id: str,
-        workflow_id: str,
-        run_id: str,
-        accepted_step_seq: int,
-        cancel_info: CancelInfo | None,
-        last_processed_node_id: str | None = None,
-    ) -> str:
-        node_id = f"wf_cancelled|{run_id}"
-        if self._conversation_node_exists(node_id):
-            self._replace_run_status_projection(
-                conversation_id=conversation_id,
-                workflow_id=workflow_id,
-                run_id=run_id,
-                status="cancelled",
-                node_id=node_id,
-                accepted_step_seq=accepted_step_seq,
-            )
-            return node_id
-
-        req_node_id = None if not cancel_info else str(cancel_info.get("node_id") or "")
-        req_seq = None if not cancel_info else cancel_info.get("seq")
-        watermark = None if not cancel_info else cancel_info.get("watermark")
-        excerpt = (
-            f"workflow cancelled run_id={run_id} accepted_step_seq={accepted_step_seq}"
-        )
-        span = Span(
-            **_make_trace_span(
-                conversation_id=conversation_id,
-                excerpt=excerpt,
-                doc_id=f"conv:{conversation_id}",
-            )
-        )
-        node = WorkflowCancelledNode(
-            id=node_id,
-            label="Workflow cancelled",
-            type="entity",
-            doc_id=node_id,
-            summary=excerpt,
-            mentions=[Grounding(spans=[span])],
-            properties={"entity_type": "workflow_cancelled"},
-            metadata={
-                "entity_type": "workflow_cancelled",
-                "workflow_id": workflow_id,
-                "run_id": run_id,
-                "conversation_id": conversation_id,
-                "accepted_step_seq": int(accepted_step_seq),
-                "cancel_request_node_id": req_node_id or None,
-                "cancel_request_seq": req_seq,
-                "accepted_watermark": watermark,
-                "last_processed_node_id": (
-                    str(last_processed_node_id) if last_processed_node_id else None
-                ),
-                "level_from_root": 0,
-            },
-            level_from_root=0,
-            domain_id=None,
-            canonical_entity_id=None,
-            embedding=None,
-        )
-        with self._trace_write_mode():
-            self.conversation_engine.write.add_node(node)
-
-            run_node_id = f"wf_run|{run_id}"
-            if self._conversation_node_exists(run_node_id):
-                edge_id = str(stable_id("workflow.edge", "cancelled", run_node_id, node_id))
-                if not self._conversation_edge_exists(edge_id):
-                    edge = _make_runtime_edge(
-                        edge_id=edge_id,
-                        relation="wf_cancelled",
-                        label="wf_cancelled",
-                        summary="workflow cancelled",
-                        doc_id=f"wf_cancelled|{run_id}",
-                        conversation_id=conversation_id,
-                        source_ids=[run_node_id],
-                        target_ids=[node_id],
-                        mentions=[Grounding(spans=[Span.from_dummy_for_conversation()])],
-                        run_id=run_id,
-                    )
-                    self.conversation_engine.write.add_edge(edge)
-
-            if req_node_id:
-                req_edge_id = str(
-                    stable_id("workflow.edge", "cancel_reconciled", req_node_id, node_id)
-                )
-                if not self._conversation_edge_exists(req_edge_id):
-                    req_edge = _make_runtime_edge(
-                        edge_id=req_edge_id,
-                        relation="wf_cancel_reconciled",
-                        label="wf_cancel_reconciled",
-                        summary="cancel request reconciled",
-                        doc_id=f"wf_cancelled|{run_id}",
-                        conversation_id=conversation_id,
-                        source_ids=[req_node_id],
-                        target_ids=[node_id],
-                        mentions=[Grounding(spans=[Span.from_dummy_for_conversation()])],
-                        run_id=run_id,
-                    )
-                    self.conversation_engine.write.add_edge(req_edge)
-
-            if last_processed_node_id:
-                cancelled_at_edge_id = str(
-                    stable_id(
-                        "workflow.edge",
-                        "cancelled_at",
-                        node_id,
-                        str(last_processed_node_id),
-                    )
-                )
-                if not self._conversation_edge_exists(cancelled_at_edge_id):
-                    cancelled_at_edge = _make_runtime_edge(
-                        edge_id=cancelled_at_edge_id,
-                        relation="wf_cancelled_at",
-                        label="wf_cancelled_at",
-                        summary="workflow cancelled at node",
-                        doc_id=f"wf_cancelled|{run_id}",
-                        conversation_id=conversation_id,
-                        source_ids=[node_id],
-                        target_ids=[str(last_processed_node_id)],
-                        mentions=[Grounding(spans=[Span.from_dummy_for_conversation()])],
-                        run_id=run_id,
-                    )
-                    self.conversation_engine.write.add_edge(cancelled_at_edge)
-            self._replace_run_status_projection(
-                conversation_id=conversation_id,
-                workflow_id=workflow_id,
-                run_id=run_id,
-                status="cancelled",
-                node_id=node_id,
-                accepted_step_seq=accepted_step_seq,
-            )
-        return node_id
-
-    def _persist_completed_terminal(
-        self,
-        *,
-        conversation_id: str,
-        workflow_id: str,
-        run_id: str,
-        accepted_step_seq: int,
-        last_processed_node_id: str | None = None,
-    ) -> str:
-        node_id = f"wf_completed|{run_id}"
-        if self._conversation_node_exists(node_id):
-            self._replace_run_status_projection(
-                conversation_id=conversation_id,
-                workflow_id=workflow_id,
-                run_id=run_id,
-                status="completed",
-                node_id=node_id,
-                accepted_step_seq=accepted_step_seq,
-            )
-            return node_id
-
-        excerpt = (
-            f"workflow completed run_id={run_id} accepted_step_seq={accepted_step_seq}"
-        )
-        span = Span(
-            **_make_trace_span(
-                conversation_id=conversation_id,
-                excerpt=excerpt,
-                doc_id=f"conv:{conversation_id}",
-            )
-        )
-        node = WorkflowCompletedNode(
-            id=node_id,
-            label="Workflow completed",
-            type="entity",
-            doc_id=node_id,
-            summary=excerpt,
-            mentions=[Grounding(spans=[span])],
-            properties={"entity_type": "workflow_completed"},
-            metadata={
-                "entity_type": "workflow_completed",
-                "workflow_id": workflow_id,
-                "run_id": run_id,
-                "conversation_id": conversation_id,
-                "accepted_step_seq": int(accepted_step_seq),
-                "last_processed_node_id": (
-                    str(last_processed_node_id) if last_processed_node_id else None
-                ),
-                "level_from_root": 0,
-            },
-            level_from_root=0,
-            domain_id=None,
-            canonical_entity_id=None,
-            embedding=None,
-        )
-        with self._trace_write_mode():
-            self.conversation_engine.write.add_node(node)
-
-            run_node_id = f"wf_run|{run_id}"
-            if self._conversation_node_exists(run_node_id):
-                edge_id = str(stable_id("workflow.edge", "completed", run_node_id, node_id))
-                if not self._conversation_edge_exists(edge_id):
-                    edge = _make_runtime_edge(
-                        edge_id=edge_id,
-                        relation="wf_completed",
-                        label="wf_completed",
-                        summary="workflow completed",
-                        doc_id=f"wf_completed|{run_id}",
-                        conversation_id=conversation_id,
-                        source_ids=[run_node_id],
-                        target_ids=[node_id],
-                        mentions=[Grounding(spans=[Span.from_dummy_for_conversation()])],
-                        run_id=run_id,
-                    )
-                    self.conversation_engine.write.add_edge(edge)
-            self._replace_run_status_projection(
-                conversation_id=conversation_id,
-                workflow_id=workflow_id,
-                run_id=run_id,
-                status="completed",
-                node_id=node_id,
-                accepted_step_seq=accepted_step_seq,
-            )
-        return node_id
-
-    def _persist_failed_terminal(
-        self,
-        *,
-        conversation_id: str,
-        workflow_id: str,
-        run_id: str,
-        accepted_step_seq: int,
-        errors: list[str] | None,
-        last_processed_node_id: str | None = None,
-    ) -> str:
-        node_id = f"wf_failed|{run_id}"
-        if self._conversation_node_exists(node_id):
-            self._replace_run_status_projection(
-                conversation_id=conversation_id,
-                workflow_id=workflow_id,
-                run_id=run_id,
-                status="failed",
-                node_id=node_id,
-                accepted_step_seq=accepted_step_seq,
-            )
-            return node_id
-
-        safe_errors = [str(err) for err in (errors or [])]
-        excerpt = f"workflow failed run_id={run_id} accepted_step_seq={accepted_step_seq}"
-        if safe_errors:
-            excerpt += f" errors={len(safe_errors)}"
-        span = Span(
-            **_make_trace_span(
-                conversation_id=conversation_id,
-                excerpt=excerpt,
-                doc_id=f"conv:{conversation_id}",
-            )
-        )
-        metadata = {
-            "entity_type": "workflow_failed",
-            "workflow_id": workflow_id,
-            "run_id": run_id,
-            "conversation_id": conversation_id,
-            "accepted_step_seq": int(accepted_step_seq),
-            "last_processed_node_id": (
-                str(last_processed_node_id) if last_processed_node_id else None
-            ),
-            "level_from_root": 0,
-        }
-        if safe_errors:
-            metadata["errors"] = safe_errors
-
-        node = WorkflowFailedNode(
-            id=node_id,
-            label="Workflow failed",
-            type="entity",
-            doc_id=node_id,
-            summary=excerpt,
-            mentions=[Grounding(spans=[span])],
-            properties={"entity_type": "workflow_failed"},
-            metadata=metadata,
-            level_from_root=0,
-            domain_id=None,
-            canonical_entity_id=None,
-            embedding=None,
-        )
-        with self._trace_write_mode():
-            self.conversation_engine.write.add_node(node)
-
-            run_node_id = f"wf_run|{run_id}"
-            if self._conversation_node_exists(run_node_id):
-                edge_id = str(stable_id("workflow.edge", "failed", run_node_id, node_id))
-                if not self._conversation_edge_exists(edge_id):
-                    edge = _make_runtime_edge(
-                        edge_id=edge_id,
-                        relation="wf_failed",
-                        label="wf_failed",
-                        summary="workflow failed",
-                        doc_id=f"wf_failed|{run_id}",
-                        conversation_id=conversation_id,
-                        source_ids=[run_node_id],
-                        target_ids=[node_id],
-                        mentions=[Grounding(spans=[Span.from_dummy_for_conversation()])],
-                        run_id=run_id,
-                    )
-                    self.conversation_engine.write.add_edge(edge)
-
-            if last_processed_node_id:
-                failed_at_edge_id = str(
-                    stable_id(
-                        "workflow.edge",
-                        "failed_at",
-                        node_id,
-                        str(last_processed_node_id),
-                    )
-                )
-                if not self._conversation_edge_exists(failed_at_edge_id):
-                    failed_at_edge = _make_runtime_edge(
-                        edge_id=failed_at_edge_id,
-                        relation="wf_failed_at",
-                        label="wf_failed_at",
-                        summary="workflow failed at node",
-                        doc_id=f"wf_failed|{run_id}",
-                        conversation_id=conversation_id,
-                        source_ids=[node_id],
-                        target_ids=[str(last_processed_node_id)],
-                        mentions=[Grounding(spans=[Span.from_dummy_for_conversation()])],
-                        run_id=run_id,
-                    )
-                    self.conversation_engine.write.add_edge(failed_at_edge)
-            self._replace_run_status_projection(
-                conversation_id=conversation_id,
-                workflow_id=workflow_id,
-                run_id=run_id,
-                status="failed",
-                node_id=node_id,
-                accepted_step_seq=accepted_step_seq,
-            )
-        return node_id
-
-    def _persist_workflow_run(
-        self,
-        conversation_id: str,
-        workflow_id: str,
-        run_id: str,
-        turn_node_id: str,
-        status: str,
-        run_metadata: Mapping[str, Any] | None = None,
-        trace_context: TraceContext | None = None,
-    ) -> WorkflowRunNode: 
-        # current engine always persist on edit, no batch persist mode needed
-        from kogwistar.engine_core.models import (
-            Grounding,
-            Span,
-        )  # adjust import path to your package layout
-
-        excerpt = f"workflow_run {workflow_id} {run_id} status={status}"
-        span = Span(
-            **_make_trace_span(
-                conversation_id=conversation_id,
-                excerpt=excerpt,
-                doc_id=f"conv:{conversation_id}",
-            )
-        )
-        metadata = {
-            "entity_type": "workflow_run",
-            "doc_id": f"wf_run|{run_id}",
-            "workflow_id": workflow_id,
-            "workflow_version": "v1",
-            "run_id": run_id,
-            "conversation_id": conversation_id,
-            "turn_node_id": turn_node_id,
-            "status": status,
-            "level_from_root": 0,
-        }
-        try:
-            existing = self.conversation_engine.read.get_nodes(
-                ids=[f"wf_run|{run_id}"], limit=1
-            )
-            existing_metadata = dict(getattr(existing[0], "metadata", {}) or {}) if existing else {}
-        except Exception:
-            existing_metadata = {}
-        for key, value in existing_metadata.items():
-            metadata.setdefault(str(key), value)
-        for key, value in (run_metadata or {}).items():
-            if key not in metadata and value is not None:
-                metadata[str(key)] = value
-        if metadata.get("parent_run_id"):
-            metadata.setdefault(
-                "wf_invoked",
-                {
-                    "parent_run_id": str(metadata["parent_run_id"]),
-                    "workflow_id": str(workflow_id),
-                },
-            )
-        if trace_context is not None and trace_context.has_valid_w3c_ids:
-            metadata["trace_id"] = trace_context.trace_id
-            metadata["run_execution_span_id"] = trace_context.span_id
-            if trace_context.parent_span_id is not None:
-                metadata["parent_span_id"] = trace_context.parent_span_id
-        n = WorkflowRunNode(
-            id=f"wf_run|{run_id}",
-            label=f"Workflow run {workflow_id}",
-            type="entity",
-            doc_id=f"wf_run|{run_id}",
-            summary=excerpt,
-            mentions=[Grounding(spans=[span])],
-            properties={},
-            metadata=metadata,
-            level_from_root=0,
-            domain_id=None,
-            canonical_entity_id=None,
-            embedding=None,
-        )
-        with self._trace_write_mode():
-            self.conversation_engine.write.add_node(n)
-        return n
-
-    # def _update_workflow_run_status(self, conversation_id: str, run_id: str, status: str) -> None:
-    #     node_id = f"wf_run|{run_id}"
-    #     got = self.conversation_engine.get_nodes(ids=[node_id], limit=1)
-    #     if not got:
-    #         return
-    #     node = got[0]
-    #     node.metadata = dict(getattr(node, "metadata", {}) or {})
-    #     node.metadata["status"] = status
-    #     node.summary = f"workflow_run {node.metadata.get('workflow_id', '')} {run_id} status={status}"
-    #     try:
-    #         props = dict(getattr(node, "properties", {}) or {})
-    #         props["status"] = status
-    #         node.properties = props
-    #     except Exception:
-    #         pass
-    #     self.conversation_engine.write.add_node(node)
-
-    def _persist_step_exec(
-        self,
-        conversation_id: str,
-        workflow_id: str,
-        run_id: str,
-        step_seq: int,
-        workflow_node_id: str,
-        op: str,
-        status: str,
-        duration_ms: int,
-        result: StepRunResult,
-        state: WorkflowState,
-        token_id: str | None = None,
-        parent_token_id: str | None = None,
-        join_mask: int | None = None,
-        last_exec_node: WorkflowStepExecNode | WorkflowRunNode | None = None,
-    ) -> WorkflowStepExecNode:
-        # from kogwistar.models import WorkflowStepExecNode, Grounding, Span  # adjust import path
-
-        result_json = try_serialize_with_ref(result)
-        workspace_id = str(state.get("workspace_id") or "").strip()
-
-        excerpt = (
-            f"{dict(step=step_seq, op=op, status=status, duration_ms=duration_ms)}"
-        )
-        span = Span(
-            **_make_trace_span(
-                conversation_id=conversation_id,
-                excerpt=excerpt,
-                doc_id=f"conv:{conversation_id}",
-            )
-        )
-
-        n = WorkflowStepExecNode(
-            id=f"wf_step|{run_id}|{step_seq}",
-            label=f"WF step {step_seq}: {op}",
-            type="entity",
-            doc_id=f"wf_step|{run_id}|{step_seq}",
-            summary=excerpt,
-            mentions=[Grounding(spans=[span])],
-            properties={},
-            level_from_root=0,
-            domain_id=None,
-            canonical_entity_id=None,
-            embedding=None,
-            metadata={
-                "entity_type": "workflow_step_exec",
-                "run_id": run_id,
-                "workflow_id": workflow_id,
-                "workflow_node_id": workflow_node_id,
-                "step_seq": step_seq,
-                "op": op,
-                "status": status,
-                "duration_ms": duration_ms,
-                "result_json": result_json,
-                "token_id": token_id,
-                "parent_token_id": parent_token_id,
-                "join_mask": join_mask,
-                "conversation_id": conversation_id,
-                "char_distance_from_last_summary": 0,
-                "turn_distance_from_last_summary": 0,
-                # "tail_turn_index": state["prev_turn_meta_summary"]["tail_turn_index"]
-            },
-        )
-        if workspace_id:
-            n.metadata["workspace_id"] = workspace_id
-        with self._trace_write_mode():
-            self.conversation_engine.write.add_node(n)
-            if result.conversation_node_id:
-                self_span = Span(
-                    collection_page_url=f"conversation/{conversation_id}",
-                    document_page_url=f"conversation/{conversation_id}#{n.id}",
-                    doc_id=f"conv:{conversation_id}",
-                    insertion_method="step_exec",
-                    page_number=1,
-                    start_char=0,
-                    end_char=len(n.summary),
-                    excerpt=n.summary,
-                    context_before="",
-                    context_after="",
-                    chunk_id=None,
-                    source_cluster_id=None,
-                    verification=MentionVerification(
-                        method="system",
-                        is_verified=True,
-                        score=1.0,
-                        notes="step run result",
-                    ),
-                )
-            # eid = f"wf_interstep_edge|{run_id}|{step_seq}|{result.conversation_node_id}"
-            # e = ConversationEdge(id = eid, type = 'relationship', summary = f"results during {result.conversation_node_id}",
-            #                      domain_id=None, label='run_result',
-            #                      properties={},
-            #                      mentions=[Grounding(spans=[self_span])], canonical_entity_id=None,
-            #                      source_ids=[n.safe_get_id()], target_ids=[result.conversation_node_id],
-            #                      relation="run_result", source_edge_ids = [], target_edge_ids = [], embedding = None,
-            #                      doc_id = f"wf_step|{run_id}|{step_seq}",
-            #                      metadata={"relation":"run_result",
-            #                                "source_id":[n.id],
-            #                                "target_id":result.conversation_node_id,
-            #                                "char_distance_from_last_summary": 0,
-            #                                "turn_distance_from_last_summary": 0,
-            #
-            #                                },
-            #                      )
-            # self.conversation_engine.write.add_edge(e)
-            if last_exec_node:
-                content = f"{last_exec_node.safe_get_id()} next is {n.safe_get_id()}"
-                self_span = Span(
-                    collection_page_url=f"conversation/{conversation_id}",
-                    document_page_url=f"conversation/{conversation_id}#{n.id}",
-                    doc_id=f"conv:{conversation_id}",
-                    insertion_method="step_exec",
-                    page_number=1,
-                    start_char=0,
-                    end_char=len(content),
-                    excerpt=content,
-                    context_before="",
-                    context_after="",
-                    chunk_id=None,
-                    source_cluster_id=None,
-                    verification=MentionVerification(
-                        method="system",
-                        is_verified=True,
-                        score=1.0,
-                        notes="step run execution",
-                    ),
-                )
-                eid = f"wf_next_step_exec|{run_id}|{step_seq}|last::{last_exec_node.safe_get_id()}|to::{n.safe_get_id()}"
-                e = _make_runtime_edge(
-                    edge_id=eid,
-                    relation="wf_next_step_exec",
-                    label=f"wf_next_step_exec {step_seq=}",
-                    summary=f"wf_next_step_exec {step_seq=}",
-                    doc_id=f"wf_next_step_exec|{run_id}|{step_seq}",
-                    conversation_id=conversation_id,
-                    source_ids=[last_exec_node.safe_get_id()],
-                    target_ids=[n.safe_get_id()],
-                    mentions=[Grounding(spans=[self_span])],
-                    run_id=run_id,
-                    metadata={
-                        "source_id": [last_exec_node.safe_get_id()],
-                        "target_id": [n.safe_get_id()],
-                        "char_distance_from_last_summary": 0,
-                        "turn_distance_from_last_summary": 0,
-                    },
-                )
-                self.conversation_engine.write.add_edge(e)
-            if result.conversation_node_id:
-                content = f"{n.safe_get_id()} created {result.conversation_node_id} durign execution"
-                self_span = Span(
-                    collection_page_url=f"conversation/{conversation_id}",
-                    document_page_url=f"conversation/{conversation_id}#{n.id}",
-                    doc_id=f"conv:{conversation_id}",
-                    insertion_method="step_exec",
-                    page_number=1,
-                    start_char=0,
-                    end_char=len(content),
-                    excerpt=content,
-                    context_before="",
-                    context_after="",
-                    chunk_id=None,
-                    source_cluster_id=None,
-                    verification=MentionVerification(
-                        method="system",
-                        is_verified=True,
-                        score=1.0,
-                        notes="step execution created node",
-                    ),
-                )
-                eid = f"conv:{conversation_id}|wfexe:{n.safe_get_id()}|created:{result.conversation_node_id}"
-                e = _make_runtime_edge(
-                    edge_id=eid,
-                    relation="created_child",
-                    label=f"created node during {step_seq=}",
-                    summary=f"created node during {step_seq=}",
-                    doc_id=f"wf_next_step_exec|{run_id}|{step_seq}",
-                    conversation_id=conversation_id,
-                    source_ids=[n.safe_get_id()],
-                    target_ids=[result.conversation_node_id],
-                    mentions=[Grounding(spans=[self_span])],
-                    run_id=run_id,
-                    metadata={
-                        "source_id": [n.safe_get_id()],
-                        "target_id": [result.conversation_node_id],
-                        "char_distance_from_last_summary": 0,
-                        "turn_distance_from_last_summary": 0,
-                    },
-                )
-
-                self.conversation_engine.write.add_edge(e)
-        return n
-
-    def _persist_checkpoint(
-        self,
-        conversation_id: str,
-        workflow_id: str,
-        run_id: str,
-        step_seq: int,
-        state: WorkflowState,
-        last_exec_node: WorkflowStepExecNode | WorkflowRunNode | None = None,
-        trace_context: TraceContext | None = None,
-    ) -> None:
-        from kogwistar.engine_core.models import (
-            Grounding,
-            Span,
-        )  # adjust import path
-
-        state_copy = self.checkpointable_state_copy(state)
-        state_json = try_serialize_with_ref(state_copy)
-        excerpt = f"checkpoint step_seq={step_seq}"
-        span = Span(
-            **_make_trace_span(
-                conversation_id=conversation_id,
-                excerpt=excerpt,
-                doc_id=f"conv:{conversation_id}",
-            )
-        )
-
-        n = WorkflowCheckpointNode(
-            id=f"wf_ckpt|{run_id}|{step_seq}",
-            label=f"WF checkpoint {step_seq}",
-            type="entity",
-            doc_id=f"wf_ckpt|{run_id}|{step_seq}",
-            summary=excerpt,
-            mentions=[Grounding(spans=[span])],
-            properties={},
-            metadata={
-                "entity_type": "workflow_checkpoint",
-                "run_id": run_id,
-                "workflow_id": workflow_id,
-                "step_seq": step_seq,
-                "checkpoint_schema_version": self.CHECKPOINT_SCHEMA_VERSION,
-                "state_json": state_json,
-                "level_from_root": 0,
-                "conversation_id": conversation_id,
-            },
-            domain_id=None,
-            canonical_entity_id=None,
-            embedding=None,
-            level_from_root=0,
-        )
-        if trace_context is not None:
-            n.metadata["trace_id"] = trace_context.trace_id
-            n.metadata["run_execution_span_id"] = trace_context.span_id
-            if trace_context.parent_span_id is not None:
-                n.metadata["parent_span_id"] = trace_context.parent_span_id
-        with self._trace_write_mode():
-            self.conversation_engine.write.add_node(n)
-
-            if last_exec_node:
-                self_span = Span(
-                    collection_page_url=f"conversation/{conversation_id}",
-                    document_page_url=f"conversation/{conversation_id}#{n.id}",
-                    doc_id=f"conv:{conversation_id}",
-                    insertion_method="persist_checkpoint",
-                    page_number=1,
-                    start_char=0,
-                    end_char=len(n.summary),
-                    excerpt=n.summary,
-                    context_before="",
-                    context_after="",
-                    chunk_id=None,
-                    source_cluster_id=None,
-                    verification=MentionVerification(
-                        method="system",
-                        is_verified=True,
-                        score=1.0,
-                        notes="persist_checkpoint",
-                    ),
-                )
-                eid = f"persist_checkpoint|{run_id}|{step_seq}|last::{last_exec_node.safe_get_id()}|to::{n.safe_get_id()}"
-                e = _make_runtime_edge(
-                    edge_id=eid,
-                    relation="persist_checkpoint during",
-                    label=f"persist_checkpoint during {step_seq=}",
-                    summary=f"persist_checkpoint during {step_seq=}",
-                    doc_id=f"wf_next_step_exec|{run_id}|{step_seq}",
-                    conversation_id=conversation_id,
-                    source_ids=[n.safe_get_id()],
-                    target_ids=[last_exec_node.safe_get_id()],
-                    mentions=[Grounding(spans=[self_span])],
-                    run_id=run_id,
-                    metadata={
-                        "source_id": [last_exec_node.safe_get_id()],
-                        "target_id": [n.safe_get_id()],
-                        "char_distance_from_last_summary": 0,
-                        "turn_distance_from_last_summary": 0,
-                    },
-                )
-                self.conversation_engine.write.add_edge(e)
-            self._replace_checkpoint_latest_projection(
-                conversation_id=conversation_id,
-                workflow_id=workflow_id,
-                run_id=run_id,
-                step_seq=step_seq,
-                node_id=str(n.id),
-                checkpoint_metadata=dict(n.metadata),
-            )

@@ -1,14 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-
-
-@dataclass(frozen=True)
-class Chunk:
-    doc_id: str
-    start_char: int
-    end_char: int  # exclusive
-    text: str
+from .document_types import Chunk
 
 
 def split_doc_deterministic(

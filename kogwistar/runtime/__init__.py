@@ -69,13 +69,10 @@ if TYPE_CHECKING:
         RetryResult,
         retry_with_context,
     )
-    from kogwistar.runtime.runtime import (
+    from kogwistar.runtime.runtime import RouteDecision, RunResult, StepContext, WorkflowRuntime
+    from kogwistar.runtime.step_context import (
         LaneMessageEventSinkLike,
         LaneMessageSenderLike,
-        RouteDecision,
-        RunResult,
-        StepContext,
-        WorkflowRuntime,
     )
     from kogwistar.runtime.sinks import EventSinkLike, JsonlEventSink
     from kogwistar.wisdom.models import (

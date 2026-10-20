@@ -203,9 +203,9 @@ mcp = McpRegistry("KnowledgeEngine + MCP + Admin", filter_tools=True)
 
 
 def _server_chat_service() -> ChatRunService:
-    import kogwistar.server_mcp_with_admin as server
+    from kogwistar.server.resources import chat_service
 
-    return server.chat_service.get()
+    return chat_service.get()
 
 
 class FindEdgesOut(BaseModel):

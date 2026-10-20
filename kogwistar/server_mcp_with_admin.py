@@ -40,6 +40,7 @@ from kogwistar.engine_core.models import (
     Node,
 )
 from kogwistar.engine_core.search_index.models import AddIndexEntriesInput
+from kogwistar.engine_core.types import PersistedDocumentGraphResult
 from kogwistar.runtime.models import (
     WorkflowEdgeMetadata,
     WorkflowNodeMetadata,
@@ -972,7 +973,7 @@ class DocumentGraphUpsertResult(BaseModel):
     status: str
     inserted_nodes: int
     inserted_edges: int
-    engine_result: dict[str, Any] | None = None
+    engine_result: PersistedDocumentGraphResult | None = None
 
 class DocumentUpsert(BaseModel):
     doc_id: str

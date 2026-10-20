@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, cast
 
-from .types import EngineLike, Verifier
+from ..typing_interfaces import StrategyEngineLike as EngineLike
+from .types import Verifier
+from ..engine_core.types import GraphEntityKind
 
 try:
     from rapidfuzz import fuzz as _rapidfuzz
@@ -300,7 +302,7 @@ class DefaultVerifier(Verifier):
 
     def verify_mentions_for_items(
         self,
-        items: list[tuple[str, str]],  # list of ("node"|"edge", id)
+        items: Sequence[tuple[GraphEntityKind, str]],
         *,
         source_text_by_doc: dict[str, str] | None = None,
         min_ngram: int = 5,
