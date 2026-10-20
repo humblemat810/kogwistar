@@ -4128,7 +4128,7 @@
           "type": "object"
         },
         "Span": {
-          "description": "A single span",
+          "description": "Locatable evidence for a node/edge mention within a document.",
           "properties": {
             "chunk_id": {
               "anyOf": [
@@ -4897,7 +4897,7 @@
           "type": "object"
         },
         "Span": {
-          "description": "A single span",
+          "description": "Locatable evidence for a node/edge mention within a document.",
           "properties": {
             "chunk_id": {
               "anyOf": [
@@ -5457,7 +5457,7 @@
           "type": "object"
         },
         "Span": {
-          "description": "A single span",
+          "description": "Locatable evidence for a node/edge mention within a document.",
           "properties": {
             "chunk_id": {
               "anyOf": [
@@ -6312,7 +6312,7 @@
           "type": "object"
         },
         "Span": {
-          "description": "A single span",
+          "description": "Locatable evidence for a node/edge mention within a document.",
           "properties": {
             "chunk_id": {
               "anyOf": [
@@ -7542,7 +7542,7 @@
           "type": "object"
         }
       },
-      "description": "A single span",
+      "description": "Locatable evidence for a node/edge mention within a document.",
       "properties": {
         "chunk_id": {
           "anyOf": [
@@ -8213,7 +8213,7 @@
           "type": "object"
         },
         "Span": {
-          "description": "A single span",
+          "description": "Locatable evidence for a node/edge mention within a document.",
           "properties": {
             "chunk_id": {
               "anyOf": [
@@ -9402,7 +9402,7 @@
           "type": "object"
         },
         "Span": {
-          "description": "A single span",
+          "description": "Locatable evidence for a node/edge mention within a document.",
           "properties": {
             "chunk_id": {
               "anyOf": [
@@ -10190,7 +10190,7 @@
           "type": "object"
         },
         "Span": {
-          "description": "A single span",
+          "description": "Locatable evidence for a node/edge mention within a document.",
           "properties": {
             "chunk_id": {
               "anyOf": [
