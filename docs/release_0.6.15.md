@@ -11,6 +11,8 @@
   join, budget, backend response, and workflow invocation boundaries.
 - Upgrade `pydantic-extension` to `0.0.8` for the intended performance
   improvement.
+- Update the Rust lockfile to `rustls-webpki 0.103.16` and `webpki-roots
+  1.0.10` to address RUSTSEC-2026-0382 and RUSTSEC-2026-0381.
 
 ## Verification status
 

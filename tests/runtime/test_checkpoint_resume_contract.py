@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from importlib import import_module
 
 import pytest
 
@@ -160,10 +161,8 @@ def test_resume_apis_reject_non_object_checkpoint_state(
         "_latest_checkpoint_for_run",
         lambda **_kwargs: checkpoint,
     )
-    monkeypatch.setattr(
-        "kogwistar.runtime.rust_runtime_authority.rust_runtime_authority_url",
-        lambda: None,
-    )
+    rust_authority = import_module("kogwistar.runtime.rust_runtime_authority")
+    monkeypatch.setattr(rust_authority, "rust_runtime_authority_url", lambda: None)
 
     with pytest.raises(ValueError, match="checkpoint state is not a JSON object"):
         if resume_api == "suspended":
