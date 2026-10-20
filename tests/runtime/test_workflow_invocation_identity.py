@@ -169,6 +169,9 @@ def test_nested_invocation_resumes_existing_child_checkpoint(monkeypatch) -> Non
     runtime = WorkflowRuntime.__new__(WorkflowRuntime)
     checkpoint = SimpleNamespace(metadata={"step_seq": 4})
     calls: list[dict] = []
+    runtime.conversation_engine = SimpleNamespace(
+        read=SimpleNamespace(node_exists=lambda **_: True)
+    )
     runtime._terminal_run_result = lambda **_: None
     runtime._latest_checkpoint_for_run = lambda **_: checkpoint
     runtime._persist_workflow_invocation_lineage = lambda **_: True

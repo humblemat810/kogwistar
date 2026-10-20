@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Literal, cast
+from typing_extensions import TypedDict
 
 from ..async_compat import run_awaitable_blocking
 from ...json_types import JsonObject
@@ -13,6 +14,49 @@ from .base import NamespaceProxy
 
 if TYPE_CHECKING:
     from ..engine import GraphKnowledgeEngine
+
+
+class RollbackDocumentResult(TypedDict):
+    rolled_back_doc_id: str
+    rolled_back_doc_ids: list[str]
+    node_redirects: dict[str, str]
+    edge_redirects: dict[str, str]
+    tombstoned_node_ids: list[str]
+    updated_node_ids: list[str]
+    deleted_node_ids: list[str]
+    tombstoned_edge_ids: list[str]
+    updated_edge_ids: list[str]
+    deleted_edge_ids: list[str]
+    deleted_docs: int
+    updated_nodes: int
+    deleted_nodes: int
+    deleted_edges: int
+    updated_edges: int
+
+
+class RollbackDocumentExtractionResult(TypedDict):
+    doc_id: str
+    method: Literal["llm_graph_extraction", "document_ingestion"]
+    updated_nodes: int
+    updated_edges: int
+    deleted_nodes: int
+    deleted_edges: int
+    deleted_node_refs: int
+    deleted_edge_refs: int
+    deleted_node_doc_rows: int
+    deleted_edge_endpoints: int
+
+
+class PrunedNodeEdgesResult(TypedDict):
+    deleted_edges: set[str]
+    updated_edges: set[str]
+
+
+class RollbackManyDocumentsResult(TypedDict):
+    deleted_nodes: int
+    deleted_edges: int
+    updated_edges: int
+    deleted_docs: int
 
 
 def _backend_object(value: object) -> JsonObject:
@@ -181,7 +225,7 @@ class RollbackSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 edge_ids.add(str(metadata_object["edge_id"]))
         return edge_ids
 
-    def rollback_document(self, document_id: str) -> dict[str, object]:
+    def rollback_document(self, document_id: str) -> RollbackDocumentResult:
         """Remove one document's contribution while preserving surviving evidence.
 
         Nodes and edges that still have mentions or valid endpoints are rewritten as
@@ -399,7 +443,7 @@ class RollbackSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         self,
         doc_id: str,
         extraction_method: Literal["llm_graph_extraction", "document_ingestion"],
-    ) -> dict[str, object]:
+    ) -> RollbackDocumentExtractionResult:
         """Undo one extraction method's refs without deleting the whole document.
 
         This pass edits raw node and edge reference payloads plus join indexes in
@@ -407,7 +451,7 @@ class RollbackSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         requested extraction method, surviving entities are updated in place, and
         entities are deleted only when no references remain after cleanup.
         """
-        summary = {
+        summary: RollbackDocumentExtractionResult = {
             "doc_id": doc_id,
             "method": extraction_method,
             "updated_nodes": 0,
@@ -670,7 +714,7 @@ class RollbackSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
 
         return summary
 
-    def prune_node_from_edges(self, node_id: str) -> dict[str, set[str]]:
+    def prune_node_from_edges(self, node_id: str) -> PrunedNodeEdgesResult:
         eps = _backend_object(
             run_awaitable_blocking(
                 self._e.backend.edge_endpoints_get(
@@ -829,8 +873,10 @@ class RollbackSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             "updated_edges": updated_edge_ids - removed_edge_ids,
         }
 
-    def rollback_many_documents(self, document_ids: list[str]) -> dict[str, int]:
-        totals = {
+    def rollback_many_documents(
+        self, document_ids: list[str]
+    ) -> RollbackManyDocumentsResult:
+        totals: RollbackManyDocumentsResult = {
             "deleted_nodes": 0,
             "deleted_edges": 0,
             "updated_edges": 0,
@@ -839,9 +885,9 @@ class RollbackSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         for did in document_ids:
             res = self.rollback_document(did)
             totals["deleted_docs"] += 1
-            totals["deleted_nodes"] += len(cast(list[object], res["deleted_node_ids"]))
-            totals["deleted_edges"] += len(cast(list[object], res["deleted_edge_ids"]))
-            totals["updated_edges"] += cast(int, res["updated_edges"])
+            totals["deleted_nodes"] += len(res["deleted_node_ids"])
+            totals["deleted_edges"] += len(res["deleted_edge_ids"])
+            totals["updated_edges"] += res["updated_edges"]
         return totals
 
     def delete_edges_by_ids(self, edge_ids: list[str]) -> None:

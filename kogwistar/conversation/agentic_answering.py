@@ -839,7 +839,9 @@ class AgenticAnsweringAgent:
         designer.ensure_answer_flow(workflow_id=workflow_id, mode="full")
 
         # Resolver registry (handlers live in workflow/resolvers.py)
-        from .resolvers import MappingStepResolver, default_resolver
+        from kogwistar.runtime.resolvers import MappingStepResolver
+
+        from .resolvers import default_resolver
 
         class AgenticStepResolver(MappingStepResolver):
             def __init__(self) -> None:

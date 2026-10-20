@@ -17,7 +17,8 @@ from ..engine_core.models import (
     Span,
 )
 from ..engine_core.utils.refs import select_best_grounding
-from .types import EngineLike, MergePolicy
+from ..typing_interfaces import StrategyEngineLike as EngineLike
+from .types import MergePolicy
 
 
 def _backend_object(value: object) -> dict[str, Any]:

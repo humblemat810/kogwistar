@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Literal, TypeVar, cast
 
 from ..typing_interfaces import ProjectionBackendLike
 from ..json_types import JsonObject, JsonValue
+from .types import GraphEntityKind
 from .subsystems.base import NamespaceProxy
 
 if TYPE_CHECKING:
@@ -291,7 +292,9 @@ class LifecycleSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
     # Internals
     # -----------------------
 
-    def _cleanup_pending_two_stage(self, *, entity_kind: str, entity_id: str) -> bool:
+    def _cleanup_pending_two_stage(
+        self, *, entity_kind: GraphEntityKind, entity_id: str
+    ) -> bool:
         """Apply lifecycle deletion to a transient row with no Stage-2 row yet."""
         if getattr(self._e, "persistence_mode", "single_stage") != "two_stage":
             return False
@@ -312,7 +315,7 @@ class LifecycleSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
     def _rust_postgres_lifecycle_patch(
         self,
         *,
-        entity_kind: str,
+        entity_kind: GraphEntityKind,
         entity_id: str,
         lifecycle_patch: JsonObject,
         op: str,
@@ -375,7 +378,7 @@ class LifecycleSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
     def apply_replayed_lifecycle_patch(
         self,
         *,
-        entity_kind: str,
+        entity_kind: GraphEntityKind,
         entity_id: str,
         lifecycle_patch: JsonObject,
     ) -> bool:
@@ -416,7 +419,12 @@ class LifecycleSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         return bool(updated)
 
     def _append_lifecycle_event(
-        self, *, entity_kind: str, entity_id: str, op: str, **kw: JsonValue
+        self,
+        *,
+        entity_kind: GraphEntityKind,
+        entity_id: str,
+        op: str,
+        **kw: JsonValue,
     ) -> None:
         """Require lifecycle mutation event before non-native projection changes."""
         payload: JsonObject = {"entity_id": entity_id}
@@ -435,7 +443,9 @@ class LifecycleSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             required=True,
         )
 
-    def _maybe_index_delete(self, *, entity_kind: str, entity_id: str) -> None:
+    def _maybe_index_delete(
+        self, *, entity_kind: GraphEntityKind, entity_id: str
+    ) -> None:
         if not getattr(self._e, "_phase1_enable_index_jobs", False):
             return
         try:

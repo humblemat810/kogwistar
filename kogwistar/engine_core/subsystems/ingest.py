@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import TYPE_CHECKING, TypedDict, cast
+from typing import TYPE_CHECKING, cast
 
 from ...llm_tasks import ExtractGraphTaskRequest
 from ..async_compat import run_awaitable_blocking
@@ -11,18 +11,20 @@ from ..models import (
     LLMGraphExtraction,
     Node,
 )
-from ..types import ExtractionSchemaMode, OffsetMismatchPolicy, OffsetRepairScorer
+from ..types import (
+    AddPageResult,
+    ExtractionSchemaMode,
+    IngestTextResult,
+    OffsetMismatchPolicy,
+    OffsetRepairScorer,
+    PersistedDocumentGraphResult,
+    RawPageIngestResult,
+)
 from ..utils.pages import coerce_pages
 from .base import NamespaceProxy
 
 if TYPE_CHECKING:
     from ..engine import GraphKnowledgeEngine
-
-
-class IngestTextResult(TypedDict, total=False):
-    nodes_added: int
-    edges_added: int
-    raw: object
 
 
 class IngestSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
@@ -39,7 +41,7 @@ class IngestSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         extraction_schema_mode: ExtractionSchemaMode | None = None,
         offset_mismatch_policy: OffsetMismatchPolicy = "exact_fuzzy",
         offset_repair_scorer: OffsetRepairScorer | None = None,
-    ) -> dict[str, object]:
+    ) -> PersistedDocumentGraphResult:
         if raw_with_parsed is None:
             raw_payload: dict[str, object] = {}
         elif isinstance(raw_with_parsed, dict):
@@ -99,7 +101,7 @@ class IngestSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         parsed = self._e.extract.de_alias_ids_in_result(doc_id, parsed)
         self._e.persist.preflight_validate(parsed, doc_id)
         res = self._e.persist.ingest_with_toposort(parsed, doc_id=doc_id)
-        res["raw"] = raw
+        result: IngestTextResult = {**res, "raw": raw}
 
         if auto_adjudicate:
             data_value = run_awaitable_blocking(
@@ -128,7 +130,7 @@ class IngestSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                     )
                     if verdict.same_entity:
                         self._e.commit_merge(left, right, verdict)
-        return cast(IngestTextResult, res)
+        return result
 
     def extract_graph_with_llm_internal(
         self,
@@ -166,7 +168,7 @@ class IngestSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         extraction_schema_mode: ExtractionSchemaMode | None = None,
         offset_mismatch_policy: OffsetMismatchPolicy = "exact_fuzzy",
         offset_repair_scorer: OffsetRepairScorer | None = None,
-    ) -> dict[str, object]:
+    ) -> AddPageResult:
         pages = coerce_pages(
             {"pages": [{"page_number": page_number, "text": page_text}]}
             if isinstance(page_text, str)
@@ -176,7 +178,7 @@ class IngestSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             return {"document_id": document_id, "nodes_added": 0, "edges_added": 0}
 
         total_nodes = total_edges = 0
-        raw_by_page = []
+        raw_by_page: list[RawPageIngestResult] = []
         for pg in pages:
             # Keep legacy seam so tests/callers monkeypatching engine._ingest_text_with_llm still work.
             res = cast(IngestTextResult, self._e._ingest_text_with_llm(

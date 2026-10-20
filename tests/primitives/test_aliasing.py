@@ -241,3 +241,22 @@ def test_add_page_calls_common_ingest_with_auto_adjudicate(monkeypatch, engine):
     assert called["kwargs"]["doc_id"] == doc.id
     assert called["kwargs"]["content"] == "Page 1 content"
     assert called["kwargs"]["auto_adjudicate"] is True
+
+
+@pytest.mark.parametrize(
+    "backend_kind",
+    [
+        pytest.param("fake", marks=pytest.mark.ci),
+        pytest.param("chroma", marks=pytest.mark.ci_full),
+    ],
+    indirect=True,
+)
+@pytest.mark.parametrize("embedding_kind", ["constant"], indirect=True)
+def test_add_page_empty_input_preserves_legacy_result_shape(engine):
+    result = engine.add_page(document_id="doc::empty_page", page_text=[])
+
+    assert result == {
+        "document_id": "doc::empty_page",
+        "nodes_added": 0,
+        "edges_added": 0,
+    }

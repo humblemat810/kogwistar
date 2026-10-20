@@ -26,6 +26,7 @@ from ...engine_core.models import (
     Span,
 )
 from ...engine_core.vector_search import VectorSearchHit
+from ...engine_core.types import GraphEntityKind
 from ...id_provider import stable_id
 from ...json_types import JsonObject, JsonValue
 from ...typing_interfaces import QueryEmbeddingInput, ReadLike, WriteLike
@@ -1447,7 +1448,7 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
     def ids_with_insertion_method(
         self,
         *,
-        kind: str,
+        kind: GraphEntityKind,
         insertion_method: str,
         ids: Sequence[str] | None = None,
         doc_id: str | None = None,

@@ -26,7 +26,8 @@ from ..llm_tasks import (
 )
 from ..llm_tasks.contracts import AdjudicatePairTask
 from ..utils.cache_backend import Memory
-from .types import EngineLike, IAdjudicator
+from ..typing_interfaces import StrategyEngineLike as EngineLike
+from .types import IAdjudicator
 
 Payload = JsonObject
 Signature = tuple[tuple[str, str], tuple[str, str], str]

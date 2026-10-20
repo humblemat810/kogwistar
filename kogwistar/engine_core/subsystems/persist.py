@@ -22,6 +22,11 @@ from ..models import (
     PureGraph,
     Span,
 )
+from ..types import (
+    PersistedDocumentGraphResult,
+    PersistedGraphResult,
+    ToposortIngestResult,
+)
 from ...json_types import JsonObject
 from ..utils.aliasing import AliasBook, _is_alias, _is_new_edge, _is_new_node, _is_uuid
 from .base import NamespaceProxy
@@ -575,7 +580,7 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         parsed: PureGraph,
         session_id: str,
         mode: str | None = None,
-    ) -> dict[str, object]:
+    ) -> PersistedGraphResult:
         self.preflight_validate(parsed, alias_key=session_id)
         node_ids, edge_ids = [], []
         self._alloc_real_ids(parsed)
@@ -652,7 +657,7 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         parsed: LLMGraphExtraction,
         mode: str = "append",
         assign_real_id_in_place: bool = True,
-    ) -> dict[str, object]:
+    ) -> PersistedDocumentGraphResult:
         doc_id = document.id
         if not assign_real_id_in_place:
             parsed = parsed.model_copy(deep=True)
@@ -755,7 +760,7 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         doc_id: str,
         parsed: GraphExtractionWithIDs | LLMGraphExtraction,
         mode: str = "append",
-    ) -> dict[str, object]:
+    ) -> PersistedDocumentGraphResult:
         self.preflight_validate(parsed, doc_id)
 
         node_ids, edge_ids = [], []
@@ -839,7 +844,7 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         parsed: LLMGraphExtraction | PureGraph | GraphExtractionWithIDs,
         *,
         doc_id: str,
-    ) -> dict[str, object]:
+    ) -> ToposortIngestResult:
         self._alloc_real_ids(parsed)
         order, id2kind, id2obj = self.build_deps(parsed)
         node_ids_added = set()

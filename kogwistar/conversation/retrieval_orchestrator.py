@@ -8,8 +8,13 @@ from ..engine_core.engine import GraphKnowledgeEngine
 from ..engine_core.models import Span
 from .callbacks import RetrievalFilteringCallback
 from .knowledge_retriever import KnowledgeRetriever
-from .memory_retriever import MemoryPinResult, MemoryRetrievalResult, MemoryRetriever
-from .models import KnowledgeRetrievalResult, MetaFromLastSummary
+from .memory_retriever import MemoryRetriever
+from .models import (
+    KnowledgeRetrievalResult,
+    MemoryPinResult,
+    MemoryRetrievalResult,
+    MetaFromLastSummary,
+)
 
 
 @dataclass(slots=True)

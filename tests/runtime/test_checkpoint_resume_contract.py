@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+from importlib import import_module
 
 import pytest
 
 from kogwistar.engine_core.models import Grounding, Span
 from kogwistar.runtime.models import WorkflowCheckpointNode, WorkflowStepExecNode
+from kogwistar.runtime.models import RunSuccess
+from kogwistar.runtime.checkpoint_state import decode_checkpoint_state
 from kogwistar.runtime.replay import _apply_state_update, load_checkpoint, replay_to
 from kogwistar.runtime.runtime import WorkflowRuntime
 
@@ -114,6 +117,71 @@ def test_replay_state_reducer_matches_sync_runtime_merge_semantics():
     )
 
     assert replay_state == sync_state
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "not-json",
+        "[]",
+        "null",
+        '{"state": {"unsupported": object()}}',
+        {"state": {"unsupported": object()}},
+    ],
+)
+def test_checkpoint_state_decoder_rejects_malformed_or_non_object_payloads(
+    payload: object,
+) -> None:
+    with pytest.raises(ValueError, match="checkpoint state is not a JSON object"):
+        decode_checkpoint_state(payload, run_id="run-corrupt")
+
+
+def test_checkpoint_state_decoder_returns_typed_json_object() -> None:
+    state = decode_checkpoint_state(
+        '{"answer":"ok","nested":{"count":2},"items":[true,null]}',
+        run_id="run-valid",
+    )
+
+    assert state == {
+        "answer": "ok",
+        "nested": {"count": 2},
+        "items": [True, None],
+    }
+
+
+@pytest.mark.parametrize("resume_api", ["suspended", "latest"])
+def test_resume_apis_reject_non_object_checkpoint_state(
+    resume_api: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = WorkflowRuntime.__new__(WorkflowRuntime)
+    checkpoint = _ckpt(1)
+    checkpoint.metadata["state_json"] = "[]"
+    monkeypatch.setattr(
+        runtime,
+        "_latest_checkpoint_for_run",
+        lambda **_kwargs: checkpoint,
+    )
+    rust_authority = import_module("kogwistar.runtime.rust_runtime_authority")
+    monkeypatch.setattr(rust_authority, "rust_runtime_authority_url", lambda: None)
+
+    with pytest.raises(ValueError, match="checkpoint state is not a JSON object"):
+        if resume_api == "suspended":
+            runtime.resume_run(
+                run_id="run-1",
+                suspended_node_id="node-1",
+                suspended_token_id="token-1",
+                client_result=RunSuccess(state_update=[]),
+                workflow_id="wf-1",
+                conversation_id="conversation-1",
+                turn_node_id="turn-1",
+            )
+        else:
+            runtime.resume_from_latest_checkpoint(
+                run_id="run-1",
+                workflow_id="wf-1",
+                conversation_id="conversation-1",
+                turn_node_id="turn-1",
+            )
 
 
 def test_replay_ignores_created_at_ms_and_orders_by_step_seq():

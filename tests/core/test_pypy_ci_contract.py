@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 
 import pytest
@@ -27,7 +28,7 @@ def test_ci_keeps_automatic_nonblocking_pypy_native_probe() -> None:
     assert 'assert sys.implementation.name == "pypy"' in workflow
     assert 'assert sys.version_info[:2] == (3, 12)' in workflow
     assert 'constraints-pypy-3.12.txt' in workflow
-    assert "'pydantic-extension>=0.0.7' 'pydantic>=2.6' 'anyio>=4.0' 'Jinja2>=3.1'" in workflow
+    assert "'pydantic-extension>=0.0.8' 'pydantic>=2.6' 'anyio>=4.0' 'Jinja2>=3.1'" in workflow
     assert "'fastapi>=0.111' 'mcp>=2.2.0,<3' 'httpx>=0.28.1'" in workflow
     assert "'python-jose[cryptography]>=3.3' 'PyJWT>=2.8' 'RapidFuzz>=3.13.0'" in workflow
     assert "'pytest>=8' pytest-asyncio pytest-dotenv pytest-xdist sqlalchemy" in workflow
@@ -109,6 +110,21 @@ def test_pypy311_profile_pins_the_supported_mcp_contract() -> None:
 
     assert "mcp>=2.2.0,<3" in requirements
     assert "mcp<2" not in requirements
+
+
+def test_first_party_typed_dicts_use_pypy_compatible_typing_extensions() -> None:
+    package_root = ROOT / "kogwistar"
+    violations: list[str] = []
+
+    for path in package_root.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8-sig"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ImportFrom) or node.module != "typing":
+                continue
+            if any(alias.name == "TypedDict" for alias in node.names):
+                violations.append(f"{path.relative_to(ROOT)}:{node.lineno}")
+
+    assert not violations, "Use typing_extensions.TypedDict: " + ", ".join(violations)
 
 
 def test_pypy_rpds_constraint_is_ci_only_and_exact() -> None:

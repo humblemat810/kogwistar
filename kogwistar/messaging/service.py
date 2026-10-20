@@ -6,7 +6,8 @@ import uuid
 from contextlib import AbstractContextManager, nullcontext
 from datetime import datetime, timezone
 from collections.abc import Iterable
-from typing import TYPE_CHECKING, NotRequired, Protocol, TypedDict, cast
+from typing import TYPE_CHECKING, NotRequired, Protocol, cast
+from typing_extensions import TypedDict
 
 from kogwistar.acl import current_acl_context
 from kogwistar.engine_core.engine import scoped_namespace

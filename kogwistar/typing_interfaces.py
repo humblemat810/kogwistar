@@ -20,6 +20,7 @@ except ImportError:  # pragma: no cover - py<3.10 compatibility
     from typing import TypeAlias
 
 from .json_types import JsonObject, JsonValue
+from .engine_core.types import GraphEntityKind
 
 if TYPE_CHECKING:
     from .engine_core.models import (
@@ -428,7 +429,7 @@ class ReadLike(Protocol):
     def ids_with_insertion_method(
         self,
         *,
-        kind: str,
+        kind: GraphEntityKind,
         insertion_method: str,
         ids: Sequence[str] | None = None,
         doc_id: str | None = None,

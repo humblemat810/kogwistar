@@ -29,13 +29,13 @@ from ..typing_interfaces import (
 )
 from .adjudicators import (
     Adjudicator,
-    IAdjudicator,
     LLMBatchAdjudicatorImpl,
     LLMPairAdjudicatorImpl,
 )
 from .merge_policies import PreferExistingCanonical
 from .proposer import CompositeProposer, VectorProposer
-from .types import EngineLike
+from ..typing_interfaces import StrategyEngineLike as EngineLike
+from .types import IAdjudicator
 from .verifiers import DefaultVerifier, VerifierConfig
 
 __all__ = [

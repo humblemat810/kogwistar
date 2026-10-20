@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import TypeAlias, TypedDict
+from typing import TypeAlias
+from typing_extensions import TypedDict
 import uuid
 
 JoinWaiter: TypeAlias = tuple[int, str, str | None]

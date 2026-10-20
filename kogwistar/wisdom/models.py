@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from kogwistar.maintenance.artifacts import VersionedArtifactWriteResult
+from kogwistar.maintenance.models import VersionedArtifactWriteResult
 
 
 @dataclass(frozen=True, slots=True)

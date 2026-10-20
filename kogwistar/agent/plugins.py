@@ -11,7 +11,7 @@ from typing import Protocol
 
 from kogwistar.json_types import JsonValue
 
-from .catalog import CatalogStore
+from .catalog import CatalogStore, DurableCatalogStore
 from .providers import (
     ProviderCleanup,
     ProviderInactiveError,
@@ -19,7 +19,6 @@ from .providers import (
     ProviderRegistry,
 )
 from .skills import (
-    DurableCatalogStore,
     DurableSkillCatalogMaterializer,
     DurableSkillProjectionStore,
     SkillGraphArtifact,

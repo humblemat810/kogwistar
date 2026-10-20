@@ -38,7 +38,7 @@ from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Protocol
 
 from .models import get_route_next_names
-from .serialize import JsonValue
+from kogwistar.json_types import JsonValue
 
 if TYPE_CHECKING:
     from ..engine_core.engine import GraphKnowledgeEngine

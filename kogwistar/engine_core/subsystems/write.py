@@ -11,11 +11,11 @@ from typing import (
     Literal,
     Protocol,
     TypeAlias,
-    TypedDict,
     TypeVar,
     cast,
     runtime_checkable,
 )
+from typing_extensions import TypedDict
 from pydantic import TypeAdapter
 
 from ...cdc.change_event import EntityRefModel

@@ -25,6 +25,7 @@ from ...utils.embedding_vectors import (
 )
 from ..async_compat import run_awaitable_blocking
 from ..models import Document, Edge, Node
+from ..types import GraphEntityKind
 from ..utils.refs import ref_doc_id
 from ..vector_search import VectorSearchHit, similarity_from_distance
 from .base import NamespaceProxy
@@ -1350,7 +1351,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
     def ids_with_insertion_method(
         self,
         *,
-        kind: str,
+        kind: GraphEntityKind,
         insertion_method: str,
         ids: Sequence[str] | None = None,
         doc_id: str | None = None,

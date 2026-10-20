@@ -4,7 +4,7 @@ import json
 from typing import Any
 
 from ..typing_interfaces import EngineLike
-from .runtime import apply_state_update_inplace
+from .base_runtime import apply_state_update_inplace
 
 State = dict[str, Any]
 

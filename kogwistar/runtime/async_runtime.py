@@ -28,9 +28,19 @@ from .base_runtime import (
     validate_initial_state,
 )
 from .contract import CancellationChecker, Predicate
+from .design import validate_workflow_design
 from .executor import TerminalStatus, WorkflowExecutor
-from .models import RunFailure, StepRunResult, WorkflowState
-from .models import WorkflowEdge, WorkflowInvocationRequest, WorkflowNode
+from .models import (
+    RunFailure,
+    RunSuccess,
+    StepRunResult,
+    WorkflowEdge,
+    WorkflowInvocationRequest,
+    WorkflowNode,
+    WorkflowRunNode,
+    WorkflowState,
+    WorkflowStepExecNode,
+)
 from .native_contracts import join_arrival_result, successor_plan
 from .join_state import (
     JoinToken,
@@ -39,26 +49,21 @@ from .join_state import (
     restore_runtime_join_snapshot,
 )
 from .runtime import (
-    EventEmitter,
-    EventSink,
-    LaneMessageEventSinkLike,
-    LaneMessageSenderLike,
     RunResult,
     StepContext,
     _compute_may_reach_join_bitsets,
-    _iter_bits,
     derive_child_authority_context,
     sink_observes_otel,
 )
 from .runtime import (
     WorkflowRuntime as ThreadedWorkflowRuntime,
 )
-from .telemetry import TraceContext
+from .telemetry import EventEmitter, EventSink, TraceContext
+from .step_context import LaneMessageEventSinkLike, LaneMessageSenderLike
+from .join_topology import _iter_bits
 
 # Compatibility anchor for tests and internal helper wiring.
 WorkflowRuntime = ThreadedWorkflowRuntime
-
-from .design import validate_workflow_design
 
 if TYPE_CHECKING:
     from ..engine_core.engine import GraphKnowledgeEngine
@@ -211,8 +216,8 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
         run_id: str | None = None,
         cache_dir: str | None = None,
         _resume_step_seq: int | None = None,
-        _resume_last_exec_node: object | None = None,
-        _run_metadata: Mapping[str, Any] | None = None,
+        _resume_last_exec_node: WorkflowStepExecNode | WorkflowRunNode | None = None,
+        _run_metadata: Mapping[str, JsonValue] | None = None,
         _trace_context: TraceContext | None = None,
         _authority_context: Mapping[str, Any] | None = None,
     ) -> RunResult:
@@ -310,9 +315,7 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
     ) -> RunResult:
         wf_design = invocation.workflow_design
         if wf_design is not None:
-            if str(getattr(wf_design, "workflow_id", "")) != str(
-                getattr(invocation, "workflow_id", "")
-            ):
+            if wf_design.workflow_id != invocation.workflow_id:
                 raise ValueError(
                     "workflow_design.workflow_id must match workflow_id on the invocation"
                 )
@@ -372,13 +375,13 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
                 if child_checkpoint is None and callable(persist_run):
                     persist_run(
                         conversation_id=plan["conversation_id"],
-                        workflow_id=str(getattr(invocation, "workflow_id", "")),
+                        workflow_id=invocation.workflow_id,
                         run_id=plan["child_run_id"],
                         turn_node_id=plan["turn_node_id"],
                         status="planned",
                         run_metadata={
                             "parent_run_id": parent_run_id,
-                            "invocation_key": getattr(invocation, "invocation_key", None),
+                            "invocation_key": invocation.invocation_key,
                             "result_state_key": plan["result_state_key"],
                         },
                     )
@@ -396,7 +399,7 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
             elif child_checkpoint is not None:
                 child_result = await self.resume_from_latest_checkpoint(
                     run_id=plan["child_run_id"],
-                    workflow_id=str(getattr(invocation, "workflow_id", "")),
+                    workflow_id=invocation.workflow_id,
                     conversation_id=plan["conversation_id"],
                     turn_node_id=plan["turn_node_id"],
                     cache_dir=cache_dir,
@@ -405,7 +408,7 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
                 )
             else:
                 child_result = await self.run(
-                    workflow_id=str(getattr(invocation, "workflow_id", "")),
+                    workflow_id=invocation.workflow_id,
                     conversation_id=plan["conversation_id"],
                     turn_node_id=plan["turn_node_id"],
                     initial_state=child_state,
@@ -413,7 +416,7 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
                     cache_dir=cache_dir,
                     _run_metadata={
                         "parent_run_id": parent_run_id,
-                        "invocation_key": getattr(invocation, "invocation_key", None),
+                        "invocation_key": invocation.invocation_key,
                         "result_state_key": plan["result_state_key"],
                     },
                     _trace_context=parent_trace_context,
@@ -516,7 +519,7 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
     ) -> list[WorkflowEdge]:
         if not edges:
             return []
-        fanout = bool((getattr(node, "metadata", {}) or {}).get("wf_fanout", False))
+        fanout = bool(node.metadata.get("wf_fanout", False))
         computed = BaseRuntime._compute_route_next_shared(
             edges=list(edges),
             state=state,
@@ -656,8 +659,8 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
         join_waiters: dict[str, list[JoinWaiter]] = {}
         join_is_merge: dict[str, bool] = {}
         for nid, node in nodes.items():
-            md = getattr(node, "metadata", {}) or {}
-            is_join = bool(md.get("wf_join", False)) or str(getattr(node, "op", "")) == "join"
+            md = node.metadata
+            is_join = bool(md.get("wf_join", False)) or node.op == "join"
             if not is_join:
                 continue
             sid = str(nid)
@@ -842,7 +845,7 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
                     if trace_emitter is not None:
                         step_completed = getattr(trace_emitter, "step_completed", None)
                         if callable(step_completed):
-                            out_status = str(getattr(out, "status", trace_status) or trace_status)
+                            out_status = str(out.status or trace_status)
                             if out_status in {"success", "succeeded"}:
                                 out_status = "ok"
                             try:
@@ -870,8 +873,8 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
         def _apply_run_result(target_state: WorkflowState, result: StepRunResult) -> None:
             apply_state_update_inplace(
                 target_state,
-                list(getattr(result, "state_update", []) or []),
-                getattr(result, "update", None),
+                list(result.state_update or []),
+                result.update,
                 state_schema=getattr(self._resolver_adapter, "_state_schema", None),
             )
 
@@ -961,7 +964,7 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
             step_exec_node: Any | None = last_exec_node
             child_failed = False
 
-            invocations = list(getattr(out, "workflow_invocations", []) or [])
+            invocations = out.workflow_invocations if isinstance(out, RunSuccess) else []
             for invocation in invocations:
                 child_result = await self._run_workflow_invocation_async(
                     invocation=invocation,
@@ -973,7 +976,7 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
                     parent_trace_context=run_trace_context,
                     parent_authority_context=nested_authority_context,
                 )
-                child_status = str(getattr(child_result, "status", None))
+                child_status = child_result.status
                 if child_status != "succeeded":
                     if child_status == "cancelled" and _cancel_requested():
                         status = "cancelled"
@@ -988,7 +991,7 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
                         status = "failure"
                         failure_errors = [
                             "Nested workflow "
-                            f"{getattr(invocation, 'workflow_id', '')!r} "
+                            f"{invocation.workflow_id!r} "
                             f"returned status {child_status!r}"
                         ]
                         out = RunFailure(
@@ -1017,9 +1020,9 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
                     op=str(nodes[node_id].op),
                     status=(
                         "suspended"
-                        if getattr(out, "status", None) == "suspended"
+                        if out.status == "suspended"
                         else "failure"
-                        if getattr(out, "status", None) == "failure"
+                        if out.status == "failure"
                         else "ok"
                     ),
                     duration_ms=0,
@@ -1049,9 +1052,9 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
                 op=str(nodes[node_id].op),
                 status=(
                     "suspended"
-                    if getattr(out, "status", None) == "suspended"
+                    if out.status == "suspended"
                     else "failure"
-                    if getattr(out, "status", None) == "failure"
+                    if out.status == "failure"
                     else "ok"
                 ),
                 duration_ms=0,
@@ -1064,9 +1067,9 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
             )
             last_exec_node = step_exec_node
 
-            if getattr(out, "status", None) == "failure":
+            if out.status == "failure":
                 status = "failure"
-                failure_errors = [str(err) for err in (getattr(out, "errors", []) or [])]
+                failure_errors = list(out.errors)
                 pending.clear()
                 await _cancel_and_drain_inflight(inflight)
                 _dec(int(mask))
@@ -1078,9 +1081,9 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
                 )
                 return
 
-            if getattr(out, "status", None) == "suspended":
+            if out.status == "suspended":
                 run_suspended = True
-                wait_reason = getattr(out, "wait_reason", None)
+                wait_reason = out.wait_reason
                 if wait_reason:
                     state["wait_reason"] = str(wait_reason)
                 suspended_tokens[str(token_id)] = (str(node_id), int(mask), str(token_id), parent_token_id)
@@ -1092,8 +1095,8 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
                 )
                 return
 
-            md = getattr(nodes[node_id], "metadata", {}) or {}
-            if bool(md.get("wf_terminal", False)):
+            node = nodes[node_id]
+            if bool(node.metadata.get("wf_terminal", False)):
                 _dec(int(mask))
                 _persist_rt_join_snapshot()
                 _maybe_persist_checkpoint(
@@ -1128,9 +1131,9 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
             )
 
             valid_destinations = [
-                str((getattr(edge, "target_ids", None) or [None])[0])
+                edge.target_ids[0]
                 for edge in next_edges
-                if (getattr(edge, "target_ids", None) or [None])[0]
+                if edge.target_ids and edge.target_ids[0]
             ]
             runtime_mode = runtime_implementation_mode()
             successor_payload = {
@@ -1498,7 +1501,7 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
         run_id: str | None = None,
         cache_dir: str | None = None,
         _resume_step_seq: int | None = None,
-        _resume_last_exec_node: object | None = None,
+        _resume_last_exec_node: WorkflowStepExecNode | WorkflowRunNode | None = None,
     ) -> RunResult:
         raise NotImplementedError(
             "AsyncWorkflowRuntime.run_sync() is removed; use async run()"

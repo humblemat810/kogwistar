@@ -4,6 +4,7 @@ from typing import Any, Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel
 
+from ..engine_core.types import GraphEntityKind
 from ..engine_core.models import (
     AdjudicationQuestionCode,
     AdjudicationTarget,
@@ -221,7 +222,7 @@ class Verifier(Protocol):
     ) -> dict[str, int]: ...
     def verify_mentions_for_items(
         self,
-        items: list[tuple[str, str]],  # list of ("node"|"edge", id)
+        items: Sequence[tuple[GraphEntityKind, str]],
         *,
         source_text_by_doc: dict[str, str] | None = None,
         min_ngram: int = 5,

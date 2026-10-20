@@ -19,6 +19,8 @@ pytestmark = pytest.mark.ci
         (True, -1),
         ({"step_seq": 4}, -1),
         ("not-an-int", -1),
+        (1.8, -1),
+        (7.0, 7),
         ("7", 7),
         (7, 7),
     ],
@@ -49,3 +51,37 @@ def test_optional_metadata_adapter_is_absent_for_legacy_engine_doubles() -> None
     runtime.conversation_engine = cast(GraphKnowledgeEngine, SimpleNamespace())
 
     assert runtime._runtime_metadata_store() is None
+
+
+def _terminal_runtime(checkpoint_state: object) -> WorkflowRuntime:
+    runtime = object.__new__(WorkflowRuntime)
+    runtime.conversation_engine = cast(
+        GraphKnowledgeEngine,
+        SimpleNamespace(
+            read=SimpleNamespace(
+                get_nodes=lambda **_: [SimpleNamespace(metadata={"errors": ["boom"]})]
+            )
+        ),
+    )
+    runtime._latest_checkpoint_for_run = lambda **_: SimpleNamespace(
+        metadata={"state_json": checkpoint_state}
+    )
+    return runtime
+
+
+def test_terminal_run_rehydrates_checkpoint_state_as_typed_json() -> None:
+    result = _terminal_runtime('{"answer": 42}')._terminal_run_result(
+        conversation_id="conversation-1", run_id="run-1"
+    )
+
+    assert result is not None
+    assert result.final_state == {"answer": 42}
+    assert result.errors == ["boom"]
+
+
+@pytest.mark.parametrize("state_json", ["[]", "null", "not-json"])
+def test_terminal_run_rejects_malformed_checkpoint_state(state_json: object) -> None:
+    with pytest.raises(ValueError, match="checkpoint state is not a JSON object"):
+        _terminal_runtime(state_json)._terminal_run_result(
+            conversation_id="conversation-1", run_id="run-1"
+        )

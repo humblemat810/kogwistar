@@ -587,3 +587,14 @@ class StateBackedBudgetLedger:
         if ready_ms is None:
             return False
         return bool(self.rate_limit and self.rate_used >= self.rate_limit and now_ms < ready_ms)
+
+
+def budget_ledger_from_state(
+    state: Mapping[str, object],
+) -> StateBackedBudgetLedger | None:
+    """Decode the optional process-local budget ledger from workflow state."""
+    dependencies = state.get("_deps")
+    if not isinstance(dependencies, Mapping):
+        return None
+    ledger = dependencies.get("budget_ledger")
+    return ledger if isinstance(ledger, StateBackedBudgetLedger) else None

@@ -31,7 +31,7 @@ import threading
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from kogwistar.engine_core.engine import EngineType
+    from kogwistar.engine_core.types import EngineType
 import time
 import webbrowser
 from dataclasses import dataclass

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Literal, Protocol
+from typing import TYPE_CHECKING, Literal, NotRequired, Protocol
+from typing_extensions import TypedDict
 
 if TYPE_CHECKING:
     from .models import Edge, Node
 
-# Keep this broad in core; domain-specific kind tokens live outside engine_core.
+# Engine names remain broad; graph entity kinds are structural node/edge tokens.
 EngineType = str
+GraphEntityKind = Literal["node", "edge"]
 ExtractionSchemaMode = Literal[
     "auto", "full", "lean", "flattened_lean", "flattened_full"
 ]
@@ -38,3 +40,46 @@ class ToolCallIdFactory(Protocol):
     """Create a stable identifier for an engine tool invocation."""
 
     def __call__(self, *parts: str) -> str: ...
+
+
+class PersistedGraphResult(TypedDict):
+    """IDs and counts returned when a graph extraction is persisted."""
+
+    node_ids: list[str]
+    edge_ids: list[str]
+    nodes_added: int
+    edges_added: int
+
+
+class PersistedDocumentGraphResult(PersistedGraphResult):
+    """Graph persistence result associated with a document identity."""
+
+    document_id: str
+
+
+class ToposortIngestResult(TypedDict):
+    """Legacy topological-ingest result; ID fields remain counts for compatibility."""
+
+    document_id: str
+    node_ids: int
+    edge_ids: int
+    nodes_added: int
+    edges_added: int
+
+
+class IngestTextResult(ToposortIngestResult):
+    """Topological-ingest result with the provider's raw response."""
+
+    raw: object
+
+
+class RawPageIngestResult(TypedDict):
+    page: int | None
+    raw: object | None
+
+
+class AddPageResult(TypedDict):
+    document_id: str
+    nodes_added: int
+    edges_added: int
+    raw_by_page: NotRequired[list[RawPageIngestResult]]

@@ -42,7 +42,8 @@ import logging
 import uuid
 from collections import deque
 from collections.abc import Generator, Mapping
-from typing import NotRequired, Protocol, TypedDict, cast
+from typing import NotRequired, Protocol, cast
+from typing_extensions import TypedDict
 
 from kogwistar.runtime.models import WorkflowEdge, WorkflowNode
 from kogwistar.json_types import JsonObject

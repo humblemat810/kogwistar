@@ -31,6 +31,8 @@ def test_persist_document_graph_extraction_accepts_consistent_spans(engine_tmp):
     )
 
     assert result["document_id"] == seed.document.id
+    assert isinstance(result["node_ids"], list)
+    assert isinstance(result["edge_ids"], list)
     assert result["nodes_added"] == len(seed.nodes)
     assert result["edges_added"] == len(seed.edges)
     got_nodes = engine_tmp.backend.node_get(
@@ -41,6 +43,23 @@ def test_persist_document_graph_extraction_accepts_consistent_spans(engine_tmp):
         ids=[edge.id for edge in seed.edges], include=["documents"]
     )
     assert len(got_edges["documents"]) == len(seed.edges)
+
+
+def test_toposort_ingest_keeps_legacy_count_fields(engine_tmp):
+    seed = build_span_consistent_debug_rag_seed(doc_id="doc::toposort_result")
+    engine_tmp.write.add_document(seed.document)
+    parsed = seed.as_graph_extraction()
+    engine_tmp.persist.preflight_validate(parsed, seed.document.id)
+
+    result = engine_tmp.persist.ingest_with_toposort(
+        parsed, doc_id=seed.document.id
+    )
+
+    assert result["document_id"] == seed.document.id
+    assert result["node_ids"] == len(seed.nodes)
+    assert result["edge_ids"] == len(seed.edges)
+    assert result["nodes_added"] == len(seed.nodes)
+    assert result["edges_added"] == len(seed.edges)
 
 
 def test_persist_document_graph_extraction_rejects_incorrect_span(engine_tmp):

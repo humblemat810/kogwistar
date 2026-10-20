@@ -6,18 +6,16 @@ from typing import cast
 from kogwistar.llm_tasks import LLMTaskSet
 
 from ..engine_core.engine import GraphKnowledgeEngine
-from ..engine_core.models import Grounding, Span
+from ..engine_core.models import Edge, Grounding, Node, Span
 from ..server.auth_middleware import get_current_agent_id, get_security_scope
 from .callbacks import MemorySummarizeCallback, RetrievalFilteringCallback
 from .models import (
     ConversationEdge,
     ConversationNode,
-    Edge,
     FilteringResult,
     MemoryPinResult,
     MemoryRetrievalResult,
     MetaFromLastSummary,
-    Node,
     RetrievalResult,
 )
 
