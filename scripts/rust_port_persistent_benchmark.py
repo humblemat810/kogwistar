@@ -21,6 +21,7 @@ from typing import Any
 
 from kogwistar._rust_bridge import store_sqlite
 from kogwistar.engine_core.engine_sqlite import EngineSQLite
+from kogwistar.engine_core.sqlite_context import sqlite_execution_context
 
 ROOT = Path(__file__).resolve().parents[1]
 BENCHMARK_VERSION = 1
@@ -118,10 +119,29 @@ def _projection(index: int) -> dict[str, Any]:
 
 
 def _run_mode(mode: str, path: Path, *, items: int, read_cycles: int) -> dict[str, Any]:
+    if mode == "rust_cached":
+        EngineSQLite(path.parent, filename=path.name).ensure_initialized()
+        with sqlite_execution_context("rust"):
+            return _run_mode_bound(
+                mode, path, items=items, read_cycles=read_cycles,
+                initialize_python_store=False,
+            )
+    return _run_mode_bound(mode, path, items=items, read_cycles=read_cycles)
+
+
+def _run_mode_bound(
+    mode: str,
+    path: Path,
+    *,
+    items: int,
+    read_cycles: int,
+    initialize_python_store: bool = True,
+) -> dict[str, Any]:
     namespace = "benchmark"
     projection_namespace = "benchmark_projection"
     python_store = EngineSQLite(path.parent, filename=path.name)
-    python_store.ensure_initialized()
+    if initialize_python_store:
+        python_store.ensure_initialized()
     baseline_peak_rss_bytes = _peak_rss_bytes()
 
     if mode == "python":
@@ -159,7 +179,11 @@ def _run_mode(mode: str, path: Path, *, items: int, read_cycles: int) -> dict[st
             )
     else:
         def call(operation: dict[str, Any]) -> Any:
-            return store_sqlite(path=path, operation=operation)
+            return store_sqlite(
+                path=path,
+                operation=operation,
+                reuse_session=mode == "rust_cached",
+            )
 
         def append_events() -> int:
             for index in range(items):
@@ -235,6 +259,8 @@ def _run_mode(mode: str, path: Path, *, items: int, read_cycles: int) -> dict[st
             "kind": "list_named_projections",
             "namespace": projection_namespace,
         })
+        if mode == "rust_cached":
+            call({"kind": "close"})
     canonical_state = {
         "events": events,
         "projections": [
@@ -303,27 +329,32 @@ def run_benchmark(output_root: Path, *, items: int, read_cycles: int,
                   samples: int) -> dict[str, Any]:
     output_root.mkdir(parents=True, exist_ok=True)
     modes: dict[str, Any] = {}
-    for mode in ("python", "rust"):
+    for mode in ("python", "rust", "rust_cached"):
         mode_samples = []
         for sample in range(samples):
             path = output_root / f"{mode}-{sample}.sqlite3"
             path.unlink(missing_ok=True)
             mode_samples.append(_child(mode, path, items, read_cycles))
         modes[mode] = _summary(mode_samples)
-    if modes["python"]["state_digest"] != modes["rust"]["state_digest"]:
+    expected_digest = modes["python"]["state_digest"]
+    if any(mode["state_digest"] != expected_digest for mode in modes.values()):
         raise RuntimeError("Python and Rust persistent states differ")
     ratios = {
-        workload: {
-            "throughput_rust_over_python": (
-                modes["rust"]["metrics"][workload]["median_throughput_ops_per_sec"]
-                / modes["python"]["metrics"][workload]["median_throughput_ops_per_sec"]
-            ),
-            "p95_latency_rust_over_python": (
-                modes["rust"]["metrics"][workload]["p95_elapsed_ms"]
-                / modes["python"]["metrics"][workload]["p95_elapsed_ms"]
-            ),
+        mode_name: {
+            workload: {
+                "throughput_over_python": (
+                    mode["metrics"][workload]["median_throughput_ops_per_sec"]
+                    / modes["python"]["metrics"][workload]["median_throughput_ops_per_sec"]
+                ),
+                "p95_latency_over_python": (
+                    mode["metrics"][workload]["p95_elapsed_ms"]
+                    / modes["python"]["metrics"][workload]["p95_elapsed_ms"]
+                ),
+            }
+            for workload in WORKLOADS
         }
-        for workload in WORKLOADS
+        for mode_name, mode in modes.items()
+        if mode_name != "python"
     }
     rss_ratio = (
         modes["rust"]["p95_peak_rss_bytes"]
@@ -331,12 +362,12 @@ def run_benchmark(output_root: Path, *, items: int, read_cycles: int,
     )
     gate_checks = {
         "p95_latency_no_worse_than_110_percent": all(
-            value["p95_latency_rust_over_python"] <= 1.10
-            for value in ratios.values()
+            value["p95_latency_over_python"] <= 1.10
+            for value in ratios["rust"].values()
         ),
         "throughput_at_least_95_percent": all(
-            value["throughput_rust_over_python"] >= 0.95
-            for value in ratios.values()
+            value["throughput_over_python"] >= 0.95
+            for value in ratios["rust"].values()
         ),
         "peak_rss_no_worse_than_110_percent": rss_ratio <= 1.10,
     }
@@ -356,9 +387,11 @@ def run_benchmark(output_root: Path, *, items: int, read_cycles: int,
             "status": "passed" if all(gate_checks.values()) else "failed",
         },
         "interpretation": (
-            "Includes current Python-to-PyO3 JSON boundary and one SQLite connection per "
-            "capability call; each mode verifies state through its own shipped facade. "
-            "Cross-implementation rollback is a separate fresh-process compatibility gate."
+            "python and rust compare existing behavior; rust_cached is a scoped "
+            "experimental persistent autocommit handle closed at process end. All "
+            "modes verify equivalent state. The current rust gate compares rust to "
+            "python; rust_cached is exploratory for single-Rust-authority mode. "
+            "Cross-implementation overlap is rejected by SQLite authority guards."
         ),
     }
 
@@ -372,7 +405,9 @@ def _args() -> argparse.Namespace:
     parser.add_argument("--samples", type=int, default=5)
     parser.add_argument("--smoke", action="store_true")
     parser.add_argument("--child", action="store_true", help=argparse.SUPPRESS)
-    parser.add_argument("--mode", choices=("python", "rust"), help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--mode", choices=("python", "rust", "rust_cached"), help=argparse.SUPPRESS
+    )
     parser.add_argument("--path", type=Path, help=argparse.SUPPRESS)
     return parser.parse_args()
 

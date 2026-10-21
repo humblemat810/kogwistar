@@ -8,6 +8,7 @@ import pytest
 from kogwistar._rust_bridge import RustParityError, store_sqlite
 from kogwistar.engine_core.engine_sqlite import EngineSQLite
 from kogwistar.engine_core.sqlite_context import (
+    SQLiteContextError,
     independent_sqlite_execution_context,
     sqlite_execution_context,
 )
@@ -27,6 +28,10 @@ def _rust(
     transaction_id: str | None = None,
 ) -> Any:
     return store_sqlite(path=path, operation=operation, transaction_id=transaction_id)
+
+
+def _rust_reused(path: Path, operation: dict[str, Any]) -> Any:
+    return store_sqlite(path=path, operation=operation, reuse_session=True)
 
 
 def test_python_sqlite_then_rust_reads_and_writes_actual_database(tmp_path: Path) -> None:
@@ -207,6 +212,77 @@ def test_rust_python_sqlite_handoff_repeated_commits_are_strictly_visible(
                 "last_seq": seq,
             },
         )["last_seq"] == seq
+
+
+def test_reused_rust_autocommit_handle_is_visible_after_close(tmp_path: Path) -> None:
+    """A reused Rust session persists writes before relinquishing authority."""
+    path = tmp_path / "engine.db"
+    db = EngineSQLite(tmp_path)
+    db.ensure_initialized()
+    with sqlite_execution_context("rust"):
+        _rust_reused(path, {"kind": "open_init"})
+        try:
+            assert _rust_reused(
+                path,
+                {
+                    "kind": "raw_append",
+                    "namespace": "handoff",
+                    "event_id": "rust-first",
+                    "entity_kind": "node",
+                    "entity_id": "n1",
+                    "op": "UPSERT",
+                    "payload_json": '{"writer":"rust"}',
+                },
+            )["seq"] == 1
+            assert _rust_reused(
+                path,
+                {
+                    "kind": "raw_append",
+                    "namespace": "handoff",
+                    "event_id": "rust-second",
+                    "entity_kind": "node",
+                    "entity_id": "n2",
+                    "op": "UPSERT",
+                    "payload_json": '{"writer":"rust"}',
+                },
+            )["seq"] == 2
+            assert len(_rust_reused(path, {
+                "kind": "exclusive_raw_replay",
+                "namespace": "handoff",
+                "after_seq": 0,
+                "limit": 3,
+            })) == 2
+            with independent_sqlite_execution_context("python"):
+                with pytest.raises(SQLiteContextError) as conflict:
+                    db.append_entity_event(
+                        namespace="handoff",
+                        event_id="python-conflict",
+                        entity_kind="node",
+                        entity_id="n3",
+                        op="UPSERT",
+                        payload_json='{"writer":"python"}',
+                    )
+            assert conflict.value.code == "KOGWISTAR_SQLITE_DATABASE_ENGINE_CONFLICT"
+        finally:
+            _rust_reused(path, {"kind": "close"})
+
+    assert db.append_entity_event(
+        namespace="handoff",
+        event_id="python-after-close",
+        entity_kind="node",
+        entity_id="n3",
+        op="UPSERT",
+        payload_json='{"writer":"python"}',
+    ) == 3
+    assert _rust(
+        path,
+        {
+            "kind": "exclusive_raw_replay",
+            "namespace": "handoff",
+            "after_seq": 0,
+            "limit": 4,
+        },
+    )[-1]["entity_id"] == "n3"
 
 
 def test_completed_rust_transaction_cannot_hide_later_python_commit(tmp_path: Path) -> None:
