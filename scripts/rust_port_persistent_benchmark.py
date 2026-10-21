@@ -24,7 +24,8 @@ from kogwistar.engine_core.engine_sqlite import EngineSQLite
 from kogwistar.engine_core.sqlite_context import sqlite_execution_context
 
 ROOT = Path(__file__).resolve().parents[1]
-BENCHMARK_VERSION = 1
+RUST_ROOT = ROOT / "rust"
+BENCHMARK_VERSION = 2
 DATASET = "rust-port-persistent-sqlite-v1"
 WORKLOADS = (
     "event_append",
@@ -283,6 +284,46 @@ def _run_mode_bound(
 
 
 def _child(mode: str, path: Path, items: int, read_cycles: int) -> dict[str, Any]:
+    if mode == "rust_native":
+        executable = RUST_ROOT / "target" / "release" / "examples" / (
+            "sqlite_native_authority_benchmark.exe"
+            if sys.platform == "win32"
+            else "sqlite_native_authority_benchmark"
+        )
+        completed = subprocess.run(
+            [str(executable), str(path), str(items), str(read_cycles)],
+            cwd=RUST_ROOT,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        result = json.loads(completed.stdout)
+        native_state = result.pop("state")
+        python_store = EngineSQLite(path.parent, filename=path.name)
+        python_state = {
+            "events": [
+                list(row)
+                for row in python_store.iter_entity_events(
+                    namespace="benchmark", from_seq=1, batch_size=items + 1
+                )
+            ],
+            "projections": [
+                {key: value for key, value in row.items() if key != "updated_at_ms"}
+                for row in python_store.list_named_projections("benchmark_projection")
+            ],
+        }
+        if _digest(native_state) != _digest(python_state):
+            raise RuntimeError("Rust-native state differs after Python reopens the database")
+        return {
+            "mode": mode,
+            "metrics": result["metrics"],
+            "state_digest": _digest(python_state),
+            "event_count": len(python_state["events"]),
+            "projection_count": len(python_state["projections"]),
+            "database_bytes": result["database_bytes"],
+            "peak_rss_bytes": None,
+            "workload_peak_rss_delta_bytes": None,
+        }
     command = [
         sys.executable, str(Path(__file__).resolve()), "--child", "--mode", mode,
         "--path", str(path), "--items", str(items), "--read-cycles", str(read_cycles),
@@ -308,18 +349,23 @@ def _summary(samples: list[dict[str, Any]]) -> dict[str, Any]:
             "p95_elapsed_ms": _percentile(elapsed, 0.95),
             "median_throughput_ops_per_sec": statistics.median(throughput),
         }
+    peak_rss_values = [sample["peak_rss_bytes"] for sample in samples]
+    workload_rss_values = [sample["workload_peak_rss_delta_bytes"] for sample in samples]
+    has_rss = all(value is not None for value in peak_rss_values)
     return {
         "sample_count": len(samples),
         "state_digest": state_digests.pop(),
         "metrics": metrics,
-        "peak_rss_bytes": statistics.median(
-            int(sample["peak_rss_bytes"]) for sample in samples
+        "peak_rss_bytes": (
+            statistics.median(int(value) for value in peak_rss_values) if has_rss else None
         ),
-        "p95_peak_rss_bytes": _percentile(
-            [float(sample["peak_rss_bytes"]) for sample in samples], 0.95
+        "p95_peak_rss_bytes": (
+            _percentile([float(value) for value in peak_rss_values], 0.95)
+            if has_rss else None
         ),
-        "workload_peak_rss_delta_bytes": statistics.median(
-            int(sample["workload_peak_rss_delta_bytes"]) for sample in samples
+        "workload_peak_rss_delta_bytes": (
+            statistics.median(int(value) for value in workload_rss_values)
+            if all(value is not None for value in workload_rss_values) else None
         ),
         "samples": samples,
     }
@@ -328,8 +374,16 @@ def _summary(samples: list[dict[str, Any]]) -> dict[str, Any]:
 def run_benchmark(output_root: Path, *, items: int, read_cycles: int,
                   samples: int) -> dict[str, Any]:
     output_root.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        [
+            "cargo", "build", "--release", "-p", "kogwistar-store-sqlite",
+            "--example", "sqlite_native_authority_benchmark",
+        ],
+        cwd=RUST_ROOT,
+        check=True,
+    )
     modes: dict[str, Any] = {}
-    for mode in ("python", "rust", "rust_cached"):
+    for mode in ("python", "rust", "rust_cached", "rust_native"):
         mode_samples = []
         for sample in range(samples):
             path = output_root / f"{mode}-{sample}.sqlite3"
@@ -387,11 +441,11 @@ def run_benchmark(output_root: Path, *, items: int, read_cycles: int,
             "status": "passed" if all(gate_checks.values()) else "failed",
         },
         "interpretation": (
-            "python and rust compare existing behavior; rust_cached is a scoped "
-            "experimental persistent autocommit handle closed at process end. All "
-            "modes verify equivalent state. The current rust gate compares rust to "
-            "python; rust_cached is exploratory for single-Rust-authority mode. "
-            "Cross-implementation overlap is rejected by SQLite authority guards."
+            "rust_native calls SqliteStore directly in one Rust process; Python only "
+            "launches the executable and verifies its final state after it exits. "
+            "Each native write still uses its own store transaction/commit. rust_cached "
+            "keeps the PyO3/JSON boundary per operation but reuses one scoped session. "
+            "The regular rust gate compares the existing per-call Rust facade with Python."
         ),
     }
 
