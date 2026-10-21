@@ -35,6 +35,8 @@ class RustPostgresSession:
     def __init__(self, *, dsn: str, schema: str) -> None:
         self.dsn = dsn
         self.schema = schema
+        self.context_id = uuid.uuid4().hex
+        self._closed = False
         self._transaction_id: contextvars.ContextVar[str | None] = (
             contextvars.ContextVar(
                 f"kogwistar_rust_postgres_transaction_{id(self)}", default=None
@@ -47,9 +49,12 @@ class RustPostgresSession:
         )
 
     def call(self, kind: str, **values: JsonValue) -> JsonValue:
+        if self._closed and kind != "close_store":
+            raise RustPostgresConnectionUnavailable("Rust PostgreSQL store is closed")
         return store_postgres(
             dsn=self.dsn,
             schema=self.schema,
+            context_id=self.context_id,
             operation={"kind": kind, **values},
             transaction_id=self._transaction_id.get(),
         )
@@ -60,6 +65,16 @@ class RustPostgresSession:
 
     def ensure_initialized(self) -> None:
         self.call("ensure_schema")
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        if self.transaction_active:
+            raise RustPostgresConnectionUnavailable(
+                "cannot close Rust PostgreSQL store during an active transaction"
+            )
+        self.call("close_store")
+        self._closed = True
 
     def connect(self) -> None:
         raise RustPostgresConnectionUnavailable(
@@ -170,12 +185,8 @@ class RustEnginePostgresMetaStore(RustEngineSQLite):
         self.session.ensure_initialized()
 
     def close(self) -> None:
-        """Rust PostgreSQL calls own their pool lifetime per operation.
-
-        Unlike the SQLite bridge, the PostgreSQL ABI has no cached-handle
-        ``close`` operation. Keep engine shutdown explicit and harmless.
-        """
-        return None
+        """Release the native PostgreSQL worker and its connection pool."""
+        self.session.close()
 
     def connect(self) -> None:
         self.session.connect()

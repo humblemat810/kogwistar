@@ -72,6 +72,38 @@ def test_postgres_session_rolls_back_and_rejects_raw_or_stale_writer(monkeypatch
         session.require_token(stale)
 
 
+def test_postgres_session_owns_stable_context_and_closes_worker(monkeypatch):
+    calls: list[tuple[str, str, str | None]] = []
+
+    def fake_store_postgres(*, operation, context_id, transaction_id, **kwargs):
+        del kwargs
+        calls.append((operation["kind"], context_id, transaction_id))
+        return None
+
+    monkeypatch.setattr(
+        "kogwistar.engine_core.rust_postgres_session.store_postgres",
+        fake_store_postgres,
+    )
+    session = RustPostgresSession(dsn="postgresql://example/db", schema="test")
+    context_id = session.context_id
+    session.call("current_global_seq")
+    with pytest.raises(RustPostgresConnectionUnavailable, match="active transaction"):
+        with session.transaction():
+            session.close()
+
+    session.close()
+    session.close()
+    assert [kind for kind, _, _ in calls] == [
+        "current_global_seq",
+        "begin_transaction",
+        "rollback_transaction",
+        "close_store",
+    ]
+    assert {item_context for _, item_context, _ in calls} == {context_id}
+    with pytest.raises(RustPostgresConnectionUnavailable, match="closed"):
+        session.call("current_global_seq")
+
+
 def test_postgres_meta_facade_routes_nested_sequence_and_queue_calls(monkeypatch):
     calls: list[tuple[str, str | None]] = []
     results = {

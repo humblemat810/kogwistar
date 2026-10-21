@@ -27,7 +27,8 @@ use std::collections::BTreeMap;
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::pin;
-use std::sync::{Mutex, OnceLock, mpsc};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::task::{Context, Poll, Waker};
 use std::thread::JoinHandle;
 use tokio::runtime::{Builder as TokioRuntimeBuilder, Runtime as TokioRuntime};
@@ -2872,14 +2873,15 @@ fn validate_sqlite_operation(value: &Value) -> Result<(), (&'static str, String)
     Ok(())
 }
 
-/// Durable PostgreSQL Phase-3 ABI. Every call owns a Tokio runtime because
-/// the native store performs socket I/O; this must never use the synchronous
-/// no-op-waker helper used by isolated in-memory reads.
+/// Durable PostgreSQL Phase-3 ABI. Managed facades reuse a process runtime and
+/// an explicitly closeable native store pool. Unmanaged calls remain ephemeral.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PostgresStoreRequest {
     dsn: String,
     schema: String,
+    #[serde(default)]
+    context_id: Option<String>,
     #[serde(default)]
     transaction_id: Option<String>,
     operation: PostgresStoreOperation,
@@ -2888,6 +2890,7 @@ struct PostgresStoreRequest {
 #[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum PostgresStoreOperation {
+    CloseStore,
     BeginTransaction,
     CommitTransaction,
     RollbackTransaction,
@@ -3518,7 +3521,8 @@ async fn postgres_store_operation_json(
     operation: PostgresStoreOperation,
 ) -> Result<Value, PostgresStoreError> {
     match operation {
-        PostgresStoreOperation::BeginTransaction
+        PostgresStoreOperation::CloseStore
+        | PostgresStoreOperation::BeginTransaction
         | PostgresStoreOperation::CommitTransaction
         | PostgresStoreOperation::RollbackTransaction => Err(
             postgres_session_error("PostgreSQL transaction control cannot be nested as an operation"),
@@ -5165,6 +5169,481 @@ fn postgres_session_error(message: impl Into<String>) -> PostgresStoreError {
     PostgresStoreError::TransactionAborted(message.into())
 }
 
+const MAX_CACHED_POSTGRES_STORES: usize = 64;
+
+enum CachedPostgresCommand {
+    Operation {
+        transaction_id: Option<String>,
+        operation: Box<PostgresStoreOperation>,
+        response: mpsc::Sender<Result<Value, PostgresStoreError>>,
+    },
+    Begin {
+        transaction_id: String,
+        started: mpsc::Sender<Result<(), PostgresStoreError>>,
+    },
+    Finish {
+        transaction_id: String,
+        commit: bool,
+        response: mpsc::Sender<Result<(), PostgresStoreError>>,
+    },
+    Close {
+        response: mpsc::Sender<Result<(), PostgresStoreError>>,
+    },
+}
+
+type CachedPostgresReceiver = Arc<Mutex<mpsc::Receiver<CachedPostgresCommand>>>;
+
+fn receive_cached_postgres_command(
+    receiver: &CachedPostgresReceiver,
+) -> Result<CachedPostgresCommand, mpsc::RecvError> {
+    receiver
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .recv()
+}
+
+struct CachedPostgresStore {
+    process_id: u32,
+    dsn: String,
+    schema: String,
+    sender: mpsc::Sender<CachedPostgresCommand>,
+    worker: Option<JoinHandle<()>>,
+}
+
+type SharedCachedPostgresStore = Arc<Mutex<CachedPostgresStore>>;
+
+fn postgres_store_cache() -> &'static Mutex<BTreeMap<String, SharedCachedPostgresStore>> {
+    static STORES: OnceLock<Mutex<BTreeMap<String, SharedCachedPostgresStore>>> = OnceLock::new();
+    STORES.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+fn active_postgres_store_transactions() -> &'static Mutex<BTreeMap<(u32, String, String), String>> {
+    static ACTIVE: OnceLock<Mutex<BTreeMap<(u32, String, String), String>>> = OnceLock::new();
+    ACTIVE.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+fn clear_active_postgres_store_transaction(key: &(u32, String, String)) {
+    active_postgres_store_transactions()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(key);
+}
+
+fn run_cached_postgres_worker(
+    dsn: String,
+    schema: String,
+    receiver: mpsc::Receiver<CachedPostgresCommand>,
+    startup: mpsc::SyncSender<Result<(), PostgresStoreError>>,
+) {
+    let store = match PostgresStore::from_dsn(&dsn, &schema) {
+        Ok(store) => store,
+        Err(error) => {
+            let _ = startup.send(Err(error));
+            return;
+        }
+    };
+    let runtime = match postgres_runtime() {
+        Ok(runtime) => runtime,
+        Err((_, message)) => {
+            let _ = startup.send(Err(postgres_session_error(message)));
+            return;
+        }
+    };
+    let _ = startup.send(Ok(()));
+    let receiver = Arc::new(Mutex::new(receiver));
+
+    loop {
+        let command = receive_cached_postgres_command(&receiver);
+        let Ok(command) = command else {
+            break;
+        };
+        match command {
+            CachedPostgresCommand::Operation {
+                transaction_id: None,
+                operation,
+                response,
+            } => {
+                let result = runtime.block_on(postgres_store_operation_json(&store, *operation));
+                let _ = response.send(result);
+            }
+            CachedPostgresCommand::Operation {
+                transaction_id: Some(_),
+                response,
+                ..
+            } => {
+                let _ = response.send(Err(postgres_session_error(
+                    "PostgreSQL transaction operation arrived outside its transaction",
+                )));
+            }
+            CachedPostgresCommand::Begin {
+                transaction_id,
+                started,
+            } => {
+                let started_flag = Arc::new(AtomicBool::new(false));
+                let future_started = started_flag.clone();
+                let startup_response = started.clone();
+                let transaction_receiver = receiver.clone();
+                let finish_response: Arc<
+                    Mutex<Option<mpsc::Sender<Result<(), PostgresStoreError>>>>,
+                > = Arc::new(Mutex::new(None));
+                let future_finish_response = finish_response.clone();
+                let result = runtime.block_on(store.transaction(move |uow| {
+                    Box::pin(async move {
+                        future_started.store(true, Ordering::Release);
+                        let _ = started.send(Ok(()));
+                        loop {
+                            let command = receive_cached_postgres_command(&transaction_receiver)
+                                .map_err(|_| {
+                                    postgres_session_error(
+                                        "PostgreSQL store worker disconnected during transaction",
+                                    )
+                                })?;
+                            match command {
+                                CachedPostgresCommand::Operation {
+                                    transaction_id: Some(request_transaction_id),
+                                    operation,
+                                    response,
+                                } if request_transaction_id == transaction_id => {
+                                    let _ = response
+                                        .send(postgres_uow_operation_json(uow, *operation).await);
+                                }
+                                CachedPostgresCommand::Operation { response, .. } => {
+                                    let _ = response.send(Err(postgres_session_error(
+                                        "PostgreSQL operation does not match active transaction",
+                                    )));
+                                }
+                                CachedPostgresCommand::Finish {
+                                    transaction_id: request_transaction_id,
+                                    commit,
+                                    response,
+                                } if request_transaction_id == transaction_id => {
+                                    *future_finish_response
+                                        .lock()
+                                        .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                                        Some(response);
+                                    return if commit {
+                                        Ok(())
+                                    } else {
+                                        Err(postgres_session_error(POSTGRES_EXTERNAL_ROLLBACK))
+                                    };
+                                }
+                                CachedPostgresCommand::Begin { started, .. } => {
+                                    let _ = started.send(Err(postgres_session_error(
+                                        "PostgreSQL transaction is already active",
+                                    )));
+                                }
+                                CachedPostgresCommand::Finish { response, .. } => {
+                                    let _ = response.send(Err(postgres_session_error(
+                                        "PostgreSQL finish does not match active transaction",
+                                    )));
+                                }
+                                CachedPostgresCommand::Close { response } => {
+                                    let _ = response.send(Err(postgres_session_error(
+                                        "cannot close PostgreSQL store while transaction is active",
+                                    )));
+                                }
+                            }
+                        }
+                    })
+                }));
+                if !started_flag.load(Ordering::Acquire) {
+                    let error = result
+                        .err()
+                        .unwrap_or_else(|| postgres_session_error("transaction did not start"));
+                    let _ = startup_response.send(Err(error));
+                    continue;
+                }
+                let finish_result = match result {
+                    Ok(()) => Ok(()),
+                    Err(PostgresStoreError::TransactionAborted(message))
+                        if message == POSTGRES_EXTERNAL_ROLLBACK =>
+                    {
+                        Ok(())
+                    }
+                    Err(error) => Err(error),
+                };
+                if let Some(response) = finish_response
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .take()
+                {
+                    let _ = response.send(finish_result);
+                }
+            }
+            CachedPostgresCommand::Finish { response, .. } => {
+                let _ = response.send(Err(postgres_session_error(
+                    "PostgreSQL finish requested without an active transaction",
+                )));
+            }
+            CachedPostgresCommand::Close { response } => {
+                let _ = response.send(Ok(()));
+                break;
+            }
+        }
+    }
+}
+
+fn cached_postgres_store(
+    dsn: &str,
+    schema: &str,
+    context_id: &str,
+) -> Result<SharedCachedPostgresStore, PostgresStoreError> {
+    let process_id = std::process::id();
+    let mut stores = postgres_store_cache()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    // Forked children inherit the cache map but not its worker threads. Prune
+    // all stale handles so abandoned parent contexts cannot consume the cap.
+    stores.retain(|_, entry| {
+        entry
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .process_id
+            == process_id
+    });
+    if let Some(entry) = stores.get(context_id) {
+        let entry_guard = entry
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if entry_guard.process_id == process_id {
+            if entry_guard.dsn != dsn || entry_guard.schema != schema {
+                return Err(postgres_session_error(
+                    "PostgreSQL store context does not match its DSN and schema",
+                ));
+            }
+            return Ok(entry.clone());
+        }
+        drop(entry_guard);
+        unreachable!("stale PostgreSQL store entries are pruned above");
+    }
+    if stores.len() >= MAX_CACHED_POSTGRES_STORES {
+        return Err(postgres_session_error(
+            "PostgreSQL native store cache is full; close an unused store before opening another",
+        ));
+    }
+    let (sender, receiver) = mpsc::channel();
+    let (startup_sender, startup_receiver) = mpsc::sync_channel(1);
+    let worker_dsn = dsn.to_owned();
+    let worker_schema = schema.to_owned();
+    let worker = std::thread::spawn(move || {
+        run_cached_postgres_worker(worker_dsn, worker_schema, receiver, startup_sender)
+    });
+    startup_receiver
+        .recv()
+        .map_err(|_| postgres_session_error("PostgreSQL store worker failed to start"))??;
+    let entry = Arc::new(Mutex::new(CachedPostgresStore {
+        process_id,
+        dsn: dsn.to_owned(),
+        schema: schema.to_owned(),
+        sender,
+        worker: Some(worker),
+    }));
+    stores.insert(context_id.to_owned(), entry.clone());
+    Ok(entry)
+}
+
+fn active_postgres_store_key(dsn: &str, schema: &str) -> (u32, String, String) {
+    (std::process::id(), dsn.to_owned(), schema.to_owned())
+}
+
+fn cached_postgres_operation(
+    dsn: &str,
+    schema: &str,
+    context_id: &str,
+    transaction_id: Option<String>,
+    operation: PostgresStoreOperation,
+) -> Result<Value, PostgresStoreError> {
+    if matches!(&operation, PostgresStoreOperation::CloseStore) {
+        if transaction_id.is_some() {
+            return Err(postgres_session_error(
+                "PostgreSQL store close cannot run inside a transaction",
+            ));
+        }
+        close_cached_postgres_store(dsn, schema, context_id)?;
+        return Ok(Value::Null);
+    }
+    let entry = cached_postgres_store(dsn, schema, context_id)?;
+    let entry = entry
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let key = active_postgres_store_key(dsn, schema);
+    match operation {
+        PostgresStoreOperation::BeginTransaction => {
+            require_no_active_postgres_session(dsn, schema)?;
+            let transaction_id = require_postgres_transaction_id(transaction_id)?;
+            {
+                let mut active = active_postgres_store_transactions()
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                if active.contains_key(&key) {
+                    return Err(postgres_session_error(
+                        "PostgreSQL external transaction is already active for this store",
+                    ));
+                }
+                active.insert(key.clone(), context_id.to_owned());
+            }
+            let (response_sender, response_receiver) = mpsc::channel();
+            if entry
+                .sender
+                .send(CachedPostgresCommand::Begin {
+                    transaction_id,
+                    started: response_sender,
+                })
+                .is_err()
+            {
+                active_postgres_store_transactions()
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .remove(&key);
+                return Err(postgres_session_error(
+                    "PostgreSQL store worker is unavailable",
+                ));
+            }
+            let result = response_receiver
+                .recv()
+                .map_err(|_| postgres_session_error("PostgreSQL store worker dropped startup"));
+            if !matches!(&result, Ok(Ok(()))) {
+                clear_active_postgres_store_transaction(&key);
+            }
+            result??;
+            Ok(Value::Null)
+        }
+        PostgresStoreOperation::CommitTransaction | PostgresStoreOperation::RollbackTransaction => {
+            let transaction_id = require_postgres_transaction_id(transaction_id)?;
+            {
+                let active = active_postgres_store_transactions()
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                if active.get(&key).map(String::as_str) != Some(context_id) {
+                    return Err(postgres_session_error(
+                        "PostgreSQL transaction belongs to another or stale store context",
+                    ));
+                }
+            }
+            let (response_sender, response_receiver) = mpsc::channel();
+            let result = entry
+                .sender
+                .send(CachedPostgresCommand::Finish {
+                    transaction_id,
+                    commit: matches!(operation, PostgresStoreOperation::CommitTransaction),
+                    response: response_sender,
+                })
+                .map_err(|_| postgres_session_error("PostgreSQL store worker is unavailable"))
+                .and_then(|()| {
+                    response_receiver.recv().map_err(|_| {
+                        postgres_session_error("PostgreSQL store worker dropped finish")
+                    })
+                })
+                .and_then(|result| result);
+            clear_active_postgres_store_transaction(&key);
+            result.map(|()| Value::Null)
+        }
+        PostgresStoreOperation::CloseStore => unreachable!("handled above"),
+        operation => {
+            let active = active_postgres_store_transactions()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            match (active.get(&key), transaction_id.as_deref()) {
+                (Some(owner), Some(_)) if owner == context_id => {}
+                (Some(_), _) => {
+                    return Err(postgres_session_error(
+                        "PostgreSQL store has an active transaction",
+                    ));
+                }
+                (None, Some(_)) => {
+                    return Err(postgres_session_error("PostgreSQL transaction_id is stale"));
+                }
+                (None, None) => {}
+            }
+            drop(active);
+            let (response_sender, response_receiver) = mpsc::channel();
+            entry
+                .sender
+                .send(CachedPostgresCommand::Operation {
+                    transaction_id,
+                    operation: Box::new(operation),
+                    response: response_sender,
+                })
+                .map_err(|_| postgres_session_error("PostgreSQL store worker is unavailable"))?;
+            response_receiver.recv().map_err(|_| {
+                postgres_session_error("PostgreSQL store worker dropped its response")
+            })?
+        }
+    }
+}
+
+fn close_cached_postgres_store(
+    dsn: &str,
+    schema: &str,
+    context_id: &str,
+) -> Result<(), PostgresStoreError> {
+    let key = active_postgres_store_key(dsn, schema);
+    if active_postgres_store_transactions()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .contains_key(&key)
+    {
+        return Err(postgres_session_error(
+            "cannot close PostgreSQL store while a transaction is active",
+        ));
+    }
+    if postgres_sessions()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .values()
+        .any(|session| session.dsn == dsn && session.schema == schema)
+    {
+        return Err(postgres_session_error(
+            "cannot close PostgreSQL store while a transaction is active",
+        ));
+    }
+    let entry = postgres_store_cache()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(context_id)
+        .cloned();
+    let Some(entry) = entry else {
+        return Ok(());
+    };
+    let mut entry_guard = entry
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if entry_guard.process_id != std::process::id() {
+        drop(entry_guard);
+        postgres_store_cache()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(context_id);
+        return Ok(());
+    }
+    if entry_guard.dsn != dsn || entry_guard.schema != schema {
+        return Err(postgres_session_error(
+            "PostgreSQL store context does not match its DSN and schema",
+        ));
+    }
+    let (response_sender, response_receiver) = mpsc::channel();
+    entry_guard
+        .sender
+        .send(CachedPostgresCommand::Close {
+            response: response_sender,
+        })
+        .map_err(|_| postgres_session_error("PostgreSQL store worker is unavailable"))?;
+    response_receiver
+        .recv()
+        .map_err(|_| postgres_session_error("PostgreSQL store worker dropped close"))??;
+    if let Some(worker) = entry_guard.worker.take() {
+        worker
+            .join()
+            .map_err(|_| postgres_session_error("PostgreSQL store worker panicked on close"))?;
+    }
+    drop(entry_guard);
+    postgres_store_cache()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(context_id);
+    Ok(())
+}
+
 fn require_postgres_transaction_id(
     transaction_id: Option<String>,
 ) -> Result<String, PostgresStoreError> {
@@ -5180,6 +5659,7 @@ fn begin_postgres_session(
     schema: String,
     transaction_id: String,
 ) -> Result<(), PostgresStoreError> {
+    require_no_active_postgres_session(&dsn, &schema)?;
     let mut sessions = postgres_sessions()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -5339,6 +5819,16 @@ fn require_no_active_postgres_session(dsn: &str, schema: &str) -> Result<(), Pos
             "PostgreSQL operation does not own the active transaction",
         ));
     }
+    drop(sessions);
+    if active_postgres_store_transactions()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .contains_key(&active_postgres_store_key(dsn, schema))
+    {
+        return Err(postgres_session_error(
+            "PostgreSQL operation does not own the active transaction",
+        ));
+    }
     Ok(())
 }
 
@@ -5378,7 +5868,8 @@ fn validate_postgres_operation(value: &Value) -> Result<(), (&'static str, Strin
             )
         })?;
     let allowed = match kind {
-        "begin_transaction"
+        "close_store"
+        | "begin_transaction"
         | "commit_transaction"
         | "rollback_transaction"
         | "ensure_schema"
@@ -5766,7 +6257,10 @@ fn validate_postgres_operation(value: &Value) -> Result<(), (&'static str, Strin
 fn postgres_store_json_impl(payload_json: &str) -> Result<String, (&'static str, String)> {
     let value: Value = serde_json::from_str(payload_json)
         .map_err(|error| (STORE_INVALID_JSON, format!("invalid JSON: {error}")))?;
-    require_postgres_fields(&value, &["dsn", "schema", "transaction_id", "operation"])?;
+    require_postgres_fields(
+        &value,
+        &["dsn", "schema", "context_id", "transaction_id", "operation"],
+    )?;
     let operation = value.get("operation").ok_or_else(|| {
         (
             STORE_INVALID_PAYLOAD,
@@ -5780,34 +6274,46 @@ fn postgres_store_json_impl(payload_json: &str) -> Result<String, (&'static str,
             format!("invalid PostgreSQL store payload: {error}"),
         )
     })?;
-    let result: Result<Value, PostgresStoreError> = (|| match request.operation {
-        PostgresStoreOperation::BeginTransaction => {
-            let transaction_id = require_postgres_transaction_id(request.transaction_id)?;
-            begin_postgres_session(request.dsn, request.schema, transaction_id)?;
-            Ok(Value::Null)
+    let PostgresStoreRequest {
+        dsn,
+        schema,
+        context_id,
+        transaction_id,
+        operation,
+    } = request;
+    let result: Result<Value, PostgresStoreError> = match context_id.as_deref() {
+        Some(context_id) => {
+            cached_postgres_operation(&dsn, &schema, context_id, transaction_id, operation)
         }
-        PostgresStoreOperation::CommitTransaction => {
-            let transaction_id = require_postgres_transaction_id(request.transaction_id)?;
-            finish_postgres_session(&transaction_id, true)?;
-            Ok(Value::Null)
-        }
-        PostgresStoreOperation::RollbackTransaction => {
-            let transaction_id = require_postgres_transaction_id(request.transaction_id)?;
-            finish_postgres_session(&transaction_id, false)?;
-            Ok(Value::Null)
-        }
-        operation => {
-            if let Some(transaction_id) = request.transaction_id {
-                postgres_session_operation(&transaction_id, operation)
-            } else {
-                require_no_active_postgres_session(&request.dsn, &request.schema)?;
-                let store = PostgresStore::from_dsn(&request.dsn, &request.schema)?;
-                let runtime =
-                    postgres_runtime().map_err(|(_, message)| postgres_session_error(message))?;
-                runtime.block_on(postgres_store_operation_json(&store, operation))
+        None => (|| match operation {
+            PostgresStoreOperation::CloseStore => Err(postgres_session_error(
+                "PostgreSQL store close requires context_id",
+            )),
+            PostgresStoreOperation::BeginTransaction => {
+                let transaction_id = require_postgres_transaction_id(transaction_id)?;
+                begin_postgres_session(dsn, schema, transaction_id).map(|()| Value::Null)
             }
-        }
-    })();
+            PostgresStoreOperation::CommitTransaction => {
+                let transaction_id = require_postgres_transaction_id(transaction_id)?;
+                finish_postgres_session(&transaction_id, true).map(|()| Value::Null)
+            }
+            PostgresStoreOperation::RollbackTransaction => {
+                let transaction_id = require_postgres_transaction_id(transaction_id)?;
+                finish_postgres_session(&transaction_id, false).map(|()| Value::Null)
+            }
+            operation => {
+                if let Some(transaction_id) = transaction_id {
+                    postgres_session_operation(&transaction_id, operation)
+                } else {
+                    require_no_active_postgres_session(&dsn, &schema)?;
+                    let store = PostgresStore::from_dsn(&dsn, &schema)?;
+                    let runtime = postgres_runtime()
+                        .map_err(|(_, message)| postgres_session_error(message))?;
+                    runtime.block_on(postgres_store_operation_json(&store, operation))
+                }
+            }
+        })(),
+    };
     result
         .and_then(|value| {
             serde_json::to_string(&value).map_err(|error| {
@@ -6088,6 +6594,59 @@ fn _rust(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn cached_postgres_receiver_releases_lock_after_each_command() {
+        let (sender, receiver) = mpsc::channel();
+        let receiver = Arc::new(Mutex::new(receiver));
+        let (first_response, _) = mpsc::channel();
+        let (second_response, _) = mpsc::channel();
+        sender
+            .send(CachedPostgresCommand::Close {
+                response: first_response,
+            })
+            .unwrap();
+        sender
+            .send(CachedPostgresCommand::Close {
+                response: second_response,
+            })
+            .unwrap();
+
+        assert!(matches!(
+            receive_cached_postgres_command(&receiver),
+            Ok(CachedPostgresCommand::Close { .. })
+        ));
+        assert!(receiver.try_lock().is_ok());
+        assert!(matches!(
+            receive_cached_postgres_command(&receiver),
+            Ok(CachedPostgresCommand::Close { .. })
+        ));
+    }
+
+    #[test]
+    fn managed_postgres_store_reuses_and_explicitly_closes_worker() {
+        let context_id = format!("test-{}", std::process::id());
+        let dsn = "postgresql://postgres:postgres@127.0.0.1/test";
+        let first = cached_postgres_store(dsn, "test_schema", &context_id).unwrap();
+        let second = cached_postgres_store(dsn, "test_schema", &context_id).unwrap();
+        assert!(Arc::ptr_eq(&first, &second));
+        assert!(
+            cached_postgres_store(
+                "postgresql://other:other@127.0.0.1/test",
+                "test_schema",
+                &context_id
+            )
+            .is_err()
+        );
+
+        close_cached_postgres_store(dsn, "test_schema", &context_id).unwrap();
+        assert!(
+            !postgres_store_cache()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .contains_key(&context_id)
+        );
+    }
 
     #[test]
     fn isolated_store_snapshot_reads_are_ordered_and_read_only() {

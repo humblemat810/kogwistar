@@ -151,6 +151,7 @@ def store_postgres(
     dsn: str | None = None,
     schema: str,
     operation: JsonObject,
+    context_id: str | None = None,
     transaction_id: str | None = None,
 ) -> JsonValue:
     """Execute Phase-3 PostgreSQL JSON ABI through native Tokio/Postgres store.
@@ -167,6 +168,7 @@ def store_postgres(
                     {
                         "dsn": _postgres_dsn_for_rust(dsn),
                         "schema": schema,
+                        "context_id": context_id,
                         "transaction_id": transaction_id,
                         "operation": operation,
                     },
