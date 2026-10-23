@@ -179,6 +179,7 @@ def _make_registry(
     *,
     authority: str = "python",
     concurrent: _ConcurrentMcpBarriers | None = None,
+    sync_concurrent: bool = False,
 ) -> McpRegistry:
     store_type = RustEngineSQLite if authority == "rust" else EngineSQLite
     store = store_type(path.parent, filename=path.name)
@@ -289,7 +290,7 @@ def _make_registry(
                 concurrent.wait(concurrent.precommit_reads_done, "precommit-read")
         return {"seq": edge_seq, "entity_id": expected_entity_id, "edge_id": expected_edge_id}
 
-    if concurrent is None:
+    if concurrent is None or sync_concurrent:
 
         @registry.tool(name="write_record")
         def write_record_tool(
@@ -385,10 +386,6 @@ def _make_registry(
 
     if concurrent is not None:
 
-        @registry.tool(name="read_head")
-        async def read_head(expected_revision: int) -> dict[str, object]:
-            return await asyncio.to_thread(read_head_sync, expected_revision)
-
         def read_head_sync(expected_revision: int) -> dict[str, object]:
             projection = store.get_named_projection(
                 "mcp_benchmark_projection", "mcp-head"
@@ -462,6 +459,18 @@ def _make_registry(
                 ):
                     raise RuntimeError("MCP graph head edge has mismatched endpoints")
             return {"revision": revision, "entity_id": entity_id, "edge_id": edge_id}
+
+        if sync_concurrent:
+
+            @registry.tool(name="read_head")
+            def read_head(expected_revision: int) -> dict[str, object]:
+                return read_head_sync(expected_revision)
+
+        else:
+
+            @registry.tool(name="read_head")
+            async def read_head(expected_revision: int) -> dict[str, object]:
+                return await asyncio.to_thread(read_head_sync, expected_revision)
 
     return registry
 
@@ -872,6 +881,117 @@ async def _run_in_process_concurrent(
     }
 
 
+def _run_sync_threadpool_concurrent(
+    registry: McpRegistry,
+    phases: list[ConcurrentPhase],
+    barriers: _ConcurrentMcpBarriers,
+    graph_payloads: dict[int, tuple[dict[str, object], dict[str, object]]],
+) -> dict[str, Any]:
+    """Run the same MCP tool handlers from five synchronous actor threads."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    timings: dict[str, list[float]] = {"write_record": [], "read_head": []}
+    timings_lock = threading.Lock()
+
+    def call(name: str, arguments: dict[str, object]) -> dict[str, object]:
+        call_started = time.perf_counter_ns()
+        try:
+            record = registry._record_for(name)
+            if record is None:
+                raise RuntimeError(f"sync MCP benchmark tool {name!r} is missing")
+            values = record.input_model.model_validate(arguments)
+            kwargs = {
+                field: getattr(values, field)
+                for field in record.input_model.model_fields
+            }
+            result = record.function(**kwargs)
+            if not isinstance(result, dict):
+                raise RuntimeError("sync MCP tool returned a non-object result")
+            # Include response serialization in the same way as the async registry path.
+            payload = json.loads(json.dumps(result, default=str))
+            if not isinstance(payload, dict):
+                raise RuntimeError("sync MCP response serialization changed its shape")
+            return payload
+        except Exception:
+            barriers.abort()
+            raise
+        finally:
+            with timings_lock:
+                timings[name].append((time.perf_counter_ns() - call_started) / 1_000_000)
+
+    def actor(actor_id: int | None) -> int:
+        operations = 0
+        for phase in phases:
+            for step in phase["steps"]:
+                barriers.wait(barriers.start_step, "step-start")
+                if actor_id is None:
+                    index = step["write_index"]
+                    entity_id = graph_node_id(index)
+                    edge_id = graph_edge_id(index)
+                    source_id = previous_graph_node_id(index)
+                    node_payload, edge_payload = graph_payloads[index]
+                    result = call(
+                        "write_record",
+                        {
+                            "index": index,
+                            "expected_entity_id": entity_id,
+                            "expected_edge_id": edge_id,
+                            "expected_source_id": source_id,
+                            "node_payload": node_payload,
+                            "edge_payload": edge_payload,
+                        },
+                    )
+                    if result.get("entity_id") != entity_id:
+                        raise RuntimeError("sync MCP write returned wrong entity")
+                    operations += 1
+                else:
+                    barriers.wait(barriers.transaction_open, "transaction-open")
+                    reads = {
+                        item["visibility"]: item
+                        for item in step["reads"]
+                        if item["reader_id"] == actor_id
+                    }
+                    before = reads.get("before_commit")
+                    if before is not None:
+                        result = call(
+                            "read_head",
+                            {"expected_revision": before["minimum_revision"]},
+                        )
+                        if result.get("revision") != before["minimum_revision"]:
+                            raise RuntimeError("sync MCP precommit visibility mismatch")
+                        operations += 1
+                    barriers.wait(barriers.precommit_reads_done, "precommit-read")
+                barriers.wait(barriers.commit_done, "commit")
+                if actor_id is not None:
+                    reads = {
+                        item["visibility"]: item
+                        for item in step["reads"]
+                        if item["reader_id"] == actor_id
+                    }
+                    after = reads.get("after_commit")
+                    if after is not None:
+                        result = call(
+                            "read_head",
+                            {"expected_revision": after["minimum_revision"]},
+                        )
+                        if result.get("revision") != after["minimum_revision"]:
+                            raise RuntimeError("sync MCP postcommit visibility mismatch")
+                        operations += 1
+                barriers.wait(barriers.step_done, "step-done")
+        return operations
+
+    started = time.perf_counter_ns()
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        futures = [pool.submit(actor, actor_id) for actor_id in (None, 0, 1, 2, 3)]
+        outcomes = [future.result() for future in futures]
+    return {
+        "startup_ms": 0.0,
+        "elapsed_ms": (time.perf_counter_ns() - started) / 1_000_000,
+        "operations": sum(outcomes),
+        "per_operation": timings,
+    }
+
+
 def _run_concurrent_one(
     path: Path,
     phases: list[ConcurrentPhase],
@@ -951,6 +1071,81 @@ def _run_concurrent_one(
             name: {
                 "count": len(values),
                 "p50_ms": _percentile(values, 0.50),
+                "p95_ms": _percentile(values, 0.95),
+                "p99_ms": _percentile(values, 0.99),
+            }
+            for name, values in operation_latencies.items()
+        },
+    }
+
+
+def _run_sync_threadpool_one(
+    path: Path,
+    phases: list[ConcurrentPhase],
+) -> dict[str, Any]:
+    """Measure synchronous concurrent MCP calls with the canonical trace."""
+    try:
+        import psutil
+    except ImportError as exc:
+        raise RuntimeError("psutil is required to collect concurrent MCP process metrics") from exc
+    process = psutil.Process()
+    graph_payloads = {
+        step["write_index"]: build_graph_payloads(
+            step["write_index"], vector_sha256="0" * 64
+        )
+        for phase in phases
+        for step in phase["steps"]
+    }
+    rss_start = int(process.memory_info().rss)
+    cpu_started = time.process_time_ns()
+    barriers = _ConcurrentMcpBarriers.create()
+    registry = _make_registry(
+        path, authority="python", concurrent=barriers, sync_concurrent=True
+    )
+    transport_result = _run_sync_threadpool_concurrent(
+        registry, phases, barriers, graph_payloads
+    )
+    state = _final_state(path)
+    head = next(
+        (item["payload"] for item in state["projections"] if item["key"] == "mcp-head"),
+        None,
+    )
+    expected_writes = sum(len(phase["steps"]) for phase in phases)
+    if (
+        not isinstance(head, dict)
+        or head.get("revision") != expected_writes
+        or len(state["events"]) != 1 + 2 * expected_writes
+    ):
+        raise RuntimeError("sync concurrent MCP final graph state is incomplete")
+    elapsed_ms = float(transport_result["elapsed_ms"])
+    operation_count = int(transport_result["operations"])
+    expected_reads = sum(len(step["reads"]) for phase in phases for step in phase["steps"])
+    operation_latencies = transport_result["per_operation"]
+    if (
+        elapsed_ms <= 0
+        or operation_count != expected_writes + expected_reads
+        or len(operation_latencies["write_record"]) != expected_writes
+        or len(operation_latencies["read_head"]) != expected_reads
+    ):
+        raise RuntimeError("sync concurrent MCP trace skipped or duplicated work")
+    rss_end = int(process.memory_info().rss)
+    return {
+        "authority": "python",
+        "transport": "sync_threadpool",
+        "state_digest": _digest(state),
+        "elapsed_ms": elapsed_ms,
+        "startup_ms": 0.0,
+        "operations": operation_count,
+        "throughput_ops_per_sec": operation_count * 1000 / elapsed_ms,
+        "host_process_cpu_elapsed_ms": (time.process_time_ns() - cpu_started) / 1_000_000,
+        "host_process_rss_start_bytes": rss_start,
+        "host_process_rss_end_bytes": rss_end,
+        "host_process_rss_delta_bytes": rss_end - rss_start,
+        "sqlite_database_footprint_bytes": _sqlite_footprint_bytes(path),
+        "per_operation": {
+            name: {
+                "count": len(values),
+                "p50_ms": statistics.median(values),
                 "p95_ms": _percentile(values, 0.95),
                 "p99_ms": _percentile(values, 0.99),
             }
