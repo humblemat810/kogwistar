@@ -285,6 +285,13 @@ def test_request_step_persists_semantic_events_but_keeps_tokens_transient() -> N
     resolver = AsyncMappingStepResolver()
     callbacks = Callbacks()
     journal = FakeJournal()
+    trace_events: list[tuple[str, Mapping[str, object]]] = []
+
+    def publish_trace_event(
+        event_type: str, payload: Mapping[str, object]
+    ) -> None:
+        trace_events.append((event_type, payload))
+
     register_event_workflow_steps(
         resolver,
         provider=FakeProvider(),
@@ -294,6 +301,7 @@ def test_request_step_persists_semantic_events_but_keeps_tokens_transient() -> N
         sender_id="agent-1",
         security_scope="private",
         advisory_field_names=frozenset({"answer"}),
+        publish_trace_event=publish_trace_event,
     )
     request_step = resolver.handlers["agent.event.request"]
     request_callable = cast(Callable[[StepContext], Awaitable[object]], request_step)
@@ -311,6 +319,16 @@ def test_request_step_persists_semantic_events_but_keeps_tokens_transient() -> N
     ]
     assert all(trace.run_id == "run-1" and trace.turn_id == "turn-1" for _, trace in journal.events)
     assert journal.events[1][1].client_sse_sequence == 1
+    assert [event_type for event_type, _ in trace_events] == [
+        "provider.request.started",
+        "provider.event.persisted",
+        "provider.event.persisted",
+        "provider.event.persisted",
+        "provider.request.completed",
+    ]
+    assert trace_events[0][1]["workflow_step_seq"] == 3
+    assert trace_events[1][1]["provider_sequence"] == 1
+    assert trace_events[-1][1]["provider_response_id"] == "r1"
 
 
 @pytest.mark.parametrize(

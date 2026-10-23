@@ -144,6 +144,64 @@ def test_scheduled_event_run_binds_registry_execution_and_sse_projection() -> No
         "response_completed",
         "run.completed",
     ]
+
+
+def test_run_event_projection_exposes_safe_trace_correlation_fields() -> None:
+    service, _, _ = _service()
+    started = service.start_run(
+        conversation_id="conversation-1",
+        workflow_id="agent.event.v1",
+        user_id="user-1",
+        input="hello",
+    )
+    service._append_event(
+        str(started["run_id"]),
+        "response_completed",
+        {
+            "turn_id": "turn:abc",
+            "durable_event_id": "agent-event:abc",
+            "durable_message_id": "msg:abc",
+            "provider_id": "openai.responses",
+            "provider_sequence": 7,
+            "trace": {
+                "trace_id": "a" * 32,
+                "span_id": "b" * 16,
+                "parent_span_id": "c" * 16,
+                "workflow_node_id": "wf:event:request",
+                "producer_step_seq": 12,
+                "producer_attempt": 2,
+            },
+        },
+    )
+    events = service.list_events(
+        run_id=str(started["run_id"]), user_id="user-1", after_seq=0, limit=20
+    )
+    completed = next(event for event in events if event["event_type"] == "response_completed")
+    assert completed["turn_id"] == "turn:abc"
+    assert completed["trace_id"] == "a" * 32
+    assert completed["span_id"] == "b" * 16
+    assert completed["parent_span_id"] == "c" * 16
+    assert completed["workflow_node_id"] == "wf:event:request"
+    assert completed["producer_step_seq"] == 12
+    assert completed["producer_attempt"] == 2
+    assert completed["provider_id"] == "openai.responses"
+    assert completed["provider_sequence"] == 7
+    assert completed["durable_event_id"] == "agent-event:abc"
+    assert completed["durable_message_id"] == "msg:abc"
+    inspected = service.get_run(run_id=str(started["run_id"]), user_id="user-1")
+    assert inspected["trace"] == {
+        "turn_id": "turn:abc",
+        "trace_id": "a" * 32,
+        "span_id": "b" * 16,
+        "parent_span_id": "c" * 16,
+        "workflow_node_id": "wf:event:request",
+        "producer_step_seq": 12,
+        "producer_attempt": 2,
+        "provider_id": "openai.responses",
+        "provider_sequence": 7,
+        "durable_event_id": "agent-event:abc",
+        "durable_message_id": "msg:abc",
+    }
     # Token deltas use a separate, host-owned transient sink and never enter
     # the durable run registry event log.
     assert all("hello" not in str(event) for event in events)

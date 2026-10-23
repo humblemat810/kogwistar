@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Awaitable, Callable, Mapping
-from typing import Protocol, cast
+from typing import Literal, Protocol, cast
 
 from pydantic import BaseModel, ConfigDict
 
@@ -22,6 +22,8 @@ class EventTraceMetadata(BaseModel):
     workflow_node_id: str
     step_id: str
     attempt: int = 1
+    producer_step_seq: int | None = None
+    producer_attempt: int | None = None
     trace_id: str | None = None
     span_id: str | None = None
     parent_span_id: str | None = None
@@ -104,6 +106,7 @@ class LaneMessageJournalService(Protocol):
         step_id: str,
         conversation_id: str,
         run_id: str,
+        relation: Literal["handled_by_step", "emitted_by_step"] = "handled_by_step",
     ) -> None: ...
 
 
@@ -285,6 +288,25 @@ class LaneProviderEventJournal:
             step_id=f"wf_step|{run_id}|{step_seq}",
             conversation_id=conversation_id,
             run_id=run_id,
+            relation="handled_by_step",
+        )
+
+    def link_producer_step(
+        self,
+        claim: ClaimedProviderEvent,
+        *,
+        conversation_id: str,
+        run_id: str,
+    ) -> None:
+        trace = claim.durable_event.trace
+        if trace.producer_step_seq is None:
+            return
+        self._messaging.link_message_to_step(
+            message_id=claim.message_id,
+            step_id=f"wf_step|{run_id}|{trace.producer_step_seq}",
+            conversation_id=conversation_id,
+            run_id=run_id,
+            relation="emitted_by_step",
         )
 
     def requeue(self, claim: ClaimedProviderEvent, *, error: JsonObject) -> None:

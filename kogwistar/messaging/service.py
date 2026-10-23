@@ -6,7 +6,7 @@ import uuid
 from contextlib import AbstractContextManager, nullcontext
 from datetime import datetime, timezone
 from collections.abc import Iterable
-from typing import TYPE_CHECKING, NotRequired, Protocol, cast
+from typing import TYPE_CHECKING, Literal, NotRequired, Protocol, cast
 from typing_extensions import TypedDict
 from pydantic_extension.model_slicing import use_mode
 
@@ -659,8 +659,11 @@ class LaneMessagingService:
         step_id: str,
         conversation_id: str,
         run_id: str,
+        relation: Literal["handled_by_step", "emitted_by_step"] = "handled_by_step",
     ) -> None:
-        """Persist a causal link from a lane message to its handling step."""
+        """Persist a causal link from a lane message to a run execution step."""
+        if relation not in {"handled_by_step", "emitted_by_step"}:
+            raise ValueError("unsupported lane-message workflow-step relation")
         claims = claims_ctx.get() or {}
         namespace = str(
             claims.get("storage_ns")
@@ -686,12 +689,12 @@ class LaneMessagingService:
                 or step_metadata.get("conversation_id") != conversation_id
             ):
                 raise ValueError("workflow step does not belong to the requested run/conversation")
-            edge_id = str(stable_id("lane_message_handled_by", message_id, step_id))
+            edge_id = str(stable_id("lane_message_step_link", message_id, relation, step_id))
             self._add_semantic_edge(
                 edge_id=edge_id,
                 source_id=str(message_id),
                 target_id=str(step_id),
-                relation="handled_by_step",
+                relation=relation,
                 conversation_id=conversation_id,
             )
 
@@ -1106,9 +1109,46 @@ class LaneMessagingService:
             actual_value = None if actual is None else str(actual)
             comparison_value = None if expected_value is None else str(expected_value)
             if actual_value != comparison_value:
+                if (
+                    key == "payload_json"
+                    and msg_type == "agent.provider_event"
+                    and self._same_provider_event_payload(actual_value, comparison_value)
+                ):
+                    continue
                 raise ValueError(
                     f"lane message idempotency conflict for {key}: expected {comparison_value!r}, got {actual_value!r}"
                 )
+
+    @staticmethod
+    def _same_provider_event_payload(actual: str | None, expected: str | None) -> bool:
+        """Ignore attempt-local producer coordinates for replayed provider events."""
+        if actual is None or expected is None:
+            return False
+        try:
+            actual_payload = json.loads(actual)
+            expected_payload = json.loads(expected)
+        except (TypeError, ValueError):
+            return False
+        if not isinstance(actual_payload, dict) or not isinstance(expected_payload, dict):
+            return False
+        actual_trace = actual_payload.get("trace")
+        expected_trace = expected_payload.get("trace")
+        if not isinstance(actual_trace, dict) or not isinstance(expected_trace, dict):
+            return False
+        actual_trace = dict(actual_trace)
+        expected_trace = dict(expected_trace)
+        for trace in (actual_trace, expected_trace):
+            for key in (
+                "producer_step_seq",
+                "producer_attempt",
+                "trace_id",
+                "span_id",
+                "parent_span_id",
+            ):
+                trace.pop(key, None)
+        actual_payload["trace"] = actual_trace
+        expected_payload["trace"] = expected_trace
+        return actual_payload == expected_payload
 
     def _ensure_projected_row_for_node(self, node: Node, *, namespace: str) -> None:
         message_id = str(getattr(node, "id", "") or "")

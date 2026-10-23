@@ -255,10 +255,22 @@ def create_agent_event_router(
                         payload.update(cast(JsonObject, dict(payload_raw)))
                     payload["run_id"] = run_id
                     for sequence_key in (
+                        "turn_id",
                         "provider_sequence",
                         "provider_event_id",
                         "durable_event_id",
+                        "durable_message_id",
                         "response_id",
+                        "trace_id",
+                        "span_id",
+                        "parent_span_id",
+                        "workflow_node_id",
+                        "workflow_step_seq",
+                        "attempt",
+                        "producer_step_seq",
+                        "producer_attempt",
+                        "provider_id",
+                        "provider_response_id",
                     ):
                         value = event.get(sequence_key)
                         if isinstance(value, (str, int)) and not isinstance(value, bool):

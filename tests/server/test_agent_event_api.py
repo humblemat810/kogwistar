@@ -65,7 +65,17 @@ class FakeRunService:
         return [
             {
                 "sse_sequence": 1,
+                "turn_id": "turn-1",
                 "provider_sequence": 5,
+                "durable_message_id": "msg-1",
+                "trace_id": "a" * 32,
+                "span_id": "b" * 16,
+                "parent_span_id": "c" * 16,
+                "workflow_node_id": "wf:event:request",
+                "workflow_step_seq": 4,
+                "attempt": 2,
+                "producer_step_seq": 4,
+                "producer_attempt": 2,
                 "event_type": "response_completed",
                 "payload": {"status": "completed", "run_id": "forged"},
             }
@@ -124,6 +134,16 @@ def test_event_agent_routes_authenticate_reuse_namespace_and_stream_client_seque
     assert '"run_id":"run-1"' in stream.text
     assert '"run_id":"forged"' not in stream.text
     assert '"provider_sequence":5' in stream.text
+    assert '"turn_id":"turn-1"' in stream.text
+    assert '"durable_message_id":"msg-1"' in stream.text
+    assert f'"trace_id":"{"a" * 32}"' in stream.text
+    assert '"span_id":"bbbbbbbbbbbbbbbb"' in stream.text
+    assert '"parent_span_id":"cccccccccccccccc"' in stream.text
+    assert '"workflow_node_id":"wf:event:request"' in stream.text
+    assert '"workflow_step_seq":4' in stream.text
+    assert '"attempt":2' in stream.text
+    assert '"producer_step_seq":4' in stream.text
+    assert '"producer_attempt":2' in stream.text
     assert roles == ["rw", "rw", "ro", "ro", "ro"]
     assert namespaces == [namespace] * 5
 

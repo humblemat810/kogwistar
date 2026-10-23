@@ -35,6 +35,36 @@ _MAX_TRANSIENT_DELTAS_PER_RUN = 64
 _MAX_TRANSIENT_DELTA_CHARS = 4_096
 _SAFE_ERROR_CODE = re.compile(r"^[a-zA-Z0-9_.-]{1,80}$")
 _SAFE_EVENT_TYPE = re.compile(r"^[a-zA-Z][a-zA-Z0-9_.-]{0,79}$")
+_TRACE_PROJECTION_FIELDS = (
+    "turn_id",
+    "trace_id",
+    "span_id",
+    "parent_span_id",
+    "workflow_node_id",
+    "workflow_step_seq",
+    "producer_step_seq",
+    "producer_attempt",
+    "attempt",
+    "provider_id",
+    "provider_response_id",
+    "provider_sequence",
+    "provider_event_id",
+    "durable_event_id",
+    "durable_message_id",
+)
+
+
+def _project_trace_fields(payload: Mapping[str, object]) -> JsonObject:
+    trace = payload.get("trace")
+    sources = (payload, trace if isinstance(trace, Mapping) else {})
+    projected: JsonObject = {}
+    for key in _TRACE_PROJECTION_FIELDS:
+        value = next((source[key] for source in sources if key in source), None)
+        if isinstance(value, str) and value and len(value) <= 256:
+            projected[key] = value
+        elif isinstance(value, int) and not isinstance(value, bool):
+            projected[key] = value
+    return projected
 
 
 @dataclass(frozen=True, slots=True)
@@ -386,7 +416,7 @@ class ScheduledEventAgentRunService:
 
     def get_run(self, *, run_id: str, user_id: str) -> JsonObject:
         run = self._owned_run(run_id=run_id, user_id=user_id)
-        return {
+        result: JsonObject = {
             key: cast(JsonValue, run[key])
             for key in (
                 "run_id",
@@ -401,6 +431,15 @@ class ScheduledEventAgentRunService:
             )
             if key in run
         }
+        rows = self._registry.list_events(run_id, after_seq=0, limit=500)
+        for row in reversed(rows):
+            payload = row.get("payload")
+            if isinstance(payload, Mapping):
+                trace = _project_trace_fields(payload)
+                if trace:
+                    result["trace"] = trace
+                    break
+        return result
 
     def get_control_capabilities(
         self, *, run_id: str, user_id: str
@@ -467,6 +506,9 @@ class ScheduledEventAgentRunService:
                 "event_type": str(row.get("event_type") or "message"),
                 "payload": cast(JsonValue, row.get("payload") or {}),
             }
+            payload = row.get("payload")
+            if isinstance(payload, Mapping):
+                event.update(_project_trace_fields(payload))
             output.append(event)
         return output
 

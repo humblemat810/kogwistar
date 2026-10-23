@@ -333,8 +333,12 @@ def test_fake_provider_runs_graph_workflow_and_keeps_events_out_of_transcript(
             step_links = conversation_engine.read.get_edges(
                 where={"relation": "handled_by_step"}
             )
+            producer_links = conversation_engine.read.get_edges(
+                where={"relation": "emitted_by_step"}
+            )
             assert len(run_links) == 3
             assert len(step_links) == 3
+            assert len(producer_links) == 3
             execution_steps = conversation_engine.read.get_nodes(
                 where={
                     "$and": [

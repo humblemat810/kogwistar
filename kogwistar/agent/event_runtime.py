@@ -36,6 +36,7 @@ from .streaming import (
 )
 
 EventCallback = Callable[..., object]
+TraceEventCallback = Callable[[str, Mapping[str, object]], object]
 _JSON_OBJECT_ADAPTER = TypeAdapter(JsonObject)
 _MAX_HOOK_ANNOTATION_CHARS = 6_000
 _MAX_ADVISORY_CONTINUATIONS_PER_RUN = 4
@@ -211,6 +212,38 @@ def _bounded_annotations(raw: object) -> JsonObject:
     return cast(JsonObject, value)
 
 
+async def _publish_trace_event(
+    callback: TraceEventCallback | None,
+    event_type: str,
+    ctx: StepContext,
+    payload: Mapping[str, object],
+) -> None:
+    if callback is None:
+        return
+    trace = ctx.trace_ctx
+    event_payload: dict[str, object] = {
+        **dict(payload),
+        "run_id": str(ctx.run_id),
+        "turn_id": str(ctx.turn_node_id or ""),
+        "workflow_node_id": str(ctx.workflow_node_id),
+        "workflow_step_seq": int(ctx.step_seq),
+        "attempt": int(ctx.attempt),
+        "trace": {
+            "trace_id": trace.trace_id,
+            "span_id": trace.span_id,
+            "parent_span_id": trace.parent_span_id,
+            "workflow_node_id": str(ctx.workflow_node_id),
+            "producer_step_seq": int(ctx.step_seq),
+            "producer_attempt": int(ctx.attempt),
+        },
+    }
+    try:
+        await _call(callback, event_type, event_payload)
+    except Exception:
+        # Run-stream observability must not become an execution authority.
+        pass
+
+
 def register_event_workflow_steps(
     resolver: AsyncMappingStepResolver,
     *,
@@ -226,6 +259,7 @@ def register_event_workflow_steps(
     allow_reasoning_summaries: bool = False,
     max_advisory_hooks_per_run: int = 8,
     max_advisory_continuations_per_run: int = 0,
+    publish_trace_event: TraceEventCallback | None = None,
 ) -> dict[str, Callable[..., bool]]:
     """Register the graph event-loop operations and their pure route predicates.
 
@@ -290,8 +324,17 @@ def register_event_workflow_steps(
         client_sequence = _state_integer(ctx.state_view, "agent_event_client_sse_sequence")
         semantic_count = 0
         provider_sequence = 0
+        response_id: str | None = None
+        await _publish_trace_event(
+            publish_trace_event,
+            "provider.request.started",
+            ctx,
+            {"provider_id": provider.provider_id},
+        )
         try:
             async for event in provider.stream(provider_request):
+                if event.response_id:
+                    response_id = event.response_id
                 if event.provider_sequence is not None:
                     provider_sequence = max(provider_sequence, event.provider_sequence)
                 if isinstance(event, ProviderToolCallCompleted) and not provider.capabilities.tool_calls:
@@ -312,6 +355,8 @@ def register_event_workflow_steps(
                     workflow_node_id=str(ctx.workflow_node_id),
                     step_id=str(ctx.step_seq),
                     attempt=int(ctx.attempt),
+                    producer_step_seq=int(ctx.step_seq),
+                    producer_attempt=int(ctx.attempt),
                     trace_id=trace_context.trace_id,
                     span_id=trace_context.span_id,
                     parent_span_id=trace_context.parent_span_id,
@@ -328,6 +373,19 @@ def register_event_workflow_steps(
                     security_scope=security_scope,
                 )
                 semantic_count += 1
+                await _publish_trace_event(
+                    publish_trace_event,
+                    "provider.event.persisted",
+                    ctx,
+                    {
+                        "provider_id": provider.provider_id,
+                        "provider_event_id": event.provider_event_id,
+                        "provider_response_id": event.response_id,
+                        "provider_sequence": event.provider_sequence,
+                        "durable_message_id": result.message_id,
+                        "event_kind": event.kind,
+                    },
+                )
                 emitter = ctx.events
                 if emitter is not None and ctx.trace_context is not None:
                     try:
@@ -358,6 +416,8 @@ def register_event_workflow_steps(
                 workflow_node_id=str(ctx.workflow_node_id),
                 step_id=str(ctx.step_seq),
                 attempt=int(ctx.attempt),
+                producer_step_seq=int(ctx.step_seq),
+                producer_attempt=int(ctx.attempt),
                 trace_id=trace_context.trace_id,
                 span_id=trace_context.span_id,
                 parent_span_id=trace_context.parent_span_id,
@@ -373,6 +433,35 @@ def register_event_workflow_steps(
                 security_scope=security_scope,
             )
             semantic_count += 1
+            await _publish_trace_event(
+                publish_trace_event,
+                "provider.request.failed",
+                ctx,
+                {
+                    "provider_id": provider.provider_id,
+                    "provider_response_id": response_id,
+                    "provider_sequence": provider_sequence,
+                    "error_type": type(exc).__name__,
+                },
+            )
+        else:
+            request_outcome = (
+                "provider.request.completed"
+                if semantic_count > 0
+                else "provider.request.failed"
+            )
+            await _publish_trace_event(
+                publish_trace_event,
+                request_outcome,
+                ctx,
+                {
+                    "provider_id": provider.provider_id,
+                    "provider_response_id": response_id,
+                    "provider_sequence": provider_sequence,
+                    "semantic_event_count": semantic_count,
+                    **({"error_code": "empty_provider_stream"} if semantic_count == 0 else {}),
+                },
+            )
         if semantic_count == 0:
             empty_failure = ProviderResponseFailed(
                 error_code="empty_provider_stream",
@@ -387,6 +476,8 @@ def register_event_workflow_steps(
                     workflow_node_id=str(ctx.workflow_node_id),
                     step_id=str(ctx.step_seq),
                     attempt=int(ctx.attempt),
+                    producer_step_seq=int(ctx.step_seq),
+                    producer_attempt=int(ctx.attempt),
                     trace_id=trace_context.trace_id,
                     span_id=trace_context.span_id,
                     parent_span_id=trace_context.parent_span_id,
@@ -517,6 +608,11 @@ def register_event_workflow_steps(
     @resolver.register("agent.event.ack")
     async def acknowledge(ctx: StepContext) -> RunSuccess:
         claim = _claim_from_state(ctx.state_view)
+        journal.link_producer_step(
+            claim,
+            conversation_id=conversation_id,
+            run_id=str(ctx.run_id),
+        )
         journal.link_handling_step(
             claim,
             conversation_id=conversation_id,

@@ -118,8 +118,16 @@ def test_event_journal_identity_is_stable_across_workflow_replay() -> None:
         provider_event_id="evt-1", response_id="resp-1", provider_sequence=3
     )
     first_trace = _trace()
+    first_trace = first_trace.model_copy(
+        update={"producer_step_seq": 2, "producer_attempt": 1}
+    )
     replay_trace = first_trace.model_copy(
-        update={"step_id": "step-9", "attempt": 2}
+        update={
+            "step_id": "step-9",
+            "attempt": 2,
+            "producer_step_seq": 9,
+            "producer_attempt": 3,
+        }
     )
 
     journal.publish(
@@ -142,6 +150,33 @@ def test_event_journal_identity_is_stable_across_workflow_replay() -> None:
     assert isinstance(first_payload, dict) and isinstance(replay_payload, dict)
     assert first_payload["idempotency_key"] == replay_payload["idempotency_key"]
     assert first_payload["correlation_id"] == replay_payload["correlation_id"]
+    assert first_payload["payload"]["trace"]["producer_step_seq"] == 2
+    assert first_payload["payload"]["trace"]["producer_attempt"] == 1
+    assert replay_payload["payload"]["trace"]["producer_step_seq"] == 9
+
+
+def test_provider_event_payload_equivalence_ignores_replay_attempt_coordinates() -> None:
+    first = json.dumps(
+        {"event_id": "same", "trace": {"producer_step_seq": 2, "producer_attempt": 1}},
+        sort_keys=True,
+    )
+    replay = json.dumps(
+        {
+            "event_id": "same",
+            "trace": {
+                "producer_step_seq": 9,
+                "producer_attempt": 3,
+                "trace_id": "d" * 32,
+                "span_id": "e" * 16,
+                "parent_span_id": "f" * 16,
+            },
+        },
+        sort_keys=True,
+    )
+    assert LaneMessagingService._same_provider_event_payload(first, replay)
+    assert not LaneMessagingService._same_provider_event_payload(
+        first, json.dumps({"event_id": "different", "trace": {}})
+    )
 
 
 def test_event_journal_requeues_failed_handler_and_never_persists_token_deltas() -> None:
@@ -202,7 +237,14 @@ def test_event_effect_is_not_repeated_when_process_fails_before_ack(tmp_path) ->
             )
             first_publish = journal.publish(
                 event,
-                trace=_trace(),
+                trace=_trace().model_copy(
+                    update={
+                        "producer_step_seq": 2,
+                        "producer_attempt": 1,
+                        "trace_id": "a" * 32,
+                        "span_id": "b" * 16,
+                    }
+                ),
                 conversation_id="conversation-1",
                 sender_id="agent-1",
                 security_scope="private",
@@ -210,13 +252,27 @@ def test_event_effect_is_not_repeated_when_process_fails_before_ack(tmp_path) ->
             duplicate_publish = journal.publish(
                 event,
                 trace=_trace().model_copy(
-                    update={"step_id": "step-9", "attempt": 2}
+                    update={
+                        "step_id": "step-9",
+                        "attempt": 2,
+                        "producer_step_seq": 9,
+                        "producer_attempt": 3,
+                        "trace_id": "c" * 32,
+                        "span_id": "d" * 16,
+                    }
                 ),
                 conversation_id="conversation-1",
                 sender_id="agent-1",
                 security_scope="private",
             )
             assert duplicate_publish.message_id == first_publish.message_id
+            message_node = engine.read.get_nodes(ids=[first_publish.message_id])[0]
+            durable_payload_raw = message_node.metadata["payload_json"]
+            assert isinstance(durable_payload_raw, str)
+            durable_payload = json.loads(durable_payload_raw)
+            assert durable_payload["trace"]["producer_step_seq"] == 2
+            assert durable_payload["trace"]["producer_attempt"] == 1
+            assert durable_payload["trace"]["span_id"] == "b" * 16
             idempotency = NamedProjectionToolCallIdempotency(engine.meta_sqlite)
             effects: list[str] = []
 

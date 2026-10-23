@@ -66,9 +66,12 @@ flowchart TD
 - Inbox publication uses an idempotency key derived from run/response/provider
   event coordinates and canonical event content. Repeated publication of the
   same event returns the existing message. Its durable envelope uses a stable
-  provider-response producer locator; per-attempt workflow step coordinates
-  remain in execution artifacts and telemetry so retries do not conflict with
-  the message idempotency key.
+  provider-response producer locator and separately records the first producer
+  step sequence/attempt and span coordinates. Those attempt-local fields are
+  excluded from provider-event replay equivalence, so a retry reuses the first
+  durable envelope without losing its origin. Once the producer step exists,
+  the event is linked to it with `emitted_by_step`; handling has its own
+  `handled_by_step` edge.
 - The event is claimed with a lease, handled, linked to its handling step, and
   acknowledged in a later step. A crash before acknowledgement redelivers it.
   Handlers must be idempotent; tool dispatch receives a stable key derived from
@@ -82,7 +85,14 @@ flowchart TD
   new provider request only through an explicit workflow transition.
 - Telemetry uses the runtime `TraceContext` and `EventEmitter` where present.
   Telemetry is best effort; graph events and runtime checkpoints are the
-  recovery source of truth.
+  recovery source of truth. The opt-in run-event API projects bounded trace,
+  provider, and workflow correlation fields from durable event payloads so an
+  operator can correlate SSE/run events with graph and runtime traces.
+  Hosts that want provider request lifecycle visibility in run inspection/SSE
+  pass the run service's `publish_semantic_event` callback as
+  `publish_trace_event` when registering the workflow. This emits request
+  started/completed/failed and event-persisted records with correlation
+  metadata; publication is best-effort and never controls provider execution.
 
 ## Authority and hooks
 
