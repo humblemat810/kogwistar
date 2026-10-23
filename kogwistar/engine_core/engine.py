@@ -1582,6 +1582,8 @@ class GraphKnowledgeEngine:
                     SQLiteChromaTwoStageProjectionAdapter(self)
                 )
         elif _is_pgvector_backend_instance(backend):
+            from .postgres_backend import PgVectorBackend
+
             from kogwistar._rust_bridge import (
                 graph_store_implementation_mode,
                 meta_store_implementation_mode,
