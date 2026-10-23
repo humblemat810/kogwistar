@@ -657,12 +657,20 @@ output belong under the selected temporary output root, not in source control.
   completed all four size/mix cells with five measured samples each, matching
   trace and final-state digests, and verified cgroup limits of 4 CPUs, 8 GiB
   memory, and equal memory/swap ceilings. See the result table below.
-- [ ] Run final focused tests, lint, formatting, and parity checks; update the
-  results and interpretation using only verified complete runs; review and
-  commit only benchmark-owned source, fixtures, documentation, and report
-  artifacts on the benchmarking feature branch. Keep generated databases and
-  raw samples out of source control. Create `benchmark_complete.flag` only
-  after all required evidence and checks are verified.
+- [x] Verify the fixed-resource matrix against its saved reports and digests;
+  run the focused runtime-verifier/container tests (11 passed), Ruff on the
+  benchmark Python files (passed), and the cross-runtime parity verifier
+  (complete, no errors).
+- [ ] Run the MCP integration-test subset in Linux CI or a Linux test
+  container. On this Windows host, the local test process blocks while
+  creating asyncio's loopback `socketpair` before entering benchmark code, so
+  this is an environment limitation rather than a completed test. Do not mark
+  the overall benchmark complete until this check is resolved.
+- [x] Commit only benchmark-owned source, workload fixtures, and documentation
+  on the benchmark feature branch (`4399353`, `bench: record fixed-resource
+  runtime matrix`). Generated databases and raw samples remain out of source
+  control. Create `benchmark_complete.flag` only after all required evidence
+  and checks are verified.
 
 ## Fixed-Resource Python Runtime Matrix
 
