@@ -30,6 +30,8 @@ from kogwistar.runtime.runtime import StepContext
 from .limits import refresh_budget_hints
 from .providers import ModelProvider, ToolProvider
 from .read_tools import AgentReadTools, ReadScope
+from .profile import AgentProfile
+from .whisper import WhisperConfig, WhisperResult, build_whisper_context
 
 # Compatibility names retained for callers of the deterministic test bindings.
 # The provider protocols are the single source of truth for these contracts.
@@ -173,6 +175,11 @@ def register_model_step(
     prompt_object_id: str = "agent_prompt",
     output_acl_key: str = "agent_model_output_acl",
     output_provenance_key: str = "agent_model_output_provenance",
+    profile: AgentProfile | None = None,
+    whisper_config: WhisperConfig | None = None,
+    whisper_read_tools: AgentReadTools | None = None,
+    whisper_scope: ReadScope | Callable[[StepContext], ReadScope] | None = None,
+    whisper_output_key: str = "agent_whisper_context",
 ) -> None:
     """Register one model call; call/token ceilings are enforced before exposure."""
     selected_acl_policy = normalize_derivation_policy(acl_policy)
@@ -222,6 +229,59 @@ def register_model_step(
                 dict(budget_hints) if isinstance(budget_hints, Mapping) else {},
             )
         }
+        selected_whisper_config = (
+            whisper_config
+            if whisper_config is not None
+            else profile.whisper if profile is not None else WhisperConfig()
+        )
+        whisper_result: WhisperResult | None = None
+        if selected_whisper_config.enabled:
+            authority = getattr(ctx, "authority_context", {})
+            capabilities = (
+                tuple(str(value) for value in authority.get("effective_capabilities", ()))
+                if isinstance(authority, Mapping)
+                else ()
+            )
+            try:
+                if callable(whisper_scope):
+                    selected_scope = whisper_scope(ctx)
+                elif isinstance(whisper_scope, ReadScope):
+                    selected_scope = whisper_scope
+                elif (
+                    isinstance(authority, Mapping)
+                    and authority.get("principal_id")
+                    and all(
+                        key in authority
+                        for key in ("tenant_id", "project_id", "security_scope")
+                    )
+                ):
+                    selected_scope = ReadScope(
+                        principal_id=str(authority["principal_id"]),
+                        namespace=(str(authority["namespace"]) if authority.get("namespace") is not None else None),
+                        security_scope=(str(authority["security_scope"]) if authority.get("security_scope") is not None else None),
+                        tenant_id=(str(authority["tenant_id"]) if authority.get("tenant_id") is not None else None),
+                        project_id=(str(authority["project_id"]) if authority.get("project_id") is not None else None),
+                    )
+                else:
+                    selected_scope = None
+                if whisper_read_tools is None or selected_scope is None:
+                    whisper_result = WhisperResult(
+                        status="degraded", degraded_reason="read_scope_unavailable"
+                    )
+                else:
+                    whisper_result = build_whisper_context(
+                        query=prompt,
+                        config=selected_whisper_config,
+                        read_tools=whisper_read_tools,
+                        scope=selected_scope,
+                        effective_capabilities=capabilities,
+                    )
+            except Exception:
+                whisper_result = WhisperResult(
+                    status="degraded", degraded_reason="retrieval_unavailable"
+                )
+        if whisper_result is not None:
+            model_context["whisper"] = whisper_result.as_json()
         # ACL derivation is an authorization and audit concern, not prompt
         # content.  Do not expose modes, policies, source IDs, scopes, or
         # derivation inputs to the model.  The authoritative result remains
@@ -270,6 +330,11 @@ def register_model_step(
                         output_key: payload,
                         output_acl_key: acl_result.to_metadata(),
                         output_provenance_key: acl_result.to_dict(),
+                        **(
+                            {whisper_output_key: whisper_result.as_json()}
+                            if whisper_result is not None
+                            else {}
+                        ),
                     },
                 )
             ]

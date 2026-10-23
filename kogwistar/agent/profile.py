@@ -11,6 +11,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from .whisper import WhisperConfig
+
 
 def _clean_names(values: list[str]) -> list[str]:
     result: list[str] = []
@@ -36,6 +38,7 @@ class AgentProfile(BaseModel):
     skill_providers: list[str] = Field(default_factory=list)
     plugin_ids: list[str] = Field(default_factory=list)
     hook_ids: list[str] = Field(default_factory=list)
+    whisper: WhisperConfig = Field(default_factory=WhisperConfig)
     acl_required: bool = True
 
     @field_validator(

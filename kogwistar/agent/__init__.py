@@ -72,6 +72,13 @@ from .plugins import (
     select_mcp_schemas,
 )
 from .profile import AgentProfile
+from .whisper import (
+    WhisperConfig,
+    WhisperKnowledgeHint,
+    WhisperResult,
+    WhisperToolHint,
+    build_whisper_context,
+)
 from .providers import (
     PROVIDER_LIFECYCLE_NAMESPACE,
     CompressorProvider,
@@ -198,6 +205,10 @@ __all__ = [
     "SkillStepKind",
     "ToolProvider",
     "WorkflowRuntimeLike",
+    "WhisperConfig",
+    "WhisperKnowledgeHint",
+    "WhisperResult",
+    "WhisperToolHint",
     "attach_glossary_references",
     "bounded_child_result",
     "budget_hints",
@@ -208,6 +219,7 @@ __all__ = [
     "build_normal_workflow",
     "build_plan_workflow",
     "build_skill_execution_evidence",
+    "build_whisper_context",
     "catalog_entries_from_artifact",
     "compile_approved_proposal_to_skill",
     "deduplicate_inferred_edges",
