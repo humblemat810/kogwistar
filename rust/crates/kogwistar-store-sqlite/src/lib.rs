@@ -39,6 +39,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
 const BUSY_TIMEOUT_MS: u64 = 30_000;
+// Bump this when initialize_schema gains a migration. The marker lets ordinary
+// opens avoid taking a schema write lock after initialization, including while
+// another connection has an active data transaction.
+const STORE_SCHEMA_VERSION: i64 = 1;
 static NEXT_CLAIM_TOKEN: AtomicU64 = AtomicU64::new(0);
 
 /// Errors for direct SQLite APIs. Trait methods retain `kogwistar-store`'s
@@ -323,7 +327,11 @@ impl SqliteStore {
             fs::create_dir_all(parent)?;
         }
         let conn = configured_connection(&path)?;
-        initialize_schema(&conn)?;
+        let schema_version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        if schema_version < STORE_SCHEMA_VERSION {
+            initialize_schema(&conn)?;
+            conn.execute_batch(&format!("PRAGMA user_version = {STORE_SCHEMA_VERSION};"))?;
+        }
         Ok(Self {
             path: Arc::new(path),
             connection: Arc::new(Mutex::new(conn)),

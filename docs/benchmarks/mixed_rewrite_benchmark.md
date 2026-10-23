@@ -584,8 +584,10 @@ The Rust facade was 1.65x faster by median throughput for balanced and 1.99x
 for read-heavy in these runs, with the same canonical final-state digest per
 mix. There were only two measured samples, and read-heavy Rust variation was
 high; do not infer stable scaling or recommend a broad rewrite from this
-single-size result. The second-size and five-sample matrix remains outstanding.
-Raw output is retained under the ignored `.tmp/` directory, not checked into
+single-size pilot. At the time of this pilot, the second-size and five-sample
+matrix was still outstanding; it was completed later and is reported in the
+v3 backend/MCP matrices and the fixed-resource runtime matrix below. Raw pilot
+output is retained under the ignored `.tmp/` directory, not checked into
 source control.
 
 Example small parity smoke:
@@ -661,22 +663,30 @@ output belong under the selected temporary output root, not in source control.
   run the focused runtime-verifier/container tests (11 passed), Ruff on the
   benchmark Python files (passed), and the cross-runtime parity verifier
   (complete, no errors).
-- [ ] Run the MCP integration-test subset in Linux CI or a Linux test
-  container. On this Windows host, the local test process blocks while
-  creating asyncio's loopback `socketpair` before entering benchmark code, so
-  this is an environment limitation rather than a completed test. Do not mark
-  the overall benchmark complete until this check is resolved.
+- [x] Add and execute CPython 3.15.1 free-threaded + Rust SQLite authority as
+  a separate fifth runtime/configuration, using the same trace, fixtures,
+  samples, and container caps. Accept it as a no-GIL measurement only if
+  `sys._is_gil_enabled()` stays false through PyO3 extension import and the
+  full trace. The probe and full run retained no-GIL status; the combined
+  five-runtime verifier passed with identical graph-state and trace digests.
+- [x] Run the MCP integration-test subset in a Linux test container using the
+  repository's actual `tests/conftest.py` fixtures. Both
+  `test_mcp_registry_and_local_http_run_the_same_trace` and
+  `test_concurrent_mcp_transports_preserve_exact_visibility` passed on
+  CPython 3.15.1 free-threaded with the Rust extension loaded (2 passed,
+  137.69s). The staged run used the installed wheel and repository helper
+  modules; this is local Linux-container evidence, not a GitHub CI run.
 - [x] Commit only benchmark-owned source, workload fixtures, and documentation
   on the benchmark feature branch (`4399353`, `bench: record fixed-resource
   runtime matrix`). Generated databases and raw samples remain out of source
   control. Create `benchmark_complete.flag` only after all required evidence
   and checks are verified.
 
-## Fixed-Resource Python Runtime Matrix
+## Fixed-Resource Runtime And Authority Matrix
 
 The runtime expansion is implemented by `scripts/run_mixed_runtime_matrix.ps1`
-and `scripts/runtime_matrix/Dockerfile`. It runs the same Python-authority
-SQLite graph trace in four isolated images: CPython 3.14.9 with the GIL,
+and `scripts/runtime_matrix/Dockerfile`. The original four isolated images run
+the same Python-authority SQLite graph trace: CPython 3.14.9 with the GIL,
 CPython 3.15.1 with the GIL, CPython 3.15.1 built with `--disable-gil`, and
 PyPy 3.11. CPython 3.14.9 and both CPython 3.15.1 builds use checksum-verified
 Python.org source archives; the two 3.15 builds differ only in the GIL build
@@ -691,10 +701,18 @@ manifest also reports dependency-version differences; if versions vary across
 runtime images, interpret timing as runtime-plus-dependency-stack evidence, not
 a pure interpreter comparison.
 
-The no-GIL case is accepted only if `sys._is_gil_enabled()` reports `False`
-both before and after importing and executing the Kogwistar benchmark path. An
-extension that silently re-enables the GIL makes the runtime result invalid
-instead of being reported as a free-threaded measurement. CPython/PyPy version
+The Python-authority no-GIL case is accepted only if `sys._is_gil_enabled()`
+reports `False` before and after the Kogwistar benchmark path. An extension
+that silently re-enables the GIL makes a runtime result invalid instead of
+being reported as a free-threaded measurement. The additional Rust-authority
+configuration builds the existing PyO3 SQLite extension for CPython 3.15.1t,
+then runs only the Rust storage-authority mode on the same SQLite trace. Its
+report captures GIL state immediately after native-extension import and after
+the workload; both must remain disabled for acceptance. This is a
+compatibility/performance probe, not a claim that the extension is already
+free-threading safe. The compiled extension is copied into a final image based
+on the unchanged no-GIL runtime image, so the Rust toolchain/compiler used to
+build it is not present in the measured container. CPython/PyPy version
 identity and actual cgroup CPU/memory limits are also checked at runtime. The
 limit probe supports both cgroup v2 and v1; the local Docker Desktop engine
 exposes v1 quota files (`400000/100000`) and an 8 GiB memory limit. The
@@ -704,7 +722,27 @@ that current package metadata accepts CPython 3.15 or PyPy 3.11 through pip.
 SQLite databases run on the container's writable layer, not a Windows host bind
 mount; only compact JSON reports and deterministic traces are exported after
 each size finishes. The final verifier checks cross-runtime trace and graph
-digest parity for both sizes and mixes.
+digest parity for both sizes and mixes, selecting Python authority for the
+original four runtimes and Rust authority for the fifth. The fifth runtime's
+raw report and traces are in the ignored
+`.tmp/mixed-runtime-matrix-20261023-nogil-rust/` directory. The combined
+verifier reported `complete` with no errors. Python-authority and
+Rust-authority median throughput for CPython 3.15.1 no-GIL, in graph operations
+per second:
+
+| Fixture | Mix | Python authority | Rust authority | Rust/Python |
+| ---: | --- | ---: | ---: | ---: |
+| 1k | Balanced | 159.41 | 364.53 | 2.29x |
+| 1k | Read-heavy | 203.37 | 458.27 | 2.25x |
+| 2k | Balanced | 158.33 | 378.27 | 2.39x |
+| 2k | Read-heavy | 205.22 | 451.77 | 2.20x |
+
+Each cell uses one warm-up and five fresh-database measured samples. Rust
+throughput coefficient of variation ranged from 0.92% to 3.36%; final state
+and operation-trace digests matched all four Python-authority runtimes. The
+Rust result is the Python service/harness using Rust SQLite authority, not a
+pure-Rust application or HTTP endpoint. It is evidence for this storage
+authority slice only and does not generalize to every graph, MCP, or HTTP path.
 
 Run on a host with Docker available:
 
@@ -717,7 +755,8 @@ concurrency mix, and one warm-up per runtime/size/mix. The verified run is in
 the ignored
 `.tmp/mixed-runtime-matrix-20261023-final-verified/` directory. The verifier
 reported `complete` with no errors and confirmed identical trace and final
-graph-state digests for every size/mix cell across all four runtimes. The
+graph-state digests for every size/mix cell across the four interpreter
+runtimes and the fifth Rust-authority configuration. The
 manifest records 4 CPUs, 8 GiB RAM, swap capped at 8 GiB, Docker 29.8.0, and
 the Windows 10 host. The container-level reports independently recorded
 `400000 100000` CPU quota and an 8,589,934,592-byte memory ceiling. The PyPy
@@ -763,7 +802,8 @@ and HTTP transports, the narrow Rust-native concurrent HTTP vertical slice,
 real Chroma/pgvector reopen and query coverage, and concurrent
 visibility/digest parity across the three storage configurations. The
 two-size/five-sample concurrent storage-backend matrix, sequential/concurrent
-MCP service matrices, and fixed-resource four-runtime matrix are complete.
+MCP service matrices, and fixed-resource four-interpreter/five-configuration
+runtime-and-authority matrix are complete.
 These establish correctness and characterize the measured configurations;
 they do not, by themselves, justify rewriting the entire stack. Any broader
 Rust rewrite decision still requires representative production profiling and

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Event
 
 import pytest
 
@@ -98,6 +100,102 @@ def test_rust_authority_uow_is_atomic_and_raw_python_writer_is_closed(
             raise RuntimeError("rollback")
     assert store.current_global_seq() == 1
     assert [row[0] for row in store.iter_entity_events(namespace="authority")] == [1]
+
+
+def test_rust_open_during_active_write_reads_previous_committed_projection(
+    tmp_path: Path,
+) -> None:
+    store = RustEngineSQLite(tmp_path, "concurrent-read.sqlite")
+    store.ensure_initialized()
+    store.replace_named_projection(
+        "concurrent",
+        "head",
+        {"revision": 0},
+        last_authoritative_seq=0,
+        last_materialized_seq=0,
+        projection_schema_version=1,
+        materialization_status="ready",
+    )
+    transaction_open = Event()
+    reader_done = Event()
+
+    def write_uncommitted() -> None:
+        with store.transaction():
+            seq = store.append_entity_event(
+                namespace="concurrent",
+                event_id="uncommitted",
+                entity_kind="node",
+                entity_id="n1",
+                op="UPSERT",
+                payload_json="{}",
+            )
+            store.replace_named_projection(
+                "concurrent",
+                "head",
+                {"revision": 1},
+                last_authoritative_seq=seq,
+                last_materialized_seq=seq,
+                projection_schema_version=1,
+                materialization_status="ready",
+            )
+            transaction_open.set()
+            if not reader_done.wait(timeout=5):
+                raise AssertionError("reader could not finish before writer commit")
+
+    def read_committed() -> dict[str, object] | None:
+        if not transaction_open.wait(timeout=5):
+            raise AssertionError("writer did not open its transaction")
+        try:
+            return store.get_named_projection("concurrent", "head")
+        finally:
+            reader_done.set()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        writer = executor.submit(write_uncommitted)
+        reader = executor.submit(read_committed)
+        projection = reader.result(timeout=7)
+        writer.result(timeout=7)
+
+    assert projection is not None
+    assert projection["payload"] == {"revision": 0}
+    assert store.get_named_projection("concurrent", "head")["payload"] == {
+        "revision": 1
+    }
+
+
+def test_rust_session_reuses_connection_across_reads_and_transaction(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_store_sqlite(**kwargs: object) -> object:
+        calls.append(kwargs)
+        operation = kwargs["operation"]
+        assert isinstance(operation, dict)
+        if operation["kind"] == "next_global_seq":
+            return 1
+        return None
+
+    monkeypatch.setattr(rust_meta_sqlite, "store_sqlite", fake_store_sqlite)
+    store = RustEngineSQLite(tmp_path, "session.sqlite")
+
+    with store.session():
+        assert store.next_global_seq() == 1
+        with store.transaction():
+            assert store.next_global_seq() == 1
+        assert store.next_global_seq() == 1
+        assert calls[-1]["operation"] == {"kind": "next_global_seq"}
+
+    assert [call["operation"] for call in calls] == [
+        {"kind": "open_init"},
+        {"kind": "next_global_seq"},
+        {"kind": "begin_transaction"},
+        {"kind": "next_global_seq"},
+        {"kind": "commit_transaction"},
+        {"kind": "next_global_seq"},
+        {"kind": "close"},
+    ]
+    assert all(call["reuse_session"] is True for call in calls)
 
 
 def test_rust_authority_database_is_readable_after_python_rollback(

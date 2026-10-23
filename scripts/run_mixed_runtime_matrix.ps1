@@ -34,6 +34,21 @@ foreach ($scriptName in @(
 )) {
     Copy-Item (Join-Path $PSScriptRoot $scriptName) (Join-Path $sourceStage "scripts/$scriptName")
 }
+$stagedRust = Join-Path $sourceStage "rust"
+New-Item -ItemType Directory -Force -Path $stagedRust | Out-Null
+foreach ($rustFile in @("Cargo.toml", "Cargo.lock", "deny.toml", "rust-toolchain.toml")) {
+    $rustFilePath = Join-Path (Join-Path $repo "rust") $rustFile
+    if (Test-Path -LiteralPath $rustFilePath) {
+        Copy-Item -LiteralPath $rustFilePath -Destination $stagedRust
+    }
+}
+Copy-Item -Recurse -LiteralPath (Join-Path $repo "rust/crates") -Destination (Join-Path $stagedRust "crates")
+foreach ($rootFile in @("pyproject.toml", "Cargo.lock", "README.md", "LICENSE")) {
+    $rootFilePath = Join-Path $repo $rootFile
+    if (Test-Path -LiteralPath $rootFilePath) {
+        Copy-Item -LiteralPath $rootFilePath -Destination $sourceStage
+    }
+}
 $requirementsSource = Join-Path $runtimeMatrixContext "requirements.txt"
 Copy-Item -LiteralPath $requirementsSource -Destination (Join-Path $sourceStage "requirements.txt")
 $contractSource = Join-Path $repo "contracts"
@@ -83,6 +98,7 @@ $matrix = @(
     @{ Name = "cpython314-gil"; Target = "cpython314-gil"; Items = @(1000, 2000) },
     @{ Name = "cpython315-gil"; Target = "cpython315-gil"; Items = @(1000, 2000) },
     @{ Name = "cpython315-nogil"; Target = "cpython315-nogil"; Items = @(1000, 2000) },
+    @{ Name = "cpython315-nogil-rust"; Target = "cpython315-nogil-rust"; Authority = "rust"; Items = @(1000, 2000) },
     @{ Name = "pypy311"; Target = "pypy311"; Items = @(1000, 2000) }
 )
 
@@ -109,9 +125,10 @@ foreach ($entry in $matrix) {
     $itemArgs = @()
     foreach ($size in $entry.Items) { $itemArgs += @("--items", "$size") }
     Write-Host "Running $($entry.Name) with --cpus=$CpuLimit --memory=$MemoryLimit --memory-swap=$MemoryLimit"
+    $authority = if ($entry.Authority) { $entry.Authority } else { "python" }
     docker run --rm --network none --cpus $CpuLimit --memory $MemoryLimit --memory-swap $MemoryLimit `
         --mount "type=bind,source=$resolvedOutput,target=/results" `
-        $tag --output /results --samples $Samples --expected-runtime $entry.Name `
+        $tag --output /results --samples $Samples --expected-runtime $entry.Name --authority $authority `
         --expected-cpus $CpuLimit --expected-memory-bytes $memoryBytes @itemArgs
     if ($LASTEXITCODE -ne 0) { throw "Runtime verification/benchmark failed for $($entry.Name)" }
     $runtimeResult = Get-Content -LiteralPath (Join-Path $runtimeOutput "runtime-report.json") -Raw | ConvertFrom-Json

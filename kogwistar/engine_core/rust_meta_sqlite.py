@@ -62,6 +62,9 @@ class RustEngineSQLite:
         self._transaction_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
             f"kogwistar_rust_sqlite_transaction_{id(self)}", default=None
         )
+        self._session_depth: contextvars.ContextVar[int] = contextvars.ContextVar(
+            f"kogwistar_rust_sqlite_session_depth_{id(self)}", default=0
+        )
 
     def _call(self, kind: str, **values: JsonValue) -> _RustResultT:  # pyright: ignore[reportInvalidTypeVarUse]
         """Call the Rust JSON boundary with an explicit caller result type.
@@ -74,10 +77,13 @@ class RustEngineSQLite:
         return cast(
             _RustResultT,
             store_sqlite(
-            path=self.db_path,
-            operation={"kind": kind, **values},
-            transaction_id=self._transaction_id.get(),
-            reuse_session=self._transaction_id.get() is not None,
+                path=self.db_path,
+                operation={"kind": kind, **values},
+                transaction_id=self._transaction_id.get(),
+                reuse_session=(
+                    self._transaction_id.get() is not None
+                    or self._session_depth.get() > 0
+                ),
             ),
         )
 
@@ -88,6 +94,33 @@ class RustEngineSQLite:
     def close(self) -> None:
         """Release the native cached SQLite handle for this facade path."""
         self._call("close")
+
+    @contextmanager
+    def session(self) -> Iterator[RustEngineSQLite]:
+        """Reuse one Rust-owned SQLite connection for this execution context.
+
+        A session is useful for a request or worker performing several
+        operations. It avoids reopening the database and rerunning schema
+        initialization for every read. Nested sessions share the outer
+        connection; a transaction inside a session retains it after commit.
+        """
+        from .sqlite_context import sqlite_execution_context
+
+        with sqlite_execution_context("rust"):
+            depth = self._session_depth.get()
+            token = self._session_depth.set(depth + 1)
+            initialized = False
+            try:
+                if depth == 0:
+                    self.ensure_initialized()
+                    initialized = True
+                yield self
+            finally:
+                try:
+                    if depth == 0 and initialized:
+                        self.close()
+                finally:
+                    self._session_depth.reset(token)
 
     def connect(self) -> None:
         raise RustSQLiteConnectionUnavailable(
@@ -118,7 +151,8 @@ class RustEngineSQLite:
                     self._call("commit_transaction")
             finally:
                 try:
-                    self._call("close")
+                    if self._session_depth.get() == 0:
+                        self._call("close")
                 finally:
                     self._transaction_id.reset(token)
 

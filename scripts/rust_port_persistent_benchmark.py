@@ -19,19 +19,28 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from kogwistar._rust_bridge import store_sqlite
-from kogwistar.engine_core.engine_sqlite import EngineSQLite
-from kogwistar.engine_core.sqlite_context import sqlite_execution_context
-
 ROOT = Path(__file__).resolve().parents[1]
 RUST_ROOT = ROOT / "rust"
-BENCHMARK_VERSION = 2
-DATASET = "rust-port-persistent-sqlite-v1"
+sys.path.insert(0, str(ROOT))
+
+from kogwistar._rust_bridge import store_sqlite
+from kogwistar.engine_core.engine_sqlite import EngineSQLite
+from kogwistar.engine_core.rust_meta_sqlite import RustEngineSQLite
+from kogwistar.engine_core.sqlite_context import sqlite_execution_context
+from mixed_workload import (
+    WorkloadOperation,
+    read_trace,
+    write_trace,
+)
+
+BENCHMARK_VERSION = 3
+DATASET = "kogwistar-mixed-rewrite-workload-v2"
 WORKLOADS = (
     "event_append",
     "event_replay",
     "projection_replace",
     "projection_list",
+    "mixed_interleaved",
 )
 
 
@@ -93,17 +102,46 @@ def _digest(value: Any) -> str:
     return hashlib.sha256(_canonical(value).encode()).hexdigest()
 
 
+def _database_footprint_bytes(path: Path) -> int:
+    return sum(
+        candidate.stat().st_size
+        for candidate in (
+            path,
+            Path(f"{path}-wal"),
+            Path(f"{path}-shm"),
+        )
+        if candidate.is_file()
+    )
+
+
 def _percentile(values: list[float], percentile: float) -> float:
     ordered = sorted(values)
     return ordered[max(0, math.ceil(len(ordered) * percentile) - 1)]
 
 
+def _sample_variation(values: list[float]) -> dict[str, float]:
+    mean = statistics.mean(values)
+    deviation = statistics.stdev(values) if len(values) > 1 else 0.0
+    return {
+        "mean": mean,
+        "stdev": deviation,
+        "coefficient_of_variation_pct": deviation * 100 / mean if mean else 0.0,
+        "normal_approx_95pct_ci_low": mean - 1.96 * deviation / math.sqrt(len(values)),
+        "normal_approx_95pct_ci_high": mean + 1.96 * deviation / math.sqrt(len(values)),
+        "min": min(values),
+        "max": max(values),
+    }
+
+
 def _measure(operation: Callable[[], int]) -> dict[str, float | int]:
     started = time.perf_counter_ns()
+    cpu_started = time.process_time_ns()
     count = operation()
+    cpu_elapsed_ns = time.process_time_ns() - cpu_started
     elapsed_ns = time.perf_counter_ns() - started
     return {
         "elapsed_ms": elapsed_ns / 1_000_000,
+        "cpu_elapsed_ms": cpu_elapsed_ns / 1_000_000,
         "operations": count,
         "throughput_ops_per_sec": count * 1_000_000_000 / elapsed_ns,
     }
@@ -119,15 +157,24 @@ def _projection(index: int) -> dict[str, Any]:
     }
 
 
-def _run_mode(mode: str, path: Path, *, items: int, read_cycles: int) -> dict[str, Any]:
+def _run_mode(
+    mode: str,
+    path: Path,
+    *,
+    items: int,
+    read_cycles: int,
+    trace: list[WorkloadOperation],
+) -> dict[str, Any]:
     if mode == "rust_cached":
         EngineSQLite(path.parent, filename=path.name).ensure_initialized()
         with sqlite_execution_context("rust"):
             return _run_mode_bound(
-                mode, path, items=items, read_cycles=read_cycles,
+                mode, path, items=items, read_cycles=read_cycles, trace=trace,
                 initialize_python_store=False,
             )
-    return _run_mode_bound(mode, path, items=items, read_cycles=read_cycles)
+    return _run_mode_bound(
+        mode, path, items=items, read_cycles=read_cycles, trace=trace
+    )
 
 
 def _run_mode_bound(
@@ -136,6 +183,7 @@ def _run_mode_bound(
     *,
     items: int,
     read_cycles: int,
+    trace: list[WorkloadOperation],
     initialize_python_store: bool = True,
 ) -> dict[str, Any]:
     namespace = "benchmark"
@@ -144,6 +192,13 @@ def _run_mode_bound(
     if initialize_python_store:
         python_store.ensure_initialized()
     baseline_peak_rss_bytes = _peak_rss_bytes()
+
+    def call(operation: dict[str, Any]) -> Any:
+        return store_sqlite(
+            path=path,
+            operation=operation,
+            reuse_session=mode == "rust_cached",
+        )
 
     if mode == "python":
         def append_events() -> int:
@@ -178,14 +233,46 @@ def _run_mode_bound(
                 len(python_store.list_named_projections(projection_namespace))
                 for _ in range(read_cycles)
             )
-    else:
-        def call(operation: dict[str, Any]) -> Any:
-            return store_sqlite(
-                path=path,
-                operation=operation,
-                reuse_session=mode == "rust_cached",
-            )
 
+        def mixed_interleaved() -> int:
+            operations = 0
+            for step in trace:
+                index = step["index"]
+                entity_id = step["expected_entity_id"]
+                projection_key = f"mixed-key-{index:05d}"
+                if step["operation"] == "write_record":
+                    with python_store.transaction():
+                        python_store.append_entity_event(
+                            namespace="mixed_interleaved",
+                            event_id=f"mixed-event-{index:05d}",
+                            entity_kind="node",
+                            entity_id=entity_id,
+                            op="UPSERT",
+                            payload_json=_canonical({"id": entity_id, "revision": 1}),
+                        )
+                        python_store.replace_named_projection(
+                            "mixed_interleaved_projection",
+                            projection_key,
+                            **_projection(index),
+                        )
+                elif step["operation"] == "read_event":
+                    rows = list(python_store.iter_entity_events(
+                        namespace="mixed_interleaved",
+                        from_seq=index + 1,
+                        batch_size=1,
+                    ))
+                    if not rows or rows[0][2] != entity_id:
+                        raise RuntimeError("interleaved event read did not observe its write")
+                elif step["operation"] == "read_projection":
+                    projection = python_store.get_named_projection(
+                        "mixed_interleaved_projection", projection_key
+                    )
+                    payload = projection.get("payload") if projection is not None else None
+                    if not isinstance(payload, dict) or payload.get("index") != index:
+                        raise RuntimeError("interleaved projection read did not observe its write")
+                operations += 1
+            return operations
+    else:
         def append_events() -> int:
             for index in range(items):
                 call({
@@ -223,11 +310,59 @@ def _run_mode_bound(
                 "namespace": projection_namespace,
             })) for _ in range(read_cycles))
 
+        def mixed_interleaved() -> int:
+            if mode == "rust_cached":
+                # The cached operation session and the transactional facade
+                # intentionally cannot own one SQLite execution context at the
+                # same time. Close the raw session before opening UoWs; this
+                # workload measures the supported atomic transaction path.
+                call({"kind": "close"})
+            rust_store = RustEngineSQLite(path.parent, filename=path.name)
+            operations = 0
+            for step in trace:
+                index = step["index"]
+                entity_id = step["expected_entity_id"]
+                projection_key = f"mixed-key-{index:05d}"
+                if step["operation"] == "write_record":
+                    with rust_store.transaction():
+                        rust_store.append_entity_event(
+                            namespace="mixed_interleaved",
+                            event_id=f"mixed-event-{index:05d}",
+                            entity_kind="node",
+                            entity_id=entity_id,
+                            op="UPSERT",
+                            payload_json=_canonical({"id": entity_id, "revision": 1}),
+                        )
+                        rust_store.replace_named_projection(
+                            "mixed_interleaved_projection",
+                            projection_key,
+                            **_projection(index),
+                        )
+                elif step["operation"] == "read_event":
+                    rows = list(rust_store.iter_entity_events(
+                        namespace="mixed_interleaved",
+                        from_seq=index + 1,
+                        batch_size=1,
+                    ))
+                    if not rows or rows[0][2] != entity_id:
+                        raise RuntimeError("interleaved Rust event read did not observe its write")
+                elif step["operation"] == "read_projection":
+                    projection = rust_store.get_named_projection(
+                        "mixed_interleaved_projection",
+                        projection_key,
+                    )
+                    payload = projection.get("payload") if projection is not None else None
+                    if not isinstance(payload, dict) or payload.get("index") != index:
+                        raise RuntimeError("interleaved Rust projection read did not observe its write")
+                operations += 1
+            return operations
+
     metrics = {
         "event_append": _measure(append_events),
         "event_replay": _measure(replay_events),
         "projection_replace": _measure(replace_projections),
         "projection_list": _measure(list_projections),
+        "mixed_interleaved": _measure(mixed_interleaved),
     }
     if mode == "python":
         events = [
@@ -237,6 +372,7 @@ def _run_mode_bound(
             )
         ]
         projections = python_store.list_named_projections(projection_namespace)
+        mixed_store = python_store
     else:
         # Keep each authority benchmark on its own facade. Loading CPython's
         # `_sqlite3` and a bundled-rusqlite PyO3 extension against the same WAL
@@ -262,11 +398,26 @@ def _run_mode_bound(
         })
         if mode == "rust_cached":
             call({"kind": "close"})
+        mixed_store = RustEngineSQLite(path.parent, filename=path.name)
+    mixed_events = [
+        list(row)
+        for row in mixed_store.iter_entity_events(
+            namespace="mixed_interleaved", from_seq=1, batch_size=items + 1
+        )
+    ]
+    mixed_projections = mixed_store.list_named_projections(
+        "mixed_interleaved_projection"
+    )
     canonical_state = {
         "events": events,
         "projections": [
             {key: value for key, value in row.items() if key != "updated_at_ms"}
             for row in projections
+        ],
+        "mixed_events": mixed_events,
+        "mixed_projections": [
+            {key: value for key, value in row.items() if key != "updated_at_ms"}
+            for row in mixed_projections
         ],
     }
     return {
@@ -275,7 +426,7 @@ def _run_mode_bound(
         "state_digest": _digest(canonical_state),
         "event_count": len(events),
         "projection_count": len(projections),
-        "database_bytes": path.stat().st_size,
+        "database_bytes": _database_footprint_bytes(path),
         "peak_rss_bytes": _peak_rss_bytes(),
         "workload_peak_rss_delta_bytes": max(
             0, _peak_rss_bytes() - baseline_peak_rss_bytes
@@ -283,7 +434,9 @@ def _run_mode_bound(
     }
 
 
-def _child(mode: str, path: Path, items: int, read_cycles: int) -> dict[str, Any]:
+def _child(
+    mode: str, path: Path, items: int, read_cycles: int, trace_path: Path
+) -> dict[str, Any]:
     if mode == "rust_native":
         executable = RUST_ROOT / "target" / "release" / "examples" / (
             "sqlite_native_authority_benchmark.exe"
@@ -291,7 +444,7 @@ def _child(mode: str, path: Path, items: int, read_cycles: int) -> dict[str, Any
             else "sqlite_native_authority_benchmark"
         )
         completed = subprocess.run(
-            [str(executable), str(path), str(items), str(read_cycles)],
+            [str(executable), str(path), str(items), str(read_cycles), str(trace_path)],
             cwd=RUST_ROOT,
             text=True,
             capture_output=True,
@@ -311,6 +464,18 @@ def _child(mode: str, path: Path, items: int, read_cycles: int) -> dict[str, Any
                 {key: value for key, value in row.items() if key != "updated_at_ms"}
                 for row in python_store.list_named_projections("benchmark_projection")
             ],
+            "mixed_events": [
+                list(row)
+                for row in python_store.iter_entity_events(
+                    namespace="mixed_interleaved", from_seq=1, batch_size=items + 1
+                )
+            ],
+            "mixed_projections": [
+                {key: value for key, value in row.items() if key != "updated_at_ms"}
+                for row in python_store.list_named_projections(
+                    "mixed_interleaved_projection"
+                )
+            ],
         }
         if _digest(native_state) != _digest(python_state):
             raise RuntimeError("Rust-native state differs after Python reopens the database")
@@ -327,6 +492,7 @@ def _child(mode: str, path: Path, items: int, read_cycles: int) -> dict[str, Any
     command = [
         sys.executable, str(Path(__file__).resolve()), "--child", "--mode", mode,
         "--path", str(path), "--items", str(items), "--read-cycles", str(read_cycles),
+        "--trace", str(trace_path),
     ]
     env = os.environ.copy()
     env["PYTHONPATH"] = str(ROOT) + os.pathsep + env.get("PYTHONPATH", "")
@@ -342,12 +508,22 @@ def _summary(samples: list[dict[str, Any]]) -> dict[str, Any]:
     metrics: dict[str, Any] = {}
     for workload in WORKLOADS:
         elapsed = [float(sample["metrics"][workload]["elapsed_ms"]) for sample in samples]
+        cpu_values = [sample["metrics"][workload].get("cpu_elapsed_ms") for sample in samples]
+        cpu_elapsed = [float(value) for value in cpu_values if value is not None]
         throughput = [float(sample["metrics"][workload]["throughput_ops_per_sec"])
                       for sample in samples]
         metrics[workload] = {
             "median_elapsed_ms": statistics.median(elapsed),
+            "elapsed_sample_variation": _sample_variation(elapsed),
             "p95_elapsed_ms": _percentile(elapsed, 0.95),
+            "p99_elapsed_ms": _percentile(elapsed, 0.99),
+            "median_cpu_elapsed_ms": (
+                statistics.median(cpu_elapsed)
+                if len(cpu_elapsed) == len(samples)
+                else None
+            ),
             "median_throughput_ops_per_sec": statistics.median(throughput),
+            "throughput_sample_variation": _sample_variation(throughput),
         }
     peak_rss_values = [sample["peak_rss_bytes"] for sample in samples]
     workload_rss_values = [sample["workload_peak_rss_delta_bytes"] for sample in samples]
@@ -374,6 +550,8 @@ def _summary(samples: list[dict[str, Any]]) -> dict[str, Any]:
 def run_benchmark(output_root: Path, *, items: int, read_cycles: int,
                   samples: int) -> dict[str, Any]:
     output_root.mkdir(parents=True, exist_ok=True)
+    trace_path = output_root / "read_after_write_trace.v1.json"
+    trace = write_trace(trace_path, items)
     subprocess.run(
         [
             "cargo", "build", "--release", "-p", "kogwistar-store-sqlite",
@@ -384,12 +562,20 @@ def run_benchmark(output_root: Path, *, items: int, read_cycles: int,
     )
     modes: dict[str, Any] = {}
     for mode in ("python", "rust", "rust_cached", "rust_native"):
+        warmup_path = output_root / f"{mode}-warmup.sqlite3"
+        for suffix in ("", "-wal", "-shm"):
+            Path(f"{warmup_path}{suffix}").unlink(missing_ok=True)
+        warmup = _child(mode, warmup_path, items, read_cycles, trace_path)
         mode_samples = []
         for sample in range(samples):
             path = output_root / f"{mode}-{sample}.sqlite3"
-            path.unlink(missing_ok=True)
-            mode_samples.append(_child(mode, path, items, read_cycles))
+            for suffix in ("", "-wal", "-shm"):
+                Path(f"{path}{suffix}").unlink(missing_ok=True)
+            mode_samples.append(_child(mode, path, items, read_cycles, trace_path))
         modes[mode] = _summary(mode_samples)
+        if warmup["state_digest"] != modes[mode]["state_digest"]:
+            raise RuntimeError(f"warm-up state differs for {mode}")
+        modes[mode]["warmup"] = warmup
     expected_digest = modes["python"]["state_digest"]
     if any(mode["state_digest"] != expected_digest for mode in modes.values()):
         raise RuntimeError("Python and Rust persistent states differ")
@@ -428,10 +614,16 @@ def run_benchmark(output_root: Path, *, items: int, read_cycles: int,
     return {
         "benchmark_version": BENCHMARK_VERSION,
         "dataset": DATASET,
-        "scope": "persistent authoritative SQLite event and named-projection capabilities",
+        "scope": (
+            "persistent authoritative SQLite event/projection operations plus a "
+            "versioned sequential read-after-write trace"
+        ),
         "items": items,
         "read_cycles": read_cycles,
         "samples_per_mode": samples,
+        "warmup_samples_per_mode": 1,
+        "workload_trace_sha256": _digest(trace),
+        "workload_trace_path": str(trace_path),
         "python": sys.version,
         "modes": modes,
         "ratios": ratios,
@@ -463,6 +655,7 @@ def _args() -> argparse.Namespace:
         "--mode", choices=("python", "rust", "rust_cached"), help=argparse.SUPPRESS
     )
     parser.add_argument("--path", type=Path, help=argparse.SUPPRESS)
+    parser.add_argument("--trace", type=Path, help=argparse.SUPPRESS)
     return parser.parse_args()
 
 
@@ -473,10 +666,11 @@ def main() -> int:
     if args.items < 1 or args.read_cycles < 1 or args.samples < 2:
         raise SystemExit("items/read-cycles must be positive and samples must be >= 2")
     if args.child:
-        if args.mode is None or args.path is None:
-            raise SystemExit("--child requires --mode and --path")
+        if args.mode is None or args.path is None or args.trace is None:
+            raise SystemExit("--child requires --mode, --path, and --trace")
         print(_canonical(_run_mode(args.mode, args.path, items=args.items,
-                                   read_cycles=args.read_cycles)))
+                                   read_cycles=args.read_cycles,
+                                   trace=read_trace(args.trace))))
         return 0
     if args.output_root is None:
         raise SystemExit("--output-root is required")
@@ -484,9 +678,9 @@ def main() -> int:
                            read_cycles=args.read_cycles, samples=args.samples)
     payload = json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     print(payload, end="")
-    if args.report:
-        args.report.parent.mkdir(parents=True, exist_ok=True)
-        args.report.write_text(payload, encoding="utf-8")
+    report_path = args.report or (args.output_root.resolve() / "report.v3.json")
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(payload, encoding="utf-8")
     return 0
 
 

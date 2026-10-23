@@ -18,9 +18,9 @@ def _write_runtime_report(root: Path, runtime: str, *, corrupt_graph_digest: boo
     if runtime == "cpython314-gil":
         implementation, version, gil = "CPython", "3.14.9", True
     elif runtime == "cpython315-gil":
-        implementation, version, gil = "CPython", "3.15.0", True
-    elif runtime == "cpython315-nogil":
-        implementation, version, gil = "CPython", "3.15.0", False
+        implementation, version, gil = "CPython", "3.15.1", True
+    elif runtime in {"cpython315-nogil", "cpython315-nogil-rust"}:
+        implementation, version, gil = "CPython", "3.15.1", False
     else:
         implementation, version, gil = "PyPy", "3.11.13", None
     child_reports: list[dict[str, Any]] = []
@@ -32,7 +32,7 @@ def _write_runtime_report(root: Path, runtime: str, *, corrupt_graph_digest: boo
                 "trace_path": f"{size}/concurrent_{mix}.trace.v3.json",
                 "trace_sha256": f"trace-{size}-{mix}",
                 "mode_results": {
-                    "python": {
+                    ("rust" if runtime == "cpython315-nogil-rust" else "python"): {
                         "state_digest": f"graph-{size}-{mix}-{runtime if corrupt_graph_digest else 'same'}",
                         "samples": [{"sample": index} for index in range(5)],
                     }
@@ -58,6 +58,7 @@ def _write_runtime_report(root: Path, runtime: str, *, corrupt_graph_digest: boo
             ).hexdigest()
     report = {
         "expected_runtime": runtime,
+        "authority": "rust" if runtime == "cpython315-nogil-rust" else "python",
         "status": "complete",
         "runtime_verified": True,
         "limits_verified": True,
@@ -67,6 +68,7 @@ def _write_runtime_report(root: Path, runtime: str, *, corrupt_graph_digest: boo
             "version": version,
             "gil_enabled_before_benchmark_import": gil,
             "gil_enabled_after_benchmark": gil,
+            "gil_enabled_after_native_import": gil,
             "expected_cpus": 4,
             "expected_memory_bytes": 8 * 1024**3,
             "cgroup_cpu_max": "400000 100000",
@@ -117,6 +119,20 @@ def test_runtime_matrix_verifier_rejects_reenabled_gil(tmp_path: Path) -> None:
 
     assert report["status"] == "failed"
     assert any("interpreter/GIL or cgroup evidence" in error for error in report["errors"])
+
+
+def test_runtime_matrix_verifier_rejects_rust_import_that_enables_gil(tmp_path: Path) -> None:
+    for runtime in _MODULE.RUNTIMES:
+        _write_runtime_report(tmp_path, runtime)
+    target = tmp_path / "cpython315-nogil-rust" / "runtime-report.json"
+    report_data = json.loads(target.read_text(encoding="utf-8"))
+    report_data["runtime"]["gil_enabled_after_native_import"] = True
+    target.write_text(json.dumps(report_data), encoding="utf-8")
+
+    report = _MODULE.verify_matrix(tmp_path)
+
+    assert report["status"] == "failed"
+    assert any("importing Rust enabled" in error for error in report["errors"])
 
 
 def test_runtime_matrix_verifier_requires_cpython314_gil(tmp_path: Path) -> None:

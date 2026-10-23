@@ -1,4 +1,4 @@
-"""Run the Python-authority concurrent trace and record runtime/container facts."""
+"""Run a concurrent trace and record runtime/container facts."""
 
 from __future__ import annotations
 
@@ -77,17 +77,17 @@ def _verify_runtime(
             and gil_enabled_before is True
             and gil_enabled_after is True
         )
-    if expected == "cpython315-nogil":
+    if expected in {"cpython315-nogil", "cpython315-nogil-rust"}:
         return (
             implementation == "CPython"
-            and version.startswith("3.15.")
+            and version == "3.15.1"
             and gil_enabled_before is False
             and gil_enabled_after is False
         )
     if expected == "cpython315-gil":
         return (
             implementation == "CPython"
-            and version.startswith("3.15.")
+            and version == "3.15.1"
             and gil_enabled_before is True
             and gil_enabled_after is True
         )
@@ -114,6 +114,7 @@ def main() -> int:
     parser.add_argument("--items", type=int, action="append", required=True)
     parser.add_argument("--samples", type=int, default=5)
     parser.add_argument("--expected-runtime", required=True)
+    parser.add_argument("--authority", choices=("python", "rust"), default="python")
     parser.add_argument("--expected-cpus", type=float, required=True)
     parser.add_argument("--expected-memory-bytes", type=int, required=True)
     args = parser.parse_args()
@@ -125,6 +126,13 @@ def main() -> int:
         "version": platform.python_version(),
         "gil_enabled_before_benchmark_import": _gil_enabled(),
     }
+    if args.authority == "rust":
+        if args.expected_runtime != "cpython315-nogil-rust":
+            parser.error("Rust authority is currently supported only for the no-GIL comparison")
+        from kogwistar.engine_core.rust_meta_sqlite import RustEngineSQLite as _RustEngineSQLite
+
+        del _RustEngineSQLite
+    gil_after_native_import = _gil_enabled()
     from mixed_concurrent_benchmark import run_benchmark
 
     args.output.mkdir(parents=True, exist_ok=True)
@@ -133,6 +141,7 @@ def main() -> int:
         "schema": "kogwistar-fixed-resource-runtime-report/v1",
         "status": "running",
         "expected_runtime": args.expected_runtime,
+        "authority": args.authority,
         "runtime_verified": False,
         "limits_verified": False,
         "runtime_before_import": runtime_before_import,
@@ -153,7 +162,7 @@ def main() -> int:
                     report_dir,
                     items=size,
                     samples=args.samples,
-                    modes=("python",),
+                    modes=(args.authority,),
                     backends=("sqlite_event_projection",),
                 )
             except Exception as exc:
@@ -198,6 +207,7 @@ def main() -> int:
         "runtime": {
             **runtime_before_import,
             "gil_enabled_after_benchmark": gil_after_benchmark,
+            "gil_enabled_after_native_import": gil_after_native_import,
             "platform": platform.platform(),
             "executable": sys.executable,
             "cpu_count": os.cpu_count(),

@@ -1,9 +1,13 @@
 .git
 .github
+.tmp/
 .venv
 .venv*
 __pycache__/
 *.py[cod]
+*.pyd
+*.so
+*.pdb
 *.egg-info/
 .pytest_cache/
 .pytest*/
@@ -17,6 +21,7 @@ tests/
 tests/_artifacts/
 build/
 dist/
+rust/target/
 bundle/
 assets/
 *.png

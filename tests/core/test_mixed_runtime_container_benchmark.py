@@ -12,11 +12,14 @@ _SPEC.loader.exec_module(_MODULE)
 
 
 def test_runtime_probe_requires_actual_free_threaded_execution() -> None:
-    assert _MODULE._verify_runtime("cpython315-nogil", "CPython", "3.15.0", False, False)
-    assert not _MODULE._verify_runtime("cpython315-nogil", "CPython", "3.15.0", False, True)
-    assert not _MODULE._verify_runtime("cpython315-nogil", "CPython", "3.15.0", True, False)
+    assert _MODULE._verify_runtime("cpython315-nogil", "CPython", "3.15.1", False, False)
+    assert not _MODULE._verify_runtime("cpython315-nogil", "CPython", "3.15.1", False, True)
+    assert not _MODULE._verify_runtime("cpython315-nogil", "CPython", "3.15.1", True, False)
     assert not _MODULE._verify_runtime("cpython315-nogil", "CPython", "3.15.0", None, None)
     assert not _MODULE._verify_runtime("cpython315-nogil", "CPython", "3.14.9", False, False)
+    assert not _MODULE._verify_runtime("cpython315-nogil", "CPython", "3.15.0", False, False)
+    assert _MODULE._verify_runtime("cpython315-nogil-rust", "CPython", "3.15.1", False, False)
+    assert not _MODULE._verify_runtime("cpython315-nogil-rust", "CPython", "3.15.1", False, True)
 
 
 def test_runtime_probe_distinguishes_gil_cpython_from_pypy() -> None:
@@ -24,8 +27,8 @@ def test_runtime_probe_distinguishes_gil_cpython_from_pypy() -> None:
     assert not _MODULE._verify_runtime("cpython314-gil", "CPython", "3.14.9", True, False)
     assert not _MODULE._verify_runtime("cpython314-gil", "CPython", "3.13.9", True, True)
     assert not _MODULE._verify_runtime("cpython314-gil", "CPython", "3.15.0", True, True)
-    assert _MODULE._verify_runtime("cpython315-gil", "CPython", "3.15.0", True, True)
-    assert not _MODULE._verify_runtime("cpython315-gil", "CPython", "3.15.0", True, False)
+    assert _MODULE._verify_runtime("cpython315-gil", "CPython", "3.15.1", True, True)
+    assert not _MODULE._verify_runtime("cpython315-gil", "CPython", "3.15.1", True, False)
     assert _MODULE._verify_runtime("pypy311", "PyPy", "3.11.13", None, None)
     assert not _MODULE._verify_runtime("pypy311", "PyPy", "3.10.18", None, None)
     assert not _MODULE._verify_runtime("pypy311", "CPython", "3.15.0", True, True)
@@ -38,6 +41,8 @@ def test_runtime_docker_matrix_contains_all_requested_interpreters() -> None:
     launcher = (root / "scripts" / "run_mixed_runtime_matrix.ps1").read_text()
 
     assert "AS cpython314-gil" in dockerfile
+    assert "AS cpython315-nogil-rust" in dockerfile
+    assert "Name = \"cpython315-nogil-rust\"; Target = \"cpython315-nogil-rust\"" in launcher
     assert "ARG PYTHON_VERSION=3.14.9" in dockerfile
     assert "Name = \"cpython314-gil\"; Target = \"cpython314-gil\"" in launcher
     assert "--cpus $CpuLimit --memory $MemoryLimit --memory-swap $MemoryLimit" in launcher

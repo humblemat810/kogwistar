@@ -8,7 +8,13 @@ import json
 from pathlib import Path
 from typing import Any
 
-RUNTIMES = ("cpython314-gil", "cpython315-gil", "cpython315-nogil", "pypy311")
+RUNTIMES = (
+    "cpython314-gil",
+    "cpython315-gil",
+    "cpython315-nogil",
+    "cpython315-nogil-rust",
+    "pypy311",
+)
 SIZES = (1000, 2000)
 MIXES = ("balanced", "read_heavy")
 
@@ -40,15 +46,15 @@ def _runtime_evidence_matches(runtime: str, report: dict[str, Any]) -> bool:
         identity_matches = (
             implementation == "CPython"
             and isinstance(version, str)
-            and version.startswith("3.15.")
+            and version == "3.15.1"
             and gil_before is True
             and gil_after is True
         )
-    elif runtime == "cpython315-nogil":
+    elif runtime in {"cpython315-nogil", "cpython315-nogil-rust"}:
         identity_matches = (
             implementation == "CPython"
             and isinstance(version, str)
-            and version.startswith("3.15.")
+            and version == "3.15.1"
             and gil_before is False
             and gil_after is False
         )
@@ -88,6 +94,13 @@ def verify_matrix(root: Path) -> dict[str, Any]:
             errors.append(f"{runtime}: fixed cgroup limits were not verified")
         if report.get("expected_runtime") != runtime or not _runtime_evidence_matches(runtime, report):
             errors.append(f"{runtime}: recorded interpreter/GIL or cgroup evidence does not match")
+        expected_authority = "rust" if runtime == "cpython315-nogil-rust" else "python"
+        if report.get("authority", "python") != expected_authority:
+            errors.append(f"{runtime}: expected {expected_authority} storage authority")
+        if runtime == "cpython315-nogil-rust":
+            gil_after_import = report.get("runtime", {}).get("gil_enabled_after_native_import")
+            if gil_after_import is not False:
+                errors.append("cpython315-nogil-rust: importing Rust enabled or failed to verify the GIL")
 
     graph_digests: dict[str, dict[str, str]] = {}
     trace_digests: dict[str, dict[str, str]] = {}
@@ -111,7 +124,8 @@ def verify_matrix(root: Path) -> dict[str, Any]:
                 if not isinstance(result, dict):
                     errors.append(f"{runtime}/{size}/{mix}: mix report is missing")
                     continue
-                mode = result.get("mode_results", {}).get("python", {})
+                mode_name = "rust" if runtime == "cpython315-nogil-rust" else "python"
+                mode = result.get("mode_results", {}).get(mode_name, {})
                 expected_samples = report.get("samples_per_mix")
                 samples = mode.get("samples")
                 if result.get("state_digest_equal") is not True:

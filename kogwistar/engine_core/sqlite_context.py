@@ -34,6 +34,8 @@ _registry_lock = threading.RLock()
 _active_implementations: dict[tuple[object, ...], dict[str, int]] = {}
 _active_path_identities: dict[str, tuple[tuple[object, ...] | None, int]] = {}
 _native_session_leases: dict[tuple[str, str], SQLiteDatabaseLease] = {}
+_native_reusable_sessions: set[tuple[str, str]] = set()
+_native_active_transactions: set[tuple[str, str]] = set()
 P = ParamSpec("P")
 R = TypeVar("R")
 
@@ -322,21 +324,44 @@ def native_sqlite_enter(
         os.path.normcase(os.path.abspath(database)),
         binding.context_id,
     )
-    persistent = reuse_session or operation == "begin_transaction"
     with _registry_lock:
-        if persistent and session_key in _native_session_leases:
-            if operation == "begin_transaction":
+        if operation == "close":
+            return binding.context_id, None
+
+        if operation == "begin_transaction":
+            if session_key in _native_active_transactions:
                 raise SQLiteContextError(
                     "this SQLite execution context already owns a native transaction",
                     "KOGWISTAR_SQLITE_TRANSACTION_ALREADY_ACTIVE",
                 )
-            _native_session_leases[session_key].refresh_file_identity(database)
+            lease = _native_session_leases.get(session_key)
+            if lease is None:
+                lease = acquire_sqlite_database(database, "rust")
+                _native_session_leases[session_key] = lease
+            else:
+                lease.refresh_file_identity(database)
+            _native_active_transactions.add(session_key)
             return binding.context_id, None
+
+        if reuse_session:
+            lease = _native_session_leases.get(session_key)
+            if lease is None:
+                lease = acquire_sqlite_database(database, "rust")
+                _native_session_leases[session_key] = lease
+            else:
+                lease.refresh_file_identity(database)
+            _native_reusable_sessions.add(session_key)
+            return binding.context_id, None
+
         lease = acquire_sqlite_database(database, "rust")
-        if persistent:
-            _native_session_leases[session_key] = lease
-            return binding.context_id, None
-    return binding.context_id, lease
+        return binding.context_id, lease
+
+
+def _release_native_session(session_key: tuple[str, str]) -> None:
+    lease = _native_session_leases.pop(session_key, None)
+    _native_reusable_sessions.discard(session_key)
+    if lease is not None:
+        lease.release()
 
 
 def native_sqlite_exit(
@@ -346,25 +371,27 @@ def native_sqlite_exit(
     reuse_session: bool,
     succeeded: bool,
 ) -> None:
-    # Failed begin must not leave a process-wide reservation without a live
-    # native connection/session to own it.
-    if operation == "begin_transaction" and not succeeded:
+    session_key = (os.path.normcase(os.path.abspath(database)), context_id)
+
+    if operation == "begin_transaction":
+        if succeeded:
+            return
         with _registry_lock:
-            lease = _native_session_leases.pop(
-                (os.path.normcase(os.path.abspath(database)), context_id), None
-            )
-        if lease is not None:
-            lease.release()
+            _native_active_transactions.discard(session_key)
+            if session_key not in _native_reusable_sessions:
+                _release_native_session(session_key)
         return
-    should_close = succeeded and (operation == "close" or (
-        not reuse_session
-        and operation in {"commit_transaction", "rollback_transaction"}
-    ))
-    if not should_close:
+
+    if operation in {"commit_transaction", "rollback_transaction"}:
+        if not succeeded:
+            return
+        with _registry_lock:
+            _native_active_transactions.discard(session_key)
+            if not reuse_session:
+                _release_native_session(session_key)
         return
-    with _registry_lock:
-        lease = _native_session_leases.pop(
-            (os.path.normcase(os.path.abspath(database)), context_id), None
-        )
-    if lease is not None:
-        lease.release()
+
+    if operation == "close" and succeeded:
+        with _registry_lock:
+            _native_active_transactions.discard(session_key)
+            _release_native_session(session_key)

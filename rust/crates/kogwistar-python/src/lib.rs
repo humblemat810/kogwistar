@@ -6523,7 +6523,10 @@ fn store_sqlite_json(py: Python<'_>, payload_json: &str) -> PyResult<String> {
             context_id, operation, reuse_session, database
         );
     }
-    let result = sqlite_store_json_impl(&payload_json);
+    // SQLite calls can block on another reader or writer. Keep the Python-side
+    // ownership checks above and cleanup below under the GIL, but let concurrent
+    // Python callers reach the Rust store while one operation waits on SQLite.
+    let result = py.detach(move || sqlite_store_json_impl(&payload_json));
     py.import("kogwistar.engine_core.sqlite_context")?
         .call_method1(
             "native_sqlite_exit",

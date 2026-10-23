@@ -17,6 +17,8 @@ from kogwistar.engine_core.sqlite_context import (
     SQLiteContextError,
     acquire_sqlite_database,
     independent_sqlite_execution_context,
+    native_sqlite_enter,
+    native_sqlite_exit,
     select_sqlite_implementation,
     sqlite_execution_context,
 )
@@ -37,6 +39,40 @@ def test_context_binding_is_immutable_and_nested_calls_inherit() -> None:
         with pytest.raises(SQLiteContextError):
             with sqlite_execution_context("rust"):
                 pass
+
+
+def test_native_reused_session_can_own_one_transaction_at_a_time(
+    tmp_path: Path,
+) -> None:
+    database = str(tmp_path / "session.db")
+    with sqlite_execution_context("rust") as binding:
+        context_id, lease = native_sqlite_enter(database, "open_init", True)
+        assert context_id == binding.context_id
+        assert lease is None
+        native_sqlite_exit(database, context_id, "open_init", True, True)
+
+        context_id, lease = native_sqlite_enter(
+            database, "begin_transaction", True
+        )
+        assert context_id == binding.context_id
+        assert lease is None
+        with pytest.raises(SQLiteContextError) as duplicate:
+            native_sqlite_enter(database, "begin_transaction", True)
+        _assert_code(duplicate.value, "KOGWISTAR_SQLITE_TRANSACTION_ALREADY_ACTIVE")
+
+        native_sqlite_exit(database, context_id, "commit_transaction", True, True)
+        context_id, lease = native_sqlite_enter(
+            database, "get_named_projection", True
+        )
+        assert context_id == binding.context_id
+        assert lease is None
+
+        native_sqlite_enter(database, "close", True)
+        native_sqlite_exit(database, context_id, "close", True, True)
+
+    with sqlite_execution_context("python"):
+        lease = acquire_sqlite_database(database, "python")
+        lease.release()
 
 
 def test_python_connection_closes_and_releases_database_ownership(tmp_path: Path) -> None:

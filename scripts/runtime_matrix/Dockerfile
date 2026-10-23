@@ -90,6 +90,26 @@ WORKDIR /workspace
 ENV PYTHONPATH=/src PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
 ENTRYPOINT ["python3.15t", "/src/scripts/mixed_runtime_container_benchmark.py"]
 
+FROM cpython315-nogil AS cpython315-nogil-rust-build
+RUN apt-get update && apt-get install --no-install-recommends -y \
+    build-essential ca-certificates curl libffi-dev libssl-dev pkg-config \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+        https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.97.1 --profile minimal
+ENV PATH="/root/.cargo/bin:$PATH"
+COPY pyproject.toml README.md LICENSE /build/
+COPY rust /build/rust
+COPY contracts /build/contracts
+COPY kogwistar /build/kogwistar
+RUN python3.15t -m pip install --no-cache-dir maturin==1.15.0 \
+    && python3.15t -m pip install --no-cache-dir --no-build-isolation --no-deps /build \
+    && env -u PYTHONPATH python3.15t -c \
+        'import importlib.util, shutil; from pathlib import Path; p = importlib.util.find_spec("kogwistar._rust"); assert p and p.origin; out = Path("/tmp/native-extension"); out.mkdir(); shutil.copy2(p.origin, out / Path(p.origin).name)'
+
+FROM cpython315-nogil AS cpython315-nogil-rust
+COPY --from=cpython315-nogil-rust-build /tmp/native-extension/_rust* /src/kogwistar/
+ENTRYPOINT ["python3.15t", "/src/scripts/mixed_runtime_container_benchmark.py"]
+
 FROM debian:trixie-slim AS cpython314-gil
 RUN apt-get update && apt-get install --no-install-recommends -y \
     ca-certificates libbz2-1.0 libffi8 libgdbm6t64 liblzma5 libncursesw6 \
