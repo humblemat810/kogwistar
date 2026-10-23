@@ -48,6 +48,8 @@ class InvocationFactory(Protocol):
 class SequenceFakeModel:
     """Deterministic model fixture; no network or provider dependency."""
 
+    provider_id = "fake.sequence"
+
     def __init__(self, payloads: Sequence[JsonValue]) -> None:
         self._payloads = list(payloads)
         self.prompts: list[str] = []

@@ -529,6 +529,193 @@ def test_lane_message_request_reply_round_trip_preserves_contract():
         shutil.rmtree(test_db_dir, ignore_errors=True)
 
 
+def test_lane_message_can_link_to_its_run_scoped_workflow_step():
+    engine, test_db_dir = _make_engine()
+    namespace = "ws:demo:conv:event-agent"
+    service = LaneMessagingService(engine)
+    run_id = "run-event-agent"
+    conversation_id = "conv-event-agent"
+    run_node_id = f"wf_run|{run_id}"
+    step_id = f"wf_step|{run_id}|4"
+    claims_token = claims_ctx.set({"ns": "conversation", "security_scope": "tenant-event"})
+
+    try:
+        with scoped_namespace(engine, namespace):
+            for node_id, entity_type in (
+                (run_node_id, "workflow_run"),
+                (step_id, "workflow_step_exec"),
+            ):
+                engine.write.add_node(
+                    Node(
+                        id=node_id,
+                        label=entity_type,
+                        type="entity",
+                        summary=entity_type,
+                        mentions=[
+                            Grounding(
+                                spans=[_lane_anchor_span(conversation_id, entity_type)]
+                            )
+                        ],
+                        metadata={
+                            "entity_type": entity_type,
+                            "run_id": run_id,
+                            "conversation_id": conversation_id,
+                        },
+                    )
+                )
+            message = service.send_message(
+                conversation_id=conversation_id,
+                inbox_id="inbox:agent-events",
+                sender_id="agent:event-provider",
+                recipient_id="agent:event-worker",
+                msg_type="agent.provider_event",
+                payload={"kind": "response_started"},
+                run_id=run_id,
+                step_id="3",
+                purpose="agent_event",
+                security_scope="tenant-event",
+                idempotency_key="event-1",
+            )
+            service.link_message_to_step(
+                message_id=message.message_id,
+                step_id=step_id,
+                conversation_id=conversation_id,
+                run_id=run_id,
+            )
+            run_edges = engine.read.get_edges(where={"relation": "about_run"})
+            step_edges = engine.read.get_edges(where={"relation": "handled_by_step"})
+
+            assert len(run_edges) == 1
+            assert run_edges[0].source_ids == [message.message_id]
+            assert run_edges[0].target_ids == [run_node_id]
+            assert len(step_edges) == 1
+            assert step_edges[0].source_ids == [message.message_id]
+            assert step_edges[0].target_ids == [step_id]
+            with pytest.raises(ValueError, match="does not belong"):
+                service.link_message_to_step(
+                    message_id=message.message_id,
+                    step_id=step_id,
+                    conversation_id=conversation_id,
+                    run_id="another-run",
+                )
+    finally:
+        claims_ctx.reset(claims_token)
+        shutil.rmtree(test_db_dir, ignore_errors=True)
+
+
+def test_send_lane_message_uses_explicit_backend_model_mode(monkeypatch):
+    engine, test_db_dir = _make_engine()
+    namespace = "ws:demo:conv:explicit-backend-mode"
+
+    def reject_stack_detection(**_kwargs):
+        raise AssertionError("internal graph writes must not inspect caller stack")
+
+    try:
+        with scoped_namespace(engine, namespace):
+            with monkeypatch.context() as patcher:
+                patcher.setattr(
+                    "pydantic_extension.model_slicing.mixin._infer_mode_from_stack",
+                    reject_stack_detection,
+                )
+                result = engine.send_lane_message(
+                    conversation_id="conv-explicit-mode",
+                    inbox_id="inbox:worker:maintenance",
+                    sender_id="lane:foreground",
+                    recipient_id="lane:worker:maintenance",
+                    msg_type="request.maintenance",
+                    payload={"request_node_id": "req-mode"},
+                )
+
+            message = engine.read.get_nodes(ids=[result.message_id])
+            assert len(message) == 1
+            assert message[0].metadata["artifact_kind"] == "lane_message"
+            assert len(engine.read.get_edges(where={"relation": "in_conversation"})) == 1
+            assert len(engine.read.get_edges(where={"relation": "sent_by"})) == 1
+            assert len(engine.read.get_edges(where={"relation": "sent_to"})) == 1
+            assert len(engine.list_projected_lane_messages(inbox_id="inbox:worker:maintenance")) == 1
+    finally:
+        shutil.rmtree(test_db_dir, ignore_errors=True)
+
+
+def test_send_lane_message_reconciles_derived_indexes_once(monkeypatch):
+    engine, test_db_dir = _make_engine()
+    namespace = "ws:demo:conv:deferred-index-reconciliation"
+    engine._phase1_enable_index_jobs = True
+    reconcile_calls = []
+    original_reconcile = engine.reconcile_indexes
+
+    def recording_reconcile(*args, **kwargs):
+        reconcile_calls.append(
+            (kwargs.get("max_jobs"), engine.raw_write._index_reconciliation_is_deferred())
+        )
+        return original_reconcile(*args, **kwargs)
+
+    monkeypatch.setattr(engine, "reconcile_indexes", recording_reconcile)
+    try:
+        with scoped_namespace(engine, namespace):
+            result = engine.send_lane_message(
+                conversation_id="conv-deferred-index-reconciliation",
+                inbox_id="inbox:worker:maintenance",
+                sender_id="lane:foreground",
+                recipient_id="lane:worker:maintenance",
+                msg_type="request.maintenance",
+                payload={"request_node_id": "req-deferred"},
+            )
+
+            assert len(engine.read.get_nodes(ids=[result.message_id])) == 1
+            assert reconcile_calls == [(50, False)]
+    finally:
+        shutil.rmtree(test_db_dir, ignore_errors=True)
+
+
+def test_find_idempotent_lane_message_filters_in_backend(monkeypatch):
+    engine, test_db_dir = _make_engine()
+    namespace = "ws:demo:conv:idempotency-filter"
+    service = LaneMessagingService(engine)
+    claims_token = claims_ctx.set({"storage_ns": namespace})
+
+    try:
+        with scoped_namespace(engine, namespace):
+            for index, key in enumerate(("match-key", "other-key", "another-key")):
+                service.send_message(
+                    conversation_id="conv-filter",
+                    inbox_id="inbox:worker:maintenance",
+                    sender_id="lane:foreground",
+                    recipient_id="lane:worker:maintenance",
+                    msg_type="request.maintenance",
+                    payload={"request_node_id": f"req-{index}"},
+                    idempotency_key=key,
+                )
+
+            queries = []
+            original_get_nodes = engine.read.get_nodes
+
+            def recording_get_nodes(*args, **kwargs):
+                result = original_get_nodes(*args, **kwargs)
+                queries.append(kwargs.get("where"))
+                return result
+
+            monkeypatch.setattr(engine.read, "get_nodes", recording_get_nodes)
+            matches = service.find_messages(
+                namespace=namespace,
+                conversation_id="conv-filter",
+                idempotency_key="match-key",
+                limit=1,
+                newest_first=True,
+            )
+
+            assert len(queries) == 1
+            assert queries[0] == {
+                "artifact_kind": "lane_message",
+                "idempotency_key": "match-key",
+            }
+            assert len(matches) == 1
+            assert matches[0].metadata["idempotency_key"] == "match-key"
+    finally:
+        claims_ctx.reset(claims_token)
+        shutil.rmtree(test_db_dir, ignore_errors=True)
+
+
 def test_lane_message_sample_integration_pins_stable_contract():
     engine, test_db_dir = _make_engine()
     namespace = "ws:demo:conv:bg"

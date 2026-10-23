@@ -630,6 +630,26 @@ def test_control_point_queue_preserves_fifo_and_high_water_deduplicates() -> Non
     assert update["agent_control_duplicate"] is True
 
 
+def test_queue_control_point_reports_queue_not_live_steering() -> None:
+    messaging = _FakeControlMessaging()
+    resolver = MappingStepResolver()
+    register_control_point(
+        resolver,
+        messaging,
+        ControlPointSpec(
+            inbox_id="inbox:agent",
+            recipient_id="agent-1",
+            policy="queue",
+        ),
+    )
+    result = resolver.resolve("agent.control_point")(
+        _ctx({"agent_claimed_by": "worker-1"}, op="agent.control_point")
+    )
+
+    assert isinstance(result, RunSuccess)
+    assert result.state_update[0][1]["agent_control_action"] == "queue"
+
+
 def test_control_point_reclaims_after_crash_before_checkpoint() -> None:
     messaging = _FakeControlMessaging()
     resolver = MappingStepResolver()

@@ -112,6 +112,12 @@ def test_pypy311_profile_pins_the_supported_mcp_contract() -> None:
     assert "mcp<2" not in requirements
 
 
+def test_pypy311_profile_includes_event_agent_schema_validation_dependency() -> None:
+    requirements = PYPI_REQUIREMENTS.read_text(encoding="utf-8")
+
+    assert "jsonschema>=4.21,<5" in requirements
+
+
 def test_first_party_typed_dicts_use_pypy_compatible_typing_extensions() -> None:
     package_root = ROOT / "kogwistar"
     violations: list[str] = []

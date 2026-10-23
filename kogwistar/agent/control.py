@@ -234,10 +234,15 @@ def register_control_point(
             "agent_control_duplicate": duplicate,
             "agent_control_policy": spec.policy,
         }
-        if spec.policy == "cancel_and_replace" and not duplicate:
-            update["agent_control_action"] = "cancel_and_replace"
+        if duplicate:
+            action = "duplicate"
         else:
-            update["agent_control_action"] = "steer" if not duplicate else "duplicate"
+            action = {
+                "steer": "steer",
+                "queue": "queue",
+                "cancel_and_replace": "cancel_and_replace",
+            }[spec.policy]
+        update["agent_control_action"] = action
         return RunSuccess(state_update=[_overwrite(update)])
 
 

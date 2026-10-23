@@ -4,7 +4,9 @@ import hashlib
 import inspect
 import json
 import uuid
-from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import (
     TYPE_CHECKING,
@@ -52,6 +54,9 @@ if TYPE_CHECKING:
 
 
 _T = TypeVar("_T")
+_DEFERRED_INDEX_RECONCILIATION: ContextVar[frozenset[int]] = ContextVar(
+    "kogwistar_deferred_index_reconciliation", default=frozenset()
+)
 _ProjectionEntityKind: TypeAlias = Literal["node", "edge"]
 _GraphEntityKind: TypeAlias = Literal["node", "edge", "document", "domain"]
 _AsyncBackendCollectionKey: TypeAlias = Literal[
@@ -68,6 +73,10 @@ _AsyncBackendMethod: TypeAlias = Literal["add", "delete", "get", "update", "upse
 _BackendOperation: TypeAlias = Callable[..., object]
 _ReferenceOwnerField: TypeAlias = Literal["node_id", "edge_id"]
 _EndpointRole: TypeAlias = Literal["src", "tgt"]
+
+
+def _engine_identity(engine: object) -> int:
+    return id(getattr(engine, "_real", engine))
 
 
 @runtime_checkable
@@ -319,6 +328,33 @@ def _edge_reference_spans(edge: Edge) -> list[tuple[int, int, Span]]:
 class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
     def __init__(self, engine: GraphKnowledgeEngine) -> None:
         super().__init__(engine)
+
+    @contextmanager
+    def defer_index_reconciliation(self, *, max_jobs: int = 50) -> Iterator[None]:
+        """Defer queued index projection work until a related write batch ends.
+
+        Canonical graph writes remain durable as they happen. Only the
+        best-effort/queued derived-index drain is coalesced at the outermost
+        context for this engine.
+        """
+        if max_jobs < 0:
+            raise ValueError("max_jobs must be non-negative")
+        engine_key = _engine_identity(self._e)
+        previous = _DEFERRED_INDEX_RECONCILIATION.get()
+        token = _DEFERRED_INDEX_RECONCILIATION.set(previous | {engine_key})
+        try:
+            yield
+        finally:
+            _DEFERRED_INDEX_RECONCILIATION.reset(token)
+        if (
+            engine_key not in previous
+            and self._e._phase1_enable_index_jobs
+            and max_jobs > 0
+        ):
+            self._e.reconcile_indexes(max_jobs=max_jobs)
+
+    def _index_reconciliation_is_deferred(self) -> bool:
+        return _engine_identity(self._e) in _DEFERRED_INDEX_RECONCILIATION.get()
 
     def _projection_backend(self) -> ProjectionBackendLike:
         """Narrow optional native projection attributes at their boundary."""
@@ -1308,7 +1344,8 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         if self._e._phase1_enable_index_jobs:
             if not native_added:
                 self._e.enqueue_index_jobs_for_node(node.safe_get_id(), op="UPSERT")
-            self._e.reconcile_indexes(max_jobs=50)
+            if not self._index_reconciliation_is_deferred():
+                self._e.reconcile_indexes(max_jobs=50)
         else:
             self.index_node_docs(node)
             self.maybe_reindex_node_refs(node)
@@ -1419,7 +1456,8 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         if self._e._phase1_enable_index_jobs:
             if not native_added:
                 self._e.enqueue_index_jobs_for_edge(edge.safe_get_id(), op="UPSERT")
-            self._e.reconcile_indexes(max_jobs=50)
+            if not self._index_reconciliation_is_deferred():
+                self._e.reconcile_indexes(max_jobs=50)
         else:
             self.maybe_reindex_edge_refs(edge)
             rows = self.fanout_endpoints_rows(edge, doc_id)

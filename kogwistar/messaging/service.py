@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, NotRequired, Protocol, cast
 from typing_extensions import TypedDict
+from pydantic_extension.model_slicing import use_mode
 
 from kogwistar.acl import current_acl_context
 from kogwistar.engine_core.engine import scoped_namespace
@@ -343,7 +344,15 @@ class LaneMessagingService:
             AbstractContextManager[object],
             unit_of_work() if callable(unit_of_work) else nullcontext(),
         )
-        with uow_context, scoped_namespace(self.engine, namespace):
+        # These graph objects are being persisted, so select the backend model
+        # contract explicitly rather than paying for heuristic caller-stack
+        # inspection on every Node and Edge validation.
+        with (
+            use_mode("backend"),
+            uow_context,
+            self.engine.write.defer_index_reconciliation(),
+            scoped_namespace(self.engine, namespace),
+        ):
             anchor_nodes = self._ensure_anchor_nodes(
                 conversation_id=conversation_id,
                 inbox_id=inbox_id,
@@ -643,6 +652,49 @@ class LaneMessagingService:
     def ack(self, *, message_id: str, claimed_by: str) -> None:
         self._meta_store().ack_projected_lane_message(message_id=message_id, claimed_by=claimed_by)
 
+    def link_message_to_step(
+        self,
+        *,
+        message_id: str,
+        step_id: str,
+        conversation_id: str,
+        run_id: str,
+    ) -> None:
+        """Persist a causal link from a lane message to its handling step."""
+        claims = claims_ctx.get() or {}
+        namespace = str(
+            claims.get("storage_ns")
+            or getattr(self.engine, "namespace", "default")
+            or "default"
+        )
+        with scoped_namespace(self.engine, namespace):
+            message_nodes = self.engine.read.get_nodes(ids=[str(message_id)], limit=1)
+            step_nodes = self.engine.read.get_nodes(ids=[str(step_id)], limit=1)
+            if not message_nodes or not step_nodes:
+                raise ValueError("message and workflow step must exist before linking")
+            message_metadata = dict(getattr(message_nodes[0], "metadata", {}) or {})
+            step_metadata = dict(getattr(step_nodes[0], "metadata", {}) or {})
+            if (
+                message_metadata.get("artifact_kind") != "lane_message"
+                or message_metadata.get("conversation_id") != conversation_id
+                or message_metadata.get("run_id") != run_id
+            ):
+                raise ValueError("lane message does not belong to the requested run/conversation")
+            if (
+                step_metadata.get("entity_type") != "workflow_step_exec"
+                or step_metadata.get("run_id") != run_id
+                or step_metadata.get("conversation_id") != conversation_id
+            ):
+                raise ValueError("workflow step does not belong to the requested run/conversation")
+            edge_id = str(stable_id("lane_message_handled_by", message_id, step_id))
+            self._add_semantic_edge(
+                edge_id=edge_id,
+                source_id=str(message_id),
+                target_id=str(step_id),
+                relation="handled_by_step",
+                conversation_id=conversation_id,
+            )
+
     def requeue(
         self,
         *,
@@ -763,8 +815,14 @@ class LaneMessagingService:
         upper = _coerce_lane_datetime(created_at_lte)
         lower_available = _coerce_lane_datetime(available_at_gte)
         upper_available = _coerce_lane_datetime(available_at_lte)
+        # Idempotency is checked for every durable send. Filter the graph read
+        # at the backend instead of materializing the entire lane-message
+        # history and scanning it in Python on every send.
+        where = {"artifact_kind": "lane_message"}
+        if idempotency_key:
+            where["idempotency_key"] = str(idempotency_key)
         with scoped_namespace(self.engine, target_namespace):
-            nodes = self.engine.read.get_nodes(where={"artifact_kind": "lane_message"}, limit=100_000)
+            nodes = self.engine.read.get_nodes(where=where, limit=100_000)
         matched: list[Node] = []
         for node in nodes:
             metadata = dict(getattr(node, "metadata", {}) or {})

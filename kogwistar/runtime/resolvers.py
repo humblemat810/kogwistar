@@ -29,7 +29,7 @@ import inspect
 import warnings
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Protocol, cast
+from typing import TYPE_CHECKING, Any, Protocol, TypeVar, cast
 
 from kogwistar.runtime.models import RunFailure, RunSuccess, RunSuspended, StepRunResult
 from kogwistar.runtime.sandbox import SandboxRequest
@@ -46,6 +46,15 @@ class RawStepFn(Protocol):
     """Callable contract for one runtime workflow step."""
 
     def __call__(self, context: StepContext, /) -> Json | StepRunResult: ...
+
+
+class AsyncRawStepFn(Protocol):
+    """Callable contract for an async workflow step."""
+
+    def __call__(self, context: StepContext, /) -> Awaitable[StepRunResult]: ...
+
+
+AsyncResolverStepFn = TypeVar("AsyncResolverStepFn", bound=RawStepFn | AsyncRawStepFn)
 
 
 
@@ -324,6 +333,21 @@ class AsyncMappingStepResolver(MappingStepResolver):
     - Sync handlers run inline on the async event loop unless the handler
       itself chooses to spawn threads.
     """
+
+    def register(
+        self, op: str, *, is_nested: bool = False, is_sandboxed: bool = False
+    ) -> Callable[[AsyncResolverStepFn], AsyncResolverStepFn]:
+        """Register either a synchronous or asynchronous workflow step."""
+
+        def _decorator(fn: AsyncResolverStepFn) -> AsyncResolverStepFn:
+            self.handlers[op] = cast(RawStepFn, fn)
+            if is_nested:
+                self.nested_ops.add(str(op))
+            if is_sandboxed:
+                self.sandboxed_ops.add(str(op))
+            return fn
+
+        return _decorator
 
     def resolve_async(
         self, op: str

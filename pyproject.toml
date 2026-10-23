@@ -30,6 +30,7 @@ dependencies = [
   "fastapi>=0.111",
   "mcp>=2.2.0,<3",
   "httpx>=0.28.1",
+  "jsonschema>=4.21,<5",
   "python-jose[cryptography]>=3.3",
   "PyJWT>=2.8",
   "RapidFuzz>=3.13.0",
