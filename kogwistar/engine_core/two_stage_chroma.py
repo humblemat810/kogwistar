@@ -16,6 +16,7 @@ from .edge_endpoint_rows import edge_endpoint_rows
 from .engine import GraphKnowledgeEngine
 from .models import Edge, Node
 from .storage_backend import TwoStageProjectionCapability
+from .two_stage_namespace import active_graph_namespace
 
 
 class _Stage1MetaStore(Protocol):
@@ -83,7 +84,7 @@ class SQLiteChromaTwoStageProjectionAdapter:
         return cast(_Stage1MetaStore, self.engine.meta_sqlite)
 
     def _namespace(self) -> str:
-        return str(getattr(self.engine, "namespace", "default"))
+        return active_graph_namespace(self.engine)
 
     @staticmethod
     def _stage1_key(entity_kind: str, entity_id: str) -> str:

@@ -13,6 +13,7 @@ from .edge_endpoint_rows import edge_endpoint_rows
 from .engine import GraphKnowledgeEngine
 from .models import Edge, Node
 from .storage_backend import TwoStageProjectionCapability
+from .two_stage_namespace import active_graph_namespace
 
 
 class _PostgresProjectionBackend(Protocol):
@@ -61,7 +62,7 @@ class PostgresTwoStageProjectionAdapter:
             )
 
     def _namespace(self) -> str:
-        return str(getattr(self.engine, "namespace", "default"))
+        return active_graph_namespace(self.engine)
 
     def _backend(self) -> _PostgresProjectionBackend:
         return cast(_PostgresProjectionBackend, self.engine.backend)

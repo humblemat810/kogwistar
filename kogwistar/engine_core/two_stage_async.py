@@ -13,6 +13,7 @@ from ..utils.embedding_vectors import normalize_embedding_vector
 from .edge_endpoint_rows import edge_endpoint_rows
 from .models import Edge, Node
 from .storage_backend import TwoStageProjectionCapability
+from .two_stage_namespace import active_graph_namespace
 from .two_stage_rust_postgres import (
     RustPostgresTwoStageProjectionAdapter,
     _RustProjectionEngine,
@@ -153,7 +154,7 @@ class AsyncPostgresTwoStageProjectionAdapter:
         return self.engine.backend
 
     def _namespace(self) -> str:
-        return str(getattr(self.engine, "namespace", "default"))
+        return active_graph_namespace(self.engine)
 
     @asynccontextmanager
     async def _backend_transaction(self) -> AsyncIterator[None]:
@@ -445,7 +446,7 @@ class AsyncChromaTwoStageProjectionAdapter:
         self.engine = cast(_TwoStageEngineLike, engine)
 
     def _namespace(self) -> str:
-        return str(getattr(self.engine, "namespace", "default"))
+        return active_graph_namespace(self.engine)
 
     def _key(self, entity_kind: str, entity_id: str) -> str:
         return f"{entity_kind}:{entity_id}"
