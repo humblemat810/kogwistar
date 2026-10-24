@@ -17,6 +17,7 @@ pub const WORKER_PROTOCOL_ASYNC_V2: &str = "async-v2";
 pub const RUST_NATIVE_EXECUTOR_TARGET: &str = "rust-native";
 pub const RUST_NATIVE_OPERATION_PREFIX: &str = "rust-native/";
 pub const RUST_NATIVE_OPERATION_SCHEMA_VERSION: u32 = 1;
+pub const RUST_NATIVE_SEAM_ATTESTATION_VERSION: u32 = 1;
 
 pub fn native_operation_name(operation: &str) -> Option<&str> {
     operation
@@ -200,6 +201,9 @@ pub fn execute_native_step(
         trace_events: vec![json!({
             "schema_version": RUST_NATIVE_OPERATION_SCHEMA_VERSION,
             "event": "runtime.native.step.completed",
+            "implementation_authority": RUST_NATIVE_EXECUTOR_TARGET,
+            "seam_attestation_version": RUST_NATIVE_SEAM_ATTESTATION_VERSION,
+            "seam_crossings": [],
             "executor_target": RUST_NATIVE_EXECUTOR_TARGET,
             "operation": request.operation,
             "run_id": request.run_id,
@@ -2332,6 +2336,15 @@ mod tests {
             "runtime.native.step.completed"
         );
         assert_eq!(effect.trace_events[0]["schema_version"], 1);
+        assert_eq!(
+            effect.trace_events[0]["implementation_authority"],
+            RUST_NATIVE_EXECUTOR_TARGET
+        );
+        assert_eq!(
+            effect.trace_events[0]["seam_attestation_version"],
+            RUST_NATIVE_SEAM_ATTESTATION_VERSION
+        );
+        assert_eq!(effect.trace_events[0]["seam_crossings"], json!([]));
     }
 
     #[test]
