@@ -1877,6 +1877,10 @@ fn security_scope_value(principal: &Value) -> Value {
         "tenant": tenant,
         "workspace": workspace,
         "project": project,
+        "graph_space": principal["graph_space"]
+            .as_str()
+            .unwrap_or_default()
+            .to_ascii_lowercase(),
     })
 }
 
@@ -4413,6 +4417,30 @@ fn capability_allowed(
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     audit_capability(&request.principal, &mut state, action, required)
+}
+
+fn graph_mutation_scope_allowed(scope: &GraphScope, security_scope: &Value) -> bool {
+    if scope.namespace
+        != security_scope
+            .get("storage_namespace")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+    {
+        return false;
+    }
+    if let Some(workspace) = security_scope.get("workspace").and_then(Value::as_str)
+        && !workspace.is_empty()
+        && scope.workspace_id.as_deref() != Some(workspace)
+    {
+        return false;
+    }
+    if let Some(graph_space) = security_scope.get("graph_space").and_then(Value::as_str)
+        && !graph_space.is_empty()
+        && scope.graph_space.as_deref() != Some(graph_space)
+    {
+        return false;
+    }
+    true
 }
 
 #[derive(Clone)]
@@ -8391,18 +8419,14 @@ impl PostgresRunApplicationService {
             );
         }
         let security_scope = security_scope_value(&request.principal);
-        let authorized_namespace = security_scope
-            .get("storage_namespace")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
         if mutations
             .iter()
-            .any(|mutation| mutation.scope.namespace != authorized_namespace)
+            .any(|mutation| !graph_mutation_scope_allowed(&mutation.scope, &security_scope))
         {
             return effect_error(
                 StatusCode::FORBIDDEN,
                 "KOGWISTAR_SCOPE_FORBIDDEN",
-                "Graph mutation namespace is outside the principal storage scope",
+                "Graph mutation scope is outside the principal storage scope",
             );
         }
         let applied = if input.index_jobs.is_empty() {
@@ -13874,6 +13898,53 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
         )
         .await;
         assert_eq!(cross_scope.status(), StatusCode::FORBIDDEN);
+
+        let scoped_key = key;
+        let scoped_token = encode(
+            &Header::new(Algorithm::HS256),
+            &json!({
+                "sub": "alice",
+                "role": "rw",
+                "roles": ["reader", "rw"],
+                "ns": "workflow",
+                "storage_ns": "alpha",
+                "workspace": "workspace-a",
+                "graph_space": "facts",
+                "capabilities": ["write_graph"],
+                "exp": 4102444800_u64
+            }),
+            &EncodingKey::from_secret(scoped_key.as_bytes()),
+        )
+        .unwrap();
+        let mut workspace_mismatch_body = body.clone();
+        workspace_mismatch_body["mutations"][0]["scope"]["workspace_id"] = json!("workspace-b");
+        let workspace_mismatch =
+            send_mutation(make_app(), scoped_token, workspace_mismatch_body).await;
+        assert_eq!(workspace_mismatch.status(), StatusCode::FORBIDDEN);
+        let mut graph_space_mismatch_body = body.clone();
+        graph_space_mismatch_body["mutations"][0]["scope"]["graph_space"] = json!("private");
+        let graph_space_mismatch = send_mutation(
+            make_app(),
+            encode(
+                &Header::new(Algorithm::HS256),
+                &json!({
+                    "sub": "alice",
+                    "role": "rw",
+                    "roles": ["reader", "rw"],
+                    "ns": "workflow",
+                    "storage_ns": "alpha",
+                    "workspace": "workspace-a",
+                    "graph_space": "facts",
+                    "capabilities": ["write_graph"],
+                    "exp": 4102444800_u64
+                }),
+                &EncodingKey::from_secret(scoped_key.as_bytes()),
+            )
+            .unwrap(),
+            graph_space_mismatch_body,
+        )
+        .await;
+        assert_eq!(graph_space_mismatch.status(), StatusCode::FORBIDDEN);
 
         let http_response = send_mutation(
             make_app(),
