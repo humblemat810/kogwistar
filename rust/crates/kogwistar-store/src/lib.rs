@@ -712,6 +712,12 @@ pub trait GraphMutationStore: Send + Sync {
         envelope: GraphModelEnvelope,
     ) -> impl Future<Output = StoreResult<AppliedGraphMutation>> + Send {
         async move {
+            if !self.graph_authority_capability().supports_single_mutation() {
+                return Err(StoreError::Backend {
+                    backend: "graph-mutation".to_owned(),
+                    message: "typed graph mutations require declared graph authority".to_owned(),
+                });
+            }
             validate_typed_graph_mutation(&mutation, &envelope)?;
             self.apply_graph_mutation(mutation).await
         }
