@@ -30,6 +30,7 @@ use kogwistar_store::{
     WorkflowDesignHistoryReadStore, WorkflowDesignHistoryWriteStore, WorkflowDesignSnapshot,
     WorkflowDesignSnapshotWrite, runtime_checkpoint_namespace, runtime_projection_write,
     runtime_status_namespace, validate_entity_rebuild_request, validate_entity_recovery_request,
+    validate_graph_mutation, validate_graph_mutation_batch,
 };
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -648,6 +649,7 @@ impl PostgresStore {
         &self,
         mutation: GraphMutation,
     ) -> PostgresStoreResult<AppliedGraphMutation> {
+        validate_graph_mutation(&mutation)?;
         self.transaction(move |uow| {
             Box::pin(async move { uow.apply_graph_mutation(mutation).await })
         })
@@ -659,6 +661,10 @@ impl PostgresStore {
         &self,
         mutations: Vec<GraphMutation>,
     ) -> PostgresStoreResult<Vec<AppliedGraphMutation>> {
+        validate_graph_mutation_batch(&GraphMutationBatch {
+            mutations: mutations.clone(),
+            index_jobs: Vec::new(),
+        })?;
         self.transaction(move |uow| {
             Box::pin(async move {
                 let mut results = Vec::with_capacity(mutations.len());
@@ -677,6 +683,7 @@ impl PostgresStore {
         &self,
         batch: GraphMutationBatch,
     ) -> PostgresStoreResult<Vec<AppliedGraphMutation>> {
+        validate_graph_mutation_batch(&batch)?;
         self.transaction(move |uow| {
             Box::pin(async move {
                 let mut results = Vec::with_capacity(batch.mutations.len());
@@ -1666,6 +1673,7 @@ impl PostgresUnitOfWork<'_> {
         &mut self,
         mutation: GraphMutation,
     ) -> PostgresStoreResult<AppliedGraphMutation> {
+        validate_graph_mutation(&mutation)?;
         apply_graph_mutation(&self.transaction, &self.tables, mutation).await
     }
 

@@ -178,6 +178,111 @@ pub struct GraphMutationBatch {
     pub index_jobs: Vec<NewIndexJob>,
 }
 
+/// Validate the internal mutation before a store can own its effects.
+///
+/// The versioned wire DTO performs the same checks at the API boundary, but
+/// Rust-native callers can reach a store without going through that adapter.
+/// Keeping this guard at the effect owner prevents a direct caller from
+/// bypassing the shared graph-mutation contract.
+pub fn validate_graph_mutation(mutation: &GraphMutation) -> StoreResult<()> {
+    if mutation.scope.namespace.is_empty() {
+        return Err(StoreError::EmptyNamespace);
+    }
+    if mutation.event_id.is_empty() {
+        return Err(StoreError::InvalidIdentifier {
+            identifier: "graph mutation event_id",
+        });
+    }
+    if mutation.record.id.is_empty() {
+        return Err(StoreError::EmptyRecordId);
+    }
+    let expected_table = match mutation.entity_kind.as_str() {
+        "node" => "gke_nodes",
+        "edge" => "gke_edges",
+        _ => {
+            return Err(StoreError::InvalidEntityEventPayload {
+                message: format!("unsupported graph entity kind {:?}", mutation.entity_kind),
+            });
+        }
+    };
+    if mutation.table != expected_table {
+        return Err(StoreError::InvalidEntityEventPayload {
+            message: format!(
+                "graph entity kind {:?} must use table {:?}",
+                mutation.entity_kind, expected_table
+            ),
+        });
+    }
+    if !matches!(mutation.op.as_str(), "ADD" | "REPLACE" | "TOMBSTONE") {
+        return Err(StoreError::UnsupportedEntityEventOperation {
+            op: mutation.op.clone(),
+        });
+    }
+    if !mutation.payload.is_object() {
+        return Err(StoreError::InvalidEntityEventPayload {
+            message: "graph mutation payload must be a JSON object".to_owned(),
+        });
+    }
+    if let Some(embedding) = &mutation.record.embedding {
+        if embedding.iter().any(|value| !value.is_finite()) {
+            return Err(StoreError::NonFiniteVector);
+        }
+        if embedding.len() != mutation.embedding_dim {
+            return Err(StoreError::VectorDimensionMismatch {
+                expected: mutation.embedding_dim,
+                actual: embedding.len(),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Validate a store-owned atomic batch before opening its transaction.
+pub fn validate_graph_mutation_batch(batch: &GraphMutationBatch) -> StoreResult<()> {
+    let first = batch
+        .mutations
+        .first()
+        .ok_or(StoreError::InvalidEntityEventPayload {
+            message: "graph mutation batches must not be empty".to_owned(),
+        })?;
+    for mutation in &batch.mutations {
+        validate_graph_mutation(mutation)?;
+        if mutation.scope != first.scope {
+            return Err(StoreError::InvalidEntityEventPayload {
+                message: "all atomic graph mutations must share one graph scope".to_owned(),
+            });
+        }
+    }
+    for job in &batch.index_jobs {
+        if job.job_id.is_empty()
+            || job.namespace.is_empty()
+            || job.entity_kind.is_empty()
+            || job.entity_id.is_empty()
+            || job.index_kind.is_empty()
+        {
+            return Err(StoreError::InvalidIdentifier {
+                identifier: "index job field",
+            });
+        }
+        if job.namespace != first.scope.namespace {
+            return Err(StoreError::InvalidEntityEventPayload {
+                message: "index job namespace must match graph mutation namespace".to_owned(),
+            });
+        }
+        if !matches!(job.op.as_str(), "UPSERT" | "DELETE") {
+            return Err(StoreError::InvalidEntityEventPayload {
+                message: "index job op must be UPSERT or DELETE".to_owned(),
+            });
+        }
+        if job.max_retries < 0 {
+            return Err(StoreError::InvalidEntityEventPayload {
+                message: "index job max_retries must not be negative".to_owned(),
+            });
+        }
+    }
+    Ok(())
+}
+
 /// Validate the optional typed model that accompanies a graph mutation.
 ///
 /// The legacy mutation payload remains unchanged.  This additive seam lets a
@@ -1327,6 +1432,54 @@ mod tests {
         let node_envelope = GraphModelEnvelope::new(GraphModelClass::Node, node_payload);
         assert!(matches!(
             validate_typed_graph_mutation(&node_mutation, &node_envelope),
+            Err(StoreError::InvalidEntityEventPayload { .. })
+        ));
+    }
+
+    #[test]
+    fn direct_graph_mutation_validation_rejects_effect_bypass_inputs() {
+        let mut mutation = typed_mutation("node", fixture_payload(0));
+        mutation.table = "gke_edges".to_owned();
+        assert!(matches!(
+            validate_graph_mutation(&mutation),
+            Err(StoreError::InvalidEntityEventPayload { .. })
+        ));
+
+        mutation.table = "gke_nodes".to_owned();
+        mutation.payload = Value::Array(Vec::new());
+        assert!(matches!(
+            validate_graph_mutation(&mutation),
+            Err(StoreError::InvalidEntityEventPayload { .. })
+        ));
+    }
+
+    #[test]
+    fn graph_mutation_batch_validation_rejects_scope_and_index_drift() {
+        let first = typed_mutation("node", fixture_payload(0));
+        let mut second = typed_mutation("edge", fixture_payload(1));
+        second.scope.namespace = "other".to_owned();
+        assert!(matches!(
+            validate_graph_mutation_batch(&GraphMutationBatch {
+                mutations: vec![first.clone(), second],
+                index_jobs: Vec::new(),
+            }),
+            Err(StoreError::InvalidEntityEventPayload { .. })
+        ));
+
+        assert!(matches!(
+            validate_graph_mutation_batch(&GraphMutationBatch {
+                mutations: vec![first],
+                index_jobs: vec![NewIndexJob {
+                    job_id: "job-1".to_owned(),
+                    namespace: "other".to_owned(),
+                    entity_kind: "node".to_owned(),
+                    entity_id: "n-1".to_owned(),
+                    index_kind: "doc".to_owned(),
+                    op: "UPSERT".to_owned(),
+                    payload_json: None,
+                    max_retries: 0,
+                }],
+            }),
             Err(StoreError::InvalidEntityEventPayload { .. })
         ));
     }

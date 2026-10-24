@@ -12,6 +12,7 @@ use kogwistar_store::{
     StoreError, StoreResult, VectorMatch, VectorQuery, WorkflowDesignDelta,
     WorkflowDesignDeltaWrite, WorkflowDesignHistoryReadStore, WorkflowDesignHistoryWriteStore,
     WorkflowDesignSnapshot, WorkflowDesignSnapshotWrite, integer_timestamp, timestamp_i64,
+    validate_graph_mutation,
 };
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
@@ -785,6 +786,7 @@ impl InMemoryStore {
         &self,
         mutation: GraphMutation,
     ) -> StoreResult<AppliedGraphMutation> {
+        validate_graph_mutation(&mutation)?;
         namespace(&mutation.scope.namespace)?;
         let record = mutation.record;
         if record.id.is_empty() {
