@@ -384,3 +384,6 @@ def test_supported_edge_families_retain_node_lifecycle_capabilities() -> None:
         assert issubclass(edge_type, TombstoneMixin), edge_type.__name__
         assert issubclass(edge_type, LevelAwareMixin), edge_type.__name__
 
+    assert not issubclass(engine_models.DocNode, TombstoneMixin)
+    assert not issubclass(engine_models.DocNode, LevelAwareMixin)
+

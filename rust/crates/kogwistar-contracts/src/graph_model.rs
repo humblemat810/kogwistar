@@ -137,6 +137,14 @@ const PURE_CHROMA_EDGE_CAPABILITIES: GraphCapabilityProfile = GraphCapabilityPro
     level: false,
 };
 
+const DOCUMENT_NODE_CAPABILITIES: GraphCapabilityProfile = GraphCapabilityProfile {
+    graph_entity: true,
+    edge_entity: false,
+    metadata: false,
+    lifecycle: false,
+    level: false,
+};
+
 impl GraphModelClass {
     /// Return every graph class supported by this contract version.
     ///
@@ -301,11 +309,10 @@ impl GraphModelClass {
     /// same as Python's Node/Edge inheritance.
     pub const fn capabilities(self) -> GraphCapabilityProfile {
         match self {
-            Self::Node
-            | Self::AclNode
-            | Self::ConversationNode
-            | Self::WorkflowNode
-            | Self::DocNode => PERSISTENT_NODE_CAPABILITIES,
+            Self::Node | Self::AclNode | Self::ConversationNode | Self::WorkflowNode => {
+                PERSISTENT_NODE_CAPABILITIES
+            }
+            Self::DocNode => DOCUMENT_NODE_CAPABILITIES,
             Self::Edge | Self::AclEdge | Self::ConversationEdge | Self::WorkflowEdge => {
                 PERSISTENT_EDGE_CAPABILITIES
             }
@@ -2648,6 +2655,16 @@ mod tests {
             );
             assert!(edge.edge_extends_node_capabilities());
         }
+    }
+
+    #[test]
+    fn document_node_does_not_claim_persistent_capabilities() {
+        let capabilities = GraphModelClass::DocNode.capabilities();
+        assert!(capabilities.graph_entity);
+        assert!(!capabilities.edge_entity);
+        assert!(!capabilities.metadata);
+        assert!(!capabilities.lifecycle);
+        assert!(!capabilities.level);
     }
 
     #[test]
