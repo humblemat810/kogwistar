@@ -13186,8 +13186,12 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
         // A transport retry must be idempotent at both authority layers:
         // the graph event is not appended twice and the pending index intent
         // remains one coalesced queue row.
-        let retry_response =
-            send_mutation(make_app(), make_token(&["write_graph"], "alpha"), body).await;
+        let retry_response = send_mutation(
+            make_app(),
+            make_token(&["write_graph"], "alpha"),
+            body.clone(),
+        )
+        .await;
         let retry_status = retry_response.status();
         let retry_body = to_bytes(retry_response.into_body(), 65_536).await.unwrap();
         assert_eq!(
@@ -13222,6 +13226,65 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
                 .unwrap()
                 .len(),
             1
+        );
+
+        // A queue primary-key collision must roll back the graph event that
+        // preceded it in the same transaction; otherwise a retry could leave
+        // graph truth ahead of its durable indexing intent.
+        let mut rollback_body = body.clone();
+        rollback_body["mutations"][0]["event_id"] = json!("graph-route-event-2");
+        rollback_body["mutations"][0]["record"]["id"] = json!("node-2");
+        rollback_body["mutations"][0]["payload"]["id"] = json!("node-2");
+        rollback_body["index_jobs"][0]["entity_id"] = json!("node-2");
+        rollback_body["index_jobs"][0]["job_id"] = json!("graph-route-index-1");
+        let rollback_response = send_mutation(
+            make_app(),
+            make_token(&["write_graph"], "alpha"),
+            rollback_body,
+        )
+        .await;
+        assert_eq!(rollback_response.status(), StatusCode::CONFLICT);
+        assert!(
+            service
+                .store
+                .graph_projection_records(kogwistar_store::GraphProjectionRead {
+                    scope: GraphScope {
+                        namespace: "alpha".to_owned(),
+                        workspace_id: Some("ws".to_owned()),
+                        graph_space: Some("facts".to_owned()),
+                    },
+                    table: "gke_nodes".to_owned(),
+                    ids: Some(vec!["node-2".to_owned()]),
+                    metadata: Default::default(),
+                    limit: 10,
+                })
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            service
+                .store
+                .replay_raw_events("alpha", 0, 10)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(
+            service
+                .store
+                .list_index_jobs(
+                    Some("alpha"),
+                    Some("PENDING"),
+                    Some("node"),
+                    Some("node-2"),
+                    Some("node_embedding"),
+                    10,
+                )
+                .await
+                .unwrap()
+                .is_empty()
         );
     }
 
