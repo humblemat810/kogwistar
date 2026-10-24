@@ -35,6 +35,11 @@ from kogwistar.engine_core.graph_contracts import (
     build_graph_model_envelope,
     graph_model_class_for,
 )
+from kogwistar.engine_core.graph_mutation_contract import (
+    GraphMutationBatchPayload,
+    GraphMutationContractError,
+    validate_graph_mutation_batch,
+)
 from kogwistar.engine_core.indexing import IndexingSubsystem
 from kogwistar.engine_core.jobs import JobQueueItem, JobQueueSubsystem
 from kogwistar.engine_core.lifecycle import LifecycleSubsystem
@@ -181,6 +186,8 @@ __all__ = [
     "ExtractSubsystem",
     "ExtractionSchemaMode",
     "GraphKnowledgeEngine",
+    "GraphMutationBatchPayload",
+    "GraphMutationContractError",
     "GRAPH_MODEL_ENVELOPE_VERSION",
     "GraphModelAdapterError",
     "InMemoryBackend",
@@ -245,6 +252,7 @@ __all__ = [
     "get_atomic_mutation_capability",
     "build_graph_model_envelope",
     "graph_model_class_for",
+    "validate_graph_mutation_batch",
     "require_acl_protocols",
     "similarity_from_distance",
 ]
