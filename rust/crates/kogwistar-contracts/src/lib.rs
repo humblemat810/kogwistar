@@ -63,6 +63,37 @@ pub fn supported_graph_model_classes() -> Vec<&'static str> {
 
 pub const CONTRACT_VERSION: &str = "1.0.0";
 
+/// Versioned evidence that a response was produced by the native Rust path.
+///
+/// This is diagnostic metadata, not an authorization grant. Keeping its
+/// construction here prevents individual Rust services from silently drifting
+/// in the fields used to audit language-seam crossings.
+pub const NATIVE_SEAM_ATTESTATION_VERSION: u32 = 1;
+pub const RUST_NATIVE_IMPLEMENTATION_AUTHORITY: &str = "rust";
+
+pub fn attach_native_seam_attestation(value: &mut Value, implementation_authority: &str) {
+    let Some(object) = value.as_object_mut() else {
+        return;
+    };
+    object.insert(
+        "implementation_authority".to_owned(),
+        Value::String(implementation_authority.to_owned()),
+    );
+    object.insert(
+        "seam_attestation_version".to_owned(),
+        Value::from(NATIVE_SEAM_ATTESTATION_VERSION),
+    );
+    object.insert("seam_crossings".to_owned(), Value::Array(Vec::new()));
+}
+
+pub fn attach_rust_native_seam_attestation(value: &mut Value) {
+    attach_native_seam_attestation(value, RUST_NATIVE_IMPLEMENTATION_AUTHORITY);
+}
+
+pub fn attach_rust_native_executor_attestation(value: &mut Value) {
+    attach_native_seam_attestation(value, "rust-native");
+}
+
 #[derive(Debug, Error)]
 pub enum ContractError {
     #[error("invalid JSON contract payload: {0}")]

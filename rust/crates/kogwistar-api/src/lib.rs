@@ -17,8 +17,8 @@ use jsonwebtoken::{
 };
 use kogwistar_contracts::{
     DelegationAuthorityV1, GraphMutationBatchV1 as GraphMutationBatchInput,
-    GraphMutationV1 as GraphMutationInput, GraphNeighborsRequestV1, attenuate_capabilities,
-    graph_neighbors_request_from_str,
+    GraphMutationV1 as GraphMutationInput, GraphNeighborsRequestV1,
+    attach_rust_native_seam_attestation, attenuate_capabilities, graph_neighbors_request_from_str,
 };
 use kogwistar_runtime::{
     RECORDED_RUNTIME_CONTRACT_VERSION, RecordedRuntimeState, RecordedRuntimeTransition,
@@ -58,6 +58,11 @@ pub const FROZEN_MCP_TOOLS_JSON: &str = include_str!(concat!(env!("OUT_DIR"), "/
 const CYTOSCAPE_TEMPLATE: &str = include_str!(concat!(env!("OUT_DIR"), "/cytoscape.html"));
 const D3_TEMPLATE: &str = include_str!(concat!(env!("OUT_DIR"), "/d3.html"));
 const GO_TEMPLATE: &str = include_str!(concat!(env!("OUT_DIR"), "/go.html"));
+
+fn rust_native_attested(mut value: Value) -> Value {
+    attach_rust_native_seam_attestation(&mut value);
+    value
+}
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -5749,13 +5754,10 @@ impl PostgresRunApplicationService {
         let neighbors = graph_neighbors_from_records(rid, &nodes, &edges, doc_id);
         json_effect(
             StatusCode::OK,
-            json!({
-                "implementation_authority": "rust",
-                "seam_attestation_version": 1,
-                "seam_crossings": [],
+            rust_native_attested(json!({
                 "nodes": neighbors.nodes.into_iter().collect::<Vec<_>>(),
                 "edges": neighbors.edges.into_iter().collect::<Vec<_>>(),
-            }),
+            })),
         )
     }
 
@@ -5840,12 +5842,9 @@ impl PostgresRunApplicationService {
         };
         json_effect(
             StatusCode::OK,
-            json!({
-                "implementation_authority": "rust",
-                "seam_attestation_version": 1,
-                "seam_crossings": [],
+            rust_native_attested(json!({
                 "edges": graph_find_edges_from_records(&query, &nodes, &edges),
-            }),
+            })),
         )
     }
 
@@ -5938,12 +5937,9 @@ impl PostgresRunApplicationService {
         };
         json_effect(
             StatusCode::OK,
-            json!({
-                "implementation_authority": "rust",
-                "seam_attestation_version": 1,
-                "seam_crossings": [],
+            rust_native_attested(json!({
                 "path": graph_shortest_path_from_records(&query, &nodes, &edges),
-            }),
+            })),
         )
     }
 
@@ -6050,12 +6046,9 @@ impl PostgresRunApplicationService {
             .collect::<Vec<_>>();
         json_effect(
             StatusCode::OK,
-            json!({
-                "implementation_authority": "rust",
-                "seam_attestation_version": 1,
-                "seam_crossings": [],
+            rust_native_attested(json!({
                 "layers": layers,
-            }),
+            })),
         )
     }
 
@@ -8435,12 +8428,9 @@ impl PostgresRunApplicationService {
         match applied {
             Ok(results) => json_effect(
                 StatusCode::OK,
-                json!({
+                rust_native_attested(json!({
                     "contract_version": 1,
                     "atomic": true,
-                    "implementation_authority": "rust",
-                    "seam_attestation_version": 1,
-                    "seam_crossings": [],
                     "results": results.into_iter().map(|result| json!({
                         "event": {
                             "namespace": result.event.namespace,
@@ -8454,7 +8444,7 @@ impl PostgresRunApplicationService {
                         "inserted": result.inserted,
                         "mutated": result.mutated,
                     })).collect::<Vec<_>>(),
-                }),
+                })),
             ),
             Err(error) => effect_error(
                 StatusCode::CONFLICT,

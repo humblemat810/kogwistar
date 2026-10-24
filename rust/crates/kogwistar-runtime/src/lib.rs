@@ -4,7 +4,9 @@
 //! dependency.  A caller supplies a result that was already recorded by the
 //! authoritative worker.  The reducer validates and folds only durable state.
 
-use kogwistar_contracts::canonical_json;
+use kogwistar_contracts::{
+    NATIVE_SEAM_ATTESTATION_VERSION, attach_rust_native_executor_attestation, canonical_json,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
@@ -17,7 +19,8 @@ pub const WORKER_PROTOCOL_ASYNC_V2: &str = "async-v2";
 pub const RUST_NATIVE_EXECUTOR_TARGET: &str = "rust-native";
 pub const RUST_NATIVE_OPERATION_PREFIX: &str = "rust-native/";
 pub const RUST_NATIVE_OPERATION_SCHEMA_VERSION: u32 = 1;
-pub const RUST_NATIVE_SEAM_ATTESTATION_VERSION: u32 = 1;
+// Compatibility export retained for callers that used the runtime constant.
+pub const RUST_NATIVE_SEAM_ATTESTATION_VERSION: u32 = NATIVE_SEAM_ATTESTATION_VERSION;
 
 pub fn native_operation_name(operation: &str) -> Option<&str> {
     operation
@@ -198,23 +201,24 @@ pub fn execute_native_step(
         wait_reason: None,
         resume_payload: None,
         usage: None,
-        trace_events: vec![json!({
-            "schema_version": RUST_NATIVE_OPERATION_SCHEMA_VERSION,
-            "event": "runtime.native.step.completed",
-            "implementation_authority": RUST_NATIVE_EXECUTOR_TARGET,
-            "seam_attestation_version": RUST_NATIVE_SEAM_ATTESTATION_VERSION,
-            "seam_crossings": [],
-            "executor_target": RUST_NATIVE_EXECUTOR_TARGET,
-            "operation": request.operation,
-            "run_id": request.run_id,
-            "workflow_id": request.workflow_id,
-            "conversation_id": request.conversation_id,
-            "turn_node_id": request.turn_node_id,
-            "node_id": request.node_id,
-            "token_id": request.token_id,
-            "parent_token_id": request.parent_token_id,
-            "step_seq": request.step_seq,
-        })],
+        trace_events: vec![{
+            let mut trace = json!({
+                "schema_version": RUST_NATIVE_OPERATION_SCHEMA_VERSION,
+                "event": "runtime.native.step.completed",
+                "executor_target": RUST_NATIVE_EXECUTOR_TARGET,
+                "operation": request.operation,
+                "run_id": request.run_id,
+                "workflow_id": request.workflow_id,
+                "conversation_id": request.conversation_id,
+                "turn_node_id": request.turn_node_id,
+                "node_id": request.node_id,
+                "token_id": request.token_id,
+                "parent_token_id": request.parent_token_id,
+                "step_seq": request.step_seq,
+            });
+            attach_rust_native_executor_attestation(&mut trace);
+            trace
+        }],
     })
 }
 
