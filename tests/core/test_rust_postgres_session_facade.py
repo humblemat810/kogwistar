@@ -45,6 +45,28 @@ def test_postgres_session_nested_commit_uses_one_native_transaction(monkeypatch)
     ]
 
 
+def test_postgres_session_exposes_typed_graph_authority_capability(monkeypatch):
+    calls: list[str] = []
+
+    def fake_store_postgres(*, operation, **kwargs):
+        del kwargs
+        calls.append(operation["kind"])
+        return {
+            "level": "atomic_batch_with_index_jobs",
+            "single_mutation": True,
+            "atomic_index_jobs": True,
+        }
+
+    monkeypatch.setattr(
+        "kogwistar.engine_core.rust_postgres_session.store_postgres",
+        fake_store_postgres,
+    )
+    session = RustPostgresSession(dsn="postgresql://example/db", schema="test")
+
+    assert session.graph_authority_capability()["level"] == "atomic_batch_with_index_jobs"
+    assert calls == ["graph_authority_capability"]
+
+
 def test_postgres_session_rolls_back_and_rejects_raw_or_stale_writer(monkeypatch):
     calls: list[str] = []
 

@@ -66,6 +66,12 @@ class RustPostgresSession:
     def ensure_initialized(self) -> None:
         self.call("ensure_schema")
 
+    def graph_authority_capability(self) -> JsonObject:
+        result = self.call("graph_authority_capability")
+        if not isinstance(result, dict):
+            raise RuntimeError("native graph authority capability returned invalid data")
+        return cast(JsonObject, result)
+
     def close(self) -> None:
         if self._closed:
             return
@@ -140,6 +146,9 @@ class RustEnginePostgresMetaStore(RustEngineSQLite):
         if not isinstance(result, dict):
             raise RuntimeError("native graph mutation returned a non-object")
         return result
+
+    def graph_authority_capability(self) -> JsonObject:
+        return self.session.graph_authority_capability()
 
     def apply_graph_metadata_patch_mutation(
         self, **values: JsonValue
