@@ -10,6 +10,10 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from pydantic_extension.model_slicing.mixin import use_mode
 
+from ..implementation_selection import (
+    ImplementationSelectionSnapshot,
+    implementation_selection_bound,
+)
 from .async_compat import run_awaitable_blocking
 from .canonical_events import CanonicalEntityRevision, read_canonical_entity_revision
 from .models import Edge, Grounding, Node, Span
@@ -74,6 +78,13 @@ class IndexingSubsystem:
 
     _PHASE1_JOIN_INDEX_KINDS = ("node_docs", "node_refs", "edge_refs", "edge_endpoints")
 
+    @property
+    def _implementation_selection_snapshot(self) -> ImplementationSelectionSnapshot | None:
+        """Expose the owning engine snapshot to worker-boundary decorators."""
+
+        return getattr(self.engine, "_implementation_selection_snapshot", None)
+
+    @implementation_selection_bound
     def enqueue_index_job(
         self,
         *,
@@ -370,6 +381,7 @@ class IndexingSubsystem:
                 repaired += 1
         return repaired
 
+    @implementation_selection_bound
     def reconcile_indexes(
         self,
         *,
@@ -526,6 +538,7 @@ class IndexingSubsystem:
             namespace=namespace,
         )
 
+    @implementation_selection_bound
     def apply_index_job(
         self,
         *,

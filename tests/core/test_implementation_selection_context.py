@@ -19,6 +19,7 @@ from kogwistar._rust_bridge import (
 )
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.in_memory_backend import build_in_memory_backend
+from kogwistar.engine_core.indexing import IndexingSubsystem
 from kogwistar.implementation_selection import (
     capture_implementation_selection,
     implementation_selection_metadata,
@@ -175,6 +176,31 @@ def test_resolve_implementation_selection_rejects_split_authority() -> None:
             SimpleNamespace(_implementation_selection_snapshot=python_snapshot),
             SimpleNamespace(_implementation_selection_snapshot=rust_snapshot),
         )
+
+
+def test_indexing_boundary_uses_owning_engine_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Meta:
+        def enqueue_index_job(self, **_: object) -> str:
+            return runtime_implementation_mode()
+
+    snapshot = capture_implementation_selection()
+    engine = SimpleNamespace(
+        _implementation_selection_snapshot=snapshot,
+        _phase1_enable_index_jobs=True,
+        meta_sqlite=Meta(),
+        namespace="default",
+    )
+    subsystem = IndexingSubsystem(engine=engine)
+    monkeypatch.setenv("KOGWISTAR_IMPL_MODE", "rust")
+
+    assert subsystem.enqueue_index_job(
+        entity_kind="node",
+        entity_id="node-1",
+        index_kind="node_embedding",
+        op="UPSERT",
+    ) == "python"
 
 
 def test_graph_engine_captures_selectors_when_constructed(
