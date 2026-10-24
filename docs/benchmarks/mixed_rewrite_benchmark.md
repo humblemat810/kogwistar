@@ -870,7 +870,24 @@ concurrent profile. The runtime-matrix Dockerfile has an opt-in
 into the image and records the container CPU and memory ceilings in
 `endpoint-report.v1.json`.
 
-This is an execution path and contract check, not completed performance
-evidence yet. The target still needs a controlled Docker run and its report
-must show equal digests, verified limits, and comparable samples before the
-Rust rewrite decision can be updated.
+The first resource-matched Docker run completed on 2026-10-24 with CPython
+3.15.1 free-threaded, four CPU cores, an 8 GiB memory limit, two warm/sample
+cycles, and 100 logical items (300 operations per measured sample). The
+report is `kogwistar-resource-matched-endpoint-report/v1` and verified both
+the cgroup CPU and memory limits. The two modes produced the same final state
+digest:
+
+| Mode | Median elapsed | Median throughput | Median startup |
+| --- | ---: | ---: | ---: |
+| Python HTTP | 62.92 s | 4.77 ops/s | 555 ms |
+| Rust-native HTTP | 9.19 s | 32.66 ops/s | 341 ms |
+
+This is meaningful evidence that the narrow endpoint slice removes a large
+Python service/transport cost for this workload (about 6.9x higher measured
+throughput), while preserving the canonical graph result. It is still not a
+full-stack rewrite decision: the fixture is synthetic, the endpoint is a
+narrow benchmark server, and graph ACL, indexing, agent, PostgreSQL, replay,
+and production request paths remain outside this comparison. The raw report
+is intentionally kept in the ignored benchmark output directory rather than
+source control; rerun with `scripts/run_mixed_runtime_matrix.ps1
+-EndpointOnly -EndpointItems 100 -Samples 2` to reproduce it.
