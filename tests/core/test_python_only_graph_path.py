@@ -11,10 +11,11 @@ from tests.conftest import FakeEmbeddingFunction, build_fake_backend
 pytestmark = [pytest.mark.ci, pytest.mark.core]
 
 
+@pytest.mark.parametrize("explicit_python", [True, False], ids=["explicit", "legacy-default"])
 def test_python_only_graph_path_does_not_load_rust(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
+    monkeypatch: pytest.MonkeyPatch, tmp_path, explicit_python: bool
 ) -> None:
-    """The explicit Python path remains complete when the native loader is absent."""
+    """Python graph execution remains complete when the native loader is absent."""
 
     for selector in (
         "KOGWISTAR_IMPL_MODE",
@@ -25,7 +26,10 @@ def test_python_only_graph_path_does_not_load_rust(
         "KOGWISTAR_IMPL_RUNTIME",
         "KOGWISTAR_IMPL_SERVER",
     ):
-        monkeypatch.setenv(selector, "python")
+        if explicit_python:
+            monkeypatch.setenv(selector, "python")
+        else:
+            monkeypatch.delenv(selector, raising=False)
 
     def unavailable() -> None:
         raise RustExtensionUnavailableError("native loader must not be called")
