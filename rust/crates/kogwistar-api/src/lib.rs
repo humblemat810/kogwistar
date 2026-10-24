@@ -11239,6 +11239,10 @@ pub fn router_with_application(
         "/internal/graph/mutations",
         post(application_effect_handler),
     );
+    router = router.route(
+        "/internal/graph/neighbors",
+        post(application_effect_handler),
+    );
     for &(method, path) in FROZEN_OPENAPI_ROUTES {
         if (method == "GET"
             && matches!(
@@ -11275,7 +11279,7 @@ pub async fn serve(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::body::to_bytes;
+    use axum::body::{Body, to_bytes};
     use axum::http::Request;
     use tower::ServiceExt;
 
@@ -11354,6 +11358,46 @@ mod tests {
             })
             .await;
         assert_eq!(malformed.status, StatusCode::UNPROCESSABLE_ENTITY.as_u16());
+    }
+
+    #[tokio::test]
+    async fn router_exposes_graph_neighbor_effect_route() {
+        let service = Arc::new(
+            PostgresRunApplicationService::from_dsn(
+                "postgres://unused:unused@127.0.0.1:1/unused",
+                "graph_neighbor_router_contract",
+            )
+            .unwrap(),
+        );
+        let app = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: Vec::new(),
+                implementation: ImplementationSnapshot::default(),
+                auth: AuthConfig {
+                    key: Some("route-test-secret".to_owned()),
+                    ..AuthConfig::default()
+                },
+            },
+            service,
+        );
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/internal/graph/neighbors")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"rid":"n1"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // The route must reach the application authorization layer. A missing
+        // capability is a 403; a 404 would mean the transport seam is absent.
+        let status = response.status();
+        let body = to_bytes(response.into_body(), 4096).await.unwrap();
+        assert_eq!(status, StatusCode::FORBIDDEN, "body={:?}", body);
     }
 
     #[test]
