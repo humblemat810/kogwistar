@@ -34,6 +34,7 @@ and CI evidence rather than assigning one percentage to the whole port.
 | DL-09 | NOT STARTED | Prove event, projection, checkpoint, queue, and source-map reopen/replay in both directions under supported schema versions and backends. |
 | DL-10 | NOT STARTED | Prove idempotency, ambiguous-effect handling, cancellation, and resume across Python/Rust worker and PyO3 boundaries, including failures before/after commit and acknowledgement. |
 | DL-11 | NOT STARTED | Prove run/step/event/parent-span and principal provenance survives every seam and produces equivalent durable traces. |
+| DL-11A | PASS (Python runtime configuration evidence only) | Python sync/async workflow-run trace metadata now includes versioned `implementation_selection` (`schema_version=1`, `source=engine_construction`, all seven selector values). The runtime overwrites any stale planned-run value with its own captured configuration; the additive metadata is accepted by the existing `extra="allow"` contract. Evidence: `tests/runtime/test_runtime_parity_bridge_contract.py::test_runtime_parity_bridge_runtime_trace_events_metadata_shape`; combined with `tests/core/test_implementation_selection_context.py`: 11 passed on Windows CPython 3.13. This records configured selectors, not per-operation native/fallback execution. Rust-authority and standalone Rust server traces, step/event identity equivalence, and principal provenance remain unverified under DL-11. |
 
 ## Supported execution paths
 

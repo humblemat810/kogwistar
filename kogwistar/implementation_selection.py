@@ -8,6 +8,8 @@ from contextvars import ContextVar
 from functools import wraps
 from typing import ParamSpec, TypeAlias, TypeVar, cast
 
+from kogwistar.json_types import JsonObject
+
 _IMPLEMENTATION_ENV_NAMES = (
     "KOGWISTAR_IMPL_MODE",
     "KOGWISTAR_IMPL_CONTRACTS",
@@ -40,6 +42,17 @@ def implementation_env(name: str, default: str | None = None) -> str | None:
 def capture_implementation_selection() -> ImplementationSelectionSnapshot:
     """Capture all implementation selectors as one immutable configuration."""
     return tuple((name, os.getenv(name)) for name in _IMPLEMENTATION_ENV_NAMES)
+
+
+def implementation_selection_metadata(
+    snapshot: ImplementationSelectionSnapshot,
+) -> JsonObject:
+    """Project selector configuration to a versioned, non-secret trace object."""
+    return {
+        "schema_version": 1,
+        "source": "engine_construction",
+        "selectors": {name: value for name, value in snapshot},
+    }
 
 
 @contextmanager

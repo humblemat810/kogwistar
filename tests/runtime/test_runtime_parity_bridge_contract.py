@@ -2528,6 +2528,23 @@ def test_runtime_parity_bridge_runtime_trace_events_metadata_shape(monkeypatch):
         turn_node_id="turn-trace-meta",
         initial_state={},
     )
+    run_trace = next(
+        node
+        for node in sync_runtime.conversation_engine.nodes
+        if node.metadata.get("entity_type") == "workflow_run"
+    )
+    selection_trace = run_trace.metadata["implementation_selection"]
+    assert selection_trace["schema_version"] == 1
+    assert selection_trace["source"] == "engine_construction"
+    assert set(selection_trace["selectors"]) == {
+        "KOGWISTAR_IMPL_MODE",
+        "KOGWISTAR_IMPL_CONTRACTS",
+        "KOGWISTAR_IMPL_META_STORE",
+        "KOGWISTAR_IMPL_GRAPH_STORE",
+        "KOGWISTAR_IMPL_RUNTIME",
+        "KOGWISTAR_IMPL_SERVER",
+        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
+    }
     _sync_state, _async_trace = _run_async_trace_bridge(monkeypatch)
     async_emitted = []
     async_state, _ = _run_async_trace_bridge(monkeypatch)

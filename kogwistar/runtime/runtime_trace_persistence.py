@@ -7,6 +7,10 @@ from contextlib import AbstractContextManager
 from typing import Protocol
 
 from kogwistar.engine_core.models import Grounding, MentionVerification, Span
+from kogwistar.implementation_selection import (
+    ImplementationSelectionSnapshot,
+    implementation_selection_metadata,
+)
 from kogwistar.json_types import JsonObject, JsonValue
 from kogwistar.runtime.models import (
     StepRunResult,
@@ -29,6 +33,9 @@ class RuntimeTraceEngine(Protocol):
 class RuntimeTracePersistenceHost(Protocol):
     @property
     def conversation_engine(self) -> RuntimeTraceEngine: ...
+
+    @property
+    def _implementation_selection_snapshot(self) -> ImplementationSelectionSnapshot: ...
 
     def _trace_write_mode(self) -> AbstractContextManager[None]: ...
 
@@ -79,6 +86,9 @@ class RuntimeTracePersistenceMixin:
         for key, value in (run_metadata or {}).items():
             if key not in metadata and value is not None:
                 metadata[str(key)] = value
+        metadata["implementation_selection"] = implementation_selection_metadata(
+            self._implementation_selection_snapshot
+        )
         if metadata.get("parent_run_id"):
             metadata.setdefault(
                 "wf_invoked",
