@@ -466,6 +466,22 @@ pub trait ApplicationService: Send + Sync + 'static {
         rust_mcp_tool_supported(surface, name)
     }
 
+    /// Report which frozen HTTP operations this concrete service can execute.
+    ///
+    /// Transport registration is deliberately not used as evidence: the
+    /// default service is unavailable, and partially wired services must not
+    /// claim the capabilities of the complete route catalog.
+    fn supports_http_operation(&self, _method: &str, _path: &str) -> bool {
+        false
+    }
+
+    fn implemented_http_operations(&self) -> usize {
+        FROZEN_OPENAPI_ROUTES
+            .iter()
+            .filter(|(method, path)| self.supports_http_operation(method, path))
+            .count()
+    }
+
     fn execute(
         &self,
         request: ApiEffectRequest,
@@ -8852,6 +8868,10 @@ impl ApplicationService for PostgresRunApplicationService {
         self.store.graph_authority_capability()
     }
 
+    fn supports_http_operation(&self, method: &str, path: &str) -> bool {
+        !PENDING_SERVER_CUTOVER_ROUTES.contains(&(method, path))
+    }
+
     fn execute(
         &self,
         request: ApiEffectRequest,
@@ -8863,6 +8883,10 @@ impl ApplicationService for PostgresRunApplicationService {
 impl ApplicationService for SqliteRunApplicationService {
     fn supports_mcp_tool(&self, surface: &str, name: &str) -> bool {
         surface != "root" && rust_mcp_tool_supported(surface, name)
+    }
+
+    fn supports_http_operation(&self, method: &str, path: &str) -> bool {
+        !PENDING_SERVER_CUTOVER_ROUTES.contains(&(method, path))
     }
 
     fn execute(
@@ -11024,10 +11048,13 @@ async fn auth_logout_handler() -> Json<Value> {
 async fn health_handler(State(state): State<Arc<ServerState>>) -> Json<Value> {
     let mut value = health_response(&state.api.health);
     if let Some(object) = value.as_object_mut() {
+        let mut implementation = state.api.implementation.clone();
+        implementation.implemented_route_operations =
+            state.application.implemented_http_operations();
+        let effective_server_cutover_ready = implementation.effective_server_cutover_ready();
         object.insert(
             "implementation".to_owned(),
-            serde_json::to_value(&state.api.implementation)
-                .expect("implementation snapshot serializes"),
+            serde_json::to_value(&implementation).expect("implementation snapshot serializes"),
         );
         if let Some(implementation) = object
             .get_mut("implementation")
@@ -11035,7 +11062,7 @@ async fn health_handler(State(state): State<Arc<ServerState>>) -> Json<Value> {
         {
             implementation.insert(
                 "effective_server_cutover_ready".to_owned(),
-                json!(state.api.implementation.effective_server_cutover_ready()),
+                json!(effective_server_cutover_ready),
             );
         }
         let capability = state.application.graph_authority_capability();
@@ -11811,6 +11838,12 @@ mod tests {
 
         implementation.implemented_route_operations = implementation.frozen_route_operations;
         assert!(!implementation.effective_server_cutover_ready());
+    }
+
+    #[test]
+    fn unavailable_application_does_not_claim_registered_http_routes() {
+        let service = UnavailableApplicationService;
+        assert_eq!(service.implemented_http_operations(), 0);
     }
 
     #[test]
