@@ -2,14 +2,14 @@
 use kogwistar_contracts::EntityEventEnvelope;
 use kogwistar_store::{
     AcceptedIndexJobResult, AppendedEvent, AppliedGraphMutation, DistanceMetric, EntityEvent,
-    EventPruneStore, EventReadStore, EventWriteStore, GraphMutation, GraphMutationStore,
-    GraphProjectionRead, GraphProjectionVectorQuery, GraphReadStore, GraphRecord, GraphScope,
-    GraphWriteStore, IndexJob, IndexJobReadStore, IndexJobWriteStore, LaneMessageClaimFilter,
-    LaneMessageFilter, LaneMessageReadStore, LaneMessageWriteStore, MetadataFilter,
-    NamedProjection, NamedProjectionWrite, NewEntityEvent, NewIndexJob, NewProjectedLaneMessage,
-    ProjectedLaneMessage, ProjectionReadStore, ProjectionWriteStore, ReplayCursor, ServerRun,
-    ServerRunCreate, ServerRunEvent, ServerRunReadStore, ServerRunUpdate, ServerRunWriteStore,
-    StoreError, StoreResult, VectorMatch, VectorQuery, WorkflowDesignDelta,
+    EventPruneStore, EventReadStore, EventWriteStore, GraphAuthorityCapability, GraphMutation,
+    GraphMutationStore, GraphProjectionRead, GraphProjectionVectorQuery, GraphReadStore,
+    GraphRecord, GraphScope, GraphWriteStore, IndexJob, IndexJobReadStore, IndexJobWriteStore,
+    LaneMessageClaimFilter, LaneMessageFilter, LaneMessageReadStore, LaneMessageWriteStore,
+    MetadataFilter, NamedProjection, NamedProjectionWrite, NewEntityEvent, NewIndexJob,
+    NewProjectedLaneMessage, ProjectedLaneMessage, ProjectionReadStore, ProjectionWriteStore,
+    ReplayCursor, ServerRun, ServerRunCreate, ServerRunEvent, ServerRunReadStore, ServerRunUpdate,
+    ServerRunWriteStore, StoreError, StoreResult, VectorMatch, VectorQuery, WorkflowDesignDelta,
     WorkflowDesignDeltaWrite, WorkflowDesignHistoryReadStore, WorkflowDesignHistoryWriteStore,
     WorkflowDesignSnapshot, WorkflowDesignSnapshotWrite, integer_timestamp, timestamp_i64,
     validate_graph_mutation,
@@ -1293,6 +1293,10 @@ impl GraphWriteStore for InMemoryStore {
 }
 
 impl GraphMutationStore for InMemoryStore {
+    fn graph_authority_capability(&self) -> GraphAuthorityCapability {
+        GraphAuthorityCapability::SingleMutation
+    }
+
     async fn apply_graph_mutation(
         &self,
         mutation: GraphMutation,
@@ -1726,9 +1730,9 @@ fn now_ms() -> i64 {
 mod tests {
     use super::*;
     use kogwistar_store::{
-        GraphMutation, GraphMutationStore, GraphProjectionRead, GraphProjectionVectorQuery,
-        GraphRecord, GraphScope, ProjectionWriteStore, ServerRunReadStore, ServerRunWriteStore,
-        ShadowInspectable,
+        GraphAuthorityCapability, GraphMutation, GraphMutationStore, GraphProjectionRead,
+        GraphProjectionVectorQuery, GraphRecord, GraphScope, ProjectionWriteStore,
+        ServerRunReadStore, ServerRunWriteStore, ShadowInspectable,
     };
     use serde_json::{Value, json};
     use std::future::Future;
@@ -1745,6 +1749,14 @@ mod tests {
                 Poll::Pending => std::thread::yield_now(),
             }
         }
+    }
+
+    #[test]
+    fn graph_authority_capability_is_explicit_and_does_not_claim_atomic_jobs() {
+        let capability = InMemoryStore::new().graph_authority_capability();
+        assert_eq!(capability, GraphAuthorityCapability::SingleMutation);
+        assert!(capability.supports_single_mutation());
+        assert!(!capability.supports_atomic_index_jobs());
     }
 
     fn event(event_id: &str, entity_id: &str) -> NewEntityEvent {

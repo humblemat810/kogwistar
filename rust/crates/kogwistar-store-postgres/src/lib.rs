@@ -18,11 +18,11 @@ use kogwistar_runtime::{
 use kogwistar_store::{
     AcceptedIndexJobResult, AppendedEvent, AppliedGraphMutation, AuthIdentityStore, AuthUser,
     EntityEvent, EntityRebuildRequest, EntityRecoveryReport, EntityRecoveryRequest,
-    EventPruneStore, EventReadStore, EventWriteStore, ExternalIdentity, GraphMutation,
-    GraphMutationBatch, GraphMutationStore, GraphProjectionRead, GraphProjectionVectorQuery,
-    GraphRecord, IndexJob, IndexJobReadStore, IndexJobWriteStore, LaneMessageClaimFilter,
-    LaneMessageFilter, LaneMessageReadStore, LaneMessageWriteStore, NamedProjection,
-    NamedProjectionWrite, NewEntityEvent, NewIndexJob, NewProjectedLaneMessage,
+    EventPruneStore, EventReadStore, EventWriteStore, ExternalIdentity, GraphAuthorityCapability,
+    GraphMutation, GraphMutationBatch, GraphMutationStore, GraphProjectionRead,
+    GraphProjectionVectorQuery, GraphRecord, IndexJob, IndexJobReadStore, IndexJobWriteStore,
+    LaneMessageClaimFilter, LaneMessageFilter, LaneMessageReadStore, LaneMessageWriteStore,
+    NamedProjection, NamedProjectionWrite, NewEntityEvent, NewIndexJob, NewProjectedLaneMessage,
     ProjectedLaneMessage, ProjectionReadStore, ProjectionWriteStore,
     RUNTIME_CURRENT_STATE_NAMESPACE, ReplayCursor, ResolveExternalIdentity, ServerRun,
     ServerRunCreate, ServerRunEvent, ServerRunReadStore, ServerRunUpdate, ServerRunWriteStore,
@@ -2712,6 +2712,10 @@ impl EventPruneStore for PostgresStore {
 }
 
 impl GraphMutationStore for PostgresStore {
+    fn graph_authority_capability(&self) -> GraphAuthorityCapability {
+        GraphAuthorityCapability::AtomicBatchWithIndexJobs
+    }
+
     async fn apply_graph_mutation(
         &self,
         mutation: GraphMutation,

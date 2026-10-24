@@ -617,6 +617,29 @@ pub struct AppliedGraphMutation {
     pub mutated: bool,
 }
 
+/// Declared graph-authority level for a store implementation.
+///
+/// This is intentionally explicit and ordered by authority. A caller must
+/// not infer graph support from an unrelated metadata or event API; the
+/// default remains unsupported so older backends fail closed.
+#[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
+pub enum GraphAuthorityCapability {
+    #[default]
+    Unsupported,
+    SingleMutation,
+    AtomicBatchWithIndexJobs,
+}
+
+impl GraphAuthorityCapability {
+    pub const fn supports_single_mutation(self) -> bool {
+        !matches!(self, Self::Unsupported)
+    }
+
+    pub const fn supports_atomic_index_jobs(self) -> bool {
+        matches!(self, Self::AtomicBatchWithIndexJobs)
+    }
+}
+
 /// Read request for the materialized Python pgvector graph tables.  Metadata
 /// predicates retain exact JSON equality semantics; scope predicates are
 /// applied in addition to these user-visible filters.
@@ -642,6 +665,12 @@ pub struct GraphProjectionVectorQuery {
 /// can make both durable together.  The existing `GraphWriteStore` remains a
 /// lightweight, non-evented Phase-2 capability.
 pub trait GraphMutationStore: Send + Sync {
+    /// Declare the strongest graph authority this store can actually provide.
+    /// The default is unsupported for backward-compatible, fail-closed
+    /// adoption by existing implementations.
+    fn graph_authority_capability(&self) -> GraphAuthorityCapability {
+        GraphAuthorityCapability::Unsupported
+    }
     fn apply_graph_mutation(
         &self,
         mutation: GraphMutation,
