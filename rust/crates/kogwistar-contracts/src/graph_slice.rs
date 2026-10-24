@@ -313,6 +313,71 @@ mod tests {
     }
 
     #[test]
+    fn list_item_projection_matches_recursive_pydantic_slice_shape() {
+        let nested = GraphSliceManifestV1 {
+            schema_version: GRAPH_SLICE_MANIFEST_VERSION,
+            model_name: Some("Nested".to_owned()),
+            retain_unlisted_modes: BTreeSet::new(),
+            fields: BTreeMap::from([
+                (
+                    "visible".to_owned(),
+                    rule(&[GraphSliceMode::Backend, GraphSliceMode::LlmIn]),
+                ),
+                ("secret".to_owned(), rule(&[GraphSliceMode::Backend])),
+            ]),
+        };
+        let manifest = GraphSliceManifestV1::new(BTreeMap::from([(
+            "items".to_owned(),
+            GraphSliceFieldV1 {
+                modes: BTreeSet::from([GraphSliceMode::Backend, GraphSliceMode::LlmIn]),
+                child: Some(Box::new(nested)),
+                child_location: GraphSliceChildLocation::Items,
+            },
+        )]));
+
+        let payload = serde_json::json!({
+            "items": [
+                {"visible": "one", "secret": "hidden"},
+                {"visible": "two", "secret": "hidden"}
+            ]
+        });
+        assert_eq!(
+            manifest.project(&payload, GraphSliceMode::LlmIn).unwrap(),
+            serde_json::json!({
+                "items": [{"visible": "one"}, {"visible": "two"}]
+            })
+        );
+        assert_eq!(
+            manifest.project(&payload, GraphSliceMode::Backend).unwrap(),
+            payload
+        );
+    }
+
+    #[test]
+    fn map_key_projection_preserves_unmodeled_values() {
+        let nested = GraphSliceManifestV1 {
+            schema_version: GRAPH_SLICE_MANIFEST_VERSION,
+            model_name: Some("Key".to_owned()),
+            retain_unlisted_modes: BTreeSet::new(),
+            fields: BTreeMap::from([("value".to_owned(), rule(&[GraphSliceMode::Llm]))]),
+        };
+        let manifest = GraphSliceManifestV1::new(BTreeMap::from([(
+            "items".to_owned(),
+            GraphSliceFieldV1 {
+                modes: BTreeSet::from([GraphSliceMode::Llm]),
+                child: Some(Box::new(nested)),
+                child_location: GraphSliceChildLocation::Keys,
+            },
+        )]));
+
+        let payload = serde_json::json!({"items": {"alpha": "kept", "beta": "also kept"}});
+        assert_eq!(
+            manifest.project(&payload, GraphSliceMode::Llm).unwrap(),
+            payload
+        );
+    }
+
+    #[test]
     fn invalid_manifest_version_fails_closed() {
         let manifest = GraphSliceManifestV1 {
             schema_version: GRAPH_SLICE_MANIFEST_VERSION + 1,
