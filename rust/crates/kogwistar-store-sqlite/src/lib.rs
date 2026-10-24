@@ -4849,6 +4849,7 @@ mod tests {
     use super::*;
     use std::future::Future;
     use std::pin::pin;
+    use std::process::{Command, Stdio};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Barrier};
     use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
@@ -4867,6 +4868,52 @@ mod tests {
     fn store(label: &str) -> (SqliteStore, PathBuf) {
         let path = database_path(label);
         (SqliteStore::open(&path).unwrap(), path)
+    }
+
+    #[test]
+    fn standalone_rust_process_cannot_open_an_authority_owned_database() {
+        let Ok(path) = std::env::var("KOGWISTAR_SQLITE_LOCK_CHILD_PATH") else {
+            let path = database_path("cross-process-authority");
+            let ready_path = PathBuf::from(format!("{}.ready", path.display()));
+            let mut child = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "tests::standalone_rust_process_cannot_open_an_authority_owned_database",
+                    "--nocapture",
+                ])
+                .env("KOGWISTAR_SQLITE_LOCK_CHILD_PATH", &path)
+                .env("KOGWISTAR_SQLITE_LOCK_CHILD_READY", &ready_path)
+                .stdin(Stdio::piped())
+                .spawn()
+                .unwrap();
+            for _ in 0..50 {
+                if ready_path.exists() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            assert!(
+                ready_path.exists(),
+                "child did not acquire SQLite authority"
+            );
+            let error = SqliteStore::open(&path).unwrap_err();
+            assert!(matches!(error, SqliteStoreError::AuthorityConflict { .. }));
+            drop(child.stdin.take());
+            assert!(child.wait().unwrap().success());
+            let _ = fs::remove_file(&path);
+            let _ = fs::remove_file(&ready_path);
+            let _ = fs::remove_file(format!("{}.kogwistar-authority.lock", path.display()));
+            return;
+        };
+
+        let path = PathBuf::from(path);
+        let _store = SqliteStore::open(&path).unwrap();
+        fs::write(
+            std::env::var("KOGWISTAR_SQLITE_LOCK_CHILD_READY").unwrap(),
+            b"ready",
+        )
+        .unwrap();
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input).unwrap();
     }
 
     #[test]
