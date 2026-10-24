@@ -66,3 +66,12 @@ def test_backend_manifest_projection_is_lossless_for_known_model() -> None:
     assert projected == expected
     assert manifest["schema_version"] == 1
     assert manifest["model_name"] == "Node"
+
+
+def test_manifest_cache_returns_defensive_deterministic_copies() -> None:
+    first = build_slice_manifest(Node)
+    first["fields"]["label"]["modes"].clear()
+
+    second = build_slice_manifest(Node)
+    assert second["fields"]["label"]["modes"]
+    assert second == build_slice_manifest(Node)

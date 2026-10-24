@@ -7,6 +7,8 @@ never changes the model or canonical storage payload.
 
 from __future__ import annotations
 
+from copy import deepcopy
+from functools import lru_cache
 from typing import Annotated, Any, get_args, get_origin, get_type_hints
 
 from pydantic import BaseModel
@@ -55,7 +57,7 @@ def _excluded_modes(annotation: Any) -> set[str]:
     }
 
 
-def build_slice_manifest(
+def _build_slice_manifest(
     model: type[ModeSlicingMixin],
     *,
     model_name: str | None = None,
@@ -95,7 +97,7 @@ def build_slice_manifest(
         rule: dict[str, Any] = {"modes": sorted(modes)}
         nested = _nested_model(annotation)
         if nested is not None and nested not in (*_seen, model):
-            rule["child"] = build_slice_manifest(
+            rule["child"] = _build_slice_manifest(
                 nested,
                 model_name=nested.__name__,
                 _seen=(*_seen, model),
@@ -108,6 +110,34 @@ def build_slice_manifest(
         "retain_unlisted_modes": ["backend"],
         "fields": fields,
     }
+
+
+@lru_cache(maxsize=256)
+def _cached_slice_manifest(
+    model: type[ModeSlicingMixin], model_name: str | None
+) -> dict[str, Any]:
+    """Cache immutable-by-convention schema work for the process lifetime."""
+
+    return _build_slice_manifest(model, model_name=model_name)
+
+
+def build_slice_manifest(
+    model: type[ModeSlicingMixin],
+    *,
+    model_name: str | None = None,
+    _seen: tuple[type[ModeSlicingMixin], ...] = (),
+) -> dict[str, Any]:
+    """Return a defensive copy of the deterministic field-slice manifest.
+
+    Model classes are schema objects for the lifetime of a Python process. The
+    cache avoids repeating recursive annotation inspection at language seams,
+    while the copy prevents a caller from mutating a later projection.
+    Recursive calls use the uncached builder so cycle handling remains explicit.
+    """
+
+    if _seen:
+        return _build_slice_manifest(model, model_name=model_name, _seen=_seen)
+    return deepcopy(_cached_slice_manifest(model, model_name))
 
 
 def project_with_manifest(
