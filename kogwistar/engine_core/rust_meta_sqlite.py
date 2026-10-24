@@ -169,7 +169,7 @@ class RustEngineSQLite:
         with sqlite_execution_context("rust"):
             current = self._transaction_id.get()
             if current is not None:
-                yield _RustTransactionToken(current)
+                yield _RustTransactionToken(current, self._authority_id)
                 return
             transaction_id = uuid.uuid4().hex
             token = self._transaction_id.set(transaction_id)
