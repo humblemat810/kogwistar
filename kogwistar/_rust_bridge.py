@@ -9,6 +9,7 @@ from importlib import import_module
 from typing import Any, Protocol, TypeVar, cast
 
 from kogwistar.json_types import JsonObject, JsonValue
+from kogwistar.implementation_selection import implementation_env
 from kogwistar.runtime.strict_json import normalize_json_value
 
 
@@ -84,6 +85,13 @@ def _rust_json_payload(
 def _exception_code(exc: BaseException) -> str | None:
     code = getattr(exc, "code", None)
     return code if isinstance(code, str) else None
+
+
+def _implementation_setting(name: str, *, fallback: str | None = None) -> str:
+    value = implementation_env(name)
+    if value is None and fallback is not None:
+        value = implementation_env(fallback)
+    return "python" if value is None else value
 
 
 def store_sqlite(
@@ -209,8 +217,8 @@ _MISSING_PYTHON_RESULT = object()
 
 
 def contract_implementation_mode() -> str:
-    mode = os.getenv(
-        "KOGWISTAR_IMPL_CONTRACTS", os.getenv("KOGWISTAR_IMPL_MODE", "python")
+    mode = _implementation_setting(
+        "KOGWISTAR_IMPL_CONTRACTS", fallback="KOGWISTAR_IMPL_MODE"
     ).strip().lower()
     if mode not in {"python", "shadow", "rust"}:
         raise ValueError(
@@ -221,8 +229,8 @@ def contract_implementation_mode() -> str:
 
 
 def runtime_implementation_mode() -> str:
-    mode = os.getenv(
-        "KOGWISTAR_IMPL_RUNTIME", os.getenv("KOGWISTAR_IMPL_MODE", "python")
+    mode = _implementation_setting(
+        "KOGWISTAR_IMPL_RUNTIME", fallback="KOGWISTAR_IMPL_MODE"
     ).strip().lower()
     if mode not in {"python", "shadow", "rust"}:
         raise ValueError(
@@ -233,7 +241,7 @@ def runtime_implementation_mode() -> str:
 
 
 def _store_implementation_mode(*, env_name: str) -> str:
-    mode = os.getenv(env_name, os.getenv("KOGWISTAR_IMPL_MODE", "python")).strip().lower()
+    mode = _implementation_setting(env_name, fallback="KOGWISTAR_IMPL_MODE").strip().lower()
     if mode not in {"python", "shadow", "rust"}:
         raise ValueError(
             f"{env_name} must be one of: python, shadow, rust; got {mode!r}"
@@ -253,7 +261,7 @@ def meta_store_implementation_mode() -> str:
 
 def postgres_authority_implementation_mode() -> str:
     """Select coordinated PostgreSQL authority independently from SQLite meta."""
-    mode = os.getenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "python").strip().lower()
+    mode = _implementation_setting("KOGWISTAR_IMPL_POSTGRES_AUTHORITY").strip().lower()
     if mode not in {"python", "rust"}:
         raise ValueError(
             "KOGWISTAR_IMPL_POSTGRES_AUTHORITY must be one of: python, rust; "
@@ -263,8 +271,8 @@ def postgres_authority_implementation_mode() -> str:
 
 
 def server_implementation_mode() -> str:
-    mode = os.getenv(
-        "KOGWISTAR_IMPL_SERVER", os.getenv("KOGWISTAR_IMPL_MODE", "python")
+    mode = _implementation_setting(
+        "KOGWISTAR_IMPL_SERVER", fallback="KOGWISTAR_IMPL_MODE"
     ).strip().lower()
     if mode not in {"python", "rust"}:
         raise ValueError(

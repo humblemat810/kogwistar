@@ -19,6 +19,7 @@ from typing import (
 )
 
 from kogwistar.engine_core.sqlite_context import sqlite_execution_bound
+from kogwistar.implementation_selection import implementation_selection_bound
 from kogwistar.json_types import JsonObject, JsonValue
 
 from .base_runtime import (
@@ -205,6 +206,7 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
     def sync_runtime(self) -> ThreadedWorkflowRuntime:
         return self._sync_runtime
 
+    @implementation_selection_bound
     @sqlite_execution_bound("workflow_engine", "conversation_engine")
     async def run(
         self,

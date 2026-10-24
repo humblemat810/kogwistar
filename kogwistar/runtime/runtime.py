@@ -17,6 +17,7 @@ from typing import (
 )
 
 from kogwistar.engine_core.sqlite_context import sqlite_execution_bound
+from kogwistar.implementation_selection import implementation_selection_bound
 from kogwistar.cdc.sqlite_sink import _get_shared_sqlite_sink
 from kogwistar.id_provider import stable_id
 from kogwistar.json_types import JsonObject, JsonValue
@@ -387,6 +388,7 @@ class WorkflowRuntime(
         )
 
 
+    @implementation_selection_bound
     @sqlite_execution_bound("workflow_engine", "conversation_engine")
     def run(
         self,
