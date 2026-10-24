@@ -74,6 +74,8 @@ pub enum GraphSliceError {
     PayloadMustBeObject,
     #[error("graph slice manifest contains an empty field name")]
     EmptyFieldName,
+    #[error("unlisted graph fields may only be retained in backend mode")]
+    UnlistedFieldsOutsideBackend,
 }
 
 impl GraphSliceManifestV1 {
@@ -89,6 +91,13 @@ impl GraphSliceManifestV1 {
     pub fn project(&self, payload: &Value, mode: GraphSliceMode) -> Result<Value, GraphSliceError> {
         if self.schema_version != GRAPH_SLICE_MANIFEST_VERSION {
             return Err(GraphSliceError::UnsupportedVersion(self.schema_version));
+        }
+        if self
+            .retain_unlisted_modes
+            .iter()
+            .any(|retained| *retained != GraphSliceMode::Backend)
+        {
+            return Err(GraphSliceError::UnlistedFieldsOutsideBackend);
         }
         for name in self.fields.keys() {
             if name.is_empty() {
@@ -230,5 +239,20 @@ mod tests {
             manifest.project(&serde_json::json!({}), GraphSliceMode::LlmIn),
             Err(GraphSliceError::UnsupportedVersion(_))
         ));
+    }
+
+    #[test]
+    fn unlisted_fields_cannot_be_retained_in_model_visible_modes() {
+        let manifest = GraphSliceManifestV1 {
+            schema_version: GRAPH_SLICE_MANIFEST_VERSION,
+            model_name: Some("GraphEntity".to_owned()),
+            retain_unlisted_modes: BTreeSet::from([GraphSliceMode::Llm]),
+            fields: BTreeMap::new(),
+        };
+
+        assert_eq!(
+            manifest.project(&serde_json::json!({"secret": true}), GraphSliceMode::Llm),
+            Err(GraphSliceError::UnlistedFieldsOutsideBackend)
+        );
     }
 }
