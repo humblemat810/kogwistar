@@ -6,6 +6,7 @@ import pytest
 from pydantic_extension.model_slicing.mixin import ModeSlicingMixin
 
 from kogwistar._rust_bridge import project_graph_model_slice, project_graph_model_slices
+from kogwistar._rust_bridge import graph_model_capability_profiles
 from kogwistar.acl import models as acl_models
 from kogwistar.conversation import models as conversation_models
 from kogwistar.engine_core import graph_contracts
@@ -240,6 +241,25 @@ def test_built_rust_extension_projects_python_slice_envelope() -> None:
             assert result["mode"] == mode
             expected = project_with_manifest(type(model), model, mode)
             assert result["payload"] == expected, mode
+
+
+@pytest.mark.requires_rust
+def test_native_capability_report_matches_corrected_doc_node_profile() -> None:
+    pytest.importorskip("kogwistar._rust")
+    profiles = graph_model_capability_profiles()
+
+    assert len(profiles) == 26
+    doc_node = next(profile for profile in profiles if profile["model_class"] == "doc_node")
+    assert doc_node == {
+        "schema_version": 1,
+        "model_class": "doc_node",
+        "entity_kind": "node",
+        "graph_entity": True,
+        "edge_entity": False,
+        "metadata": False,
+        "lifecycle": False,
+        "level": False,
+    }
 
 
 def test_python_slice_envelope_accepts_all_extension_modes() -> None:
