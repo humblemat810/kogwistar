@@ -11293,6 +11293,36 @@ mod tests {
         assert!(parse_graph_neighbors_request(br#"{"rid":""}"#).is_err());
     }
 
+    #[tokio::test]
+    async fn graph_neighbor_route_authorizes_before_storage_access() {
+        let service = PostgresRunApplicationService::from_dsn(
+            "postgres://unused:unused@127.0.0.1:1/unused",
+            "graph_neighbor_contract",
+        )
+        .unwrap();
+        let denied = service
+            .graph_neighbors_effect(&ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/internal/graph/neighbors".to_owned(),
+                body: br#"{"rid":"n1"}"#.to_vec(),
+                principal: json!({"sub":"alice","capabilities":[]}),
+            })
+            .await;
+        assert_eq!(denied.status, StatusCode::FORBIDDEN.as_u16());
+
+        let malformed = service
+            .graph_neighbors_effect(&ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/internal/graph/neighbors".to_owned(),
+                body: br#"{"rid":"n1","unknown":true}"#.to_vec(),
+                principal: json!({"sub":"alice","capabilities":["read_graph"]}),
+            })
+            .await;
+        assert_eq!(malformed.status, StatusCode::UNPROCESSABLE_ENTITY.as_u16());
+    }
+
     #[test]
     fn native_runtime_routing_requires_explicit_operation_prefix() {
         assert_eq!(native_operation_name("rust-native/noop"), Some("noop"));
