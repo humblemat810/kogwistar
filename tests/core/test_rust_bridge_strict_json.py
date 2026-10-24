@@ -4,7 +4,11 @@ from typing import Any
 
 import pytest
 
-from kogwistar._rust_bridge import RustParityError, api_health
+from kogwistar._rust_bridge import (
+    RustExtensionUnavailableError,
+    RustParityError,
+    api_health,
+)
 
 pytestmark = [pytest.mark.ci, pytest.mark.core]
 
@@ -50,3 +54,31 @@ def test_rust_bridge_preserves_valid_json_payload_shape(
         payload={"service": "wiki", "enabled": True}, python_value={"ok": False}
     ) == {"ok": True}
     assert extension.payloads == ['{"service":"wiki","enabled":true}']
+
+
+def test_python_server_mode_keeps_legacy_path_without_loading_rust(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_SERVER", "python")
+
+    def unavailable() -> None:
+        raise RustExtensionUnavailableError("extension intentionally unavailable")
+
+    monkeypatch.setattr("kogwistar._rust_bridge._load_extension", unavailable)
+    expected = {"ok": True, "implementation": "python"}
+
+    assert api_health(payload={}, python_value=expected) is expected
+
+
+def test_selected_rust_server_fails_closed_without_python_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_SERVER", "rust")
+
+    def unavailable() -> None:
+        raise RustExtensionUnavailableError("extension intentionally unavailable")
+
+    monkeypatch.setattr("kogwistar._rust_bridge._load_extension", unavailable)
+
+    with pytest.raises(RustExtensionUnavailableError, match="intentionally unavailable"):
+        api_health(payload={}, python_value={"ok": True})
