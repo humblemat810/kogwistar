@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 import pytest
 
+from kogwistar._rust_bridge import RustExtensionUnavailableError
 from kogwistar.conversation.resolvers import default_resolver
 from kogwistar.engine_core import GraphKnowledgeEngine
 from kogwistar.engine_core.in_memory_backend import build_in_memory_backend
@@ -821,6 +822,59 @@ def test_async_runtime_dispatches_frozen_operation_version(tmp_path, monkeypatch
 
     assert out.status == "succeeded"
     assert out.final_state["selected"] == "historical-v1"
+
+
+def test_async_runtime_legacy_python_default_completes_without_native_loader(
+    tmp_path, monkeypatch
+):
+    """Async legacy runtime selection must not acquire a Rust dependency implicitly."""
+
+    for selector in (
+        "KOGWISTAR_IMPL_MODE",
+        "KOGWISTAR_IMPL_CONTRACTS",
+        "KOGWISTAR_IMPL_GRAPH_STORE",
+        "KOGWISTAR_IMPL_META_STORE",
+        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
+        "KOGWISTAR_IMPL_RUNTIME",
+        "KOGWISTAR_IMPL_SERVER",
+    ):
+        monkeypatch.delenv(selector, raising=False)
+
+    def unavailable() -> None:
+        raise RustExtensionUnavailableError("native loader must not be called")
+
+    monkeypatch.setattr("kogwistar._rust_bridge._load_extension", unavailable)
+    workflow_id = "wf-async-legacy-python-default"
+    _patch_single_step_design(monkeypatch, workflow_id=workflow_id, op="compute")
+    resolver = AsyncMappingStepResolver()
+
+    @resolver.register("compute")
+    async def _compute(_ctx):
+        return RunSuccess(
+            conversation_node_id=None,
+            state_update=[("u", {"implementation": "python-default"})],
+        )
+
+    runtime = AsyncWorkflowRuntime(
+        workflow_engine=object(),
+        conversation_engine=_lane_runtime_engine(tmp_path / "conversation"),
+        step_resolver=resolver,
+        predicate_registry={},
+        trace=True,
+    )
+
+    out = asyncio.run(
+        runtime.run(
+            workflow_id=workflow_id,
+            conversation_id="conv-async-legacy-python-default",
+            turn_node_id="turn-async-legacy-python-default",
+            initial_state={},
+            run_id="run-async-legacy-python-default",
+        )
+    )
+
+    assert out.status == "succeeded"
+    assert out.final_state["implementation"] == "python-default"
 
 
 def test_async_runtime_resolver_send_lane_message_appends_run_registry_event(
