@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "source": "python_runtime_state_update_contract",
+  "cases": [
+    {
+      "name": "ordered_u_a_e_fold",
+      "state": {
+        "items": ["seed"],
+        "keep": {"v": 1}
+      },
+      "state_update": [
+        ["u", {"answer": 42}],
+        ["a", {"items": "first"}],
+        ["e", {"items": ["second", "third"]}]
+      ],
+      "update": null,
+      "state_schema": {},
+      "expected": {
+        "answer": 42,
+        "items": ["seed", "first", "second", "third"],
+        "keep": {"v": 1}
+      }
+    },
+    {
+      "name": "schema_append_and_replace",
+      "state": {
+        "events": ["old"],
+        "status": "queued"
+      },
+      "state_update": [],
+      "update": {
+        "events": ["new", "done"],
+        "status": "succeeded"
+      },
+      "state_schema": {"events": "a"},
+      "expected": {
+        "events": ["old", "new", "done"],
+        "status": "succeeded"
+      }
+    },
+    {
+      "name": "empty_delta_preserves_state",
+      "state": {
+        "nested": {"stable": true},
+        "items": [1, 2]
+      },
+      "state_update": [],
+      "update": null,
+      "state_schema": {},
+      "expected": {
+        "nested": {"stable": true},
+        "items": [1, 2]
+      }
+    }
+  ]
+}

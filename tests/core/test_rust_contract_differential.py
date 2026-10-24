@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import math
 import random
@@ -23,6 +24,11 @@ pytestmark = [pytest.mark.ci, pytest.mark.core]
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = json.loads(
     (ROOT / "contracts" / "golden" / "deterministic-primitives.json").read_text(
+        encoding="utf-8"
+    )
+)
+STATE_UPDATE_FIXTURE = json.loads(
+    (ROOT / "contracts" / "golden" / "runtime-state-update-v1.json").read_text(
         encoding="utf-8"
     )
 )
@@ -188,6 +194,67 @@ def test_runtime_state_reducer_parity_idempotency_and_invalid_inputs(monkeypatch
         apply_state_update_inplace({}, [("e", {"items": 1})])
     with pytest.raises(AttributeError):
         apply_state_update_inplace({"items": 1}, [("a", {"items": "x"})])
+
+
+@pytest.mark.parametrize("mode", ["shadow", "rust"])
+def test_runtime_state_reducer_matches_shared_python_golden(
+    monkeypatch, mode: str
+) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_RUNTIME", mode)
+    assert STATE_UPDATE_FIXTURE["schema_version"] == 1
+    for case in STATE_UPDATE_FIXTURE["cases"]:
+        state = copy.deepcopy(case["state"])
+        apply_state_update_inplace(
+            state,
+            copy.deepcopy(case["state_update"]),
+            copy.deepcopy(case["update"]),
+            state_schema=copy.deepcopy(case["state_schema"]),
+        )
+        assert state == case["expected"], f"case {case['name']} in {mode} mode"
+
+
+def test_runtime_state_reducer_seeded_differential_sweep(monkeypatch) -> None:
+    rng = random.Random(20261024)
+
+    for sample in range(128):
+        initial_state: dict[str, Any] = {
+            "items": [sample, "seed"],
+            "events": [{"sequence": sample}],
+            "current": sample,
+        }
+        if sample % 2:
+            state_update = [
+                ("u", {"current": rng.randint(-10_000, 10_000)}),
+                ("a", {"events": {"sequence": sample, "kind": "append"}}),
+                ("e", {"items": [rng.randint(-100, 100) for _ in range(sample % 7)]}),
+            ]
+            update = None
+            state_schema: dict[str, str] = {}
+        else:
+            state_update = []
+            update = {
+                "events": [rng.randint(-100, 100) for _ in range(sample % 5)],
+                "current": rng.randint(-10_000, 10_000),
+            }
+            state_schema = {"events": "a"}
+
+        python_state = copy.deepcopy(initial_state)
+        monkeypatch.setenv("KOGWISTAR_IMPL_RUNTIME", "python")
+        apply_state_update_inplace(
+            python_state,
+            copy.deepcopy(state_update),
+            copy.deepcopy(update),
+            state_schema=copy.deepcopy(state_schema),
+        )
+        rust_state = copy.deepcopy(initial_state)
+        monkeypatch.setenv("KOGWISTAR_IMPL_RUNTIME", "rust")
+        apply_state_update_inplace(
+            rust_state,
+            copy.deepcopy(state_update),
+            copy.deepcopy(update),
+            state_schema=copy.deepcopy(state_schema),
+        )
+        assert rust_state == python_state, f"sample {sample} differs between reducers"
 
 
 @pytest.mark.parametrize("mode", ["shadow", "rust"])

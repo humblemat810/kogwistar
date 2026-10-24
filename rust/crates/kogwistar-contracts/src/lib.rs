@@ -1533,6 +1533,28 @@ mod tests {
         }
     }
 
+    #[test]
+    fn runtime_state_update_matches_shared_python_golden() {
+        let fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/runtime-state-update-v1.json"
+        )))
+        .expect("valid shared runtime state-update fixture");
+        assert_eq!(fixture["schema_version"], 1);
+        for case in fixture["cases"].as_array().unwrap() {
+            let request = serde_json::json!({
+                "state": case["state"],
+                "state_update": case["state_update"],
+                "update": case["update"],
+                "state_schema": case["state_schema"]
+            });
+            let result: Value =
+                serde_json::from_str(&apply_state_update_from_str(&request.to_string()).unwrap())
+                    .unwrap();
+            assert_eq!(result, case["expected"], "case {}", case["name"]);
+        }
+    }
+
     proptest! {
         #[test]
         fn short_id_json_round_trip_preserves_order(
