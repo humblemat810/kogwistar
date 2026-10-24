@@ -5601,6 +5601,23 @@ pub struct PostgresRunApplicationService {
     capabilities: SharedCapabilityState,
 }
 
+#[derive(Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct GraphNeighborsRequest {
+    rid: String,
+    #[serde(default)]
+    doc_id: Option<String>,
+}
+
+fn parse_graph_neighbors_request(body: &[u8]) -> Result<GraphNeighborsRequest, String> {
+    let input =
+        serde_json::from_slice::<GraphNeighborsRequest>(body).map_err(|error| error.to_string())?;
+    if input.rid.trim().is_empty() {
+        return Err("rid is required".to_owned());
+    }
+    Ok(input)
+}
+
 impl PostgresRunApplicationService {
     async fn graph_neighbors_effect(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
         if !capability_allowed(request, &self.capabilities, "read_graph", &["read_graph"]) {
@@ -5610,7 +5627,7 @@ impl PostgresRunApplicationService {
                 "Graph read requires read_graph capability",
             );
         }
-        let input = match serde_json::from_slice::<Value>(&request.body) {
+        let input = match parse_graph_neighbors_request(&request.body) {
             Ok(value) => value,
             Err(error) => {
                 return effect_error(
@@ -5620,19 +5637,8 @@ impl PostgresRunApplicationService {
                 );
             }
         };
-        let Some(rid) = input
-            .get("rid")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        else {
-            return effect_error(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "KOGWISTAR_INVALID_REQUEST",
-                "rid is required",
-            );
-        };
-        let doc_id = input.get("doc_id").and_then(Value::as_str);
+        let rid = input.rid.trim();
+        let doc_id = input.doc_id.as_deref();
         let scope_value = security_scope_value(&request.principal);
         let scope = GraphScope {
             namespace: scope_value["storage_namespace"]
@@ -11273,6 +11279,18 @@ mod tests {
         assert_eq!(value["ok"], true);
         assert_eq!(value["backend"], "pg");
         assert_eq!(value["pg_schema_base"], "kogwistar");
+    }
+
+    #[test]
+    fn graph_neighbor_request_is_typed_and_closed_to_unknown_fields() {
+        let request: GraphNeighborsRequest =
+            serde_json::from_str(r#"{"rid":" n1 ","doc_id":"doc-1"}"#).unwrap();
+        assert_eq!(request.rid, " n1 ");
+        assert_eq!(request.doc_id.as_deref(), Some("doc-1"));
+        assert!(
+            serde_json::from_str::<GraphNeighborsRequest>(r#"{"rid":"n1","write":true}"#).is_err()
+        );
+        assert!(parse_graph_neighbors_request(br#"{"rid":""}"#).is_err());
     }
 
     #[test]
