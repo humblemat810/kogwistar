@@ -13460,6 +13460,7 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
 
         let mut cross_scope_body = body.clone();
         cross_scope_body["mutations"][0]["scope"]["namespace"] = json!("beta");
+        cross_scope_body["index_jobs"][0]["namespace"] = json!("beta");
         let cross_scope = send_mutation(
             make_app(),
             make_token(&["write_graph"], "alpha"),
