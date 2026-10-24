@@ -13134,8 +13134,12 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
         .await;
         assert_eq!(cross_scope.status(), StatusCode::FORBIDDEN);
 
-        let http_response =
-            send_mutation(make_app(), make_token(&["write_graph"], "alpha"), body).await;
+        let http_response = send_mutation(
+            make_app(),
+            make_token(&["write_graph"], "alpha"),
+            body.clone(),
+        )
+        .await;
         let http_status = http_response.status();
         let response_body = to_bytes(http_response.into_body(), 65_536).await.unwrap();
         assert_eq!(
@@ -13178,6 +13182,47 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
             .unwrap();
         assert_eq!(index_jobs.len(), 1);
         assert_eq!(index_jobs[0].job_id, "graph-route-index-1");
+
+        // A transport retry must be idempotent at both authority layers:
+        // the graph event is not appended twice and the pending index intent
+        // remains one coalesced queue row.
+        let retry_response =
+            send_mutation(make_app(), make_token(&["write_graph"], "alpha"), body).await;
+        let retry_status = retry_response.status();
+        let retry_body = to_bytes(retry_response.into_body(), 65_536).await.unwrap();
+        assert_eq!(
+            retry_status,
+            StatusCode::OK,
+            "{}",
+            String::from_utf8_lossy(&retry_body)
+        );
+        let retry_result: Value = serde_json::from_slice(&retry_body).unwrap();
+        assert_eq!(retry_result["results"][0]["mutated"], false);
+        assert_eq!(
+            service
+                .store
+                .replay_raw_events("alpha", 0, 10)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            service
+                .store
+                .list_index_jobs(
+                    Some("alpha"),
+                    Some("PENDING"),
+                    Some("node"),
+                    Some("node-1"),
+                    Some("node_embedding"),
+                    10,
+                )
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[tokio::test]
