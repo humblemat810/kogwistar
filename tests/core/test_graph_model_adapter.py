@@ -18,7 +18,13 @@ from kogwistar.engine_core.graph_contracts import (
     graph_model_class_for,
 )
 from kogwistar.engine_core.graph_slice_manifest import project_with_manifest
-from kogwistar.engine_core.models import Edge, Node
+from kogwistar.engine_core.models import (
+    Edge,
+    EdgeMixin,
+    LevelAwareMixin,
+    Node,
+    TombstoneMixin,
+)
 from kogwistar.engine_core.subsystems.write import _validate_graph_model_contract
 from kogwistar.runtime import models as runtime_models
 from kogwistar.runtime.models import WorkflowRunNode, WorkflowRuntimeEdge
@@ -349,4 +355,32 @@ def test_hyperedge_keeps_the_edge_wire_identity_with_multiple_incidences() -> No
     assert envelope["payload"]["id"] == edge.id
     assert envelope["payload"]["source_ids"] == ["node-a", "node-b"]
     assert envelope["payload"]["source_edge_ids"] == ["edge-parent"]
+
+
+def test_supported_edge_families_retain_node_lifecycle_capabilities() -> None:
+    edge_types = (
+        acl_models.ACLEdge,
+        conversation_models.ConversationEdge,
+        runtime_models.WorkflowEdge,
+        runtime_models.WorkflowRuntimeEdge,
+        engine_models.PureChromaEdge,
+        engine_models.LLMEdge,
+        engine_models.LLMEdgeExtraction,
+        engine_models.FlattenedLLMEdge,
+        engine_models.AssocFlattenedLLMEdge,
+    )
+
+    for edge_type in edge_types:
+        assert issubclass(edge_type, EdgeMixin), edge_type.__name__
+
+    persistent_edge_types = (
+        Edge,
+        acl_models.ACLEdge,
+        conversation_models.ConversationEdge,
+        runtime_models.WorkflowEdge,
+        runtime_models.WorkflowRuntimeEdge,
+    )
+    for edge_type in persistent_edge_types:
+        assert issubclass(edge_type, TombstoneMixin), edge_type.__name__
+        assert issubclass(edge_type, LevelAwareMixin), edge_type.__name__
 
