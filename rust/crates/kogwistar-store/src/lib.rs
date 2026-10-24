@@ -2122,7 +2122,15 @@ mod tests {
             .as_array()
             .expect("fixture nodes")
             .iter()
-            .map(|value| node_record(value.as_str().expect("node ID")))
+            .map(|value| {
+                let id = value.as_str().expect("node ID");
+                let mut record = node_record(id);
+                let label = fixture["graph"]["node_labels"][id]
+                    .as_str()
+                    .expect("node label");
+                record.document = Some(serde_json::json!({"label": label}).to_string());
+                record
+            })
             .collect::<Vec<_>>();
         let edges = fixture["graph"]["edges"]
             .as_array()
@@ -2133,6 +2141,7 @@ mod tests {
                     value["id"].as_str().expect("edge ID"),
                     serde_json::json!({
                         "doc_id": value["doc_id"],
+                        "relation": value["relation"],
                         "source_ids": value["source_ids"],
                         "target_ids": value["target_ids"]
                     }),
@@ -2211,6 +2220,29 @@ mod tests {
             assert_eq!(actual.nodes, string_set(&expected["nodes"]));
             assert_eq!(actual.edges, string_set(&expected["edges"]));
         }
+
+        let find_case = &cases[4];
+        let matching_edges = graph_find_edges_from_records(
+            &GraphFindEdgesQuery {
+                relation: find_case["relation"].as_str().map(str::to_owned),
+                src_label_contains: find_case["source_label_contains"]
+                    .as_str()
+                    .map(str::to_owned),
+                tgt_label_contains: find_case["target_label_contains"]
+                    .as_str()
+                    .map(str::to_owned),
+                doc_id: find_case["doc_id"].as_str().map(str::to_owned),
+            },
+            &nodes,
+            &edges,
+        );
+        let expected_edges = find_case["expected_edge_ids"]
+            .as_array()
+            .expect("fixture edge IDs")
+            .iter()
+            .map(|value| value.as_str().expect("fixture edge ID").to_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(matching_edges, expected_edges);
     }
 
     #[test]

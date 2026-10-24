@@ -2,10 +2,12 @@
   "schema_version": 1,
   "graph": {
     "nodes": ["A", "B"],
+    "node_labels": {"A": "Smoking", "B": "Lung Cancer"},
     "edges": [
       {
         "id": "E1",
         "doc_id": "D1",
+        "relation": "causes",
         "source_ids": ["A"],
         "target_ids": ["B"]
       }
@@ -36,6 +38,14 @@
         {"nodes": [], "edges": ["E1"]},
         {"nodes": ["A", "B"], "edges": []}
       ]
+    },
+    {
+      "name": "find_edges",
+      "relation": "causes",
+      "source_label_contains": "smok",
+      "target_label_contains": "lung",
+      "doc_id": "D1",
+      "expected_edge_ids": ["E1"]
     }
   ]
 }

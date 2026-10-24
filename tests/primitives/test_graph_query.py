@@ -398,6 +398,14 @@ def test_graph_traversal_matches_shared_golden_contract(small_graph):
         for layer in layers
     ] == cases["k_hop"]["expected_layers"]
 
+    find_case = cases["find_edges"]
+    assert gq.find_edges(
+        relation=find_case["relation"],
+        src_label_contains=find_case["source_label_contains"],
+        tgt_label_contains=find_case["target_label_contains"],
+        doc_id=find_case["doc_id"],
+    ) == find_case["expected_edge_ids"]
+
 
 def test_shortest_path_and_find_edges(small_graph):
     engine, doc_id = small_graph
