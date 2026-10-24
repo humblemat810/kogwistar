@@ -26,13 +26,13 @@ use kogwistar_runtime::{
     RuntimeStepExecutePayload, RuntimeStepExecuteRequest,
 };
 use kogwistar_store::{
-    AuthIdentityStore, AuthUser, EntityEvent, GraphAclPrincipal, GraphMutation, GraphMutationBatch,
-    GraphMutationStore, GraphProjectionRead, GraphRecord, GraphScope, LaneMessageClaimFilter,
-    LaneMessageFilter, MetadataFilter, NamedProjection, NamedProjectionWrite, NewIndexJob,
-    NewProjectedLaneMessage, ProjectedLaneMessage, ResolveExternalIdentity, ServerRun,
-    ServerRunCreate, ServerRunEvent, WorkflowDesignDeltaWrite, WorkflowDesignSnapshot,
-    WorkflowDesignSnapshotWrite, graph_neighbors_from_records, graph_records_visible_by_acl,
-    validate_typed_graph_mutation,
+    AuthIdentityStore, AuthUser, EntityEvent, GraphAclPrincipal, GraphAuthorityCapability,
+    GraphMutation, GraphMutationBatch, GraphMutationStore, GraphProjectionRead, GraphRecord,
+    GraphScope, LaneMessageClaimFilter, LaneMessageFilter, MetadataFilter, NamedProjection,
+    NamedProjectionWrite, NewIndexJob, NewProjectedLaneMessage, ProjectedLaneMessage,
+    ResolveExternalIdentity, ServerRun, ServerRunCreate, ServerRunEvent, WorkflowDesignDeltaWrite,
+    WorkflowDesignSnapshot, WorkflowDesignSnapshotWrite, graph_neighbors_from_records,
+    graph_records_visible_by_acl, validate_typed_graph_mutation,
 };
 use kogwistar_store_postgres::{
     NewRawEntityEvent as PostgresNewRawEntityEvent, PostgresAuthStore, PostgresStore,
@@ -432,6 +432,10 @@ pub struct ApiEffectResponse {
 }
 
 pub trait ApplicationService: Send + Sync + 'static {
+    fn graph_authority_capability(&self) -> GraphAuthorityCapability {
+        GraphAuthorityCapability::Unsupported
+    }
+
     fn execute(
         &self,
         request: ApiEffectRequest,
@@ -8446,6 +8450,10 @@ impl PostgresRunApplicationService {
 }
 
 impl ApplicationService for PostgresRunApplicationService {
+    fn graph_authority_capability(&self) -> GraphAuthorityCapability {
+        self.store.graph_authority_capability()
+    }
+
     fn execute(
         &self,
         request: ApiEffectRequest,
@@ -10603,6 +10611,15 @@ async fn health_handler(State(state): State<Arc<ServerState>>) -> Json<Value> {
             serde_json::to_value(&state.api.implementation)
                 .expect("implementation snapshot serializes"),
         );
+        let capability = state.application.graph_authority_capability();
+        object.insert(
+            "graph_authority".to_owned(),
+            json!({
+                "level": capability.as_str(),
+                "single_mutation": capability.supports_single_mutation(),
+                "atomic_index_jobs": capability.supports_atomic_index_jobs(),
+            }),
+        );
     }
     Json(value)
 }
@@ -11964,6 +11981,9 @@ mod tests {
             serde_json::from_slice::<Value>(&health_body).unwrap()["backend"],
             "pg"
         );
+        let health_value: Value = serde_json::from_slice(&health_body).unwrap();
+        assert_eq!(health_value["graph_authority"]["level"], "unsupported");
+        assert_eq!(health_value["graph_authority"]["single_mutation"], false);
 
         let openapi = app
             .clone()

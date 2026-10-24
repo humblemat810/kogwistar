@@ -631,6 +631,14 @@ pub enum GraphAuthorityCapability {
 }
 
 impl GraphAuthorityCapability {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Unsupported => "unsupported",
+            Self::SingleMutation => "single_mutation",
+            Self::AtomicBatchWithIndexJobs => "atomic_batch_with_index_jobs",
+        }
+    }
+
     pub const fn supports_single_mutation(self) -> bool {
         !matches!(self, Self::Unsupported)
     }
