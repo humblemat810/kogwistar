@@ -19,8 +19,9 @@ class RustPostgresConnectionUnavailable(RuntimeError):
 
 
 class _RustPostgresTransactionToken:
-    def __init__(self, value: str) -> None:
+    def __init__(self, value: str, owner_id: str) -> None:
         self.value = value
+        self.owner_id = owner_id
 
     def execute(self, *args: object, **kwargs: object) -> NoReturn:
         raise RustPostgresConnectionUnavailable(
@@ -95,7 +96,7 @@ class RustPostgresSession:
                 self._transaction_depth.get() + 1
             )
             try:
-                yield _RustPostgresTransactionToken(current)
+                yield _RustPostgresTransactionToken(current, self.context_id)
             finally:
                 self._transaction_depth.reset(depth_token)
             return
@@ -106,7 +107,7 @@ class RustPostgresSession:
         try:
             self.call("begin_transaction")
             try:
-                yield _RustPostgresTransactionToken(transaction_id)
+                yield _RustPostgresTransactionToken(transaction_id, self.context_id)
             except BaseException:
                 self.call("rollback_transaction")
                 raise
@@ -121,6 +122,7 @@ class RustPostgresSession:
         if (
             not isinstance(token, _RustPostgresTransactionToken)
             or token.value != active
+            or token.owner_id != self.context_id
         ):
             raise RustPostgresConnectionUnavailable(
                 "stale Rust PostgreSQL transaction token"

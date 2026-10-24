@@ -20,6 +20,7 @@ from kogwistar.engine_core.in_memory_backend import InMemoryBackend, _DummyLock
 from kogwistar.engine_core.rust_meta_sqlite import (
     RustEngineSQLite,
     RustSQLiteConnectionUnavailable,
+    _RustTransactionToken,
     build_sqlite_meta_store,
 )
 from tests._helpers.graph_builders import build_entity_node
@@ -100,6 +101,20 @@ def test_rust_authority_uow_is_atomic_and_raw_python_writer_is_closed(
             raise RuntimeError("rollback")
     assert store.current_global_seq() == 1
     assert [row[0] for row in store.iter_entity_events(namespace="authority")] == [1]
+
+
+def test_sqlite_transaction_token_cannot_cross_facade_owner(
+    tmp_path: Path,
+) -> None:
+    first = RustEngineSQLite(tmp_path, "owner.sqlite")
+    second = RustEngineSQLite(tmp_path, "owner.sqlite")
+    token = _RustTransactionToken("same-transaction", first._authority_id)
+    active = second._transaction_id.set(token.value)
+    try:
+        with pytest.raises(RustSQLiteConnectionUnavailable, match="stale"):
+            second._require_token(token)
+    finally:
+        second._transaction_id.reset(active)
 
 
 def test_rust_open_during_active_write_reads_previous_committed_projection(

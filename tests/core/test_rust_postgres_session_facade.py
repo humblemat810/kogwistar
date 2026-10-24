@@ -8,6 +8,7 @@ from kogwistar.engine_core.rust_postgres_session import (
     RustEnginePostgresMetaStore,
     RustPostgresConnectionUnavailable,
     RustPostgresSession,
+    _RustPostgresTransactionToken,
 )
 from kogwistar.engine_core.subsystems.read import ReadSubsystem
 
@@ -92,6 +93,18 @@ def test_postgres_session_rolls_back_and_rejects_raw_or_stale_writer(monkeypatch
     assert stale is not None
     with pytest.raises(RustPostgresConnectionUnavailable, match="stale"):
         session.require_token(stale)
+
+
+def test_postgres_transaction_token_cannot_cross_session_owner():
+    first = RustPostgresSession(dsn="postgresql://example/db", schema="test")
+    second = RustPostgresSession(dsn="postgresql://example/db", schema="test")
+    token = _RustPostgresTransactionToken("same-transaction", first.context_id)
+    active = second._transaction_id.set(token.value)
+    try:
+        with pytest.raises(RustPostgresConnectionUnavailable, match="stale"):
+            second.require_token(token)
+    finally:
+        second._transaction_id.reset(active)
 
 
 def test_postgres_session_commit_error_clears_local_owner_without_retry(monkeypatch):

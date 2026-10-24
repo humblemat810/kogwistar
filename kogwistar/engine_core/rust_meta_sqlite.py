@@ -41,8 +41,9 @@ class _TransactionToken(Protocol):
 
 
 class _RustTransactionToken:
-    def __init__(self, value: str) -> None:
+    def __init__(self, value: str, owner_id: str) -> None:
         self.value = value
+        self.owner_id = owner_id
 
     def execute(self, *args: object, **kwargs: object) -> NoReturn:
         raise RustSQLiteConnectionUnavailable(
@@ -59,6 +60,7 @@ class RustEngineSQLite:
     def __init__(self, persistent_directory: Path, filename: str = "engine.db") -> None:
         self.persistent_directory = Path(persistent_directory)
         self.db_path = self.persistent_directory / filename
+        self._authority_id = uuid.uuid4().hex
         self._transaction_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
             f"kogwistar_rust_sqlite_transaction_{id(self)}", default=None
         )
@@ -174,7 +176,7 @@ class RustEngineSQLite:
             try:
                 self._call("begin_transaction")
                 try:
-                    yield _RustTransactionToken(transaction_id)
+                    yield _RustTransactionToken(transaction_id, self._authority_id)
                 except BaseException:
                     self._call("rollback_transaction")
                     raise
@@ -227,7 +229,11 @@ class RustEngineSQLite:
 
     def _require_token(self, conn: _TransactionToken) -> None:
         active = self._transaction_id.get()
-        if not isinstance(conn, _RustTransactionToken) or conn.value != active:
+        if (
+            not isinstance(conn, _RustTransactionToken)
+            or conn.value != active
+            or conn.owner_id != self._authority_id
+        ):
             raise RustSQLiteConnectionUnavailable("stale Rust SQLite transaction token")
 
     def enqueue_index_job(self, **values: JsonValue) -> str:
