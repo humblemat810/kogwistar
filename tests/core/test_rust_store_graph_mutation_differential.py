@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import uuid
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -10,9 +12,20 @@ pytest.importorskip("sqlalchemy")
 
 from kogwistar._rust_bridge import RustParityError, store_postgres
 from kogwistar.engine_core.engine_postgres_meta import EnginePostgresMetaStore
+from kogwistar.engine_core.models import Edge, Node
 from kogwistar.engine_core.postgres_backend import PgVectorBackend
 
 pytestmark = [pytest.mark.ci_full, pytest.mark.core]
+
+ROOT = Path(__file__).resolve().parents[2]
+PYTHON_GRAPH_MODEL_FIXTURE = json.loads(
+    (
+        ROOT
+        / "contracts"
+        / "golden"
+        / "python-graph-model-payloads-v1.json"
+    ).read_text(encoding="utf-8")
+)
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -126,6 +139,71 @@ def test_graph_mutation_event_history_pgvector_and_python_mutual_readability(
         },
     )
     assert [row["id"] for row in rows] == ["n1", "python-row"]
+
+
+def test_python_node_and_edge_payloads_round_trip_through_rust_graph_mutation(
+    sa_engine, pg_dsn: str | None, pg_schema: str | None
+) -> None:
+    dsn, schema = _require_pg(pg_dsn, pg_schema)
+    backend = PgVectorBackend(engine=sa_engine, embedding_dim=3, schema=schema)
+    backend.ensure_schema()
+    meta = EnginePostgresMetaStore(engine=sa_engine, schema=schema)
+    meta.ensure_initialized()
+
+    assert PYTHON_GRAPH_MODEL_FIXTURE["schema_version"] == 1
+    assert [case["kind"] for case in PYTHON_GRAPH_MODEL_FIXTURE["cases"]] == [
+        "node",
+        "edge",
+        "edge_with_edge_endpoints",
+    ]
+    entities = [
+        (
+            case["kind"],
+            (Node if case["kind"] == "node" else Edge).model_validate(case["payload"]),
+        )
+        for case in PYTHON_GRAPH_MODEL_FIXTURE["cases"]
+    ]
+    node = next(entity for kind, entity in entities if kind == "node")
+    edges = [entity for kind, entity in entities if kind != "node"]
+    for fixture_kind, entity in entities:
+        entity_kind = "node" if fixture_kind == "node" else "edge"
+        table = "gke_nodes" if entity_kind == "node" else "gke_edges"
+        payload = entity.model_dump(field_mode="backend", dump_format="json")
+        fixture_payload = next(
+            case["payload"]
+            for case in PYTHON_GRAPH_MODEL_FIXTURE["cases"]
+            if case["kind"] == fixture_kind
+        )
+        assert payload == fixture_payload
+        mutation = _mutation(
+            event_id=f"{fixture_kind}-model-payload",
+            op="ADD",
+            id=entity.id,
+            document=entity.summary,
+            metadata=entity.metadata,
+            embedding=list(entity.embedding or []),
+        )
+        mutation.update(
+            entity_kind=entity_kind,
+            table=table,
+            payload=payload,
+        )
+        _rust(dsn, schema, mutation)
+
+        event = list(meta.iter_entity_events(namespace="alpha", from_seq=1))[-1]
+        restored_payload = json.loads(event[4])
+        assert restored_payload == payload
+        restored = (Node if entity_kind == "node" else Edge).model_validate(
+            restored_payload
+        )
+        assert restored.model_dump(field_mode="backend", dump_format="json") == payload
+
+    assert backend.node_get(
+        ids=[node.id], include=["documents", "metadatas"]
+    )["documents"] == [node.summary]
+    assert backend.edge_get(
+        ids=[edge.id for edge in edges], include=["documents", "metadatas"]
+    )["documents"] == [edge.summary for edge in edges]
 
 
 def test_graph_mutation_scope_vector_contract_and_fault_rollback(

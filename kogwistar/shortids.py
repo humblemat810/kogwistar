@@ -122,6 +122,14 @@ class ShortIdMapper:
     def _save(self) -> None:
         self._file().write_text(json.dumps(self.state, ensure_ascii=False), "utf-8")
 
+    def _restore_state(self, state: ShortIdState) -> None:
+        restored = _decode_state(state)
+        if restored is None:
+            raise ValueError("Cannot restore invalid short-id state")
+        if self.state != restored:
+            self.state = restored
+            self._save()
+
     def _native_payload(
         self,
         value: object,
@@ -182,19 +190,32 @@ class ShortIdMapper:
     ) -> object:
         if contract_implementation_mode() != "shadow" or not json_contract_compatible(value):
             return python_value
-        native = _rust_short_id_transform(
-            payload=self._native_payload(
-                value, direction, before, primitive=primitive
-            ),
-            python_value=None,
-        )
-        expected = {"state": self.state, "value": cast(JsonValue, python_value)}
-        if native != expected:
-            raise RustParityError(
-                "Rust parity mismatch for short_id_transform: "
-                f"python={expected!r}, rust={native!r}"
+        try:
+            native = _rust_short_id_transform(
+                payload=self._native_payload(
+                    value, direction, before, primitive=primitive
+                ),
+                python_value=None,
             )
+            expected = {"state": self.state, "value": cast(JsonValue, python_value)}
+            if native != expected:
+                raise RustParityError(
+                    "Rust parity mismatch for short_id_transform: "
+                    f"python={expected!r}, rust={native!r}"
+                )
+        except Exception:
+            self._restore_state(before)
+            raise
         return python_value
+
+    def _restore_shadow_operation(
+        self, before: ShortIdState, value: object
+    ) -> None:
+        if (
+            contract_implementation_mode() == "shadow"
+            and json_contract_compatible(value)
+        ):
+            self._restore_state(before)
 
     # --- knobs ---
     def set_obj_max_depth(self, depth: int) -> None:
@@ -317,11 +338,15 @@ class ShortIdMapper:
         except Exception:
             return in_doc_str  # not JSON: don't touch
         before = json.loads(json.dumps(self.state, ensure_ascii=False))
-        data2 = self._native_transform(data, "l2s")
-        if data2 is None:
-            data2 = self._walk_ids_l2s(data, self.obj_max_depth - 1)
-            data2 = self._shadow_compare(data, "l2s", before, data2)
-        return json.dumps(data2, ensure_ascii=False)
+        try:
+            data2 = self._native_transform(data, "l2s")
+            if data2 is None:
+                data2 = self._walk_ids_l2s(data, self.obj_max_depth - 1)
+                data2 = self._shadow_compare(data, "l2s", before, data2)
+            return json.dumps(data2, ensure_ascii=False)
+        except Exception:
+            self._restore_shadow_operation(before, data)
+            raise
 
     def s2l_doc(self, in_doc_str: str) -> str:
         if not isinstance(in_doc_str, str):
@@ -342,11 +367,15 @@ class ShortIdMapper:
         if callable(getattr(in_obj, "model_dump", None)):
             in_obj = cast(_ModelDumpable, in_obj).model_dump()
         before = json.loads(json.dumps(self.state, ensure_ascii=False))
-        output = self._native_transform(in_obj, "l2s")
-        if output is not None:
-            return output
-        output = self._walk_ids_l2s(cast(JsonValue, in_obj), self.obj_max_depth - 1)
-        return self._shadow_compare(in_obj, "l2s", before, output)
+        try:
+            output = self._native_transform(in_obj, "l2s")
+            if output is not None:
+                return output
+            output = self._walk_ids_l2s(cast(JsonValue, in_obj), self.obj_max_depth - 1)
+            return self._shadow_compare(in_obj, "l2s", before, output)
+        except Exception:
+            self._restore_shadow_operation(before, in_obj)
+            raise
 
     def s2l_obj(self, in_obj: object) -> object:
         if callable(getattr(in_obj, "model_dump", None)):

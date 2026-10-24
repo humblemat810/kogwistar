@@ -46,6 +46,7 @@ class RustExtensionLike(Protocol):
     def runtime_scheduler_tick(self, payload: str) -> str: ...
     def canonical_entity_event(self, payload: str) -> str: ...
     def replay_entity_events(self, payload: str) -> str: ...
+    def validate_graph_model_family(self, payload: str) -> None: ...
 
 
 _T = TypeVar("_T")
@@ -280,6 +281,28 @@ def server_implementation_mode() -> str:
             f"got {mode!r}"
         )
     return mode
+
+
+def validate_graph_model_family(payload: JsonObject) -> None:
+    """Validate a graph-model envelope at the selected contract seam.
+
+    Python mode deliberately does nothing: Pydantic remains authoritative and
+    the legacy path has no additional serialization or native-extension cost.
+    Shadow and Rust modes require the native validator and fail closed before
+    the caller performs an effect.
+    """
+
+    if contract_implementation_mode() == "python":
+        return
+    extension = _load_extension()
+    try:
+        extension.validate_graph_model_family(
+            _rust_json_payload(payload, ensure_ascii=False, separators=(",", ":"))
+        )
+    except Exception as exc:
+        raise RustParityError(
+            f"Rust graph-model contract validation failed: {exc}"
+        ) from exc
 
 
 def api_health(*, payload: JsonObject, python_value: JsonObject) -> JsonObject:

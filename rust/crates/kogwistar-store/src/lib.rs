@@ -1,5 +1,5 @@
 //! Async-first storage contracts. Shadow handles expose reads only.
-use kogwistar_contracts::EntityEventEnvelope;
+use kogwistar_contracts::{EntityEventEnvelope, GraphEntityKind, GraphModelEnvelope};
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -169,6 +169,71 @@ pub struct GraphMutation {
     pub embedding_dim: usize,
 }
 
+/// A graph mutation batch plus optional indexing intents that must share its
+/// commit boundary.  Indexing remains explicit: a store must never infer a
+/// queue operation from arbitrary graph metadata.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GraphMutationBatch {
+    pub mutations: Vec<GraphMutation>,
+    pub index_jobs: Vec<NewIndexJob>,
+}
+
+/// Validate the optional typed model that accompanies a graph mutation.
+///
+/// The legacy mutation payload remains unchanged.  This additive seam lets a
+/// Rust-native caller opt into the same model contract as the Python writer
+/// without forcing old event/replay callers to construct an envelope.
+pub fn validate_typed_graph_mutation(
+    mutation: &GraphMutation,
+    envelope: &GraphModelEnvelope,
+) -> StoreResult<()> {
+    envelope
+        .validate_family_v1()
+        .map_err(|error| StoreError::InvalidEntityEventPayload {
+            message: error.to_string(),
+        })?;
+    let expected_kind = match mutation.entity_kind.as_str() {
+        "node" => GraphEntityKind::Node,
+        "edge" => GraphEntityKind::Edge,
+        _ => {
+            return Err(StoreError::InvalidEntityEventPayload {
+                message: format!(
+                    "typed graph mutation has unsupported entity kind {:?}",
+                    mutation.entity_kind
+                ),
+            });
+        }
+    };
+    if envelope.model_class.entity_kind() != expected_kind {
+        return Err(StoreError::InvalidEntityEventPayload {
+            message: format!(
+                "typed graph mutation entity kind {:?} does not match model class {:?}",
+                expected_kind, envelope.model_class
+            ),
+        });
+    }
+    if mutation.payload != envelope.payload {
+        return Err(StoreError::InvalidEntityEventPayload {
+            message: "typed graph mutation payload differs from its model envelope".to_owned(),
+        });
+    }
+    let entity_id =
+        match envelope
+            .inspect()
+            .map_err(|error| StoreError::InvalidEntityEventPayload {
+                message: error.to_string(),
+            })? {
+            kogwistar_contracts::TypedGraphEntity::Node(node) => node.common.id,
+            kogwistar_contracts::TypedGraphEntity::Edge(edge) => edge.common.id,
+        };
+    if entity_id.as_deref() != Some(mutation.record.id.as_str()) {
+        return Err(StoreError::InvalidEntityEventPayload {
+            message: "typed graph mutation record id differs from its model envelope".to_owned(),
+        });
+    }
+    Ok(())
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct AppliedGraphMutation {
     pub event: EntityEvent,
@@ -207,6 +272,47 @@ pub trait GraphMutationStore: Send + Sync {
         &self,
         mutation: GraphMutation,
     ) -> impl Future<Output = StoreResult<AppliedGraphMutation>> + Send;
+    /// Apply a group under one authoritative transaction.
+    ///
+    /// The default is deliberately fail-closed.  Implementations must opt in
+    /// only when they can preserve one commit boundary for the whole group;
+    /// callers must not silently degrade an atomic request to per-item writes.
+    fn apply_graph_mutations_atomic(
+        &self,
+        _mutations: Vec<GraphMutation>,
+    ) -> impl Future<Output = StoreResult<Vec<AppliedGraphMutation>>> + Send {
+        async {
+            Err(StoreError::Backend {
+                backend: "graph-mutation".to_owned(),
+                message: "atomic graph mutation batches are not supported by this store".to_owned(),
+            })
+        }
+    }
+    /// Apply graph mutations and their explicit index intents atomically.
+    /// The default is fail-closed because a queue write outside the graph
+    /// transaction would create a false durability guarantee.
+    fn apply_graph_mutations_with_index_jobs_atomic(
+        &self,
+        _batch: GraphMutationBatch,
+    ) -> impl Future<Output = StoreResult<Vec<AppliedGraphMutation>>> + Send {
+        async {
+            Err(StoreError::Backend {
+                backend: "graph-mutation".to_owned(),
+                message: "atomic graph mutation plus index jobs are not supported by this store"
+                    .to_owned(),
+            })
+        }
+    }
+    fn apply_typed_graph_mutation(
+        &self,
+        mutation: GraphMutation,
+        envelope: GraphModelEnvelope,
+    ) -> impl Future<Output = StoreResult<AppliedGraphMutation>> + Send {
+        async move {
+            validate_typed_graph_mutation(&mutation, &envelope)?;
+            self.apply_graph_mutation(mutation).await
+        }
+    }
     fn graph_projection_records(
         &self,
         read: GraphProjectionRead,
@@ -1140,6 +1246,43 @@ impl<S: ProjectionReadStore + Send + Sync> ProjectionReadStore for ShadowInspect
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kogwistar_contracts::{GraphModelClass, GraphModelEnvelope};
+
+    fn fixture_payload(index: usize) -> Value {
+        let fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/python-graph-model-payloads-v1.json"
+        )))
+        .expect("valid graph model fixture");
+        fixture["cases"][index]["payload"].clone()
+    }
+
+    fn typed_mutation(entity_kind: &str, payload: Value) -> GraphMutation {
+        let id = payload["id"].as_str().expect("fixture id").to_owned();
+        GraphMutation {
+            scope: GraphScope {
+                namespace: "ns".to_owned(),
+                workspace_id: Some("ws".to_owned()),
+                graph_space: Some("facts".to_owned()),
+            },
+            table: if entity_kind == "edge" {
+                "gke_edges".to_owned()
+            } else {
+                "gke_nodes".to_owned()
+            },
+            entity_kind: entity_kind.to_owned(),
+            event_id: "event-1".to_owned(),
+            op: "ADD".to_owned(),
+            payload: payload.clone(),
+            record: GraphRecord {
+                id,
+                document: None,
+                metadata: payload["metadata"].as_object().cloned().unwrap_or_default(),
+                embedding: None,
+            },
+            embedding_dim: 0,
+        }
+    }
 
     #[test]
     fn runtime_projection_contract_has_one_stable_shape() {
@@ -1158,5 +1301,33 @@ mod tests {
             RUNTIME_PROJECTION_SCHEMA_VERSION
         );
         assert_eq!(projection.materialization_status, "ready");
+    }
+
+    #[test]
+    fn typed_graph_mutation_validates_before_storage_effects() {
+        let payload = fixture_payload(1);
+        let mutation = typed_mutation("edge", payload.clone());
+        let envelope = GraphModelEnvelope::new(GraphModelClass::Edge, payload);
+        validate_typed_graph_mutation(&mutation, &envelope).expect("valid typed mutation");
+    }
+
+    #[test]
+    fn typed_graph_mutation_rejects_kind_and_identity_confusion() {
+        let edge_payload = fixture_payload(1);
+        let edge_mutation = typed_mutation("node", edge_payload.clone());
+        let edge_envelope = GraphModelEnvelope::new(GraphModelClass::Edge, edge_payload);
+        assert!(matches!(
+            validate_typed_graph_mutation(&edge_mutation, &edge_envelope),
+            Err(StoreError::InvalidEntityEventPayload { .. })
+        ));
+
+        let node_payload = fixture_payload(0);
+        let mut node_mutation = typed_mutation("node", node_payload.clone());
+        node_mutation.record.id = "different-id".to_owned();
+        let node_envelope = GraphModelEnvelope::new(GraphModelClass::Node, node_payload);
+        assert!(matches!(
+            validate_typed_graph_mutation(&node_mutation, &node_envelope),
+            Err(StoreError::InvalidEntityEventPayload { .. })
+        ));
     }
 }

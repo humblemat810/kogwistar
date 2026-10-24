@@ -33,6 +33,10 @@ from .strict_json import normalize_json_value, strict_json_dumps
 
 JsonObject = dict[str, JsonValue]
 
+# A missing target is legacy-compatible; when present, Python workers must
+# never accept work explicitly addressed to another executor.
+PYTHON_EXECUTOR_TARGET = "python-worker"
+
 if TYPE_CHECKING:
     from kogwistar.runtime.runtime import StepContext
 
@@ -326,6 +330,21 @@ class RustStepResolverAdapter:
         return requested
 
     @staticmethod
+    def _validate_executor_target(
+        payload: Mapping[str, JsonValue], op: str
+    ) -> None:
+        requested = payload.get("executor_target")
+        if requested is not None and requested != PYTHON_EXECUTOR_TARGET:
+            raise RustWorkerError(
+                "Python worker cannot execute payload for executor target "
+                f"{requested!r}"
+            )
+        if op.startswith("rust-native/"):
+            raise RustWorkerError(
+                "Python worker cannot execute a rust-native operation"
+            )
+
+    @staticmethod
     def _validate_work_identity(work: Mapping[str, object]) -> None:
         """Reject work that cannot be correlated before invoking user code."""
         required = ("message_id", "run_id", "step_id", "claimed_by", "correlation_id")
@@ -355,6 +374,7 @@ class RustStepResolverAdapter:
         op = str(payload.get("op") or "")
         if not op:
             raise RustWorkerError("claimed work requires a frozen workflow op")
+        self._validate_executor_target(payload, op)
         self._validate_op_version(op, payload)
         self._validate_op_environment(op, payload)
 
@@ -648,6 +668,7 @@ class AsyncRustStepResolverAdapter(RustStepResolverAdapter):
         op = str(payload.get("op") or "")
         if not op:
             raise RustWorkerError("claimed work requires a frozen workflow op")
+        self._validate_executor_target(payload, op)
         self._validate_op_version(op, payload)
         self._validate_op_environment(op, payload)
 

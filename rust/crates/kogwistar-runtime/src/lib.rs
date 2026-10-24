@@ -14,6 +14,15 @@ use thiserror::Error;
 pub const RECORDED_RUNTIME_CONTRACT_VERSION: u32 = 1;
 pub const WORKER_PROTOCOL_SYNC_V1: &str = "sync-v1";
 pub const WORKER_PROTOCOL_ASYNC_V2: &str = "async-v2";
+pub const RUST_NATIVE_EXECUTOR_TARGET: &str = "rust-native";
+pub const RUST_NATIVE_OPERATION_PREFIX: &str = "rust-native/";
+pub const RUST_NATIVE_OPERATION_SCHEMA_VERSION: u32 = 1;
+
+pub fn native_operation_name(operation: &str) -> Option<&str> {
+    operation
+        .strip_prefix(RUST_NATIVE_OPERATION_PREFIX)
+        .filter(|name| !name.trim().is_empty())
+}
 
 fn default_operation_version() -> String {
     "v1".to_owned()
@@ -48,6 +57,10 @@ pub struct RuntimeStepExecutePayload {
     pub turn_node_id: Option<String>,
     pub node_id: String,
     pub op: Value,
+    /// Explicit executor identity for opt-in native operations. Legacy
+    /// Python-worker payloads omit this field and retain their old contract.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub executor_target: Option<String>,
     /// Version of this registered workflow operation, independent of the
     /// worker transport protocol. Missing legacy values mean v1.
     #[serde(
@@ -85,11 +98,132 @@ pub struct RuntimeStepExecuteRequest {
     pub resume_effect: Option<Value>,
 }
 
+/// The deliberately small first native execution slice.  Native operations
+/// are explicit and never inferred from an arbitrary Python operation name.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeNativeStepRequest {
+    pub executor_target: String,
+    pub operation: String,
+    pub run_id: String,
+    pub workflow_id: String,
+    pub node_id: String,
+    pub conversation_id: String,
+    #[serde(default)]
+    pub turn_node_id: Option<String>,
+    pub token_id: String,
+    #[serde(default)]
+    pub parent_token_id: Option<String>,
+    pub step_seq: i64,
+    #[serde(default)]
+    pub runtime_routes: Vec<RuntimeStaticRoute>,
+}
+
+#[derive(Debug, Error)]
+pub enum RuntimeNativeExecutionError {
+    #[error("native executor target must be {expected:?}, got {got:?}")]
+    WrongExecutorTarget { expected: String, got: String },
+    #[error("native operation must be non-empty")]
+    EmptyOperation,
+    #[error("native operation {0:?} is not registered")]
+    UnsupportedOperation(String),
+    #[error("native step identifier {field} must be non-empty")]
+    EmptyIdentifier { field: &'static str },
+    #[error("native step sequence must not be negative")]
+    NegativeStepSequence,
+    #[error("native routing failed: {0}")]
+    Routing(#[from] RecordedRuntimeError),
+}
+
+/// Execute the current Rust-native registry and emit the same durable effect
+/// shape accepted from Python workers.  This is intentionally not a generic
+/// callback bridge: unsupported operations fail closed instead of falling
+/// through to Python or silently acquiring a native implementation.
+pub fn execute_native_step(
+    request: &RuntimeNativeStepRequest,
+) -> Result<RecordedWorkerSuccessEffect, RuntimeNativeExecutionError> {
+    if request.executor_target != RUST_NATIVE_EXECUTOR_TARGET {
+        return Err(RuntimeNativeExecutionError::WrongExecutorTarget {
+            expected: RUST_NATIVE_EXECUTOR_TARGET.to_owned(),
+            got: request.executor_target.clone(),
+        });
+    }
+    if request.operation.trim().is_empty() {
+        return Err(RuntimeNativeExecutionError::EmptyOperation);
+    }
+    for (field, value) in [
+        ("run_id", request.run_id.as_str()),
+        ("workflow_id", request.workflow_id.as_str()),
+        ("node_id", request.node_id.as_str()),
+        ("conversation_id", request.conversation_id.as_str()),
+        ("token_id", request.token_id.as_str()),
+    ] {
+        if value.trim().is_empty() {
+            return Err(RuntimeNativeExecutionError::EmptyIdentifier { field });
+        }
+    }
+    if request.step_seq < 0 {
+        return Err(RuntimeNativeExecutionError::NegativeStepSequence);
+    }
+    let result = match request.operation.as_str() {
+        "noop" => None,
+        "emit-result" => Some(json!({
+            "executor": RUST_NATIVE_EXECUTOR_TARGET,
+            "operation": request.operation,
+            "schema_version": RUST_NATIVE_OPERATION_SCHEMA_VERSION,
+        })),
+        _ => {
+            return Err(RuntimeNativeExecutionError::UnsupportedOperation(
+                request.operation.clone(),
+            ));
+        }
+    };
+    let successors =
+        authoritative_runtime_successors(&request.runtime_routes, &request.node_id, &[])?;
+    Ok(RecordedWorkerSuccessEffect {
+        contract_version: RECORDED_RUNTIME_CONTRACT_VERSION,
+        effect_id: format!(
+            "native-step|{}|{}|{}|{}",
+            request.run_id, request.node_id, request.token_id, request.step_seq
+        ),
+        status: RuntimeWorkerEffectStatus::Success,
+        state_update: Vec::new(),
+        update: None,
+        state_schema: Map::new(),
+        successors,
+        route_next: Vec::new(),
+        result,
+        errors: Vec::new(),
+        wait_reason: None,
+        resume_payload: None,
+        usage: None,
+        trace_events: vec![json!({
+            "schema_version": RUST_NATIVE_OPERATION_SCHEMA_VERSION,
+            "event": "runtime.native.step.completed",
+            "executor_target": RUST_NATIVE_EXECUTOR_TARGET,
+            "operation": request.operation,
+            "run_id": request.run_id,
+            "workflow_id": request.workflow_id,
+            "conversation_id": request.conversation_id,
+            "turn_node_id": request.turn_node_id,
+            "node_id": request.node_id,
+            "token_id": request.token_id,
+            "parent_token_id": request.parent_token_id,
+            "step_seq": request.step_seq,
+        })],
+    })
+}
+
 impl RuntimeStepExecutePayload {
     pub fn from_recorded_state(
         state: &RecordedRuntimeState,
         request: RuntimeStepExecuteRequest,
     ) -> Self {
+        let executor_target = request
+            .op
+            .as_str()
+            .filter(|operation| native_operation_name(operation).is_some())
+            .map(|_| RUST_NATIVE_EXECUTOR_TARGET.to_owned());
         Self {
             contract_version: RECORDED_RUNTIME_CONTRACT_VERSION,
             kind: "workflow.step.execute".to_owned(),
@@ -100,6 +234,7 @@ impl RuntimeStepExecutePayload {
             turn_node_id: state.user_turn_node_id.clone(),
             node_id: request.node_id.clone(),
             op: request.op,
+            executor_target,
             op_version: state
                 .state
                 .get("_rt_node_versions")
@@ -2158,6 +2293,98 @@ mod tests {
             .state["seed"],
             1
         );
+    }
+
+    #[test]
+    fn native_noop_emits_the_shared_worker_effect_and_static_successor() {
+        let effect = execute_native_step(&RuntimeNativeStepRequest {
+            executor_target: RUST_NATIVE_EXECUTOR_TARGET.to_owned(),
+            operation: "noop".to_owned(),
+            run_id: "run".to_owned(),
+            workflow_id: "workflow".to_owned(),
+            node_id: "start".to_owned(),
+            conversation_id: "conversation".to_owned(),
+            turn_node_id: Some("turn".to_owned()),
+            token_id: "token".to_owned(),
+            parent_token_id: None,
+            step_seq: 1,
+            runtime_routes: vec![RuntimeStaticRoute {
+                edge_id: "edge".to_owned(),
+                source_node_id: "start".to_owned(),
+                target_node_id: "finish".to_owned(),
+                aliases: vec![],
+                join_mask: 0,
+                predicate: None,
+                multiplicity: "one".to_owned(),
+                is_default: true,
+                priority: 100,
+                source_fanout: false,
+            }],
+        })
+        .unwrap();
+
+        assert_eq!(effect.contract_version, RECORDED_RUNTIME_CONTRACT_VERSION);
+        assert_eq!(effect.status, RuntimeWorkerEffectStatus::Success);
+        assert_eq!(effect.successors[0].node_id, "finish");
+        assert!(effect.state_update.is_empty());
+        assert_eq!(
+            effect.trace_events[0]["event"],
+            "runtime.native.step.completed"
+        );
+        assert_eq!(effect.trace_events[0]["schema_version"], 1);
+    }
+
+    #[test]
+    fn native_executor_fails_closed_for_wrong_target_and_unregistered_operations() {
+        let request = RuntimeNativeStepRequest {
+            executor_target: "python-worker".to_owned(),
+            operation: "noop".to_owned(),
+            run_id: "run".to_owned(),
+            workflow_id: "workflow".to_owned(),
+            node_id: "node".to_owned(),
+            conversation_id: "conversation".to_owned(),
+            turn_node_id: None,
+            token_id: "token".to_owned(),
+            parent_token_id: None,
+            step_seq: 0,
+            runtime_routes: vec![],
+        };
+        assert!(matches!(
+            execute_native_step(&request),
+            Err(RuntimeNativeExecutionError::WrongExecutorTarget { .. })
+        ));
+        let emit_result = RuntimeNativeStepRequest {
+            executor_target: RUST_NATIVE_EXECUTOR_TARGET.to_owned(),
+            operation: "emit-result".to_owned(),
+            ..request.clone()
+        };
+        let effect = execute_native_step(&emit_result).unwrap();
+        assert_eq!(
+            effect.result,
+            Some(json!({
+                "executor": RUST_NATIVE_EXECUTOR_TARGET,
+                "operation": "emit-result",
+                "schema_version": RUST_NATIVE_OPERATION_SCHEMA_VERSION,
+            }))
+        );
+        let unsupported = RuntimeNativeStepRequest {
+            executor_target: RUST_NATIVE_EXECUTOR_TARGET.to_owned(),
+            operation: "arbitrary-callback".to_owned(),
+            ..request
+        };
+        assert!(matches!(
+            execute_native_step(&unsupported),
+            Err(RuntimeNativeExecutionError::UnsupportedOperation(operation))
+                if operation == "arbitrary-callback"
+        ));
+    }
+
+    #[test]
+    fn native_operation_recognition_is_strict_and_shared() {
+        assert_eq!(native_operation_name("rust-native/noop"), Some("noop"));
+        assert_eq!(native_operation_name("rust-native/"), None);
+        assert_eq!(native_operation_name("rust-native"), None);
+        assert_eq!(native_operation_name("python/noop"), None);
     }
 
     #[test]

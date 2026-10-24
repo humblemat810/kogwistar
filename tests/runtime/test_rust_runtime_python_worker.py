@@ -320,6 +320,42 @@ def test_async_worker_preflight_rejects_missing_correlation_identity() -> None:
         AsyncRustStepResolverAdapter(resolver).validate_work(work)
 
 
+def test_sync_python_worker_rejects_foreign_executor_target() -> None:
+    resolver = MappingStepResolver()
+    work = _adapter_work()
+    work["payload"]["executor_target"] = "rust-native"
+
+    with pytest.raises(RustWorkerError, match="cannot execute payload"):
+        RustStepResolverAdapter(resolver).validate_work(work)
+
+
+def test_async_python_worker_rejects_foreign_executor_target() -> None:
+    resolver = MappingStepResolver()
+    work = _adapter_work()
+    work["payload"]["worker_protocol"] = "async-v2"
+    work["payload"]["executor_target"] = "rust-native"
+
+    with pytest.raises(RustWorkerError, match="cannot execute payload"):
+        AsyncRustStepResolverAdapter(resolver).validate_work(work)
+
+
+def test_sync_python_worker_rejects_native_operation_without_target() -> None:
+    resolver = MappingStepResolver()
+    work = _adapter_work(op="rust-native/noop")
+
+    with pytest.raises(RustWorkerError, match="rust-native operation"):
+        RustStepResolverAdapter(resolver).validate_work(work)
+
+
+def test_async_python_worker_rejects_native_operation_without_target() -> None:
+    resolver = MappingStepResolver()
+    work = _adapter_work(op="rust-native/noop")
+    work["payload"]["worker_protocol"] = "async-v2"
+
+    with pytest.raises(RustWorkerError, match="rust-native operation"):
+        AsyncRustStepResolverAdapter(resolver).validate_work(work)
+
+
 def test_worker_process_validates_identity_for_generic_executor(
     tmp_path: Path,
 ) -> None:

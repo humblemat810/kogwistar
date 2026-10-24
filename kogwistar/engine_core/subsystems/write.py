@@ -79,6 +79,20 @@ def _engine_identity(engine: object) -> int:
     return id(getattr(engine, "_real", engine))
 
 
+def _validate_graph_model_contract(entity: Node | Edge) -> JsonObject | None:
+    """Run optional Rust model validation before any write-side effect."""
+
+    from ..._rust_bridge import contract_implementation_mode, validate_graph_model_family
+
+    if contract_implementation_mode() == "python":
+        return None
+    from ..graph_contracts import build_graph_model_envelope
+
+    envelope = build_graph_model_envelope(entity)
+    validate_graph_model_family(envelope)
+    return cast(JsonObject, envelope)
+
+
 @runtime_checkable
 class _AsyncSemanticUpsertBackend(Protocol):
     def async_node_upsert(self, **kwargs: object) -> object: ...
@@ -875,6 +889,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         if doc_id is not None:
             node.doc_id = doc_id
         await asyncio.to_thread(self._run_pre_add_node_hooks, node)
+        model_envelope = await asyncio.to_thread(_validate_graph_model_contract, node)
         document, metadata = await asyncio.to_thread(self.node_doc_and_meta, node)
         if node.embedding is None:
             node.embedding = await self._embedding_async(document)
@@ -883,18 +898,44 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
 
             node.embedding = normalize_embedding_vector(node.embedding, allow_none=False)
         metadata["_class_name"] = type(node).__name__
-        payload = node.model_dump(field_mode="backend", exclude=["embedding"])
-        await asyncio.to_thread(
-            self._e._append_event_for_entity,
-            namespace=self._e.namespace,
-            entity_kind="node", entity_id=node.safe_get_id(), op="ADD",
-            payload=payload if isinstance(payload, dict) else {}, required=True,
+        payload = (
+            model_envelope["payload"]
+            if model_envelope is not None
+            else node.model_dump(field_mode="backend", exclude=["embedding"])
         )
-        await self._async_semantic_upsert(
-            entity_kind="node", entity_id=node.safe_get_id(),
-            document=document, metadata=metadata,
-            embedding=_required_embedding(node.embedding),
-        )
+        native_added = False
+        if self._rust_postgres_meta() is not None:
+            native_added = await asyncio.to_thread(
+                self._rust_postgres_projection_upsert,
+                entity_kind="node",
+                entity_id=node.safe_get_id(),
+                document=document,
+                metadata=metadata,
+                embedding=_required_embedding(node.embedding),
+                enqueue_index_jobs=False,
+            ) or await asyncio.to_thread(
+                self._rust_postgres_add,
+                entity_kind="node",
+                entity_id=node.safe_get_id(),
+                document=document,
+                metadata=metadata,
+                embedding=_required_embedding(node.embedding),
+                payload=payload if isinstance(payload, dict) else {},
+                model_envelope=model_envelope,
+                enqueue_index_jobs=False,
+            )
+        if not native_added:
+            await asyncio.to_thread(
+                self._e._append_event_for_entity,
+                namespace=self._e.namespace,
+                entity_kind="node", entity_id=node.safe_get_id(), op="ADD",
+                payload=payload if isinstance(payload, dict) else {}, required=True,
+            )
+            await self._async_semantic_upsert(
+                entity_kind="node", entity_id=node.safe_get_id(),
+                document=document, metadata=metadata,
+                embedding=_required_embedding(node.embedding),
+            )
         await self._async_post_write(entity_kind="node", entity=node)
         await asyncio.to_thread(
             self._e._emit_change,
@@ -922,6 +963,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         await asyncio.to_thread(self._e.persist.assert_endpoints_exist, edge)
         if await asyncio.to_thread(self._run_pre_add_edge_hooks, edge, pure=False):
             return None
+        model_envelope = await asyncio.to_thread(_validate_graph_model_contract, edge)
         document = edge.model_dump_json(field_mode="backend", exclude=["embedding"])
         if edge.embedding is None:
             edge.embedding = await self._embedding_async(document)
@@ -930,18 +972,44 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
 
             edge.embedding = normalize_embedding_vector(edge.embedding, allow_none=False)
         metadata = await asyncio.to_thread(self.enrich_edge_meta, edge)
-        payload = edge.model_dump(field_mode="backend", exclude=["embedding"])
-        await asyncio.to_thread(
-            self._e._append_event_for_entity,
-            namespace=self._e.namespace,
-            entity_kind="edge", entity_id=edge.safe_get_id(), op="ADD",
-            payload=payload if isinstance(payload, dict) else {}, required=True,
+        payload = (
+            model_envelope["payload"]
+            if model_envelope is not None
+            else edge.model_dump(field_mode="backend", exclude=["embedding"])
         )
-        await self._async_semantic_upsert(
-            entity_kind="edge", entity_id=edge.safe_get_id(),
-            document=document, metadata=metadata,
-            embedding=_required_embedding(edge.embedding),
-        )
+        native_added = False
+        if self._rust_postgres_meta() is not None:
+            native_added = await asyncio.to_thread(
+                self._rust_postgres_projection_upsert,
+                entity_kind="edge",
+                entity_id=edge.safe_get_id(),
+                document=document,
+                metadata=metadata,
+                embedding=_required_embedding(edge.embedding),
+                enqueue_index_jobs=False,
+            ) or await asyncio.to_thread(
+                self._rust_postgres_add,
+                entity_kind="edge",
+                entity_id=edge.safe_get_id(),
+                document=document,
+                metadata=metadata,
+                embedding=_required_embedding(edge.embedding),
+                payload=payload if isinstance(payload, dict) else {},
+                model_envelope=model_envelope,
+                enqueue_index_jobs=False,
+            )
+        if not native_added:
+            await asyncio.to_thread(
+                self._e._append_event_for_entity,
+                namespace=self._e.namespace,
+                entity_kind="edge", entity_id=edge.safe_get_id(), op="ADD",
+                payload=payload if isinstance(payload, dict) else {}, required=True,
+            )
+            await self._async_semantic_upsert(
+                entity_kind="edge", entity_id=edge.safe_get_id(),
+                document=document, metadata=metadata,
+                embedding=_required_embedding(edge.embedding),
+            )
         await self._async_post_write(entity_kind="edge", entity=edge)
         await asyncio.to_thread(
             self._e._emit_change,
@@ -1025,6 +1093,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         metadata: JsonObject,
         embedding: Sequence[float],
         payload: JsonObject,
+        model_envelope: JsonObject | None = None,
         enqueue_index_jobs: bool = True,
     ) -> bool:
         meta = self._rust_postgres_meta()
@@ -1040,23 +1109,26 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             else self._projection_backend().domains.name
         )
         with meta.transaction():
-            meta.apply_graph_mutation(
-                namespace=self._e.namespace,
-                workspace_id=metadata.get("workspace_id"),
-                graph_space=metadata.get("graph_space"),
-                table=table,
-                entity_kind=entity_kind,
-                event_id=str(uuid.uuid4()),
-                op="ADD",
-                record={
+            mutation_values: JsonObject = {
+                "namespace": self._e.namespace,
+                "workspace_id": metadata.get("workspace_id"),
+                "graph_space": metadata.get("graph_space"),
+                "table": table,
+                "entity_kind": entity_kind,
+                "event_id": str(uuid.uuid4()),
+                "op": "ADD",
+                "record": {
                     "id": entity_id,
                     "document": document,
                     "metadata": metadata,
                     "embedding": list(embedding),
                 },
-                payload=payload,
-                embedding_dim=self._projection_backend().embedding_dim,
-            )
+                "payload": payload,
+                "embedding_dim": self._projection_backend().embedding_dim,
+            }
+            if model_envelope is not None:
+                mutation_values["model_envelope"] = model_envelope
+            meta.apply_graph_mutation(**mutation_values)
             if enqueue_index_jobs and entity_kind == "node":
                 self._e.enqueue_index_jobs_for_node(entity_id, op="UPSERT")
             elif enqueue_index_jobs and entity_kind == "edge":
@@ -1280,6 +1352,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             if doc_id is not None:
                 node.doc_id = doc_id
             self._run_pre_add_node_hooks(node)
+            _validate_graph_model_contract(node)
             doc, meta = self.node_doc_and_meta(node)
             meta["_class_name"] = type(node).__name__
             payload = node.model_dump(field_mode="backend", exclude=["embedding"])
@@ -1300,6 +1373,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         if doc_id is not None:
             node.doc_id = doc_id
         self._run_pre_add_node_hooks(node)
+        model_envelope = _validate_graph_model_contract(node)
 
         doc, meta = self.node_doc_and_meta(node)
         if node.embedding is None:
@@ -1307,7 +1381,11 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         node.embedding = normalize_embedding_vector(node.embedding, allow_none=False)
         meta["_class_name"] = type(node).__name__
 
-        payload = node.model_dump(field_mode="backend", exclude=["embedding"])
+        payload = (
+            model_envelope["payload"]
+            if model_envelope is not None
+            else node.model_dump(field_mode="backend", exclude=["embedding"])
+        )
         native_added = self._rust_postgres_projection_upsert(
             entity_kind="node",
             entity_id=node.safe_get_id(),
@@ -1321,6 +1399,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             metadata=meta,
             embedding=_required_embedding(node.embedding),
             payload=payload if isinstance(payload, dict) else {},
+            model_envelope=model_envelope,
         )
 
         if not native_added:
@@ -1385,6 +1464,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             self._e.persist.assert_endpoints_exist(edge)
             if self._run_pre_add_edge_hooks(edge, pure=False):
                 return
+            _validate_graph_model_contract(edge)
             payload = edge.model_dump(field_mode="backend", exclude=["embedding"])
             with self._e.uow():
                 self._e._append_event_for_entity(
@@ -1412,15 +1492,19 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         self._e.persist.assert_endpoints_exist(edge)
         if self._run_pre_add_edge_hooks(edge, pure=False):
             return
+        model_envelope = _validate_graph_model_contract(edge)
 
         doc = edge.model_dump_json(field_mode="backend", exclude=["embedding"])
         if edge.embedding is None:
             edge.embedding = self._e.embed.iterative_defensive_emb(str(doc))
         edge.embedding = normalize_embedding_vector(edge.embedding, allow_none=False)
 
-        doc = edge.model_dump_json(field_mode="backend", exclude=["embedding"])
         base_metadata = [self.enrich_edge_meta(edge)]
-        payload = edge.model_dump(field_mode="backend", exclude=["embedding"])
+        payload = (
+            model_envelope["payload"]
+            if model_envelope is not None
+            else edge.model_dump(field_mode="backend", exclude=["embedding"])
+        )
         native_added = self._rust_postgres_projection_upsert(
             entity_kind="edge",
             entity_id=edge.safe_get_id(),
@@ -1434,6 +1518,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             metadata=base_metadata[0],
             embedding=_required_embedding(edge.embedding),
             payload=payload if isinstance(payload, dict) else {},
+            model_envelope=model_envelope,
         )
         if not native_added:
             self._e._append_event_for_entity(

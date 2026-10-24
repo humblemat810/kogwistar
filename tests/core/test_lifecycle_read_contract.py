@@ -1,13 +1,33 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
+from kogwistar.acl.models import ACLEdge, ACLNode
+from kogwistar.conversation.models import ConversationEdge, ConversationNode
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
-from kogwistar.engine_core.models import Grounding, Node, Span
+from kogwistar.engine_core.models import (
+    AssocFlattenedLLMEdge,
+    AssocFlattenedLLMNode,
+    Edge,
+    EdgeMixin,
+    FlattenedLLMEdge,
+    FlattenedLLMNode,
+    Grounding,
+    LLMEdge,
+    LLMNode,
+    Node,
+    PureChromaEdge,
+    PureChromaNode,
+    Span,
+)
 from kogwistar.engine_core.utils.refs import backend_update_record_lifecycle
+from kogwistar.runtime.models import WorkflowEdge, WorkflowNode
 from tests._helpers.fake_backend import build_fake_backend
+from tests._helpers.graph_builders import build_entity_node, build_relationship_edge
 
 pytestmark = pytest.mark.regression
 
@@ -34,6 +54,157 @@ class _CountingEmbeddingFunction:
                 "metadata-only lifecycle update tried to recompute an embedding"
             )
         return [[0.1, 0.2, 0.3] for _ in input]
+
+
+def test_edge_model_shares_tombstone_and_level_metadata_contract() -> None:
+    edge = build_relationship_edge(
+        edge_id="edge-contract",
+        src="source",
+        tgt="target",
+        doc_id="doc:edge-contract",
+        metadata={"level_from_root": 2},
+    )
+
+    assert edge.metadata["lifecycle_status"] == "active"
+    assert edge.metadata["redirect_to_id"] is None
+    assert edge.level_from_root == 2
+
+    explicit_level = Edge.model_validate(
+        {
+            **edge.model_dump(field_mode="backend", dump_format="json"),
+            "level_from_root": 3,
+        }
+    )
+    assert explicit_level.level_from_root == 3
+    assert explicit_level.metadata["level_from_root"] == 3
+
+    validated = Edge.model_validate(
+        {
+            **edge.model_dump(field_mode="backend", dump_format="json"),
+            "metadata": {"lifecycle_status": "deleted"},
+        }
+    )
+    assert validated.metadata["lifecycle_status"] == "tombstoned"
+    assert validated.metadata["redirect_to_id"] is None
+    with pytest.raises(ValidationError, match="lifecycle_status"):
+        Edge.model_validate(
+            {
+                **edge.model_dump(field_mode="backend", dump_format="json"),
+                "metadata": {"lifecycle_status": "purged"},
+            }
+        )
+
+
+def test_edge_model_extends_node_mixin_contract() -> None:
+    node_mixins = {base for base in Node.__mro__ if base.__name__.endswith("Mixin")}
+    edge_mixins = {base for base in Edge.__mro__ if base.__name__.endswith("Mixin")}
+
+    assert node_mixins <= edge_mixins
+    assert EdgeMixin in edge_mixins
+    assert len(edge_mixins) > len(node_mixins)
+
+
+@pytest.mark.parametrize(
+    ("node_type", "edge_type"),
+    [
+        (Node, Edge),
+        (LLMNode, LLMEdge),
+        (FlattenedLLMNode, FlattenedLLMEdge),
+        (AssocFlattenedLLMNode, AssocFlattenedLLMEdge),
+        (PureChromaNode, PureChromaEdge),
+        (ACLNode, ACLEdge),
+        (ConversationNode, ConversationEdge),
+        (WorkflowNode, WorkflowEdge),
+    ],
+)
+def test_each_node_edge_family_preserves_shared_mixin_contract(
+    node_type: type[object], edge_type: type[object]
+) -> None:
+    """Edges retain shared graph capabilities but may omit node-only semantics."""
+    node_only_mixins = {"ConversationRoleMixin"}
+    node_mixins = {
+        base.__name__
+        for base in node_type.__mro__
+        if base.__name__.endswith("Mixin")
+    }
+    edge_mixins = {
+        base.__name__
+        for base in edge_type.__mro__
+        if base.__name__.endswith("Mixin")
+    }
+
+    assert (node_mixins - node_only_mixins) <= edge_mixins
+    assert "EdgeMixin" in edge_mixins
+    assert edge_mixins > (node_mixins - node_only_mixins)
+
+
+def test_semantic_queries_filter_tombstones_from_stale_projections(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path),
+        backend_factory=build_fake_backend,
+        embedding_function=_CountingEmbeddingFunction(),
+    )
+    node = Node(
+        id="query-node-tombstone",
+        label="query node",
+        type="entity",
+        summary="query node",
+        mentions=[Grounding(spans=[Span.from_dummy_for_document()])],
+        doc_id="doc:query",
+        metadata={},
+        embedding=[1.0, 0.0, 0.0],
+    )
+    edge = build_relationship_edge(
+        edge_id="query-edge-tombstone",
+        src="query-edge-source",
+        tgt="query-edge-target",
+        doc_id="doc:query",
+        metadata={},
+        embedding=[1.0, 0.0, 0.0],
+    )
+
+    engine.write.add_node(node)
+    engine.write.add_node(
+        build_entity_node(
+            node_id="query-edge-source",
+            doc_id="doc:query",
+            embedding=[0.0, 1.0, 0.0],
+        )
+    )
+    engine.write.add_node(
+        build_entity_node(
+            node_id="query-edge-target",
+            doc_id="doc:query",
+            embedding=[0.0, 0.0, 1.0],
+        )
+    )
+    engine.write.add_edge(edge)
+    assert engine.lifecycle.tombstone_node(node.id)
+    assert engine.lifecycle.tombstone_edge(edge.id)
+    node = engine.read.get_nodes(ids=[node.id], resolve_mode="include_tombstones")[0]
+    edge = engine.read.get_edges(ids=[edge.id], resolve_mode="include_tombstones")[0]
+    assert node.metadata["lifecycle_status"] == "tombstoned"
+    assert edge.metadata["lifecycle_status"] == "tombstoned"
+
+    def query_result(item: Node | Edge) -> dict[str, object]:
+        return {
+            "ids": [[item.id]],
+            "documents": [
+                [json.dumps(item.model_dump(field_mode="backend", dump_format="json"))]
+            ],
+            "embeddings": [[[1.0, 0.0, 0.0]]],
+            "metadatas": [[item.metadata]],
+        }
+
+    monkeypatch.setattr(engine.backend, "node_query", lambda **_kwargs: query_result(node))
+    monkeypatch.setattr(engine.backend, "edge_query", lambda **_kwargs: query_result(edge))
+    try:
+        assert engine.read.query_nodes(query_embeddings=[[1.0, 0.0, 0.0]]) == [[]]
+        assert engine.read.query_edges(query_embeddings=[[1.0, 0.0, 0.0]]) == [[]]
+    finally:
+        engine.close()
 
 
 @pytest.mark.ci_full

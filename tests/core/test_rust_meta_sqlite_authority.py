@@ -198,6 +198,94 @@ def test_rust_session_reuses_connection_across_reads_and_transaction(
     assert all(call["reuse_session"] is True for call in calls)
 
 
+def test_rust_batch_facade_uses_one_native_call(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_store_sqlite(**kwargs: object) -> list[object]:
+        calls.append(kwargs)
+        return [1, None]
+
+    monkeypatch.setattr(rust_meta_sqlite, "store_sqlite", fake_store_sqlite)
+    store = RustEngineSQLite(tmp_path, "batch.sqlite")
+    operations = [{"kind": "next_global_seq"}, {"kind": "current_global_seq"}]
+
+    assert store.execute_batch(operations) == [1, None]
+    assert calls == [
+        {
+            "path": tmp_path / "batch.sqlite",
+            "operation": {
+                "kind": "batch",
+                "operations": operations,
+                "abort": False,
+            },
+            "transaction_id": None,
+            "reuse_session": False,
+        }
+    ]
+
+
+def test_rust_batch_facade_empty_input_does_not_cross_native_seam(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    def fail_store_sqlite(**kwargs: object) -> object:
+        raise AssertionError(f"empty batch unexpectedly called Rust: {kwargs}")
+
+    monkeypatch.setattr(rust_meta_sqlite, "store_sqlite", fail_store_sqlite)
+    assert RustEngineSQLite(tmp_path).execute_batch([]) == []
+
+
+def test_rust_batch_facade_rejects_nested_transaction(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    store = RustEngineSQLite(tmp_path, "nested-batch.sqlite")
+    token = store._transaction_id.set("active")
+    try:
+        with pytest.raises(RuntimeError, match="cannot be nested"):
+            store.execute_batch([{"kind": "next_global_seq"}])
+    finally:
+        store._transaction_id.reset(token)
+
+
+def test_rust_batch_facade_preserves_atomic_rollback(tmp_path: Path) -> None:
+    store = RustEngineSQLite(tmp_path, "batch-atomic.sqlite")
+    store.ensure_initialized()
+    operations = [
+        {
+            "kind": "raw_append",
+            "namespace": "batch",
+            "event_id": "committed",
+            "entity_kind": "node",
+            "entity_id": "n1",
+            "op": "UPSERT",
+            "payload_json": "{}",
+        },
+        {
+            "kind": "replace_named_projection",
+            "namespace": "batch",
+            "key": "head",
+            "payload": {"revision": 1},
+            "last_authoritative_seq": 1,
+            "last_materialized_seq": 1,
+            "projection_schema_version": 1,
+            "materialization_status": "ready",
+        },
+    ]
+
+    result = store.execute_batch(operations)
+    assert isinstance(result, list)
+    assert store.get_latest_entity_event_seq(namespace="batch") == 1
+    assert store.get_named_projection("batch", "head")["payload"] == {"revision": 1}
+
+    aborted = [dict(operations[0], event_id="rolled-back"), dict(operations[1], key="rollback")]
+    with pytest.raises(RustParityError) as exc:
+        store.execute_batch(aborted, abort=True)
+    assert exc.value.code == "KOGWISTAR_STORE_TRANSACTION_ABORTED"
+    assert store.get_latest_entity_event_seq(namespace="batch") == 1
+    assert store.get_named_projection("batch", "rollback") is None
+
+
 def test_rust_authority_database_is_readable_after_python_rollback(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

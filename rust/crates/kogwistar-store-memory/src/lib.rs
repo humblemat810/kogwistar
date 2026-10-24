@@ -1725,7 +1725,7 @@ mod tests {
     use super::*;
     use kogwistar_store::{
         GraphMutation, GraphMutationStore, GraphProjectionRead, GraphProjectionVectorQuery,
-        GraphScope, ProjectionWriteStore, ServerRunReadStore, ServerRunWriteStore,
+        GraphRecord, GraphScope, ProjectionWriteStore, ServerRunReadStore, ServerRunWriteStore,
         ShadowInspectable,
     };
     use serde_json::{Value, json};
@@ -1771,6 +1771,81 @@ mod tests {
             record: record(id, "red", embedding),
             embedding_dim: embedding.len(),
         }
+    }
+
+    #[test]
+    fn typed_graph_mutation_guard_is_atomic_at_the_memory_store_seam() {
+        let store = InMemoryStore::new();
+        let scope = GraphScope {
+            namespace: "typed".to_owned(),
+            workspace_id: Some("ws".to_owned()),
+            graph_space: Some("facts".to_owned()),
+        };
+        let fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/python-graph-model-payloads-v1.json"
+        )))
+        .expect("valid graph model fixture");
+        let payload = fixture["cases"][0]["payload"].clone();
+        let envelope = kogwistar_contracts::GraphModelEnvelope::new(
+            kogwistar_contracts::GraphModelClass::Node,
+            payload.clone(),
+        );
+        let mutation = GraphMutation {
+            scope: scope.clone(),
+            table: "gke_nodes".to_owned(),
+            entity_kind: "node".to_owned(),
+            event_id: "typed-event".to_owned(),
+            op: "ADD".to_owned(),
+            payload: payload.clone(),
+            record: GraphRecord {
+                id: "parity-node".to_owned(),
+                document: None,
+                metadata: payload["metadata"].as_object().cloned().unwrap_or_default(),
+                embedding: Some(vec![1.0, 0.0, 0.0]),
+            },
+            embedding_dim: 3,
+        };
+        let applied = block_on(store.apply_typed_graph_mutation(mutation.clone(), envelope));
+        assert!(applied.is_ok());
+
+        let mut invalid = mutation;
+        invalid.event_id = "invalid-event".to_owned();
+        invalid.record.id = "different-id".to_owned();
+        let invalid_envelope = kogwistar_contracts::GraphModelEnvelope::new(
+            kogwistar_contracts::GraphModelClass::Node,
+            payload,
+        );
+        assert!(block_on(store.apply_typed_graph_mutation(invalid, invalid_envelope)).is_err());
+        let records = block_on(store.graph_projection_records(GraphProjectionRead {
+            scope,
+            table: "gke_nodes".to_owned(),
+            ids: None,
+            metadata: Default::default(),
+            limit: 10,
+        }))
+        .expect("read memory projection");
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].id, "parity-node");
+    }
+
+    #[test]
+    fn unsupported_atomic_graph_batches_fail_closed() {
+        let store = InMemoryStore::new();
+        let scope = GraphScope {
+            namespace: "atomic".to_owned(),
+            workspace_id: Some("ws".to_owned()),
+            graph_space: Some("facts".to_owned()),
+        };
+        let mutation = graph_mutation(scope, "atomic-event", "atomic-node", &[1.0, 0.0]);
+
+        let error = block_on(store.apply_graph_mutations_atomic(vec![mutation]))
+            .expect_err("in-memory store must not claim atomic batch support");
+        assert!(
+            error
+                .to_string()
+                .contains("atomic graph mutation batches are not supported")
+        );
     }
 
     #[test]

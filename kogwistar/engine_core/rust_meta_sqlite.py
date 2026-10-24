@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import contextvars
 import uuid
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import fields
 from pathlib import Path
@@ -86,6 +86,37 @@ class RustEngineSQLite:
                 ),
             ),
         )
+
+    @property
+    def transaction_active(self) -> bool:
+        """Whether this facade currently owns an explicit native transaction."""
+        return self._transaction_id.get() is not None
+
+    def execute_batch(
+        self, operations: Sequence[JsonObject], *, abort: bool = False
+    ) -> list[JsonValue]:
+        """Execute several compatible store operations across one native seam.
+
+        The Rust store owns one immediate transaction for the batch. Existing
+        one-operation methods remain unchanged; callers opt into this path only
+        when the operations are intentionally atomic and do not require an
+        externally visible commit between individual items.
+        """
+        if not operations:
+            return []
+        if self.transaction_active:
+            raise RuntimeError(
+                "Rust store batches cannot be nested inside an active transaction; "
+                "use individual operations or make the batch the transaction owner"
+            )
+        result = self._call(
+            "batch",
+            operations=[dict(operation) for operation in operations],
+            abort=abort,
+        )
+        if not isinstance(result, list):
+            raise RuntimeError("Rust SQLite batch returned a non-list result")
+        return cast(list[JsonValue], result)
 
     def ensure_initialized(self) -> None:
         self.persistent_directory.mkdir(parents=True, exist_ok=True)

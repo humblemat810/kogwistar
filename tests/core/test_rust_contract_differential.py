@@ -18,14 +18,13 @@ from kogwistar.engine_core.in_memory_backend import (
     _matches_where,
     _matches_where_python,
 )
+from kogwistar.engine_core.graph_contracts import SUPPORTED_GRAPH_MODEL_CLASSES
 from kogwistar.engine_core.models import (
     Edge,
     FlattenedLLMEdge,
-    FlattenedLLMNode,
     Grounding,
     LLMEdge,
     LLMNode,
-    PureChromaEdge,
     PureChromaNode,
     Node,
     Span,
@@ -34,7 +33,17 @@ from kogwistar.engine_core.models import (
 from kogwistar.id_provider import stable_id
 from kogwistar.provenance import evidence_pack_digest_hash
 from kogwistar.runtime.base_runtime import apply_state_update_inplace
-from kogwistar.runtime.models import WorkflowEdge, WorkflowNode
+from kogwistar.runtime.models import (
+    WorkflowCancelledNode,
+    WorkflowCheckpointNode,
+    WorkflowCompletedNode,
+    WorkflowEdge,
+    WorkflowFailedNode,
+    WorkflowRunNode,
+    WorkflowRuntimeEdge,
+    WorkflowStepExecNode,
+    WorkflowNode,
+)
 from kogwistar.runtime.serialize import stable_json_dumps
 
 pytestmark = [pytest.mark.ci, pytest.mark.core]
@@ -67,6 +76,15 @@ def test_stable_id_matches_python_golden(monkeypatch, mode: str) -> None:
     monkeypatch.setenv("KOGWISTAR_IMPL_CONTRACTS", mode)
     for case in FIXTURE["stable_ids"]:
         assert str(stable_id(case["kind"], *case["parts"])) == case["expected"]
+
+
+@pytest.mark.requires_rust
+def test_native_graph_model_registry_matches_python_seam() -> None:
+    """Detect a stale native extension before it accepts partial graph parity."""
+
+    from kogwistar import _rust
+
+    assert tuple(_rust.supported_graph_model_classes()) == SUPPORTED_GRAPH_MODEL_CLASSES
 
 
 @pytest.mark.parametrize("mode", ["shadow", "rust"])
@@ -198,6 +216,90 @@ def test_python_family_payloads_validate_through_rust_graph_contract(monkeypatch
     }
     workflow_edge = project(WorkflowEdge, workflow_edge)
     _rust.validate_graph_model_family(envelope("workflow_edge", workflow_edge))
+
+    runtime_nodes = [
+        (
+            WorkflowRunNode,
+            "workflow_run_node",
+            {
+                "entity_type": "workflow_run",
+                "workflow_id": "wf:python-fixture",
+                "run_id": "run:python-fixture",
+                "conversation_id": "conversation:python-fixture",
+                "turn_node_id": "turn:python-fixture",
+            },
+        ),
+        (
+            WorkflowStepExecNode,
+            "workflow_step_exec_node",
+            {
+                "entity_type": "workflow_step_exec",
+                "run_id": "run:python-fixture",
+                "workflow_id": "wf:python-fixture",
+                "workflow_node_id": "wf-node:parse",
+                "step_seq": 0,
+                "op": "parse",
+                "result_json": "{}",
+            },
+        ),
+        (
+            WorkflowCheckpointNode,
+            "workflow_checkpoint_node",
+            {
+                "entity_type": "workflow_checkpoint",
+                "run_id": "run:python-fixture",
+                "workflow_id": "wf:python-fixture",
+                "step_seq": 0,
+                "state_json": "{}",
+            },
+        ),
+        (
+            WorkflowCompletedNode,
+            "workflow_completed_node",
+            {
+                "entity_type": "workflow_completed",
+                "workflow_id": "wf:python-fixture",
+                "run_id": "run:python-fixture",
+                "conversation_id": "conversation:python-fixture",
+                "accepted_step_seq": 0,
+            },
+        ),
+        (
+            WorkflowCancelledNode,
+            "workflow_cancelled_node",
+            {
+                "entity_type": "workflow_cancelled",
+                "workflow_id": "wf:python-fixture",
+                "run_id": "run:python-fixture",
+                "conversation_id": "conversation:python-fixture",
+                "accepted_step_seq": 0,
+            },
+        ),
+        (
+            WorkflowFailedNode,
+            "workflow_failed_node",
+            {
+                "entity_type": "workflow_failed",
+                "workflow_id": "wf:python-fixture",
+                "run_id": "run:python-fixture",
+                "conversation_id": "conversation:python-fixture",
+                "accepted_step_seq": 0,
+            },
+        ),
+    ]
+    for model_type, model_class, metadata in runtime_nodes:
+        runtime_node = copy.deepcopy(base_node)
+        runtime_node["metadata"] = metadata
+        runtime_node = project(model_type, runtime_node)
+        _rust.validate_graph_model_family(envelope(model_class, runtime_node))
+
+    runtime_edge = copy.deepcopy(GRAPH_MODEL_FIXTURE["cases"][1]["payload"])
+    runtime_edge["metadata"] = {
+        "entity_type": "conversation_edge",
+        "relation": "next",
+    }
+    runtime_edge = project(WorkflowRuntimeEdge, runtime_edge)
+    _rust.validate_graph_model_family(envelope("workflow_runtime_edge", runtime_edge))
 
     conversation_node = copy.deepcopy(base_node)
     conversation_node["metadata"] = {

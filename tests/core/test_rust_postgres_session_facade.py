@@ -186,6 +186,27 @@ def test_postgres_meta_facade_routes_nested_sequence_and_queue_calls(monkeypatch
     assert len({value for _, value in calls if value is not None}) == 1
 
 
+def test_postgres_meta_facade_reuses_the_shared_atomic_batch_seam(monkeypatch):
+    calls: list[tuple[str, str | None]] = []
+
+    def fake_store_postgres(*, operation, transaction_id, **kwargs):
+        del kwargs
+        calls.append((operation["kind"], transaction_id))
+        return [1, None]
+
+    monkeypatch.setattr(
+        "kogwistar.engine_core.rust_postgres_session.store_postgres",
+        fake_store_postgres,
+    )
+    store = RustEnginePostgresMetaStore(
+        dsn="postgresql://example/db", schema="test"
+    )
+    assert store.execute_batch(
+        [{"kind": "next_global_seq"}, {"kind": "current_global_seq"}]
+    ) == [1, None]
+    assert calls == [("batch", None)]
+
+
 def test_postgres_meta_facade_validates_native_graph_read_shapes(monkeypatch):
     results = {
         "graph_projection_records": [{"id": "n1"}],

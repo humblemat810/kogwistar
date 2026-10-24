@@ -9,21 +9,34 @@ use std::fmt::{self, Formatter};
 use thiserror::Error;
 use uuid::Uuid;
 
+mod delegation;
 mod graph_model;
+pub use delegation::{
+    DELEGATION_AUTHORITY_SCHEMA_VERSION, DelegationAuthorityV1, DelegationError,
+    attenuate_capabilities,
+};
 pub use graph_model::{
     AclEdgeMetadataV1, AclEdgeTypeV1, AclGrainV1, AclModeV1, AclNodeMetadataV1,
     ConversationCausalTypeV1, ConversationEdgeMetadataV1, ConversationNodeMetadataV1,
     ConversationRoleV1, DocumentNodeTypeV1, DocumentNodeV1, EdgeEntity, EdgeId,
-    FlattenedGroundingV1, FlattenedLlmEdgeV1, FlattenedLlmNodeV1, GraphEdgePayload, GraphEntity,
-    GraphEntityCoreV1, GraphEntityKind, GraphEntityPayload, GraphEntityType, GraphModelClass,
-    GraphModelEnvelope, GraphModelError, GraphModelFamily, GroundingV1, HasLevel, HasLifecycle,
-    HasMetadata, LifecycleStatus, LlmEdgeV1, LlmEntityFieldsV1, LlmGroundingV1, LlmNodeV1,
-    LlmTextSpanV1, MentionVerificationMethod, MentionVerificationV1, NodeId,
-    PYTHON_GRAPH_WIRE_VERSION, PersistentEdgeV1, PersistentGraphEntityV1, PersistentNodeV1,
-    PureChromaEdgeV1, PureChromaFieldsV1, PureChromaNodeV1, RequiredNullable, TextSpanV1,
-    TypedGraphEntity, WorkflowEdgeMetadataV1, WorkflowNodeMetadataV1,
-    validate_graph_model_family_from_str,
+    FlattenedGroundingV1, FlattenedLlmEdgeV1, FlattenedLlmNodeV1, GraphCapabilityProfile,
+    GraphEdgePayload, GraphEntity, GraphEntityCoreV1, GraphEntityKind, GraphEntityPayload,
+    GraphEntityType, GraphModelClass, GraphModelEnvelope, GraphModelError, GraphModelFamily,
+    GroundingV1, HasLevel, HasLifecycle, HasMetadata, LifecycleStatus, LlmEdgeV1,
+    LlmEntityFieldsV1, LlmGroundingV1, LlmNodeV1, LlmTextSpanV1, MentionVerificationMethod,
+    MentionVerificationV1, NodeId, PYTHON_GRAPH_WIRE_VERSION, PersistentEdgeV1,
+    PersistentGraphEntityV1, PersistentNodeV1, PureChromaEdgeV1, PureChromaFieldsV1,
+    PureChromaNodeV1, RequiredNullable, TextSpanV1, TypedGraphEntity, WorkflowEdgeMetadataV1,
+    WorkflowNodeMetadataV1, validate_graph_model_family_from_str,
 };
+
+/// Return the stable graph-class names exposed by the versioned Python seam.
+pub fn supported_graph_model_classes() -> Vec<&'static str> {
+    graph_model::GraphModelClass::all()
+        .iter()
+        .map(|class| class.wire_name())
+        .collect()
+}
 
 pub const CONTRACT_VERSION: &str = "1.0.0";
 

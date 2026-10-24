@@ -578,7 +578,10 @@ class TombstoneMixin(BaseModel):
         else:
             if v["lifecycle_status"] == "deleted":
                 v["lifecycle_status"] = "tombstoned"
-            assert v["lifecycle_status"] in ["active", "tombstoned"]
+            if v["lifecycle_status"] not in ["active", "tombstoned"]:
+                raise ValueError(
+                    "lifecycle_status must be 'active' or 'tombstoned'"
+                )
         if "redirect_to_id" not in v:
             v["redirect_to_id"] = None
         return v
@@ -636,7 +639,13 @@ class Node(
 
 
 class Edge(
-    IdPolicyMixin, ChromaValidateSourceMixin, ChromaMixin, EdgeMixin, GraphEntityRefBase
+    IdPolicyMixin,
+    TombstoneMixin,
+    LevelAwareMixin,
+    ChromaValidateSourceMixin,
+    ChromaMixin,
+    EdgeMixin,
+    GraphEntityRefBase,
 ):
     """
     Base **provenance-heavy** knowledge graph edge.
@@ -646,7 +655,8 @@ class Edge(
     via edge-to-edge connections and rich metadata.
     """
 
-    # Edge with ref session enforced
+    # Edges share lifecycle and hierarchy metadata with nodes, while retaining
+    # their edge-specific endpoint and relation contract.
     id_kind: ClassVar[str] = "kg.edge"
 
     def safe_get_id(self) -> str:

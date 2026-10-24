@@ -552,6 +552,10 @@ def test_sync_runtime_resolver_send_lane_message_reaches_sync_mirror(
 
 
 def test_sync_runtime_dispatches_frozen_operation_version(tmp_path, monkeypatch):
+    """New sync mirror: `tests/runtime/test_async_runtime_bijection_contract.py::test_async_runtime_dispatches_frozen_operation_version`.
+    Verify sync execution dispatches the frozen operation version rather than
+    the currently registered default.
+    """
     workflow_id = "wf-sync-versioned-dispatch"
     _patch_single_step_design(
         monkeypatch, workflow_id=workflow_id, op="compute", version="v1"

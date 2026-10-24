@@ -37,6 +37,13 @@ pub enum GraphModelClass {
     ConversationEdge,
     WorkflowNode,
     WorkflowEdge,
+    WorkflowRunNode,
+    WorkflowStepExecNode,
+    WorkflowCheckpointNode,
+    WorkflowCompletedNode,
+    WorkflowCancelledNode,
+    WorkflowFailedNode,
+    WorkflowRuntimeEdge,
     PureChromaNode,
     PureChromaEdge,
     DocNode,
@@ -56,19 +63,156 @@ pub enum GraphModelFamily {
     Acl,
     Conversation,
     Workflow,
+    WorkflowRuntime,
     PureChroma,
     Document,
     Llm,
     FlattenedLlm,
 }
 
+/// Capabilities exposed by a graph model at a language seam.
+///
+/// This is deliberately a description of the model contract, not an
+/// authorization grant.  Edge profiles must retain every capability of their
+/// corresponding node profile and add incidence operations.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GraphCapabilityProfile {
+    pub graph_entity: bool,
+    pub edge_entity: bool,
+    pub metadata: bool,
+    pub lifecycle: bool,
+    pub level: bool,
+}
+
+const PERSISTENT_NODE_CAPABILITIES: GraphCapabilityProfile = GraphCapabilityProfile {
+    graph_entity: true,
+    edge_entity: false,
+    metadata: true,
+    lifecycle: true,
+    level: true,
+};
+
+const PERSISTENT_EDGE_CAPABILITIES: GraphCapabilityProfile = GraphCapabilityProfile {
+    graph_entity: true,
+    edge_entity: true,
+    metadata: true,
+    lifecycle: true,
+    level: true,
+};
+
+const LLM_NODE_CAPABILITIES: GraphCapabilityProfile = GraphCapabilityProfile {
+    graph_entity: true,
+    edge_entity: false,
+    metadata: false,
+    lifecycle: false,
+    level: false,
+};
+
+const LLM_EDGE_CAPABILITIES: GraphCapabilityProfile = GraphCapabilityProfile {
+    graph_entity: true,
+    edge_entity: true,
+    metadata: false,
+    lifecycle: false,
+    level: false,
+};
+
+const PURE_CHROMA_NODE_CAPABILITIES: GraphCapabilityProfile = GraphCapabilityProfile {
+    graph_entity: true,
+    edge_entity: false,
+    metadata: true,
+    lifecycle: false,
+    level: false,
+};
+
+const PURE_CHROMA_EDGE_CAPABILITIES: GraphCapabilityProfile = GraphCapabilityProfile {
+    graph_entity: true,
+    edge_entity: true,
+    metadata: true,
+    lifecycle: false,
+    level: false,
+};
+
 impl GraphModelClass {
+    /// Return every graph class supported by this contract version.
+    ///
+    /// Keep this list explicit so language bindings can attest that their
+    /// registries describe the same wire contract before using the bridge.
+    pub const fn all() -> &'static [Self] {
+        &[
+            Self::Node,
+            Self::Edge,
+            Self::AclNode,
+            Self::AclEdge,
+            Self::ConversationNode,
+            Self::ConversationEdge,
+            Self::WorkflowNode,
+            Self::WorkflowEdge,
+            Self::WorkflowRunNode,
+            Self::WorkflowStepExecNode,
+            Self::WorkflowCheckpointNode,
+            Self::WorkflowCompletedNode,
+            Self::WorkflowCancelledNode,
+            Self::WorkflowFailedNode,
+            Self::WorkflowRuntimeEdge,
+            Self::PureChromaNode,
+            Self::PureChromaEdge,
+            Self::DocNode,
+            Self::LlmNode,
+            Self::LlmEdge,
+            Self::LlmNodeExtraction,
+            Self::LlmEdgeExtraction,
+            Self::FlattenedLlmNode,
+            Self::FlattenedLlmEdge,
+            Self::AssocFlattenedLlmNode,
+            Self::AssocFlattenedLlmEdge,
+        ]
+    }
+
+    /// Return the stable snake-case name used in the Python envelope.
+    pub const fn wire_name(self) -> &'static str {
+        match self {
+            Self::Node => "node",
+            Self::Edge => "edge",
+            Self::AclNode => "acl_node",
+            Self::AclEdge => "acl_edge",
+            Self::ConversationNode => "conversation_node",
+            Self::ConversationEdge => "conversation_edge",
+            Self::WorkflowNode => "workflow_node",
+            Self::WorkflowEdge => "workflow_edge",
+            Self::WorkflowRunNode => "workflow_run_node",
+            Self::WorkflowStepExecNode => "workflow_step_exec_node",
+            Self::WorkflowCheckpointNode => "workflow_checkpoint_node",
+            Self::WorkflowCompletedNode => "workflow_completed_node",
+            Self::WorkflowCancelledNode => "workflow_cancelled_node",
+            Self::WorkflowFailedNode => "workflow_failed_node",
+            Self::WorkflowRuntimeEdge => "workflow_runtime_edge",
+            Self::PureChromaNode => "pure_chroma_node",
+            Self::PureChromaEdge => "pure_chroma_edge",
+            Self::DocNode => "doc_node",
+            Self::LlmNode => "llm_node",
+            Self::LlmEdge => "llm_edge",
+            Self::LlmNodeExtraction => "llm_node_extraction",
+            Self::LlmEdgeExtraction => "llm_edge_extraction",
+            Self::FlattenedLlmNode => "flattened_llm_node",
+            Self::FlattenedLlmEdge => "flattened_llm_edge",
+            Self::AssocFlattenedLlmNode => "assoc_flattened_llm_node",
+            Self::AssocFlattenedLlmEdge => "assoc_flattened_llm_edge",
+        }
+    }
+
     pub const fn family(self) -> GraphModelFamily {
         match self {
             Self::Node | Self::Edge => GraphModelFamily::Persistent,
             Self::AclNode | Self::AclEdge => GraphModelFamily::Acl,
             Self::ConversationNode | Self::ConversationEdge => GraphModelFamily::Conversation,
             Self::WorkflowNode | Self::WorkflowEdge => GraphModelFamily::Workflow,
+            Self::WorkflowRunNode
+            | Self::WorkflowStepExecNode
+            | Self::WorkflowCheckpointNode
+            | Self::WorkflowCompletedNode
+            | Self::WorkflowCancelledNode
+            | Self::WorkflowFailedNode
+            | Self::WorkflowRuntimeEdge => GraphModelFamily::WorkflowRuntime,
             Self::PureChromaNode | Self::PureChromaEdge => GraphModelFamily::PureChroma,
             Self::DocNode => GraphModelFamily::Document,
             Self::LlmNode | Self::LlmEdge | Self::LlmNodeExtraction | Self::LlmEdgeExtraction => {
@@ -87,6 +231,7 @@ impl GraphModelClass {
             | Self::AclEdge
             | Self::ConversationEdge
             | Self::WorkflowEdge
+            | Self::WorkflowRuntimeEdge
             | Self::PureChromaEdge
             | Self::LlmEdge
             | Self::LlmEdgeExtraction
@@ -96,6 +241,12 @@ impl GraphModelClass {
             | Self::AclNode
             | Self::ConversationNode
             | Self::WorkflowNode
+            | Self::WorkflowRunNode
+            | Self::WorkflowStepExecNode
+            | Self::WorkflowCheckpointNode
+            | Self::WorkflowCompletedNode
+            | Self::WorkflowCancelledNode
+            | Self::WorkflowFailedNode
             | Self::PureChromaNode
             | Self::DocNode
             | Self::LlmNode
@@ -103,6 +254,108 @@ impl GraphModelClass {
             | Self::FlattenedLlmNode
             | Self::AssocFlattenedLlmNode => GraphEntityKind::Node,
         }
+    }
+
+    /// Return the node/edge capability profile represented by this class.
+    ///
+    /// Specialized persistent families intentionally reuse the persistent
+    /// capability profile. Their family-specific metadata is validated by the
+    /// family adapter, while the shared graph/lifecycle contract remains the
+    /// same as Python's Node/Edge inheritance.
+    pub const fn capabilities(self) -> GraphCapabilityProfile {
+        match self {
+            Self::Node
+            | Self::AclNode
+            | Self::ConversationNode
+            | Self::WorkflowNode
+            | Self::DocNode => PERSISTENT_NODE_CAPABILITIES,
+            Self::Edge | Self::AclEdge | Self::ConversationEdge | Self::WorkflowEdge => {
+                PERSISTENT_EDGE_CAPABILITIES
+            }
+            Self::WorkflowRuntimeEdge => PERSISTENT_EDGE_CAPABILITIES,
+            Self::WorkflowRunNode
+            | Self::WorkflowStepExecNode
+            | Self::WorkflowCheckpointNode
+            | Self::WorkflowCompletedNode
+            | Self::WorkflowCancelledNode
+            | Self::WorkflowFailedNode => PERSISTENT_NODE_CAPABILITIES,
+            Self::LlmNode | Self::LlmNodeExtraction => LLM_NODE_CAPABILITIES,
+            Self::LlmEdge | Self::LlmEdgeExtraction => LLM_EDGE_CAPABILITIES,
+            Self::FlattenedLlmNode | Self::AssocFlattenedLlmNode => LLM_NODE_CAPABILITIES,
+            Self::FlattenedLlmEdge | Self::AssocFlattenedLlmEdge => LLM_EDGE_CAPABILITIES,
+            Self::PureChromaNode => PURE_CHROMA_NODE_CAPABILITIES,
+            Self::PureChromaEdge => PURE_CHROMA_EDGE_CAPABILITIES,
+        }
+    }
+
+    /// Return the corresponding node or edge model class in this family.
+    pub const fn corresponding_class(self, kind: GraphEntityKind) -> Option<Self> {
+        match (self.family(), kind) {
+            (GraphModelFamily::Persistent, GraphEntityKind::Node) => Some(Self::Node),
+            (GraphModelFamily::Persistent, GraphEntityKind::Edge) => Some(Self::Edge),
+            (GraphModelFamily::Acl, GraphEntityKind::Node) => Some(Self::AclNode),
+            (GraphModelFamily::Acl, GraphEntityKind::Edge) => Some(Self::AclEdge),
+            (GraphModelFamily::Conversation, GraphEntityKind::Node) => Some(Self::ConversationNode),
+            (GraphModelFamily::Conversation, GraphEntityKind::Edge) => Some(Self::ConversationEdge),
+            (GraphModelFamily::Workflow, GraphEntityKind::Node) => Some(Self::WorkflowNode),
+            (GraphModelFamily::Workflow, GraphEntityKind::Edge) => Some(Self::WorkflowEdge),
+            (GraphModelFamily::WorkflowRuntime, GraphEntityKind::Node) => match self {
+                Self::WorkflowRunNode => Some(Self::WorkflowRunNode),
+                Self::WorkflowStepExecNode => Some(Self::WorkflowStepExecNode),
+                Self::WorkflowCheckpointNode => Some(Self::WorkflowCheckpointNode),
+                Self::WorkflowCompletedNode => Some(Self::WorkflowCompletedNode),
+                Self::WorkflowCancelledNode => Some(Self::WorkflowCancelledNode),
+                Self::WorkflowFailedNode => Some(Self::WorkflowFailedNode),
+                Self::WorkflowRuntimeEdge => Some(Self::WorkflowRunNode),
+                _ => None,
+            },
+            (GraphModelFamily::WorkflowRuntime, GraphEntityKind::Edge) => match self {
+                // Runtime nodes have several concrete lifecycle states but
+                // share one persistent Node capability profile. Use the
+                // first runtime node as the profile representative; this is
+                // not a wire-type coercion.
+                Self::WorkflowRuntimeEdge => Some(Self::WorkflowRunNode),
+                _ => None,
+            },
+            (GraphModelFamily::PureChroma, GraphEntityKind::Node) => Some(Self::PureChromaNode),
+            (GraphModelFamily::PureChroma, GraphEntityKind::Edge) => Some(Self::PureChromaEdge),
+            (GraphModelFamily::Document, GraphEntityKind::Node) => Some(Self::DocNode),
+            (GraphModelFamily::Document, GraphEntityKind::Edge) => None,
+            (GraphModelFamily::Llm, GraphEntityKind::Node) => match self {
+                Self::LlmEdge | Self::LlmEdgeExtraction => Some(Self::LlmNode),
+                Self::LlmNodeExtraction => Some(Self::LlmNodeExtraction),
+                _ => Some(Self::LlmNode),
+            },
+            (GraphModelFamily::Llm, GraphEntityKind::Edge) => match self {
+                Self::LlmNodeExtraction => Some(Self::LlmEdgeExtraction),
+                _ => Some(Self::LlmEdge),
+            },
+            (GraphModelFamily::FlattenedLlm, GraphEntityKind::Node) => match self {
+                Self::AssocFlattenedLlmEdge => Some(Self::AssocFlattenedLlmNode),
+                _ => Some(Self::FlattenedLlmNode),
+            },
+            (GraphModelFamily::FlattenedLlm, GraphEntityKind::Edge) => match self {
+                Self::AssocFlattenedLlmNode => Some(Self::AssocFlattenedLlmEdge),
+                _ => Some(Self::FlattenedLlmEdge),
+            },
+        }
+    }
+
+    /// Whether this class satisfies the shared node/edge inheritance rule.
+    pub fn edge_extends_node_capabilities(self) -> bool {
+        if self.entity_kind() != GraphEntityKind::Edge {
+            return false;
+        }
+        let Some(node_class) = self.corresponding_class(GraphEntityKind::Node) else {
+            return false;
+        };
+        let node = node_class.capabilities();
+        let edge = self.capabilities();
+        edge.graph_entity == node.graph_entity
+            && (!node.metadata || edge.metadata)
+            && (!node.lifecycle || edge.lifecycle)
+            && (!node.level || edge.level)
+            && edge.edge_entity
     }
 }
 
@@ -210,6 +463,44 @@ impl GraphModelEnvelope {
                 let typed = self.decode_persistent_edge_shape()?;
                 validate_workflow_edge_metadata(&typed.core.metadata)
             }
+            GraphModelClass::WorkflowRunNode => validate_workflow_runtime_node_shape(
+                self.model_class,
+                &self.payload,
+                "workflow_run",
+            ),
+            GraphModelClass::WorkflowStepExecNode => validate_workflow_runtime_node_shape(
+                self.model_class,
+                &self.payload,
+                "workflow_step_exec",
+            ),
+            GraphModelClass::WorkflowCheckpointNode => validate_workflow_runtime_node_shape(
+                self.model_class,
+                &self.payload,
+                "workflow_checkpoint",
+            ),
+            GraphModelClass::WorkflowCompletedNode => validate_workflow_runtime_node_shape(
+                self.model_class,
+                &self.payload,
+                "workflow_completed",
+            ),
+            GraphModelClass::WorkflowCancelledNode => validate_workflow_runtime_node_shape(
+                self.model_class,
+                &self.payload,
+                "workflow_cancelled",
+            ),
+            GraphModelClass::WorkflowFailedNode => validate_workflow_runtime_node_shape(
+                self.model_class,
+                &self.payload,
+                "workflow_failed",
+            ),
+            GraphModelClass::WorkflowRuntimeEdge => {
+                let typed = self.decode_persistent_edge_shape()?;
+                validate_workflow_runtime_metadata(
+                    self.model_class,
+                    &typed.core.metadata,
+                    "conversation_edge",
+                )
+            }
             GraphModelClass::ConversationNode => {
                 let typed = self.decode_persistent_shape(GraphEntityKind::Node)?;
                 validate_conversation_node_metadata(&typed.core.metadata)
@@ -304,6 +595,34 @@ fn validate_workflow_node_metadata(
         return Err(GraphModelError::InvalidEntityFields {
             model_class: GraphModelClass::WorkflowNode,
             reason: "invalid workflow node metadata",
+        });
+    }
+    Ok(())
+}
+
+fn validate_workflow_runtime_node_shape(
+    model_class: GraphModelClass,
+    payload: &Value,
+    expected_entity_type: &str,
+) -> Result<(), GraphModelError> {
+    let typed = GraphModelEnvelope::new(model_class, payload.clone())
+        .decode_persistent_shape(GraphEntityKind::Node)?;
+    validate_workflow_runtime_metadata(model_class, &typed.core.metadata, expected_entity_type)
+}
+
+fn validate_workflow_runtime_metadata(
+    model_class: GraphModelClass,
+    metadata: &BTreeMap<String, Value>,
+    expected_entity_type: &str,
+) -> Result<(), GraphModelError> {
+    let actual = metadata
+        .get("entity_type")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if actual != expected_entity_type {
+        return Err(GraphModelError::InvalidEntityFields {
+            model_class,
+            reason: "workflow runtime metadata has an unexpected entity_type",
         });
     }
     Ok(())
@@ -518,6 +837,40 @@ fn validate_acl_shape(
     model_class: GraphModelClass,
     payload: &Value,
 ) -> Result<(), GraphModelError> {
+    // ACLNode/ACLEdge are persistent Node/Edge subclasses in Python. Validate
+    // the shared persistent shape first so metadata checks cannot accept an
+    // ACL edge without incidence fields.
+    match model_class {
+        GraphModelClass::AclNode => {
+            let node: PersistentNodeV1 = serde_json::from_value(payload.clone())
+                .map_err(|error| GraphModelError::InvalidPayload(format!("ACL node: {error}")))?;
+            node.core.validate(model_class)?;
+        }
+        GraphModelClass::AclEdge => {
+            let edge: PersistentEdgeV1 = serde_json::from_value(payload.clone())
+                .map_err(|error| GraphModelError::InvalidPayload(format!("ACL edge: {error}")))?;
+            edge.core.validate(model_class)?;
+            if edge
+                .source_ids
+                .iter()
+                .chain(edge.target_ids.iter())
+                .any(|id| id.0.is_empty())
+                || edge
+                    .source_edge_ids
+                    .as_option()
+                    .into_iter()
+                    .chain(edge.target_edge_ids.as_option())
+                    .flatten()
+                    .any(|id| id.0.is_empty())
+            {
+                return Err(GraphModelError::InvalidEntityFields {
+                    model_class,
+                    reason: "ACL edge endpoint IDs must not be empty",
+                });
+            }
+        }
+        _ => unreachable!("validate_acl_shape only accepts ACL model classes"),
+    }
     let metadata = payload
         .get("metadata")
         .cloned()
@@ -1330,6 +1683,17 @@ pub trait EdgeEntity: GraphEntity {
     fn relation(&self) -> Option<&str>;
     fn source_edge_ids(&self) -> Option<&[EdgeId]>;
     fn target_edge_ids(&self) -> Option<&[EdgeId]>;
+
+    /// Python represents hyperedges as ordinary `Edge` identities with more
+    /// than one node incidence or with edge-to-edge incidence. Keep that
+    /// meaning at the shared interface instead of inventing a second wire
+    /// entity whose IDs could not round-trip through legacy payloads.
+    fn is_hyperedge(&self) -> bool {
+        self.source_node_ids().is_some_and(|ids| ids.len() > 1)
+            || self.target_node_ids().is_some_and(|ids| ids.len() > 1)
+            || self.source_edge_ids().is_some_and(|ids| !ids.is_empty())
+            || self.target_edge_ids().is_some_and(|ids| !ids.is_empty())
+    }
 }
 
 pub trait HasMetadata {
@@ -1918,6 +2282,23 @@ mod tests {
     }
 
     #[test]
+    fn hyperedges_reuse_edge_identity_and_preserve_all_incidences() {
+        let mut payload = fixture()["cases"][1]["payload"].clone();
+        payload["source_ids"] = serde_json::json!(["node-a", "node-b"]);
+        payload["target_ids"] = serde_json::json!(["node-c", "node-d"]);
+        payload["source_edge_ids"] = serde_json::json!(["edge-parent"]);
+        let envelope = GraphModelEnvelope::new(GraphModelClass::Edge, payload);
+        let TypedGraphEntity::Edge(edge) = envelope.inspect().unwrap() else {
+            panic!("hyperedge must retain the ordinary edge identity");
+        };
+        assert_eq!(edge.source_ids.as_ref().unwrap().len(), 2);
+        assert_eq!(edge.target_ids.as_ref().unwrap().len(), 2);
+        assert_eq!(edge.source_edge_ids.as_ref().unwrap().len(), 1);
+        assert!(edge.is_hyperedge());
+        assert_eq!(edge.graph_entity_id(), Some("parity-edge"));
+    }
+
+    #[test]
     fn nodes_and_edges_share_the_graph_entity_interface() {
         fn inspect_entity(entity: &impl GraphEntity) -> (&'static str, Option<&str>) {
             let kind = match entity.graph_entity_kind() {
@@ -2034,6 +2415,22 @@ mod tests {
 
     #[test]
     fn strict_edge_extends_the_shared_graph_entity_interface() {
+        fn assert_persistent_capabilities<T>()
+        where
+            T: GraphEntity + HasMetadata + HasLifecycle + HasLevel,
+        {
+        }
+
+        fn assert_edge_capabilities<T>()
+        where
+            T: EdgeEntity + HasMetadata + HasLifecycle + HasLevel,
+        {
+        }
+
+        assert_persistent_capabilities::<PersistentNodeV1>();
+        assert_persistent_capabilities::<PersistentEdgeV1>();
+        assert_edge_capabilities::<PersistentEdgeV1>();
+
         fn inspect(entity: &impl GraphEntity) -> (&'static str, Option<&str>) {
             let kind = match entity.graph_entity_kind() {
                 GraphEntityKind::Node => "node",
@@ -2066,6 +2463,27 @@ mod tests {
     }
 
     #[test]
+    fn every_rust_graph_model_pair_keeps_node_capabilities_on_edges() {
+        fn assert_node<T: GraphEntity>() {}
+        fn assert_edge<T: GraphEntity + EdgeEntity>() {}
+
+        assert_node::<GraphNodePayload>();
+        assert_edge::<GraphEdgePayload>();
+        assert_node::<PersistentNodeV1>();
+        assert_edge::<PersistentEdgeV1>();
+        assert_node::<LlmNodeV1>();
+        assert_edge::<LlmEdgeV1>();
+        assert_node::<FlattenedLlmNodeV1>();
+        assert_edge::<FlattenedLlmEdgeV1>();
+        assert_node::<PureChromaNodeV1>();
+        assert_edge::<PureChromaEdgeV1>();
+
+        // These assertions are intentionally compile-time contracts: an edge
+        // is a graph entity plus incidence capabilities, never a narrower
+        // replacement for its corresponding node family.
+    }
+
+    #[test]
     fn model_family_classification_keeps_specialized_shapes_separate() {
         assert_eq!(GraphModelClass::Node.family(), GraphModelFamily::Persistent);
         assert_eq!(
@@ -2083,6 +2501,38 @@ mod tests {
         assert_eq!(
             GraphModelClass::LlmEdgeExtraction.family(),
             GraphModelFamily::Llm
+        );
+    }
+
+    #[test]
+    fn every_edge_family_explicitly_extends_its_node_capabilities() {
+        let edge_classes = [
+            GraphModelClass::Edge,
+            GraphModelClass::AclEdge,
+            GraphModelClass::ConversationEdge,
+            GraphModelClass::WorkflowEdge,
+            GraphModelClass::WorkflowRuntimeEdge,
+            GraphModelClass::PureChromaEdge,
+            GraphModelClass::LlmEdge,
+            GraphModelClass::LlmEdgeExtraction,
+            GraphModelClass::FlattenedLlmEdge,
+            GraphModelClass::AssocFlattenedLlmEdge,
+        ];
+
+        for edge_class in edge_classes {
+            let node_class = edge_class
+                .corresponding_class(GraphEntityKind::Node)
+                .expect("every edge family has a node counterpart");
+            assert_eq!(edge_class.entity_kind(), GraphEntityKind::Edge);
+            assert_eq!(node_class.entity_kind(), GraphEntityKind::Node);
+            assert_eq!(edge_class.family(), node_class.family());
+            assert!(edge_class.edge_extends_node_capabilities());
+        }
+
+        assert!(
+            GraphModelClass::DocNode
+                .corresponding_class(GraphEntityKind::Edge)
+                .is_none()
         );
     }
 
@@ -2162,6 +2612,47 @@ mod tests {
                 .validate_family_v1()
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn workflow_runtime_subtypes_preserve_node_edge_shape_and_metadata_tag() {
+        let fixture = fixture();
+        let node_payload = fixture["cases"][0]["payload"].clone();
+        for (model_class, entity_type) in [
+            (GraphModelClass::WorkflowRunNode, "workflow_run"),
+            (GraphModelClass::WorkflowStepExecNode, "workflow_step_exec"),
+            (
+                GraphModelClass::WorkflowCheckpointNode,
+                "workflow_checkpoint",
+            ),
+            (GraphModelClass::WorkflowCompletedNode, "workflow_completed"),
+            (GraphModelClass::WorkflowCancelledNode, "workflow_cancelled"),
+            (GraphModelClass::WorkflowFailedNode, "workflow_failed"),
+        ] {
+            let mut payload = node_payload.clone();
+            payload["metadata"] = serde_json::json!({"entity_type": entity_type});
+            assert!(
+                GraphModelEnvelope::new(model_class, payload)
+                    .validate_family_v1()
+                    .is_ok(),
+                "runtime node should validate: {model_class:?}"
+            );
+        }
+
+        let mut edge_payload = fixture["cases"][1]["payload"].clone();
+        edge_payload["metadata"] = serde_json::json!({"entity_type": "conversation_edge"});
+        assert!(
+            GraphModelEnvelope::new(GraphModelClass::WorkflowRuntimeEdge, edge_payload)
+                .validate_family_v1()
+                .is_ok()
+        );
+
+        let mut wrong = fixture["cases"][0]["payload"].clone();
+        wrong["metadata"] = serde_json::json!({"entity_type": "workflow_failed"});
+        assert!(matches!(
+            GraphModelEnvelope::new(GraphModelClass::WorkflowRunNode, wrong).validate_family_v1(),
+            Err(GraphModelError::InvalidEntityFields { .. })
+        ));
     }
 
     #[test]
@@ -2303,5 +2794,34 @@ mod tests {
             mentions: vec![],
         };
         assert_eq!(identify(&doc), (GraphEntityKind::Node, Some("doc-node:1")));
+    }
+
+    #[test]
+    fn acl_edge_validation_preserves_the_persistent_edge_shape() {
+        let fixture = fixture();
+        let mut acl_edge = fixture["cases"][1]["payload"].clone();
+        acl_edge["metadata"] = serde_json::json!({
+            "entity_type": "acl_targets_truth",
+            "acl_truth_graph": "truth:main",
+            "acl_target_entity_id": "parity-node",
+            "acl_target_grain": "node",
+            "acl_version": 1,
+            "acl_mode": "shared",
+            "level_from_root": 0
+        });
+        assert!(
+            GraphModelEnvelope::new(GraphModelClass::AclEdge, acl_edge.clone())
+                .validate_family_v1()
+                .is_ok()
+        );
+
+        acl_edge
+            .as_object_mut()
+            .expect("edge payload object")
+            .remove("source_ids");
+        assert!(matches!(
+            GraphModelEnvelope::new(GraphModelClass::AclEdge, acl_edge).validate_family_v1(),
+            Err(GraphModelError::InvalidPayload(_))
+        ));
     }
 }

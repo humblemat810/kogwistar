@@ -88,6 +88,14 @@ atomic operation or add a deliberately specified asynchronous/outbox workflow.
 An outbox provides eventual follow-up, not a claim of cross-language or
 cross-store ACID.
 
+The Rust internal graph-mutation seam therefore treats indexing as an explicit
+part of the command, not as an inferred side effect. A caller may attach
+versioned index-job intents to a graph batch. PostgreSQL commits the graph
+event, projection, and queue intents in one native unit of work; stores without
+that capability reject the combined request. Omitting the intents retains the
+legacy pre-indexed contract and does not claim that embedding or indexing was
+performed.
+
 | Backend | Current boundary | Required handoff |
 | --- | --- | --- |
 | SQLite | Existing context binding prohibits overlapping Python/Rust handles on one database in one process. | Finish commit or rollback, close connections and cached sessions, release ownership, then reopen under the other implementation. Do not switch within an active execution context. |

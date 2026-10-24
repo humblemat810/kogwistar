@@ -2,11 +2,12 @@ use kogwistar_contracts as contracts;
 use kogwistar_runtime::{RecordedRuntimeTransition, RecordedWorkerHandoff};
 use kogwistar_store::{
     DistanceMetric, EntityRebuildRequest, EntityRecoveryReport, EntityRecoveryRequest,
-    EventReadStore, GraphReadStore, GraphRecord, GraphWriteStore, LaneMessageClaimFilter,
-    LaneMessageFilter, MetadataFilter, NamedProjection, NamedProjectionWrite,
-    NewProjectedLaneMessage, ProjectedLaneMessage, ProjectionReadStore, ReplayCursor, ServerRun,
-    ServerRunCreate, ServerRunEvent, ServerRunUpdate, VectorQuery, WorkflowDesignDelta,
-    WorkflowDesignDeltaWrite, WorkflowDesignSnapshot, WorkflowDesignSnapshotWrite,
+    EventReadStore, GraphMutationStore, GraphReadStore, GraphRecord, GraphWriteStore,
+    LaneMessageClaimFilter, LaneMessageFilter, MetadataFilter, NamedProjection,
+    NamedProjectionWrite, NewProjectedLaneMessage, ProjectedLaneMessage, ProjectionReadStore,
+    ReplayCursor, ServerRun, ServerRunCreate, ServerRunEvent, ServerRunUpdate, VectorQuery,
+    WorkflowDesignDelta, WorkflowDesignDeltaWrite, WorkflowDesignSnapshot,
+    WorkflowDesignSnapshotWrite,
 };
 use kogwistar_store_memory::InMemoryStore;
 use kogwistar_store_postgres::{
@@ -2956,6 +2957,8 @@ enum PostgresStoreOperation {
         record: GraphMutationRecord,
         payload: Value,
         embedding_dim: usize,
+        #[serde(default)]
+        model_envelope: Option<kogwistar_contracts::GraphModelEnvelope>,
     },
     GraphMetadataPatchMutation {
         namespace: String,
@@ -3611,20 +3614,26 @@ async fn postgres_store_operation_json(
             record,
             payload,
             embedding_dim,
-        } => Ok(graph_mutation_json(
-            store
-                .apply_graph_mutation(kogwistar_store::GraphMutation {
-                    scope: graph_scope(namespace, workspace_id, graph_space),
-                    table,
-                    entity_kind,
-                    event_id,
-                    op,
-                    payload,
-                    record: graph_mutation_record(record),
-                    embedding_dim,
-                })
-                .await?,
-        )),
+            model_envelope,
+        } => {
+            let mutation = kogwistar_store::GraphMutation {
+                scope: graph_scope(namespace, workspace_id, graph_space),
+                table,
+                entity_kind,
+                event_id,
+                op,
+                payload,
+                record: graph_mutation_record(record),
+                embedding_dim,
+            };
+            let applied = match model_envelope {
+                Some(envelope) => store
+                    .apply_typed_graph_mutation(mutation, envelope)
+                    .await?,
+                None => store.apply_graph_mutation(mutation).await?,
+            };
+            Ok(graph_mutation_json(applied))
+        }
         PostgresStoreOperation::GraphMetadataPatchMutation {
             namespace,
             workspace_id,
@@ -4539,8 +4548,9 @@ async fn postgres_uow_operation_json(
             record,
             payload,
             embedding_dim,
-        } => Ok(graph_mutation_json(
-            uow.apply_graph_mutation(kogwistar_store::GraphMutation {
+            model_envelope,
+        } => {
+            let mutation = kogwistar_store::GraphMutation {
                 scope: graph_scope(namespace, workspace_id, graph_space),
                 table,
                 entity_kind,
@@ -4549,9 +4559,14 @@ async fn postgres_uow_operation_json(
                 payload,
                 record: graph_mutation_record(record),
                 embedding_dim,
-            })
-            .await?,
-        )),
+            };
+            if let Some(envelope) = model_envelope {
+                kogwistar_store::validate_typed_graph_mutation(&mutation, &envelope)?;
+            }
+            Ok(graph_mutation_json(
+                uow.apply_graph_mutation(mutation).await?,
+            ))
+        }
         PostgresStoreOperation::ExclusiveRawReplay {
             namespace,
             after_seq,
@@ -6352,6 +6367,14 @@ fn validate_graph_model_family(payload_json: &str) -> PyResult<()> {
 }
 
 #[pyfunction]
+fn supported_graph_model_classes() -> Vec<String> {
+    contracts::supported_graph_model_classes()
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
+}
+
+#[pyfunction]
 fn evidence_pack_digest_hash(payload_json: &str) -> PyResult<String> {
     contracts::evidence_pack_digest_hash_from_str(payload_json).map_err(contract_error)
 }
@@ -6576,6 +6599,7 @@ fn _rust(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(stable_id_json, module)?)?;
     module.add_function(wrap_pyfunction!(canonical_json, module)?)?;
     module.add_function(wrap_pyfunction!(validate_graph_model_family, module)?)?;
+    module.add_function(wrap_pyfunction!(supported_graph_model_classes, module)?)?;
     module.add_function(wrap_pyfunction!(evidence_pack_digest_hash, module)?)?;
     module.add_function(wrap_pyfunction!(metadata_filter_matches, module)?)?;
     module.add_function(wrap_pyfunction!(normalize_metadata_filter, module)?)?;

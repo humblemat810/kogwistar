@@ -113,9 +113,10 @@
       "rust_port_manifest_id": "graph-pgvector",
       "conformance_profile": "graph-pgvector",
       "rust_coverage": "not-cutover-ready",
-      "mixed_coverage": "not-inventoried",
+      "mixed_coverage": "partial; Python payloads round-trip through the typed Rust graph contract and an authenticated internal Rust HTTP mutation slice persists to PostgreSQL; full ACL, indexing, recovery, and public-route parity remain open",
       "native_python_path": "not-verified",
-      "native_rust_path": "not-verified"
+      "native_rust_path": "not-verified",
+      "evidence_note": "Internal pre-indexed graph mutation only; public ingestion, indexing, recovery, and full ACL parity remain open"
     },
     {
       "id": "chroma-adapter",

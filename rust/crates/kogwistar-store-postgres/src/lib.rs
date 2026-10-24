@@ -19,17 +19,17 @@ use kogwistar_store::{
     AcceptedIndexJobResult, AppendedEvent, AppliedGraphMutation, AuthIdentityStore, AuthUser,
     EntityEvent, EntityRebuildRequest, EntityRecoveryReport, EntityRecoveryRequest,
     EventPruneStore, EventReadStore, EventWriteStore, ExternalIdentity, GraphMutation,
-    GraphMutationStore, GraphProjectionRead, GraphProjectionVectorQuery, GraphRecord, IndexJob,
-    IndexJobReadStore, IndexJobWriteStore, LaneMessageClaimFilter, LaneMessageFilter,
-    LaneMessageReadStore, LaneMessageWriteStore, NamedProjection, NamedProjectionWrite,
-    NewEntityEvent, NewIndexJob, NewProjectedLaneMessage, ProjectedLaneMessage,
-    ProjectionReadStore, ProjectionWriteStore, RUNTIME_CURRENT_STATE_NAMESPACE, ReplayCursor,
-    ResolveExternalIdentity, ServerRun, ServerRunCreate, ServerRunEvent, ServerRunReadStore,
-    ServerRunUpdate, ServerRunWriteStore, StoreError, StoreResult, VectorMatch,
-    WorkflowDesignDelta, WorkflowDesignDeltaWrite, WorkflowDesignHistoryReadStore,
-    WorkflowDesignHistoryWriteStore, WorkflowDesignSnapshot, WorkflowDesignSnapshotWrite,
-    runtime_checkpoint_namespace, runtime_projection_write, runtime_status_namespace,
-    validate_entity_rebuild_request, validate_entity_recovery_request,
+    GraphMutationBatch, GraphMutationStore, GraphProjectionRead, GraphProjectionVectorQuery,
+    GraphRecord, IndexJob, IndexJobReadStore, IndexJobWriteStore, LaneMessageClaimFilter,
+    LaneMessageFilter, LaneMessageReadStore, LaneMessageWriteStore, NamedProjection,
+    NamedProjectionWrite, NewEntityEvent, NewIndexJob, NewProjectedLaneMessage,
+    ProjectedLaneMessage, ProjectionReadStore, ProjectionWriteStore,
+    RUNTIME_CURRENT_STATE_NAMESPACE, ReplayCursor, ResolveExternalIdentity, ServerRun,
+    ServerRunCreate, ServerRunEvent, ServerRunReadStore, ServerRunUpdate, ServerRunWriteStore,
+    StoreError, StoreResult, VectorMatch, WorkflowDesignDelta, WorkflowDesignDeltaWrite,
+    WorkflowDesignHistoryReadStore, WorkflowDesignHistoryWriteStore, WorkflowDesignSnapshot,
+    WorkflowDesignSnapshotWrite, runtime_checkpoint_namespace, runtime_projection_write,
+    runtime_status_namespace, validate_entity_rebuild_request, validate_entity_recovery_request,
 };
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -650,6 +650,44 @@ impl PostgresStore {
     ) -> PostgresStoreResult<AppliedGraphMutation> {
         self.transaction(move |uow| {
             Box::pin(async move { uow.apply_graph_mutation(mutation).await })
+        })
+        .await
+    }
+
+    /// Apply graph events and projections in one PostgreSQL transaction.
+    pub async fn apply_graph_mutations_atomic(
+        &self,
+        mutations: Vec<GraphMutation>,
+    ) -> PostgresStoreResult<Vec<AppliedGraphMutation>> {
+        self.transaction(move |uow| {
+            Box::pin(async move {
+                let mut results = Vec::with_capacity(mutations.len());
+                for mutation in mutations {
+                    results.push(uow.apply_graph_mutation(mutation).await?);
+                }
+                Ok(results)
+            })
+        })
+        .await
+    }
+
+    /// Apply graph mutations and explicit index intents in one PostgreSQL
+    /// transaction. The queue payload is never inferred from graph metadata.
+    pub async fn apply_graph_mutations_with_index_jobs_atomic(
+        &self,
+        batch: GraphMutationBatch,
+    ) -> PostgresStoreResult<Vec<AppliedGraphMutation>> {
+        self.transaction(move |uow| {
+            Box::pin(async move {
+                let mut results = Vec::with_capacity(batch.mutations.len());
+                for mutation in batch.mutations {
+                    results.push(uow.apply_graph_mutation(mutation).await?);
+                }
+                for job in batch.index_jobs {
+                    uow.enqueue_index_job(job).await?;
+                }
+                Ok(results)
+            })
         })
         .await
     }
@@ -2671,6 +2709,24 @@ impl GraphMutationStore for PostgresStore {
         mutation: GraphMutation,
     ) -> StoreResult<AppliedGraphMutation> {
         PostgresStore::apply_graph_mutation(self, mutation)
+            .await
+            .map_err(trait_error)
+    }
+
+    async fn apply_graph_mutations_atomic(
+        &self,
+        mutations: Vec<GraphMutation>,
+    ) -> StoreResult<Vec<AppliedGraphMutation>> {
+        PostgresStore::apply_graph_mutations_atomic(self, mutations)
+            .await
+            .map_err(trait_error)
+    }
+
+    async fn apply_graph_mutations_with_index_jobs_atomic(
+        &self,
+        batch: GraphMutationBatch,
+    ) -> StoreResult<Vec<AppliedGraphMutation>> {
+        PostgresStore::apply_graph_mutations_with_index_jobs_atomic(self, batch)
             .await
             .map_err(trait_error)
     }

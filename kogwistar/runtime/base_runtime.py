@@ -136,6 +136,33 @@ def _native_state_update_safe(
     return True
 
 
+def _apply_state_update_python_inplace(
+    state: WorkflowState,
+    state_update: RuntimeStateUpdate,
+    update: RuntimePayload | None,
+    state_schema: StateSchema | None,
+) -> None:
+    """Materialize a state delta with the legacy Python reducer semantics."""
+    for update_item in state_update:
+        update_item: tuple[str, dict[str, Any]] | StateUpdate
+        if update_item[0] == "a":
+            for key, value in update_item[1].items():
+                _state_list(state, key).append(value)
+        elif update_item[0] == "u":
+            for key, value in update_item[1].items():
+                state[key] = value
+        elif update_item[0] == "e":
+            for key, value in update_item[1].items():
+                _state_list(state, key).extend(_extend_values(value, key=key))
+    if update:
+        schema = state_schema or {}
+        for key, value in update.items():
+            if schema.get(key) == "a":
+                _state_list(state, key).extend(_extend_values(value, key=key))
+            else:
+                state[key] = value
+
+
 def validate_initial_state(initial_state: WorkflowState) -> None:
     """Validate user-provided initial workflow state.
 
@@ -194,49 +221,37 @@ def apply_state_update_inplace(
         mute_state, state_update, update, state_schema
     )
     native_state: JsonObject | None = None
+    native_python_state: WorkflowState | None = None
     if mode != "python" and json_compatible:
         native_payload = _native_state_update_payload(
             mute_state, state_update, update, state_schema
         )
+        native_python_state = cast(WorkflowState, native_payload["state"])
         native_state = cast(
             JsonObject, runtime_apply_state_update(payload=native_payload)
         )
 
-    for update_item in state_update:
-        update_item: tuple[str, dict[str, Any]] | StateUpdate
-        if update_item[0] == "a":
-            append_dict: dict = update_item[1]
-            for k, v in append_dict.items():
-                _state_list(mute_state, k).append(v)
-        elif update_item[0] == "u":
-            update_dict: dict = update_item[1]
-            for k, v in update_dict.items():
-                mute_state[k] = v
-        elif update_item[0] == "e":
-            update_dict: dict = update_item[1]
-            for k, v in update_dict.items():
-                _state_list(mute_state, k).extend(_extend_values(v, key=k))
-    if update:
-        schema = state_schema or {}
-        for k, v in update.items():
-            if op := schema.get(k):
-                pass
-            else:
-                op = "u"
-            if op == "a":
-                _state_list(mute_state, k).extend(_extend_values(v, key=k))
-            else:
-                mute_state[k] = v
-
     if native_state is not None:
-        # Rust owns the canonical fold.  The thin Python facade materializes the
-        # same delta in place so untouched and inserted mutable objects retain
-        # the identity guarantees of the existing public API.
-        if native_state != mute_state:
+        # Validate parity before mutating caller-owned state. A disagreement
+        # must not leak a partially trusted Rust result through an in-place API.
+        if native_python_state is None:
+            raise RuntimeError("native runtime state preflight was not initialized")
+        expected_state = native_python_state
+        _apply_state_update_python_inplace(
+            expected_state, state_update, update, state_schema
+        )
+        if native_state != expected_state:
             raise RustParityError(
                 "Rust parity mismatch for runtime_state_update: "
-                f"python={mute_state!r}, rust={native_state!r}"
+                f"python={expected_state!r}, rust={native_state!r}"
             )
+        # Apply the verified delta in place to preserve public object identity.
+        _apply_state_update_python_inplace(
+            mute_state, state_update, update, state_schema
+        )
+        return
+
+    _apply_state_update_python_inplace(mute_state, state_update, update, state_schema)
 
 
 def checkpointable_state_copy(state: WorkflowState) -> WorkflowState:

@@ -5,7 +5,7 @@
 
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
@@ -15,16 +15,18 @@ use std::sync::{Arc, Mutex};
 use jsonwebtoken::{
     Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, decode_header, encode,
 };
+use kogwistar_contracts::{DelegationAuthorityV1, attenuate_capabilities};
 use kogwistar_runtime::{
     RECORDED_RUNTIME_CONTRACT_VERSION, RecordedRuntimeState, RecordedRuntimeTransition,
     RecordedTransitionKind, RecordedWorkerHandoff, RecordedWorkerSuccessEffect, RuntimeFrontier,
     RuntimeStepExecutePayload, RuntimeStepExecuteRequest,
 };
 use kogwistar_store::{
-    AuthIdentityStore, AuthUser, EntityEvent, LaneMessageClaimFilter, LaneMessageFilter,
-    NamedProjection, NamedProjectionWrite, NewProjectedLaneMessage, ProjectedLaneMessage,
-    ResolveExternalIdentity, ServerRun, ServerRunCreate, ServerRunEvent, WorkflowDesignDeltaWrite,
-    WorkflowDesignSnapshot, WorkflowDesignSnapshotWrite,
+    AuthIdentityStore, AuthUser, EntityEvent, GraphMutation, GraphMutationBatch, GraphRecord,
+    GraphScope, LaneMessageClaimFilter, LaneMessageFilter, NamedProjection, NamedProjectionWrite,
+    NewIndexJob, NewProjectedLaneMessage, ProjectedLaneMessage, ResolveExternalIdentity, ServerRun,
+    ServerRunCreate, ServerRunEvent, WorkflowDesignDeltaWrite, WorkflowDesignSnapshot,
+    WorkflowDesignSnapshotWrite, validate_typed_graph_mutation,
 };
 use kogwistar_store_postgres::{
     NewRawEntityEvent as PostgresNewRawEntityEvent, PostgresAuthStore, PostgresStore,
@@ -143,6 +145,60 @@ pub fn sse_frame_from_str(payload_json: &str) -> Result<String, serde_json::Erro
 
 pub fn mcp_result(id: Value, result: Value) -> Value {
     json!({"jsonrpc": "2.0", "id": id, "result": result})
+}
+
+/// Return whether the Rust application currently owns a frozen MCP operation.
+///
+/// The shared catalog describes the complete product surface, including
+/// Python-owned operations. A Rust server must not advertise those operations
+/// until it has an equivalent handler and authority path.
+fn rust_mcp_tool_supported(surface: &str, name: &str) -> bool {
+    match surface {
+        "workflow" => matches!(
+            name,
+            "workflow.budget_history"
+                | "workflow.budget_snapshot"
+                | "workflow.capabilities_snapshot"
+                | "workflow.capability_approve"
+                | "workflow.capability_revoke"
+                | "workflow.dead_letter_replay"
+                | "workflow.dead_letters"
+                | "workflow.design_edge_delete"
+                | "workflow.design_edge_upsert"
+                | "workflow.design_history"
+                | "workflow.design_node_delete"
+                | "workflow.design_node_upsert"
+                | "workflow.design_redo"
+                | "workflow.design_undo"
+                | "workflow.message_orphans_repair"
+                | "workflow.operator_dashboard"
+                | "workflow.run_cancel"
+                | "workflow.run_checkpoint_get"
+                | "workflow.run_events"
+                | "workflow.run_replay"
+                | "workflow.run_resume"
+                | "workflow.run_resume_contract"
+                | "workflow.run_status"
+                | "workflow.run_submit"
+                | "workflow.scheduler_timeline"
+                | "workflow.service_declare"
+                | "workflow.service_disable"
+                | "workflow.service_enable"
+                | "workflow.service_events"
+                | "workflow.service_get"
+                | "workflow.service_heartbeat"
+                | "workflow.service_list"
+                | "workflow.service_repair"
+                | "workflow.service_trigger"
+                | "workflow.services_repair"
+                | "workflow.visibility_snapshot"
+        ),
+        "conversation" => matches!(name, "conversation.run_status" | "conversation.cancel_run"),
+        // Root graph tools remain Python-owned until their Rust authority,
+        // scope, and persistence paths are implemented.
+        "root" => false,
+        _ => false,
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -754,14 +810,39 @@ fn runtime_worker_recipient(environment_id: Option<&str>) -> String {
     format!("python-worker-env-{digest}")
 }
 
+fn native_operation_name(operation: &str) -> Option<&str> {
+    kogwistar_runtime::native_operation_name(operation)
+}
+
+fn add_executor_target(payload: &mut Value, operation: &str) {
+    if native_operation_name(operation).is_some() {
+        payload["executor_target"] = json!(kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET);
+    }
+}
+
+fn runtime_worker_recipient_for_operation(operation: &str, environment_id: Option<&str>) -> String {
+    if native_operation_name(operation).is_some() {
+        kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET.to_owned() + "-worker"
+    } else {
+        runtime_worker_recipient(environment_id)
+    }
+}
+
 fn runtime_worker_recipient_for_state(state: &RecordedRuntimeState, node_id: &str) -> String {
+    let operation = state
+        .state
+        .get("_rt_node_ops")
+        .and_then(Value::as_object)
+        .and_then(|ops| ops.get(node_id))
+        .and_then(Value::as_str)
+        .unwrap_or("noop");
     let environment_id = state
         .state
         .get("_rt_node_environment_ids")
         .and_then(Value::as_object)
         .and_then(|ids| ids.get(node_id))
         .and_then(Value::as_str);
-    runtime_worker_recipient(environment_id)
+    runtime_worker_recipient_for_operation(operation, environment_id)
 }
 
 fn effective_runtime_claim_recipients(values: &[String]) -> Result<Vec<String>, String> {
@@ -852,6 +933,95 @@ struct RuntimeWorkerResultRequest {
     transition: Option<RecordedRuntimeTransition>,
     #[serde(default)]
     effect: Option<RecordedWorkerSuccessEffect>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct RuntimeNativeExecuteRequest {
+    handoff: RecordedWorkerHandoff,
+    payload: Value,
+}
+
+fn native_step_request_from_payload(
+    handoff: &RecordedWorkerHandoff,
+    payload: Value,
+) -> Result<kogwistar_runtime::RuntimeNativeStepRequest, String> {
+    if handoff.claimed_by != "rust-native-worker" {
+        return Err("native execution requires the rust-native worker claim".to_owned());
+    }
+    if payload["kind"] == "workflow.run.execute" {
+        if payload["executor_target"]
+            .as_str()
+            .is_some_and(|target| target != kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET)
+        {
+            return Err("native run payload has a conflicting executor target".to_owned());
+        }
+        let run_id = payload["run_id"]
+            .as_str()
+            .ok_or_else(|| "native run payload lacks run_id".to_owned())?;
+        let workflow_id = payload["workflow_id"]
+            .as_str()
+            .ok_or_else(|| "native run payload lacks workflow_id".to_owned())?;
+        let conversation_id = payload["conversation_id"]
+            .as_str()
+            .ok_or_else(|| "native run payload lacks conversation_id".to_owned())?;
+        let node_id = payload["start_node_id"]
+            .as_str()
+            .ok_or_else(|| "native run payload lacks start_node_id".to_owned())?;
+        let operation = payload["op"]
+            .as_str()
+            .and_then(native_operation_name)
+            .ok_or_else(|| "native run payload requires rust-native/<operation>".to_owned())?;
+        let runtime_routes = serde_json::from_value(payload["runtime_routes"].clone())
+            .map_err(|error| format!("invalid native runtime routes: {error}"))?;
+        if handoff.run_id != run_id || handoff.step_id != node_id {
+            return Err("native run payload does not match the claimed handoff".to_owned());
+        }
+        return Ok(kogwistar_runtime::RuntimeNativeStepRequest {
+            executor_target: kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET.to_owned(),
+            operation: operation.to_owned(),
+            run_id: run_id.to_owned(),
+            workflow_id: workflow_id.to_owned(),
+            node_id: node_id.to_owned(),
+            conversation_id: conversation_id.to_owned(),
+            turn_node_id: payload["turn_node_id"].as_str().map(str::to_owned),
+            token_id: run_id.to_owned(),
+            parent_token_id: None,
+            step_seq: 0,
+            runtime_routes,
+        });
+    }
+
+    let payload: kogwistar_runtime::RuntimeStepExecutePayload = serde_json::from_value(payload)
+        .map_err(|error| format!("invalid native step payload: {error}"))?;
+    let operation = payload
+        .op
+        .as_str()
+        .and_then(native_operation_name)
+        .ok_or_else(|| "native step payload requires rust-native/<operation>".to_owned())?;
+    if payload
+        .executor_target
+        .as_deref()
+        .is_some_and(|target| target != kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET)
+    {
+        return Err("native step payload has a conflicting executor target".to_owned());
+    }
+    if handoff.run_id != payload.run_id || handoff.step_id != payload.node_id {
+        return Err("native step payload does not match the claimed handoff".to_owned());
+    }
+    Ok(kogwistar_runtime::RuntimeNativeStepRequest {
+        executor_target: kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET.to_owned(),
+        operation: operation.to_owned(),
+        run_id: payload.run_id,
+        workflow_id: payload.workflow_id,
+        node_id: payload.node_id,
+        conversation_id: payload.conversation_id,
+        turn_node_id: payload.turn_node_id,
+        token_id: payload.token_id,
+        parent_token_id: payload.parent_token_id,
+        step_seq: payload.step_seq,
+        runtime_routes: payload.runtime_routes,
+    })
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -1454,6 +1624,120 @@ fn effective_capabilities(principal: &Value, state: &CapabilityState) -> BTreeSe
     effective
 }
 
+/// Build the authority snapshot carried by a delegated workflow run.
+///
+/// The child may request less authority, but it can never widen the parent's
+/// effective set. The result is stored in reserved runtime state rather than
+/// trusting a child-supplied capability field during execution.
+fn prepare_delegated_run_args(
+    args: &Value,
+    principal: &Value,
+    shared: &SharedCapabilityState,
+) -> Result<Value, String> {
+    let mut args = args
+        .as_object()
+        .cloned()
+        .ok_or_else(|| "spawn_process args must be a JSON object".to_owned())?;
+    let mut initial_state = args
+        .remove("initial_state")
+        .unwrap_or_else(|| Value::Object(Map::new()))
+        .as_object()
+        .cloned()
+        .ok_or_else(|| "spawn_process initial_state must be a JSON object".to_owned())?;
+    let requested = match initial_state.get("_rt_requested_capabilities") {
+        None => None,
+        Some(Value::Array(values)) => Some(
+            values
+                .iter()
+                .map(|value| {
+                    value
+                        .as_str()
+                        .map(str::trim)
+                        .filter(|capability| !capability.is_empty())
+                        .map(str::to_ascii_lowercase)
+                        .ok_or_else(|| {
+                            "_rt_requested_capabilities must contain non-empty strings".to_owned()
+                        })
+                })
+                .collect::<Result<BTreeSet<_>, _>>()?,
+        ),
+        Some(_) => {
+            return Err("_rt_requested_capabilities must be an array of strings".to_owned());
+        }
+    };
+    let parent = shared
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let parent_effective = effective_capabilities(principal, &parent);
+    let child_effective = attenuate_capabilities(&parent_effective, requested.as_ref())
+        .map_err(|error| error.to_string())?;
+    let authority = DelegationAuthorityV1::new(principal_subject(principal), &child_effective)
+        .map_err(|error| error.to_string())?;
+    initial_state.insert(
+        "_rt_effective_capabilities".to_owned(),
+        json!(child_effective),
+    );
+    initial_state.insert(
+        "_rt_delegated_by".to_owned(),
+        Value::String(principal_subject(principal)),
+    );
+    initial_state.insert(
+        "_rt_delegation".to_owned(),
+        serde_json::to_value(authority).expect("delegation authority serializes"),
+    );
+    args.insert("initial_state".to_owned(), Value::Object(initial_state));
+    Ok(Value::Object(args))
+}
+
+fn delegated_child_principal(parent: &Value, args: &Value) -> Value {
+    let mut child = parent.as_object().cloned().unwrap_or_default();
+    if let Some(capabilities) = args
+        .get("initial_state")
+        .and_then(|state| state.get("_rt_effective_capabilities"))
+    {
+        child.insert("capabilities".to_owned(), capabilities.clone());
+    }
+    child.insert(
+        "delegated_by".to_owned(),
+        Value::String(principal_subject(parent)),
+    );
+    Value::Object(child)
+}
+
+fn inject_authoritative_capability_state(
+    initial_state: &mut Map<String, Value>,
+    principal: &Value,
+    shared: &SharedCapabilityState,
+) {
+    for key in [
+        "effective_capabilities",
+        "_rt_effective_capabilities",
+        "_rt_requested_capabilities",
+        "_rt_delegated_by",
+        "_rt_delegation",
+    ] {
+        initial_state.remove(key);
+    }
+    let state = shared
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let capabilities = effective_capabilities(principal, &state);
+    initial_state.insert("effective_capabilities".to_owned(), json!(capabilities));
+    initial_state.insert("_rt_effective_capabilities".to_owned(), json!(capabilities));
+    if let Some(delegated_by) = principal.get("delegated_by").and_then(Value::as_str) {
+        if let Ok(authority) = DelegationAuthorityV1::new(delegated_by, &capabilities) {
+            initial_state.insert(
+                "_rt_delegated_by".to_owned(),
+                Value::String(delegated_by.to_owned()),
+            );
+            initial_state.insert(
+                "_rt_delegation".to_owned(),
+                serde_json::to_value(authority).expect("delegation authority serializes"),
+            );
+        }
+    }
+}
+
 fn capability_snapshot(principal: &Value, state: &CapabilityState) -> Value {
     json!({
         "specs": CAPABILITY_SPECS.iter().map(|(name, description, action_kind)| json!({
@@ -1842,6 +2126,207 @@ struct DocumentGraphProposalInput {
     nodes: Vec<serde_json::Map<String, Value>>,
     #[serde(default)]
     edges: Vec<serde_json::Map<String, Value>>,
+}
+
+/// Narrow internal graph-authority contract for callers that already own
+/// deterministic embeddings.  This is deliberately separate from the public
+/// document upsert contract: indexing and document parsing remain outside this
+/// Rust cutover until their behavior is parity-tested.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct GraphMutationBatchInput {
+    contract_version: u32,
+    atomic: bool,
+    mutations: Vec<GraphMutationInput>,
+    #[serde(default)]
+    index_jobs: Vec<GraphIndexJobInput>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct GraphIndexJobInput {
+    job_id: String,
+    namespace: String,
+    entity_kind: String,
+    entity_id: String,
+    index_kind: String,
+    op: String,
+    #[serde(default)]
+    payload_json: Option<String>,
+    #[serde(default = "default_index_job_max_retries")]
+    max_retries: i64,
+}
+
+fn default_index_job_max_retries() -> i64 {
+    3
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct GraphMutationInput {
+    scope: GraphScopeInput,
+    table: String,
+    entity_kind: String,
+    event_id: String,
+    op: String,
+    payload: Value,
+    record: GraphRecordInput,
+    embedding_dim: usize,
+    #[serde(default)]
+    model_envelope: Option<kogwistar_contracts::GraphModelEnvelope>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct GraphScopeInput {
+    namespace: String,
+    #[serde(default)]
+    workspace_id: Option<String>,
+    #[serde(default)]
+    graph_space: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct GraphRecordInput {
+    id: String,
+    #[serde(default)]
+    document: Option<String>,
+    #[serde(default)]
+    metadata: Map<String, Value>,
+    #[serde(default)]
+    embedding: Option<Vec<f32>>,
+}
+
+impl GraphMutationInput {
+    fn into_store(self) -> GraphMutation {
+        GraphMutation {
+            scope: GraphScope {
+                namespace: self.scope.namespace,
+                workspace_id: self.scope.workspace_id,
+                graph_space: self.scope.graph_space,
+            },
+            table: self.table,
+            entity_kind: self.entity_kind,
+            event_id: self.event_id,
+            op: self.op,
+            payload: self.payload,
+            record: GraphRecord {
+                id: self.record.id,
+                document: self.record.document,
+                metadata: self.record.metadata,
+                embedding: self.record.embedding,
+            },
+            embedding_dim: self.embedding_dim,
+        }
+    }
+}
+
+fn graph_mutation_batch_value(
+    input: GraphMutationBatchInput,
+) -> Result<Vec<GraphMutation>, String> {
+    if input.contract_version != 1 {
+        return Err(format!(
+            "unsupported graph mutation contract version {}",
+            input.contract_version
+        ));
+    }
+    if !input.atomic {
+        return Err("graph mutation batches must set atomic=true".to_owned());
+    }
+    if input.mutations.is_empty() {
+        return Err("graph mutation batches must not be empty".to_owned());
+    }
+    let mutations = input
+        .mutations
+        .into_iter()
+        .map(GraphMutationInput::into_store)
+        .collect::<Vec<_>>();
+    let first_scope = mutations[0].scope.clone();
+    for mutation in &mutations {
+        if mutation.scope.namespace.is_empty() {
+            return Err("graph mutation namespace must not be empty".to_owned());
+        }
+        if mutation.scope != first_scope {
+            return Err("all atomic graph mutations must share one graph scope".to_owned());
+        }
+        let expected_table = match mutation.entity_kind.as_str() {
+            "node" => "gke_nodes",
+            "edge" => "gke_edges",
+            other => return Err(format!("unsupported graph entity kind {other:?}")),
+        };
+        if mutation.table != expected_table {
+            return Err(format!(
+                "graph entity kind {:?} must use table {:?}",
+                mutation.entity_kind, expected_table
+            ));
+        }
+        if let Some(embedding) = &mutation.record.embedding
+            && embedding.len() != mutation.embedding_dim
+        {
+            return Err(format!(
+                "embedding dimension {} does not match vector length {}",
+                mutation.embedding_dim,
+                embedding.len()
+            ));
+        }
+    }
+    Ok(mutations)
+}
+
+fn validate_graph_mutation_envelopes(
+    input: &GraphMutationBatchInput,
+    mutations: &[GraphMutation],
+) -> Result<(), String> {
+    for (raw, mutation) in input.mutations.iter().zip(mutations) {
+        if let Some(envelope) = &raw.model_envelope {
+            validate_typed_graph_mutation(mutation, envelope)
+                .map_err(|error| format!("typed graph mutation is invalid: {error}"))?;
+        }
+    }
+    Ok(())
+}
+
+fn graph_index_jobs_value(
+    input: &GraphMutationBatchInput,
+    mutations: &[GraphMutation],
+) -> Result<Vec<NewIndexJob>, String> {
+    let Some(first) = mutations.first() else {
+        return Err("graph mutation batches must not be empty".to_owned());
+    };
+    input
+        .index_jobs
+        .iter()
+        .map(|job| {
+            if job.job_id.is_empty()
+                || job.namespace.is_empty()
+                || job.entity_kind.is_empty()
+                || job.entity_id.is_empty()
+                || job.index_kind.is_empty()
+            {
+                return Err("index job identifiers must not be empty".to_owned());
+            }
+            if job.namespace != first.scope.namespace {
+                return Err("index job namespace must match graph mutation namespace".to_owned());
+            }
+            if !matches!(job.op.as_str(), "UPSERT" | "DELETE") {
+                return Err("index job op must be UPSERT or DELETE".to_owned());
+            }
+            if job.max_retries < 0 {
+                return Err("index job max_retries must not be negative".to_owned());
+            }
+            Ok(NewIndexJob {
+                job_id: job.job_id.clone(),
+                namespace: job.namespace.clone(),
+                entity_kind: job.entity_kind.clone(),
+                entity_id: job.entity_id.clone(),
+                index_kind: job.index_kind.clone(),
+                op: job.op.clone(),
+                payload_json: job.payload_json.clone(),
+                max_retries: job.max_retries,
+            })
+        })
+        .collect()
 }
 
 fn default_document_insertion_method() -> String {
@@ -4599,6 +5084,11 @@ impl SqliteRunApplicationService {
             .get(&effective_start_node_id)
             .cloned();
         let mut initial_state = input.initial_state.clone();
+        inject_authoritative_capability_state(
+            &mut initial_state,
+            &request.principal,
+            &self.capabilities,
+        );
         if !effective_routes.is_empty() {
             initial_state.insert(
                 "_rt_routes".to_owned(),
@@ -4665,6 +5155,9 @@ impl SqliteRunApplicationService {
         if let Some(environment_id) = effective_start_environment_id.as_ref() {
             worker_payload["op_environment_id"] = json!(environment_id);
         }
+        if native_operation_name(&effective_start_op).is_some() {
+            add_executor_target(&mut worker_payload, &effective_start_op);
+        }
         if let Ok(Some(existing)) = self.store.get_server_run(&run_id) {
             let lanes = self
                 .store
@@ -4726,7 +5219,10 @@ impl SqliteRunApplicationService {
                 purpose: "system".to_owned(),
                 inbox_id: "workflow-runtime".to_owned(),
                 conversation_id: conversation_id.to_owned(),
-                recipient_id: runtime_worker_recipient(effective_start_environment_id.as_deref()),
+                recipient_id: runtime_worker_recipient_for_operation(
+                    &effective_start_op,
+                    effective_start_environment_id.as_deref(),
+                ),
                 sender_id: "rust-scheduler".to_owned(),
                 msg_type: "workflow.run.execute".to_owned(),
                 status: "pending".to_owned(),
@@ -5114,6 +5610,52 @@ impl SqliteRunApplicationService {
             ),
         }
     }
+
+    fn execute_native_runtime_step(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
+        let input: RuntimeNativeExecuteRequest = match serde_json::from_slice(&request.body) {
+            Ok(value) => value,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    error.to_string(),
+                );
+            }
+        };
+        let native_request = match native_step_request_from_payload(&input.handoff, input.payload) {
+            Ok(value) => value,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::CONFLICT,
+                    "KOGWISTAR_NATIVE_HANDOFF_CONFLICT",
+                    error,
+                );
+            }
+        };
+        let effect = match kogwistar_runtime::execute_native_step(&native_request) {
+            Ok(effect) => effect,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_NATIVE_EXECUTION_REJECTED",
+                    error.to_string(),
+                );
+            }
+        };
+        let result = RuntimeWorkerResultRequest {
+            handoff: input.handoff,
+            transition: None,
+            effect: Some(effect),
+        };
+        let internal = ApiEffectRequest {
+            contract_version: request.contract_version,
+            method: "POST".to_owned(),
+            path_and_query: "/internal/runtime/results".to_owned(),
+            body: serde_json::to_vec(&result).expect("native runtime result serializes"),
+            principal: request.principal.clone(),
+        };
+        self.apply_runtime_result(&internal)
+    }
 }
 
 #[derive(Clone)]
@@ -5140,12 +5682,27 @@ impl PostgresRunApplicationService {
                 ) {
                     syscall_forbidden(op)
                 } else {
+                    let delegated_args = match prepare_delegated_run_args(
+                        &Value::Object(input.args.clone()),
+                        &request.principal,
+                        &self.capabilities,
+                    ) {
+                        Ok(value) => value,
+                        Err(error) => {
+                            return effect_error(
+                                StatusCode::UNPROCESSABLE_ENTITY,
+                                "KOGWISTAR_INVALID_DELEGATION",
+                                error,
+                            );
+                        }
+                    };
                     let nested = ApiEffectRequest {
                         contract_version: request.contract_version,
                         method: "POST".to_owned(),
                         path_and_query: "/api/workflow/runs".to_owned(),
-                        body: serde_json::to_vec(&input.args).expect("syscall args serialize"),
-                        principal: request.principal.clone(),
+                        body: serde_json::to_vec(&delegated_args)
+                            .expect("delegated syscall args serialize"),
+                        principal: delegated_child_principal(&request.principal, &delegated_args),
                     };
                     syscall_result(&input.version, op, self.submit_run(&nested).await)
                 }
@@ -5559,13 +6116,20 @@ impl PostgresRunApplicationService {
                         if let Some(environment_id) = start_environment_id.as_ref() {
                             payload["op_environment_id"] = json!(environment_id);
                         }
+                        add_executor_target(
+                            &mut payload,
+                            start_op.as_deref().unwrap_or("noop"),
+                        );
                         uow.project_lane_message(NewProjectedLaneMessage {
                             message_id,
                             namespace: "workflow".to_owned(),
                             purpose: "system".to_owned(),
                             inbox_id: "workflow-runtime".to_owned(),
                             conversation_id,
-                            recipient_id: runtime_worker_recipient(start_environment_id.as_deref()),
+                            recipient_id: runtime_worker_recipient_for_operation(
+                                start_op.as_deref().unwrap_or("noop"),
+                                start_environment_id.as_deref(),
+                            ),
                             sender_id: "rust-scheduler".to_owned(),
                             msg_type: "workflow.run.execute".to_owned(),
                             status: "pending".to_owned(),
@@ -6784,6 +7348,11 @@ impl PostgresRunApplicationService {
             .get(&effective_start_node_id)
             .cloned();
         let mut initial_state = input.initial_state;
+        inject_authoritative_capability_state(
+            &mut initial_state,
+            &request.principal,
+            &self.capabilities,
+        );
         if !effective_routes.is_empty() {
             initial_state.insert(
                 "_rt_routes".to_owned(),
@@ -6873,6 +7442,7 @@ impl PostgresRunApplicationService {
             if let Some(environment_id) = effective_start_environment_id.as_ref() {
                 expected_worker_payload["op_environment_id"] = json!(environment_id);
             }
+            add_executor_target(&mut expected_worker_payload, &effective_start_op);
             return match runtime_submit_retry_response(&existing, &lanes, &expected_worker_payload)
             {
                 Ok(Some(value)) => json_effect(StatusCode::ACCEPTED, value),
@@ -6967,13 +7537,15 @@ impl PostgresRunApplicationService {
                     if let Some(environment_id) = effective_start_environment_id.as_ref() {
                         payload["op_environment_id"] = json!(environment_id);
                     }
+                    add_executor_target(&mut payload, &effective_start_op);
                     uow.project_lane_message(NewProjectedLaneMessage {
                         message_id,
                         namespace: "workflow".to_owned(),
                         purpose: "system".to_owned(),
                         inbox_id: "workflow-runtime".to_owned(),
                         conversation_id,
-                        recipient_id: runtime_worker_recipient(
+                        recipient_id: runtime_worker_recipient_for_operation(
+                            &effective_start_op,
                             effective_start_environment_id.as_deref(),
                         ),
                         sender_id: "rust-scheduler".to_owned(),
@@ -7376,6 +7948,108 @@ impl PostgresRunApplicationService {
         }
     }
 
+    async fn apply_internal_graph_mutations(
+        &self,
+        request: &ApiEffectRequest,
+    ) -> ApiEffectResponse {
+        if !capability_allowed(request, &self.capabilities, "write_graph", &["write_graph"]) {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                "Graph mutation requires write_graph capability",
+            );
+        }
+        let input: GraphMutationBatchInput = match serde_json::from_slice(&request.body) {
+            Ok(value) => value,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    error.to_string(),
+                );
+            }
+        };
+        let mutations = match graph_mutation_batch_value(input.clone()) {
+            Ok(value) => value,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    error,
+                );
+            }
+        };
+        if let Err(error) = validate_graph_mutation_envelopes(&input, &mutations) {
+            return effect_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "KOGWISTAR_INVALID_REQUEST",
+                error,
+            );
+        }
+        let security_scope = security_scope_value(&request.principal);
+        let authorized_namespace = security_scope
+            .get("storage_namespace")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if mutations
+            .iter()
+            .any(|mutation| mutation.scope.namespace != authorized_namespace)
+        {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_SCOPE_FORBIDDEN",
+                "Graph mutation namespace is outside the principal storage scope",
+            );
+        }
+        let applied = if input.index_jobs.is_empty() {
+            self.store.apply_graph_mutations_atomic(mutations).await
+        } else {
+            let index_jobs = match graph_index_jobs_value(&input, &mutations) {
+                Ok(value) => value,
+                Err(error) => {
+                    return effect_error(
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        "KOGWISTAR_INVALID_REQUEST",
+                        error,
+                    );
+                }
+            };
+            self.store
+                .apply_graph_mutations_with_index_jobs_atomic(GraphMutationBatch {
+                    mutations,
+                    index_jobs,
+                })
+                .await
+        };
+        match applied {
+            Ok(results) => json_effect(
+                StatusCode::OK,
+                json!({
+                    "contract_version": 1,
+                    "atomic": true,
+                    "results": results.into_iter().map(|result| json!({
+                        "event": {
+                            "namespace": result.event.namespace,
+                            "seq": result.event.seq,
+                            "event_id": result.event.event_id,
+                            "entity_kind": result.event.entity_kind,
+                            "entity_id": result.event.entity_id,
+                            "op": result.event.op,
+                            "payload": result.event.payload,
+                        },
+                        "inserted": result.inserted,
+                        "mutated": result.mutated,
+                    })).collect::<Vec<_>>(),
+                }),
+            ),
+            Err(error) => effect_error(
+                StatusCode::CONFLICT,
+                "KOGWISTAR_GRAPH_MUTATION_CONFLICT",
+                error.to_string(),
+            ),
+        }
+    }
+
     async fn execute_async(&self, request: ApiEffectRequest) -> ApiEffectResponse {
         if let Some(response) = visualization_shell_effect(&request) {
             return response;
@@ -7456,6 +8130,13 @@ impl PostgresRunApplicationService {
         }
         if request.method == "POST" && request.path_and_query == "/internal/runtime/results" {
             return self.apply_runtime_result(&request).await;
+        }
+        if request.method == "POST" && request.path_and_query == "/internal/runtime/native/execute"
+        {
+            return self.execute_native_runtime_step(&request).await;
+        }
+        if request.method == "POST" && request.path_and_query == "/internal/graph/mutations" {
+            return self.apply_internal_graph_mutations(&request).await;
         }
         if request.method == "POST"
             && request.path_and_query.split('?').next() == Some("/api/workflow/runs")
@@ -7664,6 +8345,54 @@ impl PostgresRunApplicationService {
     }
 }
 
+impl PostgresRunApplicationService {
+    async fn execute_native_runtime_step(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
+        let input: RuntimeNativeExecuteRequest = match serde_json::from_slice(&request.body) {
+            Ok(value) => value,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    error.to_string(),
+                );
+            }
+        };
+        let native_request = match native_step_request_from_payload(&input.handoff, input.payload) {
+            Ok(value) => value,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::CONFLICT,
+                    "KOGWISTAR_NATIVE_HANDOFF_CONFLICT",
+                    error,
+                );
+            }
+        };
+        let effect = match kogwistar_runtime::execute_native_step(&native_request) {
+            Ok(effect) => effect,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_NATIVE_EXECUTION_REJECTED",
+                    error.to_string(),
+                );
+            }
+        };
+        let result = RuntimeWorkerResultRequest {
+            handoff: input.handoff,
+            transition: None,
+            effect: Some(effect),
+        };
+        let internal = ApiEffectRequest {
+            contract_version: request.contract_version,
+            method: "POST".to_owned(),
+            path_and_query: "/internal/runtime/results".to_owned(),
+            body: serde_json::to_vec(&result).expect("native runtime result serializes"),
+            principal: request.principal.clone(),
+        };
+        self.apply_runtime_result(&internal).await
+    }
+}
+
 impl ApplicationService for PostgresRunApplicationService {
     fn execute(
         &self,
@@ -7699,12 +8428,27 @@ impl SqliteRunApplicationService {
                 ) {
                     syscall_forbidden(op)
                 } else {
+                    let delegated_args = match prepare_delegated_run_args(
+                        &Value::Object(input.args.clone()),
+                        &request.principal,
+                        &self.capabilities,
+                    ) {
+                        Ok(value) => value,
+                        Err(error) => {
+                            return effect_error(
+                                StatusCode::UNPROCESSABLE_ENTITY,
+                                "KOGWISTAR_INVALID_DELEGATION",
+                                error,
+                            );
+                        }
+                    };
                     let nested = ApiEffectRequest {
                         contract_version: request.contract_version,
                         method: "POST".to_owned(),
                         path_and_query: "/api/workflow/runs".to_owned(),
-                        body: serde_json::to_vec(&input.args).expect("syscall args serialize"),
-                        principal: request.principal.clone(),
+                        body: serde_json::to_vec(&delegated_args)
+                            .expect("delegated syscall args serialize"),
+                        principal: delegated_child_principal(&request.principal, &delegated_args),
                     };
                     syscall_result(&input.version, op, self.submit_run(&nested))
                 }
@@ -8092,13 +8836,20 @@ impl SqliteRunApplicationService {
                 if let Some(environment_id) = start_environment_id.as_ref() {
                     payload["op_environment_id"] = json!(environment_id);
                 }
+                add_executor_target(
+                    &mut payload,
+                    start_op.as_deref().unwrap_or("noop"),
+                );
                 uow.project_lane_message(NewProjectedLaneMessage {
                     message_id,
                     namespace: "workflow".to_owned(),
                     purpose: "system".to_owned(),
                     inbox_id: "workflow-runtime".to_owned(),
                     conversation_id,
-                    recipient_id: runtime_worker_recipient(start_environment_id.as_deref()),
+                    recipient_id: runtime_worker_recipient_for_operation(
+                        start_op.as_deref().unwrap_or("noop"),
+                        start_environment_id.as_deref(),
+                    ),
                     sender_id: "rust-scheduler".to_owned(),
                     msg_type: "workflow.run.execute".to_owned(),
                     status: "pending".to_owned(),
@@ -8737,6 +9488,10 @@ impl SqliteRunApplicationService {
         }
         if request.method == "POST" && request.path_and_query == "/internal/runtime/results" {
             return self.apply_runtime_result(&request);
+        }
+        if request.method == "POST" && request.path_and_query == "/internal/runtime/native/execute"
+        {
+            return self.execute_native_runtime_step(&request);
         }
         if request.method == "POST"
             && request.path_and_query.split('?').next() == Some("/api/workflow/runs")
@@ -9860,11 +10615,21 @@ async fn mcp_handler(
             "/mcp/workflow" => "workflow",
             _ => "root",
         };
-        return Json(mcp_result(
-            id,
-            json!({"tools": contract["surfaces"][surface].clone()}),
-        ))
-        .into_response();
+        let tools = contract["surfaces"][surface]
+            .as_array()
+            .map(|tools| {
+                tools
+                    .iter()
+                    .filter(|tool| {
+                        tool.get("name")
+                            .and_then(Value::as_str)
+                            .is_some_and(|name| rust_mcp_tool_supported(surface, name))
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        return Json(mcp_result(id, json!({"tools": tools}))).into_response();
     }
     if method == "tools/call" {
         let principal = request_principal(&headers, &state.api.auth);
@@ -10397,6 +11162,14 @@ pub fn router_with_application(
             "/internal/runtime/results",
             post(application_effect_handler),
         );
+    router = router.route(
+        "/internal/runtime/native/execute",
+        post(application_effect_handler),
+    );
+    router = router.route(
+        "/internal/graph/mutations",
+        post(application_effect_handler),
+    );
     for &(method, path) in FROZEN_OPENAPI_ROUTES {
         if (method == "GET"
             && matches!(
@@ -10468,6 +11241,353 @@ mod tests {
         assert_eq!(value["ok"], true);
         assert_eq!(value["backend"], "pg");
         assert_eq!(value["pg_schema_base"], "kogwistar");
+    }
+
+    #[test]
+    fn native_runtime_routing_requires_explicit_operation_prefix() {
+        assert_eq!(native_operation_name("rust-native/noop"), Some("noop"));
+        assert_eq!(native_operation_name("rust-native/"), None);
+        assert_eq!(native_operation_name("noop"), None);
+        assert_eq!(
+            runtime_worker_recipient_for_operation("rust-native/noop", None),
+            "rust-native-worker"
+        );
+        assert_eq!(
+            runtime_worker_recipient_for_operation("noop", None),
+            "python-worker"
+        );
+        assert_eq!(
+            runtime_worker_recipient_for_operation("rust-native/noop", Some("numpy-cpu-2")),
+            "rust-native-worker"
+        );
+        assert_eq!(
+            runtime_worker_recipient_for_operation("noop", Some("numpy-cpu-2")),
+            runtime_worker_recipient(Some("numpy-cpu-2"))
+        );
+    }
+
+    #[tokio::test]
+    async fn sqlite_native_runtime_route_uses_shared_result_reducer() {
+        use axum::body::{Body, to_bytes};
+        use axum::http::Request;
+        use std::time::{SystemTime, UNIX_EPOCH};
+        use tower::ServiceExt;
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("kogwistar-native-runtime-{nonce}.sqlite3"));
+        let store = SqliteStore::open(&path).unwrap();
+        let app = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: vec!["reader".to_owned()],
+                implementation: ImplementationSnapshot::default(),
+                auth: AuthConfig::default(),
+            },
+            Arc::new(SqliteRunApplicationService::open(&path).unwrap()),
+        );
+
+        let submit = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/workflow/runs")
+                    .header("content-type", "application/json")
+                    .header("x-kogwistar-roles", "reader")
+                    .body(Body::from(
+                        r#"{"run_id":"native-run","workflow_id":"native-workflow","conversation_id":"native-conversation","initial_state":{"seed":1},"runtime_kind":"sync","start_node_id":"entry","node_ops":{"entry":"rust-native/noop","finish":"rust-native/emit-result"},"runtime_routes":[{"source_node_id":"entry","target_node_id":"finish","join_mask":0}]}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(submit.status(), StatusCode::ACCEPTED);
+
+        let claim = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/internal/runtime/claim")
+                    .header("content-type", "application/json")
+                    .header("x-kogwistar-roles", "reader")
+                    .body(Body::from(
+                        r#"{"claimed_by":"rust-native-worker","limit":1,"lease_seconds":60,"recipient_ids":["rust-native-worker"]}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(claim.status(), StatusCode::OK);
+        let claim_body = to_bytes(claim.into_body(), 16_384).await.unwrap();
+        let work = serde_json::from_slice::<Value>(&claim_body).unwrap()["work"][0].clone();
+        assert_eq!(work["payload"]["op"], "rust-native/noop");
+        assert_eq!(
+            work["payload"]["executor_target"],
+            kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET
+        );
+        assert_eq!(work["claimed_by"], "rust-native-worker");
+
+        let execute = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/internal/runtime/native/execute")
+                    .header("content-type", "application/json")
+                    .header("x-kogwistar-roles", "reader")
+                    .body(Body::from(
+                        serde_json::to_vec(&json!({
+                            "handoff": {
+                                "message_id": work["message_id"],
+                                "claimed_by": work["claimed_by"],
+                                "run_id": work["run_id"],
+                                "step_id": work["step_id"],
+                                "correlation_id": work["correlation_id"]
+                            },
+                            "payload": work["payload"]
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let execute_status = execute.status();
+        let execute_body = to_bytes(execute.into_body(), 16_384).await.unwrap();
+        assert_eq!(
+            execute_status,
+            StatusCode::OK,
+            "{}",
+            String::from_utf8_lossy(&execute_body)
+        );
+        assert_eq!(
+            store.get_server_run("native-run").unwrap().unwrap().status,
+            "running"
+        );
+        let continuation_claim = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/internal/runtime/claim")
+                    .header("content-type", "application/json")
+                    .header("x-kogwistar-roles", "reader")
+                    .body(Body::from(
+                        r#"{"claimed_by":"rust-native-worker","limit":1,"lease_seconds":60,"recipient_ids":["rust-native-worker"]}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(continuation_claim.status(), StatusCode::OK);
+        let continuation_body = to_bytes(continuation_claim.into_body(), 16_384)
+            .await
+            .unwrap();
+        let continuation =
+            serde_json::from_slice::<Value>(&continuation_body).unwrap()["work"][0].clone();
+        assert_eq!(continuation["payload"]["op"], "rust-native/emit-result");
+        assert_eq!(
+            continuation["payload"]["executor_target"],
+            kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET
+        );
+        let continuation_execute = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/internal/runtime/native/execute")
+                    .header("content-type", "application/json")
+                    .header("x-kogwistar-roles", "reader")
+                    .body(Body::from(
+                        serde_json::to_vec(&json!({
+                            "handoff": {
+                                "message_id": continuation["message_id"],
+                                "claimed_by": continuation["claimed_by"],
+                                "run_id": continuation["run_id"],
+                                "step_id": continuation["step_id"],
+                                "correlation_id": continuation["correlation_id"]
+                            },
+                            "payload": continuation["payload"]
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(continuation_execute.status(), StatusCode::OK);
+        assert_eq!(
+            store.get_server_run("native-run").unwrap().unwrap().status,
+            "succeeded"
+        );
+        let events = store.list_server_run_events("native-run", 0, 100).unwrap();
+        assert!(
+            events.iter().any(|event| {
+                event.event_type == "workflow.trace.v1"
+                    && event.payload_json.contains("runtime.native.step.completed")
+            }),
+            "native trace events: {:?}",
+            events
+                .iter()
+                .map(|event| &event.event_type)
+                .collect::<Vec<_>>()
+        );
+        assert!(events.iter().any(|event| {
+            event.event_type == "workflow.recorded_transition.v1"
+                && event.payload_json.contains("emit-result")
+                && event.payload_json.contains("rust-native")
+        }));
+
+        drop(app);
+        drop(store);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn postgres_native_runtime_route_uses_shared_result_reducer_when_dsn_available() {
+        let Some(dsn) = std::env::var("KOGWISTAR_TEST_PG_DSN").ok() else {
+            return;
+        };
+        let schema = format!("rust_native_runtime_{}", uuid::Uuid::new_v4().simple());
+        let service = PostgresRunApplicationService::from_dsn(&dsn, &schema).unwrap();
+        service.ensure_schema().await.unwrap();
+
+        let request = |method: &str, path: &str, body: Value| ApiEffectRequest {
+            contract_version: 1,
+            method: method.to_owned(),
+            path_and_query: path.to_owned(),
+            body: serde_json::to_vec(&body).unwrap(),
+            principal: json!({
+                "sub": "native-worker",
+                "role": "rw",
+                "ns": "workflow",
+                "capabilities": ["workflow.run.write"]
+            }),
+        };
+        let submit = service
+            .execute(request(
+                "POST",
+                "/api/workflow/runs",
+                json!({
+                    "run_id": "pg-native-run",
+                    "workflow_id": "pg-native-workflow",
+                    "conversation_id": "pg-native-conversation",
+                    "initial_state": {"seed": 1},
+                    "runtime_kind": "sync",
+                    "start_node_id": "entry",
+                    "node_ops": {"entry": "rust-native/emit-result"}
+                }),
+            ))
+            .await;
+        assert_eq!(submit.status, StatusCode::ACCEPTED.as_u16());
+
+        let claim = service
+            .execute(request(
+                "POST",
+                "/internal/runtime/claim",
+                json!({
+                    "claimed_by": "rust-native-worker",
+                    "limit": 1,
+                    "lease_seconds": 60,
+                    "recipient_ids": ["rust-native-worker"]
+                }),
+            ))
+            .await;
+        assert_eq!(claim.status, StatusCode::OK.as_u16());
+        let work = serde_json::from_slice::<Value>(&claim.body).unwrap()["work"][0].clone();
+        assert_eq!(work["payload"]["op"], "rust-native/emit-result");
+        assert_eq!(
+            work["payload"]["executor_target"],
+            kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET
+        );
+
+        let execute = service
+            .execute(request(
+                "POST",
+                "/internal/runtime/native/execute",
+                json!({
+                    "handoff": {
+                        "message_id": work["message_id"],
+                        "claimed_by": work["claimed_by"],
+                        "run_id": work["run_id"],
+                        "step_id": work["step_id"],
+                        "correlation_id": work["correlation_id"]
+                    },
+                    "payload": work["payload"]
+                }),
+            ))
+            .await;
+        assert_eq!(execute.status, StatusCode::OK.as_u16());
+        let events = service
+            .store
+            .list_server_run_events("pg-native-run", 0, 100)
+            .await
+            .unwrap();
+        assert!(events.iter().any(|event| {
+            event.event_type == "workflow.trace.v1"
+                && event.payload_json.contains("runtime.native.step.completed")
+        }));
+
+        drop(service);
+        let cleanup_dsn = dsn
+            .strip_prefix("postgresql+psycopg://")
+            .map(|rest| format!("postgresql://{rest}"))
+            .or_else(|| {
+                dsn.strip_prefix("postgresql+psycopg2://")
+                    .map(|rest| format!("postgresql://{rest}"))
+            })
+            .unwrap_or(dsn);
+        let (client, connection) = tokio_postgres::connect(&cleanup_dsn, tokio_postgres::NoTls)
+            .await
+            .unwrap();
+        let connection_task = tokio::spawn(connection);
+        client
+            .batch_execute(&format!("DROP SCHEMA \"{schema}\" CASCADE"))
+            .await
+            .unwrap();
+        drop(client);
+        connection_task.await.unwrap().unwrap();
+    }
+
+    #[test]
+    fn delegated_capabilities_are_attenuated_and_reserved_state_wins() {
+        let shared = Arc::new(Mutex::new(CapabilityState::default()));
+        let principal = json!({
+            "sub": "operator",
+            "role": "rw",
+            "ns": "workflow",
+            "capabilities": ["workflow.run.write", "read_graph"]
+        });
+        let args = json!({
+            "workflow_id": "wf",
+            "conversation_id": "conv",
+            "initial_state": {
+                "_rt_requested_capabilities": ["workflow.run.write"],
+                "_rt_effective_capabilities": ["service.manage"]
+            }
+        });
+        let delegated = prepare_delegated_run_args(&args, &principal, &shared).unwrap();
+        assert_eq!(
+            delegated["initial_state"]["_rt_effective_capabilities"],
+            json!(["workflow.run.write"])
+        );
+        assert_eq!(delegated["initial_state"]["_rt_delegated_by"], "operator");
+        assert_eq!(
+            delegated["initial_state"]["_rt_delegation"]["schema_version"],
+            1
+        );
+        let widening = json!({
+            "workflow_id": "wf",
+            "conversation_id": "conv",
+            "initial_state": {
+                "_rt_requested_capabilities": ["service.manage"]
+            }
+        });
+        assert!(prepare_delegated_run_args(&widening, &principal, &shared).is_err());
     }
 
     #[test]
@@ -10690,6 +11810,30 @@ mod tests {
         }
     }
 
+    #[test]
+    fn rust_mcp_advertisement_is_subset_of_implemented_handlers() {
+        let contract: Value = serde_json::from_str(FROZEN_MCP_TOOLS_JSON).unwrap();
+        assert!(
+            contract["surfaces"]["root"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|tool| !rust_mcp_tool_supported("root", tool["name"].as_str().unwrap()))
+        );
+        let conversation = contract["surfaces"]["conversation"].as_array().unwrap();
+        let conversation_supported = conversation
+            .iter()
+            .filter(|tool| rust_mcp_tool_supported("conversation", tool["name"].as_str().unwrap()))
+            .count();
+        assert_eq!(conversation_supported, 2);
+        let workflow = contract["surfaces"]["workflow"].as_array().unwrap();
+        let supported = workflow
+            .iter()
+            .filter(|tool| rust_mcp_tool_supported("workflow", tool["name"].as_str().unwrap()))
+            .count();
+        assert_eq!(supported, 36);
+    }
+
     #[tokio::test]
     async fn router_serves_health_auth_sse_and_mcp() {
         use axum::body::{Body, to_bytes};
@@ -10781,6 +11925,60 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(mcp.status(), StatusCode::OK);
+        let mcp_body = to_bytes(mcp.into_body(), 65_536).await.unwrap();
+        let mcp_value = serde_json::from_slice::<Value>(&mcp_body).unwrap();
+        assert_eq!(mcp_value["result"]["tools"].as_array().unwrap().len(), 0);
+
+        let workflow_mcp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp/workflow")
+                    .header("content-type", "application/json")
+                    .header("x-kogwistar-roles", "reader")
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(workflow_mcp.status(), StatusCode::OK);
+        let workflow_body = to_bytes(workflow_mcp.into_body(), 65_536).await.unwrap();
+        let workflow_value = serde_json::from_slice::<Value>(&workflow_body).unwrap();
+        assert_eq!(
+            workflow_value["result"]["tools"].as_array().unwrap().len(),
+            36
+        );
+
+        let conversation_mcp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp/conversation")
+                    .header("content-type", "application/json")
+                    .header("x-kogwistar-roles", "reader")
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","id":3,"method":"tools/list"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(conversation_mcp.status(), StatusCode::OK);
+        let conversation_body = to_bytes(conversation_mcp.into_body(), 65_536)
+            .await
+            .unwrap();
+        let conversation_value = serde_json::from_slice::<Value>(&conversation_body).unwrap();
+        assert_eq!(
+            conversation_value["result"]["tools"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
 
         let pending_cutover = app
             .oneshot(
@@ -11821,6 +13019,144 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
     }
 
     #[tokio::test]
+    async fn postgres_internal_graph_mutation_route_persists_atomically_when_dsn_available() {
+        let Some(dsn) = std::env::var("KOGWISTAR_TEST_PG_DSN").ok() else {
+            return;
+        };
+        let schema = format!("rust_api_graph_mutation_{}", uuid::Uuid::new_v4().simple());
+        let (client, connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls)
+            .await
+            .unwrap();
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+        client
+            .batch_execute(&format!(
+                r#"CREATE EXTENSION IF NOT EXISTS vector;
+                CREATE SCHEMA "{schema}";
+                CREATE TABLE "{schema}"."gke_nodes" (
+                    id TEXT PRIMARY KEY,
+                    document TEXT NULL,
+                    metadata JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+                    embedding vector(3) NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                CREATE TABLE "{schema}"."gke_edges" (
+                    id TEXT PRIMARY KEY,
+                    document TEXT NULL,
+                    metadata JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+                    embedding vector(3) NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );"#
+            ))
+            .await
+            .unwrap();
+        let service = PostgresRunApplicationService::from_dsn(&dsn, &schema).unwrap();
+        service.ensure_schema().await.unwrap();
+        let mut body: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/graph-mutation-batch-v1.json"
+        )))
+        .unwrap();
+        body["mutations"][0]["scope"]["namespace"] = json!("alpha");
+        body["mutations"][0]["record"]["embedding"] = json!([1.0, 0.0, 0.0]);
+        body["mutations"][0]["embedding_dim"] = json!(3);
+        let key = "graph-route-test-secret";
+        let make_token = |capabilities: &[&str], storage_ns: &str| {
+            encode(
+                &Header::new(Algorithm::HS256),
+                &json!({
+                    "sub": "alice",
+                    "role": "rw",
+                    "roles": ["reader", "rw"],
+                    "ns": "workflow",
+                    "storage_ns": storage_ns,
+                    "capabilities": capabilities,
+                    "exp": 4102444800_u64
+                }),
+                &EncodingKey::from_secret(key.as_bytes()),
+            )
+            .unwrap()
+        };
+        let make_app = || {
+            router_with_application(
+                ApiState {
+                    health: snapshot(),
+                    required_roles: vec!["reader".to_owned()],
+                    implementation: ImplementationSnapshot::default(),
+                    auth: AuthConfig {
+                        mode: "jwt".to_owned(),
+                        algorithm: Some("HS256".to_owned()),
+                        key: Some(key.to_owned()),
+                        ..AuthConfig::default()
+                    },
+                },
+                Arc::new(service.clone()),
+            )
+        };
+        let send_mutation = |app: Router, token: String, payload: Value| async move {
+            app.oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/internal/graph/mutations")
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::from(serde_json::to_vec(&payload).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+        };
+
+        let missing_capability =
+            send_mutation(make_app(), make_token(&[], "alpha"), body.clone()).await;
+        assert_eq!(missing_capability.status(), StatusCode::FORBIDDEN);
+
+        let mut cross_scope_body = body.clone();
+        cross_scope_body["mutations"][0]["scope"]["namespace"] = json!("beta");
+        let cross_scope = send_mutation(
+            make_app(),
+            make_token(&["write_graph"], "alpha"),
+            cross_scope_body,
+        )
+        .await;
+        assert_eq!(cross_scope.status(), StatusCode::FORBIDDEN);
+
+        let http_response =
+            send_mutation(make_app(), make_token(&["write_graph"], "alpha"), body).await;
+        let http_status = http_response.status();
+        let response_body = to_bytes(http_response.into_body(), 65_536).await.unwrap();
+        assert_eq!(
+            http_status,
+            StatusCode::OK,
+            "{}",
+            String::from_utf8_lossy(&response_body)
+        );
+        let result: Value = serde_json::from_slice(&response_body).unwrap();
+        assert_eq!(result["atomic"], true);
+        assert_eq!(result["results"][0]["mutated"], true);
+        let records = service
+            .store
+            .graph_projection_records(kogwistar_store::GraphProjectionRead {
+                scope: GraphScope {
+                    namespace: "alpha".to_owned(),
+                    workspace_id: Some("ws".to_owned()),
+                    graph_space: Some("facts".to_owned()),
+                },
+                table: "gke_nodes".to_owned(),
+                ids: Some(vec!["node-1".to_owned()]),
+                metadata: Default::default(),
+                limit: 10,
+            })
+            .await
+            .unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].id, "node-1");
+    }
+
+    #[tokio::test]
     async fn postgres_design_history_folds_and_repairs_projection_when_dsn_available() {
         use kogwistar_store_postgres::NewRawEntityEvent;
 
@@ -12796,6 +14132,108 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
     }
 
     #[test]
+    fn internal_graph_mutation_contract_requires_atomic_versioned_batches() {
+        let body: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/graph-mutation-batch-v1.json"
+        )))
+        .unwrap();
+        let input: GraphMutationBatchInput = serde_json::from_value(body.clone()).unwrap();
+        let mutations = graph_mutation_batch_value(input).unwrap();
+        assert_eq!(mutations.len(), 1);
+        assert_eq!(mutations[0].scope.namespace, "tenant-a");
+        assert_eq!(
+            mutations[0].record.embedding.as_deref(),
+            Some([1.0, 0.0].as_slice())
+        );
+
+        let graph_fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/python-graph-model-payloads-v1.json"
+        )))
+        .unwrap();
+        let typed_payload = graph_fixture["cases"][0]["payload"].clone();
+        let mut typed_body = body.clone();
+        typed_body["mutations"][0]["payload"] = typed_payload.clone();
+        typed_body["mutations"][0]["record"]["id"] = typed_payload["id"].clone();
+        typed_body["mutations"][0]["model_envelope"] = json!({
+            "schema_version": 1,
+            "model_class": "node",
+            "payload": typed_payload,
+        });
+        let typed_input: GraphMutationBatchInput =
+            serde_json::from_value(typed_body.clone()).unwrap();
+        let typed_mutations = graph_mutation_batch_value(typed_input.clone()).unwrap();
+        assert!(validate_graph_mutation_envelopes(&typed_input, &typed_mutations).is_ok());
+
+        typed_body["mutations"][0]["model_envelope"]["model_class"] = json!("edge");
+        let wrong_kind: GraphMutationBatchInput = serde_json::from_value(typed_body).unwrap();
+        let wrong_kind_mutations = graph_mutation_batch_value(wrong_kind.clone()).unwrap();
+        assert!(validate_graph_mutation_envelopes(&wrong_kind, &wrong_kind_mutations).is_err());
+
+        let mut invalid_table = body.clone();
+        invalid_table["mutations"][0]["table"] = json!("gke_edges");
+        let parsed: GraphMutationBatchInput = serde_json::from_value(invalid_table).unwrap();
+        assert!(graph_mutation_batch_value(parsed).is_err());
+
+        let mut invalid_dimension = body.clone();
+        invalid_dimension["mutations"][0]["embedding_dim"] = json!(3);
+        let parsed: GraphMutationBatchInput = serde_json::from_value(invalid_dimension).unwrap();
+        assert!(graph_mutation_batch_value(parsed).is_err());
+
+        for (field, value) in [("atomic", json!(false)), ("contract_version", json!(2))] {
+            let mut invalid = json!({
+                "contract_version": 1,
+                "atomic": true,
+                "mutations": [],
+            });
+            invalid[field] = value;
+            let parsed: GraphMutationBatchInput = serde_json::from_value(invalid).unwrap();
+            assert!(graph_mutation_batch_value(parsed).is_err());
+        }
+    }
+
+    #[test]
+    fn graph_mutation_index_intents_are_explicit_and_scope_checked() {
+        let mut body: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/graph-mutation-batch-v1.json"
+        )))
+        .unwrap();
+        body["index_jobs"] = json!([{
+            "job_id": "index-node-1",
+            "namespace": "tenant-a",
+            "entity_kind": "node",
+            "entity_id": "node-1",
+            "index_kind": "node_embedding",
+            "op": "UPSERT",
+            "payload_json": "{\"text\":\"hello\"}",
+            "max_retries": 4
+        }]);
+        let input: GraphMutationBatchInput = serde_json::from_value(body.clone()).unwrap();
+        let mutations = graph_mutation_batch_value(input.clone()).unwrap();
+        let jobs = graph_index_jobs_value(&input, &mutations).unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].coalesce_key(), "node:node-1:node_embedding");
+        assert_eq!(jobs[0].max_retries, 4);
+
+        for (field, value) in [
+            ("namespace", json!("other-tenant")),
+            ("op", json!("REPLACE")),
+            ("max_retries", json!(-1)),
+        ] {
+            let mut invalid = body.clone();
+            invalid["index_jobs"][0][field] = value;
+            let input: GraphMutationBatchInput = serde_json::from_value(invalid).unwrap();
+            let mutations = graph_mutation_batch_value(input.clone()).unwrap();
+            assert!(
+                graph_index_jobs_value(&input, &mutations).is_err(),
+                "{field}"
+            );
+        }
+    }
+
+    #[test]
     fn visualization_shells_embed_packaged_templates_without_jinja_drift() {
         for (path, marker) in [
             ("/viz/cytoscape?doc_id=doc-1&mode=graph", "Cytoscape"),
@@ -13052,7 +14490,7 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
                     .header("content-type", "application/json")
                     .header("x-kogwistar-roles", "reader")
                     .body(Body::from(
-                        r#"{"run_id":"caller-run-id","workflow_id":"workflow-submit","conversation_id":"conversation-submit","initial_state":{"seed":1},"priority_class":"foreground","runtime_kind":"sync","start_node_id":"entry","node_ops":{"entry":"begin"}}"#,
+                        r#"{"run_id":"caller-run-id","workflow_id":"workflow-submit","conversation_id":"conversation-submit","initial_state":{"seed":1,"effective_capabilities":["admin"],"_rt_effective_capabilities":["admin"]},"priority_class":"foreground","runtime_kind":"sync","start_node_id":"entry","node_ops":{"entry":"begin"}}"#,
                     ))
                     .unwrap(),
             )
@@ -13063,6 +14501,27 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
         let submitted = serde_json::from_slice::<Value>(&submit_body).unwrap();
         let submitted_run_id = submitted["run_id"].as_str().unwrap();
         assert_eq!(submitted_run_id, "caller-run-id");
+        let queued = store
+            .list_projected_lane_messages(LaneMessageFilter {
+                namespace: Some("workflow".to_owned()),
+                inbox_id: Some("workflow-runtime".to_owned()),
+                correlation_id: Some(submitted_run_id.to_owned()),
+                ..LaneMessageFilter::default()
+            })
+            .unwrap();
+        let queued_payload =
+            serde_json::from_str::<Value>(queued[0].payload_json.as_deref().unwrap()).unwrap();
+        assert!(
+            !queued_payload["initial_state"]["effective_capabilities"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|value| value == "admin")
+        );
+        assert_eq!(
+            queued_payload["initial_state"]["_rt_effective_capabilities"],
+            queued_payload["initial_state"]["effective_capabilities"]
+        );
         let retried_submit = app
             .clone()
             .oneshot(
@@ -13072,7 +14531,7 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
                     .header("content-type", "application/json")
                     .header("x-kogwistar-roles", "reader")
                     .body(Body::from(
-                        r#"{"run_id":"caller-run-id","workflow_id":"workflow-submit","conversation_id":"conversation-submit","initial_state":{"seed":1},"priority_class":"foreground","runtime_kind":"sync","start_node_id":"entry","node_ops":{"entry":"begin"}}"#,
+                        r#"{"run_id":"caller-run-id","workflow_id":"workflow-submit","conversation_id":"conversation-submit","initial_state":{"seed":1,"effective_capabilities":["admin"],"_rt_effective_capabilities":["admin"]},"priority_class":"foreground","runtime_kind":"sync","start_node_id":"entry","node_ops":{"entry":"begin"}}"#,
                     ))
                     .unwrap(),
             )
@@ -13095,7 +14554,7 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
                     .header("content-type", "application/json")
                     .header("x-kogwistar-roles", "reader")
                     .body(Body::from(
-                        r#"{"run_id":"caller-run-id","workflow_id":"workflow-submit","conversation_id":"conversation-submit","initial_state":{"seed":2},"priority_class":"foreground","runtime_kind":"sync","start_node_id":"entry","node_ops":{"entry":"begin"}}"#,
+                        r#"{"run_id":"caller-run-id","workflow_id":"workflow-submit","conversation_id":"conversation-submit","initial_state":{"seed":2,"effective_capabilities":["admin"],"_rt_effective_capabilities":["admin"]},"priority_class":"foreground","runtime_kind":"sync","start_node_id":"entry","node_ops":{"entry":"begin"}}"#,
                     ))
                     .unwrap(),
             )
@@ -14771,7 +16230,13 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
                 "args":{
                     "workflow_id":"wf-syscall",
                     "conversation_id":"conv-syscall",
-                    "initial_state":{"source":"syscall"},
+                    "initial_state":{
+                        "source":"syscall",
+                        "_rt_requested_capabilities":[
+                            "workflow.run.write"
+                        ],
+                        "_rt_effective_capabilities":["service.manage"]
+                    },
                 },
             }))
             .unwrap(),
@@ -14784,6 +16249,30 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
         assert_eq!(spawned["status"], "ok");
         let run_id = spawned["result"]["run_id"].as_str().unwrap();
         assert!(service.store.get_server_run(run_id).unwrap().is_some());
+        let lanes = service
+            .store
+            .list_projected_lane_messages(LaneMessageFilter {
+                namespace: Some("workflow".to_owned()),
+                inbox_id: Some("workflow-runtime".to_owned()),
+                correlation_id: Some(run_id.to_owned()),
+                ..LaneMessageFilter::default()
+            })
+            .unwrap();
+        let payload =
+            serde_json::from_str::<Value>(lanes[0].payload_json.as_deref().unwrap()).unwrap();
+        assert_eq!(
+            payload["initial_state"]["_rt_effective_capabilities"],
+            json!(["workflow.run.write"])
+        );
+        assert_eq!(payload["initial_state"]["_rt_delegated_by"], "operator");
+        assert_eq!(
+            payload["initial_state"]["_rt_delegation"],
+            json!({
+                "schema_version": 1,
+                "delegated_by": "operator",
+                "effective_capabilities": ["workflow.run.write"]
+            })
+        );
         let terminated = service.execute_sync(ApiEffectRequest {
             contract_version: 1,
             method: "POST".to_owned(),

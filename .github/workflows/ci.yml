@@ -339,6 +339,15 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e ".[test,server]" "sqlalchemy[asyncio]>=2.0"
 
+      - name: Verify shared Python/Rust graph payload contract
+        env:
+          ANONYMIZED_TELEMETRY: "FALSE"
+          KOGWISTAR_LOG_LEVEL: "WARNING"
+        run: >-
+          python -m pytest
+          tests/core/test_rust_contract_differential.py::test_python_node_edge_backend_payloads_round_trip_through_rust_json
+          -q -p no:cacheprovider
+
       - name: Enforce SQLite architectural invariants
         env:
           ANONYMIZED_TELEMETRY: "FALSE"
@@ -356,6 +365,44 @@ jobs:
           -m "ci and core and not requires_pgvector"
           -k sqlite
           -q
+
+  rust-python-postgres-payload-parity:
+    if: github.event_name != 'schedule' && (github.event_name != 'workflow_dispatch' || inputs.full == false)
+    name: Rust/Python PostgreSQL graph payload parity
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Set up pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.1
+
+      - name: Install test dependencies and native extension
+        env:
+          ANONYMIZED_TELEMETRY: "FALSE"
+          PIP_DEFAULT_TIMEOUT: "60"
+          PIP_RETRIES: "10"
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[test,server,full]"
+
+      - name: Round-trip shared Python Node/Edge payloads through Rust PostgreSQL
+        env:
+          ANONYMIZED_TELEMETRY: "FALSE"
+          GKE_TEST_PG_IMAGE: "pgvector/pgvector:pg16"
+          KOGWISTAR_LOG_LEVEL: "WARNING"
+        run: >-
+          python -m pytest
+          tests/core/test_rust_store_graph_mutation_differential.py::test_python_node_and_edge_payloads_round_trip_through_rust_graph_mutation
+          -q -p no:cacheprovider
 
   pypy-beta-best-effort:
     # PyPy support is an automatic compatibility signal, not a required

@@ -1,7 +1,7 @@
 {
   "dimension": 384,
   "expected": {
-    "canonical_event_projection_state_sha256": "8bc61ea0707cbe3c7aa62dfdca4ecc28f2aa4822bff82df1ec56fbeef1eaada4",
+    "canonical_event_projection_state_sha256": "d991f50a6ff71149828a96811a88a1afa21c486086892b33520b4615456c64cc",
     "concurrent_balanced_trace_sha256": "813331449ea0d1e1e1f0006ec24537a2cc88b44cb01d62b8c9cbb05831fb1d7b",
     "concurrent_read_heavy_trace_sha256": "aeaaa42f634497e4bb71d49a89982dd7c3baad33deb78f96a93be4c706e4e22e",
     "nearest_neighbor_for_each_record": "the same record id",

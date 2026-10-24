@@ -24,6 +24,18 @@ struct TraceOperation {
     expected_entity_id: String,
 }
 
+fn validate_trace_contract(trace: &WorkloadTrace, items: usize) -> BenchResult<()> {
+    if !matches!(
+        trace.schema.as_str(),
+        "kogwistar-mixed-rewrite-trace/v1" | "kogwistar-mixed-rewrite-trace/v2"
+    ) || trace.profile != "read_after_write"
+        || trace.operations.len() != items * 3
+    {
+        return Err("unsupported or malformed mixed workload trace".into());
+    }
+    Ok(())
+}
+
 fn measure<F>(operation: F) -> BenchResult<Value>
 where
     F: FnOnce() -> BenchResult<usize>,
@@ -64,12 +76,10 @@ fn main() -> BenchResult<()> {
         return Err("expected: <database-path> <items> <read-cycles> <trace-path>".into());
     }
     let trace: WorkloadTrace = serde_json::from_str(&fs::read_to_string(trace_path)?)?;
-    if trace.schema != "kogwistar-mixed-rewrite-trace/v1"
-        || trace.profile != "read_after_write"
-        || trace.operations.len() != items * 3
-    {
-        return Err("unsupported or malformed mixed workload trace".into());
-    }
+    // The Python workload generator is the contract owner. v2 keeps the same
+    // operation semantics as the original native benchmark while adding
+    // explicit graph endpoint fields used by the shared fixture.
+    validate_trace_contract(&trace, items)?;
 
     let store = SqliteStore::open(&path)?;
     let event_namespace = "benchmark";
@@ -273,4 +283,44 @@ fn main() -> BenchResult<()> {
         })
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{TraceOperation, WorkloadTrace, validate_trace_contract};
+
+    fn trace(schema: &str) -> WorkloadTrace {
+        WorkloadTrace {
+            schema: schema.to_owned(),
+            profile: "read_after_write".to_owned(),
+            operations: vec![
+                TraceOperation {
+                    operation: "write_record".to_owned(),
+                    index: 0,
+                    expected_entity_id: "mixed-node-00000".to_owned(),
+                },
+                TraceOperation {
+                    operation: "read_event".to_owned(),
+                    index: 0,
+                    expected_entity_id: "mixed-node-00000".to_owned(),
+                },
+                TraceOperation {
+                    operation: "read_projection".to_owned(),
+                    index: 0,
+                    expected_entity_id: "mixed-node-00000".to_owned(),
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn trace_contract_accepts_current_and_legacy_versions() {
+        assert!(validate_trace_contract(&trace("kogwistar-mixed-rewrite-trace/v1"), 1).is_ok());
+        assert!(validate_trace_contract(&trace("kogwistar-mixed-rewrite-trace/v2"), 1).is_ok());
+    }
+
+    #[test]
+    fn trace_contract_rejects_unknown_versions() {
+        assert!(validate_trace_contract(&trace("kogwistar-mixed-rewrite-trace/v3"), 1).is_err());
+    }
 }

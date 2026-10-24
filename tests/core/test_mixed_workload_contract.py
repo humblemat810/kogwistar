@@ -85,6 +85,9 @@ def test_graph_fixture_uses_valid_node_edge_models_and_exact_source_spans() -> N
 def test_workload_trace_round_trips_and_rejects_noncanonical_order(tmp_path) -> None:
     path = tmp_path / "trace.json"
     expected = write_trace(path, 3)
+    assert json.loads(path.read_text(encoding="utf-8"))["schema"] == (
+        "kogwistar-mixed-rewrite-trace/v2"
+    )
     assert read_trace(path) == expected
 
     payload = json.loads(path.read_text(encoding="utf-8"))

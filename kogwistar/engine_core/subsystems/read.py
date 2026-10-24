@@ -731,9 +731,13 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 )
             ),
         )
-        return self.nodes_from_query_result(
+        rows = self.nodes_from_query_result(
             got, node_type=cast(type[TNode], node_type or Node)
         )
+        return [
+            self._e._filter_items_by_resolve_mode(row, "active_only")
+            for row in rows
+        ]
 
     def _coerce_ts_utc(self, raw: object) -> datetime | None:
         if raw is None:
@@ -1054,9 +1058,13 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 )
             ),
         )
-        return self.edges_from_query_result(
+        rows = self.edges_from_query_result(
             got, edge_type=cast(type[TEdge], edge_type or Edge)
         )
+        return [
+            self._e._filter_items_by_resolve_mode(row, "active_only")
+            for row in rows
+        ]
 
     def nodes_from_single_or_id_query_result(
         self,
