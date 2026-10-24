@@ -82,3 +82,15 @@ That is roughly three orders of magnitude below the public Python bridge in
 this small synthetic fixture, but it excludes input construction, transport,
 authorization, storage, and output serialization. It should be treated as a
 measurement of the projection kernel and seam-removal opportunity only.
+
+## Current Recheck
+
+On the current Windows checkout, an independent 16-envelope fixture was run
+through both benchmark paths. The Python, PyO3, batch, and direct Rust outputs
+all produced digest
+`d8c2e7280f20e6c250dbecd781b2ba3529ce3f9834d19f6006d96fe7cec97eba`.
+The direct Rust release example measured `0.01762 ms` per iteration over 10
+iterations. The public Python bridge measured `5.842 ms` median over 3
+iterations for the same fixture. This confirms the no-seam projection kernel
+is materially faster for this workload, while leaving the full-stack transport,
+authorization, persistence, and recovery costs outside the claim.
