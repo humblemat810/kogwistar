@@ -308,6 +308,14 @@ def test_dual_language_support_matrix_is_complete_and_conservative() -> None:
             assert matrix_item["rust"]["status"] != "enabled"
 
 
+def test_unverified_runtime_matrix_lanes_are_not_enabled() -> None:
+    matrix = json.loads(SUPPORT_MATRIX_PATH.read_text(encoding="utf-8"))
+    entries = {item["id"]: item for item in matrix["capabilities"]}
+
+    for capability_id in ("chroma-adapter", "server-rest-sse-mcp-cli"):
+        assert entries[capability_id]["python"]["status"] != "enabled"
+
+
 def test_each_authoritative_capability_has_owner_and_rollback() -> None:
     manifest = _manifest()
     capabilities = manifest["capability_ownership"]

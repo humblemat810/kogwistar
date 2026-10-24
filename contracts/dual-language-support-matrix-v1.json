@@ -19,8 +19,8 @@
     {"id": "projections-snapshots-run-registry", "python": {"status": "enabled", "evidence": "DL-09"}, "rust": {"status": "disabled", "evidence": "DL-09"}, "mixed": {"status": "disabled", "evidence": "DL-09"}},
     {"id": "queues-leases-lanes", "python": {"status": "enabled", "evidence": "DL-10"}, "rust": {"status": "opt-in", "evidence": "DL-13"}, "mixed": {"status": "opt-in", "evidence": "DL-14"}},
     {"id": "graph-pgvector", "python": {"status": "enabled", "evidence": "DL-16"}, "rust": {"status": "opt-in", "evidence": "DL-16I"}, "mixed": {"status": "opt-in", "evidence": "DL-16I"}},
-    {"id": "chroma-adapter", "python": {"status": "enabled", "evidence": "DL-17"}, "rust": {"status": "not-applicable", "evidence": "DL-17"}, "mixed": {"status": "disabled", "evidence": "DL-17"}},
+    {"id": "chroma-adapter", "python": {"status": "opt-in", "evidence": "DL-17"}, "rust": {"status": "not-applicable", "evidence": "DL-17"}, "mixed": {"status": "disabled", "evidence": "DL-17"}},
     {"id": "workflow-runtime", "python": {"status": "enabled", "evidence": "DL-14A"}, "rust": {"status": "opt-in", "evidence": "DL-13"}, "mixed": {"status": "opt-in", "evidence": "DL-14A"}},
-    {"id": "server-rest-sse-mcp-cli", "python": {"status": "enabled", "evidence": "DL-17"}, "rust": {"status": "opt-in", "evidence": "DL-16N"}, "mixed": {"status": "opt-in", "evidence": "DL-16N"}}
+    {"id": "server-rest-sse-mcp-cli", "python": {"status": "opt-in", "evidence": "DL-17"}, "rust": {"status": "opt-in", "evidence": "DL-16N"}, "mixed": {"status": "opt-in", "evidence": "DL-16N"}}
   ]
 }
