@@ -1,0 +1,9 @@
+{
+  "conversation_id": "conversation:demo",
+  "schema_version": 1,
+  "start_node_id": "node:start",
+  "status": "active",
+  "tail_node_id": "node:assistant-2",
+  "turn_count": 2,
+  "user_id": "user:demo"
+}

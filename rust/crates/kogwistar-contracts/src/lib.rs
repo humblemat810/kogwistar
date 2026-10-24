@@ -9,11 +9,17 @@ use std::fmt::{self, Formatter};
 use thiserror::Error;
 use uuid::Uuid;
 
+mod conversation;
 mod delegation;
 mod graph_model;
 mod graph_mutation;
 mod graph_read;
 mod graph_slice;
+pub use conversation::{
+    CONVERSATION_WIRE_VERSION, ConversationContractError, ConversationSummaryV1,
+    ConversationTranscriptV1, ConversationTurnV1, conversation_summary_from_str,
+    conversation_transcript_from_str, conversation_turn_from_str,
+};
 pub use delegation::{
     DELEGATION_AUTHORITY_SCHEMA_VERSION, DelegationAuthorityV1, DelegationError,
     attenuate_capabilities,
