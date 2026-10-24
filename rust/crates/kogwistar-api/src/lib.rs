@@ -15,7 +15,10 @@ use std::sync::{Arc, Mutex};
 use jsonwebtoken::{
     Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, decode_header, encode,
 };
-use kogwistar_contracts::{DelegationAuthorityV1, attenuate_capabilities};
+use kogwistar_contracts::{
+    DelegationAuthorityV1, GraphMutationBatchV1 as GraphMutationBatchInput,
+    GraphMutationV1 as GraphMutationInput, attenuate_capabilities,
+};
 use kogwistar_runtime::{
     RECORDED_RUNTIME_CONTRACT_VERSION, RecordedRuntimeState, RecordedRuntimeTransition,
     RecordedTransitionKind, RecordedWorkerHandoff, RecordedWorkerSuccessEffect, RuntimeFrontier,
@@ -2132,93 +2135,25 @@ struct DocumentGraphProposalInput {
 /// deterministic embeddings.  This is deliberately separate from the public
 /// document upsert contract: indexing and document parsing remain outside this
 /// Rust cutover until their behavior is parity-tested.
-#[derive(Clone, Debug, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-struct GraphMutationBatchInput {
-    contract_version: u32,
-    atomic: bool,
-    mutations: Vec<GraphMutationInput>,
-    #[serde(default)]
-    index_jobs: Vec<GraphIndexJobInput>,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-struct GraphIndexJobInput {
-    job_id: String,
-    namespace: String,
-    entity_kind: String,
-    entity_id: String,
-    index_kind: String,
-    op: String,
-    #[serde(default)]
-    payload_json: Option<String>,
-    #[serde(default = "default_index_job_max_retries")]
-    max_retries: i64,
-}
-
-fn default_index_job_max_retries() -> i64 {
-    3
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-struct GraphMutationInput {
-    scope: GraphScopeInput,
-    table: String,
-    entity_kind: String,
-    event_id: String,
-    op: String,
-    payload: Value,
-    record: GraphRecordInput,
-    embedding_dim: usize,
-    #[serde(default)]
-    model_envelope: Option<kogwistar_contracts::GraphModelEnvelope>,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-struct GraphScopeInput {
-    namespace: String,
-    #[serde(default)]
-    workspace_id: Option<String>,
-    #[serde(default)]
-    graph_space: Option<String>,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-struct GraphRecordInput {
-    id: String,
-    #[serde(default)]
-    document: Option<String>,
-    #[serde(default)]
-    metadata: Map<String, Value>,
-    #[serde(default)]
-    embedding: Option<Vec<f32>>,
-}
-
-impl GraphMutationInput {
-    fn into_store(self) -> GraphMutation {
-        GraphMutation {
-            scope: GraphScope {
-                namespace: self.scope.namespace,
-                workspace_id: self.scope.workspace_id,
-                graph_space: self.scope.graph_space,
-            },
-            table: self.table,
-            entity_kind: self.entity_kind,
-            event_id: self.event_id,
-            op: self.op,
-            payload: self.payload,
-            record: GraphRecord {
-                id: self.record.id,
-                document: self.record.document,
-                metadata: self.record.metadata,
-                embedding: self.record.embedding,
-            },
-            embedding_dim: self.embedding_dim,
-        }
+fn graph_mutation_into_store(input: GraphMutationInput) -> GraphMutation {
+    GraphMutation {
+        scope: GraphScope {
+            namespace: input.scope.namespace,
+            workspace_id: input.scope.workspace_id,
+            graph_space: input.scope.graph_space,
+        },
+        table: input.table,
+        entity_kind: input.entity_kind,
+        event_id: input.event_id,
+        op: input.op,
+        payload: input.payload,
+        record: GraphRecord {
+            id: input.record.id,
+            document: input.record.document,
+            metadata: input.record.metadata,
+            embedding: input.record.embedding,
+        },
+        embedding_dim: input.embedding_dim,
     }
 }
 
@@ -2240,7 +2175,7 @@ fn graph_mutation_batch_value(
     let mutations = input
         .mutations
         .into_iter()
-        .map(GraphMutationInput::into_store)
+        .map(graph_mutation_into_store)
         .collect::<Vec<_>>();
     let first_scope = mutations[0].scope.clone();
     for mutation in &mutations {

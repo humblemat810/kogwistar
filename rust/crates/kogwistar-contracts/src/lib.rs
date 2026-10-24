@@ -11,6 +11,7 @@ use uuid::Uuid;
 
 mod delegation;
 mod graph_model;
+mod graph_mutation;
 pub use delegation::{
     DELEGATION_AUTHORITY_SCHEMA_VERSION, DelegationAuthorityV1, DelegationError,
     attenuate_capabilities,
@@ -28,6 +29,9 @@ pub use graph_model::{
     PersistentGraphEntityV1, PersistentNodeV1, PureChromaEdgeV1, PureChromaFieldsV1,
     PureChromaNodeV1, RequiredNullable, TextSpanV1, TypedGraphEntity, WorkflowEdgeMetadataV1,
     WorkflowNodeMetadataV1, validate_graph_model_family_from_str,
+};
+pub use graph_mutation::{
+    GraphIndexJobV1, GraphMutationBatchV1, GraphMutationV1, GraphRecordV1, GraphScopeV1,
 };
 
 /// Return the stable graph-class names exposed by the versioned Python seam.
