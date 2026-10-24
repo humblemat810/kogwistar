@@ -78,12 +78,13 @@ def test_cli_passes_requested_concurrent_fixture_size(monkeypatch, tmp_path) -> 
     observed: dict[str, int] = {}
 
     def fake_run_benchmark(
-        output, *, items: int, samples: int, concurrent_items: int
+        output, *, items: int, samples: int, concurrent_items: int, modes
     ) -> dict[str, int]:
         observed.update(
             items=items,
             samples=samples,
             concurrent_items=concurrent_items,
+            modes=list(modes),
         )
         output.mkdir(parents=True, exist_ok=True)
         return observed.copy()
@@ -106,8 +107,67 @@ def test_cli_passes_requested_concurrent_fixture_size(monkeypatch, tmp_path) -> 
     )
 
     assert mixed_mcp_benchmark.main() == 0
-    assert observed == {"items": 12, "samples": 3, "concurrent_items": 7}
+    assert observed == {
+        "items": 12,
+        "samples": 3,
+        "concurrent_items": 7,
+        "modes": list(mixed_mcp_benchmark.DEFAULT_MODES),
+    }
     assert json.loads((tmp_path / "report.v3.json").read_text()) == observed
+
+
+def test_benchmark_accepts_a_resource_matched_mode_subset(tmp_path, monkeypatch) -> None:
+    native_binary = tmp_path / "mixed_mcp_authority_benchmark"
+    native_binary.write_bytes(b"native-placeholder")
+    monkeypatch.setenv("KOGWISTAR_MIXED_NATIVE_BINARY", str(native_binary))
+    async def fake_run_one(*args, **kwargs):
+        return {
+            "state_digest": "same-state",
+            "elapsed_ms": 1.0,
+            "startup_ms": 1.0,
+            "throughput_ops_per_sec": 1.0,
+            "host_process_cpu_elapsed_ms": 1.0,
+            "host_process_rss_delta_bytes": 1,
+            "native_cpu_elapsed_ms": 1.0,
+            "native_peak_rss_bytes": 1,
+        }
+
+    monkeypatch.setattr(mixed_mcp_benchmark, "_run_one", fake_run_one)
+    def fake_asyncio_run(coroutine):
+        try:
+            coroutine.send(None)
+        except StopIteration as completed:
+            return completed.value
+        raise AssertionError("fake MCP operation unexpectedly suspended")
+
+    monkeypatch.setattr(mixed_mcp_benchmark.asyncio, "run", fake_asyncio_run)
+    monkeypatch.setattr(
+        mixed_mcp_benchmark,
+        "_trace_tool_arguments",
+        lambda step: {"index": step["index"]},
+    )
+    monkeypatch.setattr(
+        mixed_mcp_benchmark,
+        "_run_concurrent_mcp_profiles",
+        lambda *args, **kwargs: {"state_digest_equal": True},
+    )
+
+    report = mixed_mcp_benchmark.run_benchmark(
+        tmp_path / "report",
+        items=1,
+        samples=2,
+        modes=("http", "rust_native"),
+    )
+
+    assert set(report["modes"]) == {"http", "rust_native"}
+
+
+def test_benchmark_rejects_unknown_mode_before_creating_output(tmp_path) -> None:
+    with pytest.raises(ValueError, match="unsupported MCP benchmark mode"):
+        mixed_mcp_benchmark.run_benchmark(
+            tmp_path / "report", items=1, samples=2, modes=("python",)
+        )
+    assert not (tmp_path / "report").exists()
 
 
 def test_progress_json_checkpoint_replaces_atomically(tmp_path) -> None:

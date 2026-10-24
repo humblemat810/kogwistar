@@ -26,6 +26,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 _NATIVE_BINARY_READY = False
+DEFAULT_MODES = ("in_process", "rust_authority", "http", "rust_native")
 
 import uvicorn
 from mcp import ClientSession
@@ -1248,8 +1249,7 @@ def _run_native_server(
     trace: list[WorkloadOperation],
     trace_arguments: list[dict[str, object]],
 ) -> dict[str, Any]:
-    binary_name = "mixed_mcp_authority_benchmark.exe" if os.name == "nt" else "mixed_mcp_authority_benchmark"
-    binary = Path(__file__).resolve().parents[1] / "rust" / "target" / "release" / "examples" / binary_name
+    binary = _native_binary_path()
     if not binary.is_file():
         raise FileNotFoundError(
             f"Rust benchmark server is not built: {binary}; run cargo build --release --manifest-path rust/Cargo.toml -p kogwistar-api --example mixed_mcp_authority_benchmark"
@@ -1359,6 +1359,15 @@ def _run_native_server(
 
 def _ensure_native_benchmark_binary() -> Path:
     global _NATIVE_BINARY_READY
+    configured = os.environ.get("KOGWISTAR_MIXED_NATIVE_BINARY")
+    if configured:
+        binary = Path(configured)
+        if not binary.is_file():
+            raise FileNotFoundError(
+                f"configured Rust MCP benchmark server is not a file: {binary}"
+            )
+        _NATIVE_BINARY_READY = True
+        return binary
     binary_name = (
         "mixed_mcp_authority_benchmark.exe"
         if os.name == "nt"
@@ -1380,6 +1389,18 @@ def _ensure_native_benchmark_binary() -> Path:
     if not binary.is_file():
         raise FileNotFoundError(f"Cargo succeeded but native benchmark binary is absent: {binary}")
     return binary
+
+
+def _native_binary_path() -> Path:
+    configured = os.environ.get("KOGWISTAR_MIXED_NATIVE_BINARY")
+    if configured:
+        binary = Path(configured)
+        if not binary.is_file():
+            raise FileNotFoundError(
+                f"configured Rust MCP benchmark server is not a file: {binary}"
+            )
+        return binary
+    return _ensure_native_benchmark_binary()
 
 
 async def _run_native_concurrent_one(
@@ -1796,10 +1817,19 @@ def _run_concurrent_mcp_profiles(
 
 
 def run_benchmark(
-    output: Path, *, items: int, samples: int, concurrent_items: int = 8
+    output: Path,
+    *,
+    items: int,
+    samples: int,
+    concurrent_items: int = 8,
+    modes: tuple[str, ...] = DEFAULT_MODES,
 ) -> dict[str, Any]:
+    supported_modes = {"in_process", "rust_authority", "http", "rust_native"}
+    if not modes or any(mode not in supported_modes for mode in modes):
+        raise ValueError(f"unsupported MCP benchmark mode selection: {modes!r}")
     output.mkdir(parents=True, exist_ok=True)
-    _ensure_native_benchmark_binary()
+    if "rust_native" in modes:
+        _ensure_native_benchmark_binary()
     run_id = uuid.uuid4().hex[:12]
     run_root = output / run_id
     run_root.mkdir(parents=True, exist_ok=False)
@@ -1832,7 +1862,7 @@ def run_benchmark(
     progress["tool_argument_preparation_ms"] = argument_preparation_ms
     progress["active"] = None
     _write_json_atomic(progress_path, progress)
-    for mode in ("in_process", "rust_authority", "http", "rust_native"):
+    for mode in modes:
         warmup_path = run_root / f"{mode}-warmup.sqlite3"
         progress["active"] = {"mode": mode, "phase": "warmup"}
         _write_json_atomic(progress_path, progress)
@@ -1933,6 +1963,12 @@ def main() -> int:
     parser.add_argument("--items", type=int, default=1000)
     parser.add_argument("--samples", type=int, default=5)
     parser.add_argument("--concurrent-items", type=int, default=8)
+    parser.add_argument(
+        "--mode",
+        action="append",
+        choices=DEFAULT_MODES,
+        help="run only the selected sequential mode; repeat for a comparison subset",
+    )
     args = parser.parse_args()
     if args.items < 1 or args.concurrent_items < 1 or args.samples < 2:
         parser.error("item counts must be positive and --samples must be at least 2")
@@ -1941,6 +1977,7 @@ def main() -> int:
         items=args.items,
         samples=args.samples,
         concurrent_items=args.concurrent_items,
+        modes=tuple(args.mode) if args.mode else DEFAULT_MODES,
     )
     payload = json.dumps(report, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
     _write_json_atomic(args.output / "report.v3.json", report)
