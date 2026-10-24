@@ -3,8 +3,13 @@ from __future__ import annotations
 import json
 
 import pytest
+from pydantic_extension.model_slicing.mixin import ModeSlicingMixin
 
 from kogwistar._rust_bridge import project_graph_model_slice
+from kogwistar.acl import models as acl_models
+from kogwistar.conversation import models as conversation_models
+from kogwistar.engine_core import graph_contracts
+from kogwistar.engine_core import models as engine_models
 from kogwistar.engine_core.graph_contracts import (
     GRAPH_MODEL_ENVELOPE_VERSION,
     GraphModelAdapterError,
@@ -15,6 +20,7 @@ from kogwistar.engine_core.graph_contracts import (
 from kogwistar.engine_core.graph_slice_manifest import project_with_manifest
 from kogwistar.engine_core.models import Edge, Node
 from kogwistar.engine_core.subsystems.write import _validate_graph_model_contract
+from kogwistar.runtime import models as runtime_models
 from kogwistar.runtime.models import WorkflowRunNode, WorkflowRuntimeEdge
 
 
@@ -79,6 +85,28 @@ def test_unknown_subclass_fails_closed_instead_of_guessing() -> None:
 
     with pytest.raises(GraphModelAdapterError, match="unsupported graph model class"):
         graph_model_class_for(node)
+
+
+def test_every_mapped_graph_model_preserves_field_slicing_contract() -> None:
+    """Mapped Rust seam classes must remain governed by pydantic-extension."""
+
+    model_modules = (
+        engine_models,
+        acl_models,
+        conversation_models,
+        runtime_models,
+    )
+    for class_name in graph_contracts._MODEL_CLASS_BY_NAME:
+        model_class = next(
+            (
+                getattr(module, class_name, None)
+                for module in model_modules
+                if getattr(module, class_name, None) is not None
+            ),
+            None,
+        )
+        assert model_class is not None, class_name
+        assert issubclass(model_class, ModeSlicingMixin), class_name
 
 
 def test_python_slice_envelope_keeps_canonical_payload_and_manifest() -> None:
