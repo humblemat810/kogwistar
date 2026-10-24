@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +33,60 @@ def _rust(
 
 def _rust_reused(path: Path, operation: dict[str, Any]) -> Any:
     return store_sqlite(path=path, operation=operation, reuse_session=True)
+
+
+def test_runtime_attestation_payload_round_trips_as_optional_shared_contract(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[2]
+    attestation = json.loads(
+        (root / "contracts" / "golden" / "runtime-implementation-attestation-v1.json")
+        .read_text(encoding="utf-8")
+    )
+    attestation["scheduler"]["version"] = "fixture-version"
+    payload = {"run_id": "run-attestation", "implementation_attestation": attestation}
+
+    python = EngineSQLite(tmp_path)
+    python.ensure_initialized()
+    python.create_server_run(
+        run_id="run-attestation",
+        conversation_id="conversation",
+        workflow_id="workflow",
+        user_id=None,
+        user_turn_node_id="turn",
+    )
+
+    _rust(
+        python.db_path,
+        {
+            "kind": "append_server_run_event",
+            "run_id": "run-attestation",
+            "event_type": "run.created",
+            "payload_json": json.dumps(payload),
+        },
+    )
+    events = python.list_server_run_events("run-attestation")
+    assert events[0]["event_type"] == "run.created"
+    assert events[0]["payload"] == payload
+
+    legacy_payload = {"run_id": "run-legacy"}
+    python.create_server_run(
+        run_id="run-legacy",
+        conversation_id="conversation",
+        workflow_id="workflow",
+        user_id=None,
+        user_turn_node_id="turn-legacy",
+    )
+    _rust(
+        python.db_path,
+        {
+            "kind": "append_server_run_event",
+            "run_id": "run-legacy",
+            "event_type": "run.created",
+            "payload_json": json.dumps(legacy_payload),
+        },
+    )
+    assert python.list_server_run_events("run-legacy")[0]["payload"] == legacy_payload
 
 
 def test_python_sqlite_then_rust_reads_and_writes_actual_database(tmp_path: Path) -> None:

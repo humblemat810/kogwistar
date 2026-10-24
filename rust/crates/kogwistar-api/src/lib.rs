@@ -728,6 +728,23 @@ fn worker_protocol_for_runtime_kind(runtime_kind: &str) -> &'static str {
     }
 }
 
+fn runtime_implementation_attestation(runtime_kind: &str) -> Value {
+    json!({
+        "schema_version": 1,
+        "source": "rust_server_admission",
+        "scheduler": {
+            "language": "rust",
+            "package": "kogwistar-api",
+            "version": env!("CARGO_PKG_VERSION"),
+        },
+        "worker_contract": {
+            "runtime_kind": runtime_kind,
+            "protocol": worker_protocol_for_runtime_kind(runtime_kind),
+            "identity_status": "resolved_on_lane_claim",
+        },
+    })
+}
+
 fn runtime_worker_recipient(environment_id: Option<&str>) -> String {
     let Some(environment_id) = environment_id.filter(|value| !value.trim().is_empty()) else {
         return "python-worker".to_owned();
@@ -4503,6 +4520,7 @@ impl SqliteRunApplicationService {
             "workflow_id": workflow_id,
             "status": "queued",
             "turn_node_id": turn_node_id,
+            "implementation_attestation": runtime_implementation_attestation(&runtime_kind),
         });
         let graph_plan = exact_runtime_graph_plan(
             self.store
@@ -5505,6 +5523,7 @@ impl PostgresRunApplicationService {
                                     "workflow_id": target_ref,
                                     "status": "queued",
                                     "turn_node_id": turn_node_id,
+                                    "implementation_attestation": runtime_implementation_attestation(runtime_kind),
                                 })
                                 .to_string(),
                             )
@@ -6917,6 +6936,7 @@ impl PostgresRunApplicationService {
                                 "workflow_id": workflow_id,
                                 "status": "queued",
                                 "turn_node_id": turn_node_id,
+                                "implementation_attestation": runtime_implementation_attestation(&runtime_kind),
                             }))?,
                         )
                         .await?;
@@ -8037,6 +8057,7 @@ impl SqliteRunApplicationService {
                         "workflow_id": target_ref,
                         "status": "queued",
                         "turn_node_id": turn_node_id,
+                        "implementation_attestation": runtime_implementation_attestation(runtime_kind),
                     })
                     .to_string(),
                 )?;
@@ -12920,6 +12941,26 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
         assert_eq!(worker_protocol_for_runtime_kind("sync"), "sync-v1");
         assert_eq!(worker_protocol_for_runtime_kind("async"), "async-v2");
         assert_eq!(worker_protocol_for_runtime_kind("unknown"), "sync-v1");
+        let async_attestation = runtime_implementation_attestation("async");
+        assert_eq!(async_attestation["schema_version"], 1);
+        assert_eq!(async_attestation["scheduler"]["language"], "rust");
+        assert_eq!(
+            async_attestation["scheduler"]["version"],
+            env!("CARGO_PKG_VERSION")
+        );
+        assert_eq!(async_attestation["worker_contract"]["protocol"], "async-v2");
+
+        let mut sync_attestation = runtime_implementation_attestation("sync");
+        sync_attestation["scheduler"]
+            .as_object_mut()
+            .unwrap()
+            .remove("version");
+        let shared_attestation: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/runtime-implementation-attestation-v1.json"
+        )))
+        .unwrap();
+        assert_eq!(sync_attestation, shared_attestation);
 
         let mut state = serde_json::Map::new();
         state.insert(
@@ -13069,12 +13110,31 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
                 .status,
             "queued"
         );
+        let created_events = store
+            .list_server_run_events(submitted_run_id, 0, 10)
+            .unwrap();
+        assert_eq!(created_events[0].event_type, "run.created");
+        let implementation_attestation: Value =
+            serde_json::from_str(&created_events[0].payload_json).unwrap();
         assert_eq!(
-            store
-                .list_server_run_events(submitted_run_id, 0, 10)
-                .unwrap()[0]
-                .event_type,
-            "run.created"
+            implementation_attestation["implementation_attestation"]["schema_version"],
+            1
+        );
+        assert_eq!(
+            implementation_attestation["implementation_attestation"]["source"],
+            "rust_server_admission"
+        );
+        assert_eq!(
+            implementation_attestation["implementation_attestation"]["scheduler"]["language"],
+            "rust"
+        );
+        assert_eq!(
+            implementation_attestation["implementation_attestation"]["scheduler"]["package"],
+            "kogwistar-api"
+        );
+        assert_eq!(
+            implementation_attestation["implementation_attestation"]["worker_contract"]["protocol"],
+            "sync-v1"
         );
         let claimed = store
             .claim_projected_lane_messages("workflow", "workflow-runtime", "python-worker-1", 1, 60)
