@@ -47,11 +47,43 @@ def capture_implementation_selection() -> ImplementationSelectionSnapshot:
 def implementation_selection_metadata(
     snapshot: ImplementationSelectionSnapshot,
 ) -> JsonObject:
-    """Project selector configuration to a versioned, non-secret trace object."""
+    """Project raw and effective selectors to a versioned, non-secret trace.
+
+    Raw values preserve the operator configuration for compatibility. Effective
+    values make fallback explicit: an unset selector inherits the global mode,
+    except PostgreSQL authority, whose safe default is Python. This prevents a
+    trace from making an unset field look like an unverified Rust path.
+    """
+
+    raw = {name: value for name, value in snapshot}
+    global_mode = raw.get("KOGWISTAR_IMPL_MODE") or "python"
+    effective = {
+        "KOGWISTAR_IMPL_MODE": global_mode,
+        "KOGWISTAR_IMPL_CONTRACTS": raw.get("KOGWISTAR_IMPL_CONTRACTS") or global_mode,
+        "KOGWISTAR_IMPL_META_STORE": raw.get("KOGWISTAR_IMPL_META_STORE") or global_mode,
+        "KOGWISTAR_IMPL_GRAPH_STORE": raw.get("KOGWISTAR_IMPL_GRAPH_STORE") or global_mode,
+        "KOGWISTAR_IMPL_RUNTIME": raw.get("KOGWISTAR_IMPL_RUNTIME") or global_mode,
+        "KOGWISTAR_IMPL_SERVER": raw.get("KOGWISTAR_IMPL_SERVER") or global_mode,
+        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY": raw.get(
+            "KOGWISTAR_IMPL_POSTGRES_AUTHORITY"
+        )
+        or "python",
+    }
+    postgres_coherent = not (
+        effective["KOGWISTAR_IMPL_POSTGRES_AUTHORITY"] == "rust"
+        and (
+            effective["KOGWISTAR_IMPL_META_STORE"] != "rust"
+            or effective["KOGWISTAR_IMPL_GRAPH_STORE"] != "rust"
+        )
+    )
     return {
         "schema_version": 1,
         "source": "engine_construction",
-        "selectors": {name: value for name, value in snapshot},
+        "selectors": raw,
+        "effective_selectors": effective,
+        "invariants": {
+            "postgres_transaction_coherent": postgres_coherent,
+        },
     }
 
 

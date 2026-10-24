@@ -21,6 +21,7 @@ from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.in_memory_backend import build_in_memory_backend
 from kogwistar.implementation_selection import (
     capture_implementation_selection,
+    implementation_selection_metadata,
     implementation_selection_bound,
     implementation_selection_scope,
 )
@@ -82,6 +83,34 @@ def test_all_selector_families_use_the_same_run_snapshot(
         assert [selector() for selector in selectors] == ["python"] * len(selectors)
 
     assert [selector() for selector in selectors] == ["rust"] * len(selectors)
+
+
+def test_selection_metadata_records_effective_defaults_and_transaction_coherence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_MODE", "rust")
+    monkeypatch.delenv("KOGWISTAR_IMPL_META_STORE", raising=False)
+    monkeypatch.delenv("KOGWISTAR_IMPL_GRAPH_STORE", raising=False)
+    monkeypatch.delenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", raising=False)
+
+    metadata = implementation_selection_metadata(capture_implementation_selection())
+
+    assert metadata["selectors"]["KOGWISTAR_IMPL_META_STORE"] is None
+    assert metadata["effective_selectors"]["KOGWISTAR_IMPL_META_STORE"] == "rust"
+    assert metadata["effective_selectors"]["KOGWISTAR_IMPL_POSTGRES_AUTHORITY"] == "python"
+    assert metadata["invariants"]["postgres_transaction_coherent"] is True
+
+
+def test_selection_metadata_flags_incoherent_postgres_authority(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "python")
+    monkeypatch.setenv("KOGWISTAR_IMPL_GRAPH_STORE", "rust")
+
+    metadata = implementation_selection_metadata(capture_implementation_selection())
+
+    assert metadata["invariants"]["postgres_transaction_coherent"] is False
 
 
 def test_runtime_entrypoints_keep_sync_and_async_call_contracts() -> None:
