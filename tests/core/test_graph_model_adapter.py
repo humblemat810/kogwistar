@@ -1,0 +1,176 @@
+from __future__ import annotations
+
+import pytest
+
+from kogwistar.engine_core.graph_contracts import (
+    GRAPH_MODEL_ENVELOPE_VERSION,
+    GraphModelAdapterError,
+    build_graph_model_envelope,
+    graph_model_class_for,
+)
+from kogwistar.engine_core.models import Edge, Node
+from kogwistar.engine_core.subsystems.write import _validate_graph_model_contract
+from kogwistar.runtime.models import WorkflowRunNode, WorkflowRuntimeEdge
+
+
+def _mentions(excerpt: str) -> list[dict[str, list[dict[str, object]]]]:
+    return [
+        {
+            "spans": [
+                {
+                    "collection_page_url": "collection/doc",
+                    "document_page_url": "document/doc",
+                    "doc_id": "doc",
+                    "insertion_method": "test",
+                    "start_char": 0,
+                    "end_char": len(excerpt),
+                    "excerpt": excerpt,
+                }
+            ]
+        }
+    ]
+
+
+def test_base_graph_models_get_explicit_versioned_envelopes() -> None:
+    node = Node(
+        label="node",
+        type="entity",
+        summary="A node",
+        mentions=_mentions("node"),
+    )
+    edge = Edge(
+        label="edge",
+        type="relationship",
+        summary="An edge",
+        relation="relates_to",
+        source_ids=["node-a"],
+        target_ids=["node-b"],
+        source_edge_ids=None,
+        target_edge_ids=None,
+        mentions=_mentions("edge"),
+    )
+
+    node_envelope = build_graph_model_envelope(node)
+    edge_envelope = build_graph_model_envelope(edge)
+
+    assert node_envelope["schema_version"] == GRAPH_MODEL_ENVELOPE_VERSION
+    assert node_envelope["model_class"] == "node"
+    assert edge_envelope["model_class"] == "edge"
+    assert edge_envelope["payload"]["source_edge_ids"] is None
+    assert edge_envelope["payload"]["target_edge_ids"] is None
+    assert node_envelope["payload"] != node.model_dump(field_mode="llm_in", dump_format="json")
+
+
+def test_unknown_subclass_fails_closed_instead_of_guessing() -> None:
+    class FutureNode(Node):
+        pass
+
+    node = FutureNode(
+        label="node",
+        type="entity",
+        summary="A node",
+        mentions=_mentions("node"),
+    )
+
+    with pytest.raises(GraphModelAdapterError, match="unsupported graph model class"):
+        graph_model_class_for(node)
+
+
+def test_python_contract_mode_does_not_cross_native_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    node = Node(
+        label="node",
+        type="entity",
+        summary="A node",
+        mentions=_mentions("node"),
+    )
+
+    monkeypatch.setenv("KOGWISTAR_IMPL_CONTRACTS", "python")
+
+    def native_must_not_run(_: object) -> None:
+        raise AssertionError("Python contract mode crossed the native seam")
+
+    monkeypatch.setattr(
+        "kogwistar._rust_bridge.validate_graph_model_family", native_must_not_run
+    )
+    assert _validate_graph_model_contract(node) is None
+
+
+def test_shadow_contract_mode_validates_the_versioned_envelope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    node = Node(
+        label="node",
+        type="entity",
+        summary="A node",
+        mentions=_mentions("node"),
+    )
+    captured: list[dict[str, object]] = []
+
+    monkeypatch.setenv("KOGWISTAR_IMPL_CONTRACTS", "shadow")
+    monkeypatch.setattr(
+        "kogwistar._rust_bridge.validate_graph_model_family",
+        lambda payload: captured.append(payload),
+    )
+    envelope = _validate_graph_model_contract(node)
+
+    assert captured[0]["schema_version"] == GRAPH_MODEL_ENVELOPE_VERSION
+    assert captured[0]["model_class"] == "node"
+    assert envelope == captured[0]
+
+
+def test_workflow_runtime_subtypes_have_explicit_graph_wire_tags() -> None:
+    run_node = WorkflowRunNode(
+        label="run",
+        type="entity",
+        summary="workflow run",
+        mentions=_mentions("run"),
+        metadata={
+            "entity_type": "workflow_run",
+            "workflow_id": "wf:demo",
+            "run_id": "run:1",
+            "conversation_id": "conversation:1",
+            "turn_node_id": "turn:1",
+        },
+    )
+    runtime_edge = WorkflowRuntimeEdge(
+        label="runtime edge",
+        type="relationship",
+        summary="runtime transition",
+        relation="next",
+        source_ids=["run:1"],
+        target_ids=["step:1"],
+        source_edge_ids=None,
+        target_edge_ids=None,
+        mentions=_mentions("runtime transition"),
+        metadata={"relation": "next"},
+    )
+
+    assert build_graph_model_envelope(run_node)["model_class"] == "workflow_run_node"
+    assert (
+        build_graph_model_envelope(runtime_edge)["model_class"]
+        == "workflow_runtime_edge"
+    )
+
+
+def test_hyperedge_keeps_the_edge_wire_identity_with_multiple_incidences() -> None:
+    edge = Edge(
+        label="hyperedge",
+        type="relationship",
+        summary="many-way relation",
+        relation="joins",
+        source_ids=["node-a", "node-b"],
+        target_ids=["node-c", "node-d"],
+        source_edge_ids=["edge-parent"],
+        target_edge_ids=None,
+        mentions=_mentions("many-way relation"),
+    )
+
+    envelope = build_graph_model_envelope(edge)
+
+    assert envelope["model_class"] == "edge"
+    assert envelope["payload"]["id"] == edge.id
+    assert envelope["payload"]["source_ids"] == ["node-a", "node-b"]
+    assert envelope["payload"]["source_edge_ids"] == ["edge-parent"]
+

@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "delegated_by": "agent:parent",
+  "effective_capabilities": [
+    "graph.read",
+    "workflow.run.write"
+  ]
+}
