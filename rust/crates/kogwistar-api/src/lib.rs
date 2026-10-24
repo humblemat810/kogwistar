@@ -11360,17 +11360,23 @@ mod tests {
             "succeeded"
         );
         let events = store.list_server_run_events("native-run", 0, 100).unwrap();
-        assert!(
-            events.iter().any(|event| {
+        let native_trace = events
+            .iter()
+            .find(|event| {
                 event.event_type == "workflow.trace.v1"
                     && event.payload_json.contains("runtime.native.step.completed")
-            }),
-            "native trace events: {:?}",
-            events
-                .iter()
-                .map(|event| &event.event_type)
-                .collect::<Vec<_>>()
+            })
+            .expect("native trace event must survive the HTTP/API durable lane");
+        let native_trace_payload: Value = serde_json::from_str(&native_trace.payload_json).unwrap();
+        assert_eq!(
+            native_trace_payload["trace"]["implementation_authority"],
+            kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET
         );
+        assert_eq!(
+            native_trace_payload["trace"]["seam_attestation_version"],
+            kogwistar_runtime::RUST_NATIVE_SEAM_ATTESTATION_VERSION
+        );
+        assert_eq!(native_trace_payload["trace"]["seam_crossings"], json!([]));
         assert!(events.iter().any(|event| {
             event.event_type == "workflow.recorded_transition.v1"
                 && event.payload_json.contains("emit-result")
