@@ -5,7 +5,7 @@ import json
 import pytest
 from pydantic_extension.model_slicing.mixin import ModeSlicingMixin
 
-from kogwistar._rust_bridge import project_graph_model_slice
+from kogwistar._rust_bridge import project_graph_model_slice, project_graph_model_slices
 from kogwistar.acl import models as acl_models
 from kogwistar.conversation import models as conversation_models
 from kogwistar.engine_core import graph_contracts
@@ -152,6 +152,55 @@ def test_rust_slice_bridge_uses_the_declared_projection(
 
     assert projected["payload"] == {"summary": "visible"}
     assert len(calls) == 1
+
+
+def test_rust_slice_bridge_batches_projection_without_changing_payloads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeExtension:
+        def project_graph_model_slices(self, payload: str) -> str:
+            envelopes = json.loads(payload)
+            return json.dumps(
+                [
+                    {
+                        "schema_version": 1,
+                        "model_class": item["model_class"],
+                        "mode": item["slice"]["mode"],
+                        "payload": {"summary": item["payload"]["summary"]},
+                    }
+                    for item in envelopes
+                ]
+            )
+
+    monkeypatch.setattr("kogwistar._rust_bridge._load_extension", lambda: FakeExtension())
+    projected = project_graph_model_slices(
+        [
+            {
+                "schema_version": 1,
+                "model_class": "node",
+                "payload": {"summary": "one", "secret": "hidden"},
+                "slice": {
+                    "schema_version": 1,
+                    "mode": "llm_in",
+                    "manifest": {"schema_version": 1, "fields": {}},
+                },
+            },
+            {
+                "schema_version": 1,
+                "model_class": "node",
+                "payload": {"summary": "two", "secret": "hidden"},
+                "slice": {
+                    "schema_version": 1,
+                    "mode": "llm_in",
+                    "manifest": {"schema_version": 1, "fields": {}},
+                },
+            },
+        ]
+    )
+    assert [item["payload"] for item in projected] == [
+        {"summary": "one"},
+        {"summary": "two"},
+    ]
 
 
 @pytest.mark.requires_rust

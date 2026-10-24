@@ -6373,6 +6373,12 @@ fn project_graph_model_slice(payload_json: &str) -> PyResult<String> {
 }
 
 #[pyfunction]
+fn project_graph_model_slices(payload_json: &str) -> PyResult<String> {
+    contracts::project_graph_model_slices_from_str(payload_json)
+        .map_err(|error| RustContractValueError::new_err(error.to_string()))
+}
+
+#[pyfunction]
 fn supported_graph_model_classes() -> Vec<String> {
     contracts::supported_graph_model_classes()
         .into_iter()
@@ -6606,6 +6612,7 @@ fn _rust(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(canonical_json, module)?)?;
     module.add_function(wrap_pyfunction!(validate_graph_model_family, module)?)?;
     module.add_function(wrap_pyfunction!(project_graph_model_slice, module)?)?;
+    module.add_function(wrap_pyfunction!(project_graph_model_slices, module)?)?;
     module.add_function(wrap_pyfunction!(supported_graph_model_classes, module)?)?;
     module.add_function(wrap_pyfunction!(evidence_pack_digest_hash, module)?)?;
     module.add_function(wrap_pyfunction!(metadata_filter_matches, module)?)?;

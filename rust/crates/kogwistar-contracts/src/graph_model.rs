@@ -673,6 +673,22 @@ pub fn project_graph_model_slice_from_str(payload_json: &str) -> Result<String, 
         .map_err(|error| GraphModelError::InvalidPayload(error.to_string()))
 }
 
+/// Project several declared envelopes in one language-boundary crossing.
+///
+/// The batch is a transport optimization only: each envelope is still
+/// validated and projected independently, and one invalid item fails the
+/// complete call without returning partial results.
+pub fn project_graph_model_slices_from_str(payload_json: &str) -> Result<String, GraphModelError> {
+    let envelopes: Vec<GraphModelEnvelope> = serde_json::from_str(payload_json)
+        .map_err(|error| GraphModelError::InvalidPayload(error.to_string()))?;
+    let projected = envelopes
+        .into_iter()
+        .map(|envelope| envelope.project_declared_slice())
+        .collect::<Result<Vec<_>, _>>()?;
+    serde_json::to_string(&projected)
+        .map_err(|error| GraphModelError::InvalidPayload(error.to_string()))
+}
+
 fn validate_metadata<T: for<'de> Deserialize<'de>>(
     model_class: GraphModelClass,
     metadata: &BTreeMap<String, Value>,
@@ -2989,5 +3005,56 @@ mod tests {
             Err(GraphModelError::InvalidPayload(message))
                 if message.contains("does not match envelope model Edge")
         ));
+    }
+
+    #[test]
+    fn batch_slice_projection_matches_individual_projection_and_is_fail_closed() {
+        let manifest = GraphSliceManifestV1 {
+            schema_version: GRAPH_SLICE_MANIFEST_VERSION,
+            model_name: Some("Node".to_owned()),
+            retain_unlisted_modes: BTreeSet::new(),
+            fields: BTreeMap::from([(
+                "summary".to_owned(),
+                GraphSliceFieldV1 {
+                    modes: BTreeSet::from([GraphSliceMode::LlmIn]),
+                    child: None,
+                    child_location: Default::default(),
+                },
+            )]),
+        };
+        let envelopes: Vec<_> = ["one", "two"]
+            .into_iter()
+            .map(|summary| {
+                GraphModelEnvelope::new(
+                    GraphModelClass::Node,
+                    serde_json::json!({"summary": summary, "secret": "hidden"}),
+                )
+                .with_slice(GraphSliceDeclarationV1 {
+                    schema_version: GRAPH_SLICE_MANIFEST_VERSION,
+                    mode: GraphSliceMode::LlmIn,
+                    manifest: manifest.clone(),
+                })
+            })
+            .collect();
+        let request = serde_json::to_string(&envelopes).unwrap();
+        let batch: Vec<GraphModelSliceV1> =
+            serde_json::from_str(&project_graph_model_slices_from_str(&request).unwrap()).unwrap();
+        let individual: Vec<GraphModelSliceV1> = envelopes
+            .iter()
+            .map(|envelope| {
+                serde_json::from_str(
+                    &project_graph_model_slice_from_str(&serde_json::to_string(envelope).unwrap())
+                        .unwrap(),
+                )
+                .unwrap()
+            })
+            .collect();
+        assert_eq!(batch, individual);
+
+        let mut invalid = envelopes;
+        invalid[1].slice.as_mut().unwrap().manifest.model_name = Some("Edge".to_owned());
+        assert!(
+            project_graph_model_slices_from_str(&serde_json::to_string(&invalid).unwrap()).is_err()
+        );
     }
 }

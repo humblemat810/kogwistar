@@ -323,6 +323,23 @@ def project_graph_model_slice(payload: JsonObject) -> JsonObject:
     return cast(JsonObject, projected)
 
 
+def project_graph_model_slices(payloads: list[JsonObject]) -> list[JsonObject]:
+    """Project multiple graph envelopes in one native boundary crossing."""
+
+    extension = _load_extension()
+    try:
+        projected = json.loads(
+            extension.project_graph_model_slices(
+                _rust_json_payload(payloads, ensure_ascii=False, separators=(",", ":"))
+            )
+        )
+    except Exception as exc:
+        raise RustParityError(f"native graph-model slice batch failed: {exc}") from exc
+    if not isinstance(projected, list) or not all(isinstance(item, dict) for item in projected):
+        raise RustParityError("native graph-model slice batch returned non-object items")
+    return cast(list[JsonObject], projected)
+
+
 def api_health(*, payload: JsonObject, python_value: JsonObject) -> JsonObject:
     """Select Rust health contract while Python transport remains compatible."""
     if server_implementation_mode() == "python":
