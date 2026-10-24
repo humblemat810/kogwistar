@@ -12419,10 +12419,11 @@ mod tests {
 
     #[tokio::test]
     async fn oidc_callback_validates_rs256_and_persists_identity_before_minting() {
-        use axum::body::Body;
+        use axum::body::{Body, to_bytes};
         use axum::http::Request;
         use std::time::{SystemTime, UNIX_EPOCH};
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::time::{Duration, timeout};
         use tower::ServiceExt;
 
         const PRIVATE_KEY: &str = r#"-----BEGIN PRIVATE KEY-----
@@ -12573,8 +12574,9 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
             implementation: ImplementationSnapshot::default(),
             auth: config.clone(),
         });
-        let response = app
-            .oneshot(
+        let response = timeout(
+            Duration::from_secs(10),
+            app.oneshot(
                 Request::builder()
                     .uri("/api/auth/callback?code=auth-code&state=state-1")
                     .header(
@@ -12583,11 +12585,19 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
                     )
                     .body(Body::empty())
                     .unwrap(),
-            )
-            .await
-            .unwrap();
-        mock.await.unwrap();
-        assert_eq!(response.status(), StatusCode::TEMPORARY_REDIRECT);
+            ),
+        )
+        .await
+        .expect("OIDC callback exceeded the local test timeout")
+        .unwrap();
+        if response.status() != StatusCode::TEMPORARY_REDIRECT {
+            let status = response.status();
+            let body = to_bytes(response.into_body(), 16_384).await.unwrap();
+            panic!(
+                "OIDC callback failed with {status}: {}",
+                String::from_utf8_lossy(&body)
+            );
+        }
         let location = response.headers()[header::LOCATION].to_str().unwrap();
         let token = location.split_once("?token=").unwrap().1;
         let mut token_headers = HeaderMap::new();
@@ -12626,6 +12636,10 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
         );
         drop(auth_store);
         std::fs::remove_file(auth_path).unwrap();
+        timeout(Duration::from_secs(2), mock)
+            .await
+            .expect("OIDC mock issuer did not receive its expected requests")
+            .unwrap();
     }
 
     #[tokio::test]
