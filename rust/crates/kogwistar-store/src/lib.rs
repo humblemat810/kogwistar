@@ -1,7 +1,7 @@
 //! Async-first storage contracts. Shadow handles expose reads only.
 use kogwistar_contracts::{EntityEventEnvelope, GraphEntityKind, GraphModelEnvelope};
 use serde_json::{Map, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use thiserror::Error;
 
@@ -141,6 +141,89 @@ pub struct GraphRecord {
     pub document: Option<String>,
     pub metadata: Map<String, Value>,
     pub embedding: Option<Vec<f32>>,
+}
+
+/// Deterministic adjacency result shared by native graph-read adapters.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct GraphNeighbors {
+    pub nodes: BTreeSet<String>,
+    pub edges: BTreeSet<String>,
+}
+
+/// Compute Python-compatible node/edge adjacency from canonical edge records.
+///
+/// This helper is deliberately storage-neutral: callers provide the already
+/// scope-filtered node IDs and edge projections. It does not authorize access,
+/// infer a namespace, or treat a projection row as authoritative outside the
+/// caller's read boundary. Tombstoned rows are excluded so a stale projection
+/// cannot reintroduce a deleted relationship.
+pub fn graph_neighbors_from_records(
+    rid: &str,
+    node_ids: &BTreeSet<String>,
+    edges: &[GraphRecord],
+    doc_id: Option<&str>,
+) -> GraphNeighbors {
+    let mut result = GraphNeighbors::default();
+    let is_node = node_ids.contains(rid);
+
+    for edge in edges {
+        if edge
+            .metadata
+            .get("lifecycle_status")
+            .and_then(Value::as_str)
+            .is_some_and(|status| matches!(status, "tombstoned" | "deleted"))
+        {
+            continue;
+        }
+        let Some(document) = edge
+            .document
+            .as_deref()
+            .and_then(|value| serde_json::from_str::<Value>(value).ok())
+        else {
+            continue;
+        };
+        if doc_id.is_some_and(|expected| {
+            edge.metadata
+                .get("doc_id")
+                .and_then(Value::as_str)
+                .or_else(|| document.get("doc_id").and_then(Value::as_str))
+                != Some(expected)
+        }) {
+            continue;
+        }
+
+        let ids = |field: &str| {
+            document
+                .get(field)
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+        };
+        let source_nodes: Vec<&str> = ids("source_ids").collect();
+        let target_nodes: Vec<&str> = ids("target_ids").collect();
+        let source_edges: Vec<&str> = ids("source_edge_ids").collect();
+        let target_edges: Vec<&str> = ids("target_edge_ids").collect();
+
+        if is_node && (source_nodes.contains(&rid) || target_nodes.contains(&rid)) {
+            result.edges.insert(edge.id.clone());
+            for endpoint in source_nodes.iter().chain(target_nodes.iter()) {
+                if *endpoint != rid {
+                    result.nodes.insert((*endpoint).to_owned());
+                }
+            }
+        }
+        if edge.id == rid {
+            for endpoint in source_nodes.iter().chain(target_nodes.iter()) {
+                result.nodes.insert((*endpoint).to_owned());
+            }
+            for endpoint in source_edges.iter().chain(target_edges.iter()) {
+                result.edges.insert((*endpoint).to_owned());
+            }
+        }
+    }
+
+    result
 }
 
 /// Scope carried by the graph projection.  The Python pgvector schema keeps
@@ -1351,6 +1434,70 @@ impl<S: ProjectionReadStore + Send + Sync> ProjectionReadStore for ShadowInspect
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn edge_record(id: &str, document: Value) -> GraphRecord {
+        GraphRecord {
+            id: id.to_owned(),
+            document: Some(document.to_string()),
+            metadata: Map::new(),
+            embedding: None,
+        }
+    }
+
+    #[test]
+    fn graph_neighbors_match_node_and_edge_hypergraph_semantics() {
+        let edges = vec![edge_record(
+            "e1",
+            serde_json::json!({
+                "source_ids": ["n1", "n2"],
+                "target_ids": ["n3"],
+                "source_edge_ids": ["e0"],
+                "target_edge_ids": ["e2"]
+            }),
+        )];
+        let nodes = BTreeSet::from(["n1".to_owned(), "n2".to_owned(), "n3".to_owned()]);
+
+        assert_eq!(
+            graph_neighbors_from_records("n1", &nodes, &edges, None),
+            GraphNeighbors {
+                nodes: BTreeSet::from(["n2".to_owned(), "n3".to_owned()]),
+                edges: BTreeSet::from(["e1".to_owned()]),
+            }
+        );
+        assert_eq!(
+            graph_neighbors_from_records("e1", &nodes, &edges, None),
+            GraphNeighbors {
+                nodes: BTreeSet::from(["n1".to_owned(), "n2".to_owned(), "n3".to_owned()]),
+                edges: BTreeSet::from(["e0".to_owned(), "e2".to_owned()]),
+            }
+        );
+    }
+
+    #[test]
+    fn graph_neighbors_excludes_stale_and_other_document_edges() {
+        let mut stale = edge_record(
+            "stale",
+            serde_json::json!({"source_ids": ["n1"], "target_ids": ["n2"]}),
+        );
+        stale.metadata.insert(
+            "lifecycle_status".to_owned(),
+            serde_json::json!("tombstoned"),
+        );
+        let other = edge_record(
+            "other",
+            serde_json::json!({
+                "doc_id": "doc-other",
+                "source_ids": ["n1"],
+                "target_ids": ["n3"]
+            }),
+        );
+        let nodes = BTreeSet::from(["n1".to_owned(), "n2".to_owned(), "n3".to_owned()]);
+
+        assert_eq!(
+            graph_neighbors_from_records("n1", &nodes, &[stale, other], Some("doc-requested")),
+            GraphNeighbors::default()
+        );
+    }
     use kogwistar_contracts::{GraphModelClass, GraphModelEnvelope};
 
     fn fixture_payload(index: usize) -> Value {
