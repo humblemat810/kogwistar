@@ -80,13 +80,34 @@ pub enum GraphModelFamily {
 /// This is deliberately a description of the model contract, not an
 /// authorization grant.  Edge profiles must retain every capability of their
 /// corresponding node profile and add incidence operations.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GraphCapabilityProfile {
     pub graph_entity: bool,
     pub edge_entity: bool,
     pub metadata: bool,
     pub lifecycle: bool,
     pub level: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GraphModelCapabilityProfileV1 {
+    pub schema_version: u16,
+    pub model_class: String,
+    pub entity_kind: GraphEntityKind,
+    #[serde(flatten)]
+    pub capabilities: GraphCapabilityProfile,
+}
+
+pub fn graph_model_capability_profiles() -> Vec<GraphModelCapabilityProfileV1> {
+    GraphModelClass::all()
+        .iter()
+        .map(|model_class| GraphModelCapabilityProfileV1 {
+            schema_version: GRAPH_MODEL_ENVELOPE_VERSION,
+            model_class: model_class.wire_name().to_owned(),
+            entity_kind: model_class.entity_kind(),
+            capabilities: model_class.capabilities(),
+        })
+        .collect()
 }
 
 const PERSISTENT_NODE_CAPABILITIES: GraphCapabilityProfile = GraphCapabilityProfile {
@@ -2665,6 +2686,30 @@ mod tests {
         assert!(!capabilities.metadata);
         assert!(!capabilities.lifecycle);
         assert!(!capabilities.level);
+    }
+
+    #[test]
+    fn capability_report_covers_every_declared_graph_class() {
+        let profiles = graph_model_capability_profiles();
+        assert_eq!(profiles.len(), GraphModelClass::all().len());
+        assert_eq!(
+            profiles
+                .iter()
+                .map(|profile| profile.model_class.as_str())
+                .collect::<Vec<_>>(),
+            GraphModelClass::all()
+                .iter()
+                .map(|model_class| model_class.wire_name())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            profiles
+                .iter()
+                .find(|profile| profile.model_class == "doc_node")
+                .unwrap()
+                .capabilities,
+            GraphModelClass::DocNode.capabilities()
+        );
     }
 
     #[test]

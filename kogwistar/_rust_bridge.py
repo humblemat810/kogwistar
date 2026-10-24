@@ -49,6 +49,8 @@ class RustExtensionLike(Protocol):
     def validate_graph_model_family(self, payload: str) -> None: ...
     def project_graph_model_slice(self, payload: str) -> str: ...
 
+    def graph_model_capability_profiles(self) -> str: ...
+
 
 _T = TypeVar("_T")
 
@@ -321,6 +323,23 @@ def project_graph_model_slice(payload: JsonObject) -> JsonObject:
     if not isinstance(projected, dict):
         raise RustParityError("native graph-model slice projection returned non-object JSON")
     return cast(JsonObject, projected)
+
+
+def graph_model_capability_profiles() -> list[JsonObject]:
+    """Return the native graph capability report for seam diagnostics."""
+
+    extension = _load_extension()
+    try:
+        profiles = json.loads(extension.graph_model_capability_profiles())
+    except Exception as exc:
+        raise RustParityError(
+            f"native graph capability profile report failed: {exc}"
+        ) from exc
+    if not isinstance(profiles, list) or not all(
+        isinstance(profile, dict) for profile in profiles
+    ):
+        raise RustParityError("native graph capability profile report must be a list")
+    return cast(list[JsonObject], profiles)
 
 
 def project_graph_model_slices(payloads: list[JsonObject]) -> list[JsonObject]:

@@ -6397,6 +6397,12 @@ fn supported_graph_model_classes() -> Vec<String> {
 }
 
 #[pyfunction]
+fn graph_model_capability_profiles() -> PyResult<String> {
+    serde_json::to_string(&contracts::graph_model_capability_profiles())
+        .map_err(|error| RustContractValueError::new_err(error.to_string()))
+}
+
+#[pyfunction]
 fn evidence_pack_digest_hash(payload_json: &str) -> PyResult<String> {
     contracts::evidence_pack_digest_hash_from_str(payload_json).map_err(contract_error)
 }
@@ -6624,6 +6630,7 @@ fn _rust(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(project_graph_model_slice, module)?)?;
     module.add_function(wrap_pyfunction!(project_graph_model_slices, module)?)?;
     module.add_function(wrap_pyfunction!(supported_graph_model_classes, module)?)?;
+    module.add_function(wrap_pyfunction!(graph_model_capability_profiles, module)?)?;
     module.add_function(wrap_pyfunction!(evidence_pack_digest_hash, module)?)?;
     module.add_function(wrap_pyfunction!(metadata_filter_matches, module)?)?;
     module.add_function(wrap_pyfunction!(normalize_metadata_filter, module)?)?;
