@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from kogwistar._rust_bridge import project_graph_model_slice
 from kogwistar.engine_core.graph_contracts import (
     GRAPH_MODEL_ENVELOPE_VERSION,
     GraphModelAdapterError,
@@ -90,6 +91,36 @@ def test_python_slice_envelope_keeps_canonical_payload_and_manifest() -> None:
     )
     assert envelope["slice"]["mode"] == "llm_in"
     assert envelope["slice"]["manifest"]["schema_version"] == 1
+
+
+def test_rust_slice_bridge_uses_the_declared_projection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    class FakeExtension:
+        def project_graph_model_slice(self, payload: str) -> str:
+            calls.append(payload)
+            return '{"schema_version":1,"model_class":"node","mode":"llm_in","payload":{"summary":"visible"}}'
+
+    monkeypatch.setattr(
+        "kogwistar._rust_bridge._load_extension", lambda: FakeExtension()
+    )
+    projected = project_graph_model_slice(
+        {
+            "schema_version": 1,
+            "model_class": "node",
+            "payload": {"summary": "visible", "secret": "backend-only"},
+            "slice": {
+                "schema_version": 1,
+                "mode": "llm_in",
+                "manifest": {"schema_version": 1, "fields": {}},
+            },
+        }
+    )
+
+    assert projected["payload"] == {"summary": "visible"}
+    assert len(calls) == 1
 
 
 def test_python_contract_mode_does_not_cross_native_boundary(

@@ -620,6 +620,19 @@ pub fn validate_graph_model_family_from_str(payload_json: &str) -> Result<(), Gr
     envelope.validate_family_v1()
 }
 
+/// Project a declared canonical envelope at the language seam.
+///
+/// The input must retain the backend/canonical payload and an explicit slice
+/// declaration. Rust never infers a projection from field names or accepts a
+/// caller-selected mode without the manifest exported by the Python model.
+pub fn project_graph_model_slice_from_str(payload_json: &str) -> Result<String, GraphModelError> {
+    let envelope: GraphModelEnvelope = serde_json::from_str(payload_json)
+        .map_err(|error| GraphModelError::InvalidPayload(error.to_string()))?;
+    let projected = envelope.project_declared_slice()?;
+    serde_json::to_string(&projected)
+        .map_err(|error| GraphModelError::InvalidPayload(error.to_string()))
+}
+
 fn validate_metadata<T: for<'de> Deserialize<'de>>(
     model_class: GraphModelClass,
     metadata: &BTreeMap<String, Value>,
@@ -2905,6 +2918,13 @@ mod tests {
 
         let projected = envelope.project_declared_slice().unwrap();
         assert_eq!(projected.payload, serde_json::json!({"summary": "visible"}));
+        let projected_wire =
+            project_graph_model_slice_from_str(&serde_json::to_string(&envelope).unwrap()).unwrap();
+        let projected_value: Value = serde_json::from_str(&projected_wire).unwrap();
+        assert_eq!(
+            projected_value["payload"],
+            serde_json::json!({"summary": "visible"})
+        );
         assert!(
             GraphModelEnvelope::new(
                 GraphModelClass::Node,

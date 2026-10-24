@@ -47,6 +47,7 @@ class RustExtensionLike(Protocol):
     def canonical_entity_event(self, payload: str) -> str: ...
     def replay_entity_events(self, payload: str) -> str: ...
     def validate_graph_model_family(self, payload: str) -> None: ...
+    def project_graph_model_slice(self, payload: str) -> str: ...
 
 
 _T = TypeVar("_T")
@@ -303,6 +304,23 @@ def validate_graph_model_family(payload: JsonObject) -> None:
         raise RustParityError(
             f"Rust graph-model contract validation failed: {exc}"
         ) from exc
+
+
+def project_graph_model_slice(payload: JsonObject) -> JsonObject:
+    """Apply an explicit Python-exported slice through the Rust ABI."""
+
+    extension = _load_extension()
+    try:
+        projected = json.loads(
+            extension.project_graph_model_slice(
+                _rust_json_payload(payload, ensure_ascii=False, separators=(",", ":"))
+            )
+        )
+    except Exception as exc:
+        raise RustParityError(f"Rust graph-model slice projection failed: {exc}") from exc
+    if not isinstance(projected, dict):
+        raise RustParityError("native graph-model slice projection returned non-object JSON")
+    return cast(JsonObject, projected)
 
 
 def api_health(*, payload: JsonObject, python_value: JsonObject) -> JsonObject:

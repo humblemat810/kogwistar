@@ -29,7 +29,8 @@ pub use graph_model::{
     MentionVerificationV1, NodeId, PYTHON_GRAPH_WIRE_VERSION, PersistentEdgeV1,
     PersistentGraphEntityV1, PersistentNodeV1, PureChromaEdgeV1, PureChromaFieldsV1,
     PureChromaNodeV1, RequiredNullable, TextSpanV1, TypedGraphEntity, WorkflowEdgeMetadataV1,
-    WorkflowNodeMetadataV1, validate_graph_model_family_from_str,
+    WorkflowNodeMetadataV1, project_graph_model_slice_from_str,
+    validate_graph_model_family_from_str,
 };
 pub use graph_mutation::{
     GraphIndexJobV1, GraphMutationBatchV1, GraphMutationV1, GraphRecordV1, GraphScopeV1,
