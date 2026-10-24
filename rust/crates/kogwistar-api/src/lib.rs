@@ -202,7 +202,7 @@ fn rust_mcp_tool_supported(surface: &str, name: &str) -> bool {
         "conversation" => matches!(name, "conversation.run_status" | "conversation.cancel_run"),
         // Root graph tools remain Python-owned until their Rust authority,
         // scope, and persistence paths are implemented.
-        "root" => false,
+        "root" => matches!(name, "kg_neighbors"),
         _ => false,
     }
 }
@@ -8475,6 +8475,10 @@ impl ApplicationService for PostgresRunApplicationService {
 }
 
 impl ApplicationService for SqliteRunApplicationService {
+    fn supports_mcp_tool(&self, surface: &str, name: &str) -> bool {
+        surface != "root" && rust_mcp_tool_supported(surface, name)
+    }
+
     fn execute(
         &self,
         request: ApiEffectRequest,
@@ -10741,6 +10745,26 @@ async fn mcp_handler(
             .and_then(Value::as_str)
             .unwrap_or_default();
         let request = match tool_name {
+            "kg_neighbors" => arguments
+                .get("rid")
+                .and_then(Value::as_str)
+                .filter(|rid| !rid.trim().is_empty())
+                .map(|rid| {
+                    let mut body = json!({
+                        "rid": rid,
+                        "truth_graph": "knowledge",
+                    });
+                    if let Some(doc_id) = arguments.get("doc_id").and_then(Value::as_str) {
+                        body["doc_id"] = json!(doc_id);
+                    }
+                    ApiEffectRequest {
+                        contract_version: 1,
+                        method: "POST".to_owned(),
+                        path_and_query: "/internal/graph/neighbors".to_owned(),
+                        body: serde_json::to_vec(&body).expect("MCP graph arguments serialize"),
+                        principal: principal.clone(),
+                    }
+                }),
             "workflow.run_status" | "conversation.run_status" if !run_id.is_empty() => {
                 Some(ApiEffectRequest {
                     contract_version: 1,
@@ -12023,13 +12047,13 @@ mod tests {
     #[test]
     fn rust_mcp_advertisement_is_subset_of_implemented_handlers() {
         let contract: Value = serde_json::from_str(FROZEN_MCP_TOOLS_JSON).unwrap();
-        assert!(
-            contract["surfaces"]["root"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .all(|tool| !rust_mcp_tool_supported("root", tool["name"].as_str().unwrap()))
-        );
+        let root = contract["surfaces"]["root"].as_array().unwrap();
+        let root_supported = root
+            .iter()
+            .filter(|tool| rust_mcp_tool_supported("root", tool["name"].as_str().unwrap()))
+            .count();
+        assert_eq!(root_supported, 1);
+        assert!(rust_mcp_tool_supported("root", "kg_neighbors"));
         let conversation = contract["surfaces"]["conversation"].as_array().unwrap();
         let conversation_supported = conversation
             .iter()
