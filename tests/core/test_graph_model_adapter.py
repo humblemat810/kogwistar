@@ -5,6 +5,7 @@ import pytest
 from kogwistar.engine_core.graph_contracts import (
     GRAPH_MODEL_ENVELOPE_VERSION,
     GraphModelAdapterError,
+    build_graph_model_slice_envelope,
     build_graph_model_envelope,
     graph_model_class_for,
 )
@@ -74,6 +75,21 @@ def test_unknown_subclass_fails_closed_instead_of_guessing() -> None:
 
     with pytest.raises(GraphModelAdapterError, match="unsupported graph model class"):
         graph_model_class_for(node)
+
+
+def test_python_slice_envelope_keeps_canonical_payload_and_manifest() -> None:
+    node = Node(
+        label="node",
+        type="entity",
+        summary="A node",
+        mentions=_mentions("node"),
+    )
+    envelope = build_graph_model_slice_envelope(node, field_mode="llm_in")
+    assert envelope["payload"] == node.model_dump(
+        field_mode="backend", dump_format="json"
+    )
+    assert envelope["slice"]["mode"] == "llm_in"
+    assert envelope["slice"]["manifest"]["schema_version"] == 1
 
 
 def test_python_contract_mode_does_not_cross_native_boundary(

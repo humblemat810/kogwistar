@@ -35,8 +35,8 @@ pub use graph_mutation::{
     GraphIndexJobV1, GraphMutationBatchV1, GraphMutationV1, GraphRecordV1, GraphScopeV1,
 };
 pub use graph_slice::{
-    GRAPH_SLICE_MANIFEST_VERSION, GraphModelSliceV1, GraphSliceError, GraphSliceFieldV1,
-    GraphSliceManifestV1, GraphSliceMode,
+    GRAPH_SLICE_MANIFEST_VERSION, GraphModelSliceV1, GraphSliceDeclarationV1, GraphSliceError,
+    GraphSliceFieldV1, GraphSliceManifestV1, GraphSliceMode,
 };
 
 /// Return the stable graph-class names exposed by the versioned Python seam.

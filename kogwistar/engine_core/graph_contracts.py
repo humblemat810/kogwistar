@@ -11,6 +11,8 @@ from typing import Literal, TypedDict, cast
 
 from pydantic import BaseModel
 
+from kogwistar.engine_core.graph_slice_manifest import build_slice_manifest
+
 GraphModelClassName = Literal[
     "node",
     "edge",
@@ -48,6 +50,10 @@ class GraphModelEnvelopeDict(TypedDict):
     schema_version: int
     model_class: GraphModelClassName
     payload: dict[str, object]
+
+
+class GraphModelSliceEnvelopeDict(GraphModelEnvelopeDict):
+    slice: dict[str, object]
 
 
 class GraphModelAdapterError(ValueError):
@@ -129,4 +135,20 @@ def build_graph_model_envelope(
         "model_class": model_class,
         "payload": cast(dict[str, object], payload),
     }
+
+
+def build_graph_model_slice_envelope(
+    model: BaseModel,
+    *,
+    field_mode: GraphWireFieldMode,
+) -> GraphModelSliceEnvelopeDict:
+    """Build a canonical envelope plus an explicit projection declaration."""
+
+    envelope = build_graph_model_envelope(model, field_mode="backend")
+    envelope["slice"] = {
+        "schema_version": 1,
+        "mode": field_mode,
+        "manifest": build_slice_manifest(type(model)),
+    }
+    return cast(GraphModelSliceEnvelopeDict, envelope)
 

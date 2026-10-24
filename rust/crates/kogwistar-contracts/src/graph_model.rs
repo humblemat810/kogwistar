@@ -13,7 +13,10 @@ use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 use thiserror::Error;
 
-use crate::graph_slice::{GraphModelSliceV1, GraphSliceManifestV1, GraphSliceMode};
+use crate::graph_slice::{
+    GRAPH_SLICE_MANIFEST_VERSION, GraphModelSliceV1, GraphSliceDeclarationV1, GraphSliceManifestV1,
+    GraphSliceMode,
+};
 
 pub const GRAPH_MODEL_ENVELOPE_VERSION: u16 = 1;
 pub const PYTHON_GRAPH_WIRE_VERSION: u16 = 1;
@@ -376,6 +379,8 @@ pub struct GraphModelEnvelope {
     pub schema_version: u16,
     pub model_class: GraphModelClass,
     pub payload: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slice: Option<GraphSliceDeclarationV1>,
 }
 
 impl GraphModelEnvelope {
@@ -384,7 +389,15 @@ impl GraphModelEnvelope {
             schema_version: GRAPH_MODEL_ENVELOPE_VERSION,
             model_class,
             payload,
+            slice: None,
         }
+    }
+
+    /// Attach an optional projection declaration while retaining the canonical
+    /// payload for a later language or transport boundary.
+    pub fn with_slice(mut self, declaration: GraphSliceDeclarationV1) -> Self {
+        self.slice = Some(declaration);
+        self
     }
 
     /// Apply an exported pydantic-extension field policy without changing the
@@ -407,6 +420,18 @@ impl GraphModelEnvelope {
             mode,
             payload,
         })
+    }
+
+    pub fn project_declared_slice(&self) -> Result<GraphModelSliceV1, GraphModelError> {
+        let declaration = self.slice.as_ref().ok_or_else(|| {
+            GraphModelError::InvalidPayload("graph envelope has no slice declaration".to_owned())
+        })?;
+        if declaration.schema_version != GRAPH_SLICE_MANIFEST_VERSION {
+            return Err(GraphModelError::UnsupportedVersion(
+                declaration.schema_version,
+            ));
+        }
+        self.project_slice(&declaration.manifest, declaration.mode)
     }
 
     /// Decode to typed graph references without changing the original wire payload.
@@ -2233,6 +2258,11 @@ impl GraphEdgePayload {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::graph_slice::{
+        GRAPH_SLICE_MANIFEST_VERSION, GraphSliceDeclarationV1, GraphSliceFieldV1,
+        GraphSliceManifestV1, GraphSliceMode,
+    };
+    use std::collections::BTreeSet;
 
     fn fixture() -> Value {
         serde_json::from_str(include_str!(concat!(
@@ -2847,5 +2877,41 @@ mod tests {
             GraphModelEnvelope::new(GraphModelClass::AclEdge, acl_edge).validate_family_v1(),
             Err(GraphModelError::InvalidPayload(_))
         ));
+    }
+
+    #[test]
+    fn declared_slice_projects_canonical_payload_and_requires_declaration() {
+        let manifest = GraphSliceManifestV1 {
+            schema_version: GRAPH_SLICE_MANIFEST_VERSION,
+            model_name: Some("Node".to_owned()),
+            retain_unlisted_modes: BTreeSet::new(),
+            fields: BTreeMap::from([(
+                "summary".to_owned(),
+                GraphSliceFieldV1 {
+                    modes: BTreeSet::from([GraphSliceMode::LlmIn]),
+                    child: None,
+                },
+            )]),
+        };
+        let envelope = GraphModelEnvelope::new(
+            GraphModelClass::Node,
+            serde_json::json!({"summary": "visible", "secret": "backend-only"}),
+        )
+        .with_slice(GraphSliceDeclarationV1 {
+            schema_version: GRAPH_SLICE_MANIFEST_VERSION,
+            mode: GraphSliceMode::LlmIn,
+            manifest,
+        });
+
+        let projected = envelope.project_declared_slice().unwrap();
+        assert_eq!(projected.payload, serde_json::json!({"summary": "visible"}));
+        assert!(
+            GraphModelEnvelope::new(
+                GraphModelClass::Node,
+                serde_json::json!({"summary": "visible"}),
+            )
+            .project_declared_slice()
+            .is_err()
+        );
     }
 }

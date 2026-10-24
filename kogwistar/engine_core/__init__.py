@@ -32,6 +32,7 @@ from kogwistar.engine_core.event_envelope import EntityEventEnvelope
 from kogwistar.engine_core.graph_contracts import (
     GRAPH_MODEL_ENVELOPE_VERSION,
     GraphModelAdapterError,
+    build_graph_model_slice_envelope,
     build_graph_model_envelope,
     graph_model_class_for,
 )
@@ -257,6 +258,7 @@ __all__ = [
     "endpoint_fingerprint",
     "get_atomic_mutation_capability",
     "build_graph_model_envelope",
+    "build_graph_model_slice_envelope",
     "build_slice_manifest",
     "graph_model_class_for",
     "project_with_manifest",

@@ -56,6 +56,16 @@ pub struct GraphModelSliceV1 {
     pub payload: Value,
 }
 
+/// Optional declaration carried beside a canonical graph envelope. The
+/// declaration selects a projection; it does not replace the canonical
+/// payload or grant access to it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct GraphSliceDeclarationV1 {
+    pub schema_version: u16,
+    pub mode: GraphSliceMode,
+    pub manifest: GraphSliceManifestV1,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
 pub enum GraphSliceError {
     #[error("unsupported graph slice manifest version {0}")]
