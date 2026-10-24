@@ -5970,10 +5970,12 @@ where
             && matches!(row.status.as_str(), "pending" | "claimed")
     });
     candidates.sort_by_key(|row| (row.seq, row.created_at, row.message_id.clone()));
-    candidates.truncate(filter.limit);
     let lease = filter.lease_seconds.to_string();
-    let mut claimed = Vec::with_capacity(candidates.len());
+    let mut claimed = Vec::with_capacity(filter.limit);
     for row in candidates {
+        // An active older lease must not consume the caller's claim limit.
+        // The conditional UPDATE below rejects it; keep scanning so newer
+        // pending work remains claimable while another worker is running.
         let rows = c
             .query(
                 &format!(
@@ -6002,6 +6004,9 @@ where
             .map_err(backend)?;
         if let Some(row) = rows.first() {
             claimed.push(lane_from_row(row)?);
+            if claimed.len() == filter.limit {
+                break;
+            }
         }
     }
     Ok(claimed)
