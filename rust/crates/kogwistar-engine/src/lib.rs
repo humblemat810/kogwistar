@@ -249,4 +249,80 @@ mod tests {
         ));
         assert_eq!(projection.payload()["last_seq"], 0);
     }
+
+    #[test]
+    fn event_replay_matches_shared_python_golden() {
+        let fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/event-replay.json"
+        )))
+        .expect("valid shared event replay fixture");
+        let mut projection = EntityProjection::empty();
+        let mut replacement_summary_at_expected_seq = None;
+
+        for envelope in fixture["events"].as_array().unwrap() {
+            let entity = envelope["entity"].clone();
+            let seq = envelope["event_seq"].as_i64().unwrap();
+            let event_type = envelope["type"].as_str().unwrap();
+            let op = match event_type {
+                "entity.upsert" => "UPSERT",
+                "entity.tombstone" | "entity.delete" | "entity.remove" => "TOMBSTONE",
+                unsupported => panic!("unsupported fixture event type: {unsupported}"),
+            };
+            projection
+                .fold(&EntityEvent {
+                    namespace: fixture["namespace"].as_str().unwrap().to_owned(),
+                    seq,
+                    event_id: format!("shared-fixture-{seq}"),
+                    entity_kind: entity["type"].as_str().unwrap().to_owned(),
+                    entity_id: entity["id"].as_str().unwrap().to_owned(),
+                    op: op.to_owned(),
+                    payload: json!({"entity": entity}),
+                })
+                .unwrap();
+
+            if seq
+                == fixture["expected_replay"]["replacement_is_observable_at_sequence"]
+                    .as_i64()
+                    .unwrap()
+            {
+                let key = r#"["entity","node:alpha"]"#;
+                replacement_summary_at_expected_seq = Some(
+                    projection.payload()["entities"][key]["entity"]["summary"]
+                        .as_str()
+                        .unwrap()
+                        .to_owned(),
+                );
+            }
+        }
+
+        let payload = projection.payload();
+        let entities = payload["entities"].as_object().unwrap();
+        let mut active = entities
+            .values()
+            .filter(|value| value["deleted"] == false)
+            .filter_map(|value| value["entity_id"].as_str())
+            .collect::<Vec<_>>();
+        active.sort_unstable();
+        let mut tombstoned = entities
+            .values()
+            .filter(|value| value["deleted"] == true)
+            .filter_map(|value| value["entity_id"].as_str())
+            .collect::<Vec<_>>();
+        tombstoned.sort_unstable();
+
+        assert_eq!(
+            projection.last_seq(),
+            fixture["expected_replay"]["cursor"].as_i64().unwrap()
+        );
+        assert_eq!(json!(active), fixture["expected_replay"]["active_entities"]);
+        assert_eq!(
+            json!(tombstoned),
+            fixture["expected_replay"]["tombstoned_entities"]
+        );
+        assert_eq!(
+            replacement_summary_at_expected_seq.as_deref(),
+            Some("replacement")
+        );
+    }
 }
