@@ -8417,6 +8417,9 @@ impl PostgresRunApplicationService {
                 json!({
                     "contract_version": 1,
                     "atomic": true,
+                    "implementation_authority": "rust",
+                    "seam_attestation_version": 1,
+                    "seam_crossings": [],
                     "results": results.into_iter().map(|result| json!({
                         "event": {
                             "namespace": result.event.namespace,
@@ -13877,6 +13880,9 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
         );
         let result: Value = serde_json::from_slice(&response_body).unwrap();
         assert_eq!(result["atomic"], true);
+        assert_eq!(result["implementation_authority"], "rust");
+        assert_eq!(result["seam_attestation_version"], 1);
+        assert_eq!(result["seam_crossings"], json!([]));
         assert_eq!(result["results"][0]["mutated"], true);
         let records = service
             .store
