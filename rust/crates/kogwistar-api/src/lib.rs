@@ -11754,6 +11754,26 @@ mod tests {
         assert!(parse_graph_neighbors_request(br#"{"rid":""}"#).is_err());
     }
 
+    #[test]
+    fn graph_traversal_requests_preserve_defaults_and_fail_closed() {
+        let shortest: GraphShortestPathRequest =
+            serde_json::from_str(r#"{"src_id":"n1","dst_id":"n2"}"#).unwrap();
+        assert_eq!(shortest.max_depth, 8);
+        assert!(
+            serde_json::from_str::<GraphShortestPathRequest>(
+                r#"{"src_id":"n1","dst_id":"n2","extra":true}"#
+            )
+            .is_err()
+        );
+
+        let hop: GraphKHopRequest = serde_json::from_str(r#"{"start_ids":["n1"]}"#).unwrap();
+        assert_eq!(hop.k, 1);
+        assert!(
+            serde_json::from_str::<GraphKHopRequest>(r#"{"start_ids":["n1"],"unknown":true}"#)
+                .is_err()
+        );
+    }
+
     #[tokio::test]
     async fn graph_neighbor_route_authorizes_before_storage_access() {
         let service = PostgresRunApplicationService::from_dsn(
