@@ -359,7 +359,8 @@ impl GraphModelClass {
             (GraphModelFamily::Document, GraphEntityKind::Node) => Some(Self::DocNode),
             (GraphModelFamily::Document, GraphEntityKind::Edge) => None,
             (GraphModelFamily::Llm, GraphEntityKind::Node) => match self {
-                Self::LlmEdge | Self::LlmEdgeExtraction => Some(Self::LlmNode),
+                Self::LlmEdgeExtraction => Some(Self::LlmNodeExtraction),
+                Self::LlmEdge => Some(Self::LlmNode),
                 Self::LlmNodeExtraction => Some(Self::LlmNodeExtraction),
                 _ => Some(Self::LlmNode),
             },
@@ -2604,6 +2605,49 @@ mod tests {
         // These assertions are intentionally compile-time contracts: an edge
         // is a graph entity plus incidence capabilities, never a narrower
         // replacement for its corresponding node family.
+    }
+
+    #[test]
+    fn specialized_edges_resolve_to_their_matching_node_family() {
+        let pairs = [
+            (GraphModelClass::Edge, GraphModelClass::Node),
+            (GraphModelClass::AclEdge, GraphModelClass::AclNode),
+            (
+                GraphModelClass::ConversationEdge,
+                GraphModelClass::ConversationNode,
+            ),
+            (GraphModelClass::WorkflowEdge, GraphModelClass::WorkflowNode),
+            (
+                GraphModelClass::WorkflowRuntimeEdge,
+                GraphModelClass::WorkflowRunNode,
+            ),
+            (
+                GraphModelClass::PureChromaEdge,
+                GraphModelClass::PureChromaNode,
+            ),
+            (GraphModelClass::LlmEdge, GraphModelClass::LlmNode),
+            (
+                GraphModelClass::LlmEdgeExtraction,
+                GraphModelClass::LlmNodeExtraction,
+            ),
+            (
+                GraphModelClass::FlattenedLlmEdge,
+                GraphModelClass::FlattenedLlmNode,
+            ),
+            (
+                GraphModelClass::AssocFlattenedLlmEdge,
+                GraphModelClass::AssocFlattenedLlmNode,
+            ),
+        ];
+        for (edge, node) in pairs {
+            assert_eq!(
+                edge.corresponding_class(GraphEntityKind::Node),
+                Some(node),
+                "edge {:?} must retain its specialized node family",
+                edge
+            );
+            assert!(edge.edge_extends_node_capabilities());
+        }
     }
 
     #[test]
