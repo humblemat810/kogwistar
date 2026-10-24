@@ -49,6 +49,10 @@
         "large_values": [1e15, 1e16]
       },
       "expected": "{\"fixed_boundary\":0.0001,\"large_values\":[1000000000000000.0,1e+16],\"tiny_values\":[1e-05,1e-06,-1.2e-06]}"
+    },
+    {
+      "value": {"value": 6.603755384857119e-307},
+      "expected": "{\"value\":6.603755384857119e-307}"
     }
   ],
   "metadata_filters": [

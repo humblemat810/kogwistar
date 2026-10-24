@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import math
+import random
 from pathlib import Path
 from typing import Any
 
@@ -43,6 +45,30 @@ def test_canonical_json_matches_python_golden(monkeypatch, mode: str) -> None:
     monkeypatch.setenv("KOGWISTAR_IMPL_CONTRACTS", mode)
     for case in FIXTURE["canonical_json"]:
         assert stable_json_dumps(case["value"]) == case["expected"]
+
+
+@pytest.mark.parametrize("mode", ["shadow", "rust"])
+def test_canonical_json_float_magnitude_sweep_matches_python(
+    monkeypatch, mode: str
+) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_CONTRACTS", mode)
+    rng = random.Random(20261024)
+    values = [
+        math.ldexp((-1.0 if index % 2 else 1.0) * (0.5 + rng.random()), exponent)
+        for exponent in range(-1074, 1024, 7)
+        for index in range(3)
+    ]
+    values.extend(math.ldexp(1.0, exponent) for exponent in range(-1074, 1024))
+    payload = {"values": values}
+    expected = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+
+    assert stable_json_dumps(payload) == expected
 
 
 @pytest.mark.parametrize("mode", ["shadow", "rust"])

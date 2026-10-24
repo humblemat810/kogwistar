@@ -580,10 +580,12 @@ fn push_python_json_string(out: &mut String, value: &str, ensure_ascii: bool) {
 }
 
 fn python_float_repr(value: &serde_json::Number) -> String {
-    let repr = value.to_string();
-    if !value.is_f64() {
-        return repr;
-    }
+    let repr = if let Some(number) = value.as_f64().filter(|_| value.is_f64()) {
+        let mut buffer = ryu::Buffer::new();
+        buffer.format_finite(number).to_owned()
+    } else {
+        return value.to_string();
+    };
 
     if let Some((mantissa, exponent)) = repr.split_once('e').or_else(|| repr.split_once('E')) {
         if let Ok(exponent) = exponent.parse::<i32>() {
