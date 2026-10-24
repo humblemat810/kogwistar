@@ -46,6 +46,12 @@ from kogwistar.engine_core.graph_slice_manifest import (
     build_slice_manifest,
     project_with_manifest,
 )
+from kogwistar.engine_core.conversation_contracts import (
+    CONVERSATION_WIRE_VERSION,
+    ConversationSummaryV1,
+    ConversationTranscriptV1,
+    ConversationTurnV1,
+)
 from kogwistar.engine_core.indexing import IndexingSubsystem
 from kogwistar.engine_core.jobs import JobQueueItem, JobQueueSubsystem
 from kogwistar.engine_core.lifecycle import LifecycleSubsystem
@@ -168,6 +174,10 @@ __all__ = [
     "AsyncSQLiteNamedProjectionStore",
     "AtomicMutationCapability",
     "CheckpointRecoveryState",
+    "CONVERSATION_WIRE_VERSION",
+    "ConversationSummaryV1",
+    "ConversationTranscriptV1",
+    "ConversationTurnV1",
     "ChromaBackend",
     "ChromaStorageInspector",
     "CorruptEmbeddingProfileError",
