@@ -65,6 +65,21 @@ def test_pypy_ci_excludes_native_extension_tests() -> None:
     assert "not requires_rust" in pypy_tests
 
 
+def test_ci_declares_the_supported_interpreter_matrix() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    matrix = _between(workflow, "      matrix:\n        include:", "    steps:")
+
+    expected_cells = {
+        'label: cpython312\n            python-version: "3.12"',
+        'label: cpython313\n            python-version: "3.13"',
+        'label: cpython314\n            python-version: "3.14"',
+        'label: pypy311\n            python-version: pypy-3.11-v7.3.20',
+    }
+
+    for cell in expected_cells:
+        assert cell in matrix, f"missing required CI interpreter cell: {cell!r}"
+
+
 def test_sqlite_native_extension_cases_are_marked_requires_rust() -> None:
     tree = ast.parse(SQLITE_TESTS.read_text(encoding="utf-8"))
     missing_markers: list[str] = []
