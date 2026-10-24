@@ -13645,6 +13645,99 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
                 .unwrap()
                 .is_empty()
         );
+
+        let adjacency_body = json!({
+            "contract_version": 1,
+            "atomic": true,
+            "mutations": [
+                {
+                    "scope": {"namespace": "alpha", "workspace_id": "ws", "graph_space": "facts"},
+                    "table": "gke_nodes",
+                    "entity_kind": "node",
+                    "event_id": "graph-route-adjacency-node-2",
+                    "op": "ADD",
+                    "payload": {"id": "node-2"},
+                    "record": {"id": "node-2", "metadata": {}, "embedding": [0.0, 1.0, 0.0]},
+                    "embedding_dim": 3
+                },
+                {
+                    "scope": {"namespace": "alpha", "workspace_id": "ws", "graph_space": "facts"},
+                    "table": "gke_edges",
+                    "entity_kind": "edge",
+                    "event_id": "graph-route-adjacency-edge-1",
+                    "op": "ADD",
+                    "payload": {"id": "edge-1", "source_ids": ["node-1"], "target_ids": ["node-2"], "source_edge_ids": [], "target_edge_ids": []},
+                    "record": {
+                        "id": "edge-1",
+                        "document": "{\"source_ids\":[\"node-1\"],\"target_ids\":[\"node-2\"],\"source_edge_ids\":[],\"target_edge_ids\":[]}",
+                        "metadata": {},
+                        "embedding": [0.0, 0.0, 1.0]
+                    },
+                    "embedding_dim": 3
+                },
+                {
+                    "scope": {"namespace": "alpha", "workspace_id": "ws", "graph_space": "facts"},
+                    "table": "gke_nodes",
+                    "entity_kind": "node",
+                    "event_id": "graph-route-acl-node-1",
+                    "op": "ADD",
+                    "payload": {"id": "acl-node-1"},
+                    "record": {"id": "acl-node-1", "metadata": {"entity_type": "acl_record", "acl_truth_graph": "knowledge", "acl_target_grain": "node", "acl_target_entity_id": "node-1", "acl_version": 1, "acl_mode": "public"}, "embedding": [0.0, 0.0, 0.0]},
+                    "embedding_dim": 3
+                },
+                {
+                    "scope": {"namespace": "alpha", "workspace_id": "ws", "graph_space": "facts"},
+                    "table": "gke_nodes",
+                    "entity_kind": "node",
+                    "event_id": "graph-route-acl-node-2",
+                    "op": "ADD",
+                    "payload": {"id": "acl-node-2"},
+                    "record": {"id": "acl-node-2", "metadata": {"entity_type": "acl_record", "acl_truth_graph": "knowledge", "acl_target_grain": "node", "acl_target_entity_id": "node-2", "acl_version": 1, "acl_mode": "public"}, "embedding": [0.0, 0.0, 0.0]},
+                    "embedding_dim": 3
+                },
+                {
+                    "scope": {"namespace": "alpha", "workspace_id": "ws", "graph_space": "facts"},
+                    "table": "gke_nodes",
+                    "entity_kind": "node",
+                    "event_id": "graph-route-acl-edge-1",
+                    "op": "ADD",
+                    "payload": {"id": "acl-edge-1"},
+                    "record": {"id": "acl-edge-1", "metadata": {"entity_type": "acl_record", "acl_truth_graph": "knowledge", "acl_target_grain": "edge", "acl_target_entity_id": "edge-1", "acl_version": 1, "acl_mode": "public"}, "embedding": [0.0, 0.0, 0.0]},
+                    "embedding_dim": 3
+                }
+            ],
+            "index_jobs": []
+        });
+        let adjacency_response = send_mutation(
+            make_app(),
+            make_token(&["write_graph"], "alpha"),
+            adjacency_body,
+        )
+        .await;
+        assert_eq!(adjacency_response.status(), StatusCode::OK);
+
+        let mcp_adjacency = make_app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp")
+                    .header("content-type", "application/json")
+                    .header(
+                        "authorization",
+                        format!("Bearer {}", make_token(&["read_graph"], "alpha")),
+                    )
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","id":"adjacency","method":"tools/call","params":{"name":"kg_neighbors","arguments":{"rid":"node-1"}}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(mcp_adjacency.status(), StatusCode::OK);
+        let adjacency_body = to_bytes(mcp_adjacency.into_body(), 65_536).await.unwrap();
+        let adjacency_value: Value = serde_json::from_slice(&adjacency_body).unwrap();
+        assert_eq!(adjacency_value["result"]["nodes"], json!(["node-2"]));
+        assert_eq!(adjacency_value["result"]["edges"], json!(["edge-1"]));
     }
 
     #[tokio::test]
