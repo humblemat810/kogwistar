@@ -9,6 +9,7 @@ from kogwistar._rust_bridge import (
     api_mcp_result,
     api_sse_frame,
 )
+import kogwistar.server_mcp_with_admin as server
 
 pytestmark = [pytest.mark.ci]
 
@@ -33,6 +34,27 @@ def test_rust_api_health_preserves_python_contract(monkeypatch, mode: str) -> No
     python_value = {"ok": True, **payload}
 
     assert api_health(payload=payload, python_value=python_value) == python_value
+
+
+def test_python_health_handler_keeps_legacy_default_without_native_extension(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The request-level Python server path must not require Rust."""
+
+    for name in (
+        "KOGWISTAR_IMPL_MODE",
+        "KOGWISTAR_IMPL_SERVER",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    def native_must_not_load() -> object:
+        raise AssertionError("legacy Python server route loaded the Rust extension")
+
+    monkeypatch.setattr("kogwistar._rust_bridge._load_extension", native_must_not_load)
+
+    body = server.health()
+    assert body["ok"] is True
+    assert "backend" in body
 
 
 @pytest.mark.requires_rust
