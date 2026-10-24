@@ -169,6 +169,14 @@ pub struct GraphShortestPathQuery {
     pub max_depth: usize,
 }
 
+/// Query fields for the storage-neutral equivalent of Python `k_hop`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GraphKHopQuery {
+    pub start_ids: Vec<String>,
+    pub k: usize,
+    pub doc_id: Option<String>,
+}
+
 /// Principal inputs required to evaluate persisted graph ACL records.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct GraphAclPrincipal {
@@ -544,6 +552,40 @@ pub fn graph_shortest_path_from_records(
         }
     }
     Vec::new()
+}
+
+/// Expand a bounded frontier in deterministic layers.
+///
+/// The result mirrors Python `GraphQuery.k_hop`: each layer contains the
+/// nodes and edges discovered from the prior frontier, while visited IDs are
+/// not re-expanded. Records must already be scope- and ACL-filtered.
+pub fn graph_k_hop_from_records(
+    query: &GraphKHopQuery,
+    nodes: &[GraphRecord],
+    edges: &[GraphRecord],
+) -> Vec<GraphNeighbors> {
+    let mut visited = BTreeSet::new();
+    let mut frontier = query.start_ids.iter().cloned().collect::<BTreeSet<_>>();
+    let mut layers = Vec::with_capacity(query.k);
+    for _ in 0..query.k {
+        let mut next_frontier = BTreeSet::new();
+        let mut layer = GraphNeighbors::default();
+        for rid in &frontier {
+            if !visited.insert(rid.clone()) {
+                continue;
+            }
+            let neighbors =
+                graph_neighbors_from_records(rid, nodes, edges, query.doc_id.as_deref());
+            layer.nodes.extend(neighbors.nodes.iter().cloned());
+            layer.edges.extend(neighbors.edges.iter().cloned());
+            next_frontier.extend(neighbors.nodes);
+            next_frontier.extend(neighbors.edges);
+        }
+        next_frontier.retain(|id| !visited.contains(id));
+        layers.push(layer);
+        frontier = next_frontier;
+    }
+    layers
 }
 
 fn is_tombstoned(metadata: &Map<String, Value>) -> bool {
@@ -1997,6 +2039,41 @@ mod tests {
         assert!(
             graph_shortest_path_from_records(&query, &nodes, &[edges[0].clone(), tombstoned])
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn graph_k_hop_returns_stable_layers_without_reexpanding_visited_ids() {
+        let nodes = vec![node_record("n1"), node_record("n2"), node_record("n3")];
+        let edges = vec![
+            edge_record(
+                "e1",
+                serde_json::json!({"doc_id": "doc-1", "source_ids": ["n1"], "target_ids": ["n2"]}),
+            ),
+            edge_record(
+                "e2",
+                serde_json::json!({"doc_id": "doc-1", "source_ids": ["n2"], "target_ids": ["n3"]}),
+            ),
+        ];
+        let layers = graph_k_hop_from_records(
+            &GraphKHopQuery {
+                start_ids: vec!["n1".to_owned()],
+                k: 2,
+                doc_id: Some("doc-1".to_owned()),
+            },
+            &nodes,
+            &edges,
+        );
+        assert_eq!(layers.len(), 2);
+        assert_eq!(layers[0].nodes, BTreeSet::from(["n2".to_owned()]));
+        assert_eq!(layers[0].edges, BTreeSet::from(["e1".to_owned()]));
+        assert_eq!(
+            layers[1].nodes,
+            BTreeSet::from(["n1".to_owned(), "n2".to_owned(), "n3".to_owned()])
+        );
+        assert_eq!(
+            layers[1].edges,
+            BTreeSet::from(["e1".to_owned(), "e2".to_owned()])
         );
     }
 
