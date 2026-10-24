@@ -2110,6 +2110,14 @@ mod tests {
         )))
         .expect("valid graph traversal fixture");
         assert_eq!(fixture["schema_version"], 1);
+        let string_set = |value: &Value| {
+            value
+                .as_array()
+                .expect("fixture string array")
+                .iter()
+                .map(|item| item.as_str().expect("fixture string").to_owned())
+                .collect::<BTreeSet<_>>()
+        };
         let nodes = fixture["graph"]["nodes"]
             .as_array()
             .expect("fixture nodes")
@@ -2141,8 +2149,14 @@ mod tests {
             Some("D1"),
             false,
         );
-        assert_eq!(neighbors.nodes, BTreeSet::new());
-        assert_eq!(neighbors.edges, BTreeSet::from(["E1".to_owned()]));
+        assert_eq!(
+            neighbors.nodes,
+            string_set(&node_case["expected_neighbors"]["nodes"])
+        );
+        assert_eq!(
+            neighbors.edges,
+            string_set(&node_case["expected_neighbors"]["edges"])
+        );
 
         let edge_case = &cases[1];
         let neighbors = graph_neighbors_from_records(
@@ -2153,9 +2167,12 @@ mod tests {
         );
         assert_eq!(
             neighbors.nodes,
-            BTreeSet::from(["A".to_owned(), "B".to_owned()])
+            string_set(&edge_case["expected_neighbors"]["nodes"])
         );
-        assert_eq!(neighbors.edges, BTreeSet::new());
+        assert_eq!(
+            neighbors.edges,
+            string_set(&edge_case["expected_neighbors"]["edges"])
+        );
 
         let path_case = &cases[2];
         let path = graph_shortest_path_from_records(
@@ -2168,7 +2185,13 @@ mod tests {
             &nodes,
             &edges,
         );
-        assert_eq!(path, vec!["A", "E1", "B"]);
+        let expected_path = path_case["expected_path"]
+            .as_array()
+            .expect("fixture path")
+            .iter()
+            .map(|value| value.as_str().expect("fixture path ID").to_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(path, expected_path);
 
         let hop_case = &cases[3];
         let layers = graph_k_hop_from_records(
@@ -2180,13 +2203,14 @@ mod tests {
             &nodes,
             &edges,
         );
-        assert!(layers[0].nodes.is_empty());
-        assert_eq!(layers[0].edges, BTreeSet::from(["E1".to_owned()]));
-        assert_eq!(
-            layers[1].nodes,
-            BTreeSet::from(["A".to_owned(), "B".to_owned()])
-        );
-        assert!(layers[1].edges.is_empty());
+        let expected_layers = hop_case["expected_layers"]
+            .as_array()
+            .expect("fixture layers");
+        assert_eq!(layers.len(), expected_layers.len());
+        for (actual, expected) in layers.iter().zip(expected_layers) {
+            assert_eq!(actual.nodes, string_set(&expected["nodes"]));
+            assert_eq!(actual.edges, string_set(&expected["edges"]));
+        }
     }
 
     #[test]

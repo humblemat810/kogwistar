@@ -386,9 +386,13 @@ def test_graph_traversal_matches_shared_golden_contract(small_graph):
         "edges"
     ]
 
-    path = gq.shortest_path("A", "B", doc_id=doc_id, max_depth=8)
-    assert path == cases["shortest_path"]["expected_path"]
-    layers = gq.k_hop(["A"], k=2, doc_id=doc_id)
+    path_case = cases["shortest_path"]
+    path = gq.shortest_path(
+        path_case["src_id"], path_case["dst_id"], doc_id=doc_id, max_depth=8
+    )
+    assert path == path_case["expected_path"]
+    hop_case = cases["k_hop"]
+    layers = gq.k_hop(hop_case["start_ids"], k=hop_case["k"], doc_id=doc_id)
     assert [
         {"nodes": sorted(layer["nodes"]), "edges": sorted(layer["edges"])}
         for layer in layers
