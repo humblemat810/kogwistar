@@ -20,6 +20,7 @@ from ..acl.graph import (
 from ..acl.graph import ACLGraph
 from ..graph_kinds import normalize_graph_kind
 from ..json_types import JsonObject
+from ..implementation_selection import capture_implementation_selection
 from ..utils.log import bind_log_context
 from ..workers.index_job_worker import IndexJobWorker
 from .acl_protocol import require_acl_protocols
@@ -1313,6 +1314,7 @@ class GraphKnowledgeEngine:
             )
 
         load_dotenv()
+        self._implementation_selection_snapshot = capture_implementation_selection()
         self.persistence_mode = persistence_mode
         self.embedding_profile = embedding_profile
         self.embedding_profile_mode = embedding_profile_mode

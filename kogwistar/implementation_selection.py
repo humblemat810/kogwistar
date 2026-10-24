@@ -6,7 +6,7 @@ from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from functools import wraps
-from typing import ParamSpec, TypeVar, cast
+from typing import ParamSpec, TypeAlias, TypeVar, cast
 
 _IMPLEMENTATION_ENV_NAMES = (
     "KOGWISTAR_IMPL_MODE",
@@ -17,7 +17,9 @@ _IMPLEMENTATION_ENV_NAMES = (
     "KOGWISTAR_IMPL_SERVER",
     "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
 )
-_selection_snapshot: ContextVar[tuple[tuple[str, str | None], ...] | None] = (
+ImplementationSelectionSnapshot: TypeAlias = tuple[tuple[str, str | None], ...]
+
+_selection_snapshot: ContextVar[ImplementationSelectionSnapshot | None] = (
     ContextVar("kogwistar_implementation_selection", default=None)
 )
 _P = ParamSpec("_P")
@@ -35,15 +37,26 @@ def implementation_env(name: str, default: str | None = None) -> str | None:
     return default
 
 
+def capture_implementation_selection() -> ImplementationSelectionSnapshot:
+    """Capture all implementation selectors as one immutable configuration."""
+    return tuple((name, os.getenv(name)) for name in _IMPLEMENTATION_ENV_NAMES)
+
+
 @contextmanager
-def implementation_selection_scope() -> Iterator[None]:
-    """Freeze language selectors for one run; nested work inherits the snapshot."""
-    if _selection_snapshot.get() is not None:
+def implementation_selection_scope(
+    snapshot: ImplementationSelectionSnapshot | None = None,
+) -> Iterator[None]:
+    """Freeze selectors for a run and reject nested authority changes."""
+    active_snapshot = _selection_snapshot.get()
+    if active_snapshot is not None:
+        if snapshot is not None and snapshot != active_snapshot:
+            raise RuntimeError(
+                "nested workflow runtime has a different implementation selection"
+            )
         yield
         return
 
-    snapshot = tuple((name, os.getenv(name)) for name in _IMPLEMENTATION_ENV_NAMES)
-    token = _selection_snapshot.set(snapshot)
+    token = _selection_snapshot.set(snapshot or capture_implementation_selection())
     try:
         yield
     finally:
@@ -59,14 +72,18 @@ def implementation_selection_bound(
 
         @wraps(function)
         async def async_wrapper(*args: _P.args, **kwargs: _P.kwargs) -> object:
-            with implementation_selection_scope():
+            owner = args[0] if args else None
+            snapshot = getattr(owner, "_implementation_selection_snapshot", None)
+            with implementation_selection_scope(snapshot):
                 return await async_function(*args, **kwargs)
 
         return cast(Callable[_P, _R], async_wrapper)
 
     @wraps(function)
     def sync_wrapper(*args: _P.args, **kwargs: _P.kwargs) -> _R:
-        with implementation_selection_scope():
+        owner = args[0] if args else None
+        snapshot = getattr(owner, "_implementation_selection_snapshot", None)
+        with implementation_selection_scope(snapshot):
             return function(*args, **kwargs)
 
     return sync_wrapper

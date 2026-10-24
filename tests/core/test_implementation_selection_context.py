@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from kogwistar._rust_bridge import (
@@ -14,11 +17,15 @@ from kogwistar._rust_bridge import (
     runtime_implementation_mode,
     server_implementation_mode,
 )
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.in_memory_backend import build_in_memory_backend
 from kogwistar.implementation_selection import (
+    capture_implementation_selection,
     implementation_selection_bound,
     implementation_selection_scope,
 )
 from kogwistar.runtime import AsyncWorkflowRuntime, WorkflowRuntime
+from tests._helpers.embeddings import ConstantEmbeddingFunction
 
 pytestmark = [pytest.mark.ci, pytest.mark.core]
 
@@ -80,6 +87,62 @@ def test_all_selector_families_use_the_same_run_snapshot(
 def test_runtime_entrypoints_keep_sync_and_async_call_contracts() -> None:
     assert not inspect.iscoroutinefunction(WorkflowRuntime.run)
     assert inspect.iscoroutinefunction(AsyncWorkflowRuntime.run)
+
+
+def test_bound_runtime_uses_its_construction_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_RUNTIME", "python")
+    runtime = SimpleNamespace(
+        _implementation_selection_snapshot=capture_implementation_selection()
+    )
+
+    @implementation_selection_bound
+    def run(owner: SimpleNamespace) -> tuple[str, str]:
+        before = runtime_implementation_mode()
+        monkeypatch.setenv("KOGWISTAR_IMPL_RUNTIME", "rust")
+        return before, runtime_implementation_mode()
+
+    assert run(runtime) == ("python", "python")
+    assert runtime_implementation_mode() == "rust"
+
+
+def test_graph_engine_captures_selectors_when_constructed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_RUNTIME", "python")
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path),
+        embedding_function=ConstantEmbeddingFunction(dim=4),
+        backend_factory=build_in_memory_backend,
+    )
+
+    monkeypatch.setenv("KOGWISTAR_IMPL_RUNTIME", "rust")
+    with implementation_selection_scope(engine._implementation_selection_snapshot):
+        assert runtime_implementation_mode() == "python"
+    assert runtime_implementation_mode() == "rust"
+
+
+@pytest.mark.parametrize("runtime_type", [WorkflowRuntime, AsyncWorkflowRuntime])
+def test_runtime_rejects_engines_with_different_selection_snapshots(
+    monkeypatch: pytest.MonkeyPatch, runtime_type: Callable[..., object]
+) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_RUNTIME", "python")
+    workflow_engine = SimpleNamespace(
+        _implementation_selection_snapshot=capture_implementation_selection()
+    )
+    monkeypatch.setenv("KOGWISTAR_IMPL_RUNTIME", "rust")
+    conversation_engine = SimpleNamespace(
+        _implementation_selection_snapshot=capture_implementation_selection()
+    )
+
+    with pytest.raises(ValueError, match="different implementation selections"):
+        runtime_type(
+            workflow_engine=workflow_engine,
+            conversation_engine=conversation_engine,
+            step_resolver=None,
+            predicate_registry={},
+        )
 
 
 def test_selector_snapshot_propagates_to_async_tasks_and_worker_threads(

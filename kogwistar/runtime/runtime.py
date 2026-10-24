@@ -17,7 +17,11 @@ from typing import (
 )
 
 from kogwistar.engine_core.sqlite_context import sqlite_execution_bound
-from kogwistar.implementation_selection import implementation_selection_bound
+from kogwistar.implementation_selection import (
+    ImplementationSelectionSnapshot,
+    capture_implementation_selection,
+    implementation_selection_bound,
+)
 from kogwistar.cdc.sqlite_sink import _get_shared_sqlite_sink
 from kogwistar.id_provider import stable_id
 from kogwistar.json_types import JsonObject, JsonValue
@@ -177,6 +181,25 @@ class WorkflowRuntime(
         max_nested_workflow_depth: int = 8,
         run_ownership_lease_ms: int = DEFAULT_RUN_OWNERSHIP_LEASE_MS,
     ) -> None:
+        workflow_selection = getattr(
+            workflow_engine, "_implementation_selection_snapshot", None
+        )
+        conversation_selection = getattr(
+            conversation_engine, "_implementation_selection_snapshot", None
+        )
+        if (
+            workflow_selection is not None
+            and conversation_selection is not None
+            and workflow_selection != conversation_selection
+        ):
+            raise ValueError(
+                "workflow and conversation engines use different implementation selections"
+            )
+        self._implementation_selection_snapshot: ImplementationSelectionSnapshot = (
+            workflow_selection
+            or conversation_selection
+            or capture_implementation_selection()
+        )
         self.workflow_engine: GraphKnowledgeEngine = workflow_engine
         self.conversation_engine: GraphKnowledgeEngine = conversation_engine
         self.step_resolver: StepResolver = step_resolver
