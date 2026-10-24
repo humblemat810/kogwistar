@@ -41,6 +41,14 @@
         "number": -0.0
       },
       "expected": "{\"a\":\"雪😀\",\"control\":\"\\u0001\",\"number\":-0.0,\"z\":\"line\\nbreak / \\\"quoted\\\" \\\\\\\\ path\"}"
+    },
+    {
+      "value": {
+        "tiny_values": [1e-5, 1e-6, -1.2e-6],
+        "fixed_boundary": 0.0001,
+        "large_values": [1e15, 1e16]
+      },
+      "expected": "{\"fixed_boundary\":0.0001,\"large_values\":[1000000000000000.0,1e+16],\"tiny_values\":[1e-05,1e-06,-1.2e-06]}"
     }
   ],
   "metadata_filters": [

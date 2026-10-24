@@ -579,11 +579,49 @@ fn push_python_json_string(out: &mut String, value: &str, ensure_ascii: bool) {
     out.push('"');
 }
 
+fn python_float_repr(value: &serde_json::Number) -> String {
+    let repr = value.to_string();
+    if !value.is_f64() {
+        return repr;
+    }
+
+    if let Some((mantissa, exponent)) = repr.split_once('e').or_else(|| repr.split_once('E')) {
+        if let Ok(exponent) = exponent.parse::<i32>() {
+            let sign = if exponent < 0 { "-" } else { "+" };
+            return format!("{mantissa}e{sign}{:02}", exponent.unsigned_abs());
+        }
+    }
+
+    if value
+        .as_f64()
+        .is_some_and(|number| number != 0.0 && number.abs() < 1e-4)
+    {
+        let (sign, unsigned) = repr
+            .strip_prefix('-')
+            .map_or(("", repr.as_str()), |value| ("-", value));
+        let decimal_position = unsigned.find('.').unwrap_or(unsigned.len()) as i32;
+        let digits: String = unsigned.chars().filter(char::is_ascii_digit).collect();
+        let Some(first_significant) = digits.find(|digit| digit != '0') else {
+            return repr;
+        };
+        let exponent = decimal_position - first_significant as i32 - 1;
+        let significant = digits[first_significant..].trim_end_matches('0');
+        let mut mantissa = significant[..1].to_owned();
+        if significant.len() > 1 {
+            mantissa.push('.');
+            mantissa.push_str(&significant[1..]);
+        }
+        return format!("{sign}{mantissa}e-{:02}", exponent.unsigned_abs());
+    }
+
+    repr
+}
+
 fn push_python_json(out: &mut String, value: &Value, ensure_ascii: bool) {
     match value {
         Value::Null => out.push_str("null"),
         Value::Bool(value) => out.push_str(if *value { "true" } else { "false" }),
-        Value::Number(value) => out.push_str(&value.to_string()),
+        Value::Number(value) => out.push_str(&python_float_repr(value)),
         Value::String(value) => push_python_json_string(out, value, ensure_ascii),
         Value::Array(values) => {
             out.push('[');
