@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable
 import hashlib
 import json
 import math
@@ -21,12 +21,14 @@ import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 _NATIVE_BINARY_READY = False
 DEFAULT_MODES = ("in_process", "rust_authority", "http", "rust_native")
+MCP_OPERATION_TIMEOUT_SECONDS = 30
+_AwaitedT = TypeVar("_AwaitedT")
 
 import uvicorn
 from mcp import ClientSession
@@ -108,6 +110,18 @@ def _write_json_atomic(path: Path, value: object) -> None:
 
 def _digest(value: object) -> str:
     return hashlib.sha256(_canonical(value).encode("utf-8")).hexdigest()
+
+
+async def _await_mcp_operation(awaitable: Awaitable[_AwaitedT], operation: str) -> _AwaitedT:
+    """Turn a stalled local MCP transport into a bounded benchmark failure."""
+
+    try:
+        return await asyncio.wait_for(awaitable, timeout=MCP_OPERATION_TIMEOUT_SECONDS)
+    except TimeoutError as exc:
+        raise TimeoutError(
+            f"MCP operation {operation!r} exceeded "
+            f"{MCP_OPERATION_TIMEOUT_SECONDS}s"
+        ) from exc
 
 
 def _sqlite_footprint_bytes(path: Path) -> int:
@@ -538,18 +552,23 @@ async def _serve_http(
         ) as (read, write):
             async with ClientSession(read, write) as session:
                 init_started = time.perf_counter_ns()
-                await session.initialize()
+                await _await_mcp_operation(session.initialize(), "initialize")
                 startup_ms += (time.perf_counter_ns() - init_started) / 1_000_000
-                names = {tool.name for tool in (await session.list_tools()).tools}
+                names = {
+                    tool.name
+                    for tool in (
+                        await _await_mcp_operation(session.list_tools(), "list_tools")
+                    ).tools
+                }
                 if not {"write_record", "read_event", "read_projection"} <= names:
                     raise RuntimeError("MCP HTTP surface omitted required benchmark tools")
                 wall_started = time.perf_counter_ns()
                 for step, arguments in zip(trace, trace_arguments, strict=True):
                     operation = step["operation"]
                     started = time.perf_counter_ns()
-                    result = await session.call_tool(
+                    result = await _await_mcp_operation(
+                        session.call_tool(operation, arguments=arguments),
                         operation,
-                        arguments=arguments,
                     )
                     payload = _result_payload(result)
                     if payload.get("entity_id") != step["expected_entity_id"]:
@@ -656,7 +675,9 @@ async def _serve_http_concurrent(
     async def call(session: ClientSession, name: str, arguments: dict[str, object]) -> dict[str, object]:
         try:
             call_started = time.perf_counter_ns()
-            result = await session.call_tool(name, arguments=arguments)
+            result = await _await_mcp_operation(
+                session.call_tool(name, arguments=arguments), name
+            )
             payload = _result_payload(result)
             with timings_lock:
                 timings[name].append((time.perf_counter_ns() - call_started) / 1_000_000)
@@ -671,8 +692,13 @@ async def _serve_http_concurrent(
             f"http://{host}:{port}/mcp", terminate_on_close=True
         ) as (read, write):
             async with ClientSession(read, write) as session:
-                await session.initialize()
-                tools = {tool.name for tool in (await session.list_tools()).tools}
+                await _await_mcp_operation(session.initialize(), "initialize")
+                tools = {
+                    tool.name
+                    for tool in (
+                        await _await_mcp_operation(session.list_tools(), "list_tools")
+                    ).tools
+                }
                 if not {"write_record", "read_head"} <= tools:
                     raise RuntimeError("concurrent MCP HTTP tools are missing")
                 for phase in phases:
