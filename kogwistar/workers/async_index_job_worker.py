@@ -8,6 +8,8 @@ from collections.abc import Awaitable, Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypeVar, cast
 
+from ..implementation_selection import implementation_selection_bound
+
 if TYPE_CHECKING:
     from ..engine_core.engine import GraphKnowledgeEngine
 
@@ -50,6 +52,11 @@ class AsyncIndexJobWorker:
         self.max_jobs_per_tick = int(max_jobs_per_tick)
         self.namespace = namespace
 
+    @property
+    def _implementation_selection_snapshot(self) -> object:
+        return getattr(self.engine, "_implementation_selection_snapshot", None)
+
+    @implementation_selection_bound
     async def tick(self) -> AsyncWorkerTickMetrics:
         metrics = AsyncWorkerTickMetrics()
         meta = getattr(self.engine, "meta_sqlite", None)

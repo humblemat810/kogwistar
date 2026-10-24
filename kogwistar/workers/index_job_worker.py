@@ -9,6 +9,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol, cast
 
+from ..implementation_selection import implementation_selection_bound
+
 if TYPE_CHECKING:
     from ..engine_core.engine import GraphKnowledgeEngine
 
@@ -71,6 +73,11 @@ class IndexJobWorker:
         self.max_jobs_per_tick = int(max_jobs_per_tick)
         self.namespace = namespace
 
+    @property
+    def _implementation_selection_snapshot(self) -> object:
+        return getattr(self.engine, "_implementation_selection_snapshot", None)
+
+    @implementation_selection_bound
     def tick(self) -> WorkerTickMetrics:
         """Drain at most one worker tick of index jobs for a namespace.
 
