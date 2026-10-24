@@ -782,10 +782,19 @@ async def _serve_http_concurrent(
                         )
         return operations
 
+    async def guarded_actor(actor_id: int | None) -> int:
+        try:
+            return await actor(actor_id)
+        except BaseException:
+            # Setup failures must release peers waiting on a shared phase.
+            barriers.abort()
+            raise
+
     elapsed_started = time.perf_counter_ns()
     try:
         outcomes = await asyncio.gather(
-            actor(None), *(actor(reader_id) for reader_id in range(4)),
+            guarded_actor(None),
+            *(guarded_actor(reader_id) for reader_id in range(4)),
             return_exceptions=True,
         )
         operation_counts = _operation_counts(outcomes)
