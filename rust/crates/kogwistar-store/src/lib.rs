@@ -230,6 +230,10 @@ fn acl_rule_for(
     if grain != "node" && grain != "edge" {
         return None;
     }
+    if value_string(record, "acl_target_item_id").is_some_and(|target_item| !target_item.is_empty())
+    {
+        return None;
+    }
     let target_id = value_string(record, "acl_target_entity_id")?;
     let version = record_field(record, "acl_version")?.as_i64()?;
     let mode = value_string(record, "acl_mode")?.to_ascii_lowercase();
@@ -1771,6 +1775,65 @@ mod tests {
             graph_records_visible_by_acl(&nodes, &edges, "knowledge", &bob);
         assert!(bob_nodes.is_empty());
         assert!(bob_edges.is_empty());
+    }
+
+    #[test]
+    fn graph_record_acl_covers_owner_scope_group_private_and_stale_item_rules() {
+        let acl_record = |id: &str, target: &str, mode: &str, version: i64| {
+            let mut record = GraphRecord::new(id);
+            record
+                .metadata
+                .insert("entity_type".into(), "acl_record".into());
+            record
+                .metadata
+                .insert("acl_truth_graph".into(), "knowledge".into());
+            record
+                .metadata
+                .insert("acl_target_entity_id".into(), target.into());
+            record
+                .metadata
+                .insert("acl_target_grain".into(), "node".into());
+            record.metadata.insert("acl_version".into(), version.into());
+            record.metadata.insert("acl_mode".into(), mode.into());
+            record
+        };
+        let mut owner = acl_record("acl-owner", "owner", "private", 1);
+        owner.metadata.insert("owner_id".into(), "alice".into());
+        let mut scoped = acl_record("acl-scope", "scope", "scope", 1);
+        scoped
+            .metadata
+            .insert("security_scope".into(), "team-a".into());
+        let mut grouped = acl_record("acl-group", "group", "group", 1);
+        grouped.document = Some(
+            serde_json::json!({"properties": {"shared_with_groups": ["reviewers"]}}).to_string(),
+        );
+        let mut stale_item = acl_record("acl-span", "span", "public", 1);
+        stale_item
+            .metadata
+            .insert("acl_target_item_id".into(), "span-1".into());
+        let nodes = vec![
+            owner,
+            scoped,
+            grouped,
+            stale_item,
+            GraphRecord::new("owner"),
+            GraphRecord::new("scope"),
+            GraphRecord::new("group"),
+            GraphRecord::new("span"),
+        ];
+        let principal = GraphAclPrincipal {
+            principal_id: "alice".into(),
+            groups: BTreeSet::from(["reviewers".into()]),
+            security_scope: Some("team-a".into()),
+        };
+        let (visible, _) = graph_records_visible_by_acl(&nodes, &[], "knowledge", &principal);
+        assert_eq!(
+            visible
+                .iter()
+                .map(|record| record.id.as_str())
+                .collect::<Vec<_>>(),
+            ["owner", "scope", "group"]
+        );
     }
     use kogwistar_contracts::{GraphModelClass, GraphModelEnvelope};
 
