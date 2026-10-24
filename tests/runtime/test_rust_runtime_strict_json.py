@@ -56,3 +56,16 @@ def test_strict_json_rejects_non_finite_numbers_and_non_string_keys() -> None:
     invalid_key = fixture["non_string_object_key"]
     with pytest.raises(TypeError, match="non-string object key"):
         normalize_json_value({"nested": {invalid_key["key"]: invalid_key["value"]}})
+
+
+def test_worker_json_encoding_matches_shared_rust_canonical_fixtures() -> None:
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "golden"
+        / "deterministic-primitives.json"
+    )
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+
+    for case in fixture["canonical_json"]:
+        assert strict_json_dumps(case["value"]) == case["expected"]

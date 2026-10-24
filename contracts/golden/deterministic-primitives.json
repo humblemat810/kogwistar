@@ -32,6 +32,15 @@
         "a": ["é", {"b": true, "a": null}]
       },
       "expected": "{\"a\":[\"é\",{\"a\":null,\"b\":true}],\"z\":1}"
+    },
+    {
+      "value": {
+        "z": "line\nbreak / \"quoted\" \\\\ path",
+        "a": "雪😀",
+        "control": "\u0001",
+        "number": -0.0
+      },
+      "expected": "{\"a\":\"雪😀\",\"control\":\"\\u0001\",\"number\":-0.0,\"z\":\"line\\nbreak / \\\"quoted\\\" \\\\\\\\ path\"}"
     }
   ],
   "metadata_filters": [
