@@ -41,8 +41,9 @@ pub use graph_read::{
     GRAPH_NEIGHBORS_REQUEST_VERSION, GraphNeighborsRequestV1, graph_neighbors_request_from_str,
 };
 pub use graph_slice::{
-    GRAPH_SLICE_MANIFEST_VERSION, GraphModelSliceV1, GraphSliceDeclarationV1, GraphSliceError,
-    GraphSliceFieldV1, GraphSliceManifestV1, GraphSliceMode,
+    GRAPH_SLICE_MANIFEST_VERSION, GraphModelSliceV1, GraphSliceChildLocation,
+    GraphSliceDeclarationV1, GraphSliceError, GraphSliceFieldV1, GraphSliceManifestV1,
+    GraphSliceMode,
 };
 
 /// Return the stable graph-class names exposed by the versioned Python seam.
