@@ -858,3 +858,19 @@ they do not, by themselves, justify rewriting the entire stack. Any broader
 Rust rewrite decision still requires representative production profiling and
 resource-matched endpoint evidence rather than extrapolation from the narrow
 benchmark server.
+
+### Resource-matched endpoint follow-up
+
+The harness now supports a restricted sequential comparison with
+`--mode http --mode rust_native` and an externally supplied native server via
+`KOGWISTAR_MIXED_NATIVE_BINARY`. The `mixed_endpoint_container_benchmark.py`
+runner uses both modes against the same trace and disables the unrelated
+concurrent profile. The runtime-matrix Dockerfile has an opt-in
+`cpython315-nogil-rust-endpoint` target that builds the native benchmark server
+into the image and records the container CPU and memory ceilings in
+`endpoint-report.v1.json`.
+
+This is an execution path and contract check, not completed performance
+evidence yet. The target still needs a controlled Docker run and its report
+must show equal digests, verified limits, and comparable samples before the
+Rust rewrite decision can be updated.

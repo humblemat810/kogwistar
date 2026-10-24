@@ -1823,6 +1823,7 @@ def run_benchmark(
     samples: int,
     concurrent_items: int = 8,
     modes: tuple[str, ...] = DEFAULT_MODES,
+    include_concurrent: bool = True,
 ) -> dict[str, Any]:
     supported_modes = {"in_process", "rust_authority", "http", "rust_native"}
     if not modes or any(mode not in supported_modes for mode in modes):
@@ -1934,11 +1935,13 @@ def run_benchmark(
         for mode_result in results.values()
     ):
         raise RuntimeError("MCP registry and HTTP transports persisted different states")
-    progress["active"] = {"phase": "concurrent_profiles", "items": concurrent_items}
-    _write_json_atomic(progress_path, progress)
-    concurrent_report = _run_concurrent_mcp_profiles(
-        run_root / "concurrent", items=concurrent_items, samples=samples
-    )
+    concurrent_report = None
+    if include_concurrent:
+        progress["active"] = {"phase": "concurrent_profiles", "items": concurrent_items}
+        _write_json_atomic(progress_path, progress)
+        concurrent_report = _run_concurrent_mcp_profiles(
+            run_root / "concurrent", items=concurrent_items, samples=samples
+        )
     report = {
         "schema": "kogwistar-mixed-mcp-report/v3",
         "run_id": run_id,

@@ -105,10 +105,25 @@ RUN python3.15t -m pip install --no-cache-dir maturin==1.15.0 \
     && python3.15t -m pip install --no-cache-dir --no-build-isolation --no-deps /build \
     && env -u PYTHONPATH python3.15t -c \
         'import importlib.util, shutil; from pathlib import Path; p = importlib.util.find_spec("kogwistar._rust"); assert p and p.origin; out = Path("/tmp/native-extension"); out.mkdir(); shutil.copy2(p.origin, out / Path(p.origin).name)'
+RUN cargo build --release --manifest-path /build/rust/Cargo.toml \
+        -p kogwistar-api --example mixed_mcp_authority_benchmark \
+    && mkdir -p /tmp/native-endpoint \
+    && cp /build/rust/target/release/examples/mixed_mcp_authority_benchmark \
+        /tmp/native-endpoint/mixed_mcp_authority_benchmark
 
 FROM cpython315-nogil AS cpython315-nogil-rust
 COPY --from=cpython315-nogil-rust-build /tmp/native-extension/_rust* /src/kogwistar/
 ENTRYPOINT ["python3.15t", "/src/scripts/mixed_runtime_container_benchmark.py"]
+
+FROM cpython315-nogil-rust AS cpython315-nogil-rust-endpoint
+RUN apt-get update && apt-get install --no-install-recommends -y build-essential \
+    && python3.15t -m pip install --no-cache-dir "uvicorn>=0.30" "psutil>=6" \
+    && apt-get purge -y --auto-remove build-essential \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=cpython315-nogil-rust-build /tmp/native-endpoint/mixed_mcp_authority_benchmark \
+    /usr/local/bin/mixed_mcp_authority_benchmark
+ENV KOGWISTAR_MIXED_NATIVE_BINARY=/usr/local/bin/mixed_mcp_authority_benchmark
+ENTRYPOINT ["python3.15t", "/src/scripts/mixed_endpoint_container_benchmark.py"]
 
 FROM debian:trixie-slim AS cpython314-gil
 RUN apt-get update && apt-get install --no-install-recommends -y \

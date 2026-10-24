@@ -2,7 +2,9 @@ param(
     [string]$OutputRoot = ".tmp/mixed-runtime-matrix-20261022",
     [int]$CpuLimit = 4,
     [string]$MemoryLimit = "8g",
-    [int]$Samples = 5
+    [int]$Samples = 5,
+    [switch]$EndpointOnly,
+    [int[]]$EndpointItems = @(1000, 2000)
 )
 
 $ErrorActionPreference = "Stop"
@@ -30,7 +32,9 @@ foreach ($scriptName in @(
     "mixed_concurrent_benchmark.py",
     "mixed_workload.py",
     "mixed_backend_benchmark.py",
-    "mixed_runtime_container_benchmark.py"
+    "mixed_runtime_container_benchmark.py",
+    "mixed_mcp_benchmark.py",
+    "mixed_endpoint_container_benchmark.py"
 )) {
     Copy-Item (Join-Path $PSScriptRoot $scriptName) (Join-Path $sourceStage "scripts/$scriptName")
 }
@@ -101,6 +105,11 @@ $matrix = @(
     @{ Name = "cpython315-nogil-rust"; Target = "cpython315-nogil-rust"; Authority = "rust"; Items = @(1000, 2000) },
     @{ Name = "pypy311"; Target = "pypy311"; Items = @(1000, 2000) }
 )
+if ($EndpointOnly) {
+    $matrix = @(
+        @{ Name = "endpoint"; Target = "cpython315-nogil-rust-endpoint"; Items = $EndpointItems }
+    )
+}
 
 foreach ($entry in $matrix) {
     $tag = "kogwistar-mixed-runtime:$($entry.Name)"
@@ -125,22 +134,38 @@ foreach ($entry in $matrix) {
     $itemArgs = @()
     foreach ($size in $entry.Items) { $itemArgs += @("--items", "$size") }
     Write-Host "Running $($entry.Name) with --cpus=$CpuLimit --memory=$MemoryLimit --memory-swap=$MemoryLimit"
-    $authority = if ($entry.Authority) { $entry.Authority } else { "python" }
-    docker run --rm --network none --cpus $CpuLimit --memory $MemoryLimit --memory-swap $MemoryLimit `
-        --mount "type=bind,source=$resolvedOutput,target=/results" `
-        $tag --output /results --samples $Samples --expected-runtime $entry.Name --authority $authority `
-        --expected-cpus $CpuLimit --expected-memory-bytes $memoryBytes @itemArgs
+    if ($EndpointOnly) {
+        docker run --rm --network none --cpus $CpuLimit --memory $MemoryLimit --memory-swap $MemoryLimit `
+            --mount "type=bind,source=$resolvedOutput,target=/results" `
+            $tag --output /results --samples $Samples `
+            --expected-cpus $CpuLimit --expected-memory-bytes $memoryBytes @itemArgs
+    } else {
+        $authority = if ($entry.Authority) { $entry.Authority } else { "python" }
+        docker run --rm --network none --cpus $CpuLimit --memory $MemoryLimit --memory-swap $MemoryLimit `
+            --mount "type=bind,source=$resolvedOutput,target=/results" `
+            $tag --output /results --samples $Samples --expected-runtime $entry.Name --authority $authority `
+            --expected-cpus $CpuLimit --expected-memory-bytes $memoryBytes @itemArgs
+    }
     if ($LASTEXITCODE -ne 0) { throw "Runtime verification/benchmark failed for $($entry.Name)" }
-    $runtimeResult = Get-Content -LiteralPath (Join-Path $runtimeOutput "runtime-report.json") -Raw | ConvertFrom-Json
-    $runtimeRecord.status = "complete"
-    $runtimeRecord.runtime_verified = [bool]$runtimeResult.runtime_verified
-    $runtimeRecord.limits_verified = [bool]$runtimeResult.limits_verified
-    $runtimeRecord.packages = $runtimeResult.runtime.packages
+    $reportName = if ($EndpointOnly) { "endpoint-report.v1.json" } else { "runtime-report.json" }
+    $runtimeResult = Get-Content -LiteralPath (Join-Path $runtimeOutput $reportName) -Raw | ConvertFrom-Json
+    $runtimeRecord.status = $runtimeResult.status
+    if ($EndpointOnly) {
+        $runtimeRecord.state_digest_equal = [bool]$runtimeResult.state_digest_equal
+        $runtimeRecord.limits_verified = [bool]$runtimeResult.runtime.limits_verified
+        $runtimeRecord.packages = $runtimeResult.runtime.packages
+    } else {
+        $runtimeRecord.runtime_verified = [bool]$runtimeResult.runtime_verified
+        $runtimeRecord.limits_verified = [bool]$runtimeResult.limits_verified
+        $runtimeRecord.packages = $runtimeResult.runtime.packages
+    }
     $manifest | ConvertTo-Json -Depth 8 | Set-Content -Encoding utf8 $manifestPath
 }
 
 $verifier = Join-Path $PSScriptRoot "verify_mixed_runtime_matrix.py"
-python $verifier --root $output
-if ($LASTEXITCODE -ne 0) { throw "Runtime matrix parity verification failed; see runtime-matrix-verification.json" }
+if (-not $EndpointOnly) {
+    python $verifier --root $output
+    if ($LASTEXITCODE -ne 0) { throw "Runtime matrix parity verification failed; see runtime-matrix-verification.json" }
+}
 $manifest.status = "complete"
 $manifest | ConvertTo-Json -Depth 8 | Set-Content -Encoding utf8 $manifestPath
