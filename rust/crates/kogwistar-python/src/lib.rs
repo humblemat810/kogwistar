@@ -6346,6 +6346,12 @@ fn canonical_json(payload_json: &str) -> PyResult<String> {
 }
 
 #[pyfunction]
+fn validate_graph_model_family(payload_json: &str) -> PyResult<()> {
+    contracts::validate_graph_model_family_from_str(payload_json)
+        .map_err(|error| RustContractValueError::new_err(error.to_string()))
+}
+
+#[pyfunction]
 fn evidence_pack_digest_hash(payload_json: &str) -> PyResult<String> {
     contracts::evidence_pack_digest_hash_from_str(payload_json).map_err(contract_error)
 }
@@ -6569,6 +6575,7 @@ fn _rust(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(stable_id, module)?)?;
     module.add_function(wrap_pyfunction!(stable_id_json, module)?)?;
     module.add_function(wrap_pyfunction!(canonical_json, module)?)?;
+    module.add_function(wrap_pyfunction!(validate_graph_model_family, module)?)?;
     module.add_function(wrap_pyfunction!(evidence_pack_digest_hash, module)?)?;
     module.add_function(wrap_pyfunction!(metadata_filter_matches, module)?)?;
     module.add_function(wrap_pyfunction!(normalize_metadata_filter, module)?)?;

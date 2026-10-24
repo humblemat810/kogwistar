@@ -9,6 +9,22 @@ use std::fmt::{self, Formatter};
 use thiserror::Error;
 use uuid::Uuid;
 
+mod graph_model;
+pub use graph_model::{
+    AclEdgeMetadataV1, AclEdgeTypeV1, AclGrainV1, AclModeV1, AclNodeMetadataV1,
+    ConversationCausalTypeV1, ConversationEdgeMetadataV1, ConversationNodeMetadataV1,
+    ConversationRoleV1, DocumentNodeTypeV1, DocumentNodeV1, EdgeEntity, EdgeId,
+    FlattenedGroundingV1, FlattenedLlmEdgeV1, FlattenedLlmNodeV1, GraphEdgePayload, GraphEntity,
+    GraphEntityCoreV1, GraphEntityKind, GraphEntityPayload, GraphEntityType, GraphModelClass,
+    GraphModelEnvelope, GraphModelError, GraphModelFamily, GroundingV1, HasLevel, HasLifecycle,
+    HasMetadata, LifecycleStatus, LlmEdgeV1, LlmEntityFieldsV1, LlmGroundingV1, LlmNodeV1,
+    LlmTextSpanV1, MentionVerificationMethod, MentionVerificationV1, NodeId,
+    PYTHON_GRAPH_WIRE_VERSION, PersistentEdgeV1, PersistentGraphEntityV1, PersistentNodeV1,
+    PureChromaEdgeV1, PureChromaFieldsV1, PureChromaNodeV1, RequiredNullable, TextSpanV1,
+    TypedGraphEntity, WorkflowEdgeMetadataV1, WorkflowNodeMetadataV1,
+    validate_graph_model_family_from_str,
+};
+
 pub const CONTRACT_VERSION: &str = "1.0.0";
 
 #[derive(Debug, Error)]
@@ -1518,6 +1534,28 @@ mod tests {
                 parsed.as_f64().is_some(),
                 "Serde JSON representation changed; re-audit the shared contract: {literal}"
             );
+        }
+    }
+
+    #[test]
+    fn python_graph_model_payloads_match_shared_canonical_wire_json() {
+        let fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/python-graph-model-payloads-v1.json"
+        )))
+        .expect("valid Python graph model payload fixture");
+        assert_eq!(fixture["schema_version"], 1);
+        assert_eq!(
+            fixture["origin"],
+            "Python Node/Edge.model_dump(field_mode=backend, dump_format=json)"
+        );
+
+        for case in fixture["cases"].as_array().expect("graph payload cases") {
+            let payload = &case["payload"];
+            let expected = case["canonical_json"]
+                .as_str()
+                .expect("Python-produced canonical JSON");
+            assert_eq!(canonical_json(payload, false), expected, "{}", case["kind"]);
         }
     }
 

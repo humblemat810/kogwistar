@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "origin": "Python Node/Edge.model_dump(field_mode=backend, dump_format=json)",
+  "cases": [
+    {
+      "kind": "node",
+      "canonical_json": "{\"canonical_entity_id\":\"entity:parity-node\",\"doc_id\":\"doc:rust-python-parity\",\"domain_id\":null,\"embedding\":[1.0,0.0,0.0],\"id\":\"parity-node\",\"label\":\"Python node\",\"level_from_root\":0,\"mentions\":[{\"multimodal_spans\":[],\"spans\":[{\"collection_page_url\":\"https://example.test/source\",\"context_after\":\"\",\"context_before\":\"\",\"doc_id\":\"doc:rust-python-parity\",\"document_page_url\":\"https://example.test/source#span\",\"end_char\":13,\"excerpt\":\"Node evidence\",\"insertion_method\":\"contract-test\",\"page_number\":1,\"source_cluster_id\":null,\"start_char\":0,\"verification\":{\"is_verified\":false,\"method\":\"heuristic\",\"notes\":\"no explicit verification from LLM\",\"score\":null}}]}],\"metadata\":{\"graph_space\":\"facts\",\"kind\":\"node\",\"level_from_root\":0,\"lifecycle_status\":\"active\",\"redirect_to_id\":null,\"workspace_id\":\"ws\"},\"properties\":{\"attributes\":[\"unicode-雪\",\"nested-payload\"]},\"summary\":\"A complete Pydantic node payload crosses the Rust persistence seam.\",\"type\":\"entity\"}",
+      "payload": {
+        "canonical_entity_id": "entity:parity-node", "doc_id": "doc:rust-python-parity", "domain_id": null,
+        "embedding": [1.0, 0.0, 0.0], "id": "parity-node", "label": "Python node", "level_from_root": 0,
+        "mentions": [{"multimodal_spans": [], "spans": [{"collection_page_url": "https://example.test/source", "context_after": "", "context_before": "", "doc_id": "doc:rust-python-parity", "document_page_url": "https://example.test/source#span", "end_char": 13, "excerpt": "Node evidence", "insertion_method": "contract-test", "page_number": 1, "source_cluster_id": null, "start_char": 0, "verification": {"is_verified": false, "method": "heuristic", "notes": "no explicit verification from LLM", "score": null}}]}],
+        "metadata": {"graph_space": "facts", "kind": "node", "level_from_root": 0, "lifecycle_status": "active", "redirect_to_id": null, "workspace_id": "ws"},
+        "properties": {"attributes": ["unicode-雪", "nested-payload"]},
+        "summary": "A complete Pydantic node payload crosses the Rust persistence seam.", "type": "entity"
+      }
+    },
+    {
+      "kind": "edge",
+      "canonical_json": "{\"canonical_entity_id\":null,\"doc_id\":\"doc:rust-python-parity\",\"domain_id\":null,\"embedding\":[0.0,1.0,0.0],\"id\":\"parity-edge\",\"label\":\"supports\",\"level_from_root\":null,\"mentions\":[{\"multimodal_spans\":[],\"spans\":[{\"collection_page_url\":\"https://example.test/source\",\"context_after\":\"\",\"context_before\":\"\",\"doc_id\":\"doc:rust-python-parity\",\"document_page_url\":\"https://example.test/source#span\",\"end_char\":13,\"excerpt\":\"Edge evidence\",\"insertion_method\":\"contract-test\",\"page_number\":1,\"source_cluster_id\":null,\"start_char\":0,\"verification\":{\"is_verified\":false,\"method\":\"heuristic\",\"notes\":\"no explicit verification from LLM\",\"score\":null}}]}],\"metadata\":{\"graph_space\":\"facts\",\"kind\":\"edge\",\"lifecycle_status\":\"active\",\"redirect_to_id\":null,\"workspace_id\":\"ws\"},\"properties\":{\"confidence_label\":\"high\"},\"relation\":\"supports\",\"source_edge_ids\":[],\"source_ids\":[\"parity-node\"],\"summary\":\"The typed edge preserves both endpoint and source-span data.\",\"target_edge_ids\":[],\"target_ids\":[\"external:target\"],\"type\":\"relationship\"}",
+      "payload": {
+        "canonical_entity_id": null, "doc_id": "doc:rust-python-parity", "domain_id": null,
+        "embedding": [0.0, 1.0, 0.0], "id": "parity-edge", "label": "supports", "level_from_root": null,
+        "mentions": [{"multimodal_spans": [], "spans": [{"collection_page_url": "https://example.test/source", "context_after": "", "context_before": "", "doc_id": "doc:rust-python-parity", "document_page_url": "https://example.test/source#span", "end_char": 13, "excerpt": "Edge evidence", "insertion_method": "contract-test", "page_number": 1, "source_cluster_id": null, "start_char": 0, "verification": {"is_verified": false, "method": "heuristic", "notes": "no explicit verification from LLM", "score": null}}]}],
+        "metadata": {"graph_space": "facts", "kind": "edge", "lifecycle_status": "active", "redirect_to_id": null, "workspace_id": "ws"},
+        "properties": {"confidence_label": "high"}, "relation": "supports", "source_edge_ids": [],
+        "source_ids": ["parity-node"], "summary": "The typed edge preserves both endpoint and source-span data.",
+        "target_edge_ids": [], "target_ids": ["external:target"], "type": "relationship"
+      }
+    },
+    {
+      "kind": "edge_with_edge_endpoints",
+      "canonical_json": "{\"canonical_entity_id\":null,\"doc_id\":\"doc:rust-python-parity\",\"domain_id\":null,\"embedding\":[0.0,1.0,0.0],\"id\":\"parity-hyperedge\",\"label\":\"qualifies\",\"level_from_root\":null,\"mentions\":[{\"multimodal_spans\":[],\"spans\":[{\"collection_page_url\":\"https://example.test/source\",\"context_after\":\"\",\"context_before\":\"\",\"doc_id\":\"doc:rust-python-parity\",\"document_page_url\":\"https://example.test/source#span\",\"end_char\":13,\"excerpt\":\"Edge evidence\",\"insertion_method\":\"contract-test\",\"page_number\":1,\"source_cluster_id\":null,\"start_char\":0,\"verification\":{\"is_verified\":false,\"method\":\"heuristic\",\"notes\":\"no explicit verification from LLM\",\"score\":null}}]}],\"metadata\":{\"graph_space\":\"facts\",\"kind\":\"edge\",\"lifecycle_status\":\"active\",\"redirect_to_id\":null,\"workspace_id\":\"ws\"},\"properties\":{\"confidence_label\":\"high\"},\"relation\":\"qualifies\",\"source_edge_ids\":[\"parity-edge\"],\"source_ids\":[\"parity-node\"],\"summary\":\"An edge can relate to other edges through typed edge endpoint fields.\",\"target_edge_ids\":[\"parity-edge-target\"],\"target_ids\":[\"external:target\"],\"type\":\"relationship\"}",
+      "payload": {
+        "canonical_entity_id": null, "doc_id": "doc:rust-python-parity", "domain_id": null,
+        "embedding": [0.0, 1.0, 0.0], "id": "parity-hyperedge", "label": "qualifies", "level_from_root": null,
+        "mentions": [{"multimodal_spans": [], "spans": [{"collection_page_url": "https://example.test/source", "context_after": "", "context_before": "", "doc_id": "doc:rust-python-parity", "document_page_url": "https://example.test/source#span", "end_char": 13, "excerpt": "Edge evidence", "insertion_method": "contract-test", "page_number": 1, "source_cluster_id": null, "start_char": 0, "verification": {"is_verified": false, "method": "heuristic", "notes": "no explicit verification from LLM", "score": null}}]}],
+        "metadata": {"graph_space": "facts", "kind": "edge", "lifecycle_status": "active", "redirect_to_id": null, "workspace_id": "ws"},
+        "properties": {"confidence_label": "high"}, "relation": "qualifies", "source_edge_ids": ["parity-edge"],
+        "source_ids": ["parity-node"], "summary": "An edge can relate to other edges through typed edge endpoint fields.",
+        "target_edge_ids": ["parity-edge-target"], "target_ids": ["external:target"], "type": "relationship"
+      }
+    }
+  ]
+}

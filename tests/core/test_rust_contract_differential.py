@@ -8,15 +8,33 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from pydantic import BaseModel
 
 from kogwistar import shortids
+from kogwistar.acl.models import ACLEdge, ACLNode
+from kogwistar.conversation.models import ConversationEdge, ConversationNode
+from kogwistar._rust_bridge import RustParityError
 from kogwistar.engine_core.in_memory_backend import (
     _matches_where,
     _matches_where_python,
 )
+from kogwistar.engine_core.models import (
+    Edge,
+    FlattenedLLMEdge,
+    FlattenedLLMNode,
+    Grounding,
+    LLMEdge,
+    LLMNode,
+    PureChromaEdge,
+    PureChromaNode,
+    Node,
+    Span,
+    DocNode,
+)
 from kogwistar.id_provider import stable_id
 from kogwistar.provenance import evidence_pack_digest_hash
 from kogwistar.runtime.base_runtime import apply_state_update_inplace
+from kogwistar.runtime.models import WorkflowEdge, WorkflowNode
 from kogwistar.runtime.serialize import stable_json_dumps
 
 pytestmark = [pytest.mark.ci, pytest.mark.core]
@@ -29,6 +47,11 @@ FIXTURE = json.loads(
 )
 STATE_UPDATE_FIXTURE = json.loads(
     (ROOT / "contracts" / "golden" / "runtime-state-update-v1.json").read_text(
+        encoding="utf-8"
+    )
+)
+GRAPH_MODEL_FIXTURE = json.loads(
+    (ROOT / "contracts" / "golden" / "python-graph-model-payloads-v1.json").read_text(
         encoding="utf-8"
     )
 )
@@ -51,6 +74,213 @@ def test_canonical_json_matches_python_golden(monkeypatch, mode: str) -> None:
     monkeypatch.setenv("KOGWISTAR_IMPL_CONTRACTS", mode)
     for case in FIXTURE["canonical_json"]:
         assert stable_json_dumps(case["value"]) == case["expected"]
+
+
+@pytest.mark.requires_rust
+def test_python_node_edge_backend_payloads_round_trip_through_rust_json(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_CONTRACTS", "rust")
+
+    def evidence(text: str) -> Span:
+        return Span(
+            collection_page_url="https://example.test/source",
+            document_page_url="https://example.test/source#span",
+            doc_id="doc:rust-python-parity",
+            insertion_method="contract-test",
+            page_number=1,
+            start_char=0,
+            end_char=len(text),
+            excerpt=text,
+            context_before="",
+            context_after="",
+        )
+
+    node = Node(
+        id="parity-node",
+        label="Python node",
+        type="entity",
+        summary="A complete Pydantic node payload crosses the Rust persistence seam.",
+        doc_id="doc:rust-python-parity",
+        mentions=[Grounding(spans=[evidence("Node evidence")])],
+        metadata={"workspace_id": "ws", "graph_space": "facts", "kind": "node"},
+        embedding=[1.0, 0.0, 0.0],
+        level_from_root=0,
+        domain_id=None,
+        canonical_entity_id="entity:parity-node",
+        properties={"attributes": ["unicode-雪", "nested-payload"]},
+    )
+    edge = Edge(
+        id="parity-edge",
+        label="supports",
+        type="relationship",
+        summary="The typed edge preserves both endpoint and source-span data.",
+        doc_id="doc:rust-python-parity",
+        mentions=[Grounding(spans=[evidence("Edge evidence")])],
+        metadata={"workspace_id": "ws", "graph_space": "facts", "kind": "edge"},
+        embedding=[0.0, 1.0, 0.0],
+        domain_id=None,
+        canonical_entity_id=None,
+        properties={"confidence_label": "high"},
+        source_ids=[node.id],
+        target_ids=["external:target"],
+        relation="supports",
+        source_edge_ids=[],
+        target_edge_ids=[],
+    )
+    hyperedge = edge.model_copy(
+        update={
+            "id": "parity-hyperedge",
+            "label": "qualifies",
+            "summary": "An edge can relate to other edges through typed edge endpoint fields.",
+            "relation": "qualifies",
+            "source_edge_ids": ["parity-edge"],
+            "target_edge_ids": ["parity-edge-target"],
+        }
+    )
+
+    assert GRAPH_MODEL_FIXTURE["schema_version"] == 1
+    for model, kind, case in zip(
+        (node, edge, hyperedge),
+        ("node", "edge", "edge_with_edge_endpoints"),
+        GRAPH_MODEL_FIXTURE["cases"],
+        strict=True,
+    ):
+        payload = model.model_dump(field_mode="backend", dump_format="json")
+        wire_json = stable_json_dumps(payload)
+        assert case["kind"] == kind
+        assert payload == case["payload"]
+        assert wire_json == case["canonical_json"]
+        restored = type(model).model_validate(json.loads(wire_json))
+        assert restored.model_dump(field_mode="backend", dump_format="json") == payload
+
+
+@pytest.mark.requires_rust
+def test_python_family_payloads_validate_through_rust_graph_contract(monkeypatch) -> None:
+    """Derived Python payloads use the same typed family boundary as Rust."""
+
+    monkeypatch.setenv("KOGWISTAR_IMPL_CONTRACTS", "rust")
+    from kogwistar import _rust
+
+    base_node = copy.deepcopy(GRAPH_MODEL_FIXTURE["cases"][0]["payload"])
+
+    def envelope(model_class: str, payload: dict[str, Any]) -> str:
+        return json.dumps(
+            {"schema_version": 1, "model_class": model_class, "payload": payload},
+            ensure_ascii=False,
+        )
+
+    def project(
+        model_type: type[BaseModel],
+        payload: dict[str, Any],
+        *,
+        field_mode: str = "backend",
+    ) -> dict[str, Any]:
+        return model_type.model_validate(payload).model_dump(
+            field_mode=field_mode, dump_format="json"
+        )
+
+    workflow_node = copy.deepcopy(base_node)
+    workflow_node["metadata"] = {
+        "entity_type": "workflow_node",
+        "workflow_id": "wf:python-fixture",
+        "wf_op": "parse",
+    }
+    workflow_node = project(WorkflowNode, workflow_node)
+    _rust.validate_graph_model_family(envelope("workflow_node", workflow_node))
+
+    workflow_edge = copy.deepcopy(GRAPH_MODEL_FIXTURE["cases"][1]["payload"])
+    workflow_edge["metadata"] = {
+        "entity_type": "workflow_edge",
+        "workflow_id": "wf:python-fixture",
+        "wf_predicate": "ok",
+        "wf_priority": 1,
+    }
+    workflow_edge = project(WorkflowEdge, workflow_edge)
+    _rust.validate_graph_model_family(envelope("workflow_edge", workflow_edge))
+
+    conversation_node = copy.deepcopy(base_node)
+    conversation_node["metadata"] = {
+        "entity_type": "conversation_node",
+        "level_from_root": 0,
+        "role": "user",
+        "turn_index": 0,
+    }
+    conversation_node = project(ConversationNode, conversation_node)
+    _rust.validate_graph_model_family(envelope("conversation_node", conversation_node))
+
+    conversation_edge = copy.deepcopy(GRAPH_MODEL_FIXTURE["cases"][1]["payload"])
+    conversation_edge["metadata"] = {
+        "causal_type": "chain",
+        "char_distance_from_last_summary": 4,
+        "turn_distance_from_last_summary": 1,
+    }
+    conversation_edge = project(ConversationEdge, conversation_edge)
+    _rust.validate_graph_model_family(envelope("conversation_edge", conversation_edge))
+
+    llm_node = copy.deepcopy(base_node)
+    llm_node.pop("embedding")
+    llm_node = project(LLMNode, llm_node, field_mode="llm")
+    _rust.validate_graph_model_family(envelope("llm_node", llm_node))
+
+    llm_edge = copy.deepcopy(GRAPH_MODEL_FIXTURE["cases"][1]["payload"])
+    llm_edge.pop("embedding")
+    llm_edge = project(LLMEdge, llm_edge, field_mode="llm")
+    _rust.validate_graph_model_family(envelope("llm_edge", llm_edge))
+
+    pure_chroma_node = copy.deepcopy(base_node)
+    pure_chroma_node.pop("mentions")
+    pure_chroma_node = project(PureChromaNode, pure_chroma_node)
+    _rust.validate_graph_model_family(envelope("pure_chroma_node", pure_chroma_node))
+
+    flattened_edge = copy.deepcopy(GRAPH_MODEL_FIXTURE["cases"][1]["payload"])
+    flattened_edge.pop("embedding")
+    flattened_edge["mentions"] = [{"span_ids": ["sp:edge-1"]}]
+    flattened_edge = project(FlattenedLLMEdge, flattened_edge, field_mode="llm")
+    _rust.validate_graph_model_family(
+        envelope("flattened_llm_edge", flattened_edge)
+    )
+    _rust.validate_graph_model_family(
+        envelope("assoc_flattened_llm_edge", flattened_edge)
+    )
+
+    doc_node = {
+        "id": "doc-node:python",
+        "label": "Page 1",
+        "type": "page",
+        "summary": "A document page",
+        "doc_id": "document:python",
+        "mentions": base_node["mentions"],
+    }
+    doc_node = project(DocNode, doc_node)
+    _rust.validate_graph_model_family(envelope("doc_node", doc_node))
+
+    acl_node = copy.deepcopy(base_node)
+    acl_node["metadata"] = {
+        "entity_type": "acl_record",
+        "acl_truth_graph": "truth:python",
+        "acl_target_entity_id": "parity-node",
+        "acl_target_grain": "node",
+        "acl_version": 1,
+        "acl_mode": "private",
+    }
+    acl_node = project(ACLNode, acl_node)
+    _rust.validate_graph_model_family(envelope("acl_node", acl_node))
+
+    acl_edge = copy.deepcopy(GRAPH_MODEL_FIXTURE["cases"][1]["payload"])
+    acl_edge["metadata"] = {
+        "entity_type": "acl_targets_truth",
+        "acl_truth_graph": "truth:python",
+        "acl_target_entity_id": "parity-node",
+        "acl_target_grain": "node",
+        "level_from_root": 0,
+    }
+    acl_edge = project(ACLEdge, acl_edge)
+    _rust.validate_graph_model_family(envelope("acl_edge", acl_edge))
+
+    invalid_llm = copy.deepcopy(base_node)
+    with pytest.raises(Exception):
+        _rust.validate_graph_model_family(envelope("llm_node", invalid_llm))
 
 
 @pytest.mark.parametrize("mode", ["shadow", "rust"])
@@ -178,6 +408,39 @@ def test_short_ids_round_trip_ordering_and_non_json_fallback(
     assert type(raised.value) is ValueError
 
 
+@pytest.mark.parametrize("as_document", [False, True])
+def test_short_id_shadow_mismatch_rolls_back_entire_object_mapping(
+    monkeypatch, tmp_path, as_document: bool
+) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_CONTRACTS", "shadow")
+    mapper = shortids.ShortIdMapper("shadow-rollback", root_dir=str(tmp_path))
+    mapper.set_obj_max_depth(2)
+    mapper.set_id_keys(scalars=("id",), lists=("source_ids",))
+    original_state = copy.deepcopy(mapper.state)
+    rust_transform = shortids._rust_short_id_transform
+    calls = 0
+
+    def mismatch_second_alias(*, payload, python_value):
+        nonlocal calls
+        result = rust_transform(payload=payload, python_value=python_value)
+        calls += 1
+        if calls == 2:
+            return {**result, "value": "<sid>999"}
+        return result
+
+    monkeypatch.setattr(shortids, "_rust_short_id_transform", mismatch_second_alias)
+    with pytest.raises(RustParityError, match="parity mismatch"):
+        value = {"id": "node:one", "source_ids": ["edge:one"]}
+        if as_document:
+            mapper.l2s_doc(json.dumps(value))
+        else:
+            mapper.l2s_obj(value)
+
+    assert calls == 2
+    assert mapper.state == original_state
+    assert json.loads(mapper._file().read_text(encoding="utf-8")) == original_state
+
+
 @pytest.mark.parametrize("mode", ["shadow", "rust"])
 def test_runtime_state_reducer_parity_idempotency_and_invalid_inputs(monkeypatch, mode: str) -> None:
     monkeypatch.setenv("KOGWISTAR_IMPL_RUNTIME", mode)
@@ -281,6 +544,28 @@ def test_runtime_state_reducer_preserves_python_object_identity(
     assert state["assigned"] is assigned
     assert state["items"][0] is appended
     assert state["items"][1] is extended
+
+
+def test_runtime_state_reducer_parity_mismatch_does_not_mutate_caller_state(
+    monkeypatch,
+) -> None:
+    from kogwistar.runtime import base_runtime
+
+    state = {"items": ["seed"], "stable": {"value": 1}}
+    original = copy.deepcopy(state)
+    monkeypatch.setattr(base_runtime, "runtime_implementation_mode", lambda: "rust")
+    monkeypatch.setattr(
+        base_runtime,
+        "runtime_apply_state_update",
+        lambda *, payload: {"items": ["seed", "incorrect"], "stable": {"value": 1}},
+    )
+
+    with pytest.raises(RustParityError, match="parity mismatch"):
+        base_runtime.apply_state_update_inplace(
+            state, [("a", {"items": "expected"})]
+        )
+
+    assert state == original
 
 
 @pytest.mark.parametrize(

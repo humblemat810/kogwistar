@@ -1,0 +1,2307 @@
+//! Typed, additive view over Python graph-model payloads.
+//!
+//! `GraphModelEnvelope` carries the Python model class out-of-band. The tag is
+//! deliberately not inserted into the legacy graph payload: older persisted
+//! rows therefore remain byte-shape compatible, while Rust can distinguish
+//! base, ACL, conversation, extraction, and flattened models when the caller
+//! has authoritative type information. Nodes and edges both implement the
+//! shared graph-entity interface; edges extend its common fields with typed
+//! node and edge endpoint references.
+
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde_json::{Map, Value};
+use std::collections::BTreeMap;
+use thiserror::Error;
+
+pub const GRAPH_MODEL_ENVELOPE_VERSION: u16 = 1;
+pub const PYTHON_GRAPH_WIRE_VERSION: u16 = 1;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GraphEntityKind {
+    Node,
+    Edge,
+}
+
+/// Python graph model classes that can cross a typed Rust/Python seam.
+///
+/// This is envelope metadata, not a discriminator added to persisted JSON.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GraphModelClass {
+    Node,
+    Edge,
+    AclNode,
+    AclEdge,
+    ConversationNode,
+    ConversationEdge,
+    WorkflowNode,
+    WorkflowEdge,
+    PureChromaNode,
+    PureChromaEdge,
+    DocNode,
+    LlmNode,
+    LlmEdge,
+    LlmNodeExtraction,
+    LlmEdgeExtraction,
+    FlattenedLlmNode,
+    FlattenedLlmEdge,
+    AssocFlattenedLlmNode,
+    AssocFlattenedLlmEdge,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GraphModelFamily {
+    Persistent,
+    Acl,
+    Conversation,
+    Workflow,
+    PureChroma,
+    Document,
+    Llm,
+    FlattenedLlm,
+}
+
+impl GraphModelClass {
+    pub const fn family(self) -> GraphModelFamily {
+        match self {
+            Self::Node | Self::Edge => GraphModelFamily::Persistent,
+            Self::AclNode | Self::AclEdge => GraphModelFamily::Acl,
+            Self::ConversationNode | Self::ConversationEdge => GraphModelFamily::Conversation,
+            Self::WorkflowNode | Self::WorkflowEdge => GraphModelFamily::Workflow,
+            Self::PureChromaNode | Self::PureChromaEdge => GraphModelFamily::PureChroma,
+            Self::DocNode => GraphModelFamily::Document,
+            Self::LlmNode | Self::LlmEdge | Self::LlmNodeExtraction | Self::LlmEdgeExtraction => {
+                GraphModelFamily::Llm
+            }
+            Self::FlattenedLlmNode
+            | Self::FlattenedLlmEdge
+            | Self::AssocFlattenedLlmNode
+            | Self::AssocFlattenedLlmEdge => GraphModelFamily::FlattenedLlm,
+        }
+    }
+
+    pub const fn entity_kind(self) -> GraphEntityKind {
+        match self {
+            Self::Edge
+            | Self::AclEdge
+            | Self::ConversationEdge
+            | Self::WorkflowEdge
+            | Self::PureChromaEdge
+            | Self::LlmEdge
+            | Self::LlmEdgeExtraction
+            | Self::FlattenedLlmEdge
+            | Self::AssocFlattenedLlmEdge => GraphEntityKind::Edge,
+            Self::Node
+            | Self::AclNode
+            | Self::ConversationNode
+            | Self::WorkflowNode
+            | Self::PureChromaNode
+            | Self::DocNode
+            | Self::LlmNode
+            | Self::LlmNodeExtraction
+            | Self::FlattenedLlmNode
+            | Self::AssocFlattenedLlmNode => GraphEntityKind::Node,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct NodeId(pub String);
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct EdgeId(pub String);
+
+/// Stable wrapper used at language boundaries. `payload` is kept intact so a
+/// decode/inspect/re-encode cycle does not normalize or drop legacy fields.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct GraphModelEnvelope {
+    pub schema_version: u16,
+    pub model_class: GraphModelClass,
+    pub payload: Value,
+}
+
+impl GraphModelEnvelope {
+    pub fn new(model_class: GraphModelClass, payload: Value) -> Self {
+        Self {
+            schema_version: GRAPH_MODEL_ENVELOPE_VERSION,
+            model_class,
+            payload,
+        }
+    }
+
+    /// Decode to typed graph references without changing the original wire payload.
+    pub fn inspect(&self) -> Result<TypedGraphEntity, GraphModelError> {
+        if self.schema_version != GRAPH_MODEL_ENVELOPE_VERSION {
+            return Err(GraphModelError::UnsupportedVersion(self.schema_version));
+        }
+        match self.model_class.entity_kind() {
+            GraphEntityKind::Node => {
+                if has_edge_fields(&self.payload) {
+                    return Err(GraphModelError::InvalidEntityFields {
+                        model_class: self.model_class,
+                        reason: "node model payload contains edge-only fields",
+                    });
+                }
+                let payload: GraphNodePayload = serde_json::from_value(self.payload.clone())
+                    .map_err(|error| GraphModelError::InvalidPayload(error.to_string()))?;
+                payload.validate(self.model_class)?;
+                Ok(TypedGraphEntity::Node(payload))
+            }
+            GraphEntityKind::Edge => {
+                let payload: GraphEdgePayload = serde_json::from_value(self.payload.clone())
+                    .map_err(|error| GraphModelError::InvalidPayload(error.to_string()))?;
+                payload.validate(self.model_class)?;
+                Ok(TypedGraphEntity::Edge(payload))
+            }
+        }
+    }
+
+    /// Decode the strict persistent Node/Edge contract without changing the
+    /// original envelope payload. Other model families intentionally use
+    /// separate adapters because their required fields differ.
+    pub fn decode_persistent_v1(&self) -> Result<PersistentGraphEntityV1, GraphModelError> {
+        if self.schema_version != GRAPH_MODEL_ENVELOPE_VERSION {
+            return Err(GraphModelError::UnsupportedVersion(self.schema_version));
+        }
+        match self.model_class {
+            GraphModelClass::Node => serde_json::from_value(self.payload.clone())
+                .map(PersistentNodeV1::into_validated)
+                .map_err(|error| GraphModelError::InvalidPayload(error.to_string()))?,
+            GraphModelClass::Edge => {
+                for field in [
+                    "source_ids",
+                    "target_ids",
+                    "relation",
+                    "source_edge_ids",
+                    "target_edge_ids",
+                ] {
+                    require_wire_field(&self.payload, field)?;
+                }
+                serde_json::from_value(self.payload.clone())
+                    .map(PersistentEdgeV1::into_validated)
+                    .map_err(|error| GraphModelError::InvalidPayload(error.to_string()))?
+            }
+            model_class => Err(GraphModelError::StrictModelClassUnsupported { model_class }),
+        }
+    }
+
+    /// Validate the family-specific contract without changing the wire value.
+    ///
+    /// This deliberately remains separate from `inspect()` and
+    /// `decode_persistent_v1()`: callers that only need lossless forwarding can
+    /// keep using the permissive path, while typed seams can opt into the
+    /// stricter family rules.
+    pub fn validate_family_v1(&self) -> Result<(), GraphModelError> {
+        if self.schema_version != GRAPH_MODEL_ENVELOPE_VERSION {
+            return Err(GraphModelError::UnsupportedVersion(self.schema_version));
+        }
+        match self.model_class {
+            GraphModelClass::Node | GraphModelClass::Edge => {
+                self.decode_persistent_v1().map(|_| ())
+            }
+            GraphModelClass::WorkflowNode => {
+                let typed = self.decode_persistent_shape(GraphEntityKind::Node)?;
+                validate_workflow_node_metadata(&typed.core.metadata)
+            }
+            GraphModelClass::WorkflowEdge => {
+                let typed = self.decode_persistent_edge_shape()?;
+                validate_workflow_edge_metadata(&typed.core.metadata)
+            }
+            GraphModelClass::ConversationNode => {
+                let typed = self.decode_persistent_shape(GraphEntityKind::Node)?;
+                validate_conversation_node_metadata(&typed.core.metadata)
+            }
+            GraphModelClass::ConversationEdge => {
+                let typed = self.decode_persistent_edge_shape()?;
+                validate_conversation_edge_metadata(&typed.core.metadata)
+            }
+            GraphModelClass::LlmNode
+            | GraphModelClass::LlmNodeExtraction
+            | GraphModelClass::LlmEdge
+            | GraphModelClass::LlmEdgeExtraction
+            | GraphModelClass::FlattenedLlmNode
+            | GraphModelClass::FlattenedLlmEdge
+            | GraphModelClass::AssocFlattenedLlmNode
+            | GraphModelClass::AssocFlattenedLlmEdge => {
+                validate_llm_shape(self.model_class, &self.payload)
+            }
+            GraphModelClass::PureChromaNode | GraphModelClass::PureChromaEdge => {
+                validate_pure_chroma_shape(self.model_class, &self.payload)
+            }
+            GraphModelClass::DocNode => validate_document_node_shape(&self.payload),
+            GraphModelClass::AclNode | GraphModelClass::AclEdge => {
+                validate_acl_shape(self.model_class, &self.payload)
+            }
+        }
+    }
+
+    fn decode_persistent_shape(
+        &self,
+        kind: GraphEntityKind,
+    ) -> Result<PersistentNodeV1, GraphModelError> {
+        if kind != GraphEntityKind::Node || has_edge_fields(&self.payload) {
+            return Err(GraphModelError::InvalidEntityFields {
+                model_class: self.model_class,
+                reason: "family node payload contains edge-only fields",
+            });
+        }
+        let payload: PersistentNodeV1 = serde_json::from_value(self.payload.clone())
+            .map_err(|error| GraphModelError::InvalidPayload(error.to_string()))?;
+        payload.core.validate(self.model_class)?;
+        Ok(payload)
+    }
+
+    fn decode_persistent_edge_shape(&self) -> Result<PersistentEdgeV1, GraphModelError> {
+        for field in [
+            "source_ids",
+            "target_ids",
+            "relation",
+            "source_edge_ids",
+            "target_edge_ids",
+        ] {
+            require_wire_field(&self.payload, field)?;
+        }
+        let edge: PersistentEdgeV1 = serde_json::from_value(self.payload.clone())
+            .map_err(|error| GraphModelError::InvalidPayload(error.to_string()))?;
+        edge.core.validate(self.model_class)?;
+        Ok(edge)
+    }
+}
+
+/// Validate one JSON envelope at the language seam without exposing a Rust
+/// storage or runtime operation. This is used by differential tests and by
+/// optional native callers that already own the envelope class tag.
+pub fn validate_graph_model_family_from_str(payload_json: &str) -> Result<(), GraphModelError> {
+    let envelope: GraphModelEnvelope = serde_json::from_str(payload_json)
+        .map_err(|error| GraphModelError::InvalidPayload(error.to_string()))?;
+    envelope.validate_family_v1()
+}
+
+fn validate_metadata<T: for<'de> Deserialize<'de>>(
+    model_class: GraphModelClass,
+    metadata: &BTreeMap<String, Value>,
+) -> Result<T, GraphModelError> {
+    serde_json::from_value(Value::Object(metadata.clone().into_iter().collect())).map_err(|error| {
+        GraphModelError::InvalidPayload(format!("{model_class:?} metadata: {error}"))
+    })
+}
+
+fn validate_workflow_node_metadata(
+    metadata: &BTreeMap<String, Value>,
+) -> Result<(), GraphModelError> {
+    let value: WorkflowNodeMetadataV1 = validate_metadata(GraphModelClass::WorkflowNode, metadata)?;
+    if value.entity_type != "workflow_node"
+        || value.workflow_id.trim().is_empty()
+        || (!value.wf_terminal && value.wf_op.trim().is_empty())
+        || value
+            .wf_environment_id
+            .as_deref()
+            .is_some_and(|id| id.trim().is_empty() || id.trim() != id)
+    {
+        return Err(GraphModelError::InvalidEntityFields {
+            model_class: GraphModelClass::WorkflowNode,
+            reason: "invalid workflow node metadata",
+        });
+    }
+    Ok(())
+}
+
+fn validate_workflow_edge_metadata(
+    metadata: &BTreeMap<String, Value>,
+) -> Result<(), GraphModelError> {
+    let value: WorkflowEdgeMetadataV1 = validate_metadata(GraphModelClass::WorkflowEdge, metadata)?;
+    if value.entity_type != "workflow_edge"
+        || value.workflow_id.trim().is_empty()
+        || value.wf_priority < 0
+        || !matches!(value.wf_multiplicity.as_str(), "one" | "many")
+    {
+        return Err(GraphModelError::InvalidEntityFields {
+            model_class: GraphModelClass::WorkflowEdge,
+            reason: "invalid workflow edge metadata",
+        });
+    }
+    Ok(())
+}
+
+fn validate_conversation_node_metadata(
+    metadata: &BTreeMap<String, Value>,
+) -> Result<(), GraphModelError> {
+    let value: ConversationNodeMetadataV1 =
+        validate_metadata(GraphModelClass::ConversationNode, metadata)?;
+    let forbidden = [
+        "char_distance_from_last_summary",
+        "turn_distance_from_last_summary",
+        "prev_node_char_distance_from_last_summary",
+        "prev_node_distance_from_last_summary",
+        "prev_turn_meta_summary",
+    ];
+    if value.entity_type != "conversation_node"
+        || value.level_from_root < 0
+        || forbidden.iter().any(|key| metadata.contains_key(*key))
+    {
+        return Err(GraphModelError::InvalidEntityFields {
+            model_class: GraphModelClass::ConversationNode,
+            reason: "invalid conversation node metadata",
+        });
+    }
+    Ok(())
+}
+
+fn validate_conversation_edge_metadata(
+    metadata: &BTreeMap<String, Value>,
+) -> Result<(), GraphModelError> {
+    let value: ConversationEdgeMetadataV1 =
+        validate_metadata(GraphModelClass::ConversationEdge, metadata)?;
+    if value.char_distance_from_last_summary.is_some_and(|v| v < 0)
+        || value.turn_distance_from_last_summary.is_some_and(|v| v < 0)
+    {
+        return Err(GraphModelError::InvalidEntityFields {
+            model_class: GraphModelClass::ConversationEdge,
+            reason: "conversation edge distances must not be negative",
+        });
+    }
+    Ok(())
+}
+
+fn validate_llm_shape(
+    model_class: GraphModelClass,
+    payload: &Value,
+) -> Result<(), GraphModelError> {
+    if payload.get("embedding").is_some() {
+        return Err(GraphModelError::InvalidEntityFields {
+            model_class,
+            reason: "LLM graph payload must not contain an embedding",
+        });
+    }
+    if matches!(
+        model_class,
+        GraphModelClass::FlattenedLlmNode
+            | GraphModelClass::FlattenedLlmEdge
+            | GraphModelClass::AssocFlattenedLlmNode
+            | GraphModelClass::AssocFlattenedLlmEdge
+    ) {
+        return validate_flattened_llm_shape(model_class, payload);
+    }
+    if model_class.entity_kind() == GraphEntityKind::Edge {
+        let edge: LlmEdgeV1 = serde_json::from_value(payload.clone())
+            .map_err(|error| GraphModelError::InvalidPayload(error.to_string()))?;
+        validate_llm_groundings(model_class, &edge.mentions, payload)
+    } else {
+        let node: LlmNodeV1 = serde_json::from_value(payload.clone())
+            .map_err(|error| GraphModelError::InvalidPayload(error.to_string()))?;
+        validate_llm_groundings(model_class, &node.mentions, payload)
+    }
+}
+
+fn validate_llm_groundings(
+    model_class: GraphModelClass,
+    mentions: &[LlmGroundingV1],
+    payload: &Value,
+) -> Result<(), GraphModelError> {
+    if mentions.is_empty() {
+        return Err(GraphModelError::InvalidEntityFields {
+            model_class,
+            reason: "LLM graph payload requires mentions",
+        });
+    }
+    for grounding in mentions {
+        grounding.validate(model_class)?;
+        if matches!(
+            model_class,
+            GraphModelClass::LlmNodeExtraction | GraphModelClass::LlmEdgeExtraction
+        ) && grounding.spans.iter().any(|span| span.excerpt.is_empty())
+        {
+            return Err(GraphModelError::InvalidEntityFields {
+                model_class,
+                reason: "LLM extraction spans require excerpts",
+            });
+        }
+    }
+    for id_field in ["id", "local_id"] {
+        if payload
+            .get(id_field)
+            .is_some_and(|value| value.is_string() && value.as_str().unwrap_or("").is_empty())
+        {
+            return Err(GraphModelError::InvalidEntityFields {
+                model_class,
+                reason: "LLM IDs must not be empty",
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_flattened_llm_shape(
+    model_class: GraphModelClass,
+    payload: &Value,
+) -> Result<(), GraphModelError> {
+    if model_class.entity_kind() == GraphEntityKind::Edge {
+        let edge: FlattenedLlmEdgeV1 = serde_json::from_value(payload.clone())
+            .map_err(|error| GraphModelError::InvalidPayload(error.to_string()))?;
+        if edge.mentions.is_empty() {
+            return Err(GraphModelError::InvalidEntityFields {
+                model_class,
+                reason: "flattened LLM payload requires mentions",
+            });
+        }
+        for grounding in &edge.mentions {
+            grounding.validate(model_class)?;
+        }
+    } else {
+        let node: FlattenedLlmNodeV1 = serde_json::from_value(payload.clone())
+            .map_err(|error| GraphModelError::InvalidPayload(error.to_string()))?;
+        if node.mentions.is_empty() {
+            return Err(GraphModelError::InvalidEntityFields {
+                model_class,
+                reason: "flattened LLM payload requires mentions",
+            });
+        }
+        for grounding in &node.mentions {
+            grounding.validate(model_class)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_pure_chroma_shape(
+    model_class: GraphModelClass,
+    payload: &Value,
+) -> Result<(), GraphModelError> {
+    if payload.get("mentions").is_some() {
+        return Err(GraphModelError::InvalidEntityFields {
+            model_class,
+            reason: "PureChroma graph payload must not contain grounding",
+        });
+    }
+    if model_class.entity_kind() == GraphEntityKind::Edge {
+        let edge: PureChromaEdgeV1 = serde_json::from_value(payload.clone())
+            .map_err(|error| GraphModelError::InvalidPayload(error.to_string()))?;
+        if edge.fields.label.trim().is_empty() || edge.fields.summary.trim().is_empty() {
+            return Err(GraphModelError::InvalidEntityFields {
+                model_class,
+                reason: "PureChroma label and summary must not be empty",
+            });
+        }
+        Ok(())
+    } else {
+        let node: PureChromaNodeV1 = serde_json::from_value(payload.clone())
+            .map_err(|error| GraphModelError::InvalidPayload(error.to_string()))?;
+        if node.fields.label.trim().is_empty() || node.fields.summary.trim().is_empty() {
+            return Err(GraphModelError::InvalidEntityFields {
+                model_class,
+                reason: "PureChroma label and summary must not be empty",
+            });
+        }
+        Ok(())
+    }
+}
+
+fn validate_document_node_shape(payload: &Value) -> Result<(), GraphModelError> {
+    let node: DocumentNodeV1 = serde_json::from_value(payload.clone())
+        .map_err(|error| GraphModelError::InvalidPayload(format!("DocNode: {error}")))?;
+    if node.doc_id.trim().is_empty() || node.mentions.is_empty() {
+        return Err(GraphModelError::InvalidEntityFields {
+            model_class: GraphModelClass::DocNode,
+            reason: "DocNode requires a non-empty doc_id and grounding",
+        });
+    }
+    for grounding in &node.mentions {
+        grounding.validate(GraphModelClass::DocNode)?;
+    }
+    Ok(())
+}
+
+fn validate_acl_shape(
+    model_class: GraphModelClass,
+    payload: &Value,
+) -> Result<(), GraphModelError> {
+    let metadata = payload
+        .get("metadata")
+        .cloned()
+        .ok_or_else(|| GraphModelError::InvalidPayload("ACL metadata is required".to_owned()))?;
+    if model_class == GraphModelClass::AclNode {
+        let value: AclNodeMetadataV1 = serde_json::from_value(metadata).map_err(|error| {
+            GraphModelError::InvalidPayload(format!("ACL node metadata: {error}"))
+        })?;
+        if value.entity_type != "acl_record"
+            || value.acl_truth_graph.trim().is_empty()
+            || value.acl_target_entity_id.trim().is_empty()
+            || value.acl_version == 0
+            || value.level_from_root < 0
+        {
+            return Err(GraphModelError::InvalidEntityFields {
+                model_class,
+                reason: "invalid ACL node metadata",
+            });
+        }
+    } else {
+        let value: AclEdgeMetadataV1 = serde_json::from_value(metadata).map_err(|error| {
+            GraphModelError::InvalidPayload(format!("ACL edge metadata: {error}"))
+        })?;
+        if value.acl_truth_graph.trim().is_empty()
+            || value.acl_target_entity_id.trim().is_empty()
+            || value.level_from_root < 0
+        {
+            return Err(GraphModelError::InvalidEntityFields {
+                model_class,
+                reason: "invalid ACL edge metadata",
+            });
+        }
+    }
+    Ok(())
+}
+
+fn require_wire_field(payload: &Value, field: &str) -> Result<(), GraphModelError> {
+    if payload
+        .as_object()
+        .is_none_or(|object| !object.contains_key(field))
+    {
+        return Err(GraphModelError::InvalidPayload(format!(
+            "missing required wire field {field}"
+        )));
+    }
+    Ok(())
+}
+
+fn has_edge_fields(payload: &Value) -> bool {
+    [
+        "source_ids",
+        "target_ids",
+        "relation",
+        "source_edge_ids",
+        "target_edge_ids",
+    ]
+    .iter()
+    .any(|field| payload.get(field).is_some())
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
+pub struct GraphEntityPayload {
+    #[serde(default)]
+    pub id: Option<String>,
+    #[serde(default)]
+    pub local_id: Option<String>,
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(rename = "type", default)]
+    pub entity_type: Option<String>,
+    #[serde(default)]
+    pub summary: Option<String>,
+    #[serde(default)]
+    pub domain_id: Option<String>,
+    #[serde(default)]
+    pub canonical_entity_id: Option<String>,
+    #[serde(default)]
+    pub properties: Option<Value>,
+    #[serde(default)]
+    pub mentions: Option<Value>,
+    #[serde(default)]
+    pub doc_id: Option<String>,
+    #[serde(default)]
+    pub embedding: Option<Vec<f64>>,
+    #[serde(default)]
+    pub metadata: Option<Map<String, Value>>,
+    #[serde(default)]
+    pub level_from_root: Option<i64>,
+    #[serde(default)]
+    pub role: Option<Value>,
+    #[serde(default)]
+    pub turn_index: Option<Value>,
+    #[serde(default)]
+    pub conversation_id: Option<Value>,
+    #[serde(default)]
+    pub user_id: Option<Value>,
+    #[serde(flatten)]
+    pub extension_fields: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
+pub struct GraphNodePayload {
+    #[serde(flatten)]
+    pub common: GraphEntityPayload,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
+pub struct GraphEdgePayload {
+    #[serde(flatten)]
+    pub common: GraphEntityPayload,
+    #[serde(default)]
+    pub source_ids: Option<Vec<NodeId>>,
+    #[serde(default)]
+    pub target_ids: Option<Vec<NodeId>>,
+    #[serde(default)]
+    pub relation: Option<String>,
+    #[serde(default)]
+    pub source_edge_ids: Option<Vec<EdgeId>>,
+    #[serde(default)]
+    pub target_edge_ids: Option<Vec<EdgeId>>,
+}
+
+/// A field which is required to be present on the wire, but may contain JSON
+/// null. `Option<T>` alone cannot express that distinction in a Rust struct.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RequiredNullable<T> {
+    Null,
+    Value(T),
+}
+
+impl<T> RequiredNullable<T> {
+    pub const fn is_null(&self) -> bool {
+        matches!(self, Self::Null)
+    }
+
+    pub const fn as_option(&self) -> Option<&T> {
+        match self {
+            Self::Null => None,
+            Self::Value(value) => Some(value),
+        }
+    }
+}
+
+impl<T> Serialize for RequiredNullable<T>
+where
+    T: Serialize,
+{
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self {
+            Self::Null => serializer.serialize_none(),
+            Self::Value(value) => value.serialize(serializer),
+        }
+    }
+}
+
+impl<'de, T> Deserialize<'de> for RequiredNullable<T>
+where
+    T: Deserialize<'de>,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Option::<T>::deserialize(deserializer).map(|value| value.map_or(Self::Null, Self::Value))
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GraphEntityType {
+    Entity,
+    Relationship,
+    ReferencePointer,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LifecycleStatus {
+    Active,
+    Tombstoned,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MentionVerificationMethod {
+    Llm,
+    Levenshtein,
+    Regex,
+    Heuristic,
+    Human,
+    Ensemble,
+    System,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct MentionVerificationV1 {
+    pub method: MentionVerificationMethod,
+    pub is_verified: bool,
+    #[serde(default)]
+    pub score: Option<f64>,
+    #[serde(default)]
+    pub notes: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TextSpanV1 {
+    pub collection_page_url: String,
+    pub document_page_url: String,
+    pub doc_id: String,
+    pub insertion_method: String,
+    #[serde(default = "default_page_number")]
+    pub page_number: u32,
+    pub start_char: u64,
+    pub end_char: u64,
+    #[serde(default)]
+    pub excerpt: String,
+    #[serde(default)]
+    pub context_before: String,
+    #[serde(default)]
+    pub context_after: String,
+    #[serde(default)]
+    pub chunk_id: Option<String>,
+    #[serde(default)]
+    pub source_cluster_id: Option<String>,
+    #[serde(default)]
+    pub verification: Option<MentionVerificationV1>,
+}
+
+/// LLM prompt evidence is intentionally leaner than persistent evidence:
+/// backend insertion provenance is not part of the LLM projection.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LlmTextSpanV1 {
+    pub collection_page_url: String,
+    pub document_page_url: String,
+    pub doc_id: String,
+    #[serde(default = "default_page_number")]
+    pub page_number: u32,
+    pub start_char: u64,
+    pub end_char: u64,
+    #[serde(default)]
+    pub excerpt: String,
+    #[serde(default)]
+    pub context_before: String,
+    #[serde(default)]
+    pub context_after: String,
+    #[serde(default)]
+    pub chunk_id: Option<String>,
+    #[serde(default)]
+    pub source_cluster_id: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LlmGroundingV1 {
+    #[serde(default)]
+    pub spans: Vec<LlmTextSpanV1>,
+    #[serde(default)]
+    pub multimodal_spans: Vec<Value>,
+}
+
+impl LlmGroundingV1 {
+    fn validate(&self, model_class: GraphModelClass) -> Result<(), GraphModelError> {
+        if self.spans.is_empty() && self.multimodal_spans.is_empty() {
+            return Err(GraphModelError::InvalidEntityFields {
+                model_class,
+                reason: "LLM grounding requires text or multimodal evidence",
+            });
+        }
+        for span in &self.spans {
+            if span.end_char <= span.start_char || span.page_number == 0 {
+                return Err(GraphModelError::InvalidEntityFields {
+                    model_class,
+                    reason: "LLM span bounds or page number are invalid",
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
+fn default_page_number() -> u32 {
+    1
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct GroundingV1 {
+    #[serde(default)]
+    pub spans: Vec<TextSpanV1>,
+    /// Multimodal span schemas have independent versioning. Preserve them as
+    /// typed-container members until their dedicated Rust contract is added.
+    #[serde(default)]
+    pub multimodal_spans: Vec<Value>,
+}
+
+impl GroundingV1 {
+    fn validate(&self, model_class: GraphModelClass) -> Result<(), GraphModelError> {
+        if self.spans.is_empty() && self.multimodal_spans.is_empty() {
+            return Err(GraphModelError::InvalidEntityFields {
+                model_class,
+                reason: "grounding requires text or multimodal evidence",
+            });
+        }
+        for span in &self.spans {
+            if span.end_char <= span.start_char {
+                return Err(GraphModelError::InvalidEntityFields {
+                    model_class,
+                    reason: "span end_char must be greater than start_char",
+                });
+            }
+            if span.page_number == 0 {
+                return Err(GraphModelError::InvalidEntityFields {
+                    model_class,
+                    reason: "span page_number must be positive",
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct GraphEntityCoreV1 {
+    #[serde(default)]
+    pub id: Option<String>,
+    #[serde(default)]
+    pub local_id: Option<String>,
+    pub label: String,
+    #[serde(rename = "type")]
+    pub entity_type: GraphEntityType,
+    pub summary: String,
+    #[serde(default)]
+    pub domain_id: Option<String>,
+    #[serde(default)]
+    pub canonical_entity_id: Option<String>,
+    #[serde(default)]
+    pub properties: Option<Value>,
+    pub mentions: Vec<GroundingV1>,
+    #[serde(default)]
+    pub doc_id: Option<String>,
+    #[serde(default)]
+    pub embedding: Option<Vec<f64>>,
+    #[serde(default)]
+    pub metadata: BTreeMap<String, Value>,
+    #[serde(default)]
+    pub level_from_root: Option<i64>,
+    #[serde(flatten)]
+    pub extension_fields: BTreeMap<String, Value>,
+}
+
+impl GraphEntityCoreV1 {
+    fn validate(&self, model_class: GraphModelClass) -> Result<(), GraphModelError> {
+        for id in [&self.id, &self.local_id] {
+            if id.as_deref().is_some_and(str::is_empty) {
+                return Err(GraphModelError::InvalidEntityFields {
+                    model_class,
+                    reason: "entity IDs must not be empty",
+                });
+            }
+        }
+        if self.mentions.is_empty() {
+            return Err(GraphModelError::InvalidEntityFields {
+                model_class,
+                reason: "persistent entity requires at least one grounding",
+            });
+        }
+        for grounding in &self.mentions {
+            grounding.validate(model_class)?;
+        }
+        if self.level_from_root.is_some_and(|level| level < 0) {
+            return Err(GraphModelError::InvalidEntityFields {
+                model_class,
+                reason: "level_from_root must not be negative",
+            });
+        }
+        if let Some(status) = self.metadata.get("lifecycle_status") {
+            if !matches!(status.as_str(), Some("active" | "tombstoned")) {
+                return Err(GraphModelError::InvalidEntityFields {
+                    model_class,
+                    reason: "lifecycle_status must be active or tombstoned",
+                });
+            }
+        }
+        if let Some(redirect) = self.metadata.get("redirect_to_id")
+            && !redirect.is_null()
+            && redirect.as_str().is_none()
+        {
+            return Err(GraphModelError::InvalidEntityFields {
+                model_class,
+                reason: "redirect_to_id must be a string or null",
+            });
+        }
+        Ok(())
+    }
+
+    fn effective_level(&self) -> Option<i64> {
+        self.level_from_root
+            .or_else(|| self.metadata.get("level_from_root").and_then(Value::as_i64))
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PersistentNodeV1 {
+    #[serde(flatten)]
+    pub core: GraphEntityCoreV1,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PersistentEdgeV1 {
+    #[serde(flatten)]
+    pub core: GraphEntityCoreV1,
+    pub source_ids: Vec<NodeId>,
+    pub target_ids: Vec<NodeId>,
+    pub relation: String,
+    pub source_edge_ids: RequiredNullable<Vec<EdgeId>>,
+    pub target_edge_ids: RequiredNullable<Vec<EdgeId>>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum PersistentGraphEntityV1 {
+    Node(PersistentNodeV1),
+    Edge(PersistentEdgeV1),
+}
+
+/// Typed metadata contracts for graph families whose Python models extend the
+/// persistent Node/Edge shape. These are validation views only; they are not
+/// serialized into the legacy payload or used by storage.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct WorkflowNodeMetadataV1 {
+    #[serde(default = "workflow_node_entity_type")]
+    pub entity_type: String,
+    pub workflow_id: String,
+    #[serde(default = "workflow_noop")]
+    pub wf_op: String,
+    #[serde(default = "workflow_v1")]
+    pub wf_version: String,
+    #[serde(default)]
+    pub wf_environment_id: Option<String>,
+    #[serde(default)]
+    pub wf_start: bool,
+    #[serde(default)]
+    pub wf_terminal: bool,
+    #[serde(default)]
+    pub wf_fanout: bool,
+    #[serde(default)]
+    pub wf_join: bool,
+}
+
+fn workflow_node_entity_type() -> String {
+    "workflow_node".to_owned()
+}
+
+fn workflow_edge_entity_type() -> String {
+    "workflow_edge".to_owned()
+}
+
+fn workflow_noop() -> String {
+    "noop".to_owned()
+}
+
+fn workflow_v1() -> String {
+    "v1".to_owned()
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct WorkflowEdgeMetadataV1 {
+    #[serde(default = "workflow_edge_entity_type")]
+    pub entity_type: String,
+    pub workflow_id: String,
+    #[serde(default)]
+    pub wf_predicate: Option<String>,
+    #[serde(default = "workflow_default_priority")]
+    pub wf_priority: i64,
+    #[serde(default)]
+    pub wf_is_default: bool,
+    #[serde(default = "workflow_one")]
+    pub wf_multiplicity: String,
+}
+
+fn workflow_default_priority() -> i64 {
+    100
+}
+
+fn workflow_one() -> String {
+    "one".to_owned()
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConversationRoleV1 {
+    User,
+    Assistant,
+    System,
+    Tool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ConversationNodeMetadataV1 {
+    #[serde(default = "conversation_node_entity_type")]
+    pub entity_type: String,
+    pub level_from_root: i64,
+    #[serde(default)]
+    pub role: Option<ConversationRoleV1>,
+    #[serde(default)]
+    pub turn_index: Option<i64>,
+    #[serde(default)]
+    pub conversation_id: Option<String>,
+    #[serde(default)]
+    pub user_id: Option<String>,
+}
+
+fn conversation_node_entity_type() -> String {
+    "conversation_node".to_owned()
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConversationCausalTypeV1 {
+    Chain,
+    Dependency,
+    Reuse,
+    Annotation,
+    Summary,
+    Reference,
+    Internal,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ConversationEdgeMetadataV1 {
+    #[serde(default)]
+    pub causal_type: Option<ConversationCausalTypeV1>,
+    #[serde(default)]
+    pub char_distance_from_last_summary: Option<i64>,
+    #[serde(default)]
+    pub turn_distance_from_last_summary: Option<i64>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DocumentNodeTypeV1 {
+    Page,
+    Chunk,
+    Summary,
+}
+
+/// Common LLM-facing fields. Unlike the persistent core, this deliberately
+/// has no embedding and does not carry storage-only lifecycle or hierarchy
+/// fields.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LlmEntityFieldsV1 {
+    #[serde(default)]
+    pub id: Option<String>,
+    #[serde(default)]
+    pub local_id: Option<String>,
+    pub label: String,
+    #[serde(rename = "type")]
+    pub entity_type: GraphEntityType,
+    pub summary: String,
+    #[serde(default)]
+    pub domain_id: Option<String>,
+    #[serde(default)]
+    pub canonical_entity_id: Option<String>,
+    #[serde(default)]
+    pub properties: Option<Value>,
+    #[serde(default)]
+    pub doc_id: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LlmNodeV1 {
+    #[serde(flatten)]
+    pub fields: LlmEntityFieldsV1,
+    pub mentions: Vec<LlmGroundingV1>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LlmEdgeV1 {
+    #[serde(flatten)]
+    pub fields: LlmEntityFieldsV1,
+    pub source_ids: Vec<NodeId>,
+    pub target_ids: Vec<NodeId>,
+    pub relation: String,
+    pub source_edge_ids: RequiredNullable<Vec<EdgeId>>,
+    pub target_edge_ids: RequiredNullable<Vec<EdgeId>>,
+    pub mentions: Vec<LlmGroundingV1>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FlattenedGroundingV1 {
+    #[serde(default)]
+    pub span_ids: Vec<String>,
+    #[serde(default)]
+    pub multimodal_span_ids: Vec<String>,
+}
+
+impl FlattenedGroundingV1 {
+    fn validate(&self, model_class: GraphModelClass) -> Result<(), GraphModelError> {
+        if self.span_ids.is_empty() && self.multimodal_span_ids.is_empty() {
+            return Err(GraphModelError::InvalidEntityFields {
+                model_class,
+                reason: "flattened grounding requires at least one span ID",
+            });
+        }
+        if self
+            .span_ids
+            .iter()
+            .chain(self.multimodal_span_ids.iter())
+            .any(|id| id.trim().is_empty())
+        {
+            return Err(GraphModelError::InvalidEntityFields {
+                model_class,
+                reason: "flattened grounding IDs must not be empty",
+            });
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FlattenedLlmNodeV1 {
+    #[serde(flatten)]
+    pub fields: LlmEntityFieldsV1,
+    pub mentions: Vec<FlattenedGroundingV1>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FlattenedLlmEdgeV1 {
+    #[serde(flatten)]
+    pub fields: LlmEntityFieldsV1,
+    pub source_ids: Vec<NodeId>,
+    pub target_ids: Vec<NodeId>,
+    pub relation: String,
+    pub source_edge_ids: RequiredNullable<Vec<EdgeId>>,
+    pub target_edge_ids: RequiredNullable<Vec<EdgeId>>,
+    pub mentions: Vec<FlattenedGroundingV1>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PureChromaFieldsV1 {
+    #[serde(default)]
+    pub id: Option<String>,
+    pub label: String,
+    #[serde(rename = "type")]
+    pub entity_type: GraphEntityType,
+    pub summary: String,
+    #[serde(default)]
+    pub doc_id: Option<String>,
+    #[serde(default)]
+    pub embedding: Option<Vec<f64>>,
+    #[serde(default)]
+    pub metadata: BTreeMap<String, Value>,
+    #[serde(default)]
+    pub properties: Option<Value>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PureChromaNodeV1 {
+    #[serde(flatten)]
+    pub fields: PureChromaFieldsV1,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PureChromaEdgeV1 {
+    #[serde(flatten)]
+    pub fields: PureChromaFieldsV1,
+    pub source_ids: Vec<NodeId>,
+    pub target_ids: Vec<NodeId>,
+    pub relation: String,
+    pub source_edge_ids: RequiredNullable<Vec<EdgeId>>,
+    pub target_edge_ids: RequiredNullable<Vec<EdgeId>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DocumentNodeV1 {
+    #[serde(default)]
+    pub id: Option<String>,
+    pub label: String,
+    #[serde(rename = "type")]
+    pub node_type: DocumentNodeTypeV1,
+    pub summary: String,
+    pub doc_id: String,
+    pub mentions: Vec<GroundingV1>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AclNodeMetadataV1 {
+    pub entity_type: String,
+    pub acl_truth_graph: String,
+    pub acl_target_entity_id: String,
+    pub acl_target_grain: AclGrainV1,
+    #[serde(default)]
+    pub acl_target_item_id: String,
+    pub acl_version: u64,
+    pub acl_mode: AclModeV1,
+    #[serde(default)]
+    pub created_by: Option<String>,
+    #[serde(default)]
+    pub owner_id: Option<String>,
+    #[serde(default)]
+    pub security_scope: Option<String>,
+    #[serde(default)]
+    pub tombstoned: bool,
+    #[serde(default)]
+    pub supersedes_version: Option<u64>,
+    #[serde(default)]
+    pub level_from_root: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AclEdgeMetadataV1 {
+    pub entity_type: AclEdgeTypeV1,
+    pub acl_truth_graph: String,
+    pub acl_target_entity_id: String,
+    pub acl_target_grain: AclGrainV1,
+    #[serde(default)]
+    pub acl_target_item_id: String,
+    #[serde(default)]
+    pub level_from_root: i64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AclGrainV1 {
+    Document,
+    Grounding,
+    Span,
+    Node,
+    Edge,
+    Artifact,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AclModeV1 {
+    Private,
+    Shared,
+    Scope,
+    Group,
+    Public,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AclEdgeTypeV1 {
+    AclSupersedes,
+    AclTargetsTruth,
+    AclCoversUsage,
+}
+
+impl PersistentNodeV1 {
+    fn into_validated(self) -> Result<PersistentGraphEntityV1, GraphModelError> {
+        self.core.validate(GraphModelClass::Node)?;
+        Ok(PersistentGraphEntityV1::Node(self))
+    }
+}
+
+impl PersistentEdgeV1 {
+    fn into_validated(self) -> Result<PersistentGraphEntityV1, GraphModelError> {
+        self.core.validate(GraphModelClass::Edge)?;
+        if self
+            .source_ids
+            .iter()
+            .chain(self.target_ids.iter())
+            .any(|id| id.0.is_empty())
+        {
+            return Err(GraphModelError::InvalidEntityFields {
+                model_class: GraphModelClass::Edge,
+                reason: "node endpoint IDs must not be empty",
+            });
+        }
+        if self
+            .source_edge_ids
+            .as_option()
+            .into_iter()
+            .chain(self.target_edge_ids.as_option())
+            .flatten()
+            .any(|id| id.0.is_empty())
+        {
+            return Err(GraphModelError::InvalidEntityFields {
+                model_class: GraphModelClass::Edge,
+                reason: "edge endpoint IDs must not be empty",
+            });
+        }
+        Ok(PersistentGraphEntityV1::Edge(self))
+    }
+}
+
+/// Permissive, loss-preserving inspection view for legacy payloads. Use
+/// `PersistentGraphEntityV1` when semantic validation is required.
+#[derive(Clone, Debug, PartialEq)]
+pub enum TypedGraphEntity {
+    Node(GraphNodePayload),
+    Edge(GraphEdgePayload),
+}
+
+/// Shared structural accessors corresponding to Python's `NodeLike`.
+/// `GraphEntity` intentionally does not require a concrete storage layout.
+pub trait GraphEntity {
+    fn graph_entity_kind(&self) -> GraphEntityKind;
+    fn graph_entity_id(&self) -> Option<&str>;
+    fn graph_entity_label(&self) -> Option<&str>;
+    fn graph_entity_summary(&self) -> Option<&str>;
+}
+
+/// Edge-specific incidence behavior corresponding to Python's
+/// `EdgeLike(NodeLike)`. It is a capability extension, not node containment.
+pub trait EdgeEntity: GraphEntity {
+    fn source_node_ids(&self) -> Option<&[NodeId]>;
+    fn target_node_ids(&self) -> Option<&[NodeId]>;
+    fn relation(&self) -> Option<&str>;
+    fn source_edge_ids(&self) -> Option<&[EdgeId]>;
+    fn target_edge_ids(&self) -> Option<&[EdgeId]>;
+}
+
+pub trait HasMetadata {
+    fn metadata(&self) -> &BTreeMap<String, Value>;
+}
+
+pub trait HasLifecycle: HasMetadata {
+    fn lifecycle_status(&self) -> LifecycleStatus {
+        match self
+            .metadata()
+            .get("lifecycle_status")
+            .and_then(Value::as_str)
+        {
+            Some("tombstoned") => LifecycleStatus::Tombstoned,
+            _ => LifecycleStatus::Active,
+        }
+    }
+}
+
+pub trait HasLevel: HasMetadata {
+    fn level_from_root(&self) -> Option<i64>;
+}
+
+impl GraphEntity for GraphNodePayload {
+    fn graph_entity_kind(&self) -> GraphEntityKind {
+        GraphEntityKind::Node
+    }
+
+    fn graph_entity_id(&self) -> Option<&str> {
+        self.common.id.as_deref()
+    }
+
+    fn graph_entity_label(&self) -> Option<&str> {
+        self.common.label.as_deref()
+    }
+
+    fn graph_entity_summary(&self) -> Option<&str> {
+        self.common.summary.as_deref()
+    }
+}
+
+impl GraphEntity for GraphEdgePayload {
+    fn graph_entity_kind(&self) -> GraphEntityKind {
+        GraphEntityKind::Edge
+    }
+
+    fn graph_entity_id(&self) -> Option<&str> {
+        self.common.id.as_deref()
+    }
+
+    fn graph_entity_label(&self) -> Option<&str> {
+        self.common.label.as_deref()
+    }
+
+    fn graph_entity_summary(&self) -> Option<&str> {
+        self.common.summary.as_deref()
+    }
+}
+
+impl EdgeEntity for GraphEdgePayload {
+    fn source_node_ids(&self) -> Option<&[NodeId]> {
+        self.source_ids.as_deref()
+    }
+
+    fn target_node_ids(&self) -> Option<&[NodeId]> {
+        self.target_ids.as_deref()
+    }
+
+    fn relation(&self) -> Option<&str> {
+        self.relation.as_deref()
+    }
+
+    fn source_edge_ids(&self) -> Option<&[EdgeId]> {
+        self.source_edge_ids.as_deref()
+    }
+
+    fn target_edge_ids(&self) -> Option<&[EdgeId]> {
+        self.target_edge_ids.as_deref()
+    }
+}
+
+impl GraphEntity for PersistentNodeV1 {
+    fn graph_entity_kind(&self) -> GraphEntityKind {
+        GraphEntityKind::Node
+    }
+
+    fn graph_entity_id(&self) -> Option<&str> {
+        self.core.id.as_deref()
+    }
+
+    fn graph_entity_label(&self) -> Option<&str> {
+        Some(&self.core.label)
+    }
+
+    fn graph_entity_summary(&self) -> Option<&str> {
+        Some(&self.core.summary)
+    }
+}
+
+impl GraphEntity for PersistentEdgeV1 {
+    fn graph_entity_kind(&self) -> GraphEntityKind {
+        GraphEntityKind::Edge
+    }
+
+    fn graph_entity_id(&self) -> Option<&str> {
+        self.core.id.as_deref()
+    }
+
+    fn graph_entity_label(&self) -> Option<&str> {
+        Some(&self.core.label)
+    }
+
+    fn graph_entity_summary(&self) -> Option<&str> {
+        Some(&self.core.summary)
+    }
+}
+
+impl EdgeEntity for PersistentEdgeV1 {
+    fn source_node_ids(&self) -> Option<&[NodeId]> {
+        Some(&self.source_ids)
+    }
+
+    fn target_node_ids(&self) -> Option<&[NodeId]> {
+        Some(&self.target_ids)
+    }
+
+    fn relation(&self) -> Option<&str> {
+        Some(&self.relation)
+    }
+
+    fn source_edge_ids(&self) -> Option<&[EdgeId]> {
+        self.source_edge_ids.as_option().map(Vec::as_slice)
+    }
+
+    fn target_edge_ids(&self) -> Option<&[EdgeId]> {
+        self.target_edge_ids.as_option().map(Vec::as_slice)
+    }
+}
+
+impl GraphEntity for LlmNodeV1 {
+    fn graph_entity_kind(&self) -> GraphEntityKind {
+        GraphEntityKind::Node
+    }
+
+    fn graph_entity_id(&self) -> Option<&str> {
+        self.fields.id.as_deref()
+    }
+
+    fn graph_entity_label(&self) -> Option<&str> {
+        Some(&self.fields.label)
+    }
+
+    fn graph_entity_summary(&self) -> Option<&str> {
+        Some(&self.fields.summary)
+    }
+}
+
+impl GraphEntity for LlmEdgeV1 {
+    fn graph_entity_kind(&self) -> GraphEntityKind {
+        GraphEntityKind::Edge
+    }
+
+    fn graph_entity_id(&self) -> Option<&str> {
+        self.fields.id.as_deref()
+    }
+
+    fn graph_entity_label(&self) -> Option<&str> {
+        Some(&self.fields.label)
+    }
+
+    fn graph_entity_summary(&self) -> Option<&str> {
+        Some(&self.fields.summary)
+    }
+}
+
+impl EdgeEntity for LlmEdgeV1 {
+    fn source_node_ids(&self) -> Option<&[NodeId]> {
+        Some(&self.source_ids)
+    }
+
+    fn target_node_ids(&self) -> Option<&[NodeId]> {
+        Some(&self.target_ids)
+    }
+
+    fn relation(&self) -> Option<&str> {
+        Some(&self.relation)
+    }
+
+    fn source_edge_ids(&self) -> Option<&[EdgeId]> {
+        self.source_edge_ids.as_option().map(Vec::as_slice)
+    }
+
+    fn target_edge_ids(&self) -> Option<&[EdgeId]> {
+        self.target_edge_ids.as_option().map(Vec::as_slice)
+    }
+}
+
+impl GraphEntity for FlattenedLlmNodeV1 {
+    fn graph_entity_kind(&self) -> GraphEntityKind {
+        GraphEntityKind::Node
+    }
+
+    fn graph_entity_id(&self) -> Option<&str> {
+        self.fields.id.as_deref()
+    }
+
+    fn graph_entity_label(&self) -> Option<&str> {
+        Some(&self.fields.label)
+    }
+
+    fn graph_entity_summary(&self) -> Option<&str> {
+        Some(&self.fields.summary)
+    }
+}
+
+impl GraphEntity for FlattenedLlmEdgeV1 {
+    fn graph_entity_kind(&self) -> GraphEntityKind {
+        GraphEntityKind::Edge
+    }
+
+    fn graph_entity_id(&self) -> Option<&str> {
+        self.fields.id.as_deref()
+    }
+
+    fn graph_entity_label(&self) -> Option<&str> {
+        Some(&self.fields.label)
+    }
+
+    fn graph_entity_summary(&self) -> Option<&str> {
+        Some(&self.fields.summary)
+    }
+}
+
+impl EdgeEntity for FlattenedLlmEdgeV1 {
+    fn source_node_ids(&self) -> Option<&[NodeId]> {
+        Some(&self.source_ids)
+    }
+
+    fn target_node_ids(&self) -> Option<&[NodeId]> {
+        Some(&self.target_ids)
+    }
+
+    fn relation(&self) -> Option<&str> {
+        Some(&self.relation)
+    }
+
+    fn source_edge_ids(&self) -> Option<&[EdgeId]> {
+        self.source_edge_ids.as_option().map(Vec::as_slice)
+    }
+
+    fn target_edge_ids(&self) -> Option<&[EdgeId]> {
+        self.target_edge_ids.as_option().map(Vec::as_slice)
+    }
+}
+
+impl GraphEntity for PureChromaNodeV1 {
+    fn graph_entity_kind(&self) -> GraphEntityKind {
+        GraphEntityKind::Node
+    }
+
+    fn graph_entity_id(&self) -> Option<&str> {
+        self.fields.id.as_deref()
+    }
+
+    fn graph_entity_label(&self) -> Option<&str> {
+        Some(&self.fields.label)
+    }
+
+    fn graph_entity_summary(&self) -> Option<&str> {
+        Some(&self.fields.summary)
+    }
+}
+
+impl HasMetadata for PureChromaNodeV1 {
+    fn metadata(&self) -> &BTreeMap<String, Value> {
+        &self.fields.metadata
+    }
+}
+
+impl GraphEntity for PureChromaEdgeV1 {
+    fn graph_entity_kind(&self) -> GraphEntityKind {
+        GraphEntityKind::Edge
+    }
+
+    fn graph_entity_id(&self) -> Option<&str> {
+        self.fields.id.as_deref()
+    }
+
+    fn graph_entity_label(&self) -> Option<&str> {
+        Some(&self.fields.label)
+    }
+
+    fn graph_entity_summary(&self) -> Option<&str> {
+        Some(&self.fields.summary)
+    }
+}
+
+impl EdgeEntity for PureChromaEdgeV1 {
+    fn source_node_ids(&self) -> Option<&[NodeId]> {
+        Some(&self.source_ids)
+    }
+
+    fn target_node_ids(&self) -> Option<&[NodeId]> {
+        Some(&self.target_ids)
+    }
+
+    fn relation(&self) -> Option<&str> {
+        Some(&self.relation)
+    }
+
+    fn source_edge_ids(&self) -> Option<&[EdgeId]> {
+        self.source_edge_ids.as_option().map(Vec::as_slice)
+    }
+
+    fn target_edge_ids(&self) -> Option<&[EdgeId]> {
+        self.target_edge_ids.as_option().map(Vec::as_slice)
+    }
+}
+
+impl HasMetadata for PureChromaEdgeV1 {
+    fn metadata(&self) -> &BTreeMap<String, Value> {
+        &self.fields.metadata
+    }
+}
+
+impl GraphEntity for DocumentNodeV1 {
+    fn graph_entity_kind(&self) -> GraphEntityKind {
+        GraphEntityKind::Node
+    }
+
+    fn graph_entity_id(&self) -> Option<&str> {
+        self.id.as_deref()
+    }
+
+    fn graph_entity_label(&self) -> Option<&str> {
+        Some(&self.label)
+    }
+
+    fn graph_entity_summary(&self) -> Option<&str> {
+        Some(&self.summary)
+    }
+}
+
+impl HasMetadata for PersistentNodeV1 {
+    fn metadata(&self) -> &BTreeMap<String, Value> {
+        &self.core.metadata
+    }
+}
+
+impl HasMetadata for PersistentEdgeV1 {
+    fn metadata(&self) -> &BTreeMap<String, Value> {
+        &self.core.metadata
+    }
+}
+
+impl HasLifecycle for PersistentNodeV1 {}
+impl HasLifecycle for PersistentEdgeV1 {}
+
+impl HasLevel for PersistentNodeV1 {
+    fn level_from_root(&self) -> Option<i64> {
+        self.core.effective_level()
+    }
+}
+
+impl HasLevel for PersistentEdgeV1 {
+    fn level_from_root(&self) -> Option<i64> {
+        self.core.effective_level()
+    }
+}
+
+impl GraphEntity for PersistentGraphEntityV1 {
+    fn graph_entity_kind(&self) -> GraphEntityKind {
+        match self {
+            Self::Node(node) => node.graph_entity_kind(),
+            Self::Edge(edge) => edge.graph_entity_kind(),
+        }
+    }
+
+    fn graph_entity_id(&self) -> Option<&str> {
+        match self {
+            Self::Node(node) => node.graph_entity_id(),
+            Self::Edge(edge) => edge.graph_entity_id(),
+        }
+    }
+
+    fn graph_entity_label(&self) -> Option<&str> {
+        match self {
+            Self::Node(node) => node.graph_entity_label(),
+            Self::Edge(edge) => edge.graph_entity_label(),
+        }
+    }
+
+    fn graph_entity_summary(&self) -> Option<&str> {
+        match self {
+            Self::Node(node) => node.graph_entity_summary(),
+            Self::Edge(edge) => edge.graph_entity_summary(),
+        }
+    }
+}
+
+impl GraphEntity for TypedGraphEntity {
+    fn graph_entity_kind(&self) -> GraphEntityKind {
+        match self {
+            Self::Node(_) => GraphEntityKind::Node,
+            Self::Edge(_) => GraphEntityKind::Edge,
+        }
+    }
+
+    fn graph_entity_id(&self) -> Option<&str> {
+        match self {
+            Self::Node(node) => node.graph_entity_id(),
+            Self::Edge(edge) => edge.graph_entity_id(),
+        }
+    }
+
+    fn graph_entity_label(&self) -> Option<&str> {
+        match self {
+            Self::Node(node) => node.graph_entity_label(),
+            Self::Edge(edge) => edge.graph_entity_label(),
+        }
+    }
+
+    fn graph_entity_summary(&self) -> Option<&str> {
+        match self {
+            Self::Node(node) => node.graph_entity_summary(),
+            Self::Edge(edge) => edge.graph_entity_summary(),
+        }
+    }
+}
+
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum GraphModelError {
+    #[error("unsupported graph model envelope version {0}")]
+    UnsupportedVersion(u16),
+    #[error("invalid graph model payload: {0}")]
+    InvalidPayload(String),
+    #[error("graph model {model_class:?} has invalid entity fields: {reason}")]
+    InvalidEntityFields {
+        model_class: GraphModelClass,
+        reason: &'static str,
+    },
+    #[error("strict graph model decoding does not support model class {model_class:?}")]
+    StrictModelClassUnsupported { model_class: GraphModelClass },
+}
+
+impl GraphEntityPayload {
+    fn validate(&self, model_class: GraphModelClass) -> Result<(), GraphModelError> {
+        if let Some(id) = &self.id {
+            if id.is_empty() {
+                return Err(GraphModelError::InvalidEntityFields {
+                    model_class,
+                    reason: "id must not be empty",
+                });
+            }
+        }
+        if let Some(id) = &self.local_id {
+            if id.is_empty() {
+                return Err(GraphModelError::InvalidEntityFields {
+                    model_class,
+                    reason: "local_id must not be empty",
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
+impl GraphNodePayload {
+    fn validate(&self, model_class: GraphModelClass) -> Result<(), GraphModelError> {
+        self.common.validate(model_class)
+    }
+}
+
+impl GraphEdgePayload {
+    fn validate(&self, model_class: GraphModelClass) -> Result<(), GraphModelError> {
+        self.common.validate(model_class)?;
+        if self.source_ids.is_none() || self.target_ids.is_none() || self.relation.is_none() {
+            return Err(GraphModelError::InvalidEntityFields {
+                model_class,
+                reason: "edge requires source_ids, target_ids, and relation",
+            });
+        }
+        for id in self
+            .source_ids
+            .iter()
+            .chain(self.target_ids.iter())
+            .flatten()
+        {
+            if id.0.is_empty() {
+                return Err(GraphModelError::InvalidEntityFields {
+                    model_class,
+                    reason: "node endpoint IDs must not be empty",
+                });
+            }
+        }
+        for id in self
+            .source_edge_ids
+            .iter()
+            .chain(self.target_edge_ids.iter())
+            .flatten()
+        {
+            if id.0.is_empty() {
+                return Err(GraphModelError::InvalidEntityFields {
+                    model_class,
+                    reason: "edge endpoint IDs must not be empty",
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fixture() -> Value {
+        serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/python-graph-model-payloads-v1.json"
+        )))
+        .expect("valid Python graph payload fixture")
+    }
+
+    #[test]
+    fn every_python_node_and_edge_fixture_has_a_typed_rust_view() {
+        for case in fixture()["cases"].as_array().expect("fixture cases") {
+            let model_class = match case["kind"].as_str().expect("kind") {
+                "node" => GraphModelClass::Node,
+                "edge" | "edge_with_edge_endpoints" => GraphModelClass::Edge,
+                other => panic!("unexpected fixture graph model kind: {other}"),
+            };
+            let envelope = GraphModelEnvelope::new(model_class, case["payload"].clone());
+            let typed = envelope.inspect().expect("valid typed graph view");
+            match typed {
+                TypedGraphEntity::Node(node) => {
+                    assert_eq!(node.common.id.as_deref(), Some("parity-node"));
+                }
+                TypedGraphEntity::Edge(edge) => {
+                    assert_eq!(edge.source_ids.as_ref().unwrap()[0].0, "parity-node");
+                    if case["kind"] == "edge_with_edge_endpoints" {
+                        assert_eq!(edge.source_edge_ids.as_ref().unwrap()[0].0, "parity-edge");
+                        assert_eq!(
+                            edge.target_edge_ids.as_ref().unwrap()[0].0,
+                            "parity-edge-target"
+                        );
+                    }
+                }
+            }
+            assert_eq!(envelope.payload, case["payload"]);
+        }
+    }
+
+    #[test]
+    fn model_class_tag_is_out_of_band_and_preserves_legacy_payload_shape() {
+        let payload = fixture()["cases"][0]["payload"].clone();
+        let envelope = GraphModelEnvelope::new(GraphModelClass::AclNode, payload.clone());
+        assert_eq!(envelope.payload, payload);
+        assert_eq!(envelope.model_class.entity_kind(), GraphEntityKind::Node);
+        assert!(
+            !serde_json::to_value(envelope)
+                .unwrap()
+                .get("payload")
+                .unwrap()
+                .as_object()
+                .unwrap()
+                .contains_key("model_class")
+        );
+    }
+
+    #[test]
+    fn node_and_edge_endpoint_ids_are_distinct_rust_types() {
+        let payload = fixture()["cases"][2]["payload"].clone();
+        let envelope = GraphModelEnvelope::new(GraphModelClass::Edge, payload);
+        let TypedGraphEntity::Edge(edge) = envelope.inspect().unwrap() else {
+            panic!("edge model class must decode to an edge");
+        };
+        assert_eq!(
+            edge.source_ids.unwrap()[0],
+            NodeId("parity-node".to_owned())
+        );
+        assert_eq!(
+            edge.source_edge_ids.unwrap()[0],
+            EdgeId("parity-edge".to_owned())
+        );
+    }
+
+    #[test]
+    fn nodes_and_edges_share_the_graph_entity_interface() {
+        fn inspect_entity(entity: &impl GraphEntity) -> (&'static str, Option<&str>) {
+            let kind = match entity.graph_entity_kind() {
+                GraphEntityKind::Node => "node",
+                GraphEntityKind::Edge => "edge",
+            };
+            (kind, entity.graph_entity_id())
+        }
+
+        let fixture = fixture();
+        let node = GraphModelEnvelope::new(
+            GraphModelClass::Node,
+            fixture["cases"][0]["payload"].clone(),
+        )
+        .inspect()
+        .unwrap();
+        let edge = GraphModelEnvelope::new(
+            GraphModelClass::Edge,
+            fixture["cases"][1]["payload"].clone(),
+        )
+        .inspect()
+        .unwrap();
+
+        assert_eq!(inspect_entity(&node), ("node", Some("parity-node")));
+        assert_eq!(inspect_entity(&edge), ("edge", Some("parity-edge")));
+    }
+
+    #[test]
+    fn explicit_model_class_rejects_node_edge_shape_confusion() {
+        let edge_payload = fixture()["cases"][1]["payload"].clone();
+        let wrongly_tagged = GraphModelEnvelope::new(GraphModelClass::Node, edge_payload);
+        assert!(matches!(
+            wrongly_tagged.inspect(),
+            Err(GraphModelError::InvalidEntityFields {
+                reason: "node model payload contains edge-only fields",
+                ..
+            })
+        ));
+
+        let mut incomplete = fixture()["cases"][1]["payload"].clone();
+        incomplete.as_object_mut().unwrap().remove("relation");
+        let wrongly_shaped = GraphModelEnvelope::new(GraphModelClass::Edge, incomplete);
+        assert!(matches!(
+            wrongly_shaped.inspect(),
+            Err(GraphModelError::InvalidEntityFields {
+                reason: "edge requires source_ids, target_ids, and relation",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn strict_persistent_models_preserve_required_nullable_edge_fields() {
+        let fixture = fixture();
+        let payload = fixture["cases"][1]["payload"].clone();
+        let decoded = GraphModelEnvelope::new(GraphModelClass::Edge, payload.clone())
+            .decode_persistent_v1()
+            .expect("strict edge payload");
+        let PersistentGraphEntityV1::Edge(edge) = decoded else {
+            panic!("expected strict edge");
+        };
+        assert!(matches!(edge.source_edge_ids, RequiredNullable::Value(_)));
+        assert!(matches!(edge.target_edge_ids, RequiredNullable::Value(_)));
+        assert_eq!(edge.lifecycle_status(), LifecycleStatus::Active);
+        assert_eq!(edge.level_from_root(), None);
+
+        let mut explicit_null = fixture["cases"][1]["payload"].clone();
+        explicit_null["source_edge_ids"] = Value::Null;
+        explicit_null["target_edge_ids"] = Value::Null;
+        let decoded = GraphModelEnvelope::new(GraphModelClass::Edge, explicit_null)
+            .decode_persistent_v1()
+            .expect("explicit null remains valid");
+        let PersistentGraphEntityV1::Edge(edge) = decoded else {
+            panic!("expected strict edge");
+        };
+        assert!(edge.source_edge_ids.is_null());
+        assert!(edge.target_edge_ids.is_null());
+
+        let mut missing = fixture["cases"][1]["payload"].clone();
+        missing
+            .as_object_mut()
+            .expect("object payload")
+            .remove("source_edge_ids");
+        assert!(matches!(
+            GraphModelEnvelope::new(GraphModelClass::Edge, missing).decode_persistent_v1(),
+            Err(GraphModelError::InvalidPayload(_))
+        ));
+    }
+
+    #[test]
+    fn strict_persistent_models_reject_invalid_grounding_and_lifecycle() {
+        let fixture = fixture();
+        let mut payload = fixture["cases"][0]["payload"].clone();
+        payload["mentions"] = Value::Array(Vec::new());
+        assert!(matches!(
+            GraphModelEnvelope::new(GraphModelClass::Node, payload).decode_persistent_v1(),
+            Err(GraphModelError::InvalidEntityFields {
+                reason: "persistent entity requires at least one grounding",
+                ..
+            })
+        ));
+
+        let mut invalid_lifecycle = fixture["cases"][0]["payload"].clone();
+        invalid_lifecycle["metadata"]["lifecycle_status"] = Value::String("deleted".into());
+        assert!(matches!(
+            GraphModelEnvelope::new(GraphModelClass::Node, invalid_lifecycle)
+                .decode_persistent_v1(),
+            Err(GraphModelError::InvalidEntityFields {
+                reason: "lifecycle_status must be active or tombstoned",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn strict_edge_extends_the_shared_graph_entity_interface() {
+        fn inspect(entity: &impl GraphEntity) -> (&'static str, Option<&str>) {
+            let kind = match entity.graph_entity_kind() {
+                GraphEntityKind::Node => "node",
+                GraphEntityKind::Edge => "edge",
+            };
+            (kind, entity.graph_entity_id())
+        }
+
+        let fixture = fixture();
+        let node = GraphModelEnvelope::new(
+            GraphModelClass::Node,
+            fixture["cases"][0]["payload"].clone(),
+        )
+        .decode_persistent_v1()
+        .unwrap();
+        let edge = GraphModelEnvelope::new(
+            GraphModelClass::Edge,
+            fixture["cases"][1]["payload"].clone(),
+        )
+        .decode_persistent_v1()
+        .unwrap();
+        assert_eq!(inspect(&node), ("node", Some("parity-node")));
+        assert_eq!(inspect(&edge), ("edge", Some("parity-edge")));
+
+        let PersistentGraphEntityV1::Edge(edge) = edge else {
+            panic!("expected strict edge");
+        };
+        assert_eq!(edge.source_node_ids().unwrap().len(), 1);
+        assert_eq!(edge.relation(), Some("supports"));
+    }
+
+    #[test]
+    fn model_family_classification_keeps_specialized_shapes_separate() {
+        assert_eq!(GraphModelClass::Node.family(), GraphModelFamily::Persistent);
+        assert_eq!(
+            GraphModelClass::ConversationEdge.family(),
+            GraphModelFamily::Conversation
+        );
+        assert_eq!(
+            GraphModelClass::WorkflowNode.family(),
+            GraphModelFamily::Workflow
+        );
+        assert_eq!(
+            GraphModelClass::PureChromaEdge.family(),
+            GraphModelFamily::PureChroma
+        );
+        assert_eq!(
+            GraphModelClass::LlmEdgeExtraction.family(),
+            GraphModelFamily::Llm
+        );
+    }
+
+    #[test]
+    fn workflow_and_conversation_family_metadata_is_typed_and_validated() {
+        let fixture = fixture();
+        let mut workflow_node = fixture["cases"][0]["payload"].clone();
+        workflow_node["metadata"] = serde_json::json!({
+            "entity_type": "workflow_node",
+            "workflow_id": "wf:demo",
+            "wf_op": "parse",
+            "wf_version": "v1",
+            "wf_start": true
+        });
+        assert!(
+            GraphModelEnvelope::new(GraphModelClass::WorkflowNode, workflow_node)
+                .validate_family_v1()
+                .is_ok()
+        );
+
+        let mut conversation_node = fixture["cases"][0]["payload"].clone();
+        conversation_node["metadata"] = serde_json::json!({
+            "entity_type": "conversation_node",
+            "level_from_root": 0,
+            "role": "user",
+            "turn_index": 1,
+            "conversation_id": "conversation:demo",
+            "user_id": "user:demo"
+        });
+        assert!(
+            GraphModelEnvelope::new(GraphModelClass::ConversationNode, conversation_node)
+                .validate_family_v1()
+                .is_ok()
+        );
+
+        let mut invalid_conversation = fixture["cases"][0]["payload"].clone();
+        invalid_conversation["metadata"] = serde_json::json!({
+            "entity_type": "conversation_node",
+            "level_from_root": 0,
+            "turn_distance_from_last_summary": 1
+        });
+        assert!(matches!(
+            GraphModelEnvelope::new(GraphModelClass::ConversationNode, invalid_conversation)
+                .validate_family_v1(),
+            Err(GraphModelError::InvalidEntityFields {
+                model_class: GraphModelClass::ConversationNode,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn workflow_edge_and_conversation_edge_metadata_preserve_edge_shape() {
+        let fixture = fixture();
+        let mut workflow_edge = fixture["cases"][1]["payload"].clone();
+        workflow_edge["metadata"] = serde_json::json!({
+            "entity_type": "workflow_edge",
+            "workflow_id": "wf:demo",
+            "wf_predicate": "ok",
+            "wf_priority": 10,
+            "wf_multiplicity": "many"
+        });
+        assert!(
+            GraphModelEnvelope::new(GraphModelClass::WorkflowEdge, workflow_edge)
+                .validate_family_v1()
+                .is_ok()
+        );
+
+        let mut conversation_edge = fixture["cases"][1]["payload"].clone();
+        conversation_edge["metadata"] = serde_json::json!({
+            "causal_type": "chain",
+            "char_distance_from_last_summary": 12,
+            "turn_distance_from_last_summary": 1
+        });
+        assert!(
+            GraphModelEnvelope::new(GraphModelClass::ConversationEdge, conversation_edge)
+                .validate_family_v1()
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn llm_pure_chroma_and_document_families_have_distinct_requirements() {
+        let fixture = fixture();
+
+        let mut llm = fixture["cases"][0]["payload"].clone();
+        llm.as_object_mut().unwrap().remove("embedding");
+        assert!(
+            GraphModelEnvelope::new(GraphModelClass::LlmNodeExtraction, llm)
+                .validate_family_v1()
+                .is_ok()
+        );
+
+        let llm_with_embedding = fixture["cases"][0]["payload"].clone();
+        assert!(matches!(
+            GraphModelEnvelope::new(GraphModelClass::LlmNode, llm_with_embedding)
+                .validate_family_v1(),
+            Err(GraphModelError::InvalidEntityFields {
+                reason: "LLM graph payload must not contain an embedding",
+                ..
+            })
+        ));
+
+        let mut pure_chroma = fixture["cases"][0]["payload"].clone();
+        pure_chroma.as_object_mut().unwrap().remove("mentions");
+        assert!(
+            GraphModelEnvelope::new(GraphModelClass::PureChromaNode, pure_chroma)
+                .validate_family_v1()
+                .is_ok()
+        );
+
+        let mut doc = serde_json::json!({
+            "id": "doc-node:1",
+            "label": "Page 1",
+            "type": "page",
+            "summary": "A document page",
+            "doc_id": "document:1"
+        });
+        doc["mentions"] = fixture["cases"][0]["payload"]["mentions"].clone();
+        assert!(
+            GraphModelEnvelope::new(GraphModelClass::DocNode, doc)
+                .validate_family_v1()
+                .is_ok()
+        );
+
+        let invalid_doc = serde_json::json!({"type": "section", "doc_id": "document:1"});
+        assert!(
+            GraphModelEnvelope::new(GraphModelClass::DocNode, invalid_doc)
+                .validate_family_v1()
+                .is_err()
+        );
+
+        let mut acl = fixture["cases"][0]["payload"].clone();
+        acl["metadata"] = serde_json::json!({
+            "entity_type": "acl_record",
+            "acl_truth_graph": "truth:main",
+            "acl_target_entity_id": "parity-node",
+            "acl_target_grain": "node",
+            "acl_version": 1,
+            "acl_mode": "private",
+            "level_from_root": 0
+        });
+        assert!(
+            GraphModelEnvelope::new(GraphModelClass::AclNode, acl)
+                .validate_family_v1()
+                .is_ok()
+        );
+
+        let mut flattened = fixture["cases"][0]["payload"].clone();
+        flattened.as_object_mut().unwrap().remove("embedding");
+        flattened["mentions"] = serde_json::json!([{"span_ids": ["sp:1"]}]);
+        assert!(
+            GraphModelEnvelope::new(GraphModelClass::FlattenedLlmNode, flattened)
+                .validate_family_v1()
+                .is_ok()
+        );
+
+        let mut invalid_acl = fixture["cases"][0]["payload"].clone();
+        invalid_acl["metadata"] = serde_json::json!({
+            "entity_type": "acl_record",
+            "acl_truth_graph": "truth:main",
+            "acl_target_entity_id": "parity-node",
+            "acl_target_grain": "unknown-grain",
+            "acl_version": 1,
+            "acl_mode": "private"
+        });
+        assert!(
+            GraphModelEnvelope::new(GraphModelClass::AclNode, invalid_acl)
+                .validate_family_v1()
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn family_dtos_share_graph_entity_and_edge_entity_capabilities() {
+        fn identify(entity: &impl GraphEntity) -> (GraphEntityKind, Option<&str>) {
+            (entity.graph_entity_kind(), entity.graph_entity_id())
+        }
+
+        let fixture = fixture();
+        let mut llm_node_payload = fixture["cases"][0]["payload"].clone();
+        llm_node_payload
+            .as_object_mut()
+            .unwrap()
+            .remove("embedding");
+        let llm_node: LlmNodeV1 = serde_json::from_value(llm_node_payload).unwrap();
+        assert_eq!(
+            identify(&llm_node),
+            (GraphEntityKind::Node, Some("parity-node"))
+        );
+
+        let mut llm_edge_payload = fixture["cases"][1]["payload"].clone();
+        llm_edge_payload
+            .as_object_mut()
+            .unwrap()
+            .remove("embedding");
+        let llm_edge: LlmEdgeV1 = serde_json::from_value(llm_edge_payload).unwrap();
+        assert_eq!(
+            identify(&llm_edge),
+            (GraphEntityKind::Edge, Some("parity-edge"))
+        );
+        assert_eq!(llm_edge.source_node_ids().unwrap().len(), 1);
+
+        let mut pure_payload = fixture["cases"][0]["payload"].clone();
+        pure_payload.as_object_mut().unwrap().remove("mentions");
+        let pure: PureChromaNodeV1 = serde_json::from_value(pure_payload).unwrap();
+        assert_eq!(
+            identify(&pure),
+            (GraphEntityKind::Node, Some("parity-node"))
+        );
+
+        let doc = DocumentNodeV1 {
+            id: Some("doc-node:1".to_owned()),
+            label: "Page 1".to_owned(),
+            node_type: DocumentNodeTypeV1::Page,
+            summary: "A page".to_owned(),
+            doc_id: "document:1".to_owned(),
+            mentions: vec![],
+        };
+        assert_eq!(identify(&doc), (GraphEntityKind::Node, Some("doc-node:1")));
+    }
+}
