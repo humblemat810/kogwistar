@@ -33,6 +33,21 @@ pub struct GraphSliceFieldV1 {
     /// Optional recursive rule for nested models or model containers.
     #[serde(default)]
     pub child: Option<Box<GraphSliceManifestV1>>,
+    /// Where the child model occurs in the field value. `self` preserves the
+    /// original v1 behavior; container locations mirror pydantic-extension's
+    /// recursive annotation slicing for list/set/tuple and map fields.
+    #[serde(default)]
+    pub child_location: GraphSliceChildLocation,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum GraphSliceChildLocation {
+    #[default]
+    SelfValue,
+    Items,
+    Values,
+    Keys,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -133,30 +148,66 @@ fn project_object(
         if !rule.modes.contains(&mode) {
             continue;
         }
-        let value = rule
-            .child
-            .as_deref()
-            .map_or_else(|| value.clone(), |child| project_nested(value, child, mode));
+        let value = rule.child.as_deref().map_or_else(
+            || value.clone(),
+            |child| project_nested(value, child, mode, rule.child_location),
+        );
         projected.insert(name.clone(), value);
     }
     projected
 }
 
-fn project_nested(value: &Value, manifest: &GraphSliceManifestV1, mode: GraphSliceMode) -> Value {
-    match value {
-        Value::Object(object) => Value::Object(project_object(
-            object,
-            manifest,
-            mode,
-            manifest.retain_unlisted_modes.contains(&mode),
-        )),
-        Value::Array(items) => Value::Array(
+fn project_nested(
+    value: &Value,
+    manifest: &GraphSliceManifestV1,
+    mode: GraphSliceMode,
+    location: GraphSliceChildLocation,
+) -> Value {
+    match (location, value) {
+        (GraphSliceChildLocation::SelfValue, Value::Object(object)) => {
+            Value::Object(project_object(
+                object,
+                manifest,
+                mode,
+                manifest.retain_unlisted_modes.contains(&mode),
+            ))
+        }
+        (GraphSliceChildLocation::SelfValue, Value::Array(items))
+        | (GraphSliceChildLocation::Items, Value::Array(items)) => Value::Array(
             items
                 .iter()
-                .map(|item| project_nested(item, manifest, mode))
+                .map(|item| {
+                    project_nested(item, manifest, mode, GraphSliceChildLocation::SelfValue)
+                })
                 .collect(),
         ),
-        scalar => scalar.clone(),
+        (GraphSliceChildLocation::Values, Value::Object(object)) => Value::Object(
+            object
+                .iter()
+                .map(|(key, item)| {
+                    (
+                        key.clone(),
+                        project_nested(item, manifest, mode, GraphSliceChildLocation::SelfValue),
+                    )
+                })
+                .collect(),
+        ),
+        (GraphSliceChildLocation::Keys, Value::Object(object)) => object
+            .iter()
+            .map(|(key, item)| {
+                let projected_key = project_nested(
+                    &Value::String(key.clone()),
+                    manifest,
+                    mode,
+                    GraphSliceChildLocation::SelfValue,
+                );
+                (
+                    projected_key.as_str().unwrap_or(key).to_owned(),
+                    item.clone(),
+                )
+            })
+            .collect(),
+        (_, scalar) => scalar.clone(),
     }
 }
 
@@ -168,6 +219,7 @@ mod tests {
         GraphSliceFieldV1 {
             modes: modes.iter().copied().collect(),
             child: None,
+            child_location: GraphSliceChildLocation::default(),
         }
     }
 
@@ -205,9 +257,11 @@ mod tests {
                         GraphSliceFieldV1 {
                             modes: BTreeSet::from([GraphSliceMode::Backend, GraphSliceMode::LlmIn]),
                             child: Some(Box::new(span)),
+                            child_location: GraphSliceChildLocation::default(),
                         },
                     )]),
                 })),
+                child_location: GraphSliceChildLocation::default(),
             },
         );
 
@@ -224,6 +278,37 @@ mod tests {
         assert_eq!(
             manifest.project(&payload, GraphSliceMode::Backend).unwrap(),
             payload
+        );
+    }
+
+    #[test]
+    fn mapping_value_projection_preserves_keys_and_slices_values() {
+        let nested = GraphSliceManifestV1 {
+            schema_version: GRAPH_SLICE_MANIFEST_VERSION,
+            model_name: Some("Nested".to_owned()),
+            retain_unlisted_modes: BTreeSet::new(),
+            fields: BTreeMap::from([
+                ("visible".to_owned(), rule(&[GraphSliceMode::Llm])),
+                ("secret".to_owned(), rule(&[GraphSliceMode::Backend])),
+            ]),
+        };
+        let manifest = GraphSliceManifestV1::new(BTreeMap::from([(
+            "values".to_owned(),
+            GraphSliceFieldV1 {
+                modes: BTreeSet::from([GraphSliceMode::Llm]),
+                child: Some(Box::new(nested)),
+                child_location: GraphSliceChildLocation::Values,
+            },
+        )]));
+
+        let payload = serde_json::json!({
+            "values": {
+                "one": {"visible": "yes", "secret": "no"}
+            }
+        });
+        assert_eq!(
+            manifest.project(&payload, GraphSliceMode::Llm).unwrap(),
+            serde_json::json!({"values": {"one": {"visible": "yes"}}})
         );
     }
 

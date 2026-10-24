@@ -1,6 +1,12 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 import pytest
+from typing import Annotated
+
+from pydantic import BaseModel
+from pydantic_extension.model_slicing.mixin import BackendField, LLMField, ModeSlicingMixin
 
 pytestmark = pytest.mark.ci
 
@@ -9,6 +15,15 @@ from kogwistar.engine_core.graph_slice_manifest import (
     project_with_manifest,
 )
 from kogwistar.engine_core.models import Grounding, Node, Span
+
+
+class _NestedSliceModel(ModeSlicingMixin, BaseModel):
+    visible: Annotated[str, BackendField(), LLMField()]
+    secret: Annotated[str, BackendField()]
+
+
+class _MappingSliceModel(ModeSlicingMixin, BaseModel):
+    values: Annotated[Mapping[str, _NestedSliceModel], BackendField(), LLMField()]
 
 
 def _node() -> Node:
@@ -75,3 +90,16 @@ def test_manifest_cache_returns_defensive_deterministic_copies() -> None:
     second = build_slice_manifest(Node)
     assert second["fields"]["label"]["modes"]
     assert second == build_slice_manifest(Node)
+
+
+def test_manifest_preserves_mapping_value_slicing() -> None:
+    value = _MappingSliceModel(
+        values={"one": _NestedSliceModel(visible="yes", secret="no")}
+    )
+    projected = project_with_manifest(_MappingSliceModel, value, "llm")
+
+    assert projected == {"values": {"one": {"visible": "yes"}}}
+    assert (
+        build_slice_manifest(_MappingSliceModel)["fields"]["values"]["child_location"]
+        == "values"
+    )

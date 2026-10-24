@@ -7,6 +7,7 @@ never changes the model or canonical storage payload.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from copy import deepcopy
 from functools import lru_cache
 from typing import Annotated, Any, get_args, get_origin, get_type_hints
@@ -24,13 +25,28 @@ def _metadata(annotation: Any) -> tuple[Any, ...]:
     return ()
 
 
-def _nested_model(annotation: Any) -> type[BaseModel] | None:
+def _nested_model(annotation: Any) -> tuple[type[BaseModel], str] | None:
     if get_origin(annotation) is Annotated:
         return _nested_model(get_args(annotation)[0])
     if isinstance(annotation, type) and issubclass(annotation, BaseModel):
         if isinstance(annotation, type) and issubclass(annotation, ModeSlicingMixin):
-            return annotation
+            return annotation, "self"
         return None
+    origin = get_origin(annotation)
+    args = get_args(annotation)
+    if isinstance(origin, type) and issubclass(origin, Mapping):
+        if len(args) == 2:
+            nested = _nested_model(args[1])
+            if nested is not None:
+                return nested[0], "values"
+            nested = _nested_model(args[0])
+            if nested is not None:
+                return nested[0], "keys"
+        return None
+    if origin is not None and args:
+        nested = _nested_model(args[0])
+        if nested is not None:
+            return nested[0], "items"
     for arg in get_args(annotation):
         nested = _nested_model(arg)
         if nested is not None:
@@ -96,12 +112,15 @@ def _build_slice_manifest(
         }
         rule: dict[str, Any] = {"modes": sorted(modes)}
         nested = _nested_model(annotation)
-        if nested is not None and nested not in (*_seen, model):
+        if nested is not None and nested[0] not in (*_seen, model):
+            nested_model, child_location = nested
             rule["child"] = _build_slice_manifest(
-                nested,
-                model_name=nested.__name__,
+                nested_model,
+                model_name=nested_model.__name__,
                 _seen=(*_seen, model),
             )
+            if child_location != "self":
+                rule["child_location"] = child_location
         fields[field_name] = rule
 
     return {
@@ -162,7 +181,29 @@ def project_with_manifest(
     )
 
 
-def _project_value(value: Any, manifest: dict[str, Any], mode: str) -> Any:
+def _project_value(
+    value: Any,
+    manifest: dict[str, Any],
+    mode: str,
+    child_location: str = "self",
+) -> Any:
+    if child_location == "items":
+        if not isinstance(value, list):
+            return value
+        return [_project_value(item, manifest, mode) for item in value]
+    if child_location == "values":
+        if not isinstance(value, dict):
+            return value
+        return {
+            key: _project_value(item, manifest, mode) for key, item in value.items()
+        }
+    if child_location == "keys":
+        if not isinstance(value, dict):
+            return value
+        return {
+            str(_project_value(key, manifest, mode)): item
+            for key, item in value.items()
+        }
     if isinstance(value, list):
         return [_project_value(item, manifest, mode) for item in value]
     if not isinstance(value, dict):
@@ -179,7 +220,11 @@ def _project_value(value: Any, manifest: dict[str, Any], mode: str) -> Any:
         if mode not in rule.get("modes", []):
             continue
         child = rule.get("child")
-        projected[name] = _project_value(item, child, mode) if child else item
+        projected[name] = (
+            _project_value(item, child, mode, rule.get("child_location", "self"))
+            if child
+            else item
+        )
     return projected
 
 

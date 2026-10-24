@@ -2903,6 +2903,7 @@ mod tests {
                 GraphSliceFieldV1 {
                     modes: BTreeSet::from([GraphSliceMode::LlmIn]),
                     child: None,
+                    child_location: Default::default(),
                 },
             )]),
         };
