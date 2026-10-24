@@ -1,0 +1,8 @@
+{
+  "doc_id": "doc-fixture-1",
+  "content": "A stable document fixture.",
+  "insertion_method": "api_upsert",
+  "metadata": {
+    "source": "fixture"
+  }
+}
