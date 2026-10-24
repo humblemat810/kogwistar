@@ -33,7 +33,8 @@ pub use graph_model::{
     validate_graph_model_family_from_str,
 };
 pub use graph_mutation::{
-    GraphIndexJobV1, GraphMutationBatchV1, GraphMutationV1, GraphRecordV1, GraphScopeV1,
+    GraphIndexJobV1, GraphMutationBatchV1, GraphMutationV1, GraphMutationValidationError,
+    GraphRecordV1, GraphScopeV1,
 };
 pub use graph_slice::{
     GRAPH_SLICE_MANIFEST_VERSION, GraphModelSliceV1, GraphSliceDeclarationV1, GraphSliceError,

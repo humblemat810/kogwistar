@@ -5,6 +5,7 @@
 
 use serde::Deserialize;
 use serde_json::{Map, Value};
+use thiserror::Error;
 
 use crate::GraphModelEnvelope;
 
@@ -74,9 +75,117 @@ pub struct GraphRecordV1 {
     pub embedding: Option<Vec<f32>>,
 }
 
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum GraphMutationValidationError {
+    #[error("graph mutation contract_version must be 1")]
+    ContractVersion,
+    #[error("graph mutation batch must be atomic")]
+    AtomicRequired,
+    #[error("graph mutation batch must contain at least one mutation")]
+    MutationsEmpty,
+    #[error("graph mutation namespace must not be empty")]
+    NamespaceEmpty,
+    #[error("graph mutation scopes must match")]
+    ScopeMismatch,
+    #[error("index job namespace must match graph mutation namespace")]
+    IndexJobNamespaceMismatch,
+    #[error("graph mutation identifiers must not be empty")]
+    IdentifierEmpty,
+    #[error("graph mutation table and entity kind do not match")]
+    TableEntityKindMismatch,
+    #[error("unsupported graph mutation operation")]
+    MutationOperation,
+    #[error("graph mutation payload must be a JSON object")]
+    PayloadObject,
+    #[error("graph mutation embedding dimension does not match vector length")]
+    EmbeddingDimension,
+    #[error("index job identifiers must not be empty")]
+    IndexJobIdentifierEmpty,
+    #[error("index job operation must be UPSERT or DELETE")]
+    IndexJobOperation,
+    #[error("index job max_retries must not be negative")]
+    IndexJobRetries,
+}
+
+impl GraphMutationBatchV1 {
+    /// Validate semantic invariants shared with Python's Pydantic DTO.
+    ///
+    /// Deserialization only proves that a payload has the right broad JSON
+    /// types. Callers at every language seam must invoke this method before
+    /// converting the DTO into an effect or handing it to a store.
+    pub fn validate(&self) -> Result<(), GraphMutationValidationError> {
+        if self.contract_version != 1 {
+            return Err(GraphMutationValidationError::ContractVersion);
+        }
+        if !self.atomic {
+            return Err(GraphMutationValidationError::AtomicRequired);
+        }
+        let first = self
+            .mutations
+            .first()
+            .ok_or(GraphMutationValidationError::MutationsEmpty)?;
+        if first.scope.namespace.is_empty() {
+            return Err(GraphMutationValidationError::NamespaceEmpty);
+        }
+        for mutation in &self.mutations {
+            if mutation.scope.namespace.is_empty() {
+                return Err(GraphMutationValidationError::NamespaceEmpty);
+            }
+            if mutation.scope != first.scope {
+                return Err(GraphMutationValidationError::ScopeMismatch);
+            }
+            if mutation.event_id.is_empty() || mutation.record.id.is_empty() {
+                return Err(GraphMutationValidationError::IdentifierEmpty);
+            }
+            let expected_table = match mutation.entity_kind.as_str() {
+                "node" => "gke_nodes",
+                "edge" => "gke_edges",
+                _ => return Err(GraphMutationValidationError::TableEntityKindMismatch),
+            };
+            if mutation.table != expected_table {
+                return Err(GraphMutationValidationError::TableEntityKindMismatch);
+            }
+            if !matches!(mutation.op.as_str(), "ADD" | "REPLACE" | "TOMBSTONE") {
+                return Err(GraphMutationValidationError::MutationOperation);
+            }
+            if !mutation.payload.is_object() {
+                return Err(GraphMutationValidationError::PayloadObject);
+            }
+            if mutation
+                .record
+                .embedding
+                .as_ref()
+                .is_some_and(|embedding| embedding.len() != mutation.embedding_dim)
+            {
+                return Err(GraphMutationValidationError::EmbeddingDimension);
+            }
+        }
+        for job in &self.index_jobs {
+            if job.namespace != first.scope.namespace {
+                return Err(GraphMutationValidationError::IndexJobNamespaceMismatch);
+            }
+            if job.job_id.is_empty()
+                || job.namespace.is_empty()
+                || job.entity_kind.is_empty()
+                || job.entity_id.is_empty()
+                || job.index_kind.is_empty()
+            {
+                return Err(GraphMutationValidationError::IndexJobIdentifierEmpty);
+            }
+            if !matches!(job.op.as_str(), "UPSERT" | "DELETE") {
+                return Err(GraphMutationValidationError::IndexJobOperation);
+            }
+            if job.max_retries < 0 {
+                return Err(GraphMutationValidationError::IndexJobRetries);
+            }
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::GraphMutationBatchV1;
+    use super::{GraphMutationBatchV1, GraphMutationValidationError};
     use serde_json::Value;
 
     #[test]
@@ -120,5 +229,36 @@ mod tests {
             "unexpected": true
         }"#;
         assert!(serde_json::from_str::<GraphMutationBatchV1>(invalid).is_err());
+    }
+
+    #[test]
+    fn graph_mutation_semantic_validation_matches_python_contract() {
+        let fixture = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/graph-mutation-batch-v1.json"
+        ));
+        let valid: GraphMutationBatchV1 = serde_json::from_str(fixture).unwrap();
+        assert_eq!(valid.validate(), Ok(()));
+
+        let mut empty = valid.clone();
+        empty.mutations.clear();
+        assert_eq!(
+            empty.validate(),
+            Err(GraphMutationValidationError::MutationsEmpty)
+        );
+
+        let mut wrong_table = valid.clone();
+        wrong_table.mutations[0].table = "gke_edges".to_owned();
+        assert_eq!(
+            wrong_table.validate(),
+            Err(GraphMutationValidationError::TableEntityKindMismatch)
+        );
+
+        let mut wrong_embedding = valid.clone();
+        wrong_embedding.mutations[0].embedding_dim = 3;
+        assert_eq!(
+            wrong_embedding.validate(),
+            Err(GraphMutationValidationError::EmbeddingDimension)
+        );
     }
 }

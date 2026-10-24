@@ -25,6 +25,38 @@ def test_python_graph_mutation_contract_accepts_rust_golden_fixture() -> None:
     assert batch.index_jobs == []
 
 
+@pytest.mark.parametrize("mutation_change", [
+    {"table": "gke_edges"},
+    {"op": "UNKNOWN"},
+    {"embedding_dim": 3},
+    {"payload": ["not", "an", "object"]},
+])
+def test_python_graph_mutation_contract_rejects_semantically_invalid_mutations(
+    mutation_change: dict[str, object],
+) -> None:
+    payload = _fixture()
+    mutation = payload["mutations"][0]
+    assert isinstance(mutation, dict)
+    mutation.update(mutation_change)
+
+    with pytest.raises(GraphMutationContractError):
+        validate_graph_mutation_batch(payload)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("contract_version", 2), ("atomic", False), ("mutations", [])],
+)
+def test_python_graph_mutation_contract_rejects_invalid_batch_header(
+    field: str, value: object
+) -> None:
+    payload = _fixture()
+    payload[field] = value
+
+    with pytest.raises(GraphMutationContractError):
+        validate_graph_mutation_batch(payload)
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [

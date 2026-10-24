@@ -7904,6 +7904,13 @@ impl PostgresRunApplicationService {
                 );
             }
         };
+        if let Err(error) = input.validate() {
+            return effect_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "KOGWISTAR_INVALID_REQUEST",
+                error.to_string(),
+            );
+        }
         let mutations = match graph_mutation_batch_value(input.clone()) {
             Ok(value) => value,
             Err(error) => {
