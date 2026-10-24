@@ -27,12 +27,13 @@ use kogwistar_runtime::{
 };
 use kogwistar_store::{
     AuthIdentityStore, AuthUser, EntityEvent, GraphAclPrincipal, GraphAuthorityCapability,
-    GraphMutation, GraphMutationBatch, GraphMutationStore, GraphProjectionRead, GraphRecord,
-    GraphScope, LaneMessageClaimFilter, LaneMessageFilter, MetadataFilter, NamedProjection,
-    NamedProjectionWrite, NewIndexJob, NewProjectedLaneMessage, ProjectedLaneMessage,
-    ResolveExternalIdentity, ServerRun, ServerRunCreate, ServerRunEvent, WorkflowDesignDeltaWrite,
-    WorkflowDesignSnapshot, WorkflowDesignSnapshotWrite, graph_neighbors_from_records,
-    graph_records_visible_by_acl, validate_typed_graph_mutation,
+    GraphFindEdgesQuery, GraphMutation, GraphMutationBatch, GraphMutationStore,
+    GraphProjectionRead, GraphRecord, GraphScope, LaneMessageClaimFilter, LaneMessageFilter,
+    MetadataFilter, NamedProjection, NamedProjectionWrite, NewIndexJob, NewProjectedLaneMessage,
+    ProjectedLaneMessage, ResolveExternalIdentity, ServerRun, ServerRunCreate, ServerRunEvent,
+    WorkflowDesignDeltaWrite, WorkflowDesignSnapshot, WorkflowDesignSnapshotWrite,
+    graph_find_edges_from_records, graph_neighbors_from_records, graph_records_visible_by_acl,
+    validate_typed_graph_mutation,
 };
 use kogwistar_store_postgres::{
     NewRawEntityEvent as PostgresNewRawEntityEvent, PostgresAuthStore, PostgresStore,
@@ -200,9 +201,7 @@ fn rust_mcp_tool_supported(surface: &str, name: &str) -> bool {
                 | "workflow.visibility_snapshot"
         ),
         "conversation" => matches!(name, "conversation.run_status" | "conversation.cancel_run"),
-        // Root graph tools remain Python-owned until their Rust authority,
-        // scope, and persistence paths are implemented.
-        "root" => matches!(name, "kg_neighbors"),
+        "root" => matches!(name, "kg_find_edges" | "kg_neighbors"),
         _ => false,
     }
 }
@@ -5626,6 +5625,19 @@ fn parse_graph_neighbors_request(body: &[u8]) -> Result<GraphNeighborsRequestV1,
     Ok(input)
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GraphFindEdgesRequest {
+    relation: Option<String>,
+    src_label_contains: Option<String>,
+    tgt_label_contains: Option<String>,
+    doc_id: Option<String>,
+}
+
+fn parse_graph_find_edges_request(body: &[u8]) -> Result<GraphFindEdgesRequest, String> {
+    serde_json::from_slice(body).map_err(|error| error.to_string())
+}
+
 impl PostgresRunApplicationService {
     async fn graph_neighbors_effect(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
         if !capability_allowed(request, &self.capabilities, "read_graph", &["read_graph"]) {
@@ -5710,6 +5722,91 @@ impl PostgresRunApplicationService {
                 "nodes": neighbors.nodes.into_iter().collect::<Vec<_>>(),
                 "edges": neighbors.edges.into_iter().collect::<Vec<_>>(),
             }),
+        )
+    }
+
+    async fn graph_find_edges_effect(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
+        if !capability_allowed(request, &self.capabilities, "read_graph", &["read_graph"]) {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                "Graph read requires read_graph capability",
+            );
+        }
+        let input = match parse_graph_find_edges_request(&request.body) {
+            Ok(value) => value,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    error,
+                );
+            }
+        };
+        let scope_value = security_scope_value(&request.principal);
+        let scope = GraphScope {
+            namespace: scope_value["storage_namespace"]
+                .as_str()
+                .unwrap_or("default")
+                .to_owned(),
+            workspace_id: request
+                .principal
+                .get("workspace_id")
+                .or_else(|| request.principal.get("workspace"))
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            graph_space: request
+                .principal
+                .get("graph_space")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+        };
+        let read = |table: &'static str| GraphProjectionRead {
+            scope: scope.clone(),
+            table: table.to_owned(),
+            ids: None,
+            metadata: MetadataFilter::default(),
+            limit: 10_000,
+        };
+        let nodes = match self.store.graph_projection_records(read("gke_nodes")).await {
+            Ok(records) => records,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_STORE_ERROR",
+                    error.to_string(),
+                );
+            }
+        };
+        let edges = match self.store.graph_projection_records(read("gke_edges")).await {
+            Ok(records) => records,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_STORE_ERROR",
+                    error.to_string(),
+                );
+            }
+        };
+        let mut groups = principal_strings(&request.principal, "groups");
+        groups.extend(principal_strings(&request.principal, "principal_groups"));
+        groups.sort();
+        groups.dedup();
+        let principal = GraphAclPrincipal {
+            principal_id: principal_subject(&request.principal),
+            groups: groups.into_iter().collect(),
+            security_scope: scope_value["security_scope"].as_str().map(str::to_owned),
+        };
+        let (nodes, edges) = graph_records_visible_by_acl(&nodes, &edges, "knowledge", &principal);
+        let query = GraphFindEdgesQuery {
+            relation: input.relation,
+            src_label_contains: input.src_label_contains,
+            tgt_label_contains: input.tgt_label_contains,
+            doc_id: input.doc_id,
+        };
+        json_effect(
+            StatusCode::OK,
+            json!({"edges": graph_find_edges_from_records(&query, &nodes, &edges)}),
         )
     }
 
@@ -8206,6 +8303,9 @@ impl PostgresRunApplicationService {
         if request.method == "POST" && request.path_and_query == "/internal/graph/neighbors" {
             return self.graph_neighbors_effect(&request).await;
         }
+        if request.method == "POST" && request.path_and_query == "/internal/graph/find-edges" {
+            return self.graph_find_edges_effect(&request).await;
+        }
         if request.method == "POST"
             && request.path_and_query.split('?').next() == Some("/api/workflow/runs")
         {
@@ -9497,7 +9597,9 @@ impl SqliteRunApplicationService {
         if request.method == "POST"
             && matches!(
                 request.path_and_query.split('?').next(),
-                Some("/internal/graph/neighbors") | Some("/internal/graph/mutations")
+                Some("/internal/graph/find-edges")
+                    | Some("/internal/graph/neighbors")
+                    | Some("/internal/graph/mutations")
             )
         {
             return effect_error(
@@ -10753,6 +10855,13 @@ async fn mcp_handler(
             .and_then(Value::as_str)
             .unwrap_or_default();
         let request = match tool_name {
+            "kg_find_edges" => Some(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/internal/graph/find-edges".to_owned(),
+                body: serde_json::to_vec(&arguments).expect("MCP graph arguments serialize"),
+                principal: principal.clone(),
+            }),
             "kg_neighbors" => arguments
                 .get("rid")
                 .and_then(Value::as_str)
@@ -11297,6 +11406,10 @@ pub fn router_with_application(
     );
     router = router.route(
         "/internal/graph/neighbors",
+        post(application_effect_handler),
+    );
+    router = router.route(
+        "/internal/graph/find-edges",
         post(application_effect_handler),
     );
     for &(method, path) in FROZEN_OPENAPI_ROUTES {
@@ -12060,7 +12173,8 @@ mod tests {
             .iter()
             .filter(|tool| rust_mcp_tool_supported("root", tool["name"].as_str().unwrap()))
             .count();
-        assert_eq!(root_supported, 1);
+        assert_eq!(root_supported, 2);
+        assert!(rust_mcp_tool_supported("root", "kg_find_edges"));
         assert!(rust_mcp_tool_supported("root", "kg_neighbors"));
         let conversation = contract["surfaces"]["conversation"].as_array().unwrap();
         let conversation_supported = conversation
@@ -13342,6 +13456,7 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
         )))
         .unwrap();
         body["mutations"][0]["scope"]["namespace"] = json!("alpha");
+        body["mutations"][0]["record"]["document"] = json!("{\"label\":\"Alpha source\"}");
         body["mutations"][0]["record"]["embedding"] = json!([1.0, 0.0, 0.0]);
         body["mutations"][0]["embedding_dim"] = json!(3);
         body["index_jobs"] = json!([{
@@ -13657,7 +13772,7 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
                     "event_id": "graph-route-adjacency-node-2",
                     "op": "ADD",
                     "payload": {"id": "node-2"},
-                    "record": {"id": "node-2", "metadata": {}, "embedding": [0.0, 1.0, 0.0]},
+                    "record": {"id": "node-2", "document": "{\"label\":\"Beta target\"}", "metadata": {}, "embedding": [0.0, 1.0, 0.0]},
                     "embedding_dim": 3
                 },
                 {
@@ -13669,7 +13784,7 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
                     "payload": {"id": "edge-1", "source_ids": ["node-1"], "target_ids": ["node-2"], "source_edge_ids": [], "target_edge_ids": []},
                     "record": {
                         "id": "edge-1",
-                        "document": "{\"source_ids\":[\"node-1\"],\"target_ids\":[\"node-2\"],\"source_edge_ids\":[],\"target_edge_ids\":[]}",
+                        "document": "{\"relation\":\"links\",\"source_ids\":[\"node-1\"],\"target_ids\":[\"node-2\"],\"source_edge_ids\":[],\"target_edge_ids\":[]}",
                         "metadata": {},
                         "embedding": [0.0, 0.0, 1.0]
                     },
@@ -13738,6 +13853,28 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
         let adjacency_value: Value = serde_json::from_slice(&adjacency_body).unwrap();
         assert_eq!(adjacency_value["result"]["nodes"], json!(["node-2"]));
         assert_eq!(adjacency_value["result"]["edges"], json!(["edge-1"]));
+
+        let mcp_find_edges = make_app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp")
+                    .header("content-type", "application/json")
+                    .header(
+                        "authorization",
+                        format!("Bearer {}", make_token(&["read_graph"], "alpha")),
+                    )
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","id":"find-edges","method":"tools/call","params":{"name":"kg_find_edges","arguments":{"relation":"links","src_label_contains":"alpha","tgt_label_contains":"TARGET"}}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(mcp_find_edges.status(), StatusCode::OK);
+        let find_edges_body = to_bytes(mcp_find_edges.into_body(), 65_536).await.unwrap();
+        let find_edges_value: Value = serde_json::from_slice(&find_edges_body).unwrap();
+        assert_eq!(find_edges_value["result"]["edges"], json!(["edge-1"]));
     }
 
     #[tokio::test]

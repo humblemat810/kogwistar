@@ -150,6 +150,15 @@ pub struct GraphNeighbors {
     pub edges: BTreeSet<String>,
 }
 
+/// Query fields for the storage-neutral equivalent of Python `find_edges`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct GraphFindEdgesQuery {
+    pub relation: Option<String>,
+    pub src_label_contains: Option<String>,
+    pub tgt_label_contains: Option<String>,
+    pub doc_id: Option<String>,
+}
+
 /// Principal inputs required to evaluate persisted graph ACL records.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct GraphAclPrincipal {
@@ -402,6 +411,91 @@ pub fn graph_neighbors_from_records(
         }
     }
 
+    result
+}
+
+/// Find visible edge IDs using the same exact relation/document and
+/// case-insensitive endpoint-label semantics as Python `GraphQuery.find_edges`.
+/// Callers must provide records after scope and ACL filtering.
+pub fn graph_find_edges_from_records(
+    query: &GraphFindEdgesQuery,
+    nodes: &[GraphRecord],
+    edges: &[GraphRecord],
+) -> Vec<String> {
+    let node_labels = nodes
+        .iter()
+        .filter(|node| !is_tombstoned(&node.metadata))
+        .filter_map(|node| {
+            let document = node.document.as_deref()?.parse::<Value>().ok()?;
+            Some((
+                node.id.clone(),
+                document
+                    .get("label")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+            ))
+        })
+        .collect::<BTreeMap<_, _>>();
+    let contains = |label: &str, needle: &Option<String>| {
+        needle.as_deref().is_none_or(|needle| {
+            label
+                .to_ascii_lowercase()
+                .contains(&needle.to_ascii_lowercase())
+        })
+    };
+    let mut result = edges
+        .iter()
+        .filter(|edge| !is_tombstoned(&edge.metadata))
+        .filter_map(|edge| {
+            let document = edge.document.as_deref()?.parse::<Value>().ok()?;
+            let relation = document.get("relation").and_then(Value::as_str);
+            if query
+                .relation
+                .as_deref()
+                .is_some_and(|expected| relation != Some(expected))
+            {
+                return None;
+            }
+            let document_id = edge
+                .metadata
+                .get("doc_id")
+                .and_then(Value::as_str)
+                .or_else(|| document.get("doc_id").and_then(Value::as_str));
+            if query
+                .doc_id
+                .as_deref()
+                .is_some_and(|expected| document_id != Some(expected))
+            {
+                return None;
+            }
+            let ids = |field: &str| {
+                document
+                    .get(field)
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+            };
+            let source_labels = ids("source_ids")
+                .filter_map(|id| node_labels.get(id).map(String::as_str))
+                .collect::<Vec<_>>();
+            let target_labels = ids("target_ids")
+                .filter_map(|id| node_labels.get(id).map(String::as_str))
+                .collect::<Vec<_>>();
+            if !source_labels
+                .iter()
+                .any(|label| contains(label, &query.src_label_contains))
+                || !target_labels
+                    .iter()
+                    .any(|label| contains(label, &query.tgt_label_contains))
+            {
+                return None;
+            }
+            Some(edge.id.clone())
+        })
+        .collect::<Vec<_>>();
+    result.sort();
     result
 }
 
@@ -1772,6 +1866,47 @@ mod tests {
                 nodes: BTreeSet::from(["n1".to_owned()]),
                 edges: BTreeSet::new(),
             }
+        );
+    }
+
+    #[test]
+    fn graph_find_edges_matches_relation_document_and_label_filters() {
+        let mut source = node_record("n1");
+        source.document = Some(serde_json::json!({"label": "Alpha source"}).to_string());
+        let mut target = node_record("n2");
+        target.document = Some(serde_json::json!({"label": "Beta target"}).to_string());
+        let edges = vec![
+            edge_record(
+                "e1",
+                serde_json::json!({
+                    "relation": "links",
+                    "doc_id": "doc-1",
+                    "source_ids": ["n1"],
+                    "target_ids": ["n2"]
+                }),
+            ),
+            edge_record(
+                "e2",
+                serde_json::json!({
+                    "relation": "mentions",
+                    "doc_id": "doc-1",
+                    "source_ids": ["n1"],
+                    "target_ids": ["n2"]
+                }),
+            ),
+        ];
+        assert_eq!(
+            graph_find_edges_from_records(
+                &GraphFindEdgesQuery {
+                    relation: Some("links".to_owned()),
+                    src_label_contains: Some("alpha".to_owned()),
+                    tgt_label_contains: Some("TARGET".to_owned()),
+                    doc_id: Some("doc-1".to_owned()),
+                },
+                &[source, target],
+                &edges,
+            ),
+            vec!["e1".to_owned()]
         );
     }
 
