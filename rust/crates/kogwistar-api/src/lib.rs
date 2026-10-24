@@ -28,12 +28,12 @@ use kogwistar_runtime::{
 use kogwistar_store::{
     AuthIdentityStore, AuthUser, EntityEvent, GraphAclPrincipal, GraphAuthorityCapability,
     GraphFindEdgesQuery, GraphMutation, GraphMutationBatch, GraphMutationStore,
-    GraphProjectionRead, GraphRecord, GraphScope, LaneMessageClaimFilter, LaneMessageFilter,
-    MetadataFilter, NamedProjection, NamedProjectionWrite, NewIndexJob, NewProjectedLaneMessage,
-    ProjectedLaneMessage, ResolveExternalIdentity, ServerRun, ServerRunCreate, ServerRunEvent,
-    WorkflowDesignDeltaWrite, WorkflowDesignSnapshot, WorkflowDesignSnapshotWrite,
-    graph_find_edges_from_records, graph_neighbors_from_records, graph_records_visible_by_acl,
-    validate_typed_graph_mutation,
+    GraphProjectionRead, GraphRecord, GraphScope, GraphShortestPathQuery, LaneMessageClaimFilter,
+    LaneMessageFilter, MetadataFilter, NamedProjection, NamedProjectionWrite, NewIndexJob,
+    NewProjectedLaneMessage, ProjectedLaneMessage, ResolveExternalIdentity, ServerRun,
+    ServerRunCreate, ServerRunEvent, WorkflowDesignDeltaWrite, WorkflowDesignSnapshot,
+    WorkflowDesignSnapshotWrite, graph_find_edges_from_records, graph_neighbors_from_records,
+    graph_records_visible_by_acl, graph_shortest_path_from_records, validate_typed_graph_mutation,
 };
 use kogwistar_store_postgres::{
     NewRawEntityEvent as PostgresNewRawEntityEvent, PostgresAuthStore, PostgresStore,
@@ -201,7 +201,7 @@ fn rust_mcp_tool_supported(surface: &str, name: &str) -> bool {
                 | "workflow.visibility_snapshot"
         ),
         "conversation" => matches!(name, "conversation.run_status" | "conversation.cancel_run"),
-        "root" => matches!(name, "kg_find_edges" | "kg_neighbors"),
+        "root" => matches!(name, "kg_find_edges" | "kg_neighbors" | "kg_shortest_path"),
         _ => false,
     }
 }
@@ -5634,6 +5634,20 @@ struct GraphFindEdgesRequest {
     doc_id: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GraphShortestPathRequest {
+    src_id: String,
+    dst_id: String,
+    doc_id: Option<String>,
+    #[serde(default = "default_graph_max_depth")]
+    max_depth: usize,
+}
+
+fn default_graph_max_depth() -> usize {
+    8
+}
+
 fn parse_graph_find_edges_request(body: &[u8]) -> Result<GraphFindEdgesRequest, String> {
     serde_json::from_slice(body).map_err(|error| error.to_string())
 }
@@ -5807,6 +5821,99 @@ impl PostgresRunApplicationService {
         json_effect(
             StatusCode::OK,
             json!({"edges": graph_find_edges_from_records(&query, &nodes, &edges)}),
+        )
+    }
+
+    async fn graph_shortest_path_effect(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
+        if !capability_allowed(request, &self.capabilities, "read_graph", &["read_graph"]) {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                "Graph read requires read_graph capability",
+            );
+        }
+        let input: GraphShortestPathRequest = match serde_json::from_slice(&request.body) {
+            Ok(value) => value,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    error.to_string(),
+                );
+            }
+        };
+        if input.src_id.trim().is_empty() || input.dst_id.trim().is_empty() || input.max_depth > 128
+        {
+            return effect_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "KOGWISTAR_INVALID_REQUEST",
+                "src_id and dst_id are required and max_depth must be <= 128",
+            );
+        }
+        let scope_value = security_scope_value(&request.principal);
+        let scope = GraphScope {
+            namespace: scope_value["storage_namespace"]
+                .as_str()
+                .unwrap_or("default")
+                .to_owned(),
+            workspace_id: request
+                .principal
+                .get("workspace_id")
+                .or_else(|| request.principal.get("workspace"))
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            graph_space: request
+                .principal
+                .get("graph_space")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+        };
+        let read = |table: &'static str| GraphProjectionRead {
+            scope: scope.clone(),
+            table: table.to_owned(),
+            ids: None,
+            metadata: MetadataFilter::default(),
+            limit: 10_000,
+        };
+        let nodes = match self.store.graph_projection_records(read("gke_nodes")).await {
+            Ok(records) => records,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_STORE_ERROR",
+                    error.to_string(),
+                );
+            }
+        };
+        let edges = match self.store.graph_projection_records(read("gke_edges")).await {
+            Ok(records) => records,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_STORE_ERROR",
+                    error.to_string(),
+                );
+            }
+        };
+        let mut groups = principal_strings(&request.principal, "groups");
+        groups.extend(principal_strings(&request.principal, "principal_groups"));
+        groups.sort();
+        groups.dedup();
+        let principal = GraphAclPrincipal {
+            principal_id: principal_subject(&request.principal),
+            groups: groups.into_iter().collect(),
+            security_scope: scope_value["security_scope"].as_str().map(str::to_owned),
+        };
+        let (nodes, edges) = graph_records_visible_by_acl(&nodes, &edges, "knowledge", &principal);
+        let query = GraphShortestPathQuery {
+            src_id: input.src_id,
+            dst_id: input.dst_id,
+            doc_id: input.doc_id,
+            max_depth: input.max_depth,
+        };
+        json_effect(
+            StatusCode::OK,
+            json!({"path": graph_shortest_path_from_records(&query, &nodes, &edges)}),
         )
     }
 
@@ -8306,6 +8413,9 @@ impl PostgresRunApplicationService {
         if request.method == "POST" && request.path_and_query == "/internal/graph/find-edges" {
             return self.graph_find_edges_effect(&request).await;
         }
+        if request.method == "POST" && request.path_and_query == "/internal/graph/shortest-path" {
+            return self.graph_shortest_path_effect(&request).await;
+        }
         if request.method == "POST"
             && request.path_and_query.split('?').next() == Some("/api/workflow/runs")
         {
@@ -9599,6 +9709,7 @@ impl SqliteRunApplicationService {
                 request.path_and_query.split('?').next(),
                 Some("/internal/graph/find-edges")
                     | Some("/internal/graph/neighbors")
+                    | Some("/internal/graph/shortest-path")
                     | Some("/internal/graph/mutations")
             )
         {
@@ -10862,6 +10973,13 @@ async fn mcp_handler(
                 body: serde_json::to_vec(&arguments).expect("MCP graph arguments serialize"),
                 principal: principal.clone(),
             }),
+            "kg_shortest_path" => Some(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/internal/graph/shortest-path".to_owned(),
+                body: serde_json::to_vec(&arguments).expect("MCP graph arguments serialize"),
+                principal: principal.clone(),
+            }),
             "kg_neighbors" => arguments
                 .get("rid")
                 .and_then(Value::as_str)
@@ -11410,6 +11528,10 @@ pub fn router_with_application(
     );
     router = router.route(
         "/internal/graph/find-edges",
+        post(application_effect_handler),
+    );
+    router = router.route(
+        "/internal/graph/shortest-path",
         post(application_effect_handler),
     );
     for &(method, path) in FROZEN_OPENAPI_ROUTES {
@@ -12173,9 +12295,10 @@ mod tests {
             .iter()
             .filter(|tool| rust_mcp_tool_supported("root", tool["name"].as_str().unwrap()))
             .count();
-        assert_eq!(root_supported, 2);
+        assert_eq!(root_supported, 3);
         assert!(rust_mcp_tool_supported("root", "kg_find_edges"));
         assert!(rust_mcp_tool_supported("root", "kg_neighbors"));
+        assert!(rust_mcp_tool_supported("root", "kg_shortest_path"));
         let conversation = contract["surfaces"]["conversation"].as_array().unwrap();
         let conversation_supported = conversation
             .iter()
@@ -13875,6 +13998,33 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
         let find_edges_body = to_bytes(mcp_find_edges.into_body(), 65_536).await.unwrap();
         let find_edges_value: Value = serde_json::from_slice(&find_edges_body).unwrap();
         assert_eq!(find_edges_value["result"]["edges"], json!(["edge-1"]));
+
+        let mcp_shortest_path = make_app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp")
+                    .header("content-type", "application/json")
+                    .header(
+                        "authorization",
+                        format!("Bearer {}", make_token(&["read_graph"], "alpha")),
+                    )
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","id":"shortest-path","method":"tools/call","params":{"name":"kg_shortest_path","arguments":{"src_id":"node-1","dst_id":"node-2","max_depth":4}}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(mcp_shortest_path.status(), StatusCode::OK);
+        let shortest_path_body = to_bytes(mcp_shortest_path.into_body(), 65_536)
+            .await
+            .unwrap();
+        let shortest_path_value: Value = serde_json::from_slice(&shortest_path_body).unwrap();
+        assert_eq!(
+            shortest_path_value["result"]["path"],
+            json!(["node-1", "edge-1", "node-2"])
+        );
     }
 
     #[tokio::test]

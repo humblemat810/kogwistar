@@ -159,6 +159,16 @@ pub struct GraphFindEdgesQuery {
     pub doc_id: Option<String>,
 }
 
+/// Query fields for the storage-neutral equivalent of Python
+/// `GraphQuery.shortest_path`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GraphShortestPathQuery {
+    pub src_id: String,
+    pub dst_id: String,
+    pub doc_id: Option<String>,
+    pub max_depth: usize,
+}
+
 /// Principal inputs required to evaluate persisted graph ACL records.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct GraphAclPrincipal {
@@ -497,6 +507,43 @@ pub fn graph_find_edges_from_records(
         .collect::<Vec<_>>();
     result.sort();
     result
+}
+
+/// Find a bounded path through visible node and edge records.
+///
+/// The caller must provide records after scope and ACL filtering. Traversal
+/// reuses the same adjacency kernel as `kg_neighbors`, so a Rust-native query
+/// cannot bypass the authority boundary by walking raw projections.
+pub fn graph_shortest_path_from_records(
+    query: &GraphShortestPathQuery,
+    nodes: &[GraphRecord],
+    edges: &[GraphRecord],
+) -> Vec<String> {
+    if query.src_id == query.dst_id {
+        return vec![query.src_id.clone()];
+    }
+    let mut queue =
+        std::collections::VecDeque::from([(query.src_id.clone(), vec![query.src_id.clone()])]);
+    let mut seen = BTreeSet::from([query.src_id.clone()]);
+    while let Some((current, path)) = queue.pop_front() {
+        if path.len().saturating_sub(1) >= query.max_depth {
+            continue;
+        }
+        let neighbors =
+            graph_neighbors_from_records(&current, nodes, edges, query.doc_id.as_deref());
+        for next in neighbors.nodes.into_iter().chain(neighbors.edges) {
+            if !seen.insert(next.clone()) {
+                continue;
+            }
+            let mut candidate = path.clone();
+            candidate.push(next.clone());
+            if next == query.dst_id {
+                return candidate;
+            }
+            queue.push_back((next, candidate));
+        }
+    }
+    Vec::new()
 }
 
 fn is_tombstoned(metadata: &Map<String, Value>) -> bool {
@@ -1907,6 +1954,49 @@ mod tests {
                 &edges,
             ),
             vec!["e1".to_owned()]
+        );
+    }
+
+    #[test]
+    fn graph_shortest_path_is_bounded_and_respects_document_and_tombstone_filters() {
+        let nodes = vec![node_record("n1"), node_record("n2"), node_record("n3")];
+        let edges = vec![
+            edge_record(
+                "e1",
+                serde_json::json!({"doc_id": "doc-1", "source_ids": ["n1"], "target_ids": ["n2"]}),
+            ),
+            edge_record(
+                "e2",
+                serde_json::json!({"doc_id": "doc-1", "source_ids": ["n2"], "target_ids": ["n3"]}),
+            ),
+            edge_record(
+                "other-doc",
+                serde_json::json!({"doc_id": "doc-2", "source_ids": ["n1"], "target_ids": ["n3"]}),
+            ),
+        ];
+        let query = GraphShortestPathQuery {
+            src_id: "n1".to_owned(),
+            dst_id: "n3".to_owned(),
+            doc_id: Some("doc-1".to_owned()),
+            max_depth: 4,
+        };
+        assert_eq!(
+            graph_shortest_path_from_records(&query, &nodes, &edges),
+            vec!["n1", "n2", "n3"]
+        );
+        let too_shallow = GraphShortestPathQuery {
+            max_depth: 1,
+            ..query.clone()
+        };
+        assert!(graph_shortest_path_from_records(&too_shallow, &nodes, &edges).is_empty());
+        let mut tombstoned = edges[1].clone();
+        tombstoned.metadata.insert(
+            "lifecycle_status".to_owned(),
+            serde_json::json!("tombstoned"),
+        );
+        assert!(
+            graph_shortest_path_from_records(&query, &nodes, &[edges[0].clone(), tombstoned])
+                .is_empty()
         );
     }
 
