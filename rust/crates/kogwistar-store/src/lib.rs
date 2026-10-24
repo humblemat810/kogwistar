@@ -2103,6 +2103,93 @@ mod tests {
     }
 
     #[test]
+    fn graph_traversal_matches_shared_golden_contract() {
+        let fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/graph-traversal-v1.json"
+        )))
+        .expect("valid graph traversal fixture");
+        assert_eq!(fixture["schema_version"], 1);
+        let nodes = fixture["graph"]["nodes"]
+            .as_array()
+            .expect("fixture nodes")
+            .iter()
+            .map(|value| node_record(value.as_str().expect("node ID")))
+            .collect::<Vec<_>>();
+        let edges = fixture["graph"]["edges"]
+            .as_array()
+            .expect("fixture edges")
+            .iter()
+            .map(|value| {
+                edge_record(
+                    value["id"].as_str().expect("edge ID"),
+                    serde_json::json!({
+                        "doc_id": value["doc_id"],
+                        "source_ids": value["source_ids"],
+                        "target_ids": value["target_ids"]
+                    }),
+                )
+            })
+            .collect::<Vec<_>>();
+        let cases = fixture["cases"].as_array().expect("fixture cases");
+
+        let node_case = &cases[0];
+        let neighbors = graph_neighbors_from_records_with_jump(
+            node_case["rid"].as_str().expect("neighbor ID"),
+            &nodes,
+            &edges,
+            Some("D1"),
+            false,
+        );
+        assert_eq!(neighbors.nodes, BTreeSet::new());
+        assert_eq!(neighbors.edges, BTreeSet::from(["E1".to_owned()]));
+
+        let edge_case = &cases[1];
+        let neighbors = graph_neighbors_from_records(
+            edge_case["rid"].as_str().expect("edge ID"),
+            &nodes,
+            &edges,
+            Some("D1"),
+        );
+        assert_eq!(
+            neighbors.nodes,
+            BTreeSet::from(["A".to_owned(), "B".to_owned()])
+        );
+        assert_eq!(neighbors.edges, BTreeSet::new());
+
+        let path_case = &cases[2];
+        let path = graph_shortest_path_from_records(
+            &GraphShortestPathQuery {
+                src_id: path_case["src_id"].as_str().unwrap().to_owned(),
+                dst_id: path_case["dst_id"].as_str().unwrap().to_owned(),
+                doc_id: Some("D1".to_owned()),
+                max_depth: 8,
+            },
+            &nodes,
+            &edges,
+        );
+        assert_eq!(path, vec!["A", "E1", "B"]);
+
+        let hop_case = &cases[3];
+        let layers = graph_k_hop_from_records(
+            &GraphKHopQuery {
+                start_ids: vec!["A".to_owned()],
+                k: hop_case["k"].as_u64().unwrap() as usize,
+                doc_id: Some("D1".to_owned()),
+            },
+            &nodes,
+            &edges,
+        );
+        assert!(layers[0].nodes.is_empty());
+        assert_eq!(layers[0].edges, BTreeSet::from(["E1".to_owned()]));
+        assert_eq!(
+            layers[1].nodes,
+            BTreeSet::from(["A".to_owned(), "B".to_owned()])
+        );
+        assert!(layers[1].edges.is_empty());
+    }
+
+    #[test]
     fn graph_record_acl_matches_python_visibility_and_fails_closed() {
         let mut acl = GraphRecord::new("acl-n1");
         acl.metadata

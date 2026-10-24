@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "graph": {
+    "nodes": ["A", "B"],
+    "edges": [
+      {
+        "id": "E1",
+        "doc_id": "D1",
+        "source_ids": ["A"],
+        "target_ids": ["B"]
+      }
+    ]
+  },
+  "cases": [
+    {
+      "name": "node_to_edge_without_jump",
+      "rid": "A",
+      "expected_neighbors": {"nodes": [], "edges": ["E1"]}
+    },
+    {
+      "name": "edge_to_nodes",
+      "rid": "E1",
+      "expected_neighbors": {"nodes": ["A", "B"], "edges": []}
+    },
+    {
+      "name": "shortest_path",
+      "src_id": "A",
+      "dst_id": "B",
+      "expected_path": ["A", "E1", "B"]
+    },
+    {
+      "name": "k_hop",
+      "start_ids": ["A"],
+      "k": 2,
+      "expected_layers": [
+        {"nodes": [], "edges": ["E1"]},
+        {"nodes": ["A", "B"], "edges": []}
+      ]
+    }
+  ]
+}

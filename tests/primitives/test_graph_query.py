@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import pytest
 
@@ -353,6 +354,45 @@ def test_neighbors_and_khop(small_graph):
     assert "B" in nbrs["nodes"]
     layers = gq.k_hop(["A"], k=2, doc_id=doc_id)
     assert layers and "B" in layers[1]["nodes"]
+
+
+def test_graph_traversal_matches_shared_golden_contract(small_graph):
+    fixture = json.loads(
+        (Path(__file__).resolve().parents[2] / "contracts/golden/graph-traversal-v1.json")
+        .read_text(encoding="utf-8")
+    )
+    assert fixture["schema_version"] == 1
+    engine, doc_id = small_graph
+    gq = GraphQuery(engine)
+    cases = {case["name"]: case for case in fixture["cases"]}
+
+    node_neighbors = gq.neighbors(
+        cases["node_to_edge_without_jump"]["rid"],
+        doc_id=doc_id,
+        allow_jump_edge=False,
+    )
+    assert sorted(node_neighbors["nodes"]) == cases["node_to_edge_without_jump"][
+        "expected_neighbors"
+    ]["nodes"]
+    assert sorted(node_neighbors["edges"]) == cases["node_to_edge_without_jump"][
+        "expected_neighbors"
+    ]["edges"]
+
+    edge_neighbors = gq.neighbors(cases["edge_to_nodes"]["rid"], doc_id=doc_id)
+    assert sorted(edge_neighbors["nodes"]) == cases["edge_to_nodes"]["expected_neighbors"][
+        "nodes"
+    ]
+    assert sorted(edge_neighbors["edges"]) == cases["edge_to_nodes"]["expected_neighbors"][
+        "edges"
+    ]
+
+    path = gq.shortest_path("A", "B", doc_id=doc_id, max_depth=8)
+    assert path == cases["shortest_path"]["expected_path"]
+    layers = gq.k_hop(["A"], k=2, doc_id=doc_id)
+    assert [
+        {"nodes": sorted(layer["nodes"]), "edges": sorted(layer["edges"])}
+        for layer in layers
+    ] == cases["k_hop"]["expected_layers"]
 
 
 def test_shortest_path_and_find_edges(small_graph):
