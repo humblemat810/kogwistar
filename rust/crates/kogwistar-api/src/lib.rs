@@ -26,12 +26,13 @@ use kogwistar_runtime::{
     RuntimeStepExecutePayload, RuntimeStepExecuteRequest,
 };
 use kogwistar_store::{
-    AuthIdentityStore, AuthUser, EntityEvent, GraphAclPrincipal, GraphMutation, GraphMutationBatch,
-    GraphProjectionRead, GraphRecord, GraphScope, LaneMessageClaimFilter, LaneMessageFilter,
-    MetadataFilter, NamedProjection, NamedProjectionWrite, NewIndexJob, NewProjectedLaneMessage,
-    ProjectedLaneMessage, ResolveExternalIdentity, ServerRun, ServerRunCreate, ServerRunEvent,
-    WorkflowDesignDeltaWrite, WorkflowDesignSnapshot, WorkflowDesignSnapshotWrite,
-    graph_neighbors_from_records, graph_records_visible_by_acl, validate_typed_graph_mutation,
+    AuthIdentityStore, AuthUser, EntityEvent, GraphAclPrincipal, GraphAuthorityCapability,
+    GraphMutation, GraphMutationBatch, GraphMutationStore, GraphProjectionRead, GraphRecord,
+    GraphScope, LaneMessageClaimFilter, LaneMessageFilter, MetadataFilter, NamedProjection,
+    NamedProjectionWrite, NewIndexJob, NewProjectedLaneMessage, ProjectedLaneMessage,
+    ResolveExternalIdentity, ServerRun, ServerRunCreate, ServerRunEvent, WorkflowDesignDeltaWrite,
+    WorkflowDesignSnapshot, WorkflowDesignSnapshotWrite, graph_neighbors_from_records,
+    graph_records_visible_by_acl, validate_typed_graph_mutation,
 };
 use kogwistar_store_postgres::{
     NewRawEntityEvent as PostgresNewRawEntityEvent, PostgresAuthStore, PostgresStore,
@@ -7982,6 +7983,15 @@ impl PostgresRunApplicationService {
         &self,
         request: &ApiEffectRequest,
     ) -> ApiEffectResponse {
+        if self.store.graph_authority_capability()
+            != GraphAuthorityCapability::AtomicBatchWithIndexJobs
+        {
+            return effect_error(
+                StatusCode::NOT_IMPLEMENTED,
+                "KOGWISTAR_GRAPH_AUTHORITY_UNSUPPORTED",
+                "This service does not provide atomic graph authority with index jobs",
+            );
+        }
         if !capability_allowed(request, &self.capabilities, "write_graph", &["write_graph"]) {
             return effect_error(
                 StatusCode::FORBIDDEN,
