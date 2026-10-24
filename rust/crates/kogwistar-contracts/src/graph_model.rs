@@ -205,6 +205,38 @@ impl GraphModelClass {
         }
     }
 
+    /// Return the Python class name used to build a slice manifest.
+    pub const fn python_name(self) -> &'static str {
+        match self {
+            Self::Node => "Node",
+            Self::Edge => "Edge",
+            Self::AclNode => "ACLNode",
+            Self::AclEdge => "ACLEdge",
+            Self::ConversationNode => "ConversationNode",
+            Self::ConversationEdge => "ConversationEdge",
+            Self::WorkflowNode => "WorkflowNode",
+            Self::WorkflowEdge => "WorkflowEdge",
+            Self::WorkflowRunNode => "WorkflowRunNode",
+            Self::WorkflowStepExecNode => "WorkflowStepExecNode",
+            Self::WorkflowCheckpointNode => "WorkflowCheckpointNode",
+            Self::WorkflowCompletedNode => "WorkflowCompletedNode",
+            Self::WorkflowCancelledNode => "WorkflowCancelledNode",
+            Self::WorkflowFailedNode => "WorkflowFailedNode",
+            Self::WorkflowRuntimeEdge => "WorkflowRuntimeEdge",
+            Self::PureChromaNode => "PureChromaNode",
+            Self::PureChromaEdge => "PureChromaEdge",
+            Self::DocNode => "DocNode",
+            Self::LlmNode => "LLMNode",
+            Self::LlmEdge => "LLMEdge",
+            Self::LlmNodeExtraction => "LLMNodeExtraction",
+            Self::LlmEdgeExtraction => "LLMEdgeExtraction",
+            Self::FlattenedLlmNode => "FlattenedLLMNode",
+            Self::FlattenedLlmEdge => "FlattenedLLMEdge",
+            Self::AssocFlattenedLlmNode => "AssocFlattenedLLMNode",
+            Self::AssocFlattenedLlmEdge => "AssocFlattenedLLMEdge",
+        }
+    }
+
     pub const fn family(self) -> GraphModelFamily {
         match self {
             Self::Node | Self::Edge => GraphModelFamily::Persistent,
@@ -410,6 +442,14 @@ impl GraphModelEnvelope {
     ) -> Result<GraphModelSliceV1, GraphModelError> {
         if self.schema_version != GRAPH_MODEL_ENVELOPE_VERSION {
             return Err(GraphModelError::UnsupportedVersion(self.schema_version));
+        }
+        if let Some(model_name) = manifest.model_name.as_deref() {
+            if model_name != self.model_class.python_name() {
+                return Err(GraphModelError::InvalidPayload(format!(
+                    "slice manifest model {model_name:?} does not match envelope model {}",
+                    self.model_class.python_name()
+                )));
+            }
         }
         let payload = manifest
             .project(&self.payload, mode)
@@ -2934,5 +2974,20 @@ mod tests {
             .project_declared_slice()
             .is_err()
         );
+
+        let mismatched = GraphModelEnvelope::new(
+            GraphModelClass::Edge,
+            serde_json::json!({"summary": "visible"}),
+        )
+        .with_slice(GraphSliceDeclarationV1 {
+            schema_version: GRAPH_SLICE_MANIFEST_VERSION,
+            mode: GraphSliceMode::LlmIn,
+            manifest: envelope.slice.as_ref().unwrap().manifest.clone(),
+        });
+        assert!(matches!(
+            mismatched.project_declared_slice(),
+            Err(GraphModelError::InvalidPayload(message))
+                if message.contains("does not match envelope model Edge")
+        ));
     }
 }
