@@ -25,6 +25,7 @@ from kogwistar.implementation_selection import (
     implementation_selection_bound,
     implementation_selection_scope,
     postgres_authority_selectors_aligned,
+    resolve_implementation_selection,
 )
 from kogwistar.runtime import AsyncWorkflowRuntime, WorkflowRuntime
 from tests._helpers.embeddings import ConstantEmbeddingFunction
@@ -159,6 +160,21 @@ def test_bound_runtime_uses_its_construction_snapshot(
 
     assert run(runtime) == ("python", "python")
     assert runtime_implementation_mode() == "rust"
+
+
+def test_resolve_implementation_selection_rejects_split_authority() -> None:
+    python_snapshot = (("KOGWISTAR_IMPL_MODE", "python"),)
+    rust_snapshot = (("KOGWISTAR_IMPL_MODE", "rust"),)
+
+    assert resolve_implementation_selection(
+        SimpleNamespace(_implementation_selection_snapshot=python_snapshot),
+        SimpleNamespace(),
+    ) == python_snapshot
+    with pytest.raises(ValueError, match="different implementation selections"):
+        resolve_implementation_selection(
+            SimpleNamespace(_implementation_selection_snapshot=python_snapshot),
+            SimpleNamespace(_implementation_selection_snapshot=rust_snapshot),
+        )
 
 
 def test_graph_engine_captures_selectors_when_constructed(

@@ -44,6 +44,29 @@ def capture_implementation_selection() -> ImplementationSelectionSnapshot:
     return tuple((name, os.getenv(name)) for name in _IMPLEMENTATION_ENV_NAMES)
 
 
+def resolve_implementation_selection(
+    *owners: object,
+) -> ImplementationSelectionSnapshot:
+    """Return one selector snapshot for cooperating components.
+
+    Components without a snapshot retain the legacy behavior and inherit a
+    fresh capture. Components that already captured different selectors fail
+    closed instead of running one operation with split authorities.
+    """
+
+    snapshots = tuple(
+        snapshot
+        for owner in owners
+        if (snapshot := getattr(owner, "_implementation_selection_snapshot", None))
+        is not None
+    )
+    if snapshots and any(snapshot != snapshots[0] for snapshot in snapshots[1:]):
+        raise ValueError(
+            "cooperating components use different implementation selections"
+        )
+    return snapshots[0] if snapshots else capture_implementation_selection()
+
+
 def postgres_authority_selectors_aligned(
     *, meta_mode: str, graph_mode: str, authority_mode: str
 ) -> bool:

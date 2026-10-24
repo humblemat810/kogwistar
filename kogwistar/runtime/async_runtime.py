@@ -21,8 +21,8 @@ from typing import (
 from kogwistar.engine_core.sqlite_context import sqlite_execution_bound
 from kogwistar.implementation_selection import (
     ImplementationSelectionSnapshot,
-    capture_implementation_selection,
     implementation_selection_bound,
+    resolve_implementation_selection,
 )
 from kogwistar.json_types import JsonObject, JsonValue
 
@@ -161,24 +161,8 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
         experimental_native_scheduler: bool = True,
         max_nested_workflow_depth: int = 8,
     ) -> None:
-        workflow_selection = getattr(
-            workflow_engine, "_implementation_selection_snapshot", None
-        )
-        conversation_selection = getattr(
-            conversation_engine, "_implementation_selection_snapshot", None
-        )
-        if (
-            workflow_selection is not None
-            and conversation_selection is not None
-            and workflow_selection != conversation_selection
-        ):
-            raise ValueError(
-                "workflow and conversation engines use different implementation selections"
-            )
         self._implementation_selection_snapshot: ImplementationSelectionSnapshot = (
-            workflow_selection
-            or conversation_selection
-            or capture_implementation_selection()
+            resolve_implementation_selection(workflow_engine, conversation_engine)
         )
         self._raw_step_resolver = step_resolver
         self.step_resolver = step_resolver
