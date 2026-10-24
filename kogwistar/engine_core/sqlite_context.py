@@ -11,8 +11,13 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from functools import wraps
 from pathlib import Path
-from typing import ParamSpec, TypeVar, cast
+from typing import BinaryIO, ParamSpec, TypeVar, cast
 from urllib.parse import parse_qs, unquote, urlsplit
+
+if os.name == "nt":
+    import msvcrt
+else:
+    import fcntl
 
 
 class SQLiteContextError(RuntimeError):
@@ -36,6 +41,7 @@ _active_path_identities: dict[str, tuple[tuple[object, ...] | None, int]] = {}
 _native_session_leases: dict[tuple[str, str], SQLiteDatabaseLease] = {}
 _native_reusable_sessions: set[tuple[str, str]] = set()
 _native_active_transactions: set[tuple[str, str]] = set()
+_process_authority_locks: dict[str, tuple[BinaryIO, int]] = {}
 P = ParamSpec("P")
 R = TypeVar("R")
 
@@ -206,6 +212,9 @@ class SQLiteDatabaseLease:
         self._file_identity = file_identity
         self._released = False
         self.context_id = ""
+        self._process_lock_key = (
+            path_key if implementation == "python" else None
+        )
 
     def refresh_file_identity(self, database: str | os.PathLike[str]) -> None:
         new_keys = _database_keys(database)
@@ -257,6 +266,8 @@ class SQLiteDatabaseLease:
                     owners.pop(self.implementation, None)
                 if not owners:
                     _active_implementations.pop(key, None)
+            if self._process_lock_key is not None:
+                _release_process_authority_lock(self._process_lock_key)
             identity, count = _active_path_identities[self._path_key]
             if count <= 1:
                 _active_path_identities.pop(self._path_key, None)
@@ -300,9 +311,16 @@ def acquire_sqlite_database(
                     "SQLite database is already open through another implementation",
                     "KOGWISTAR_SQLITE_DATABASE_ENGINE_CONFLICT",
                 )
-        for key in keys:
-            owners = _active_implementations.setdefault(key, {})
-            owners[implementation] = owners.get(implementation, 0) + 1
+        if implementation == "python":
+            _acquire_process_authority_lock(path_key)
+        try:
+            for key in keys:
+                owners = _active_implementations.setdefault(key, {})
+                owners[implementation] = owners.get(implementation, 0) + 1
+        except BaseException:
+            if implementation == "python":
+                _release_process_authority_lock(path_key)
+            raise
         identity, count = active_identity or (file_identity, 0)
         if identity is None and file_identity is not None:
             identity = file_identity
@@ -314,6 +332,51 @@ def acquire_sqlite_database(
         f"database={path_key} identity={file_identity}"
     )
     return lease
+
+
+def _authority_lock_path(path_key: str) -> Path:
+    return Path(f"{path_key}.kogwistar-authority.lock")
+
+
+def _acquire_process_authority_lock(path_key: str) -> None:
+    existing = _process_authority_locks.get(path_key)
+    if existing is not None:
+        handle, count = existing
+        _process_authority_locks[path_key] = (handle, count + 1)
+        return
+
+    lock_path = _authority_lock_path(path_key)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = lock_path.open("a+b")
+    try:
+        handle.seek(0)
+        if os.name == "nt":
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as exc:
+        handle.close()
+        raise SQLiteContextError(
+            "SQLite database authority is held by another process",
+            "KOGWISTAR_SQLITE_PROCESS_AUTHORITY_CONFLICT",
+        ) from exc
+    _process_authority_locks[path_key] = (handle, 1)
+
+
+def _release_process_authority_lock(path_key: str) -> None:
+    existing = _process_authority_locks.get(path_key)
+    if existing is None:
+        return
+    handle, count = existing
+    if count > 1:
+        _process_authority_locks[path_key] = (handle, count - 1)
+        return
+    try:
+        if os.name != "nt":
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    finally:
+        handle.close()
+        _process_authority_locks.pop(path_key, None)
 
 
 def native_sqlite_enter(

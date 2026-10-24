@@ -4,6 +4,8 @@ import asyncio
 import json
 import os
 import sqlite3
+import subprocess
+import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import Context, copy_context
@@ -99,6 +101,35 @@ def test_overlapping_python_and_rust_database_ownership_is_rejected(tmp_path: Pa
         _assert_code(conflict.value, "KOGWISTAR_SQLITE_DATABASE_ENGINE_CONFLICT")
     finally:
         python_lease.release()
+
+
+def test_sqlite_authority_lock_rejects_another_process(tmp_path: Path) -> None:
+    path = tmp_path / "cross-process.sqlite"
+    child_code = (
+        "from pathlib import Path\n"
+        "import sys\n"
+        "from kogwistar.engine_core.sqlite_context import acquire_sqlite_database\n"
+        "lease = acquire_sqlite_database(Path(sys.argv[1]), 'python')\n"
+        "print('ready', flush=True)\n"
+        "sys.stdin.read()\n"
+        "lease.release()\n"
+    )
+    child = subprocess.Popen(
+        [sys.executable, "-c", child_code, str(path)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert child.stdout is not None
+        assert child.stdout.readline().strip() == "ready"
+        with pytest.raises(SQLiteContextError) as conflict:
+            acquire_sqlite_database(path, "python")
+        _assert_code(conflict.value, "KOGWISTAR_SQLITE_PROCESS_AUTHORITY_CONFLICT")
+    finally:
+        if child.stdin is not None:
+            child.stdin.close()
+        child.wait(timeout=10)
 
 
 def test_cross_implementation_acquire_race_grants_one_owner_only(

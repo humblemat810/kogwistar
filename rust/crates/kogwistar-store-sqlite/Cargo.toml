@@ -10,6 +10,7 @@ kogwistar-contracts = { path = "../kogwistar-contracts" }
 kogwistar-engine = { path = "../kogwistar-engine" }
 kogwistar-runtime = { path = "../kogwistar-runtime" }
 kogwistar-store = { path = "../kogwistar-store" }
+fs2.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

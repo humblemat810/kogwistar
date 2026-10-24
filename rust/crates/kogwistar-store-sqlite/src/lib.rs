@@ -3,6 +3,7 @@
 //! Schema names and event semantics intentionally match Python's
 //! `EngineSQLite`; this crate does not own queues, projections, or graph data.
 
+use fs2::FileExt;
 use kogwistar_contracts::EntityEventEnvelope;
 use kogwistar_engine::EntityProjection;
 use kogwistar_runtime::{
@@ -31,10 +32,10 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, pa
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::CStr;
-use std::fs;
+use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
@@ -45,6 +46,62 @@ const BUSY_TIMEOUT_MS: u64 = 30_000;
 const STORE_SCHEMA_VERSION: i64 = 1;
 static NEXT_CLAIM_TOKEN: AtomicU64 = AtomicU64::new(0);
 
+static PROCESS_AUTHORITY_LOCKS: OnceLock<Mutex<BTreeMap<PathBuf, Weak<File>>>> = OnceLock::new();
+
+#[derive(Debug)]
+struct ProcessAuthorityLock {
+    _file: Arc<File>,
+}
+
+impl ProcessAuthorityLock {
+    fn acquire(database: &Path) -> SqliteStoreResult<Self> {
+        let database = normalized_database_path(database);
+        let lock_path = PathBuf::from(format!("{}.kogwistar-authority.lock", database.display()));
+        let locks = PROCESS_AUTHORITY_LOCKS.get_or_init(|| Mutex::new(BTreeMap::new()));
+        let mut active = locks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(file) = active.get(&lock_path).and_then(Weak::upgrade) {
+            return Ok(Self { _file: file });
+        }
+
+        let file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .open(&lock_path)?;
+        file.try_lock_exclusive()
+            .map_err(|error| SqliteStoreError::AuthorityConflict {
+                path: database.display().to_string(),
+                message: error.to_string(),
+            })?;
+        let file = Arc::new(file);
+        active.insert(lock_path, Arc::downgrade(&file));
+        Ok(Self { _file: file })
+    }
+}
+
+fn normalized_database_path(database: &Path) -> PathBuf {
+    let absolute = if database.is_absolute() {
+        database.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map(|directory| directory.join(database))
+            .unwrap_or_else(|_| database.to_path_buf())
+    };
+    if let Ok(canonical) = fs::canonicalize(&absolute) {
+        return canonical;
+    }
+    let Some(file_name) = absolute.file_name() else {
+        return absolute;
+    };
+    absolute
+        .parent()
+        .and_then(|parent| fs::canonicalize(parent).ok())
+        .map(|parent| parent.join(file_name))
+        .unwrap_or(absolute)
+}
+
 /// Errors for direct SQLite APIs. Trait methods retain `kogwistar-store`'s
 /// existing `StoreError` contract for its validation and cursor errors.
 #[derive(Debug, Error)]
@@ -53,6 +110,8 @@ pub enum SqliteStoreError {
     Sql(#[from] rusqlite::Error),
     #[error("filesystem operation failed: {0}")]
     Io(#[from] std::io::Error),
+    #[error("SQLite database authority is held by another process for {path}: {message}")]
+    AuthorityConflict { path: String, message: String },
     #[error("namespace must not be empty")]
     EmptyNamespace,
     #[error(
@@ -138,6 +197,7 @@ pub struct AppendedRawEvent {
 pub struct SqliteStore {
     path: Arc<PathBuf>,
     connection: Arc<Mutex<Connection>>,
+    _authority_lock: Arc<ProcessAuthorityLock>,
 }
 
 impl Drop for SqliteStore {
@@ -326,6 +386,7 @@ impl SqliteStore {
         {
             fs::create_dir_all(parent)?;
         }
+        let authority_lock = Arc::new(ProcessAuthorityLock::acquire(&path)?);
         let conn = configured_connection(&path)?;
         let schema_version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
         if schema_version < STORE_SCHEMA_VERSION {
@@ -335,6 +396,7 @@ impl SqliteStore {
         Ok(Self {
             path: Arc::new(path),
             connection: Arc::new(Mutex::new(conn)),
+            _authority_lock: authority_lock,
         })
     }
 
