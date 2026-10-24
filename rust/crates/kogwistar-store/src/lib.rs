@@ -2348,6 +2348,102 @@ mod tests {
             ["owner", "scope", "group"]
         );
     }
+
+    #[test]
+    fn graph_acl_matches_shared_golden_contract() {
+        let fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/graph-acl-v1.json"
+        )))
+        .expect("valid graph ACL fixture");
+        assert_eq!(fixture["schema_version"], 1);
+        let principal = GraphAclPrincipal {
+            principal_id: fixture["principal"]["id"]
+                .as_str()
+                .expect("principal ID")
+                .to_owned(),
+            groups: fixture["principal"]["groups"]
+                .as_array()
+                .expect("principal groups")
+                .iter()
+                .map(|value| value.as_str().expect("group").to_owned())
+                .collect(),
+            security_scope: fixture["principal"]["security_scope"]
+                .as_str()
+                .map(str::to_owned),
+        };
+        let mut nodes = Vec::new();
+        let mut edges = Vec::new();
+        for target in fixture["targets"].as_array().expect("targets") {
+            let id = target["id"].as_str().expect("target ID");
+            let grain = target["grain"].as_str().expect("target grain");
+            let target_record = GraphRecord::new(id);
+            let mut acl = GraphRecord::new(format!("acl-{id}"));
+            acl.metadata
+                .insert("entity_type".into(), "acl_record".into());
+            acl.metadata
+                .insert("acl_truth_graph".into(), fixture["truth_graph"].clone());
+            acl.metadata
+                .insert("acl_target_entity_id".into(), id.into());
+            acl.metadata.insert("acl_target_grain".into(), grain.into());
+            acl.metadata.insert("acl_version".into(), 1.into());
+            if let Some(mode) = target["mode"].as_str() {
+                acl.metadata.insert("acl_mode".into(), mode.into());
+            }
+            if let Some(owner) = target["owner_id"].as_str() {
+                acl.metadata.insert("owner_id".into(), owner.into());
+            }
+            if let Some(scope) = target["security_scope"].as_str() {
+                acl.metadata.insert("security_scope".into(), scope.into());
+            }
+            let mut properties = serde_json::Map::new();
+            if let Some(values) = target["shared_with_principals"].as_array() {
+                properties.insert(
+                    "shared_with_principals".into(),
+                    Value::Array(values.clone()),
+                );
+            }
+            if let Some(values) = target["shared_with_groups"].as_array() {
+                properties.insert("shared_with_groups".into(), Value::Array(values.clone()));
+            }
+            if target["tombstoned"].as_bool().unwrap_or(false) {
+                acl.metadata.insert("tombstoned".into(), true.into());
+            }
+            if !properties.is_empty() {
+                acl.document = Some(serde_json::json!({"properties": properties}).to_string());
+            }
+            nodes.push(acl);
+            if grain == "node" {
+                nodes.push(target_record);
+            } else {
+                edges.push(target_record);
+            }
+        }
+        let (visible_nodes, visible_edges) =
+            graph_records_visible_by_acl(&nodes, &edges, "knowledge", &principal);
+        let node_ids = visible_nodes
+            .iter()
+            .map(|record| record.id.as_str())
+            .collect::<Vec<_>>();
+        let edge_ids = visible_edges
+            .iter()
+            .map(|record| record.id.as_str())
+            .collect::<Vec<_>>();
+        let expected_nodes = fixture["expected_visible"]["nodes"]
+            .as_array()
+            .expect("expected nodes")
+            .iter()
+            .map(|value| value.as_str().expect("node ID").to_owned())
+            .collect::<Vec<_>>();
+        let expected_edges = fixture["expected_visible"]["edges"]
+            .as_array()
+            .expect("expected edges")
+            .iter()
+            .map(|value| value.as_str().expect("edge ID").to_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(node_ids, expected_nodes);
+        assert_eq!(edge_ids, expected_edges);
+    }
     use kogwistar_contracts::{GraphModelClass, GraphModelEnvelope};
 
     fn fixture_payload(index: usize) -> Value {
