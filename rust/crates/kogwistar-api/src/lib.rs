@@ -13063,6 +13063,16 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
         body["mutations"][0]["scope"]["namespace"] = json!("alpha");
         body["mutations"][0]["record"]["embedding"] = json!([1.0, 0.0, 0.0]);
         body["mutations"][0]["embedding_dim"] = json!(3);
+        body["index_jobs"] = json!([{
+            "job_id": "graph-route-index-1",
+            "namespace": "alpha",
+            "entity_kind": "node",
+            "entity_id": "node-1",
+            "index_kind": "node_embedding",
+            "op": "UPSERT",
+            "payload_json": "{\"embedding\":[1.0,0.0,0.0]}",
+            "max_retries": 3
+        }]);
         let key = "graph-route-test-secret";
         let make_token = |capabilities: &[&str], storage_ns: &str| {
             encode(
@@ -13154,6 +13164,20 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
             .unwrap();
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].id, "node-1");
+        let index_jobs = service
+            .store
+            .list_index_jobs(
+                Some("alpha"),
+                Some("PENDING"),
+                Some("node"),
+                Some("node-1"),
+                Some("node_embedding"),
+                10,
+            )
+            .await
+            .unwrap();
+        assert_eq!(index_jobs.len(), 1);
+        assert_eq!(index_jobs[0].job_id, "graph-route-index-1");
     }
 
     #[tokio::test]
