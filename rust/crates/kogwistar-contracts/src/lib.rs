@@ -12,6 +12,7 @@ use uuid::Uuid;
 mod delegation;
 mod graph_model;
 mod graph_mutation;
+mod graph_read;
 mod graph_slice;
 pub use delegation::{
     DELEGATION_AUTHORITY_SCHEMA_VERSION, DelegationAuthorityV1, DelegationError,
@@ -35,6 +36,9 @@ pub use graph_model::{
 pub use graph_mutation::{
     GraphIndexJobV1, GraphMutationBatchV1, GraphMutationV1, GraphMutationValidationError,
     GraphRecordV1, GraphScopeV1,
+};
+pub use graph_read::{
+    GRAPH_NEIGHBORS_REQUEST_VERSION, GraphNeighborsRequestV1, graph_neighbors_request_from_str,
 };
 pub use graph_slice::{
     GRAPH_SLICE_MANIFEST_VERSION, GraphModelSliceV1, GraphSliceDeclarationV1, GraphSliceError,

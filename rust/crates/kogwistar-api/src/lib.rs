@@ -17,7 +17,8 @@ use jsonwebtoken::{
 };
 use kogwistar_contracts::{
     DelegationAuthorityV1, GraphMutationBatchV1 as GraphMutationBatchInput,
-    GraphMutationV1 as GraphMutationInput, attenuate_capabilities,
+    GraphMutationV1 as GraphMutationInput, GraphNeighborsRequestV1, attenuate_capabilities,
+    graph_neighbors_request_from_str,
 };
 use kogwistar_runtime::{
     RECORDED_RUNTIME_CONTRACT_VERSION, RecordedRuntimeState, RecordedRuntimeTransition,
@@ -5601,20 +5602,10 @@ pub struct PostgresRunApplicationService {
     capabilities: SharedCapabilityState,
 }
 
-#[derive(Debug, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-struct GraphNeighborsRequest {
-    rid: String,
-    #[serde(default)]
-    doc_id: Option<String>,
-}
-
-fn parse_graph_neighbors_request(body: &[u8]) -> Result<GraphNeighborsRequest, String> {
-    let input =
-        serde_json::from_slice::<GraphNeighborsRequest>(body).map_err(|error| error.to_string())?;
-    if input.rid.trim().is_empty() {
-        return Err("rid is required".to_owned());
-    }
+fn parse_graph_neighbors_request(body: &[u8]) -> Result<GraphNeighborsRequestV1, String> {
+    let payload = std::str::from_utf8(body).map_err(|error| error.to_string())?;
+    let input = graph_neighbors_request_from_str(payload).map_err(|error| error.to_string())?;
+    input.validate().map_err(str::to_owned)?;
     Ok(input)
 }
 
@@ -11283,12 +11274,13 @@ mod tests {
 
     #[test]
     fn graph_neighbor_request_is_typed_and_closed_to_unknown_fields() {
-        let request: GraphNeighborsRequest =
+        let request: GraphNeighborsRequestV1 =
             serde_json::from_str(r#"{"rid":" n1 ","doc_id":"doc-1"}"#).unwrap();
         assert_eq!(request.rid, " n1 ");
         assert_eq!(request.doc_id.as_deref(), Some("doc-1"));
         assert!(
-            serde_json::from_str::<GraphNeighborsRequest>(r#"{"rid":"n1","write":true}"#).is_err()
+            serde_json::from_str::<GraphNeighborsRequestV1>(r#"{"rid":"n1","write":true}"#)
+                .is_err()
         );
         assert!(parse_graph_neighbors_request(br#"{"rid":""}"#).is_err());
     }
