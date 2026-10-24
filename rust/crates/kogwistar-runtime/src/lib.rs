@@ -15,6 +15,18 @@ pub const RECORDED_RUNTIME_CONTRACT_VERSION: u32 = 1;
 pub const WORKER_PROTOCOL_SYNC_V1: &str = "sync-v1";
 pub const WORKER_PROTOCOL_ASYNC_V2: &str = "async-v2";
 
+fn default_operation_version() -> String {
+    "v1".to_owned()
+}
+
+fn is_default_operation_version(version: &str) -> bool {
+    version == "v1"
+}
+
+fn is_no_environment_id(value: &Option<String>) -> bool {
+    value.is_none()
+}
+
 /// Scheduler-owned payload for one Python worker step.  Keeping this wire DTO
 /// beside the reducer prevents SQLite, PostgreSQL, and API schedulers from
 /// independently hand-copying its fields.
@@ -36,6 +48,17 @@ pub struct RuntimeStepExecutePayload {
     pub turn_node_id: Option<String>,
     pub node_id: String,
     pub op: Value,
+    /// Version of this registered workflow operation, independent of the
+    /// worker transport protocol. Missing legacy values mean v1.
+    #[serde(
+        default = "default_operation_version",
+        skip_serializing_if = "is_default_operation_version"
+    )]
+    pub op_version: String,
+    /// Optional worker environment required by this operation. Legacy work
+    /// without this field remains environment-agnostic.
+    #[serde(default, skip_serializing_if = "is_no_environment_id")]
+    pub op_environment_id: Option<String>,
     #[serde(default)]
     pub runtime_routes: Vec<RuntimeStaticRoute>,
     pub join_mask: i64,
@@ -75,8 +98,23 @@ impl RuntimeStepExecutePayload {
             workflow_id: state.workflow_id.clone(),
             conversation_id: state.conversation_id.clone(),
             turn_node_id: state.user_turn_node_id.clone(),
-            node_id: request.node_id,
+            node_id: request.node_id.clone(),
             op: request.op,
+            op_version: state
+                .state
+                .get("_rt_node_versions")
+                .and_then(Value::as_object)
+                .and_then(|versions| versions.get(&request.node_id))
+                .and_then(Value::as_str)
+                .unwrap_or("v1")
+                .to_owned(),
+            op_environment_id: state
+                .state
+                .get("_rt_node_environment_ids")
+                .and_then(Value::as_object)
+                .and_then(|ids| ids.get(&request.node_id))
+                .and_then(Value::as_str)
+                .map(str::to_owned),
             runtime_routes: state.static_routes.clone(),
             join_mask: request.join_mask,
             token_id: request.token_id,
@@ -2104,7 +2142,14 @@ mod tests {
         );
         assert_eq!(payload.turn_node_id.as_deref(), Some("turn"));
         assert_eq!(payload.expected_event_seq, 9);
+        assert_eq!(payload.op_version, "v1");
         assert_eq!(payload.resume_effect.as_ref().unwrap()["status"], "success");
+        assert!(
+            serde_json::to_value(&payload)
+                .unwrap()
+                .get("op_version")
+                .is_none()
+        );
         assert_eq!(
             serde_json::from_value::<RuntimeStepExecutePayload>(
                 serde_json::to_value(payload).unwrap()
@@ -2112,6 +2157,69 @@ mod tests {
             .unwrap()
             .state["seed"],
             1
+        );
+    }
+
+    #[test]
+    fn step_execute_payload_carries_non_default_operation_version() {
+        let mut start = transition(RecordedTransitionKind::Start, "start", 0, 0);
+        let mut initial_state = Map::new();
+        initial_state.insert("_rt_node_versions".to_owned(), json!({"node": "v2"}));
+        start.initial_state = Some(initial_state);
+        start.frontier = Some(RuntimeFrontier {
+            pending: vec![("node".to_owned(), 0, "token".to_owned(), None)],
+            ..RuntimeFrontier::default()
+        });
+        let reduced = reduce_recorded_transition(None, &start).unwrap();
+        let payload = RuntimeStepExecutePayload::from_recorded_state(
+            &reduced.state,
+            RuntimeStepExecuteRequest {
+                node_id: "node".to_owned(),
+                op: json!("process"),
+                join_mask: 0,
+                token_id: "token".to_owned(),
+                parent_token_id: None,
+                step_seq: 1,
+                expected_event_seq: 2,
+                resume_effect: None,
+            },
+        );
+
+        assert_eq!(payload.op_version, "v2");
+        assert_eq!(serde_json::to_value(payload).unwrap()["op_version"], "v2");
+    }
+
+    #[test]
+    fn step_execute_payload_carries_required_worker_environment() {
+        let mut start = transition(RecordedTransitionKind::Start, "start", 0, 0);
+        let mut initial_state = Map::new();
+        initial_state.insert(
+            "_rt_node_environment_ids".to_owned(),
+            json!({"node": "numpy-cpu-2"}),
+        );
+        start.initial_state = Some(initial_state);
+        start.frontier = Some(RuntimeFrontier {
+            pending: vec![("node".to_owned(), 0, "token".to_owned(), None)],
+            ..RuntimeFrontier::default()
+        });
+        let reduced = reduce_recorded_transition(None, &start).unwrap();
+        let payload = RuntimeStepExecutePayload::from_recorded_state(
+            &reduced.state,
+            RuntimeStepExecuteRequest {
+                node_id: "node".to_owned(),
+                op: json!("numerical"),
+                join_mask: 0,
+                token_id: "token".to_owned(),
+                parent_token_id: None,
+                step_seq: 1,
+                expected_event_seq: 2,
+                resume_effect: None,
+            },
+        );
+        assert_eq!(payload.op_environment_id.as_deref(), Some("numpy-cpu-2"));
+        assert_eq!(
+            serde_json::to_value(payload).unwrap()["op_environment_id"],
+            "numpy-cpu-2"
         );
     }
 

@@ -26,7 +26,6 @@ from .step_context import (
     LaneMessageEventSinkLike,
     LaneMessageSenderLike,
     StepContext,
-    StepFn,
     StepResolver,
 )
 from .telemetry import EventEmitter, TraceContext
@@ -131,6 +130,7 @@ class SyncStepWorker:
                         workflow_id=str(self.workflow_id),
                         workflow_node_id=str(node_id),
                         op=str(op),
+                        op_version=str(getattr(workflow_node, "version", "v1") or "v1"),
                         token_id=str(token_id),
                         attempt=1,
                         step_seq=int(step_seq),
@@ -179,7 +179,19 @@ class SyncStepWorker:
                     else:
                         if self.parent_lease_renew is not None:
                             self.parent_lease_renew()
-                        step_fn: StepFn = self.runtime.step_resolver(op)
+                        op_version = context.op_version
+                        resolve_version = getattr(
+                            self.runtime.step_resolver, "resolve_version", None
+                        )
+                        if callable(resolve_version):
+                            step_fn = resolve_version(op, op_version)
+                        elif op_version == "v1":
+                            step_fn = self.runtime.step_resolver(op)
+                        else:
+                            raise KeyError(
+                                f"resolver cannot verify frozen version {op_version!r} "
+                                f"for op={op!r}"
+                            )
                         with (
                             self.runtime.conversation_engine.uow()
                             if self.runtime._should_step_uow(op, state)

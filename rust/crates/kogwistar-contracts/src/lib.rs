@@ -1457,6 +1457,31 @@ mod tests {
     }
 
     #[test]
+    fn strict_json_integer_contract_matches_shared_python_fixture() {
+        let fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/strict-json-v1.json"
+        )))
+        .expect("valid strict JSON fixture");
+        for case in fixture["valid_integer_literals"].as_array().unwrap() {
+            let literal = case["literal"].as_str().unwrap();
+            assert!(serde_json::from_str::<Value>(literal).is_ok(), "{literal}");
+        }
+        for case in fixture["invalid_integer_literals"].as_array().unwrap() {
+            let literal = case["literal"].as_str().unwrap();
+            let parsed = serde_json::from_str::<Value>(literal).unwrap();
+            assert!(
+                parsed.as_i64().is_none() && parsed.as_u64().is_none(),
+                "out-of-range integer must not retain integer semantics: {literal}"
+            );
+            assert!(
+                parsed.as_f64().is_some(),
+                "Serde JSON representation changed; re-audit the shared contract: {literal}"
+            );
+        }
+    }
+
+    #[test]
     fn evidence_hash_matches_python_golden() {
         for case in fixture()["evidence_hashes"].as_array().unwrap() {
             let canonical = canonicalize_evidence_pack_digest(&case["value"]).unwrap();

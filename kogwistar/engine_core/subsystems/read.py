@@ -11,6 +11,8 @@ from typing import (
     cast,
 )
 
+from pydantic_extension.model_slicing.mixin import use_mode
+
 from ...entity_registry import (
     default_edge_type_for_graph_kind,
     default_node_type_for_graph_kind,
@@ -71,6 +73,17 @@ def _json_float_rows(value: object) -> list[list[float]]:
         if isinstance(row, list):
             rows.append([float(item) for item in row if isinstance(item, (int, float))])
     return rows
+
+
+def _edge_has_endpoint(
+    edge: Edge, *, endpoint_id: str, endpoint_type: Literal["node", "edge"]
+) -> bool:
+    endpoint_ids = (
+        (edge.source_ids or []) + (edge.target_ids or [])
+        if endpoint_type == "node"
+        else (edge.source_edge_ids or []) + (edge.target_edge_ids or [])
+    )
+    return endpoint_id in endpoint_ids
 
 
 def _string_sequence(value: object) -> list[str]:
@@ -555,6 +568,81 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         )
         return self._e._filter_items_by_resolve_mode(edges, resolve_mode)
 
+    def get_incident_edges(
+        self,
+        endpoint_id: str,
+        *,
+        endpoint_type: Literal["node", "edge"] = "node",
+        edge_type: type[Edge] | None = None,
+        limit: int = 512,
+        resolve_mode: Literal[
+            "active_only", "redirect", "include_tombstones"
+        ] = "active_only",
+    ) -> list[Edge]:
+        """Return canonical edges incident to one typed endpoint.
+
+        Backends with an authoritative indexed query can avoid a graph-wide
+        scan. Other backends retain the bounded compatibility scan.
+        """
+        if not endpoint_id:
+            return []
+        if endpoint_type not in {"node", "edge"}:
+            raise ValueError("endpoint_type must be 'node' or 'edge'")
+        selected_edge_type = edge_type or default_edge_type_for_graph_kind(
+            self._e.kg_graph_type
+        )
+        backend_query = getattr(self._e.backend, "edge_get_by_endpoint", None)
+        if callable(backend_query):
+            got = _json_object(
+                run_awaitable_blocking(
+                    backend_query(
+                        endpoint_id=endpoint_id,
+                        endpoint_type=endpoint_type,
+                        include=["documents", "metadatas"],
+                        limit=limit,
+                    )
+                )
+            )
+            edges = self.edges_from_single_or_id_query_result(
+                got,
+                edge_type=selected_edge_type,
+                include=["documents", "metadatas"],
+            )
+        else:
+            edges = [
+                edge
+                for edge in self.get_edges(
+                    edge_type=selected_edge_type,
+                    limit=limit,
+                    resolve_mode=resolve_mode,
+                )
+                if _edge_has_endpoint(
+                    edge, endpoint_id=endpoint_id, endpoint_type=endpoint_type
+                )
+            ]
+            return cast(
+                list[Edge],
+                self._e._filter_items_by_resolve_mode(edges, resolve_mode),
+            )
+
+        edges = self._e._resolve_redirect_chain(
+            initial_items=edges,
+            resolve_mode=resolve_mode,
+            fetch_by_ids=lambda redirect_ids: self.get_edges(
+                redirect_ids,
+                edge_type=selected_edge_type,
+                resolve_mode=resolve_mode,
+            ),
+        )
+        edges = [
+            edge
+            for edge in edges
+            if _edge_has_endpoint(
+                edge, endpoint_id=endpoint_id, endpoint_type=endpoint_type
+            )
+        ]
+        return self._e._filter_items_by_resolve_mode(edges, resolve_mode)
+
     def get_document(self, doc_id: str) -> Document:
         raw_doc_get_result = self._rust_postgres_projection_get(
             entity_kind="document",
@@ -991,20 +1079,21 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             raise Exception("Missing Metadatas")
 
         res: list[TNode] = []
-        for d, emb, metadata in zip(docs, embs, metadatas):
-            json_d = json.loads(d)
-            json_d.update(
-                {
-                    "embedding": normalize_embedding_vector(emb),
-                    "metadata": metadata,
-                }
-            )
-            selected_type = pick_node_type(
-                graph_kind=self._e.kg_graph_type,
-                metadata=metadata,
-                fallback=node_type,
-            )
-            res.append(cast(TNode, selected_type.model_validate(json_d)))
+        with use_mode("backend"):
+            for d, emb, metadata in zip(docs, embs, metadatas):
+                json_d = json.loads(d)
+                json_d.update(
+                    {
+                        "embedding": normalize_embedding_vector(emb),
+                        "metadata": metadata,
+                    }
+                )
+                selected_type = pick_node_type(
+                    graph_kind=self._e.kg_graph_type,
+                    metadata=metadata,
+                    fallback=node_type,
+                )
+                res.append(cast(TNode, selected_type.model_validate(json_d)))
         return res
 
     def edges_from_single_or_id_query_result(
@@ -1031,16 +1120,17 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             raise Exception("Missing Metadatas")
 
         res = []
-        for d, emb, metadata in zip(docs, embs, metadatas):
-            json_d = json.loads(d)
-            json_d.update(
-                {
-                    "embedding": normalize_embedding_vector(emb),
-                    "metadata": metadata,
-                }
-            )
-            selected_type = pick_edge_type(metadata=metadata, fallback=edge_type)
-            res.append(cast(TEdge, selected_type.model_validate(json_d)))
+        with use_mode("backend"):
+            for d, emb, metadata in zip(docs, embs, metadatas):
+                json_d = json.loads(d)
+                json_d.update(
+                    {
+                        "embedding": normalize_embedding_vector(emb),
+                        "metadata": metadata,
+                    }
+                )
+                selected_type = pick_edge_type(metadata=metadata, fallback=edge_type)
+                res.append(cast(TEdge, selected_type.model_validate(json_d)))
         return res
 
     def nodes_from_query_result(
@@ -1119,7 +1209,8 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             )
             doc_list = _json_strings(got.get("documents"))
             if doc_list:
-                obj = Node.model_validate_json(doc_list[0])
+                with use_mode("backend"):
+                    obj = Node.model_validate_json(doc_list[0])
             else:
                 got = _json_object(
                     run_awaitable_blocking(self._e.backend.edge_get(ids=[node_or_id], include=["documents"]))
@@ -1127,7 +1218,8 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 edoc_list = _json_strings(got.get("documents"))
                 if not edoc_list:
                     raise ValueError(f"Unknown node/edge id: {node_or_id}")
-                obj = Edge.model_validate_json(edoc_list[0])
+                with use_mode("backend"):
+                    obj = Edge.model_validate_json(edoc_list[0])
 
         label = getattr(obj, "label", None)
         out: list[dict[str, object]] = []
@@ -1328,7 +1420,8 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         if not ids:
             return []
         got = _json_object(run_awaitable_blocking(self._e.backend.edge_get(ids=ids, include=["documents"])))
-        return [Edge.model_validate_json(js) for js in _json_strings(got.get("documents"))]
+        with use_mode("backend"):
+            return [Edge.model_validate_json(js) for js in _json_strings(got.get("documents"))]
 
     def nodes_by_doc(self, doc_id: str, *, where: dict | None = None) -> list[str]:
         where = (
@@ -1346,7 +1439,8 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         if not ids:
             return []
         got = _json_object(run_awaitable_blocking(self._e.backend.node_get(ids=ids, include=["documents"])))
-        return [Node.model_validate_json(js) for js in _json_strings(got.get("documents"))]
+        with use_mode("backend"):
+            return [Node.model_validate_json(js) for js in _json_strings(got.get("documents"))]
 
     def ids_with_insertion_method(
         self,
@@ -1393,13 +1487,14 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             entity_ids = _json_strings(got.get("ids"))
 
         keep: set[str] = set()
-        for entity_id, blob in zip(entity_ids, documents):
-            ent = model_cls.model_validate_json(blob)
-            for ref in ent.mentions or []:
-                im = getattr(ref, "insertion_method", None)
-                if im == insertion_method and (not doc_id or ref_doc_id(ref) == doc_id):
-                    keep.add(entity_id)
-                    break
+        with use_mode("backend"):
+            for entity_id, blob in zip(entity_ids, documents):
+                ent = model_cls.model_validate_json(blob)
+                for ref in ent.mentions or []:
+                    im = getattr(ref, "insertion_method", None)
+                    if im == insertion_method and (not doc_id or ref_doc_id(ref) == doc_id):
+                        keep.add(entity_id)
+                        break
         return sorted(keep)
 
     # Legacy names retained during migration

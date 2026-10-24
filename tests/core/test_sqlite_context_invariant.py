@@ -101,6 +101,52 @@ def test_overlapping_python_and_rust_database_ownership_is_rejected(tmp_path: Pa
         python_lease.release()
 
 
+def test_cross_implementation_acquire_race_grants_one_owner_only(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "racing-engine.db"
+    barrier = threading.Barrier(2)
+    both_attempted = threading.Event()
+    attempt_lock = threading.Lock()
+    attempt_count = 0
+    outcomes: list[tuple[str, str]] = []
+
+    def acquire(implementation: str) -> None:
+        nonlocal attempt_count
+        lease = None
+        with independent_sqlite_execution_context(implementation):
+            barrier.wait(timeout=5)
+            try:
+                lease = acquire_sqlite_database(path, implementation)
+                outcome = "acquired"
+            except SQLiteContextError as error:
+                _assert_code(
+                    error, "KOGWISTAR_SQLITE_DATABASE_ENGINE_CONFLICT"
+                )
+                outcome = "conflict"
+            finally:
+                with attempt_lock:
+                    attempt_count += 1
+                    if attempt_count == 2:
+                        both_attempted.set()
+            try:
+                assert both_attempted.wait(timeout=5)
+                outcomes.append((implementation, outcome))
+            finally:
+                if lease is not None:
+                    lease.release()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [
+            executor.submit(acquire, implementation)
+            for implementation in ("python", "rust")
+        ]
+        for future in futures:
+            future.result(timeout=10)
+
+    assert sorted(outcome for _, outcome in outcomes) == ["acquired", "conflict"]
+
+
 def test_same_implementation_can_concurrently_acquire_same_database(tmp_path: Path) -> None:
     path = tmp_path / "engine.db"
     first = acquire_sqlite_database(path, "python")

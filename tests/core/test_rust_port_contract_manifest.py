@@ -12,6 +12,9 @@ pytestmark = [pytest.mark.ci, pytest.mark.core]
 
 ROOT = Path(__file__).resolve().parents[2]
 MANIFEST_PATH = ROOT / "contracts" / "rust-port-v1.json"
+DUAL_LANGUAGE_MANIFEST_PATH = (
+    ROOT / "contracts" / "dual-language-capabilities-v1.json"
+)
 CI_WORKFLOW_PATH = ROOT / ".github" / "workflows" / "ci.yml"
 RUST_PORT_WORKFLOW_PATH = ROOT / ".github" / "workflows" / "rust-port-compat.yml"
 CONSUMER_IMPORT_INVENTORY_PATH = (
@@ -215,6 +218,63 @@ def test_versioned_server_and_syscall_deferrals_match_rust_frozen_inventory() ->
         assert group["status"] == "intentionally-deferred"
         assert group["required_authority"]
         assert group["exit_evidence"]
+
+
+def test_dual_language_crosswalk_matches_frozen_ownership_and_rust_gaps() -> None:
+    port_manifest = _manifest()
+    crosswalk = json.loads(
+        DUAL_LANGUAGE_MANIFEST_PATH.read_text(encoding="utf-8")
+    )
+    assert crosswalk["schema_version"] == 1
+    assert crosswalk["status"] == "inventory-in-progress"
+    port_capabilities = {
+        item["capability"]: item for item in port_manifest["capability_ownership"]
+    }
+    crosswalk_capabilities = {
+        item["id"]: item for item in crosswalk["capabilities"]
+    }
+    assert crosswalk_capabilities.keys() == port_capabilities.keys()
+    profiles = crosswalk["conformance_profiles"]
+    for capability_id, item in crosswalk_capabilities.items():
+        ownership = port_capabilities[capability_id]
+        assert item["rust_port_manifest_id"] == capability_id
+        assert item["conformance_profile"] == capability_id
+        assert profiles[capability_id]
+        assert all(isinstance(suite, str) and suite for suite in profiles[capability_id])
+        expected_rust_coverage = (
+            "python-only"
+            if ownership["target_authoritative_writer"] == "python-adapter"
+            else "cutover-ready"
+            if ownership["rust_cutover_ready"]
+            else "not-cutover-ready"
+        )
+        assert item["rust_coverage"] == expected_rust_coverage
+        assert item["native_python_path"] == "not-verified"
+        if expected_rust_coverage != "python-only":
+            assert item["native_rust_path"] == "not-verified"
+
+    rust_api = (
+        ROOT / "rust" / "crates" / "kogwistar-api" / "src" / "lib.rs"
+    ).read_text(encoding="utf-8")
+    routes_match = re.search(
+        r"pub const PENDING_SERVER_CUTOVER_ROUTES:.*?= &\[(.*?)\];",
+        rust_api,
+        flags=re.DOTALL,
+    )
+    syscalls_match = re.search(
+        r"pub const PENDING_SYSCALL_CUTOVER_OPS:.*?= &\[(.*?)\];",
+        rust_api,
+        flags=re.DOTALL,
+    )
+    assert routes_match is not None
+    assert syscalls_match is not None
+    expected_routes = re.findall(
+        r'"([A-Z]+)"\s*,\s*"([^"]+)"', routes_match.group(1)
+    )
+    expected_syscalls = re.findall(r'"([a-z_]+)"', syscalls_match.group(1))
+    gaps = crosswalk["rust_server_gaps"]
+    assert [tuple(route) for route in gaps["pending_routes"]] == expected_routes
+    assert gaps["pending_syscalls"] == expected_syscalls
 
 
 def test_each_authoritative_capability_has_owner_and_rollback() -> None:

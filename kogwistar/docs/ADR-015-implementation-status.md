@@ -1,5 +1,12 @@
 # ADR-015 implementation status
 
+**Architecture amendment (2026-10-24):** ADR-022 retains both Python and Rust
+as supported capability implementations. The ADR-015 default-Rust and Python
+rollback/removal entries below describe the historical migration target and
+its rollout evidence, not a deprecation decision. Transaction ownership and
+the optional native execution paths are specified in
+`ADR-022-dual-language-capability-paths.md`.
+
 Updated: 2026-09-28
 
 ## Current Source and Release Boundary

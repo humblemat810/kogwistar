@@ -55,6 +55,11 @@ def test_public_sync_runtime_dispatches_to_configured_rust_authority(
     )
     runtime: Any = WorkflowRuntime.__new__(WorkflowRuntime)
     runtime.step_resolver = SimpleNamespace(_state_schema={})
+    runtime.workflow_engine = SimpleNamespace(metadata=None)
+    runtime.conversation_engine = SimpleNamespace(
+        metadata=None,
+        read=SimpleNamespace(get_nodes=lambda **_kwargs: []),
+    )
 
     result = runtime.run(
         workflow_id="wf-1",
@@ -71,11 +76,60 @@ def test_public_sync_runtime_dispatches_to_configured_rust_authority(
             "workflow_id": "wf-1",
             "conversation_id": "conv-1",
             "turn_node_id": "turn-1",
-            "initial_state": {"seed": 1},
+            "initial_state": {
+                "seed": 1,
+                "_wf_invocation_path": ["wf-1"],
+                "_wf_current_run_id": "run-1",
+            },
             "run_id": "run-1",
             "cache_dir": "cache",
         }
     ]
+
+
+def test_rust_authority_scopes_live_python_dependencies_by_run() -> None:
+    authority = object.__new__(RustRuntimeAuthority)
+    authority._init_dependency_registry()
+    first_service = object()
+    second_service = object()
+
+    authority._register_dependencies("run-a", {"service": first_service})
+    authority._register_dependencies("run-b", {"service": second_service})
+
+    assert authority._dependencies({"run_id": "run-a"}) == {
+        "service": first_service
+    }
+    assert authority._dependencies({"run_id": "run-b"}) == {
+        "service": second_service
+    }
+    with pytest.raises(RustRuntimeAuthorityError, match="already registered"):
+        authority._register_dependencies("run-a", {})
+    with pytest.raises(RustRuntimeAuthorityError, match="no live Python dependencies"):
+        authority._dependencies({"run_id": "unknown"})
+
+    authority._release_dependencies("run-a")
+    with pytest.raises(RustRuntimeAuthorityError, match="no live Python dependencies"):
+        authority._dependencies({"run_id": "run-a"})
+
+    authority._register_dependencies("run-suspended", {"service": first_service})
+    suspended = RunResult(
+        run_id="run-suspended",
+        final_state={},
+        mq=__import__("queue").Queue(),
+        status="suspended",
+    )
+    assert authority._release_if_terminal("run-suspended", suspended) is suspended
+    assert authority._dependencies({"run_id": "run-suspended"})["service"] is first_service
+
+    terminal = RunResult(
+        run_id="run-suspended",
+        final_state={},
+        mq=__import__("queue").Queue(),
+        status="succeeded",
+    )
+    authority._release_if_terminal("run-suspended", terminal)
+    with pytest.raises(RustRuntimeAuthorityError, match="no live Python dependencies"):
+        authority._dependencies({"run_id": "run-suspended"})
 
 
 def test_public_sync_runtime_rust_mode_without_authority_url_fails_closed(
@@ -85,6 +139,11 @@ def test_public_sync_runtime_rust_mode_without_authority_url_fails_closed(
     monkeypatch.delenv("KOGWISTAR_RUST_RUNTIME_URL", raising=False)
     runtime: Any = WorkflowRuntime.__new__(WorkflowRuntime)
     runtime.step_resolver = SimpleNamespace(_state_schema={})
+    runtime.workflow_engine = SimpleNamespace(metadata=None)
+    runtime.conversation_engine = SimpleNamespace(
+        metadata=None,
+        read=SimpleNamespace(get_nodes=lambda **_kwargs: []),
+    )
 
     with pytest.raises(RustRuntimeAuthorityError, match="URL is not configured"):
         runtime.run(
@@ -752,6 +811,8 @@ def test_freeze_runtime_plan_preserves_route_alias_fanout_and_join_mask(
     assert plan["start_join_mask"] == 1
     assert plan["join_node_ids"] == ["wf|join"]
     assert plan["node_ops"] == {"wf|start": "choose", "wf|join": "join"}
+    assert plan["node_versions"] == {"wf|start": "v1", "wf|join": "v1"}
+    assert plan["node_environment_ids"] == {}
     assert plan["runtime_routes"] == [
         {
             "edge_id": "edge-1",
@@ -768,6 +829,142 @@ def test_freeze_runtime_plan_preserves_route_alias_fanout_and_join_mask(
     ]
 
 
+def test_freeze_runtime_plan_rejects_mismatched_operation_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    node = SimpleNamespace(
+        id="wf|start",
+        op="process",
+        fanout=False,
+        metadata={"wf_start": True, "wf_op": "process", "wf_version": "v2"},
+    )
+    monkeypatch.setattr(
+        "kogwistar.runtime.rust_runtime_authority.validate_workflow_design",
+        lambda **_kwargs: (node, {"wf|start": node}, {"wf|start": []}),
+    )
+    runtime = SimpleNamespace(
+        workflow_engine=object(),
+        predicate_registry={},
+        step_resolver=lambda _op: None,
+    )
+
+    with pytest.raises(
+        RustRuntimeAuthorityError,
+        match="requires 'process' version 'v2'.*registers 'v1'",
+    ):
+        freeze_runtime_plan(runtime, "wf-1")
+
+
+def test_freeze_runtime_plan_carries_registered_operation_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    node = SimpleNamespace(
+        id="wf|start",
+        op="process",
+        fanout=False,
+        metadata={"wf_start": True, "wf_op": "process", "wf_version": "v2"},
+    )
+    monkeypatch.setattr(
+        "kogwistar.runtime.rust_runtime_authority.validate_workflow_design",
+        lambda **_kwargs: (node, {"wf|start": node}, {"wf|start": []}),
+    )
+    monkeypatch.setattr(
+        "kogwistar.runtime.runtime._compute_may_reach_join_bitsets",
+        lambda **_kwargs: {"wf|start": 0},
+    )
+    resolver = lambda _op: None
+    resolver.op_versions = {"process": "v2"}
+    runtime = SimpleNamespace(
+        workflow_engine=object(), predicate_registry={}, step_resolver=resolver
+    )
+
+    plan = freeze_runtime_plan(runtime, "wf-1")
+
+    assert plan["node_versions"] == {"wf|start": "v2"}
+
+
+def test_freeze_runtime_plan_keeps_historical_operation_version_available(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kogwistar.runtime.models import RunSuccess
+    from kogwistar.runtime.resolvers import MappingStepResolver
+
+    node = SimpleNamespace(
+        id="wf|start",
+        op="process",
+        fanout=False,
+        metadata={
+            "wf_start": True,
+            "wf_op": "process",
+            "wf_version": "v1",
+            "wf_environment_id": "process-env-v1",
+        },
+    )
+    monkeypatch.setattr(
+        "kogwistar.runtime.rust_runtime_authority.validate_workflow_design",
+        lambda **_kwargs: (node, {"wf|start": node}, {"wf|start": []}),
+    )
+    monkeypatch.setattr(
+        "kogwistar.runtime.runtime._compute_may_reach_join_bitsets",
+        lambda **_kwargs: {"wf|start": 0},
+    )
+    resolver = MappingStepResolver()
+
+    @resolver.register("process", version="v2", environment_id="process-env-v2")
+    def current(_ctx):
+        return RunSuccess(conversation_node_id=None, state_update=[])
+
+    @resolver.register_versioned(
+        "process", version="v1", environment_id="process-env-v1"
+    )
+    def historical(_ctx):
+        return RunSuccess(conversation_node_id=None, state_update=[])
+
+    runtime = SimpleNamespace(
+        workflow_engine=object(), predicate_registry={}, step_resolver=resolver
+    )
+
+    plan = freeze_runtime_plan(runtime, "wf-1")
+
+    assert plan["node_versions"] == {"wf|start": "v1"}
+    assert plan["node_environment_ids"] == {"wf|start": "process-env-v1"}
+
+
+def test_freeze_runtime_plan_requires_matching_worker_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    node = SimpleNamespace(
+        id="wf|start",
+        op="numerical",
+        fanout=False,
+        metadata={
+            "wf_start": True,
+            "wf_op": "numerical",
+            "wf_environment_id": "science-cpu-v3",
+        },
+    )
+    monkeypatch.setattr(
+        "kogwistar.runtime.rust_runtime_authority.validate_workflow_design",
+        lambda **_kwargs: (node, {"wf|start": node}, {"wf|start": []}),
+    )
+    monkeypatch.setattr(
+        "kogwistar.runtime.runtime._compute_may_reach_join_bitsets",
+        lambda **_kwargs: {"wf|start": 0},
+    )
+    resolver = lambda _op: None
+    resolver.op_environment_ids = {"numerical": "science-cpu-v3"}
+    runtime = SimpleNamespace(
+        workflow_engine=object(), predicate_registry={}, step_resolver=resolver
+    )
+
+    plan = freeze_runtime_plan(runtime, "wf-1")
+
+    assert plan["node_environment_ids"] == {"wf|start": "science-cpu-v3"}
+    resolver.op_environment_ids = {"numerical": "science-cpu-v2"}
+    with pytest.raises(RustRuntimeAuthorityError, match="registers 'science-cpu-v2'"):
+        freeze_runtime_plan(runtime, "wf-1")
+
+
 def test_async_runtime_dispatches_to_async_rust_authority_when_selected(
     monkeypatch,
 ) -> None:
@@ -776,6 +973,8 @@ def test_async_runtime_dispatches_to_async_rust_authority_when_selected(
     monkeypatch.setenv("KOGWISTAR_IMPL_RUNTIME", "rust")
     monkeypatch.setenv("KOGWISTAR_RUST_RUNTIME_URL", "http://rust")
     runtime = AsyncWorkflowRuntime.__new__(AsyncWorkflowRuntime)
+    runtime.workflow_engine = None
+    runtime.conversation_engine = None
     expected = RunResult(
         run_id="run-1", final_state={"answer": 42}, mq=__import__("queue").Queue()
     )
@@ -821,6 +1020,8 @@ def test_async_runtime_rust_mode_without_authority_url_fails_closed(
     monkeypatch.setenv("KOGWISTAR_IMPL_RUNTIME", "rust")
     monkeypatch.delenv("KOGWISTAR_RUST_RUNTIME_URL", raising=False)
     runtime = AsyncWorkflowRuntime.__new__(AsyncWorkflowRuntime)
+    runtime.workflow_engine = None
+    runtime.conversation_engine = None
 
     async def invoke() -> None:
         await runtime.run(

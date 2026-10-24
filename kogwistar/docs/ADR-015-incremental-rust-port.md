@@ -4,6 +4,14 @@
 **Date:** 2026-07-14  
 **Owner:** Maintainers
 
+**Amendment (2026-10-24):** ADR-022 supersedes this ADR's final-default and
+Python-removal end state. The staged migration, authority, parity, and rollout
+rules below remain useful. Python and Rust are both supported capability
+implementations; a deployment may choose either or compose them at declared
+seams. Read Phase 6 and its deletion criteria as historical migration targets,
+not authorization to retire a Python implementation. See
+`ADR-022-dual-language-capability-paths.md` and its checklist.
+
 ## Summary
 
 Kogwistar will move its deterministic core, persistence, runtime, and service
@@ -558,7 +566,7 @@ Exit gate:
 - operational dashboards expose implementation mode, parity mismatches, queue lag,
   replay lag, and schema version.
 
-### Phase 6: Default switch and convergence
+### Phase 6: Default switch and convergence (historical target)
 
 Make Rust the default engine, runtime, and server only after canary progression and
 one full compatibility release. The Python package becomes a thin SDK, native

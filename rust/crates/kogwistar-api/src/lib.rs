@@ -21,10 +21,10 @@ use kogwistar_runtime::{
     RuntimeStepExecutePayload, RuntimeStepExecuteRequest,
 };
 use kogwistar_store::{
-    AuthIdentityStore, AuthUser, EntityEvent, LaneMessageFilter, NamedProjection,
-    NamedProjectionWrite, NewProjectedLaneMessage, ProjectedLaneMessage, ResolveExternalIdentity,
-    ServerRun, ServerRunCreate, ServerRunEvent, WorkflowDesignDeltaWrite, WorkflowDesignSnapshot,
-    WorkflowDesignSnapshotWrite,
+    AuthIdentityStore, AuthUser, EntityEvent, LaneMessageClaimFilter, LaneMessageFilter,
+    NamedProjection, NamedProjectionWrite, NewProjectedLaneMessage, ProjectedLaneMessage,
+    ResolveExternalIdentity, ServerRun, ServerRunCreate, ServerRunEvent, WorkflowDesignDeltaWrite,
+    WorkflowDesignSnapshot, WorkflowDesignSnapshotWrite,
 };
 use kogwistar_store_postgres::{
     NewRawEntityEvent as PostgresNewRawEntityEvent, PostgresAuthStore, PostgresStore,
@@ -612,6 +612,16 @@ fn resume_contract_value(state: RecordedRuntimeState) -> Value {
         .get("_rt_node_ops")
         .cloned()
         .unwrap_or_else(|| json!({}));
+    let node_versions = state
+        .state
+        .get("_rt_node_versions")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let node_environment_ids = state
+        .state
+        .get("_rt_node_environment_ids")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
     json!({
         "run_id": state.run_id,
         "status": state.status,
@@ -621,6 +631,8 @@ fn resume_contract_value(state: RecordedRuntimeState) -> Value {
         "last_step_seq": state.last_step_seq,
         "runtime_routes": state.static_routes,
         "node_ops": node_ops,
+        "node_versions": node_versions,
+        "node_environment_ids": node_environment_ids,
     })
 }
 
@@ -643,6 +655,8 @@ struct RuntimeGraphPlan {
     start_join_mask: i64,
     routes: Vec<kogwistar_runtime::RuntimeStaticRoute>,
     node_ops: std::collections::BTreeMap<String, String>,
+    node_versions: std::collections::BTreeMap<String, String>,
+    node_environment_ids: std::collections::BTreeMap<String, String>,
 }
 
 fn submitted_runtime_graph_conflicts(
@@ -673,11 +687,23 @@ fn submitted_runtime_graph_conflicts(
         values.sort();
         values
     };
+    let submitted_versions = if input.node_versions.is_empty() {
+        input
+            .node_ops
+            .keys()
+            .map(|node_id| (node_id.clone(), "v1".to_owned()))
+            .collect()
+    } else {
+        input.node_versions.clone()
+    };
+    let submitted_environment_ids = input.node_environment_ids.clone();
     graph_plan.start_node_id != start_node_id
         || graph_plan.join_node_ids != input.join_node_ids
         || graph_plan.start_join_mask != input.start_join_mask
         || canonical_routes(&graph_plan.routes) != canonical_routes(&input.runtime_routes)
         || graph_plan.node_ops != input.node_ops
+        || graph_plan.node_versions != submitted_versions
+        || graph_plan.node_environment_ids != submitted_environment_ids
 }
 
 fn runtime_join_outstanding(join_count: usize, start_join_mask: i64) -> Vec<i64> {
@@ -700,6 +726,45 @@ fn worker_protocol_for_runtime_kind(runtime_kind: &str) -> &'static str {
     } else {
         kogwistar_runtime::WORKER_PROTOCOL_SYNC_V1
     }
+}
+
+fn runtime_worker_recipient(environment_id: Option<&str>) -> String {
+    let Some(environment_id) = environment_id.filter(|value| !value.trim().is_empty()) else {
+        return "python-worker".to_owned();
+    };
+    let digest = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(Sha256::digest(environment_id.as_bytes()));
+    format!("python-worker-env-{digest}")
+}
+
+fn runtime_worker_recipient_for_state(state: &RecordedRuntimeState, node_id: &str) -> String {
+    let environment_id = state
+        .state
+        .get("_rt_node_environment_ids")
+        .and_then(Value::as_object)
+        .and_then(|ids| ids.get(node_id))
+        .and_then(Value::as_str);
+    runtime_worker_recipient(environment_id)
+}
+
+fn effective_runtime_claim_recipients(values: &[String]) -> Result<Vec<String>, String> {
+    if values.is_empty() {
+        return Ok(vec!["python-worker".to_owned()]);
+    }
+    let mut unique = BTreeSet::new();
+    let mut ordered = Vec::with_capacity(values.len());
+    for value in values {
+        if value.trim().is_empty() || value.trim() != value || value.len() > 256 {
+            return Err(
+                "recipient_ids must contain canonical non-empty values up to 256 bytes".to_owned(),
+            );
+        }
+        if !unique.insert(value.clone()) {
+            return Err("recipient_ids must not contain duplicates".to_owned());
+        }
+        ordered.push(value.clone());
+    }
+    Ok(ordered)
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -733,6 +798,11 @@ struct RuntimeSubmitRun {
     start_node_id: Option<String>,
     #[serde(default)]
     node_ops: BTreeMap<String, String>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    node_versions: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    node_environment_ids: BTreeMap<String, String>,
 }
 
 fn default_runtime_claim_limit() -> usize {
@@ -753,6 +823,8 @@ struct RuntimeClaimRequest {
     lease_seconds: i64,
     #[serde(default)]
     run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    recipient_ids: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -939,6 +1011,31 @@ fn runtime_graph_plan_from_snapshot(payload_json: &str) -> Option<RuntimeGraphPl
             Some((node_id.to_owned(), op.to_owned()))
         })
         .collect();
+    let node_versions = nodes
+        .iter()
+        .filter_map(|node| {
+            let node_id = node["id"].as_str()?;
+            let version = node["metadata"]["wf_version"]
+                .as_str()
+                .or_else(|| node["metadata"]["wf.version"].as_str())
+                .unwrap_or("v1");
+            Some((node_id.to_owned(), version.to_owned()))
+        })
+        .collect();
+    let node_environment_ids = nodes
+        .iter()
+        .filter_map(|node| {
+            let node_id = node["id"].as_str()?;
+            let environment_id = node["metadata"]["wf_environment_id"]
+                .as_str()
+                .or_else(|| node["metadata"]["wf.environment_id"].as_str())?
+                .trim();
+            if environment_id.is_empty() {
+                return None;
+            }
+            Some((node_id.to_owned(), environment_id.to_owned()))
+        })
+        .collect();
     let node_aliases = nodes
         .iter()
         .filter_map(|node| {
@@ -1073,6 +1170,8 @@ fn runtime_graph_plan_from_snapshot(payload_json: &str) -> Option<RuntimeGraphPl
         join_node_ids,
         routes,
         node_ops,
+        node_versions,
+        node_environment_ids,
     })
 }
 
@@ -4453,6 +4552,19 @@ impl SqliteRunApplicationService {
             .as_ref()
             .map(|plan| plan.node_ops.clone())
             .unwrap_or(input.node_ops);
+        let effective_node_versions = graph_plan
+            .as_ref()
+            .map(|plan| plan.node_versions.clone())
+            .unwrap_or_else(|| {
+                effective_node_ops
+                    .keys()
+                    .map(|node_id| (node_id.clone(), "v1".to_owned()))
+                    .collect()
+            });
+        let effective_node_environment_ids = graph_plan
+            .as_ref()
+            .map(|plan| plan.node_environment_ids.clone())
+            .unwrap_or(input.node_environment_ids);
         // Even a bare transport-level submission must hand the Python worker a
         // frozen operation.  Later continuation lanes already use this same
         // no-op fallback; leaving the admission lane as JSON null made the
@@ -4461,6 +4573,13 @@ impl SqliteRunApplicationService {
             .get(&effective_start_node_id)
             .cloned()
             .unwrap_or_else(|| "noop".to_owned());
+        let effective_start_op_version = effective_node_versions
+            .get(&effective_start_node_id)
+            .cloned()
+            .unwrap_or_else(|| "v1".to_owned());
+        let effective_start_environment_id = effective_node_environment_ids
+            .get(&effective_start_node_id)
+            .cloned();
         let mut initial_state = input.initial_state.clone();
         if !effective_routes.is_empty() {
             initial_state.insert(
@@ -4472,6 +4591,23 @@ impl SqliteRunApplicationService {
             initial_state.insert(
                 "_rt_node_ops".to_owned(),
                 serde_json::to_value(&effective_node_ops).expect("runtime node ops serialize"),
+            );
+        }
+        if effective_node_versions
+            .values()
+            .any(|version| version != "v1")
+        {
+            initial_state.insert(
+                "_rt_node_versions".to_owned(),
+                serde_json::to_value(&effective_node_versions)
+                    .expect("runtime node versions serialize"),
+            );
+        }
+        if !effective_node_environment_ids.is_empty() {
+            initial_state.insert(
+                "_rt_node_environment_ids".to_owned(),
+                serde_json::to_value(&effective_node_environment_ids)
+                    .expect("runtime node environment ids serialize"),
             );
         }
         initial_state.insert(
@@ -4504,6 +4640,13 @@ impl SqliteRunApplicationService {
             "op": effective_start_op,
             "runtime_routes": effective_routes,
         });
+        let mut worker_payload = worker_payload;
+        if effective_start_op_version != "v1" {
+            worker_payload["op_version"] = json!(effective_start_op_version);
+        }
+        if let Some(environment_id) = effective_start_environment_id.as_ref() {
+            worker_payload["op_environment_id"] = json!(environment_id);
+        }
         if let Ok(Some(existing)) = self.store.get_server_run(&run_id) {
             let lanes = self
                 .store
@@ -4565,7 +4708,7 @@ impl SqliteRunApplicationService {
                 purpose: "system".to_owned(),
                 inbox_id: "workflow-runtime".to_owned(),
                 conversation_id: conversation_id.to_owned(),
-                recipient_id: "python-worker".to_owned(),
+                recipient_id: runtime_worker_recipient(effective_start_environment_id.as_deref()),
                 sender_id: "rust-scheduler".to_owned(),
                 msg_type: "workflow.run.execute".to_owned(),
                 status: "pending".to_owned(),
@@ -4634,25 +4777,37 @@ impl SqliteRunApplicationService {
                 "claimed_by, positive limit, and positive lease_seconds are required",
             );
         }
+        let recipient_ids = match effective_runtime_claim_recipients(&input.recipient_ids) {
+            Ok(values) => values,
+            Err(message) => {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    message,
+                );
+            }
+        };
         let outcome = self.store.immediate_transaction(|uow| {
-            let claimed = if let Some(run_id) = input.run_id.as_deref() {
-                uow.claim_projected_lane_messages_for_run(
-                    "workflow",
-                    "workflow-runtime",
-                    run_id,
-                    &input.claimed_by,
-                    input.limit,
-                    input.lease_seconds,
-                )?
-            } else {
-                uow.claim_projected_lane_messages(
-                    "workflow",
-                    "workflow-runtime",
-                    &input.claimed_by,
-                    input.limit,
-                    input.lease_seconds,
-                )?
-            };
+            let mut claimed = Vec::new();
+            for recipient_id in &recipient_ids {
+                let remaining = input.limit.saturating_sub(claimed.len());
+                if remaining == 0 {
+                    break;
+                }
+                claimed.extend(uow.claim_projected_lane_messages_filtered(
+                    LaneMessageClaimFilter {
+                        namespace: "workflow".to_owned(),
+                        inbox_id: "workflow-runtime".to_owned(),
+                        claimed_by: input.claimed_by.clone(),
+                        message_ids: None,
+                        run_id: input.run_id.clone(),
+                        msg_type: None,
+                        recipient_id: Some(recipient_id.clone()),
+                        limit: remaining,
+                        lease_seconds: input.lease_seconds,
+                    },
+                )?);
+            }
             let mut values = Vec::new();
             for lane in claimed {
                 let payload: Value =
@@ -4852,7 +5007,10 @@ impl SqliteRunApplicationService {
                         purpose: "system".to_owned(),
                         inbox_id: "workflow-runtime".to_owned(),
                         conversation_id: transition.conversation_id.clone(),
-                        recipient_id: "python-worker".to_owned(),
+                        recipient_id: runtime_worker_recipient_for_state(
+                            &applied.reduced.state,
+                            node_id,
+                        ),
                         sender_id: "rust-scheduler".to_owned(),
                         msg_type: "workflow.step.execute".to_owned(),
                         status: "pending".to_owned(),
@@ -5278,7 +5436,18 @@ impl PostgresRunApplicationService {
                             .as_ref()
                             .map(|plan| plan.node_ops.clone())
                             .unwrap_or_default();
+                        let node_versions = graph_plan
+                            .as_ref()
+                            .map(|plan| plan.node_versions.clone())
+                            .unwrap_or_default();
+                        let node_environment_ids = graph_plan
+                            .as_ref()
+                            .map(|plan| plan.node_environment_ids.clone())
+                            .unwrap_or_default();
                         let start_op = node_ops.get(&start_node_id).cloned();
+                        let start_op_version = node_versions.get(&start_node_id).cloned();
+                        let start_environment_id =
+                            node_environment_ids.get(&start_node_id).cloned();
                         if !runtime_routes.is_empty() {
                             initial_state.insert(
                                 "_rt_routes".to_owned(),
@@ -5291,6 +5460,20 @@ impl PostgresRunApplicationService {
                                 "_rt_node_ops".to_owned(),
                                 serde_json::to_value(&node_ops)
                                     .expect("runtime node ops serialize"),
+                            );
+                        }
+                        if node_versions.values().any(|version| version != "v1") {
+                            initial_state.insert(
+                                "_rt_node_versions".to_owned(),
+                                serde_json::to_value(&node_versions)
+                                    .expect("runtime node versions serialize"),
+                            );
+                        }
+                        if !node_environment_ids.is_empty() {
+                            initial_state.insert(
+                                "_rt_node_environment_ids".to_owned(),
+                                serde_json::to_value(&node_environment_ids)
+                                    .expect("runtime node environment ids serialize"),
                             );
                         }
                         let runtime_kind = target
@@ -5330,7 +5513,7 @@ impl PostgresRunApplicationService {
                             .get("priority_class")
                             .and_then(Value::as_str)
                             .unwrap_or("background");
-                        let payload = json!({
+                        let mut payload = json!({
                             "contract_version": 1,
                             "kind": "workflow.run.execute",
                             "run_id": created_run_id,
@@ -5351,13 +5534,19 @@ impl PostgresRunApplicationService {
                             "runtime_routes": runtime_routes,
                             "expected_event_seq": created.seq,
                         });
+                        if let Some(version) = start_op_version.filter(|version| version != "v1") {
+                            payload["op_version"] = json!(version);
+                        }
+                        if let Some(environment_id) = start_environment_id.as_ref() {
+                            payload["op_environment_id"] = json!(environment_id);
+                        }
                         uow.project_lane_message(NewProjectedLaneMessage {
                             message_id,
                             namespace: "workflow".to_owned(),
                             purpose: "system".to_owned(),
                             inbox_id: "workflow-runtime".to_owned(),
                             conversation_id,
-                            recipient_id: "python-worker".to_owned(),
+                            recipient_id: runtime_worker_recipient(start_environment_id.as_deref()),
                             sender_id: "rust-scheduler".to_owned(),
                             msg_type: "workflow.run.execute".to_owned(),
                             status: "pending".to_owned(),
@@ -6548,6 +6737,19 @@ impl PostgresRunApplicationService {
             .as_ref()
             .map(|plan| plan.node_ops.clone())
             .unwrap_or(input.node_ops);
+        let effective_node_versions = graph_plan
+            .as_ref()
+            .map(|plan| plan.node_versions.clone())
+            .unwrap_or_else(|| {
+                effective_node_ops
+                    .keys()
+                    .map(|node_id| (node_id.clone(), "v1".to_owned()))
+                    .collect()
+            });
+        let effective_node_environment_ids = graph_plan
+            .as_ref()
+            .map(|plan| plan.node_environment_ids.clone())
+            .unwrap_or(input.node_environment_ids);
         // Keep PostgreSQL admission wire-identical to SQLite: the worker must
         // receive a frozen operation, never a null value requiring a node-id
         // resolver guess.
@@ -6555,6 +6757,13 @@ impl PostgresRunApplicationService {
             .get(&effective_start_node_id)
             .cloned()
             .unwrap_or_else(|| "noop".to_owned());
+        let effective_start_op_version = effective_node_versions
+            .get(&effective_start_node_id)
+            .cloned()
+            .unwrap_or_else(|| "v1".to_owned());
+        let effective_start_environment_id = effective_node_environment_ids
+            .get(&effective_start_node_id)
+            .cloned();
         let mut initial_state = input.initial_state;
         if !effective_routes.is_empty() {
             initial_state.insert(
@@ -6566,6 +6775,23 @@ impl PostgresRunApplicationService {
             initial_state.insert(
                 "_rt_node_ops".to_owned(),
                 serde_json::to_value(&effective_node_ops).expect("runtime node ops serialize"),
+            );
+        }
+        if effective_node_versions
+            .values()
+            .any(|version| version != "v1")
+        {
+            initial_state.insert(
+                "_rt_node_versions".to_owned(),
+                serde_json::to_value(&effective_node_versions)
+                    .expect("runtime node versions serialize"),
+            );
+        }
+        if !effective_node_environment_ids.is_empty() {
+            initial_state.insert(
+                "_rt_node_environment_ids".to_owned(),
+                serde_json::to_value(&effective_node_environment_ids)
+                    .expect("runtime node environment ids serialize"),
             );
         }
         initial_state.insert(
@@ -6602,7 +6828,7 @@ impl PostgresRunApplicationService {
                 })
                 .await
                 .unwrap_or_default();
-            let expected_worker_payload = json!({
+            let mut expected_worker_payload = json!({
                 "contract_version": 1,
                 "kind": "workflow.run.execute",
                 "run_id": run_id,
@@ -6622,6 +6848,12 @@ impl PostgresRunApplicationService {
                 "op": effective_start_op,
                 "runtime_routes": effective_routes,
             });
+            if effective_start_op_version != "v1" {
+                expected_worker_payload["op_version"] = json!(effective_start_op_version);
+            }
+            if let Some(environment_id) = effective_start_environment_id.as_ref() {
+                expected_worker_payload["op_environment_id"] = json!(environment_id);
+            }
             return match runtime_submit_retry_response(&existing, &lanes, &expected_worker_payload)
             {
                 Ok(Some(value)) => json_effect(StatusCode::ACCEPTED, value),
@@ -6688,7 +6920,7 @@ impl PostgresRunApplicationService {
                             }))?,
                         )
                         .await?;
-                    let payload = json!({
+                    let mut payload = json!({
                         "contract_version": 1,
                         "kind": "workflow.run.execute",
                         "run_id": run_id,
@@ -6709,13 +6941,21 @@ impl PostgresRunApplicationService {
                         "runtime_routes": effective_routes,
                         "expected_event_seq": created.seq,
                     });
+                    if effective_start_op_version != "v1" {
+                        payload["op_version"] = json!(effective_start_op_version);
+                    }
+                    if let Some(environment_id) = effective_start_environment_id.as_ref() {
+                        payload["op_environment_id"] = json!(environment_id);
+                    }
                     uow.project_lane_message(NewProjectedLaneMessage {
                         message_id,
                         namespace: "workflow".to_owned(),
                         purpose: "system".to_owned(),
                         inbox_id: "workflow-runtime".to_owned(),
                         conversation_id,
-                        recipient_id: "python-worker".to_owned(),
+                        recipient_id: runtime_worker_recipient(
+                            effective_start_environment_id.as_deref(),
+                        ),
                         sender_id: "rust-scheduler".to_owned(),
                         msg_type: "workflow.run.execute".to_owned(),
                         status: "pending".to_owned(),
@@ -6768,30 +7008,41 @@ impl PostgresRunApplicationService {
                 "claimed_by, positive limit, and positive lease_seconds are required",
             );
         }
+        let recipient_ids = match effective_runtime_claim_recipients(&input.recipient_ids) {
+            Ok(values) => values,
+            Err(message) => {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    message,
+                );
+            }
+        };
         let outcome = self
             .store
             .transaction(|uow| {
                 Box::pin(async move {
-                    let claimed = if let Some(run_id) = input.run_id.as_deref() {
-                        uow.claim_projected_lane_messages_for_run(
-                            "workflow",
-                            "workflow-runtime",
-                            run_id,
-                            &input.claimed_by,
-                            input.limit,
-                            input.lease_seconds,
-                        )
-                        .await?
-                    } else {
-                        uow.claim_projected_lane_messages(
-                            "workflow",
-                            "workflow-runtime",
-                            &input.claimed_by,
-                            input.limit,
-                            input.lease_seconds,
-                        )
-                        .await?
-                    };
+                    let mut claimed = Vec::new();
+                    for recipient_id in &recipient_ids {
+                        let remaining = input.limit.saturating_sub(claimed.len());
+                        if remaining == 0 {
+                            break;
+                        }
+                        claimed.extend(
+                            uow.claim_projected_lane_messages_filtered(LaneMessageClaimFilter {
+                                namespace: "workflow".to_owned(),
+                                inbox_id: "workflow-runtime".to_owned(),
+                                claimed_by: input.claimed_by.clone(),
+                                message_ids: None,
+                                run_id: input.run_id.clone(),
+                                msg_type: None,
+                                recipient_id: Some(recipient_id.clone()),
+                                limit: remaining,
+                                lease_seconds: input.lease_seconds,
+                            })
+                            .await?,
+                        );
+                    }
                     let mut values = Vec::new();
                     for lane in claimed {
                         let mut payload: Value =
@@ -6973,7 +7224,7 @@ impl PostgresRunApplicationService {
                                 purpose: "system".to_owned(),
                                 inbox_id: "workflow-runtime".to_owned(),
                                 conversation_id: state.conversation_id.clone(),
-                                recipient_id: "python-worker".to_owned(),
+                                recipient_id: runtime_worker_recipient_for_state(&state, node_id),
                                 sender_id: "rust-scheduler".to_owned(),
                                 msg_type: "workflow.step.execute".to_owned(),
                                 status: "pending".to_owned(),
@@ -7721,7 +7972,17 @@ impl SqliteRunApplicationService {
                     .as_ref()
                     .map(|plan| plan.node_ops.clone())
                     .unwrap_or_default();
+                let node_versions = graph_plan
+                    .as_ref()
+                    .map(|plan| plan.node_versions.clone())
+                    .unwrap_or_default();
+                let node_environment_ids = graph_plan
+                    .as_ref()
+                    .map(|plan| plan.node_environment_ids.clone())
+                    .unwrap_or_default();
                 let start_op = node_ops.get(&start_node_id).cloned();
+                let start_op_version = node_versions.get(&start_node_id).cloned();
+                let start_environment_id = node_environment_ids.get(&start_node_id).cloned();
                 if !runtime_routes.is_empty() {
                     initial_state.insert(
                         "_rt_routes".to_owned(),
@@ -7733,6 +7994,20 @@ impl SqliteRunApplicationService {
                     initial_state.insert(
                         "_rt_node_ops".to_owned(),
                         serde_json::to_value(&node_ops).expect("runtime node ops serialize"),
+                    );
+                }
+                if node_versions.values().any(|version| version != "v1") {
+                    initial_state.insert(
+                        "_rt_node_versions".to_owned(),
+                        serde_json::to_value(&node_versions)
+                            .expect("runtime node versions serialize"),
+                    );
+                }
+                if !node_environment_ids.is_empty() {
+                    initial_state.insert(
+                        "_rt_node_environment_ids".to_owned(),
+                        serde_json::to_value(&node_environment_ids)
+                            .expect("runtime node environment ids serialize"),
                     );
                 }
                 let runtime_kind = target
@@ -7769,7 +8044,7 @@ impl SqliteRunApplicationService {
                     .get("priority_class")
                     .and_then(Value::as_str)
                     .unwrap_or("background");
-                let payload = json!({
+                let mut payload = json!({
                     "contract_version": 1,
                     "kind": "workflow.run.execute",
                     "run_id": created_run_id,
@@ -7790,13 +8065,19 @@ impl SqliteRunApplicationService {
                     "runtime_routes": runtime_routes,
                     "expected_event_seq": created.seq,
                 });
+                if let Some(version) = start_op_version.filter(|version| version != "v1") {
+                    payload["op_version"] = json!(version);
+                }
+                if let Some(environment_id) = start_environment_id.as_ref() {
+                    payload["op_environment_id"] = json!(environment_id);
+                }
                 uow.project_lane_message(NewProjectedLaneMessage {
                     message_id,
                     namespace: "workflow".to_owned(),
                     purpose: "system".to_owned(),
                     inbox_id: "workflow-runtime".to_owned(),
                     conversation_id,
-                    recipient_id: "python-worker".to_owned(),
+                    recipient_id: runtime_worker_recipient(start_environment_id.as_deref()),
                     sender_id: "rust-scheduler".to_owned(),
                     msg_type: "workflow.run.execute".to_owned(),
                     status: "pending".to_owned(),
@@ -12535,6 +12816,12 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
             serde_json::from_value(vectors["result_effect"].clone()).unwrap();
         let transition_result: RuntimeWorkerResultRequest =
             serde_json::from_value(vectors["result_transition"].clone()).unwrap();
+        let mut legacy_worker_result = vectors["result_effect"].clone();
+        legacy_worker_result
+            .as_object_mut()
+            .unwrap()
+            .remove("transition");
+        let _: RuntimeWorkerResultRequest = serde_json::from_value(legacy_worker_result).unwrap();
         let resume: RuntimeResumeRequest =
             serde_json::from_value(vectors["resume"].clone()).unwrap();
         let sqlite_work: RuntimeClaimedWork =
@@ -14689,7 +14976,7 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
                     schema_version: 1,
                     payload_json: serde_json::to_string(&json!({
                         "nodes": [
-                            {"id":"graph-start","metadata":{"wf_start":true}},
+                            {"id":"graph-start","metadata":{"wf_start":true,"wf_op":"start","wf_version":"v2","wf_environment_id":"numpy-cpu-2"}},
                             {"id":"graph-end","metadata":{"wf_terminal":true}}
                         ],
                         "edges": [{
@@ -14721,14 +15008,14 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
                     .header("content-type", "application/json")
                     .header("x-kogwistar-roles", "reader")
                     .body(Body::from(
-                        r#"{"workflow_id":"graph-wf","conversation_id":"graph-conv","runtime_routes":[{"source_node_id":"start","target_node_id":"forged","join_mask":0}]}"#,
+                        r#"{"workflow_id":"graph-wf","conversation_id":"graph-conv","node_environment_ids":{"graph-start":"numpy-cpu-2"},"runtime_routes":[{"source_node_id":"start","target_node_id":"forged","join_mask":0}]}"#,
                     ))
                     .unwrap(),
             )
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::ACCEPTED);
-        let claim = app
+        let generic_claim = app
             .clone()
             .oneshot(
                 Request::builder()
@@ -14743,9 +15030,40 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
             )
             .await
             .unwrap();
+        let generic_claim_body = to_bytes(generic_claim.into_body(), 16384).await.unwrap();
+        let generic_claim_work =
+            serde_json::from_slice::<Value>(&generic_claim_body).unwrap()["work"].clone();
+        assert_eq!(generic_claim_work, json!([]));
+
+        let claim = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/internal/runtime/claim")
+                    .header("content-type", "application/json")
+                    .header("x-kogwistar-roles", "reader")
+                    .body(Body::from(
+                        serde_json::to_vec(&json!({
+                            "claimed_by": "numpy-worker",
+                            "limit": 1,
+                            "lease_seconds": 60,
+                            "recipient_ids": [
+                                runtime_worker_recipient(Some("numpy-cpu-2")),
+                                "python-worker",
+                            ],
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         let claim_body = to_bytes(claim.into_body(), 16384).await.unwrap();
         let work = serde_json::from_slice::<Value>(&claim_body).unwrap()["work"][0].clone();
         assert_eq!(work["step_id"], "graph-start");
+        assert_eq!(work["payload"]["op_version"], "v2");
+        assert_eq!(work["payload"]["op_environment_id"], "numpy-cpu-2");
         let result = app
             .clone()
             .oneshot(

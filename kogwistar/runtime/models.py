@@ -17,6 +17,7 @@ class WorkflowNodeMetadata(BaseModel):
 
     Optional:
       - wf_version: used for replay compatibility + future cache invalidation
+      - wf_environment_id: required worker/runtime dependency environment
       - wf_fanout: allow multiple outgoing edges to fire in parallel
       - wf_start: marks the start node in this workflow_id
       - wf_terminal: marks terminal node
@@ -26,6 +27,7 @@ class WorkflowNodeMetadata(BaseModel):
     workflow_id: str
     wf_op: str = "noop"
     wf_version: str = "v1"
+    wf_environment_id: str | None = None
     wf_start: bool = False
     wf_terminal: bool = False
     wf_fanout: bool = False
@@ -41,6 +43,11 @@ class WorkflowNodeMetadata(BaseModel):
             self.wf_op is None or str(self.wf_op).strip() == ""
         ):
             raise ValueError("wf_op is required unless wf_terminal=True")
+        if self.wf_environment_id is not None and (
+            not self.wf_environment_id.strip()
+            or self.wf_environment_id != self.wf_environment_id.strip()
+        ):
+            raise ValueError("wf_environment_id must be non-empty and canonical")
         return self
 
 
@@ -90,7 +97,10 @@ class WorkflowNode(Node):
 
     @field_validator("metadata")
     def check_metadataWFN(cls, v: dict[str, JsonValue]) -> dict[str, JsonValue]:
-        v2 = WorkflowNodeMetadata.model_validate(v).model_dump()
+        metadata = WorkflowNodeMetadata.model_validate(v)
+        v2 = metadata.model_dump()
+        if metadata.wf_environment_id is None:
+            v2.pop("wf_environment_id", None)
         v.update(v2)
         return v
 

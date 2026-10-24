@@ -9,6 +9,7 @@ from importlib import import_module
 from typing import Any, Protocol, TypeVar, cast
 
 from kogwistar.json_types import JsonObject, JsonValue
+from kogwistar.runtime.strict_json import normalize_json_value
 
 
 class RustExtensionLike(Protocol):
@@ -61,6 +62,25 @@ class RustParityError(RuntimeError):
         self.code = code
 
 
+def _rust_json_payload(
+    value: object,
+    *,
+    ensure_ascii: bool = True,
+    separators: tuple[str, str] | None = None,
+) -> str:
+    """Validate the shared JSON value contract before crossing the PyO3 ABI."""
+    try:
+        normalized = normalize_json_value(value, field="Rust bridge payload")
+    except (TypeError, ValueError) as exc:
+        raise RustParityError(f"Rust bridge payload violates strict JSON: {exc}") from exc
+    return json.dumps(
+        normalized,
+        ensure_ascii=ensure_ascii,
+        separators=separators,
+        allow_nan=False,
+    )
+
+
 def _exception_code(exc: BaseException) -> str | None:
     code = getattr(exc, "code", None)
     return code if isinstance(code, str) else None
@@ -108,7 +128,7 @@ def store_sqlite(
         extension = _load_extension()
         return json.loads(
             extension.store_sqlite_json(
-                json.dumps(
+                _rust_json_payload(
                     {
                         "path": os.fspath(path),
                         "transaction_id": transaction_id,
@@ -164,7 +184,7 @@ def store_postgres(
         extension = _load_extension()
         return json.loads(
             extension.store_postgres_json(
-                json.dumps(
+                _rust_json_payload(
                     {
                         "dsn": _postgres_dsn_for_rust(dsn),
                         "schema": schema,
@@ -261,7 +281,7 @@ def api_health(*, payload: JsonObject, python_value: JsonObject) -> JsonObject:
     extension = _load_extension()
     rust_value = json.loads(
         extension.api_health(
-            json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+            _rust_json_payload(payload, ensure_ascii=False, separators=(",", ":"))
         )
     )
     if not isinstance(rust_value, dict):
@@ -273,7 +293,7 @@ def api_authorize(*, roles: list[str], required_roles: list[str]) -> bool:
     extension = _load_extension()
     value = json.loads(
         extension.api_authorize(
-            json.dumps(
+            _rust_json_payload(
                 {"roles": roles, "required_roles": required_roles},
                 separators=(",", ":"),
             )
@@ -288,7 +308,7 @@ def api_sse_frame(
     extension = _load_extension()
     return str(
         extension.api_sse_frame(
-            json.dumps(
+            _rust_json_payload(
                 {"event": event, "data": data, "id": event_id},
                 ensure_ascii=False,
                 separators=(",", ":"),
@@ -301,7 +321,7 @@ def api_mcp_result(*, request_id: JsonValue, result: JsonValue) -> JsonObject:
     extension = _load_extension()
     value = json.loads(
         extension.api_mcp_result(
-            json.dumps(
+            _rust_json_payload(
                 {"id": request_id, "result": result},
                 ensure_ascii=False,
                 separators=(",", ":"),
@@ -317,7 +337,7 @@ def api_cli_health(*, payload: JsonObject) -> str:
     extension = _load_extension()
     return str(
         extension.api_cli_health(
-            json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+            _rust_json_payload(payload, ensure_ascii=False, separators=(",", ":"))
         )
     )
 
@@ -389,7 +409,7 @@ def store_memory_read(
     extension = _load_extension()
     rust_value = json.loads(
         extension.store_memory_read_json(
-            json.dumps(
+            _rust_json_payload(
                 {"snapshot": snapshot, "operation": operation},
                 ensure_ascii=False,
                 separators=(",", ":"),
@@ -432,7 +452,7 @@ def contract_stable_id(
     if mode == "python":
         return python_value
     extension = _load_extension()
-    payload_json = json.dumps(
+    payload_json = _rust_json_payload(
         [kind, *parts], ensure_ascii=False, separators=(",", ":")
     )
     rust_value = uuid.UUID(str(extension.stable_id_json(payload_json)))
@@ -449,7 +469,7 @@ def contract_canonical_json(*, value: JsonValue, python_value: str) -> str:
     if mode == "python":
         return python_value
     extension = _load_extension()
-    payload_json = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    payload_json = _rust_json_payload(value, ensure_ascii=False, separators=(",", ":"))
     rust_value = str(extension.canonical_json(payload_json))
     return _select(
         operation="canonical_json",
@@ -466,11 +486,10 @@ def contract_evidence_pack_digest_hash(
     if mode == "python":
         return python_value
     extension = _load_extension()
-    payload_json = json.dumps(
+    payload_json = _rust_json_payload(
         value,
         ensure_ascii=False,
         separators=(",", ":"),
-        default=str,
     )
     rust_value = str(extension.evidence_pack_digest_hash(payload_json))
     return _select(
@@ -495,7 +514,7 @@ def contract_metadata_filter_matches(
             raise RuntimeError("Python metadata-filter mode requires Python result")
         return python_value
     extension = _load_extension()
-    payload_json = json.dumps(
+    payload_json = _rust_json_payload(
         {"metadata": metadata, "where": where},
         ensure_ascii=False,
         separators=(",", ":"),
@@ -528,7 +547,7 @@ def short_id_transform(
     extension = _load_extension()
     rust_value = json.loads(
         extension.short_id_transform(
-            json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+            _rust_json_payload(payload, ensure_ascii=False, separators=(",", ":"))
         )
     )
     if mode == "rust":
@@ -553,7 +572,7 @@ def runtime_apply_state_update(
     extension = _load_extension()
     rust_value = json.loads(
         extension.apply_state_update(
-            json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+            _rust_json_payload(payload, ensure_ascii=False, separators=(",", ":"))
         )
     )
     if mode == "rust":
@@ -580,7 +599,7 @@ def runtime_workflow_may_reach_join(
     if mode == "python":
         return python_value
     extension = _load_extension()
-    payload_json = json.dumps(
+    payload_json = _rust_json_payload(
         {"node_ids": node_ids, "edges": edges, "join_ids": join_ids},
         ensure_ascii=False,
         separators=(",", ":"),
@@ -615,7 +634,7 @@ def runtime_workflow_terminal_reachable(
     if mode == "python":
         return python_value
     extension = _load_extension()
-    payload_json = json.dumps(
+    payload_json = _rust_json_payload(
         {
             "node_ids": node_ids,
             "edges": edges,
@@ -644,7 +663,7 @@ def runtime_select_route(*, payload: dict[str, Any]) -> dict[str, Any]:
     extension = _load_extension()
     value = json.loads(
         extension.runtime_select_route(
-            json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+            _rust_json_payload(payload, ensure_ascii=False, separators=(",", ":"))
         )
     )
     if not isinstance(value, dict):
@@ -664,7 +683,7 @@ def runtime_plan_successors(
     extension = _load_extension()
     rust_value = json.loads(
         extension.runtime_plan_successors(
-            json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+            _rust_json_payload(payload, ensure_ascii=False, separators=(",", ":"))
         )
     )
     if not isinstance(rust_value, dict):
@@ -697,7 +716,7 @@ def runtime_apply_join_arrival(*, payload: JsonObject) -> JsonObject:
     extension = _load_extension()
     value = json.loads(
         extension.runtime_apply_join_arrival(
-            json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+            _rust_json_payload(payload, ensure_ascii=False, separators=(",", ":"))
         )
     )
     if not isinstance(value, dict):
@@ -715,7 +734,7 @@ def runtime_decide_retry(
     extension = _load_extension()
     rust_value = json.loads(
         extension.runtime_decide_retry(
-            json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+            _rust_json_payload(payload, ensure_ascii=False, separators=(",", ":"))
         )
     )
     if not isinstance(rust_value, dict):
@@ -738,7 +757,7 @@ def runtime_plan_nested_invocation(
     extension = _load_extension()
     rust_value = json.loads(
         extension.runtime_plan_nested_invocation(
-            json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+            _rust_json_payload(payload, ensure_ascii=False, separators=(",", ":"))
         )
     )
     if not isinstance(rust_value, dict):
@@ -761,7 +780,7 @@ def runtime_decide_dispatch(
     extension = _load_extension()
     rust_value = json.loads(
         extension.runtime_decide_dispatch(
-            json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+            _rust_json_payload(payload, ensure_ascii=False, separators=(",", ":"))
         )
     )
     if not isinstance(rust_value, dict):
@@ -784,7 +803,7 @@ def runtime_decide_budget_suspend(
     extension = _load_extension()
     rust_value = json.loads(
         extension.runtime_decide_budget_suspend(
-            json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+            _rust_json_payload(payload, ensure_ascii=False, separators=(",", ":"))
         )
     )
     if not isinstance(rust_value, dict):
@@ -807,7 +826,7 @@ def runtime_scheduler_tick(
     extension = _load_extension()
     rust_value = json.loads(
         extension.runtime_scheduler_tick(
-            json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+            _rust_json_payload(payload, ensure_ascii=False, separators=(",", ":"))
         )
     )
     if not isinstance(rust_value, dict):

@@ -260,8 +260,15 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
             authority_context=_authority_context,
         )
 
-    def _resolve_async_step_fn(self, op: str) -> AsyncStepFn:
+    def _resolve_async_step_fn(self, op: str, version: str = "v1") -> AsyncStepFn:
         resolver = self._raw_step_resolver
+        resolve_async_version = getattr(resolver, "resolve_async_version", None)
+        if callable(resolve_async_version):
+            return cast(AsyncStepFn, resolve_async_version(op, version))
+        if version != "v1":
+            raise KeyError(
+                f"resolver cannot verify frozen version {version!r} for op={op!r}"
+            )
         resolve_async = getattr(resolver, "resolve_async", None)
         if callable(resolve_async):
             return cast(AsyncStepFn, resolve_async(op))
@@ -777,6 +784,7 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
                 workflow_id=str(workflow_id),
                 workflow_node_id=str(node_id),
                 op=str(node.op),
+                op_version=str(getattr(node, "version", "v1") or "v1"),
                 token_id=str(token_id),
                 attempt=1,
                 step_seq=int(step_seq),
@@ -799,7 +807,9 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
                 cache_dir=cache_dir,
                 authority_context=nested_authority_context,
             )
-            fn = self._resolve_async_step_fn(str(node.op))
+            fn = self._resolve_async_step_fn(
+                str(node.op), str(getattr(node, "version", "v1") or "v1")
+            )
             should_step_uow = getattr(self._sync_runtime, "_should_step_uow", None)
             maybe_step_uow = getattr(self._sync_runtime, "_maybe_step_uow", None)
             try:

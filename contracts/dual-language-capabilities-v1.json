@@ -1,0 +1,186 @@
+{
+  "schema_version": 1,
+  "contract_id": "kogwistar-dual-language-capabilities",
+  "status": "inventory-in-progress",
+  "sources_of_truth": {
+    "capability_ownership": "contracts/rust-port-v1.json#/capability_ownership",
+    "rust_server_pending_routes": "rust/crates/kogwistar-api/src/lib.rs::PENDING_SERVER_CUTOVER_ROUTES",
+    "rust_server_pending_syscalls": "rust/crates/kogwistar-api/src/lib.rs::PENDING_SYSCALL_CUTOVER_OPS"
+  },
+  "interpretation": {
+    "python_coverage": "The legacy Python implementation is the current authoritative writer in rust-port-v1; this does not claim every consumer combination is verified.",
+    "rust_coverage": "Derived only from rust-port-v1 rust_cutover_ready. A false value means partial or not cutover-ready, not necessarily no implementation.",
+    "mixed_coverage": "Not inferred from the availability of a facade, extension, or worker. Only explicitly evidenced seams are listed.",
+    "native_paths": "All full request-path claims remain unverified until ingress-to-persistence conformance and resource-matched benchmarks pass."
+  },
+  "conformance_profiles": {
+    "deterministic-contracts": [
+      "cross-language-valid-invalid-golden-fixtures",
+      "canonical-serialization-and-error-parity"
+    ],
+    "sqlite-meta": [
+      "cross-language-valid-invalid-golden-fixtures",
+      "single-writer-and-close-reopen-handoff",
+      "crash-retry-and-replay"
+    ],
+    "postgres-sequence-event-log": [
+      "cross-language-valid-invalid-golden-fixtures",
+      "transaction-owner-and-rollback",
+      "commit-acknowledgement-failure-and-recovery",
+      "reopen-and-schema-compatibility"
+    ],
+    "projections-snapshots-run-registry": [
+      "cross-language-valid-invalid-golden-fixtures",
+      "projection-rebuild-and-snapshot-parity",
+      "restart-resume-and-stale-state"
+    ],
+    "queues-leases-lanes": [
+      "cross-language-valid-invalid-golden-fixtures",
+      "claim-lease-reclaim-and-idempotency",
+      "crash-before-after-effect-and-acknowledgement",
+      "trace-and-correlation-parity"
+    ],
+    "graph-pgvector": [
+      "cross-language-valid-invalid-golden-fixtures",
+      "graph-acl-namespace-and-source-evidence-parity",
+      "transaction-and-vector-index-reopen-parity"
+    ],
+    "chroma-adapter": [
+      "python-chroma-contract",
+      "single-writer-and-isolated-shadow-read"
+    ],
+    "workflow-runtime": [
+      "cross-language-valid-invalid-golden-fixtures",
+      "transition-route-and-checkpoint-parity",
+      "worker-version-environment-and-replay-contract",
+      "trace-provenance-and-cancellation"
+    ],
+    "server-rest-sse-mcp-cli": [
+      "openapi-and-mcp-contract-parity",
+      "authentication-acl-namespace-and-capability-parity",
+      "sse-ordering-and-resume",
+      "cli-operation-and-error-parity"
+    ]
+  },
+  "capabilities": [
+    {
+      "id": "deterministic-contracts",
+      "rust_port_manifest_id": "deterministic-contracts",
+      "conformance_profile": "deterministic-contracts",
+      "rust_coverage": "cutover-ready",
+      "mixed_coverage": "not-inventoried",
+      "native_python_path": "not-verified",
+      "native_rust_path": "not-verified"
+    },
+    {
+      "id": "sqlite-meta",
+      "rust_port_manifest_id": "sqlite-meta",
+      "conformance_profile": "sqlite-meta",
+      "rust_coverage": "cutover-ready",
+      "mixed_coverage": "partial; in-process sequential handoff only, cross-process ownership open",
+      "native_python_path": "not-verified",
+      "native_rust_path": "not-verified"
+    },
+    {
+      "id": "postgres-sequence-event-log",
+      "rust_port_manifest_id": "postgres-sequence-event-log",
+      "conformance_profile": "postgres-sequence-event-log",
+      "rust_coverage": "not-cutover-ready",
+      "mixed_coverage": "partial; Rust-owned transaction facade exists, full capability parity open",
+      "native_python_path": "not-verified",
+      "native_rust_path": "not-verified"
+    },
+    {
+      "id": "projections-snapshots-run-registry",
+      "rust_port_manifest_id": "projections-snapshots-run-registry",
+      "conformance_profile": "projections-snapshots-run-registry",
+      "rust_coverage": "not-cutover-ready",
+      "mixed_coverage": "not-inventoried",
+      "native_python_path": "not-verified",
+      "native_rust_path": "not-verified"
+    },
+    {
+      "id": "queues-leases-lanes",
+      "rust_port_manifest_id": "queues-leases-lanes",
+      "conformance_profile": "queues-leases-lanes",
+      "rust_coverage": "not-cutover-ready",
+      "mixed_coverage": "partial; Rust-owned scheduler to Python sync/async worker is implemented, full parity open",
+      "native_python_path": "not-verified",
+      "native_rust_path": "not-verified"
+    },
+    {
+      "id": "graph-pgvector",
+      "rust_port_manifest_id": "graph-pgvector",
+      "conformance_profile": "graph-pgvector",
+      "rust_coverage": "not-cutover-ready",
+      "mixed_coverage": "not-inventoried",
+      "native_python_path": "not-verified",
+      "native_rust_path": "not-verified"
+    },
+    {
+      "id": "chroma-adapter",
+      "rust_port_manifest_id": "chroma-adapter",
+      "conformance_profile": "chroma-adapter",
+      "rust_coverage": "python-only",
+      "mixed_coverage": "not-inventoried",
+      "native_python_path": "not-verified",
+      "native_rust_path": "not-applicable"
+    },
+    {
+      "id": "workflow-runtime",
+      "rust_port_manifest_id": "workflow-runtime",
+      "conformance_profile": "workflow-runtime",
+      "rust_coverage": "not-cutover-ready",
+      "mixed_coverage": "partial; Rust-owned scheduler with versioned Python worker protocol",
+      "native_python_path": "not-verified",
+      "native_rust_path": "not-verified"
+    },
+    {
+      "id": "server-rest-sse-mcp-cli",
+      "rust_port_manifest_id": "server-rest-sse-mcp-cli",
+      "conformance_profile": "server-rest-sse-mcp-cli",
+      "rust_coverage": "not-cutover-ready",
+      "mixed_coverage": "not-inventoried",
+      "native_python_path": "not-verified",
+      "native_rust_path": "not-verified"
+    }
+  ],
+  "rust_server_gaps": {
+    "status": "intentionally-deferred",
+    "pending_routes": [
+      ["DELETE", "/admin/doc/{doc_id}"],
+      ["GET", "/api/conversations"],
+      ["GET", "/api/conversations/{conversation_id}"],
+      ["GET", "/api/conversations/{conversation_id}/snapshots/latest"],
+      ["GET", "/api/conversations/{conversation_id}/turns"],
+      ["GET", "/api/search_index_hybrid"],
+      ["GET", "/api/viz/cytoscape.json"],
+      ["GET", "/api/viz/d3.json"],
+      ["GET", "/api/workflow/tools/audit"],
+      ["GET", "/viz/d3.bundle"],
+      ["POST", "/api/add_index_entries"],
+      ["POST", "/api/conversations"],
+      ["POST", "/api/conversations/{conversation_id}/turns:answer"],
+      ["POST", "/api/document"],
+      ["POST", "/api/document.upsert_tree"],
+      ["POST", "/api/graph/upsert"]
+    ],
+    "pending_syscalls": [
+      "send_message",
+      "receive_message",
+      "mount_memory",
+      "project_view",
+      "invoke_tool"
+    ]
+  },
+  "rust_to_python_worker": {
+    "status": "implemented-seam; production parity remains incomplete",
+    "protocols": ["sync-v1", "async-v2"],
+    "dispatch_contract": ["frozen operation", "operation version", "environment label"],
+    "environment_attestation": "not-implemented; labels are not proof of installed build or dependencies",
+    "transaction_boundary": "Rust commits claim before callback; Python runs outside that transaction; Rust validates and commits result afterward",
+    "idempotency": "stable lane message_id is provided; exactly-once external effects are not guaranteed",
+    "native_rust_path": false
+  },
+  "release_rule": "This crosswalk is descriptive, not a cutover authorization. Readiness must be proven by the capability's conformance gates and native-path evidence."
+}

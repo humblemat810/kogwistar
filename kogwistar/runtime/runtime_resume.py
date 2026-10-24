@@ -32,7 +32,6 @@ from .step_context import RouteDecision, RunResult, StepResolver
 from .telemetry import EventEmitter
 
 if TYPE_CHECKING:
-    from .runtime import WorkflowRuntime
     from ..engine_core.engine import GraphKnowledgeEngine
 
 
@@ -159,6 +158,7 @@ class SuspendedRunResumeMixin:
         1. A checkpoint exists for the suspended state.
         2. The suspended step was saved in _rt_join_snapshot as pending with mask logic intact.
         """
+        from .runtime import WorkflowRuntime
         from .rust_runtime_authority import (
             RustRuntimeAuthority,
             rust_runtime_authority_url,

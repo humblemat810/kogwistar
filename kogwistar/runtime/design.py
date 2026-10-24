@@ -99,6 +99,7 @@ class WFNode:
         workflow_id: ID of the workflow this node belongs to.
         op: The operation name (resolved via BaseResolver). Maps to metadata `wf_op`.
         version: Semantic version of the operation. Maps to metadata `wf_version`.
+        environment_id: Required execution environment. Maps to `wf_environment_id`.
         start: Whether this is the entry point. Maps to metadata `wf_start`.
         terminal: Whether this is an exit point. Maps to metadata `wf_terminal`.
         fanout: Whether this step supports parallel execution. Maps to metadata `wf_fanout`.
@@ -112,6 +113,7 @@ class WFNode:
     terminal: bool = False
     fanout: bool = False
     cacheable: bool = True
+    environment_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -217,6 +219,11 @@ def build_workflow_from_engine(
             workflow_id=str(md.get("workflow_id") or workflow_id),
             op=str(md.get("wf_op") or md.get("wf.op") or ""),
             version=str(md.get("wf_version") or md.get("wf.version") or "v1"),
+            environment_id=(
+                str(md["wf_environment_id"])
+                if md.get("wf_environment_id") is not None
+                else None
+            ),
             start=bool(md.get("wf_start", False)),
             terminal=bool(md.get("wf_terminal", False)),
             fanout=bool(md.get("wf_fanout", False)),
@@ -395,6 +402,66 @@ def validate_workflow_design(
                 raise Exception(f"workflow_contains unregistered ops {unknown_ops}")
         elif not callable(resolver):
             raise Exception("resolver must be callable or expose an iterable `.ops`.")
+
+        supports_version = getattr(resolver, "supports_version", None)
+        resolve_version = getattr(resolver, "resolve_version", None)
+        resolve_async_version = getattr(resolver, "resolve_async_version", None)
+        can_resolve_versions = callable(supports_version) or callable(
+            resolve_version
+        ) or callable(resolve_async_version)
+        for node in nodes.values():
+            op = _node_op(node)
+            if not op:
+                continue
+            version = str(
+                node.metadata.get("wf_version")
+                or node.metadata.get("wf.version")
+                or "v1"
+            )
+            if callable(supports_version):
+                supported = bool(supports_version(op, version))
+            elif version == "v1":
+                # Legacy callable resolvers remain valid for the default contract.
+                supported = True
+            elif can_resolve_versions:
+                try:
+                    if callable(resolve_version):
+                        versioned_handler = resolve_version(op, version)
+                    else:
+                        versioned_handler = resolve_async_version(op, version)
+                    supported = callable(versioned_handler)
+                except (LookupError, ValueError):
+                    supported = False
+            else:
+                supported = False
+            if not supported:
+                raise ValueError(
+                    f"workflow op {op!r} requires unsupported version {version!r}"
+                )
+            environment_id = node.metadata.get("wf_environment_id")
+            if environment_id is not None:
+                if (
+                    not isinstance(environment_id, str)
+                    or not environment_id.strip()
+                    or environment_id != environment_id.strip()
+                ):
+                    raise ValueError(
+                        f"workflow op {op!r} has non-canonical wf_environment_id"
+                    )
+                environment_for_version = getattr(
+                    resolver, "environment_for_version", None
+                )
+                registered_environment = (
+                    environment_for_version(op, version)
+                    if callable(environment_for_version)
+                    else None
+                )
+                if registered_environment != environment_id:
+                    raise ValueError(
+                        f"workflow op {op!r} requires environment "
+                        f"{environment_id!r}, but resolver registers "
+                        f"{registered_environment!r}"
+                    )
     # predicate resolution
     for edges in adj.values():
         for e in edges:

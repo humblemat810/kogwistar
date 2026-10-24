@@ -867,6 +867,17 @@ class PgVectorBackend:
             ),
         )
 
+        self._edge_endpoint_fields = (
+            "source_ids",
+            "target_ids",
+            "source_edge_ids",
+            "target_edge_ids",
+        )
+        self._edge_endpoint_gin_indexes = {
+            field: f"idx_{edges_table}_{field}_gin"
+            for field in self._edge_endpoint_fields
+        }
+
         # High-churn, non-semantic staging projection.  It is deliberately
         # separate from named projections and vector serving tables.
         self.stage1_projections = sa.Table(
@@ -964,6 +975,10 @@ class PgVectorBackend:
             sa.Index(
                 f"ix_{edge_endpoints_table}_endpoint",
                 sa.text("(metadata->>'endpoint_node_id')"),
+            ),
+            sa.Index(
+                f"ix_{edge_endpoints_table}_endpoint_id",
+                sa.text("(metadata->>'endpoint_id')"),
             ),
             sa.Index(
                 f"ix_{edge_endpoints_table}_edge", sa.text("(metadata->>'edge_id')")
@@ -1403,6 +1418,21 @@ class PgVectorBackend:
                 "(namespace, materialization_status, updated_at_ms)"
             )
         )
+        conn.execute(
+            sa.text(
+                f'CREATE INDEX IF NOT EXISTS "ix_{self.edge_endpoints.name}_endpoint_id" '
+                f'ON "{self.schema}"."{self.edge_endpoints.name}" '
+                "((metadata->>'endpoint_id'))"
+            )
+        )
+        for field, index_name in self._edge_endpoint_gin_indexes.items():
+            conn.execute(
+                sa.text(
+                    f'CREATE INDEX IF NOT EXISTS "{index_name}" '
+                    f'ON "{self.schema}"."{self.edges.name}" '
+                    f"USING gin (((metadata ->> '{field}')::jsonb) jsonb_path_ops)"
+                )
+            )
 
         # Optional-but-useful vector indexes. We default to HNSW because it's
         # generally strong out of the box and doesn't require ANALYZE/training.
@@ -2340,6 +2370,66 @@ class PgVectorBackend:
         limit: int = 200,
     ) -> dict[str, JsonValue]:
         return self._edges_c.get(ids=ids, where=where, include=include, limit=limit)
+
+    def edge_get_by_endpoint(
+        self,
+        *,
+        endpoint_id: str,
+        endpoint_type: str,
+        include: list[str] | None = None,
+        limit: int = 512,
+    ) -> dict[str, JsonValue] | Awaitable[dict[str, JsonValue]]:
+        """Read incident edges from canonical edge metadata, not a lagging projection."""
+        if endpoint_type not in {"node", "edge"}:
+            raise ValueError("endpoint_type must be 'node' or 'edge'")
+        fields = (
+            ("source_ids", "target_ids")
+            if endpoint_type == "node"
+            else ("source_edge_ids", "target_edge_ids")
+        )
+        predicates = [
+            sa.cast(
+                self.edges.c.metadata.op("->>")(sa.literal_column(f"'{field}'")),
+                psql.JSONB,
+            ).contains([endpoint_id])
+            for field in fields
+        ]
+        selected = include or ["documents", "metadatas"]
+        columns = [self.edges.c.id]
+        if "documents" in selected:
+            columns.append(self.edges.c.document)
+        if "metadatas" in selected:
+            columns.append(self.edges.c.metadata)
+        query = (
+            sa.select(*columns)
+            .where(sa.or_(*predicates))
+            .order_by(self.edges.c.id.asc())
+            .limit(max(0, int(limit)))
+        )
+
+        if self._is_async_engine:
+            return self._edge_endpoint_query_async(query, selected)
+        with self._conn() as conn:
+            rows = conn.execute(query).fetchall()
+        return self._edge_endpoint_rows(rows, selected)
+
+    async def _edge_endpoint_query_async(
+        self, query: sa.Select, include: list[str]
+    ) -> dict[str, JsonValue]:
+        async with self._async_conn() as conn:
+            rows = (await conn.execute(query)).fetchall()
+        return self._edge_endpoint_rows(rows, include)
+
+    @staticmethod
+    def _edge_endpoint_rows(
+        rows: Sequence[object], include: list[str]
+    ) -> dict[str, JsonValue]:
+        result: dict[str, JsonValue] = {"ids": [str(row.id) for row in rows]}
+        if "documents" in include:
+            result["documents"] = [row.document for row in rows]
+        if "metadatas" in include:
+            result["metadatas"] = [dict(row.metadata or {}) for row in rows]
+        return result
 
     def edge_delete(
         self, *, ids: Sequence[str] | None = None, where: Json | None = None

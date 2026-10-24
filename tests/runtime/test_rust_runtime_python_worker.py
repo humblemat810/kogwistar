@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import copy
+import hashlib
 import json
 import sqlite3
 from pathlib import Path
@@ -11,6 +14,10 @@ import pytest
 
 from kogwistar.runtime.models import RunFailure, RunSuccess, RunSuspended
 from kogwistar.runtime.resolvers import MappingStepResolver
+from kogwistar.runtime.rust_runtime_authority import (
+    RustRuntimeAuthorityError,
+    _json_state,
+)
 from kogwistar.runtime.rust_worker import (
     AmbiguousWorkerExecution,
     AsyncRustRuntimeWorker,
@@ -57,6 +64,8 @@ def _adapter_work(
     state: dict[str, Any] | None = None,
     routes: list[dict[str, Any]] | None = None,
     op: str = "start",
+    op_version: str = "v1",
+    op_environment_id: str | None = None,
 ) -> dict[str, Any]:
     work = _work()
     work["payload"].update(
@@ -66,6 +75,12 @@ def _adapter_work(
             "state": dict(state or {"seed": 1}),
             "runtime_routes": list(routes or []),
             "op": op,
+            "op_version": op_version,
+            **(
+                {"op_environment_id": op_environment_id}
+                if op_environment_id is not None
+                else {}
+            ),
         }
     )
     return work
@@ -106,6 +121,7 @@ def test_step_resolver_adapter_maps_context_mutation_update_and_explicit_route()
             "start",
         )
         assert ctx.turn_node_id == "turn-1"
+        assert ctx.idempotency_key == "lane-1"
         assert ctx.state_view["_deps"]["injected"] == 7
         with ctx.state_write as state:
             state["direct"] = "kept"
@@ -136,6 +152,396 @@ def test_step_resolver_adapter_maps_context_mutation_update_and_explicit_route()
         "workflow_status": "succeeded",
         "final_state": {"seed": 1, "items": ["result"], "direct": "kept"},
     }
+
+
+def test_step_idempotency_key_stays_stable_when_another_worker_reclaims() -> None:
+    resolver = MappingStepResolver()
+    seen: list[str | None] = []
+
+    @resolver.register("start")
+    def execute(ctx):
+        seen.append(ctx.idempotency_key)
+        return RunSuccess(conversation_node_id=None, state_update=[])
+
+    adapter = RustStepResolverAdapter(resolver)
+    for worker_id in ("worker-a", "worker-b"):
+        work = _adapter_work()
+        work["claimed_by"] = worker_id
+        assert adapter(work)["status"] == "success"
+
+    assert seen == ["lane-1", "lane-1"]
+
+
+def test_python_runtime_dependencies_stay_process_local_and_accept_library_objects() -> None:
+    class NumericalService:
+        def mean(self, values: list[float]) -> float:
+            return sum(values) / len(values)
+
+    service = NumericalService()
+    resolver = MappingStepResolver()
+
+    @resolver.register("numerical", version="v2")
+    def execute(ctx):
+        assert ctx.op_version == "v2"
+        injected = ctx.state_view["_deps"]["numerical_service"]
+        assert isinstance(injected, NumericalService)
+        assert injected is service
+        mean = injected.mean([2.0, 4.0, 6.0])
+        return RunSuccess(
+            conversation_node_id=None,
+            state_update=[("u", {"mean": mean})],
+        )
+
+    work = _adapter_work(op="numerical", op_version="v2")
+    effect = RustStepResolverAdapter(
+        resolver,
+        dependency_provider=lambda _work: {"numerical_service": service},
+    )(work)
+
+    assert effect["status"] == "success"
+    result = effect.get("result")
+    assert isinstance(result, dict)
+    assert result.get("final_state") == {"seed": 1, "mean": 4.0}
+    assert "_deps" not in effect
+
+
+def test_numpy_worker_result_must_be_explicitly_projected_to_json() -> None:
+    np = pytest.importorskip("numpy")
+    resolver = MappingStepResolver()
+
+    @resolver.register("numerical", version="v1", environment_id="numpy-test-v1")
+    def execute(ctx):
+        values = np.asarray(ctx.state_view["values"], dtype=np.float64)
+        mean = np.mean(values)
+        return RunSuccess(
+            conversation_node_id=None,
+            state_update=[("u", {"mean": mean.item()})],
+        )
+
+    effect = RustStepResolverAdapter(
+        resolver,
+        dependency_provider=lambda _work: {"numpy": np},
+    )(
+        _adapter_work(
+            state={"values": [2.0, 4.0, 6.0]},
+            op="numerical",
+            op_version="v1",
+            op_environment_id="numpy-test-v1",
+        )
+    )
+    assert effect["state_update"] == [["u", {"mean": 4.0}]]
+    assert effect["result"]["final_state"] == {"values": [2.0, 4.0, 6.0], "mean": 4.0}
+    assert "_deps" not in effect
+
+    array_resolver = MappingStepResolver()
+
+    @array_resolver.register("numerical", version="v1", environment_id="numpy-test-v1")
+    def return_array(_ctx):
+        return RunSuccess(
+            conversation_node_id=None,
+            state_update=[("u", {"vector": np.asarray([1.0, 2.0])})],
+        )
+
+    with pytest.raises(RustWorkerError, match="must be JSON-only"):
+        RustStepResolverAdapter(array_resolver)(_adapter_work(
+            op="numerical",
+            op_version="v1",
+            op_environment_id="numpy-test-v1",
+        ))
+
+
+def test_python_worker_rejects_operation_version_mismatch_before_execution() -> None:
+    resolver = MappingStepResolver()
+    calls: list[str] = []
+
+    @resolver.register("start", version="v1")
+    def execute(_ctx):
+        calls.append("executed")
+        return RunSuccess(conversation_node_id=None, state_update=[])
+
+    with pytest.raises(RustWorkerError, match="registers 'v1'"):
+        RustStepResolverAdapter(resolver)(_adapter_work(op_version="v2"))
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    "identity_field",
+    ["message_id", "run_id", "step_id", "claimed_by", "correlation_id"],
+)
+def test_worker_rejects_missing_correlation_identity_before_callback(
+    tmp_path: Path, identity_field: str
+) -> None:
+    resolver = MappingStepResolver()
+    calls: list[str] = []
+
+    @resolver.register("start")
+    def execute(_ctx):
+        calls.append("executed")
+        return RunSuccess(conversation_node_id=None, state_update=[])
+
+    work = _adapter_work()
+    del work[identity_field]
+    journal_path = tmp_path / f"missing-{identity_field}.sqlite"
+    worker = RustRuntimeWorker(
+        base_url="http://rust",
+        worker_id="worker-1",
+        journal_path=journal_path,
+        execute=RustStepResolverAdapter(resolver),
+        client=httpx.Client(
+            transport=httpx.MockTransport(
+                lambda _request: pytest.fail("invalid work must not be submitted")
+            )
+        ),
+    )
+
+    expected_error = "missing message_id" if identity_field == "message_id" else "missing identity fields"
+    with worker, pytest.raises(RustWorkerError, match=expected_error):
+        worker.process(work)
+
+    assert calls == []
+    with sqlite3.connect(journal_path) as connection:
+        assert connection.execute(
+            "SELECT status FROM rust_worker_results WHERE message_id = ?",
+            ("lane-1",),
+        ).fetchone() is None
+
+
+def test_async_worker_preflight_rejects_missing_correlation_identity() -> None:
+    resolver = MappingStepResolver()
+
+    @resolver.register("start")
+    def execute(_ctx):
+        pytest.fail("invalid work must be rejected before callback execution")
+
+    work = _adapter_work()
+    work.pop("message_id")
+
+    with pytest.raises(RustWorkerError, match="missing identity fields"):
+        AsyncRustStepResolverAdapter(resolver).validate_work(work)
+
+
+def test_worker_process_validates_identity_for_generic_executor(
+    tmp_path: Path,
+) -> None:
+    calls: list[str] = []
+
+    def execute(_work):
+        calls.append("executed")
+        return _effect()
+
+    work = _work()
+    work.pop("correlation_id")
+    journal_path = tmp_path / "generic-executor-invalid-identity.sqlite"
+    worker = RustRuntimeWorker(
+        base_url="http://rust",
+        worker_id="worker-1",
+        journal_path=journal_path,
+        execute=execute,
+        client=httpx.Client(
+            transport=httpx.MockTransport(
+                lambda _request: pytest.fail("invalid work must not be submitted")
+            )
+        ),
+    )
+
+    with worker, pytest.raises(RustWorkerError, match="missing identity fields"):
+        worker.process(work)
+
+    assert calls == []
+    with sqlite3.connect(journal_path) as connection:
+        assert connection.execute(
+            "SELECT status FROM rust_worker_results WHERE message_id = ?",
+            ("lane-1",),
+        ).fetchone() is None
+
+
+@pytest.mark.asyncio
+async def test_async_worker_process_validates_identity_for_generic_executor(
+    tmp_path: Path,
+) -> None:
+    calls: list[str] = []
+
+    async def execute(_work):
+        calls.append("executed")
+        return _effect()
+
+    work = _work()
+    work.pop("correlation_id")
+    journal_path = tmp_path / "async-generic-executor-invalid-identity.sqlite"
+
+    async def unexpected_request(_request: httpx.Request) -> httpx.Response:
+        pytest.fail("invalid work must not be submitted")
+
+    worker = AsyncRustRuntimeWorker(
+        base_url="http://rust",
+        worker_id="async-worker-1",
+        journal_path=journal_path,
+        execute=execute,
+        client=httpx.AsyncClient(
+            transport=httpx.MockTransport(unexpected_request),
+            base_url="http://rust",
+        ),
+    )
+
+    try:
+        with pytest.raises(RustWorkerError, match="missing identity fields"):
+            await worker.process(work)
+    finally:
+        await worker.aclose()
+
+    assert calls == []
+    with sqlite3.connect(journal_path) as connection:
+        assert connection.execute(
+            "SELECT status FROM rust_worker_results WHERE message_id = ?",
+            ("lane-1",),
+        ).fetchone() is None
+
+
+def test_python_worker_checks_environment_before_numerical_callback() -> None:
+    resolver = MappingStepResolver()
+    calls: list[str] = []
+
+    @resolver.register("numerical", version="v2", environment_id="numpy-cpu-2")
+    def execute(ctx):
+        calls.append(ctx.op_environment_id or "")
+        return RunSuccess(conversation_node_id=None, state_update=[])
+
+    adapter = RustStepResolverAdapter(resolver)
+    accepted = adapter(
+        _adapter_work(
+            op="numerical", op_version="v2", op_environment_id="numpy-cpu-2"
+        )
+    )
+    assert accepted["status"] == "success"
+    assert calls == ["numpy-cpu-2"]
+    with pytest.raises(RustWorkerError, match="registers 'numpy-cpu-2'"):
+        adapter(
+            _adapter_work(
+                op="numerical", op_version="v2", op_environment_id="numpy-cpu-1"
+            )
+        )
+    assert calls == ["numpy-cpu-2"]
+
+    with pytest.raises(RustWorkerError, match="requires environment None"):
+        adapter(_adapter_work(op="numerical", op_version="v2"))
+    assert calls == ["numpy-cpu-2"]
+
+
+def test_python_worker_dispatches_legacy_and_versioned_handlers_in_one_resolver() -> None:
+    resolver = MappingStepResolver()
+
+    @resolver.register("numerical", version="v2", environment_id="numpy-cpu-v2")
+    def current(ctx):
+        return RunSuccess(
+            conversation_node_id=None,
+            state_update=[("u", {"implementation": f"new-{ctx.op_version}"})],
+        )
+
+    @resolver.register_versioned(
+        "numerical", version="v1", environment_id="numpy-cpu-v1"
+    )
+    def legacy(ctx):
+        return RunSuccess(
+            conversation_node_id=None,
+            state_update=[("u", {"implementation": f"old-{ctx.op_version}"})],
+        )
+
+    adapter = RustStepResolverAdapter(resolver)
+    legacy_effect = adapter(
+        _adapter_work(
+            op="numerical", op_version="v1", op_environment_id="numpy-cpu-v1"
+        )
+    )
+    current_effect = adapter(
+        _adapter_work(
+            op="numerical", op_version="v2", op_environment_id="numpy-cpu-v2"
+        )
+    )
+
+    assert legacy_effect["result"]["final_state"]["implementation"] == "old-v1"
+    assert current_effect["result"]["final_state"]["implementation"] == "new-v2"
+    assert resolver.op_versions == {"numerical": "v2"}
+    assert resolver.supports_version("numerical", "v1")
+    assert resolver.supports_version("numerical", "v2")
+    assert len(adapter.claim_recipient_ids) == 3
+    assert adapter.claim_recipient_ids[-1] == "python-worker"
+    assert all(
+        recipient.startswith("python-worker-env-")
+        for recipient in adapter.claim_recipient_ids[:-1]
+    )
+
+
+@pytest.mark.asyncio
+async def test_async_python_worker_dispatches_multiple_versions() -> None:
+    from kogwistar.runtime.resolvers import AsyncMappingStepResolver
+
+    resolver = AsyncMappingStepResolver()
+
+    @resolver.register("summary", version="v2")
+    async def current(ctx):
+        return RunSuccess(
+            conversation_node_id=None,
+            state_update=[("u", {"implementation": f"new-{ctx.op_version}"})],
+        )
+
+    @resolver.register_versioned("summary", version="v1")
+    async def legacy(ctx):
+        return RunSuccess(
+            conversation_node_id=None,
+            state_update=[("u", {"implementation": f"old-{ctx.op_version}"})],
+        )
+
+    adapter = AsyncRustStepResolverAdapter(resolver)
+    legacy_work = _adapter_work(op="summary", op_version="v1")
+    current_work = _adapter_work(op="summary", op_version="v2")
+    legacy_work["payload"]["worker_protocol"] = "async-v2"
+    current_work["payload"]["worker_protocol"] = "async-v2"
+    legacy_effect = await adapter.execute(legacy_work)
+    current_effect = await adapter.execute(current_work)
+
+    assert legacy_effect["result"]["final_state"]["implementation"] == "old-v1"
+    assert current_effect["result"]["final_state"]["implementation"] == "new-v2"
+
+
+@pytest.mark.parametrize("environment_id", ["", " numpy-cpu-2", "numpy-cpu-2 "])
+def test_resolver_rejects_noncanonical_environment_ids(environment_id: str) -> None:
+    resolver = MappingStepResolver()
+    with pytest.raises(ValueError, match="canonical"):
+        resolver.register("numerical", environment_id=environment_id)
+
+
+def test_worker_environment_mismatch_does_not_poison_execution_journal(
+    tmp_path: Path,
+) -> None:
+    resolver = MappingStepResolver()
+
+    @resolver.register("numerical", version="v2", environment_id="numpy-cpu-2")
+    def execute(_ctx):
+        pytest.fail("incompatible worker must not invoke the callback")
+
+    journal_path = tmp_path / "environment-mismatch.sqlite"
+    worker = RustRuntimeWorker(
+        base_url="http://rust",
+        worker_id="wrong-env-worker",
+        journal_path=journal_path,
+        execute=RustStepResolverAdapter(resolver),
+        client=httpx.Client(
+            transport=httpx.MockTransport(
+                lambda _request: pytest.fail("preflight must fail before result IO")
+            )
+        ),
+    )
+    with worker, pytest.raises(RustWorkerError, match="registers 'numpy-cpu-2'"):
+        worker.process(
+            _adapter_work(
+                op="numerical", op_version="v2", op_environment_id="numpy-cpu-1"
+            )
+        )
+
+    with sqlite3.connect(journal_path) as connection:
+        assert connection.execute(
+            "SELECT status FROM rust_worker_results WHERE message_id='lane-1'"
+        ).fetchone() is None
 
 
 def test_step_resolver_adapter_maps_suspend() -> None:
@@ -219,6 +625,52 @@ def test_step_resolver_adapter_rejects_result_runtime_plumbing(key: str) -> None
 
     with pytest.raises(RustWorkerError, match="runtime plumbing keys"):
         RustStepResolverAdapter(resolver)(_adapter_work())
+
+
+@pytest.mark.parametrize("non_finite", [float("nan"), float("inf"), float("-inf")])
+def test_python_worker_rejects_non_finite_numbers_at_rust_json_seam(
+    non_finite: float,
+) -> None:
+    resolver = MappingStepResolver()
+
+    @resolver.register("start")
+    def execute(_ctx):
+        return RunSuccess(
+            conversation_node_id=None,
+            state_update=[("u", {"numeric_result": non_finite})],
+        )
+
+    with pytest.raises(RustWorkerError, match="must be JSON-only"):
+        RustStepResolverAdapter(resolver)(_adapter_work())
+
+
+def test_python_worker_rejects_non_string_json_keys_without_coercion() -> None:
+    resolver = MappingStepResolver()
+
+    @resolver.register("start")
+    def execute(_ctx):
+        return RunSuccess(
+            conversation_node_id=None,
+            state_update=[("u", {"numeric_result": {1: "must not become string key"}})],
+        )
+
+    with pytest.raises(RustWorkerError, match="non-string object key"):
+        RustStepResolverAdapter(resolver)(_adapter_work())
+
+
+@pytest.mark.parametrize("non_finite", [float("nan"), float("inf"), float("-inf")])
+def test_rust_authority_rejects_non_finite_initial_state(non_finite: float) -> None:
+    with pytest.raises(RustRuntimeAuthorityError, match="durable state must be JSON-only"):
+        _json_state({"numeric_value": non_finite})
+
+
+def test_rust_authority_rejects_non_string_keys_without_coercion() -> None:
+    with pytest.raises(RustRuntimeAuthorityError, match="non-string object key"):
+        _json_state({"nested": {1: "would be coerced by json.dumps"}})
+
+
+def test_rust_authority_preserves_legacy_tuple_to_json_array_conversion() -> None:
+    assert _json_state({"items": (1, "two")}) == {"items": [1, "two"]}
 
 
 def test_step_resolver_adapter_rejects_unrepresented_callbacks() -> None:
@@ -377,6 +829,132 @@ def test_worker_claim_and_scheduler_identity_are_validated(tmp_path: Path) -> No
             worker.process(_work())
 
 
+def test_python_worker_matches_shared_rust_runtime_wire_fixture(
+    tmp_path: Path,
+) -> None:
+    from kogwistar.id_provider import stable_id
+
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "golden"
+        / "adr015-runtime-wire-v1.json"
+    )
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    requests: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.content))
+        return httpx.Response(200, json={"work": []}, request=request)
+
+    with RustRuntimeWorker(
+        base_url="http://rust",
+        worker_id="worker-1",
+        journal_path=tmp_path / "golden-worker.sqlite",
+        execute=lambda _work: _effect(),
+        client=httpx.Client(
+            transport=httpx.MockTransport(handler), base_url="http://rust"
+        ),
+    ) as worker:
+        assert worker.claim(limit=2, run_id="run-1") == []
+
+    assert requests == [fixture["claim"]]
+    expected = copy.deepcopy(fixture["result_effect"])
+    expected["effect"]["effect_id"] = str(
+        stable_id("runtime.worker.result", "lane-1", "run-1", "entry")
+    )
+    assert RustRuntimeWorker._result_envelope(
+        fixture["claimed_work_sqlite"], expected["effect"]
+    ) == expected
+
+
+def test_environment_pinned_resolver_advertises_compatible_claim_recipients(
+    tmp_path: Path,
+) -> None:
+    requests: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.content))
+        return httpx.Response(200, json={"work": []}, request=request)
+
+    resolver = MappingStepResolver()
+
+    @resolver.register("numerical", environment_id="numpy-cpu-2")
+    def execute(_ctx):
+        return RunSuccess(conversation_node_id=None, state_update=[])
+
+    worker = RustRuntimeWorker.from_step_resolver(
+        base_url="http://rust",
+        worker_id="numpy-worker",
+        journal_path=tmp_path / "numpy-worker.sqlite",
+        step_resolver=resolver,
+        client=httpx.Client(
+            transport=httpx.MockTransport(handler), base_url="http://rust"
+        ),
+    )
+    with worker:
+        assert worker.claim() == []
+
+    assert requests == [
+        {
+            "claimed_by": "numpy-worker",
+            "limit": 1,
+            "lease_seconds": 60,
+            "recipient_ids": [
+                    "python-worker-env-"
+                    + base64.urlsafe_b64encode(
+                        hashlib.sha256(b"numpy-cpu-2").digest()
+                    )
+                    .decode()
+                    .rstrip("="),
+                    "python-worker",
+            ],
+        }
+    ]
+
+
+def test_async_environment_pinned_resolver_advertises_compatible_claim_recipients(
+    tmp_path: Path,
+) -> None:
+    from kogwistar.runtime.resolvers import AsyncMappingStepResolver
+
+    requests: list[dict[str, Any]] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.content))
+        return httpx.Response(200, json={"work": []}, request=request)
+
+    resolver = AsyncMappingStepResolver()
+
+    @resolver.register("numerical", environment_id="numpy-cpu-2")
+    async def execute(_ctx):
+        return RunSuccess(conversation_node_id=None, state_update=[])
+
+    async def invoke() -> None:
+        worker = AsyncRustRuntimeWorker.from_step_resolver(
+            base_url="http://rust",
+            worker_id="numpy-async-worker",
+            journal_path=tmp_path / "numpy-async-worker.sqlite",
+            step_resolver=resolver,
+            client=httpx.AsyncClient(
+                transport=httpx.MockTransport(handler), base_url="http://rust"
+            ),
+        )
+        try:
+            assert await worker.claim() == []
+        finally:
+            await worker.aclose()
+
+    asyncio.run(invoke())
+    assert requests[0]["recipient_ids"] == [
+        "python-worker-env-"
+        + base64.urlsafe_b64encode(hashlib.sha256(b"numpy-cpu-2").digest())
+        .decode()
+        .rstrip("="),
+        "python-worker",
+    ]
+
+
 def test_worker_rejects_claim_without_frozen_workflow_op(tmp_path: Path) -> None:
     work = _work()
     work["payload"].pop("op")
@@ -464,6 +1042,7 @@ def test_async_step_resolver_adapter_awaits_callback_and_rejects_sync_protocol()
 
     @resolver.register("start")
     async def execute(ctx):
+        assert ctx.idempotency_key == "lane-1"
         await asyncio.sleep(0)
         with ctx.state_write as state:
             state["async"] = True

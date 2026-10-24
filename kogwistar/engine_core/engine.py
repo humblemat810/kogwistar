@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextvars
+import hashlib
 import pathlib
 import threading
 import time
@@ -1797,23 +1798,44 @@ class GraphKnowledgeEngine:
         )
         self.cached_embed: Callable[[str], Iterable[float]] | None = None
         if embedding_cache_path:
-            self.embedding_cache = Memory(location=embedding_cache_path)
+            # The memoized function accepts only a digest. Joblib persists
+            # call arguments in metadata, so passing document text directly
+            # would disclose it in cache files and verbose logs.
+            self.embedding_cache = Memory(location=embedding_cache_path, verbose=0)
+            cache_local = threading.local()
 
-            def cached_embed(query: str, model_name: str) -> Iterable[float]:
-
+            def compute_embedding(query_digest: str) -> Iterable[float]:
+                query = getattr(cache_local, "query", None)
+                if not isinstance(query, str):
+                    raise RuntimeError("embedding cache query context is missing")
                 return self._iterative_defensive_emb(query)
 
-            from functools import partial
+            cached_compute = cached(self.embedding_cache, compute_embedding)
 
             name_fn = getattr(self._ef, "name", None)
             model_name = str(
                 name_fn() if callable(name_fn) else type(self._ef).__name__
             )
-            cached_embed = partial(
-                cached(self.embedding_cache, cached_embed), model_name=model_name
-            )
-            # MethodType
-            # a.foo = MethodType(foo, a)
+
+            def embedding_cache_key(query: str) -> str:
+                identity = f"{model_name}\0{query}".encode("utf-8")
+                return hashlib.sha256(identity).hexdigest()
+
+            def cached_embed(query: str) -> Iterable[float]:
+                query_digest = embedding_cache_key(query)
+                cache_local.query = query
+                try:
+                    return cached_compute(query_digest)
+                finally:
+                    del cache_local.query
+
+            def check_embedding_cache(query: str) -> bool:
+                checker = getattr(cached_compute, "check_call_in_cache", None)
+                if not callable(checker):
+                    return False
+                return bool(checker(embedding_cache_key(query)))
+
+            setattr(cached_embed, "check_call_in_cache", check_embedding_cache)
             self.cached_embed = cast(Callable[[str], Iterable[float]], cached_embed)
 
         # Namespaced subsystem APIs (new source-of-truth surface).

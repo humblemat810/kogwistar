@@ -72,6 +72,48 @@ def test_postgres_session_rolls_back_and_rejects_raw_or_stale_writer(monkeypatch
         session.require_token(stale)
 
 
+def test_postgres_session_commit_error_clears_local_owner_without_retry(monkeypatch):
+    calls: list[tuple[str, str | None]] = []
+    fail_commit = True
+
+    def fake_store_postgres(*, operation, transaction_id, **kwargs):
+        nonlocal fail_commit
+        del kwargs
+        calls.append((operation["kind"], transaction_id))
+        if operation["kind"] == "commit_transaction" and fail_commit:
+            fail_commit = False
+            raise RuntimeError("commit acknowledgement lost")
+        return None
+
+    monkeypatch.setattr(
+        "kogwistar.engine_core.rust_postgres_session.store_postgres",
+        fake_store_postgres,
+    )
+    session = RustPostgresSession(dsn="postgresql://example/db", schema="test")
+    stale = None
+    with pytest.raises(RuntimeError, match="acknowledgement lost"):
+        with session.transaction() as token:
+            stale = token
+            session.call("raw_append")
+
+    assert not session.transaction_active
+    assert stale is not None
+    with pytest.raises(RustPostgresConnectionUnavailable, match="stale"):
+        session.require_token(stale)
+    assert [kind for kind, _ in calls] == [
+        "begin_transaction",
+        "raw_append",
+        "commit_transaction",
+    ]
+    assert len({transaction_id for _, transaction_id in calls}) == 1
+
+    with session.transaction():
+        pass
+    next_transaction_id = calls[-1][1]
+    assert next_transaction_id is not None
+    assert next_transaction_id != calls[0][1]
+
+
 def test_postgres_session_owns_stable_context_and_closes_worker(monkeypatch):
     calls: list[tuple[str, str, str | None]] = []
 

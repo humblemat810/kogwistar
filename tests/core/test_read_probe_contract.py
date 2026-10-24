@@ -117,6 +117,59 @@ def _edge(
     )
 
 
+def test_graph_reads_use_explicit_backend_model_mode(tmp_path, monkeypatch):
+    engine = _engine(tmp_path)
+    node = _node(
+        node_id="read-mode-node",
+        doc_id="read-mode-doc",
+        label="Read mode node",
+        summary="A node used to verify backend deserialization mode.",
+        entity_type="concept",
+        embedding=[0.1, 0.2],
+        metadata={},
+    )
+    edge = _edge(
+        edge_id="read-mode-edge",
+        src=node.id,
+        tgt="read-mode-target",
+        doc_id="read-mode-doc",
+        label="Read mode edge",
+        summary="An edge used to verify backend deserialization mode.",
+        relation="related_to",
+        entity_type="relation",
+        embedding=[0.2, 0.3],
+        metadata={},
+    )
+    target = _node(
+        node_id="read-mode-target",
+        doc_id="read-mode-doc",
+        label="Read mode target",
+        summary="The edge endpoint used by the read-mode test.",
+        entity_type="concept",
+        embedding=[0.3, 0.4],
+        metadata={},
+    )
+    engine.write.add_node(node)
+    engine.write.add_node(target)
+    engine.write.add_edge(edge)
+
+    def reject_stack_detection(**_kwargs):
+        raise AssertionError("backend reads must not inspect the caller stack")
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(
+            "pydantic_extension.model_slicing.mixin._infer_mode_from_stack",
+            reject_stack_detection,
+        )
+        read_nodes = engine.read.get_nodes(ids=[node.id])
+        read_edges = engine.read.get_edges(ids=[edge.id])
+
+    assert len(read_nodes) == 1
+    assert read_nodes[0].label == node.label
+    assert len(read_edges) == 1
+    assert read_edges[0].relation == edge.relation
+
+
 def test_probe_reads_work_without_embeddings(tmp_path, monkeypatch):
     engine = _engine(tmp_path)
 

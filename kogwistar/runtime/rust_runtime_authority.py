@@ -11,6 +11,7 @@ import asyncio
 import json
 import os
 import queue
+import threading
 import tempfile
 import time
 from collections.abc import Mapping
@@ -25,6 +26,7 @@ from .rust_worker import (
     RustRuntimeWorker,
     RustStepResolver,
 )
+from .strict_json import normalize_json_value
 
 if TYPE_CHECKING:
     from .async_runtime import AsyncWorkflowRuntime
@@ -58,9 +60,7 @@ def _json_state(initial_state: Mapping[str, Any]) -> dict[str, Any]:
         if key not in {"_deps", "dream_deps"}
     }
     try:
-        value = json.loads(
-            json.dumps(durable, ensure_ascii=False, separators=(",", ":"))
-        )
+        value = normalize_json_value(durable, field="initial_state")
     except (TypeError, ValueError) as error:
         raise RustRuntimeAuthorityError(
             f"Rust runtime durable state must be JSON-only: {error}"
@@ -98,6 +98,56 @@ def freeze_runtime_plan(
         predicate_registry=runtime.predicate_registry,
         resolver=runtime.step_resolver,
     )
+    node_versions: dict[str, str] = {}
+    node_environment_ids: dict[str, str] = {}
+    resolver = runtime.step_resolver
+    registered_versions = getattr(resolver, "op_versions", {})
+    registered_environments = getattr(resolver, "op_environment_ids", {})
+    supports_version = getattr(resolver, "supports_version", None)
+    environment_for_version = getattr(resolver, "environment_for_version", None)
+    for node_id, node in nodes.items():
+        metadata = getattr(node, "metadata", None) or {}
+        version = str(metadata.get("wf_version") or metadata.get("wf.version") or "v1")
+        environment_id_value = metadata.get("wf_environment_id") or metadata.get(
+            "wf.environment_id"
+        )
+        environment_id = (
+            str(environment_id_value).strip() if environment_id_value is not None else None
+        )
+        op = str(getattr(node, "op", "") or "noop")
+        if callable(supports_version):
+            version_is_registered = bool(supports_version(op, version))
+            declared_version = version if version_is_registered else "unregistered"
+        else:
+            declared_version = (
+                str(registered_versions.get(op, "v1"))
+                if isinstance(registered_versions, Mapping)
+                else "v1"
+            )
+            version_is_registered = version == declared_version
+        if not version_is_registered:
+            raise RustRuntimeAuthorityError(
+                f"workflow node {node_id!r} requires {op!r} version {version!r}, "
+                f"but the Python resolver registers {declared_version!r}"
+            )
+        if callable(environment_for_version):
+            declared_environment = environment_for_version(op, version)
+        else:
+            declared_environment = (
+                str(registered_environments.get(op)).strip()
+                if isinstance(registered_environments, Mapping)
+                and registered_environments.get(op) is not None
+                else None
+            )
+        if environment_id != declared_environment:
+            raise RustRuntimeAuthorityError(
+                f"workflow node {node_id!r} requires environment "
+                f"{environment_id!r} for {op!r}, but the Python resolver registers "
+                f"{declared_environment!r}"
+            )
+        node_versions[str(node_id)] = version
+        if environment_id is not None:
+            node_environment_ids[str(node_id)] = environment_id
     node_ids = [str(node_id) for node_id in nodes]
     join_node_ids = sorted(
         str(node_id)
@@ -145,11 +195,64 @@ def freeze_runtime_plan(
             str(node_id): str(getattr(node, "op", "") or "noop")
             for node_id, node in nodes.items()
         },
+        "node_versions": node_versions,
+        "node_environment_ids": node_environment_ids,
         "runtime_routes": routes,
     }
 
 
-class RustRuntimeAuthority:
+class _RunDependencyRegistry:
+    """Keep live Python services isolated by durable run identity."""
+
+    def _init_dependency_registry(self) -> None:
+        self._dependency_lock = threading.RLock()
+        self._dependencies_by_run: dict[str, Mapping[str, Any]] = {}
+
+    def _register_dependencies(
+        self, run_id: str, dependencies: Mapping[str, Any]
+    ) -> None:
+        if not run_id.strip():
+            raise RustRuntimeAuthorityError("run_id must not be empty")
+        with self._dependency_lock:
+            if run_id in self._dependencies_by_run:
+                raise RustRuntimeAuthorityError(
+                    f"runtime dependencies are already registered for run {run_id!r}"
+                )
+            self._dependencies_by_run[run_id] = dependencies
+
+    def _register_dependencies_if_absent(
+        self, run_id: str, dependencies: Mapping[str, Any]
+    ) -> None:
+        if not run_id.strip():
+            raise RustRuntimeAuthorityError("run_id must not be empty")
+        with self._dependency_lock:
+            self._dependencies_by_run.setdefault(run_id, dependencies)
+
+    def _run_dependencies(
+        self, run_id: str, *, allow_empty: bool = False
+    ) -> Mapping[str, Any]:
+        with self._dependency_lock:
+            dependencies = self._dependencies_by_run.get(run_id)
+            if dependencies is None and allow_empty:
+                dependencies = {}
+                self._dependencies_by_run[run_id] = dependencies
+        if dependencies is None:
+            raise RustRuntimeAuthorityError(
+                f"no live Python dependencies are registered for run {run_id!r}"
+            )
+        return dependencies
+
+    def _release_dependencies(self, run_id: str) -> None:
+        with self._dependency_lock:
+            self._dependencies_by_run.pop(run_id, None)
+
+    def _release_if_terminal(self, run_id: str, result: RunResult) -> RunResult:
+        if result.status != "suspended":
+            self._release_dependencies(run_id)
+        return result
+
+
+class RustRuntimeAuthority(_RunDependencyRegistry):
     """Submit one public run and synchronously pump its Python callbacks."""
 
     def __init__(
@@ -160,6 +263,7 @@ class RustRuntimeAuthority:
         cache_dir: str | os.PathLike[str] | None,
         client: httpx.Client | None = None,
     ) -> None:
+        self._init_dependency_registry()
         self.runtime = runtime
         self.base_url = base_url.rstrip("/")
         self._owns_client = client is None
@@ -193,11 +297,10 @@ class RustRuntimeAuthority:
             headers=headers,
             client=self.client,
         )
-        self._live_dependencies: Mapping[str, Any] = {}
 
     def _dependencies(self, work: Mapping[str, Any]) -> Mapping[str, Any]:
-        del work
-        return self._live_dependencies
+        run_id = str(work.get("run_id") or "")
+        return self._run_dependencies(run_id)
 
     def close(self) -> None:
         self.worker.close()
@@ -267,6 +370,8 @@ class RustRuntimeAuthority:
             state = dict(latest_state)
         state.pop("_rt_routes", None)
         state.pop("_rt_node_ops", None)
+        state.pop("_rt_node_versions", None)
+        state.pop("_rt_node_environment_ids", None)
         if dependencies:
             state["_deps"] = dependencies
         return state
@@ -382,6 +487,7 @@ class RustRuntimeAuthority:
     ) -> RunResult:
         from .runtime import RunResult
 
+        self._register_dependencies_if_absent(run_id, dependencies)
         deadline = time.monotonic() + float(
             os.getenv("KOGWISTAR_RUST_RUNTIME_RUN_TIMEOUT_SECONDS", "300")
         )
@@ -454,7 +560,6 @@ class RustRuntimeAuthority:
         dependencies = initial_state.get("_deps") or {}
         if not isinstance(dependencies, Mapping):
             raise RustRuntimeAuthorityError("initial_state['_deps'] must be a mapping")
-        self._live_dependencies = dependencies
         durable_initial = _json_state(initial_state)
         plan = freeze_runtime_plan(self.runtime, workflow_id)
         payload = {
@@ -466,17 +571,19 @@ class RustRuntimeAuthority:
             "runtime_kind": "sync",
             **plan,
         }
+        self._register_dependencies(run_id, dependencies)
         submitted = self._submit_run(payload)
         if submitted.get("run_id") != run_id or submitted.get("admission") != "accepted":
             raise RustRuntimeAuthorityError(
                 f"Rust scheduler returned invalid admission: {submitted!r}"
             )
 
-        return self._pump_existing_run(
+        result = self._pump_existing_run(
             run_id=run_id,
             durable_initial=durable_initial,
-            dependencies=dependencies,
+            dependencies=self._run_dependencies(run_id),
         )
+        return self._release_if_terminal(run_id, result)
 
     def resume(
         self,
@@ -489,13 +596,27 @@ class RustRuntimeAuthority:
         conversation_id: str,
         turn_node_id: str | None,
     ) -> RunResult:
+        dependencies = self._run_dependencies(run_id, allow_empty=True)
         contract = self._request_json(
             "GET", f"/api/workflow/runs/{run_id}/resume-contract"
         )
         plan = freeze_runtime_plan(self.runtime, workflow_id)
+        stored_versions = contract.get("node_versions")
+        if not isinstance(stored_versions, dict) or not stored_versions:
+            stored_ops = contract.get("node_ops")
+            stored_versions = (
+                {node_id: "v1" for node_id in stored_ops}
+                if isinstance(stored_ops, dict)
+                else {}
+            )
+        stored_environment_ids = contract.get("node_environment_ids")
+        if not isinstance(stored_environment_ids, dict):
+            stored_environment_ids = {}
         if (
             contract.get("runtime_routes") != plan["runtime_routes"]
             or contract.get("node_ops") != plan["node_ops"]
+            or stored_versions != plan["node_versions"]
+            or stored_environment_ids != plan["node_environment_ids"]
         ):
             raise RustRuntimeAuthorityError(
                 "current Python workflow differs from the run's frozen resume contract"
@@ -539,12 +660,12 @@ class RustRuntimeAuthority:
                 "turn_node_id": turn_node_id,
             },
         )
-        dependencies = self._live_dependencies
-        return self._pump_existing_run(
+        result = self._pump_existing_run(
             run_id=run_id,
             durable_initial=state,
             dependencies=dependencies,
         )
+        return self._release_if_terminal(run_id, result)
 
 
 def run_with_rust_authority(
@@ -577,7 +698,7 @@ def run_with_rust_authority(
         authority.close()
 
 
-class AsyncRustRuntimeAuthority:
+class AsyncRustRuntimeAuthority(_RunDependencyRegistry):
     """Async facade over same Rust durable scheduler and worker-effect DTO.
 
     This deliberately admits only ``runtime_kind=async``.  It does not adapt
@@ -593,6 +714,7 @@ class AsyncRustRuntimeAuthority:
         cache_dir: str | os.PathLike[str] | None,
         client: httpx.AsyncClient | None = None,
     ) -> None:
+        self._init_dependency_registry()
         self.runtime = runtime
         self.base_url = base_url.rstrip("/")
         self._owns_client = client is None
@@ -626,11 +748,10 @@ class AsyncRustRuntimeAuthority:
             headers=headers,
             client=self.client,
         )
-        self._live_dependencies: Mapping[str, Any] = {}
 
     def _dependencies(self, work: Mapping[str, Any]) -> Mapping[str, Any]:
-        del work
-        return self._live_dependencies
+        run_id = str(work.get("run_id") or "")
+        return self._run_dependencies(run_id)
 
     async def aclose(self) -> None:
         await self.worker.aclose()
@@ -703,6 +824,8 @@ class AsyncRustRuntimeAuthority:
             state = dict(latest_state)
         state.pop("_rt_routes", None)
         state.pop("_rt_node_ops", None)
+        state.pop("_rt_node_versions", None)
+        state.pop("_rt_node_environment_ids", None)
         if dependencies:
             state["_deps"] = dependencies
         return state
@@ -716,6 +839,7 @@ class AsyncRustRuntimeAuthority:
     ) -> RunResult:
         from .runtime import RunResult
 
+        self._register_dependencies_if_absent(run_id, dependencies)
         deadline = time.monotonic() + float(
             os.getenv("KOGWISTAR_RUST_RUNTIME_RUN_TIMEOUT_SECONDS", "300")
         )
@@ -783,7 +907,6 @@ class AsyncRustRuntimeAuthority:
         dependencies = initial_state.get("_deps") or {}
         if not isinstance(dependencies, Mapping):
             raise RustRuntimeAuthorityError("initial_state['_deps'] must be a mapping")
-        self._live_dependencies = dependencies
         durable_initial = _json_state(initial_state)
         plan = freeze_runtime_plan(self.runtime, workflow_id)
         payload = {
@@ -795,16 +918,18 @@ class AsyncRustRuntimeAuthority:
             "runtime_kind": "async",
             **plan,
         }
+        self._register_dependencies(run_id, dependencies)
         submitted = await self._submit_run(payload)
         if submitted.get("run_id") != run_id or submitted.get("admission") != "accepted":
             raise RustRuntimeAuthorityError(
                 f"Rust scheduler returned invalid admission: {submitted!r}"
             )
-        return await self._pump_existing_run(
+        result = await self._pump_existing_run(
             run_id=run_id,
             durable_initial=durable_initial,
-            dependencies=dependencies,
+            dependencies=self._run_dependencies(run_id),
         )
+        return self._release_if_terminal(run_id, result)
 
 
 async def run_with_rust_authority_async(

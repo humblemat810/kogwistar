@@ -28,7 +28,7 @@ import functools
 import inspect
 import warnings
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, TypeVar, cast
 
 from kogwistar.runtime.models import RunFailure, RunSuccess, RunSuspended, StepRunResult
@@ -72,18 +72,45 @@ _LEGACY_UPDATE_WARNING_EMITTED = False
 class MappingStepResolver(BaseResolver):
     handlers: dict[str, RawStepFn]
     default: RawStepFn | None = None
+    op_versions: dict[str, str] = field(init=False)
+    op_environment_ids: dict[str, str] = field(init=False)
+    versioned_handlers: dict[tuple[str, str], RawStepFn] = field(init=False)
+    versioned_environment_ids: dict[tuple[str, str], str] = field(init=False)
 
     @property
     def ops(self) -> set[str]:
-        return set(self.handlers)
+        return set(self.handlers) | {op for op, _version in self.versioned_handlers}
 
     def __init__(
         self,
         handlers: Mapping[str, RawStepFn] | None = None,
         *,
         default: RawStepFn | None = None,
+        op_versions: Mapping[str, str] | None = None,
+        op_environment_ids: Mapping[str, str] | None = None,
     ) -> None:
         self.handlers = dict(handlers or {})
+        self.op_versions = {op: "v1" for op in self.handlers}
+        self.op_versions.update(
+            {str(op): str(version) for op, version in (op_versions or {}).items()}
+        )
+        self.op_environment_ids = {
+            str(op): str(environment_id)
+            for op, environment_id in (op_environment_ids or {}).items()
+        }
+        self.versioned_handlers = {}
+        self.versioned_environment_ids = {}
+        if any(not op.strip() or not version.strip() for op, version in self.op_versions.items()):
+            raise ValueError("step op and version registrations must not be empty")
+        if any(
+            not op.strip()
+            or not environment_id.strip()
+            or environment_id != environment_id.strip()
+            for op, environment_id in self.op_environment_ids.items()
+        ):
+            raise ValueError(
+                "step op and environment registrations must be non-empty and canonical"
+            )
         self.default = default
         # Ops that are allowed to execute nested workflows (i.e., may call back into
         # WorkflowRuntime). Runtime may use this to avoid holding a step-UoW open.
@@ -107,8 +134,25 @@ class MappingStepResolver(BaseResolver):
             self._sandbox.close()
 
     def register(
-        self, op: str, *, is_nested: bool = False, is_sandboxed: bool = False
+        self,
+        op: str,
+        *,
+        version: str = "v1",
+        environment_id: str | None = None,
+        is_nested: bool = False,
+        is_sandboxed: bool = False,
     ) -> Callable[[RawStepFn], RawStepFn]:
+        if not op.strip() or not version.strip() or (
+            environment_id is not None
+            and (
+                not environment_id.strip()
+                or environment_id != environment_id.strip()
+            )
+        ):
+            raise ValueError(
+                "step op, version, and environment must be non-empty and canonical"
+            )
+
         def _decorator(fn: RawStepFn) -> RawStepFn:
             @functools.wraps(fn)
             def wrapped_fun(
@@ -124,6 +168,11 @@ class MappingStepResolver(BaseResolver):
                     return handler(ctx, *args, **kwargs)
 
             self.handlers[op] = fn  # wrapped_fun
+            self.op_versions[op] = version
+            if environment_id is None:
+                self.op_environment_ids.pop(op, None)
+            else:
+                self.op_environment_ids[op] = environment_id
             if is_nested:
                 self.nested_ops.add(str(op))
             if is_sandboxed:
@@ -132,12 +181,80 @@ class MappingStepResolver(BaseResolver):
 
         return _decorator
 
+    def register_versioned(
+        self,
+        op: str,
+        *,
+        version: str,
+        environment_id: str | None = None,
+        is_nested: bool = False,
+        is_sandboxed: bool = False,
+    ) -> Callable[[RawStepFn], RawStepFn]:
+        """Register an additional immutable operation version for worker replay."""
+        if not op.strip() or not version.strip() or (
+            environment_id is not None
+            and (not environment_id.strip() or environment_id != environment_id.strip())
+        ):
+            raise ValueError(
+                "step op, version, and environment must be non-empty and canonical"
+            )
+        if self.op_versions.get(op, "v1") == version and op in self.handlers:
+            raise ValueError(
+                f"operation {op!r} version {version!r} is already registered as active"
+            )
+
+        def _decorator(fn: RawStepFn) -> RawStepFn:
+            key = (op, version)
+            if key in self.versioned_handlers:
+                raise ValueError(
+                    f"operation {op!r} version {version!r} is already registered"
+                )
+            self.versioned_handlers[key] = fn
+            if environment_id is not None:
+                self.versioned_environment_ids[key] = environment_id
+            if is_nested:
+                self.nested_ops.add(op)
+            if is_sandboxed:
+                self.sandboxed_ops.add(op)
+            return fn
+
+        return _decorator
+
+    def supports_version(self, op: str, version: str) -> bool:
+        return (op, version) in self.versioned_handlers or (
+            op in self.handlers and self.op_versions.get(op, "v1") == version
+        ) or (self.default is not None and op not in self.handlers and version == "v1")
+
+    def environment_for_version(self, op: str, version: str) -> str | None:
+        key = (op, version)
+        if key in self.versioned_handlers:
+            return self.versioned_environment_ids.get(key)
+        if op in self.handlers and self.op_versions.get(op, "v1") == version:
+            return self.op_environment_ids.get(op)
+        return None
+
+    def resolve_version(
+        self, op: str, version: str
+    ) -> Callable[[StepContext], StepRunResult]:
+        key = (op, version)
+        if key in self.versioned_handlers:
+            return self._wrap_handler(op, self.versioned_handlers[key])
+        if op in self.handlers and self.op_versions.get(op, "v1") == version:
+            return self.resolve(op)
+        if self.default is not None and op not in self.handlers and version == "v1":
+            return self._wrap_handler(op, self.default)
+        raise KeyError(f"No step handler registered for op={op!r}, version={version!r}")
+
     def resolve(self, op: str) -> Callable[[StepContext], StepRunResult]:
         raw = self.handlers.get(op) or self.default
-        from kogwistar.runtime.models import RunFailure
-
         if raw is None:
             raise KeyError(f"No step handler registered for op={op!r}")
+        return self._wrap_handler(op, raw)
+
+    def _wrap_handler(
+        self, op: str, raw: RawStepFn
+    ) -> Callable[[StepContext], StepRunResult]:
+        from kogwistar.runtime.models import RunFailure
 
         def _wrapped(ctx: StepContext) -> StepRunResult:
             try:
@@ -335,16 +452,61 @@ class AsyncMappingStepResolver(MappingStepResolver):
     """
 
     def register(
-        self, op: str, *, is_nested: bool = False, is_sandboxed: bool = False
+        self,
+        op: str,
+        *,
+        version: str = "v1",
+        environment_id: str | None = None,
+        is_nested: bool = False,
+        is_sandboxed: bool = False,
     ) -> Callable[[AsyncResolverStepFn], AsyncResolverStepFn]:
         """Register either a synchronous or asynchronous workflow step."""
+        if not op.strip() or not version.strip() or (
+            environment_id is not None
+            and (
+                not environment_id.strip()
+                or environment_id != environment_id.strip()
+            )
+        ):
+            raise ValueError(
+                "step op, version, and environment must be non-empty and canonical"
+            )
 
         def _decorator(fn: AsyncResolverStepFn) -> AsyncResolverStepFn:
             self.handlers[op] = cast(RawStepFn, fn)
+            self.op_versions[op] = version
+            if environment_id is None:
+                self.op_environment_ids.pop(op, None)
+            else:
+                self.op_environment_ids[op] = environment_id
             if is_nested:
                 self.nested_ops.add(str(op))
             if is_sandboxed:
                 self.sandboxed_ops.add(str(op))
+            return fn
+
+        return _decorator
+
+    def register_versioned(
+        self,
+        op: str,
+        *,
+        version: str,
+        environment_id: str | None = None,
+        is_nested: bool = False,
+        is_sandboxed: bool = False,
+    ) -> Callable[[AsyncResolverStepFn], AsyncResolverStepFn]:
+        """Register an additional async or sync operation version."""
+        register = super().register_versioned(
+            op,
+            version=version,
+            environment_id=environment_id,
+            is_nested=is_nested,
+            is_sandboxed=is_sandboxed,
+        )
+
+        def _decorator(fn: AsyncResolverStepFn) -> AsyncResolverStepFn:
+            register(cast(RawStepFn, fn))
             return fn
 
         return _decorator
@@ -355,6 +517,23 @@ class AsyncMappingStepResolver(MappingStepResolver):
         raw = self.handlers.get(op) or self.default
         if raw is None:
             raise KeyError(f"No step handler registered for op={op!r}")
+        return self._wrap_async_handler(op, raw)
+
+    def resolve_async_version(
+        self, op: str, version: str
+    ) -> Callable[[StepContext], Awaitable[StepRunResult]]:
+        key = (op, version)
+        if key in self.versioned_handlers:
+            return self._wrap_async_handler(op, self.versioned_handlers[key])
+        if op in self.handlers and self.op_versions.get(op, "v1") == version:
+            return self.resolve_async(op)
+        if self.default is not None and op not in self.handlers and version == "v1":
+            return self._wrap_async_handler(op, self.default)
+        raise KeyError(f"No step handler registered for op={op!r}, version={version!r}")
+
+    def _wrap_async_handler(
+        self, op: str, raw: RawStepFn
+    ) -> Callable[[StepContext], Awaitable[StepRunResult]]:
 
         async def _wrapped(ctx: StepContext) -> StepRunResult:
             try:

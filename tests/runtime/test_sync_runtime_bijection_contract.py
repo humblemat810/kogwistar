@@ -29,6 +29,7 @@ class _RuntimeLaneNode:
     op: str
     metadata: dict
     terminal: bool = True
+    version: str = "v1"
 
     def safe_get_id(self) -> str:
         return self.id
@@ -42,11 +43,14 @@ def _lane_runtime_engine(tmp_path):
     )
 
 
-def _patch_single_step_design(monkeypatch, *, workflow_id: str, op: str) -> None:
+def _patch_single_step_design(
+    monkeypatch, *, workflow_id: str, op: str, version: str = "v1"
+) -> None:
     node = _RuntimeLaneNode(
         id=f"wf|{workflow_id}|send",
         op=op,
         metadata={"wf_terminal": True, "wf_start": True},
+        version=version,
     )
 
     def _validate(*, workflow_engine, workflow_id, predicate_registry, resolver):
@@ -545,6 +549,47 @@ def test_sync_runtime_resolver_send_lane_message_reaches_sync_mirror(
         "workflow_node_id": f"wf|{workflow_id}|send",
     }
     assert [str(node.id) for node in lane_nodes] == [rows[0].message_id]
+
+
+def test_sync_runtime_dispatches_frozen_operation_version(tmp_path, monkeypatch):
+    workflow_id = "wf-sync-versioned-dispatch"
+    _patch_single_step_design(
+        monkeypatch, workflow_id=workflow_id, op="compute", version="v1"
+    )
+    resolver = MappingStepResolver()
+
+    @resolver.register("compute", version="v2")
+    def _current(ctx):
+        return RunSuccess(
+            conversation_node_id=None,
+            state_update=[("u", {"selected": ctx.op_version})],
+        )
+
+    @resolver.register_versioned("compute", version="v1")
+    def _historical(ctx):
+        return RunSuccess(
+            conversation_node_id=None,
+            state_update=[("u", {"selected": f"historical-{ctx.op_version}"})],
+        )
+
+    runtime = WorkflowRuntime(
+        workflow_engine=object(),
+        conversation_engine=_lane_runtime_engine(tmp_path / "conversation"),
+        step_resolver=resolver,
+        predicate_registry={},
+        trace=False,
+    )
+
+    out = runtime.run(
+        workflow_id=workflow_id,
+        conversation_id="conv-versioned",
+        turn_node_id="turn-versioned",
+        initial_state={},
+        run_id="run-versioned-sync",
+    )
+
+    assert out.status == "succeeded"
+    assert out.final_state["selected"] == "historical-v1"
 
 
 def test_sync_runtime_resolver_send_lane_message_appends_run_registry_event(

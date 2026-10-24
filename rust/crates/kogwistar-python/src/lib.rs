@@ -5790,9 +5790,9 @@ fn finish_postgres_session(transaction_id: &str, commit: bool) -> Result<(), Pos
         })?;
         (session.sender.clone(), worker)
     };
-    sender
+    let finish_sent = sender
         .send(PostgresSessionCommand::Finish { commit })
-        .map_err(|_| postgres_session_error("PostgreSQL transaction worker is unavailable"))?;
+        .is_ok();
     let result = match worker.join() {
         Ok(Ok(())) => Ok(()),
         Ok(Err(error)) => Err(error),
@@ -5804,6 +5804,11 @@ fn finish_postgres_session(transaction_id: &str, commit: bool) -> Result<(), Pos
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .remove(transaction_id);
+    if !finish_sent {
+        return Err(postgres_session_error(
+            "PostgreSQL transaction worker is unavailable",
+        ));
+    }
     result
 }
 
@@ -6624,6 +6629,35 @@ mod tests {
             receive_cached_postgres_command(&receiver),
             Ok(CachedPostgresCommand::Close { .. })
         ));
+    }
+
+    #[test]
+    fn failed_postgres_finish_still_joins_and_removes_session() {
+        let transaction_id = format!("finish-failure-{}", std::process::id());
+        let (sender, receiver) = mpsc::channel();
+        drop(receiver);
+        let worker = std::thread::spawn(|| Ok(()));
+        postgres_sessions()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(
+                transaction_id.clone(),
+                PostgresSession {
+                    dsn: "postgresql://unreachable/test".to_owned(),
+                    schema: "finish_failure".to_owned(),
+                    sender,
+                    worker: Some(worker),
+                    finishing: false,
+                },
+            );
+
+        assert!(finish_postgres_session(&transaction_id, true).is_err());
+        assert!(
+            !postgres_sessions()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .contains_key(&transaction_id)
+        );
     }
 
     #[test]
