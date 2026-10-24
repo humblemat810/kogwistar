@@ -9,6 +9,8 @@ import struct
 from pathlib import Path
 from typing import Literal, TypedDict
 
+from pydantic_extension.model_slicing.mixin import use_mode
+
 from kogwistar.engine_core.models import Edge, Grounding, Node
 from kogwistar.engine_core.span_models import Span
 
@@ -83,26 +85,27 @@ def _node_payload(
     *, node_id: str, label: str, summary: str, excerpt: str, start_char: int,
     properties: dict[str, object], metadata: dict[str, object],
 ) -> dict[str, object]:
-    span = Span(
-        collection_page_url="fixture/mixed-rewrite",
-        document_page_url="fixture/mixed-rewrite/source-v1",
-        doc_id=SOURCE_DOC_ID,
-        insertion_method="benchmark_fixture",
-        page_number=1,
-        start_char=start_char,
-        end_char=start_char + len(excerpt),
-        excerpt=excerpt,
-    )
-    node = Node(
-        id=node_id,
-        label=label,
-        type="entity",
-        summary=summary,
-        doc_id=SOURCE_DOC_ID,
-        properties=properties,
-        mentions=[Grounding(spans=[span])],
-        metadata=metadata,
-    )
+    with use_mode("backend"):
+        span = Span(
+            collection_page_url="fixture/mixed-rewrite",
+            document_page_url="fixture/mixed-rewrite/source-v1",
+            doc_id=SOURCE_DOC_ID,
+            insertion_method="benchmark_fixture",
+            page_number=1,
+            start_char=start_char,
+            end_char=start_char + len(excerpt),
+            excerpt=excerpt,
+        )
+        node = Node(
+            id=node_id,
+            label=label,
+            type="entity",
+            summary=summary,
+            doc_id=SOURCE_DOC_ID,
+            properties=properties,
+            mentions=[Grounding(spans=[span])],
+            metadata=metadata,
+        )
     payload = json.loads(node.model_dump_json(field_mode="backend"))
     if not isinstance(payload, dict):
         raise TypeError("Kogwistar Node serialization must produce an object")
@@ -113,31 +116,32 @@ def _edge_payload(
     *, edge_id: str, source_id: str, target_id: str, excerpt: str, start_char: int,
     index: int,
 ) -> dict[str, object]:
-    span = Span(
-        collection_page_url="fixture/mixed-rewrite",
-        document_page_url="fixture/mixed-rewrite/source-v1",
-        doc_id=SOURCE_DOC_ID,
-        insertion_method="benchmark_fixture",
-        page_number=1,
-        start_char=start_char,
-        end_char=start_char + len(excerpt),
-        excerpt=excerpt,
-    )
-    edge = Edge(
-        id=edge_id,
-        label="precedes",
-        type="relationship",
-        summary=f"{source_id} precedes {target_id}",
-        doc_id=SOURCE_DOC_ID,
-        mentions=[Grounding(spans=[span])],
-        source_ids=[source_id],
-        target_ids=[target_id],
-        relation="precedes",
-        source_edge_ids=[],
-        target_edge_ids=[],
-        properties={"ordinal": index},
-        metadata={"benchmark": True, "ordinal": index},
-    )
+    with use_mode("backend"):
+        span = Span(
+            collection_page_url="fixture/mixed-rewrite",
+            document_page_url="fixture/mixed-rewrite/source-v1",
+            doc_id=SOURCE_DOC_ID,
+            insertion_method="benchmark_fixture",
+            page_number=1,
+            start_char=start_char,
+            end_char=start_char + len(excerpt),
+            excerpt=excerpt,
+        )
+        edge = Edge(
+            id=edge_id,
+            label="precedes",
+            type="relationship",
+            summary=f"{source_id} precedes {target_id}",
+            doc_id=SOURCE_DOC_ID,
+            mentions=[Grounding(spans=[span])],
+            source_ids=[source_id],
+            target_ids=[target_id],
+            relation="precedes",
+            source_edge_ids=[],
+            target_edge_ids=[],
+            properties={"ordinal": index},
+            metadata={"benchmark": True, "ordinal": index},
+        )
     payload = json.loads(edge.model_dump_json(field_mode="backend"))
     if not isinstance(payload, dict):
         raise TypeError("Kogwistar Edge serialization must produce an object")

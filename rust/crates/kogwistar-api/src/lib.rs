@@ -19,6 +19,7 @@ use kogwistar_contracts::{
     DelegationAuthorityV1, GraphMutationBatchV1 as GraphMutationBatchInput,
     GraphMutationV1 as GraphMutationInput, GraphNeighborsRequestV1,
     attach_rust_native_seam_attestation, attenuate_capabilities, graph_neighbors_request_from_str,
+    native_seam_attestation_is_valid,
 };
 use kogwistar_runtime::{
     RECORDED_RUNTIME_CONTRACT_VERSION, RecordedRuntimeState, RecordedRuntimeTransition,
@@ -26,15 +27,15 @@ use kogwistar_runtime::{
     RuntimeStepExecutePayload, RuntimeStepExecuteRequest,
 };
 use kogwistar_store::{
-    AuthIdentityStore, AuthUser, EntityEvent, GraphAclPrincipal, GraphAuthorityCapability,
-    GraphFindEdgesQuery, GraphKHopQuery, GraphMutation, GraphMutationBatch, GraphMutationStore,
-    GraphProjectionRead, GraphRecord, GraphScope, GraphShortestPathQuery, LaneMessageClaimFilter,
-    LaneMessageFilter, MetadataFilter, NamedProjection, NamedProjectionWrite, NewIndexJob,
-    NewProjectedLaneMessage, ProjectedLaneMessage, ResolveExternalIdentity, ServerRun,
-    ServerRunCreate, ServerRunEvent, WorkflowDesignDeltaWrite, WorkflowDesignSnapshot,
-    WorkflowDesignSnapshotWrite, graph_find_edges_from_records, graph_k_hop_from_records,
-    graph_neighbors_from_records, graph_records_visible_by_acl, graph_shortest_path_from_records,
-    validate_typed_graph_mutation,
+    AuthIdentityStore, AuthUser, DocumentAuthorityCapability, DocumentStore, EntityEvent,
+    GraphAclPrincipal, GraphAuthorityCapability, GraphFindEdgesQuery, GraphKHopQuery,
+    GraphMutation, GraphMutationBatch, GraphMutationStore, GraphProjectionRead, GraphRecord,
+    GraphScope, GraphShortestPathQuery, LaneMessageClaimFilter, LaneMessageFilter, MetadataFilter,
+    NamedProjection, NamedProjectionWrite, NewIndexJob, NewProjectedLaneMessage,
+    ProjectedLaneMessage, ResolveExternalIdentity, ServerRun, ServerRunCreate, ServerRunEvent,
+    WorkflowDesignDeltaWrite, WorkflowDesignSnapshot, WorkflowDesignSnapshotWrite,
+    graph_find_edges_from_records, graph_k_hop_from_records, graph_neighbors_from_records,
+    graph_records_visible_by_acl, graph_shortest_path_from_records, validate_typed_graph_mutation,
 };
 use kogwistar_store_postgres::{
     NewRawEntityEvent as PostgresNewRawEntityEvent, PostgresAuthStore, PostgresStore,
@@ -304,7 +305,7 @@ impl ImplementationSnapshot {
     pub fn effective_server_cutover_ready(&self) -> bool {
         self.server_cutover_ready
             && PENDING_SERVER_CUTOVER_ROUTES.is_empty()
-            && self.implemented_route_operations == self.frozen_route_operations
+            && self.implemented_route_operations == frozen_application_route_operations()
     }
 }
 
@@ -332,6 +333,30 @@ pub const PENDING_SERVER_CUTOVER_ROUTES: &[(&str, &str)] = &[
     ("POST", "/api/document.upsert_tree"),
     ("POST", "/api/graph/upsert"),
 ];
+
+/// OpenAPI operations handled by the Axum transport layer rather than by an
+/// `ApplicationService`. Keep these out of backend authority accounting so a
+/// service cannot appear to implement authentication merely because the
+/// router registers those handlers.
+pub const TRANSPORT_OWNED_HTTP_ROUTES: &[(&str, &str)] = &[
+    ("GET", "/health"),
+    ("GET", "/api/auth/login"),
+    ("GET", "/api/auth/callback"),
+    ("GET", "/api/auth/me"),
+    ("POST", "/api/auth/logout"),
+    ("POST", "/auth/dev-token"),
+];
+
+fn is_transport_owned_http_route(method: &str, path: &str) -> bool {
+    TRANSPORT_OWNED_HTTP_ROUTES.contains(&(method, path))
+}
+
+fn frozen_application_route_operations() -> usize {
+    FROZEN_OPENAPI_ROUTES
+        .iter()
+        .filter(|(method, path)| !is_transport_owned_http_route(method, path))
+        .count()
+}
 
 /// Syscall sub-operations which still require conversation/tool authority.
 /// OpenAPI freezes these behind one parameterized route, so keep sub-route
@@ -428,8 +453,7 @@ impl Default for ImplementationSnapshot {
             // resume, resume-contract, steps, checkpoint list/item, and replay;
             // plus poll on the conversation API. Static transport-only
             // /api/events and /mcp are not frozen OpenAPI operations.
-            implemented_route_operations: FROZEN_OPENAPI_ROUTES
-                .len()
+            implemented_route_operations: frozen_application_route_operations()
                 .saturating_sub(PENDING_SERVER_CUTOVER_ROUTES.len()),
             runtime_cutover_ready: false,
             server_cutover_ready: false,
@@ -458,12 +482,16 @@ pub trait ApplicationService: Send + Sync + 'static {
         GraphAuthorityCapability::Unsupported
     }
 
+    fn document_authority_capability(&self) -> DocumentAuthorityCapability {
+        DocumentAuthorityCapability::Unsupported
+    }
+
     /// Advertise only operations this concrete authority can execute.
     ///
     /// Keeping discovery on the application service prevents an unavailable or
     /// partially wired backend from claiming the static catalog's operations.
-    fn supports_mcp_tool(&self, surface: &str, name: &str) -> bool {
-        rust_mcp_tool_supported(surface, name)
+    fn supports_mcp_tool(&self, _surface: &str, _name: &str) -> bool {
+        false
     }
 
     /// Report which frozen HTTP operations this concrete service can execute.
@@ -8868,8 +8896,18 @@ impl ApplicationService for PostgresRunApplicationService {
         self.store.graph_authority_capability()
     }
 
+    fn document_authority_capability(&self) -> DocumentAuthorityCapability {
+        self.store.document_authority_capability()
+    }
+
+    fn supports_mcp_tool(&self, surface: &str, name: &str) -> bool {
+        rust_mcp_tool_supported(surface, name)
+            && (surface != "root" || self.graph_authority_capability().supports_single_mutation())
+    }
+
     fn supports_http_operation(&self, method: &str, path: &str) -> bool {
-        !PENDING_SERVER_CUTOVER_ROUTES.contains(&(method, path))
+        !is_transport_owned_http_route(method, path)
+            && !PENDING_SERVER_CUTOVER_ROUTES.contains(&(method, path))
     }
 
     fn execute(
@@ -8886,7 +8924,8 @@ impl ApplicationService for SqliteRunApplicationService {
     }
 
     fn supports_http_operation(&self, method: &str, path: &str) -> bool {
-        !PENDING_SERVER_CUTOVER_ROUTES.contains(&(method, path))
+        !is_transport_owned_http_route(method, path)
+            && !PENDING_SERVER_CUTOVER_ROUTES.contains(&(method, path))
     }
 
     fn execute(
@@ -11074,6 +11113,14 @@ async fn health_handler(State(state): State<Arc<ServerState>>) -> Json<Value> {
                 "atomic_index_jobs": capability.supports_atomic_index_jobs(),
             }),
         );
+        let document_capability = state.application.document_authority_capability();
+        object.insert(
+            "document_authority".to_owned(),
+            json!({
+                "level": document_capability.as_str(),
+                "projection_upsert": document_capability.supports_projection_upsert(),
+            }),
+        );
     }
     Json(value)
 }
@@ -11847,6 +11894,73 @@ mod tests {
     }
 
     #[test]
+    fn application_route_accounting_excludes_transport_owned_handlers() {
+        assert_eq!(
+            frozen_application_route_operations() + TRANSPORT_OWNED_HTTP_ROUTES.len(),
+            FROZEN_OPENAPI_ROUTES.len()
+        );
+        let service = PostgresRunApplicationService::from_dsn(
+            "postgres://unused:unused@127.0.0.1:1/unused",
+            "route_accounting_contract",
+        )
+        .unwrap();
+        assert!(!service.supports_http_operation("GET", "/health"));
+        assert!(!service.supports_http_operation("GET", "/api/auth/me"));
+        assert!(service.supports_http_operation("POST", "/api/workflow/runs"));
+    }
+
+    #[test]
+    fn mcp_advertisement_requires_concrete_authority() {
+        let postgres = PostgresRunApplicationService::from_dsn(
+            "postgres://unused:unused@127.0.0.1:1/unused",
+            "mcp_authority_contract",
+        )
+        .unwrap();
+        assert!(postgres.supports_mcp_tool("root", "kg_neighbors"));
+        assert!(postgres.supports_mcp_tool("workflow", "workflow.run_status"));
+
+        let sqlite_path = std::env::temp_dir().join(format!(
+            "kogwistar-api-mcp-authority-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let sqlite = SqliteRunApplicationService::open(&sqlite_path).unwrap();
+        assert!(!sqlite.supports_mcp_tool("root", "kg_neighbors"));
+        assert!(sqlite.supports_mcp_tool("workflow", "workflow.run_status"));
+        drop(sqlite);
+        remove_test_sqlite(&sqlite_path);
+    }
+
+    #[test]
+    fn document_routes_remain_pending_for_every_rust_service() {
+        let sqlite_path = std::env::temp_dir().join(format!(
+            "kogwistar-api-document-route-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let sqlite = SqliteRunApplicationService::open(&sqlite_path).unwrap();
+        let postgres = PostgresRunApplicationService::from_dsn(
+            "postgres://unused:unused@127.0.0.1:1/unused",
+            "document_route_contract",
+        )
+        .unwrap();
+
+        for service in [&sqlite as &dyn ApplicationService, &postgres] {
+            assert!(!service.supports_http_operation("POST", "/api/document"));
+            assert!(!service.supports_http_operation("POST", "/api/document.upsert_tree"));
+        }
+        assert_eq!(
+            sqlite.document_authority_capability(),
+            DocumentAuthorityCapability::Unsupported
+        );
+        assert_eq!(
+            postgres.document_authority_capability(),
+            DocumentAuthorityCapability::ProjectionUpsert
+        );
+
+        drop(sqlite);
+        remove_test_sqlite(&sqlite_path);
+    }
+
+    #[test]
     fn graph_neighbor_request_is_typed_and_closed_to_unknown_fields() {
         let request: GraphNeighborsRequestV1 =
             serde_json::from_str(r#"{"rid":" n1 ","doc_id":"doc-1"}"#).unwrap();
@@ -12140,6 +12254,9 @@ mod tests {
             })
             .expect("native trace event must survive the HTTP/API durable lane");
         let native_trace_payload: Value = serde_json::from_str(&native_trace.payload_json).unwrap();
+        assert!(native_seam_attestation_is_valid(
+            &native_trace_payload["trace"]
+        ));
         assert_eq!(
             native_trace_payload["trace"]["implementation_authority"],
             kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET
@@ -12604,6 +12721,11 @@ mod tests {
         let health_value: Value = serde_json::from_slice(&health_body).unwrap();
         assert_eq!(health_value["graph_authority"]["level"], "unsupported");
         assert_eq!(health_value["graph_authority"]["single_mutation"], false);
+        assert_eq!(health_value["document_authority"]["level"], "unsupported");
+        assert_eq!(
+            health_value["document_authority"]["projection_upsert"],
+            false
+        );
 
         let openapi = app
             .clone()
@@ -14030,6 +14152,7 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
         );
         let result: Value = serde_json::from_slice(&response_body).unwrap();
         assert_eq!(result["atomic"], true);
+        assert!(native_seam_attestation_is_valid(&result));
         assert_eq!(result["implementation_authority"], "rust");
         assert_eq!(result["seam_attestation_version"], 1);
         assert_eq!(result["seam_crossings"], json!([]));

@@ -143,6 +143,18 @@ pub struct GraphRecord {
     pub embedding: Option<Vec<f32>>,
 }
 
+/// A document projection write owned by one concrete backend.
+///
+/// This is intentionally separate from graph mutation: document ingestion has
+/// different lifecycle and embedding semantics, and must not be disguised as
+/// a node write at a language seam.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DocumentProjectionUpsert {
+    pub scope: GraphScope,
+    pub record: GraphRecord,
+    pub embedding_dim: usize,
+}
+
 /// Deterministic adjacency result shared by native graph-read adapters.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct GraphNeighbors {
@@ -949,6 +961,52 @@ pub trait GraphMutationStore: Send + Sync {
         &self,
         query: GraphProjectionVectorQuery,
     ) -> impl Future<Output = StoreResult<Vec<VectorMatch>>> + Send;
+}
+
+/// Declared document-projection authority for a store implementation.
+///
+/// This is intentionally explicit and fail-closed. A store must not advertise
+/// document parity merely because it can persist events or named projections.
+#[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
+pub enum DocumentAuthorityCapability {
+    #[default]
+    Unsupported,
+    ProjectionUpsert,
+}
+
+impl DocumentAuthorityCapability {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Unsupported => "unsupported",
+            Self::ProjectionUpsert => "projection_upsert",
+        }
+    }
+
+    pub const fn supports_projection_upsert(self) -> bool {
+        matches!(self, Self::ProjectionUpsert)
+    }
+}
+
+/// Backend-owned document projection capability.
+///
+/// The default is fail-closed so stores without Python-compatible document
+/// semantics cannot accidentally advertise the public document route.
+pub trait DocumentStore: Send + Sync {
+    fn upsert_document_projection(
+        &self,
+        _write: DocumentProjectionUpsert,
+    ) -> impl Future<Output = StoreResult<()>> + Send {
+        async {
+            Err(StoreError::Backend {
+                backend: "document".to_owned(),
+                message: "document projection is not supported by this store".to_owned(),
+            })
+        }
+    }
+
+    fn document_authority_capability(&self) -> DocumentAuthorityCapability {
+        DocumentAuthorityCapability::Unsupported
+    }
 }
 
 impl GraphRecord {
@@ -1886,6 +1944,20 @@ mod tests {
 
     fn node_record(id: &str) -> GraphRecord {
         GraphRecord::new(id)
+    }
+
+    #[test]
+    fn document_authority_capability_is_explicit_and_fail_closed() {
+        assert_eq!(
+            DocumentAuthorityCapability::default(),
+            DocumentAuthorityCapability::Unsupported
+        );
+        assert_eq!(
+            DocumentAuthorityCapability::Unsupported.as_str(),
+            "unsupported"
+        );
+        assert!(!DocumentAuthorityCapability::Unsupported.supports_projection_upsert());
+        assert!(DocumentAuthorityCapability::ProjectionUpsert.supports_projection_upsert());
     }
 
     #[test]

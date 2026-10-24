@@ -8,18 +8,20 @@ import pytest
 
 from scripts import mixed_mcp_benchmark
 from scripts import mixed_concurrent_benchmark
-from scripts.mixed_mcp_benchmark import _run_one, _run_concurrent_mcp_profiles
+from scripts.mixed_mcp_benchmark import (
+    _run_concurrent_mcp_profiles,
+    _run_one,
+    _run_one_sync,
+)
 from scripts.mixed_workload import build_read_after_write_trace
 
 
 @pytest.mark.ci_full
 def test_mcp_registry_and_local_http_run_the_same_trace(tmp_path) -> None:
     trace = build_read_after_write_trace(2)
-    in_process = asyncio.run(
-        _run_one(tmp_path / "in-process.sqlite3", trace, "in_process")
-    )
-    rust_authority = asyncio.run(
-        _run_one(tmp_path / "rust-authority.sqlite3", trace, "rust_authority")
+    in_process = _run_one_sync(tmp_path / "in-process.sqlite3", trace, "in_process")
+    rust_authority = _run_one_sync(
+        tmp_path / "rust-authority.sqlite3", trace, "rust_authority"
     )
     http = asyncio.run(_run_one(tmp_path / "http.sqlite3", trace, "http"))
 
@@ -33,6 +35,21 @@ def test_mcp_registry_and_local_http_run_the_same_trace(tmp_path) -> None:
     assert in_process["host_process_rss_start_bytes"] > 0
     assert rust_authority["host_process_cpu_elapsed_ms"] > 0
     assert http["host_process_rss_end_bytes"] > 0
+
+
+def test_sync_mcp_modes_preserve_the_same_trace_digest(tmp_path) -> None:
+    """Keep the restricted Windows path covered without requiring loopback."""
+
+    trace = build_read_after_write_trace(2)
+    python_result = _run_one_sync(
+        tmp_path / "python.sqlite3", trace, "in_process"
+    )
+    rust_result = _run_one_sync(
+        tmp_path / "rust-authority.sqlite3", trace, "rust_authority"
+    )
+
+    assert python_result["state_digest"] == rust_result["state_digest"]
+    assert python_result["operations"] == rust_result["operations"] == len(trace)
 
 
 @pytest.mark.ci_full
@@ -140,7 +157,7 @@ def test_benchmark_accepts_a_resource_matched_mode_subset(tmp_path, monkeypatch)
             return completed.value
         raise AssertionError("fake MCP operation unexpectedly suspended")
 
-    monkeypatch.setattr(mixed_mcp_benchmark.asyncio, "run", fake_asyncio_run)
+    monkeypatch.setattr(mixed_mcp_benchmark, "_run_async", fake_asyncio_run)
     monkeypatch.setattr(
         mixed_mcp_benchmark,
         "_trace_tool_arguments",
@@ -206,6 +223,19 @@ def test_mcp_run_prepares_and_reuses_tool_arguments_once(monkeypatch, tmp_path) 
             "native_peak_rss_bytes": 1024,
         }
 
+    def fake_run_one_sync(path, trace, mode, *, trace_arguments):
+        argument_list_ids.append(id(trace_arguments))
+        return {
+            "state_digest": "same-state",
+            "elapsed_ms": 100.0,
+            "startup_ms": 1.0,
+            "throughput_ops_per_sec": 30.0,
+            "host_process_cpu_elapsed_ms": 20.0,
+            "host_process_rss_delta_bytes": 0,
+            "native_cpu_elapsed_ms": 10.0,
+            "native_peak_rss_bytes": 1024,
+        }
+
     def fake_asyncio_run(coroutine):
         try:
             coroutine.send(None)
@@ -216,7 +246,8 @@ def test_mcp_run_prepares_and_reuses_tool_arguments_once(monkeypatch, tmp_path) 
     monkeypatch.setattr(mixed_mcp_benchmark, "_ensure_native_benchmark_binary", lambda: None)
     monkeypatch.setattr(mixed_mcp_benchmark, "_trace_tool_arguments", prepare_argument)
     monkeypatch.setattr(mixed_mcp_benchmark, "_run_one", fake_run_one)
-    monkeypatch.setattr(mixed_mcp_benchmark.asyncio, "run", fake_asyncio_run)
+    monkeypatch.setattr(mixed_mcp_benchmark, "_run_one_sync", fake_run_one_sync)
+    monkeypatch.setattr(mixed_mcp_benchmark, "_run_async", fake_asyncio_run)
     monkeypatch.setattr(
         mixed_mcp_benchmark,
         "_run_concurrent_mcp_profiles",

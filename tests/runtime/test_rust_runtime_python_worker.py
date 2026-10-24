@@ -329,6 +329,43 @@ def test_sync_python_worker_rejects_foreign_executor_target() -> None:
         RustStepResolverAdapter(resolver).validate_work(work)
 
 
+def test_worker_rejects_foreign_executor_before_callback_or_journal(
+    tmp_path: Path,
+) -> None:
+    calls: list[str] = []
+    resolver = MappingStepResolver()
+
+    @resolver.register("start")
+    def execute(_ctx):
+        calls.append("executed")
+        return RunSuccess(conversation_node_id=None, state_update=[])
+
+    work = _adapter_work()
+    work["payload"]["executor_target"] = "rust-native"
+    journal_path = tmp_path / "foreign-executor.sqlite"
+    worker = RustRuntimeWorker(
+        base_url="http://rust",
+        worker_id="worker-1",
+        journal_path=journal_path,
+        execute=RustStepResolverAdapter(resolver),
+        client=httpx.Client(
+            transport=httpx.MockTransport(
+                lambda _request: pytest.fail("foreign work must not be submitted")
+            )
+        ),
+    )
+
+    with worker, pytest.raises(RustWorkerError, match="cannot execute payload"):
+        worker.process(work)
+
+    assert calls == []
+    with sqlite3.connect(journal_path) as connection:
+        assert connection.execute(
+            "SELECT status FROM rust_worker_results WHERE message_id = ?",
+            ("lane-1",),
+        ).fetchone() is None
+
+
 def test_async_python_worker_rejects_foreign_executor_target() -> None:
     resolver = MappingStepResolver()
     work = _adapter_work()

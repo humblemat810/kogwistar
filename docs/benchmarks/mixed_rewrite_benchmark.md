@@ -114,6 +114,25 @@ p50/p95/p99 latency, startup, host or native child CPU/RSS metrics, and SQLite
 database/WAL footprint. All implemented paths must produce the same canonical
 state digest.
 
+Benchmark fixture construction enters the explicit `backend` model-slicing mode
+while creating Node/Edge payloads. This keeps repeated stack-based mode
+inference out of setup and separates Pydantic model-construction overhead from
+service measurements. A Windows CPython 3.13 smoke on 2026-10-25 measured the
+root plus eight graph payloads at approximately 167 ms after this change; this
+is setup evidence, not service throughput. The same smoke reached the
+in-process warm-up but stalled in the existing local HTTP regression before
+producing a parity report. Sequential in-process modes now use a synchronous
+registry dispatcher and therefore do not require a Windows event loop; a
+  two-item in-process trace completed in 0.392 seconds with a deterministic
+  digest. A follow-up synchronous dispatcher check on 2026-10-25 ran the same
+  six-operation trace through both Python in-process and Rust-authority modes;
+  both produced state digest
+  `8984a097312f1d8b063c42812fa01019e3dc9ff2f7093cc51fc56b4b03ac4ce4`.
+  The measured elapsed times were 188 ms and 335 ms respectively. This is
+  bounded local parity evidence, not a whole-stack performance claim. It also
+  does not replace the all-surface benchmark; the local HTTP shutdown/progress
+  issue remains an open transport-test item.
+
 Run a tiny all-surface MCP parity smoke (the first invocation builds the Rust
 example in release mode):
 
@@ -868,6 +887,26 @@ concurrent cells; those startup costs are reported separately from steady-state
 elapsed time. This is fresh correctness and directional performance evidence
 for the narrow vertical slice, not a resource-matched rewrite decision. The
 raw report remains in the ignored `.tmp/mcp-smoke-goal-elevated/` directory.
+
+### 2026-10-25 synchronous authority follow-up
+
+A 100-item sequential trace was run through the synchronous in-process modes
+only, with one warm-up and two measured samples. Each sample contained 300
+operations and both modes produced the same final-state digest:
+`a2713532374fe5995a8dcc68e4951bfcda5e74955e122de67f744291fec945d7`.
+
+| Mode | Median elapsed | Median throughput |
+| --- | ---: | ---: |
+| Python in-process | 10.35 s | 28.99 ops/s |
+| Rust authority in-process | 15.04 s | 19.94 ops/s |
+
+This is not evidence that Rust storage is intrinsically slower. It shows that
+the Rust-authority mode still pays the surrounding Python service, validation,
+and boundary costs, and those costs dominated this small local workload. It
+reinforces the rewrite criterion: a no-seam improvement must be measured at
+the native request path, not inferred from replacing only the persistence
+kernel. The run was not container-resource matched and did not include HTTP,
+PostgreSQL, indexing, ACL, or agent operations.
 
 ## Interpretation Guardrail
 

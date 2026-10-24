@@ -17,12 +17,13 @@ use kogwistar_runtime::{
 };
 use kogwistar_store::{
     AcceptedIndexJobResult, AppendedEvent, AppliedGraphMutation, AuthIdentityStore, AuthUser,
-    EntityEvent, EntityRebuildRequest, EntityRecoveryReport, EntityRecoveryRequest,
-    EventPruneStore, EventReadStore, EventWriteStore, ExternalIdentity, GraphAuthorityCapability,
-    GraphMutation, GraphMutationBatch, GraphMutationStore, GraphProjectionRead,
-    GraphProjectionVectorQuery, GraphRecord, IndexJob, IndexJobReadStore, IndexJobWriteStore,
-    LaneMessageClaimFilter, LaneMessageFilter, LaneMessageReadStore, LaneMessageWriteStore,
-    NamedProjection, NamedProjectionWrite, NewEntityEvent, NewIndexJob, NewProjectedLaneMessage,
+    DocumentAuthorityCapability, DocumentProjectionUpsert, DocumentStore, EntityEvent,
+    EntityRebuildRequest, EntityRecoveryReport, EntityRecoveryRequest, EventPruneStore,
+    EventReadStore, EventWriteStore, ExternalIdentity, GraphAuthorityCapability, GraphMutation,
+    GraphMutationBatch, GraphMutationStore, GraphProjectionRead, GraphProjectionVectorQuery,
+    GraphRecord, IndexJob, IndexJobReadStore, IndexJobWriteStore, LaneMessageClaimFilter,
+    LaneMessageFilter, LaneMessageReadStore, LaneMessageWriteStore, NamedProjection,
+    NamedProjectionWrite, NewEntityEvent, NewIndexJob, NewProjectedLaneMessage,
     ProjectedLaneMessage, ProjectionReadStore, ProjectionWriteStore,
     RUNTIME_CURRENT_STATE_NAMESPACE, ReplayCursor, ResolveExternalIdentity, ServerRun,
     ServerRunCreate, ServerRunEvent, ServerRunReadStore, ServerRunUpdate, ServerRunWriteStore,
@@ -2759,6 +2760,23 @@ impl GraphMutationStore for PostgresStore {
         PostgresStore::graph_projection_vector_query(self, query)
             .await
             .map_err(trait_error)
+    }
+}
+
+impl DocumentStore for PostgresStore {
+    fn document_authority_capability(&self) -> DocumentAuthorityCapability {
+        DocumentAuthorityCapability::ProjectionUpsert
+    }
+
+    async fn upsert_document_projection(&self, write: DocumentProjectionUpsert) -> StoreResult<()> {
+        self.upsert_graph_projection(GraphProjectionUpsert {
+            scope: write.scope,
+            table: "gke_documents".to_owned(),
+            record: write.record,
+            embedding_dim: write.embedding_dim,
+        })
+        .await
+        .map_err(trait_error)
     }
 }
 

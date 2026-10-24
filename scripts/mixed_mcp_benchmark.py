@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-from collections.abc import AsyncIterator, Awaitable
+from collections.abc import AsyncIterator, Awaitable, Coroutine
 import hashlib
+import inspect
 import json
 import math
 import os
@@ -155,6 +156,15 @@ def _serve_uvicorn(server: uvicorn.Server, sock: socket.socket) -> None:
             runner.run(server.serve(sockets=[sock]))
         return
     server.run(sockets=[sock])
+
+
+def _run_async(awaitable: Coroutine[Any, Any, _AwaitedT]) -> _AwaitedT:
+    """Run benchmark coroutines without Windows Proactor self-pipe stalls."""
+
+    if os.name == "nt":
+        with asyncio.Runner(loop_factory=asyncio.SelectorEventLoop) as runner:
+            return runner.run(awaitable)
+    return asyncio.run(awaitable)
 
 
 def _percentile(values: list[float], percentile: float) -> float:
@@ -497,6 +507,30 @@ def _result_payload(result: object) -> dict[str, object]:
     if not isinstance(structured, dict):
         raise RuntimeError("MCP tool returned no structured result")
     return structured
+
+
+def _call_registry_sync(
+    registry: McpRegistry, name: str, arguments: dict[str, object]
+) -> dict[str, object]:
+    """Dispatch synchronous benchmark tools without creating an event loop."""
+
+    record = registry._record_for(name)
+    if record is None:
+        raise RuntimeError(f"sync MCP tool {name!r} is missing")
+    values = record.input_model.model_validate(arguments)
+    kwargs = {
+        field: getattr(values, field)
+        for field in record.input_model.model_fields
+    }
+    result = record.function(**kwargs)
+    if inspect.isawaitable(result):
+        raise RuntimeError(f"MCP benchmark tool {name!r} unexpectedly became async")
+    if not isinstance(result, dict):
+        raise RuntimeError("sync MCP tool returned a non-object result")
+    payload = json.loads(json.dumps(result, default=str))
+    if not isinstance(payload, dict):
+        raise RuntimeError("sync MCP response serialization changed its shape")
+    return payload
 
 
 def _final_state(path: Path) -> dict[str, Any]:
@@ -1052,11 +1086,11 @@ def _run_concurrent_one(
     barriers = _ConcurrentMcpBarriers.create()
     registry = _make_registry(path, authority=authority, concurrent=barriers)
     if transport == "http":
-        transport_result = asyncio.run(
+        transport_result = _run_async(
             _serve_http_concurrent(registry, phases, barriers, graph_payloads)
         )
     else:
-        transport_result = asyncio.run(
+        transport_result = _run_async(
             _run_in_process_concurrent(registry, phases, barriers, graph_payloads)
         )
     state = _final_state(path)
@@ -1223,11 +1257,7 @@ async def _run_one(
         for step, arguments in zip(trace, trace_arguments, strict=True):
             operation = step["operation"]
             started = time.perf_counter_ns()
-            result = await registry.call_tool(
-                operation,
-                arguments,
-            )
-            payload = _result_payload(result)
+            payload = _call_registry_sync(registry, operation, arguments)
             if payload.get("entity_id") != step["expected_entity_id"]:
                 raise RuntimeError("in-process MCP returned an unexpected entity id")
             if operation == "read_projection" and payload.get("index") != step["index"]:
@@ -1277,6 +1307,76 @@ async def _run_one(
         result["native_cpu_elapsed_ms"] = native_result["cpu_elapsed_ms"]
         result["native_peak_rss_bytes"] = native_result["peak_rss_bytes"]
     return result
+
+
+def _run_one_sync(
+    path: Path,
+    trace: list[WorkloadOperation],
+    mode: str,
+    *,
+    trace_arguments: list[dict[str, object]] | None = None,
+) -> dict[str, Any]:
+    """Run synchronous registry modes without an asyncio dependency."""
+
+    if mode not in {"in_process", "rust_authority"}:
+        raise ValueError(f"sync MCP benchmark does not support mode {mode!r}")
+    try:
+        import psutil
+    except ImportError as exc:
+        raise RuntimeError("psutil is required to collect MCP benchmark RSS metrics") from exc
+    if trace_arguments is None:
+        trace_arguments = [_trace_tool_arguments(step) for step in trace]
+    elif len(trace_arguments) != len(trace):
+        raise ValueError("trace arguments must have one entry per workload operation")
+    process = psutil.Process()
+    rss_start = int(process.memory_info().rss)
+    cpu_started = time.process_time_ns()
+    started = time.perf_counter_ns()
+    registry = _make_registry(
+        path,
+        authority="rust" if mode == "rust_authority" else "python",
+    )
+    startup_ms = (time.perf_counter_ns() - started) / 1_000_000
+    wall_started = time.perf_counter_ns()
+    timings: dict[str, list[float]] = {
+        "write_record": [],
+        "read_event": [],
+        "read_projection": [],
+    }
+    for step, arguments in zip(trace, trace_arguments, strict=True):
+        operation = step["operation"]
+        operation_started = time.perf_counter_ns()
+        payload = _call_registry_sync(registry, operation, arguments)
+        if payload.get("entity_id") != step["expected_entity_id"]:
+            raise RuntimeError("in-process MCP returned an unexpected entity id")
+        if operation == "read_projection" and payload.get("index") != step["index"]:
+            raise RuntimeError("in-process MCP returned an unexpected projection index")
+        timings[operation].append(
+            (time.perf_counter_ns() - operation_started) / 1_000_000
+        )
+    elapsed_ms = (time.perf_counter_ns() - wall_started) / 1_000_000
+    state = _final_state(path)
+    return {
+        "state_digest": _digest(state),
+        "elapsed_ms": elapsed_ms,
+        "startup_ms": startup_ms,
+        "operations": len(trace),
+        "throughput_ops_per_sec": len(trace) * 1000 / elapsed_ms,
+        "host_process_cpu_elapsed_ms": (time.process_time_ns() - cpu_started) / 1_000_000,
+        "host_process_rss_start_bytes": rss_start,
+        "host_process_rss_end_bytes": int(process.memory_info().rss),
+        "host_process_rss_delta_bytes": int(process.memory_info().rss) - rss_start,
+        "sqlite_database_footprint_bytes": _sqlite_footprint_bytes(path),
+        "per_operation": {
+            name: {
+                "count": len(values),
+                "p50_ms": _percentile(values, 0.50),
+                "p95_ms": _percentile(values, 0.95),
+                "p99_ms": _percentile(values, 0.99),
+            }
+            for name, values in timings.items()
+        },
+    }
 
 
 def _run_native_server(
@@ -1758,7 +1858,7 @@ def _run_concurrent_mcp_profiles(
             file=sys.stderr,
             flush=True,
         )
-        native_warmup = asyncio.run(
+        native_warmup = _run_async(
             _run_native_concurrent_one(native_warmup_path, phases)
         )
         native_warmup["sqlite_database_footprint_bytes"] = _sqlite_footprint_bytes(
@@ -1786,7 +1886,7 @@ def _run_concurrent_mcp_profiles(
                 file=sys.stderr,
                 flush=True,
             )
-            result = asyncio.run(_run_native_concurrent_one(db_path, phases))
+            result = _run_async(_run_native_concurrent_one(db_path, phases))
             state = _final_state(db_path)
             expected_writes = sum(len(phase["steps"]) for phase in phases)
             expected_reads = sum(
@@ -1907,8 +2007,10 @@ def run_benchmark(
             file=sys.stderr,
             flush=True,
         )
-        warmup = asyncio.run(
-            _run_one(warmup_path, trace, mode, trace_arguments=trace_arguments)
+        warmup = (
+            _run_one_sync(warmup_path, trace, mode, trace_arguments=trace_arguments)
+            if mode in {"in_process", "rust_authority"}
+            else _run_async(_run_one(warmup_path, trace, mode, trace_arguments=trace_arguments))
         )
         mode_samples = []
         progress["partial_samples"][mode] = {"warmup": warmup, "samples": mode_samples}
@@ -1926,8 +2028,10 @@ def run_benchmark(
                 file=sys.stderr,
                 flush=True,
             )
-            result = asyncio.run(
-                _run_one(path, trace, mode, trace_arguments=trace_arguments)
+            result = (
+                _run_one_sync(path, trace, mode, trace_arguments=trace_arguments)
+                if mode in {"in_process", "rust_authority"}
+                else _run_async(_run_one(path, trace, mode, trace_arguments=trace_arguments))
             )
             digests.add(result["state_digest"])
             mode_samples.append(result)
