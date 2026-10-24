@@ -412,7 +412,7 @@ impl GraphModelEnvelope {
             return Err(GraphModelError::UnsupportedVersion(self.schema_version));
         }
         let payload = manifest
-            .project(&self.payload, mode.clone())
+            .project(&self.payload, mode)
             .map_err(|error| GraphModelError::InvalidPayload(error.to_string()))?;
         Ok(GraphModelSliceV1 {
             schema_version: self.schema_version,
@@ -431,7 +431,7 @@ impl GraphModelEnvelope {
                 declaration.schema_version,
             ));
         }
-        self.project_slice(&declaration.manifest, declaration.mode.clone())
+        self.project_slice(&declaration.manifest, declaration.mode)
     }
 
     /// Decode to typed graph references without changing the original wire payload.
