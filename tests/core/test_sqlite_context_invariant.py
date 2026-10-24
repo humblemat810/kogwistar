@@ -205,6 +205,70 @@ def test_python_authority_rejects_standalone_rust_process(
             lease.release()
 
 
+@pytest.mark.ci_full
+def test_rust_authority_rejects_python_process(tmp_path: Path) -> None:
+    """Exercise the reverse direction of the shared authority contract."""
+    cargo = shutil.which("cargo")
+    if cargo is None:
+        pytest.skip("cargo is required for the cross-language process check")
+
+    path = tmp_path / "rust-owned-python-child.sqlite"
+    ready_path = Path(f"{path}.ready")
+    manifest = Path(__file__).resolve().parents[2] / "rust" / "Cargo.toml"
+    command = [
+        cargo,
+        "test",
+        "--manifest-path",
+        str(manifest),
+        "-p",
+        "kogwistar-store-sqlite",
+        "tests::standalone_rust_process_cannot_open_an_authority_owned_database",
+        "--",
+        "--exact",
+        "--nocapture",
+    ]
+    env = os.environ.copy()
+    env.update(
+        {
+            "KOGWISTAR_SQLITE_LOCK_CHILD_PATH": str(path),
+            "KOGWISTAR_SQLITE_LOCK_CHILD_READY": str(ready_path),
+        }
+    )
+    child = subprocess.Popen(
+        command,
+        cwd=manifest.parent.parent,
+        env=env,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    try:
+        for _ in range(120):
+            if ready_path.exists():
+                break
+            if child.poll() is not None:
+                output = child.stdout.read() if child.stdout else ""
+                raise AssertionError(f"Rust lock child exited before readiness: {output}")
+            time.sleep(0.5)
+        else:
+            child.kill()
+            output, _ = child.communicate(timeout=10)
+            raise AssertionError(f"Rust lock child did not become ready: {output}")
+
+        with sqlite_execution_context("python"):
+            with pytest.raises(SQLiteContextError) as conflict:
+                acquire_sqlite_database(path, "python")
+        _assert_code(conflict.value, "KOGWISTAR_SQLITE_PROCESS_AUTHORITY_CONFLICT")
+    finally:
+        if child.stdin is not None:
+            child.stdin.close()
+            child.stdin = None
+        child.wait(timeout=30)
+        output = child.stdout.read() if child.stdout else ""
+        assert child.returncode == 0, output
+
+
 def test_cross_implementation_acquire_race_grants_one_owner_only(
     tmp_path: Path,
 ) -> None:
