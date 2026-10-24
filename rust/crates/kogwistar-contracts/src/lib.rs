@@ -12,6 +12,7 @@ use uuid::Uuid;
 mod delegation;
 mod graph_model;
 mod graph_mutation;
+mod graph_slice;
 pub use delegation::{
     DELEGATION_AUTHORITY_SCHEMA_VERSION, DelegationAuthorityV1, DelegationError,
     attenuate_capabilities,
@@ -32,6 +33,10 @@ pub use graph_model::{
 };
 pub use graph_mutation::{
     GraphIndexJobV1, GraphMutationBatchV1, GraphMutationV1, GraphRecordV1, GraphScopeV1,
+};
+pub use graph_slice::{
+    GRAPH_SLICE_MANIFEST_VERSION, GraphModelSliceV1, GraphSliceError, GraphSliceFieldV1,
+    GraphSliceManifestV1, GraphSliceMode,
 };
 
 /// Return the stable graph-class names exposed by the versioned Python seam.

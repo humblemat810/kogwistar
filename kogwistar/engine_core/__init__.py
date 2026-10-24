@@ -40,6 +40,11 @@ from kogwistar.engine_core.graph_mutation_contract import (
     GraphMutationContractError,
     validate_graph_mutation_batch,
 )
+from kogwistar.engine_core.graph_slice_manifest import (
+    SLICE_MODES,
+    build_slice_manifest,
+    project_with_manifest,
+)
 from kogwistar.engine_core.indexing import IndexingSubsystem
 from kogwistar.engine_core.jobs import JobQueueItem, JobQueueSubsystem
 from kogwistar.engine_core.lifecycle import LifecycleSubsystem
@@ -188,6 +193,7 @@ __all__ = [
     "GraphKnowledgeEngine",
     "GraphMutationBatchPayload",
     "GraphMutationContractError",
+    "SLICE_MODES",
     "GRAPH_MODEL_ENVELOPE_VERSION",
     "GraphModelAdapterError",
     "InMemoryBackend",
@@ -251,7 +257,9 @@ __all__ = [
     "endpoint_fingerprint",
     "get_atomic_mutation_capability",
     "build_graph_model_envelope",
+    "build_slice_manifest",
     "graph_model_class_for",
+    "project_with_manifest",
     "validate_graph_mutation_batch",
     "require_acl_protocols",
     "similarity_from_distance",

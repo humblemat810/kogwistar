@@ -13,6 +13,8 @@ use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 use thiserror::Error;
 
+use crate::graph_slice::{GraphModelSliceV1, GraphSliceManifestV1, GraphSliceMode};
+
 pub const GRAPH_MODEL_ENVELOPE_VERSION: u16 = 1;
 pub const PYTHON_GRAPH_WIRE_VERSION: u16 = 1;
 
@@ -383,6 +385,28 @@ impl GraphModelEnvelope {
             model_class,
             payload,
         }
+    }
+
+    /// Apply an exported pydantic-extension field policy without changing the
+    /// canonical envelope. The caller chooses the boundary explicitly; Rust
+    /// never infers a public or LLM slice from field names.
+    pub fn project_slice(
+        &self,
+        manifest: &GraphSliceManifestV1,
+        mode: GraphSliceMode,
+    ) -> Result<GraphModelSliceV1, GraphModelError> {
+        if self.schema_version != GRAPH_MODEL_ENVELOPE_VERSION {
+            return Err(GraphModelError::UnsupportedVersion(self.schema_version));
+        }
+        let payload = manifest
+            .project(&self.payload, mode)
+            .map_err(|error| GraphModelError::InvalidPayload(error.to_string()))?;
+        Ok(GraphModelSliceV1 {
+            schema_version: self.schema_version,
+            model_class: self.model_class,
+            mode,
+            payload,
+        })
     }
 
     /// Decode to typed graph references without changing the original wire payload.

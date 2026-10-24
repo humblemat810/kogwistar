@@ -340,6 +340,29 @@ a native Rust path. Deployment labels must reflect the actual request path.
     independently verifiable worker build identity; the current label check
     alone is insufficient evidence of the installed environment.
 
+### Boundary field slicing
+
+Pydantic-extension remains authoritative for Python model annotations and
+dynamic slices. It must not be silently replaced by a Rust serializer that
+guesses from field names. A Python model may export its resolved field policy
+through the versioned `GraphSliceManifestV1` contract. The manifest records the
+allowed modes (`backend`, `frontend`, `dto`, `llm`, and `llm_in`) for each field
+and recursively describes nested models.
+
+Rust applies that manifest with `GraphModelEnvelope::project_slice()`. The
+canonical backend payload remains lossless; unlisted legacy fields are retained
+only for the backend mode. Public and LLM projections are deny-by-default, so
+an omitted rule cannot accidentally expose an ACL field, source-map locator,
+embedding, or verification record. Slice mode, manifest version, and model
+class are part of the projection contract and should be included in cache and
+trace keys.
+
+This is a boundary contract, not an authorization mechanism. ACL, namespace,
+source-evidence, and capability checks remain authoritative after projection.
+Custom model families are not considered slice-compatible until their manifest
+has been exported and differential-tested against Python's
+`model_dump(field_mode=...)` output.
+
 ## Verification and rollout
 
 Run one shared operation trace and golden corpus through each declared path.
