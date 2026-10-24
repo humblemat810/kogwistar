@@ -24,6 +24,7 @@ from kogwistar.implementation_selection import (
     implementation_selection_metadata,
     implementation_selection_bound,
     implementation_selection_scope,
+    postgres_authority_selectors_aligned,
 )
 from kogwistar.runtime import AsyncWorkflowRuntime, WorkflowRuntime
 from tests._helpers.embeddings import ConstantEmbeddingFunction
@@ -99,6 +100,7 @@ def test_selection_metadata_records_effective_defaults_and_transaction_coherence
     assert metadata["effective_selectors"]["KOGWISTAR_IMPL_META_STORE"] == "rust"
     assert metadata["effective_selectors"]["KOGWISTAR_IMPL_POSTGRES_AUTHORITY"] == "python"
     assert metadata["invariants"]["postgres_transaction_coherent"] is True
+    assert metadata["invariants"]["postgres_selector_alignment"] is False
 
 
 def test_selection_metadata_flags_incoherent_postgres_authority(
@@ -111,6 +113,29 @@ def test_selection_metadata_flags_incoherent_postgres_authority(
     metadata = implementation_selection_metadata(capture_implementation_selection())
 
     assert metadata["invariants"]["postgres_transaction_coherent"] is False
+    assert metadata["invariants"]["postgres_selector_alignment"] is False
+
+
+@pytest.mark.parametrize(
+    ("meta_mode", "graph_mode", "authority_mode", "expected"),
+    [
+        ("python", "python", "python", True),
+        ("rust", "rust", "rust", True),
+        ("rust", "python", "python", False),
+        ("shadow", "shadow", "python", False),
+    ],
+)
+def test_postgres_selectors_cannot_silently_split_authority(
+    meta_mode: str, graph_mode: str, authority_mode: str, expected: bool
+) -> None:
+    assert (
+        postgres_authority_selectors_aligned(
+            meta_mode=meta_mode,
+            graph_mode=graph_mode,
+            authority_mode=authority_mode,
+        )
+        is expected
+    )
 
 
 def test_runtime_entrypoints_keep_sync_and_async_call_contracts() -> None:

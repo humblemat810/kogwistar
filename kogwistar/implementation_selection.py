@@ -44,6 +44,19 @@ def capture_implementation_selection() -> ImplementationSelectionSnapshot:
     return tuple((name, os.getenv(name)) for name in _IMPLEMENTATION_ENV_NAMES)
 
 
+def postgres_authority_selectors_aligned(
+    *, meta_mode: str, graph_mode: str, authority_mode: str
+) -> bool:
+    """Return whether PostgreSQL selectors name one transaction authority.
+
+    The graph and metadata selectors are not independent implementation
+    choices for PostgreSQL: both participate in the same event/graph write
+    boundary.  Keeping this predicate separate from environment parsing lets
+    construction-time validation and trace generation use the same invariant.
+    """
+    return meta_mode == graph_mode == authority_mode
+
+
 def implementation_selection_metadata(
     snapshot: ImplementationSelectionSnapshot,
 ) -> JsonObject:
@@ -76,6 +89,11 @@ def implementation_selection_metadata(
             or effective["KOGWISTAR_IMPL_GRAPH_STORE"] != "rust"
         )
     )
+    postgres_selector_alignment = postgres_authority_selectors_aligned(
+        meta_mode=effective["KOGWISTAR_IMPL_META_STORE"],
+        graph_mode=effective["KOGWISTAR_IMPL_GRAPH_STORE"],
+        authority_mode=effective["KOGWISTAR_IMPL_POSTGRES_AUTHORITY"],
+    )
     return {
         "schema_version": 1,
         "source": "engine_construction",
@@ -83,6 +101,7 @@ def implementation_selection_metadata(
         "effective_selectors": effective,
         "invariants": {
             "postgres_transaction_coherent": postgres_coherent,
+            "postgres_selector_alignment": postgres_selector_alignment,
         },
     }
 

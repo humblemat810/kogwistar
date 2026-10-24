@@ -1595,6 +1595,9 @@ class GraphKnowledgeEngine:
 
             from .engine_postgres_meta import EnginePostgresMetaStore
             from .rust_postgres_session import RustEnginePostgresMetaStore
+            from kogwistar.implementation_selection import (
+                postgres_authority_selectors_aligned,
+            )
 
             if type(backend) is str:
                 raise Exception("unreacheable")
@@ -1613,6 +1616,18 @@ class GraphKnowledgeEngine:
                     "KOGWISTAR_IMPL_META_STORE=rust and "
                     "KOGWISTAR_IMPL_GRAPH_STORE=rust so graph/event writes share one "
                     "transaction"
+                )
+            if not postgres_authority_selectors_aligned(
+                meta_mode=meta_mode,
+                graph_mode=graph_mode,
+                authority_mode=postgres_authority_mode,
+            ):
+                raise ValueError(
+                    "PostgreSQL implementation selectors must agree: "
+                    "KOGWISTAR_IMPL_META_STORE, KOGWISTAR_IMPL_GRAPH_STORE, and "
+                    "KOGWISTAR_IMPL_POSTGRES_AUTHORITY must select the same "
+                    "authority; use python for all three until the Rust path is "
+                    "ready"
                 )
             if postgres_authority_mode == "rust":
                 dsn = backend2.engine.url.render_as_string(hide_password=False)
