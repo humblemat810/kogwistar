@@ -25,11 +25,12 @@ use kogwistar_runtime::{
     RuntimeStepExecutePayload, RuntimeStepExecuteRequest,
 };
 use kogwistar_store::{
-    AuthIdentityStore, AuthUser, EntityEvent, GraphMutation, GraphMutationBatch, GraphRecord,
-    GraphScope, LaneMessageClaimFilter, LaneMessageFilter, NamedProjection, NamedProjectionWrite,
-    NewIndexJob, NewProjectedLaneMessage, ProjectedLaneMessage, ResolveExternalIdentity, ServerRun,
-    ServerRunCreate, ServerRunEvent, WorkflowDesignDeltaWrite, WorkflowDesignSnapshot,
-    WorkflowDesignSnapshotWrite, validate_typed_graph_mutation,
+    AuthIdentityStore, AuthUser, EntityEvent, GraphMutation, GraphMutationBatch,
+    GraphProjectionRead, GraphRecord, GraphScope, LaneMessageClaimFilter, LaneMessageFilter,
+    MetadataFilter, NamedProjection, NamedProjectionWrite, NewIndexJob, NewProjectedLaneMessage,
+    ProjectedLaneMessage, ResolveExternalIdentity, ServerRun, ServerRunCreate, ServerRunEvent,
+    WorkflowDesignDeltaWrite, WorkflowDesignSnapshot, WorkflowDesignSnapshotWrite,
+    graph_neighbors_from_records, validate_typed_graph_mutation,
 };
 use kogwistar_store_postgres::{
     NewRawEntityEvent as PostgresNewRawEntityEvent, PostgresAuthStore, PostgresStore,
@@ -5601,6 +5602,93 @@ pub struct PostgresRunApplicationService {
 }
 
 impl PostgresRunApplicationService {
+    async fn graph_neighbors_effect(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
+        if !capability_allowed(request, &self.capabilities, "read_graph", &["read_graph"]) {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                "Graph read requires read_graph capability",
+            );
+        }
+        let input = match serde_json::from_slice::<Value>(&request.body) {
+            Ok(value) => value,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    error.to_string(),
+                );
+            }
+        };
+        let Some(rid) = input
+            .get("rid")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            return effect_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "KOGWISTAR_INVALID_REQUEST",
+                "rid is required",
+            );
+        };
+        let doc_id = input.get("doc_id").and_then(Value::as_str);
+        let scope_value = security_scope_value(&request.principal);
+        let scope = GraphScope {
+            namespace: scope_value["storage_namespace"]
+                .as_str()
+                .unwrap_or("default")
+                .to_owned(),
+            workspace_id: request
+                .principal
+                .get("workspace_id")
+                .or_else(|| request.principal.get("workspace"))
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            graph_space: request
+                .principal
+                .get("graph_space")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+        };
+        let read = |table: &'static str| GraphProjectionRead {
+            scope: scope.clone(),
+            table: table.to_owned(),
+            ids: None,
+            metadata: MetadataFilter::default(),
+            limit: 10_000,
+        };
+        let nodes = match self.store.graph_projection_records(read("gke_nodes")).await {
+            Ok(records) => records,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_STORE_ERROR",
+                    error.to_string(),
+                );
+            }
+        };
+        let edges = match self.store.graph_projection_records(read("gke_edges")).await {
+            Ok(records) => records,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_STORE_ERROR",
+                    error.to_string(),
+                );
+            }
+        };
+        let node_ids = nodes.into_iter().map(|record| record.id).collect();
+        let neighbors = graph_neighbors_from_records(rid, &node_ids, &edges, doc_id);
+        json_effect(
+            StatusCode::OK,
+            json!({
+                "nodes": neighbors.nodes.into_iter().collect::<Vec<_>>(),
+                "edges": neighbors.edges.into_iter().collect::<Vec<_>>(),
+            }),
+        )
+    }
+
     async fn syscall_effect(&self, request: &ApiEffectRequest, op: &str) -> ApiEffectResponse {
         let input = match syscall_input(request, op) {
             Ok(input) => input,
@@ -8079,6 +8167,9 @@ impl PostgresRunApplicationService {
         }
         if request.method == "POST" && request.path_and_query == "/internal/graph/mutations" {
             return self.apply_internal_graph_mutations(&request).await;
+        }
+        if request.method == "POST" && request.path_and_query == "/internal/graph/neighbors" {
+            return self.graph_neighbors_effect(&request).await;
         }
         if request.method == "POST"
             && request.path_and_query.split('?').next() == Some("/api/workflow/runs")
