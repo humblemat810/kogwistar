@@ -360,6 +360,22 @@ pub fn graph_neighbors_from_records(
     edges: &[GraphRecord],
     doc_id: Option<&str>,
 ) -> GraphNeighbors {
+    graph_neighbors_from_records_with_jump(rid, nodes, edges, doc_id, true)
+}
+
+/// Compute adjacency with the caller-selected node-to-opposite-node jump.
+///
+/// Python's `GraphQuery.k_hop` intentionally disables this jump so traversal
+/// advances through explicit edge IDs one layer at a time. Keeping the mode
+/// in the storage kernel prevents a native caller from silently changing the
+/// graph distance semantics.
+pub fn graph_neighbors_from_records_with_jump(
+    rid: &str,
+    nodes: &[GraphRecord],
+    edges: &[GraphRecord],
+    doc_id: Option<&str>,
+    allow_jump_edge: bool,
+) -> GraphNeighbors {
     let mut result = GraphNeighbors::default();
     let node_ids: BTreeSet<&str> = nodes
         .iter()
@@ -409,9 +425,11 @@ pub fn graph_neighbors_from_records(
 
         if is_node && (source_nodes.contains(&rid) || target_nodes.contains(&rid)) {
             result.edges.insert(edge.id.clone());
-            for endpoint in source_nodes.iter().chain(target_nodes.iter()) {
-                if *endpoint != rid && node_ids.contains(endpoint) {
-                    result.nodes.insert((*endpoint).to_owned());
+            if allow_jump_edge {
+                for endpoint in source_nodes.iter().chain(target_nodes.iter()) {
+                    if *endpoint != rid && node_ids.contains(endpoint) {
+                        result.nodes.insert((*endpoint).to_owned());
+                    }
                 }
             }
         }
@@ -537,8 +555,13 @@ pub fn graph_shortest_path_from_records(
         if path.len().saturating_sub(1) >= query.max_depth {
             continue;
         }
-        let neighbors =
-            graph_neighbors_from_records(&current, nodes, edges, query.doc_id.as_deref());
+        let neighbors = graph_neighbors_from_records_with_jump(
+            &current,
+            nodes,
+            edges,
+            query.doc_id.as_deref(),
+            false,
+        );
         for next in neighbors.nodes.into_iter().chain(neighbors.edges) {
             if !seen.insert(next.clone()) {
                 continue;
@@ -574,8 +597,13 @@ pub fn graph_k_hop_from_records(
             if !visited.insert(rid.clone()) {
                 continue;
             }
-            let neighbors =
-                graph_neighbors_from_records(rid, nodes, edges, query.doc_id.as_deref());
+            let neighbors = graph_neighbors_from_records_with_jump(
+                rid,
+                nodes,
+                edges,
+                query.doc_id.as_deref(),
+                false,
+            );
             layer.nodes.extend(neighbors.nodes.iter().cloned());
             layer.edges.extend(neighbors.edges.iter().cloned());
             next_frontier.extend(neighbors.nodes);
@@ -2024,7 +2052,7 @@ mod tests {
         };
         assert_eq!(
             graph_shortest_path_from_records(&query, &nodes, &edges),
-            vec!["n1", "n2", "n3"]
+            vec!["n1", "e1", "n2", "e2", "n3"]
         );
         let too_shallow = GraphShortestPathQuery {
             max_depth: 1,
@@ -2065,16 +2093,13 @@ mod tests {
             &edges,
         );
         assert_eq!(layers.len(), 2);
-        assert_eq!(layers[0].nodes, BTreeSet::from(["n2".to_owned()]));
+        assert!(layers[0].nodes.is_empty());
         assert_eq!(layers[0].edges, BTreeSet::from(["e1".to_owned()]));
         assert_eq!(
             layers[1].nodes,
-            BTreeSet::from(["n1".to_owned(), "n2".to_owned(), "n3".to_owned()])
+            BTreeSet::from(["n1".to_owned(), "n2".to_owned()])
         );
-        assert_eq!(
-            layers[1].edges,
-            BTreeSet::from(["e1".to_owned(), "e2".to_owned()])
-        );
+        assert!(layers[1].edges.is_empty());
     }
 
     #[test]

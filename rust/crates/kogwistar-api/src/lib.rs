@@ -14200,10 +14200,7 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
         assert_eq!(mcp_k_hop.status(), StatusCode::OK);
         let k_hop_body = to_bytes(mcp_k_hop.into_body(), 65_536).await.unwrap();
         let k_hop_value: Value = serde_json::from_slice(&k_hop_body).unwrap();
-        assert_eq!(
-            k_hop_value["result"]["layers"][0]["nodes"],
-            json!(["node-2"])
-        );
+        assert_eq!(k_hop_value["result"]["layers"][0]["nodes"], json!([]));
         assert_eq!(
             k_hop_value["result"]["layers"][0]["edges"],
             json!(["edge-1"])
