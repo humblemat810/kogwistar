@@ -294,6 +294,20 @@ pub struct ImplementationSnapshot {
     pub server_cutover_ready: bool,
 }
 
+impl ImplementationSnapshot {
+    /// Return the readiness that is safe to expose to operators.
+    ///
+    /// The stored flag is intentionally retained for compatibility with the
+    /// existing health payload, but it cannot overrule the frozen route
+    /// inventory. This prevents transport registration from accidentally
+    /// turning into a claim that the whole public server is cut over.
+    pub fn effective_server_cutover_ready(&self) -> bool {
+        self.server_cutover_ready
+            && PENDING_SERVER_CUTOVER_ROUTES.is_empty()
+            && self.implemented_route_operations == self.frozen_route_operations
+    }
+}
+
 /// Frozen OpenAPI operations still owned by the Python rollback deployment.
 /// Keep this list explicit so health/readiness cannot infer server completion
 /// from transport registration alone.
@@ -11015,6 +11029,15 @@ async fn health_handler(State(state): State<Arc<ServerState>>) -> Json<Value> {
             serde_json::to_value(&state.api.implementation)
                 .expect("implementation snapshot serializes"),
         );
+        if let Some(implementation) = object
+            .get_mut("implementation")
+            .and_then(Value::as_object_mut)
+        {
+            implementation.insert(
+                "effective_server_cutover_ready".to_owned(),
+                json!(state.api.implementation.effective_server_cutover_ready()),
+            );
+        }
         let capability = state.application.graph_authority_capability();
         object.insert(
             "graph_authority".to_owned(),
@@ -11776,6 +11799,18 @@ mod tests {
         assert_eq!(value["ok"], true);
         assert_eq!(value["backend"], "pg");
         assert_eq!(value["pg_schema_base"], "kogwistar");
+    }
+
+    #[test]
+    fn server_readiness_cannot_overclaim_pending_routes() {
+        let mut implementation = ImplementationSnapshot::default();
+        assert!(!implementation.effective_server_cutover_ready());
+
+        implementation.server_cutover_ready = true;
+        assert!(!implementation.effective_server_cutover_ready());
+
+        implementation.implemented_route_operations = implementation.frozen_route_operations;
+        assert!(!implementation.effective_server_cutover_ready());
     }
 
     #[test]
