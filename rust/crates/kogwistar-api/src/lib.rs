@@ -10704,14 +10704,14 @@ async fn mcp_handler(
         .get("method")
         .and_then(Value::as_str)
         .unwrap_or_default();
+    let surface = match uri.path() {
+        "/mcp/conversation" => "conversation",
+        "/mcp/workflow" => "workflow",
+        _ => "root",
+    };
     if method == "tools/list" {
         let contract: Value = serde_json::from_str(FROZEN_MCP_TOOLS_JSON)
             .expect("committed MCP tool contract is valid JSON");
-        let surface = match uri.path() {
-            "/mcp/conversation" => "conversation",
-            "/mcp/workflow" => "workflow",
-            _ => "root",
-        };
         let tools = contract["surfaces"][surface]
             .as_array()
             .map(|tools| {
@@ -10735,6 +10735,14 @@ async fn mcp_handler(
             .get("name")
             .and_then(Value::as_str)
             .unwrap_or_default();
+        if !state.application.supports_mcp_tool(surface, tool_name) {
+            return Json(json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "error": {"code": -32602, "message": "Tool not advertised by this application service"},
+            }))
+            .into_response();
+        }
         let arguments = params
             .get("arguments")
             .and_then(Value::as_object)
@@ -12165,6 +12173,28 @@ mod tests {
         let mcp_body = to_bytes(mcp.into_body(), 65_536).await.unwrap();
         let mcp_value = serde_json::from_slice::<Value>(&mcp_body).unwrap();
         assert_eq!(mcp_value["result"]["tools"].as_array().unwrap().len(), 0);
+
+        let unadvertised_mcp_call = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp")
+                    .header("content-type", "application/json")
+                    .header("x-kogwistar-roles", "reader")
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","id":"unadvertised","method":"tools/call","params":{"name":"kg_neighbors","arguments":{"rid":"node-1"}}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unadvertised_mcp_call.status(), StatusCode::OK);
+        let unadvertised_body = to_bytes(unadvertised_mcp_call.into_body(), 65_536)
+            .await
+            .unwrap();
+        let unadvertised_value = serde_json::from_slice::<Value>(&unadvertised_body).unwrap();
+        assert_eq!(unadvertised_value["error"]["code"], -32602);
 
         let workflow_mcp = app
             .clone()
