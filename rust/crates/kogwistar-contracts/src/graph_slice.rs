@@ -6,23 +6,84 @@
 //! preserve unknown fields for legacy compatibility; public/LLM slices fail
 //! closed when a field is not listed by the manifest.
 
-use serde::{Deserialize, Serialize};
+use serde::de::{Error as DeError, Visitor};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
 use thiserror::Error;
 
 use crate::graph_model::GraphModelClass;
 
 pub const GRAPH_SLICE_MANIFEST_VERSION: u16 = 1;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum GraphSliceMode {
     Backend,
     Frontend,
     Dto,
     Llm,
     LlmIn,
+    /// A registered pydantic-extension mode not known to the core contract.
+    Custom(String),
+}
+
+impl GraphSliceMode {
+    fn as_str(&self) -> &str {
+        match self {
+            Self::Backend => "backend",
+            Self::Frontend => "frontend",
+            Self::Dto => "dto",
+            Self::Llm => "llm",
+            Self::LlmIn => "llm_in",
+            Self::Custom(name) => name,
+        }
+    }
+}
+
+impl Serialize for GraphSliceMode {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for GraphSliceMode {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct ModeVisitor;
+
+        impl<'de> Visitor<'de> for ModeVisitor {
+            type Value = GraphSliceMode;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a non-empty graph slice mode name")
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: DeError,
+            {
+                if value.is_empty() {
+                    return Err(E::custom("graph slice mode must not be empty"));
+                }
+                Ok(match value {
+                    "backend" => GraphSliceMode::Backend,
+                    "frontend" => GraphSliceMode::Frontend,
+                    "dto" => GraphSliceMode::Dto,
+                    "llm" => GraphSliceMode::Llm,
+                    "llm_in" => GraphSliceMode::LlmIn,
+                    custom => GraphSliceMode::Custom(custom.to_owned()),
+                })
+            }
+        }
+
+        deserializer.deserialize_str(ModeVisitor)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -74,6 +135,8 @@ pub enum GraphSliceError {
     PayloadMustBeObject,
     #[error("graph slice manifest contains an empty field name")]
     EmptyFieldName,
+    #[error("graph slice manifest contains an empty mode name")]
+    EmptyModeName,
 }
 
 impl GraphSliceManifestV1 {
@@ -95,13 +158,24 @@ impl GraphSliceManifestV1 {
                 return Err(GraphSliceError::EmptyFieldName);
             }
         }
+        if self
+            .retain_unlisted_modes
+            .iter()
+            .any(|mode| mode.as_str().is_empty())
+            || self
+                .fields
+                .values()
+                .any(|rule| rule.modes.iter().any(|mode| mode.as_str().is_empty()))
+        {
+            return Err(GraphSliceError::EmptyModeName);
+        }
         let object = payload
             .as_object()
             .ok_or(GraphSliceError::PayloadMustBeObject)?;
         Ok(Value::Object(project_object(
             object,
             self,
-            mode,
+            &mode,
             self.retain_unlisted_modes.contains(&mode),
         )))
     }
@@ -110,7 +184,7 @@ impl GraphSliceManifestV1 {
 fn project_object(
     object: &Map<String, Value>,
     manifest: &GraphSliceManifestV1,
-    mode: GraphSliceMode,
+    mode: &GraphSliceMode,
     retain_unlisted: bool,
 ) -> Map<String, Value> {
     let mut projected = Map::new();
@@ -121,7 +195,7 @@ fn project_object(
             }
             continue;
         };
-        if !rule.modes.contains(&mode) {
+        if !rule.modes.contains(mode) {
             continue;
         }
         let value = rule
@@ -133,13 +207,13 @@ fn project_object(
     projected
 }
 
-fn project_nested(value: &Value, manifest: &GraphSliceManifestV1, mode: GraphSliceMode) -> Value {
+fn project_nested(value: &Value, manifest: &GraphSliceManifestV1, mode: &GraphSliceMode) -> Value {
     match value {
         Value::Object(object) => Value::Object(project_object(
             object,
             manifest,
             mode,
-            manifest.retain_unlisted_modes.contains(&mode),
+            manifest.retain_unlisted_modes.contains(mode),
         )),
         Value::Array(items) => Value::Array(
             items
@@ -157,7 +231,7 @@ mod tests {
 
     fn rule(modes: &[GraphSliceMode]) -> GraphSliceFieldV1 {
         GraphSliceFieldV1 {
-            modes: modes.iter().copied().collect(),
+            modes: modes.iter().cloned().collect(),
             child: None,
         }
     }
@@ -230,5 +304,43 @@ mod tests {
             manifest.project(&serde_json::json!({}), GraphSliceMode::LlmIn),
             Err(GraphSliceError::UnsupportedVersion(_))
         ));
+    }
+
+    #[test]
+    fn custom_registered_mode_round_trips_and_projects_explicitly() {
+        let manifest = GraphSliceManifestV1 {
+            schema_version: GRAPH_SLICE_MANIFEST_VERSION,
+            model_name: Some("ProductView".to_owned()),
+            retain_unlisted_modes: BTreeSet::new(),
+            fields: BTreeMap::from([
+                (
+                    "title".to_owned(),
+                    rule(&[GraphSliceMode::Custom("public".to_owned())]),
+                ),
+                ("secret".to_owned(), rule(&[GraphSliceMode::Backend])),
+            ]),
+        };
+        let mode = GraphSliceMode::Custom("public".to_owned());
+        let encoded = serde_json::to_string(&mode).unwrap();
+        assert_eq!(encoded, r#""public""#);
+        assert_eq!(
+            serde_json::from_str::<GraphSliceMode>(&encoded).unwrap(),
+            mode
+        );
+        assert_eq!(
+            manifest
+                .project(
+                    &serde_json::json!({"title": "visible", "secret": "hidden"}),
+                    mode,
+                )
+                .unwrap(),
+            serde_json::json!({"title": "visible"})
+        );
+    }
+
+    #[test]
+    fn empty_custom_mode_fails_closed() {
+        let result = serde_json::from_str::<GraphSliceMode>(r#"""#);
+        assert!(result.is_err());
     }
 }

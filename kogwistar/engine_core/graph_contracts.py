@@ -43,6 +43,9 @@ GraphModelClassName = Literal[
 ]
 
 GraphWireFieldMode = Literal["backend", "llm", "llm_in"]
+# Slice declarations may use a custom mode registered with pydantic-extension;
+# canonical graph envelopes still use the narrower wire-field contract above.
+GraphWireSliceMode = str
 GRAPH_MODEL_ENVELOPE_VERSION = 1
 
 
@@ -140,7 +143,7 @@ def build_graph_model_envelope(
 def build_graph_model_slice_envelope(
     model: BaseModel,
     *,
-    field_mode: GraphWireFieldMode,
+    field_mode: GraphWireSliceMode,
 ) -> GraphModelSliceEnvelopeDict:
     """Build a canonical envelope plus an explicit projection declaration."""
 

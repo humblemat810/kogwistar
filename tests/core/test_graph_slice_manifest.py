@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+from typing import Annotated
+
 import pytest
+from pydantic import BaseModel
+from pydantic_extension.model_slicing.mixin import ExcludeMode, ModeSlicingMixin
 
 pytestmark = pytest.mark.ci
 
@@ -9,6 +13,18 @@ from kogwistar.engine_core.graph_slice_manifest import (
     project_with_manifest,
 )
 from kogwistar.engine_core.models import Grounding, Node, Span
+
+
+class _PublicView(ModeSlicingMixin, BaseModel):
+    title: str
+    secret: Annotated[str, ExcludeMode("public")]
+
+
+_PublicView.register_mode("public")
+_PublicView.include_unmarked_for_modes = {
+    *_PublicView.include_unmarked_for_modes,
+    "public",
+}
 
 
 def _node() -> Node:
@@ -66,3 +82,12 @@ def test_backend_manifest_projection_is_lossless_for_known_model() -> None:
     assert projected == expected
     assert manifest["schema_version"] == 1
     assert manifest["model_name"] == "Node"
+
+
+def test_registered_custom_mode_matches_pydantic_extension_projection() -> None:
+    value = _PublicView(title="visible", secret="hidden")
+    projected = project_with_manifest(type(value), value, "public")
+
+    assert projected == {"title": "visible"}
+    assert projected == value.model_dump(field_mode="public", dump_format="json")
+    assert "public" in build_slice_manifest(type(value))["fields"]["title"]["modes"]

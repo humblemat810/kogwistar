@@ -78,6 +78,13 @@ def build_slice_manifest(
         }
 
     hints = get_type_hints(model, include_extras=True)
+    # pydantic-extension permits registered application modes in addition to
+    # the core modes. Export them so a Rust consumer preserves the same
+    # explicit projection instead of silently collapsing a custom mode.
+    registered_modes = {
+        str(mode).lower() for mode in getattr(model, "_mode_markers", {})
+    }
+    available_modes = set(SLICE_MODES) | registered_modes
     include_unmarked: set[str] = set(
         getattr(model, "include_unmarked_for_modes", set())
     )
@@ -88,7 +95,7 @@ def build_slice_manifest(
         excluded = _excluded_modes(annotation)
         modes = {
             mode
-            for mode in SLICE_MODES
+            for mode in available_modes
             if ((mode in marked) or (not marked and mode in include_unmarked))
             and mode not in excluded
         }
@@ -122,13 +129,19 @@ def project_with_manifest(
     ``model_dump(field_mode=mode)``.
     """
 
-    if mode not in SLICE_MODES:
+    normalized_mode = mode.strip().lower()
+    available_modes = set(SLICE_MODES) | {
+        str(name).lower() for name in getattr(model, "_mode_markers", {})
+    }
+    if normalized_mode not in available_modes:
         raise ValueError(f"unsupported graph slice mode: {mode}")
     manifest = build_slice_manifest(model)
     # The Rust consumer receives the canonical/backend payload and applies a
     # requested public or LLM projection after crossing the language seam.
     return _project_value(
-        value.model_dump(dump_format="json", field_mode="backend"), manifest, mode
+        value.model_dump(dump_format="json", field_mode="backend"),
+        manifest,
+        normalized_mode,
     )
 
 
