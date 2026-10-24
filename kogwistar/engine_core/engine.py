@@ -20,7 +20,10 @@ from ..acl.graph import (
 from ..acl.graph import ACLGraph
 from ..graph_kinds import normalize_graph_kind
 from ..json_types import JsonObject
-from ..implementation_selection import capture_implementation_selection
+from ..implementation_selection import (
+    capture_implementation_selection,
+    implementation_selection_scope,
+)
 from ..utils.log import bind_log_context
 from ..workers.index_job_worker import IndexJobWorker
 from .acl_protocol import require_acl_protocols
@@ -439,8 +442,13 @@ def engine_context(
             "conversation_id": kwargs.get("conv_id"),
         }
 
-        with bind_log_context(**ctx_kwargs):
-            return fn(self, *args, **kwargs)
+        # Graph boundary methods must use the engine's construction-time
+        # authority snapshot, not selectors that may have changed in the
+        # surrounding process after construction.
+        snapshot = getattr(self, "_implementation_selection_snapshot", None)
+        with implementation_selection_scope(snapshot):
+            with bind_log_context(**ctx_kwargs):
+                return fn(self, *args, **kwargs)
 
     return wrapper
 

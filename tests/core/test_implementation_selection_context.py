@@ -17,7 +17,7 @@ from kogwistar._rust_bridge import (
     runtime_implementation_mode,
     server_implementation_mode,
 )
-from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.engine import GraphKnowledgeEngine, engine_context
 from kogwistar.engine_core.in_memory_backend import build_in_memory_backend
 from kogwistar.engine_core.indexing import IndexingSubsystem
 from kogwistar.implementation_selection import (
@@ -160,6 +160,25 @@ def test_bound_runtime_uses_its_construction_snapshot(
         return before, runtime_implementation_mode()
 
     assert run(runtime) == ("python", "python")
+    assert runtime_implementation_mode() == "rust"
+
+
+def test_engine_context_uses_the_owning_engine_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_RUNTIME", "python")
+    owner = SimpleNamespace(
+        kg_graph_type="knowledge",
+        engine_id=None,
+        _implementation_selection_snapshot=capture_implementation_selection(),
+    )
+
+    @engine_context
+    def boundary(engine: SimpleNamespace) -> str:
+        return runtime_implementation_mode()
+
+    monkeypatch.setenv("KOGWISTAR_IMPL_RUNTIME", "rust")
+    assert boundary(owner) == "python"
     assert runtime_implementation_mode() == "rust"
 
 
