@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from kogwistar._rust_bridge import project_graph_model_slice
@@ -121,6 +123,25 @@ def test_rust_slice_bridge_uses_the_declared_projection(
 
     assert projected["payload"] == {"summary": "visible"}
     assert len(calls) == 1
+
+
+@pytest.mark.requires_rust
+def test_built_rust_extension_projects_python_slice_envelope() -> None:
+    native = pytest.importorskip("kogwistar._rust")
+    node = Node(
+        label="node",
+        type="entity",
+        summary="A node",
+        mentions=_mentions("node"),
+    )
+    envelope = build_graph_model_slice_envelope(node, field_mode="llm_in")
+
+    projected = native.project_graph_model_slice(json.dumps(envelope))
+    result = json.loads(projected)
+    assert result["mode"] == "llm_in"
+    assert result["payload"] == node.model_dump(
+        field_mode="llm_in", dump_format="json"
+    )
 
 
 def test_python_contract_mode_does_not_cross_native_boundary(
