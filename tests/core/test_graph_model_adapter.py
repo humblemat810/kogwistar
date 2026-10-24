@@ -12,6 +12,7 @@ from kogwistar.engine_core.graph_contracts import (
     build_graph_model_envelope,
     graph_model_class_for,
 )
+from kogwistar.engine_core.graph_slice_manifest import project_with_manifest
 from kogwistar.engine_core.models import Edge, Node
 from kogwistar.engine_core.subsystems.write import _validate_graph_model_contract
 from kogwistar.runtime.models import WorkflowRunNode, WorkflowRuntimeEdge
@@ -149,12 +150,28 @@ def test_built_rust_extension_projects_python_slice_envelope() -> None:
     ]
 
     for model in models:
-        envelope = build_graph_model_slice_envelope(model, field_mode="llm_in")
-        projected = native.project_graph_model_slice(json.dumps(envelope))
-        result = json.loads(projected)
-        assert result["mode"] == "llm_in"
-        assert result["payload"] == model.model_dump(
-            field_mode="llm_in", dump_format="json"
+        for mode in ("backend", "frontend", "dto", "llm", "llm_in"):
+            envelope = build_graph_model_slice_envelope(model, field_mode=mode)
+            projected = native.project_graph_model_slice(json.dumps(envelope))
+            result = json.loads(projected)
+            assert result["mode"] == mode
+            expected = project_with_manifest(type(model), model, mode)
+            assert result["payload"] == expected, mode
+
+
+def test_python_slice_envelope_accepts_all_extension_modes() -> None:
+    node = Node(
+        label="node",
+        type="entity",
+        summary="A node",
+        mentions=_mentions("node"),
+    )
+
+    for mode in ("backend", "frontend", "dto", "llm", "llm_in"):
+        envelope = build_graph_model_slice_envelope(node, field_mode=mode)
+        assert envelope["slice"]["mode"] == mode
+        assert envelope["payload"] == node.model_dump(
+            field_mode="backend", dump_format="json"
         )
 
 

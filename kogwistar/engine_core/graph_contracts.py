@@ -42,7 +42,7 @@ GraphModelClassName = Literal[
     "assoc_flattened_llm_edge",
 ]
 
-GraphWireFieldMode = Literal["backend", "llm", "llm_in"]
+GraphWireFieldMode = Literal["backend", "frontend", "dto", "llm", "llm_in"]
 GRAPH_MODEL_ENVELOPE_VERSION = 1
 
 
