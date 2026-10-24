@@ -150,6 +150,172 @@ pub struct GraphNeighbors {
     pub edges: BTreeSet<String>,
 }
 
+/// Principal inputs required to evaluate persisted graph ACL records.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct GraphAclPrincipal {
+    pub principal_id: String,
+    pub groups: BTreeSet<String>,
+    pub security_scope: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct GraphAclRule {
+    version: i64,
+    mode: String,
+    owner_id: Option<String>,
+    security_scope: Option<String>,
+    shared_principals: BTreeSet<String>,
+    shared_groups: BTreeSet<String>,
+    tombstoned: bool,
+}
+
+fn record_json(record: &GraphRecord) -> Option<Value> {
+    record
+        .document
+        .as_deref()
+        .and_then(|document| serde_json::from_str(document).ok())
+}
+
+fn record_field(record: &GraphRecord, field: &str) -> Option<Value> {
+    if let Some(value) = record.metadata.get(field) {
+        return Some(value.clone());
+    }
+    let document = record_json(record)?;
+    for container in [document.get("metadata"), document.get("properties")] {
+        if let Some(value) = container.and_then(|value| value.get(field)) {
+            return Some(value.clone());
+        }
+    }
+    None
+}
+
+fn value_string(record: &GraphRecord, field: &str) -> Option<String> {
+    record_field(record, field).and_then(|value| value.as_str().map(str::to_owned))
+}
+
+fn value_strings(record: &GraphRecord, field: &str) -> BTreeSet<String> {
+    record_field(record, field)
+        .and_then(|value| value.as_array().cloned())
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|value| value.as_str().map(|item| item.to_ascii_lowercase()))
+        .collect()
+}
+
+fn acl_rank(mode: &str) -> i64 {
+    match mode {
+        "public" => 0,
+        "group" => 1,
+        "shared" => 2,
+        "scope" => 3,
+        "private" => 4,
+        _ => 99,
+    }
+}
+
+fn is_acl_record(record: &GraphRecord) -> bool {
+    value_string(record, "entity_type").as_deref() == Some("acl_record")
+}
+
+fn acl_rule_for(
+    record: &GraphRecord,
+    truth_graph: &str,
+) -> Option<((String, String), GraphAclRule)> {
+    if !is_acl_record(record)
+        || value_string(record, "acl_truth_graph").as_deref() != Some(truth_graph)
+    {
+        return None;
+    }
+    let grain = value_string(record, "acl_target_grain")?;
+    if grain != "node" && grain != "edge" {
+        return None;
+    }
+    let target_id = value_string(record, "acl_target_entity_id")?;
+    let version = record_field(record, "acl_version")?.as_i64()?;
+    let mode = value_string(record, "acl_mode")?.to_ascii_lowercase();
+    Some((
+        (grain, target_id),
+        GraphAclRule {
+            version,
+            mode,
+            owner_id: value_string(record, "owner_id"),
+            security_scope: value_string(record, "security_scope"),
+            shared_principals: value_strings(record, "shared_with_principals"),
+            shared_groups: value_strings(record, "shared_with_groups"),
+            tombstoned: record_field(record, "tombstoned")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false),
+        },
+    ))
+}
+
+fn acl_rule_visible(rule: &GraphAclRule, principal: &GraphAclPrincipal) -> bool {
+    if rule.tombstoned {
+        return false;
+    }
+    if rule.mode == "public" {
+        return true;
+    }
+    if rule.owner_id.as_deref() == Some(principal.principal_id.as_str()) {
+        return true;
+    }
+    match rule.mode.as_str() {
+        "private" => false,
+        "scope" => {
+            principal.security_scope.is_some() && principal.security_scope == rule.security_scope
+        }
+        "shared" => rule
+            .shared_principals
+            .contains(&principal.principal_id.to_ascii_lowercase()),
+        "group" => !rule.shared_groups.is_disjoint(&principal.groups),
+        _ => false,
+    }
+}
+
+/// Filter graph projections using the same fail-closed ACL rules as Python.
+///
+/// ACL records are persisted as graph nodes. Missing records deny access, and
+/// ACL helper nodes never enter the returned graph projection.
+pub fn graph_records_visible_by_acl(
+    nodes: &[GraphRecord],
+    edges: &[GraphRecord],
+    truth_graph: &str,
+    principal: &GraphAclPrincipal,
+) -> (Vec<GraphRecord>, Vec<GraphRecord>) {
+    let mut rules: BTreeMap<(String, String), GraphAclRule> = BTreeMap::new();
+    for record in nodes {
+        let Some((key, rule)) = acl_rule_for(record, truth_graph) else {
+            continue;
+        };
+        let replace = rules.get(&key).is_none_or(|current| {
+            (rule.version, acl_rank(&rule.mode)) > (current.version, acl_rank(&current.mode))
+        });
+        if replace {
+            rules.insert(key, rule);
+        }
+    }
+    let visible = |record: &GraphRecord, grain: &str| {
+        if is_acl_record(record) {
+            return false;
+        }
+        rules
+            .get(&(grain.to_owned(), record.id.clone()))
+            .is_some_and(|rule| acl_rule_visible(rule, principal))
+    };
+    (
+        nodes
+            .iter()
+            .filter(|record| visible(record, "node"))
+            .cloned()
+            .collect(),
+        edges
+            .iter()
+            .filter(|record| visible(record, "edge"))
+            .cloned()
+            .collect(),
+    )
+}
+
 /// Compute Python-compatible node/edge adjacency from canonical edge records.
 ///
 /// This helper is deliberately storage-neutral: callers provide the already
@@ -1560,6 +1726,51 @@ mod tests {
                 edges: BTreeSet::new(),
             }
         );
+    }
+
+    #[test]
+    fn graph_record_acl_matches_python_visibility_and_fails_closed() {
+        let mut acl = GraphRecord::new("acl-n1");
+        acl.metadata
+            .insert("entity_type".into(), "acl_record".into());
+        acl.metadata
+            .insert("acl_truth_graph".into(), "knowledge".into());
+        acl.metadata
+            .insert("acl_target_entity_id".into(), "n1".into());
+        acl.metadata
+            .insert("acl_target_grain".into(), "node".into());
+        acl.metadata.insert("acl_version".into(), 1.into());
+        acl.metadata.insert("acl_mode".into(), "shared".into());
+        acl.document = Some(
+            serde_json::json!({
+                "properties": {"shared_with_principals": ["alice"]}
+            })
+            .to_string(),
+        );
+        let nodes = vec![acl, GraphRecord::new("n1"), GraphRecord::new("n2")];
+        let edges = vec![GraphRecord::new("e1")];
+        let alice = GraphAclPrincipal {
+            principal_id: "alice".to_owned(),
+            ..Default::default()
+        };
+        let bob = GraphAclPrincipal {
+            principal_id: "bob".to_owned(),
+            ..Default::default()
+        };
+        let (alice_nodes, alice_edges) =
+            graph_records_visible_by_acl(&nodes, &edges, "knowledge", &alice);
+        assert_eq!(
+            alice_nodes
+                .iter()
+                .map(|r| r.id.as_str())
+                .collect::<Vec<_>>(),
+            ["n1"]
+        );
+        assert!(alice_edges.is_empty());
+        let (bob_nodes, bob_edges) =
+            graph_records_visible_by_acl(&nodes, &edges, "knowledge", &bob);
+        assert!(bob_nodes.is_empty());
+        assert!(bob_edges.is_empty());
     }
     use kogwistar_contracts::{GraphModelClass, GraphModelEnvelope};
 

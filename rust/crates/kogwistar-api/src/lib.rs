@@ -26,12 +26,12 @@ use kogwistar_runtime::{
     RuntimeStepExecutePayload, RuntimeStepExecuteRequest,
 };
 use kogwistar_store::{
-    AuthIdentityStore, AuthUser, EntityEvent, GraphMutation, GraphMutationBatch,
+    AuthIdentityStore, AuthUser, EntityEvent, GraphAclPrincipal, GraphMutation, GraphMutationBatch,
     GraphProjectionRead, GraphRecord, GraphScope, LaneMessageClaimFilter, LaneMessageFilter,
     MetadataFilter, NamedProjection, NamedProjectionWrite, NewIndexJob, NewProjectedLaneMessage,
     ProjectedLaneMessage, ResolveExternalIdentity, ServerRun, ServerRunCreate, ServerRunEvent,
     WorkflowDesignDeltaWrite, WorkflowDesignSnapshot, WorkflowDesignSnapshotWrite,
-    graph_neighbors_from_records, validate_typed_graph_mutation,
+    graph_neighbors_from_records, graph_records_visible_by_acl, validate_typed_graph_mutation,
 };
 use kogwistar_store_postgres::{
     NewRawEntityEvent as PostgresNewRawEntityEvent, PostgresAuthStore, PostgresStore,
@@ -5675,6 +5675,17 @@ impl PostgresRunApplicationService {
                 );
             }
         };
+        let mut groups = principal_strings(&request.principal, "groups");
+        groups.extend(principal_strings(&request.principal, "principal_groups"));
+        groups.sort();
+        groups.dedup();
+        let principal = GraphAclPrincipal {
+            principal_id: principal_subject(&request.principal),
+            groups: groups.into_iter().collect(),
+            security_scope: scope_value["security_scope"].as_str().map(str::to_owned),
+        };
+        let (nodes, edges) =
+            graph_records_visible_by_acl(&nodes, &edges, input.truth_graph.trim(), &principal);
         let neighbors = graph_neighbors_from_records(rid, &nodes, &edges, doc_id);
         json_effect(
             StatusCode::OK,
@@ -11278,6 +11289,7 @@ mod tests {
             serde_json::from_str(r#"{"rid":" n1 ","doc_id":"doc-1"}"#).unwrap();
         assert_eq!(request.rid, " n1 ");
         assert_eq!(request.doc_id.as_deref(), Some("doc-1"));
+        assert_eq!(request.truth_graph, "knowledge");
         assert!(
             serde_json::from_str::<GraphNeighborsRequestV1>(r#"{"rid":"n1","write":true}"#)
                 .is_err()
