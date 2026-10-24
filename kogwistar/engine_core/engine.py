@@ -695,6 +695,7 @@ class GraphKnowledgeEngine:
         )
 
     ## get
+    @engine_context
     def get_nodes(
         self,
         ids: Sequence[str] | None = None,
@@ -715,6 +716,7 @@ class GraphKnowledgeEngine:
             resolve_mode=resolve_mode,
         ))
 
+    @engine_context
     def query_nodes(
         self,
         *args: object,
@@ -739,6 +741,7 @@ class GraphKnowledgeEngine:
             ),
         )
 
+    @engine_context
     def search_nodes_as_of(
         self,
         *,
@@ -768,6 +771,7 @@ class GraphKnowledgeEngine:
             **kwargs,
         ))
 
+    @engine_context
     def search_nodes_as_of_scored(
         self,
         *,
@@ -797,6 +801,7 @@ class GraphKnowledgeEngine:
             **kwargs,
         )
 
+    @engine_context
     def query_edges(
         self,
         *args: object,
