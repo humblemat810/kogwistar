@@ -914,6 +914,8 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+ "uuid",
+ "winapi",
 ]
 
 [[package]]

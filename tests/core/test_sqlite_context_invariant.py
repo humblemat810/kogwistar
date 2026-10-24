@@ -3,10 +3,12 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 import sqlite3
 import subprocess
 import sys
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import Context, copy_context
 from pathlib import Path
@@ -130,6 +132,77 @@ def test_sqlite_authority_lock_rejects_another_process(tmp_path: Path) -> None:
         if child.stdin is not None:
             child.stdin.close()
         child.wait(timeout=10)
+
+
+@pytest.mark.ci_full
+def test_python_authority_rejects_standalone_rust_process(
+    tmp_path: Path,
+) -> None:
+    """Exercise the shared lock-file contract across real language processes."""
+    cargo = shutil.which("cargo")
+    if cargo is None:
+        pytest.skip("cargo is required for the cross-language process check")
+
+    path = tmp_path / "python-owned-rust-child.sqlite"
+    ready_path = Path(f"{path}.ready")
+    manifest = Path(__file__).resolve().parents[2] / "rust" / "Cargo.toml"
+    command = [
+        cargo,
+        "test",
+        "--manifest-path",
+        str(manifest),
+        "-p",
+        "kogwistar-store-sqlite",
+        "tests::standalone_rust_process_cannot_open_an_authority_owned_database",
+        "--",
+        "--exact",
+        "--nocapture",
+    ]
+    env = os.environ.copy()
+    env.update(
+        {
+            "KOGWISTAR_SQLITE_LOCK_CHILD_PATH": str(path),
+            "KOGWISTAR_SQLITE_LOCK_CHILD_READY": str(ready_path),
+            "KOGWISTAR_SQLITE_LOCK_EXPECT_CONFLICT": "1",
+        }
+    )
+    with sqlite_execution_context("python"):
+        lease = acquire_sqlite_database(path, "python")
+        try:
+            child = subprocess.Popen(
+                command,
+                cwd=manifest.parent.parent,
+                env=env,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+            try:
+                for _ in range(120):
+                    if ready_path.exists():
+                        break
+                    if child.poll() is not None:
+                        output = child.stdout.read() if child.stdout else ""
+                        raise AssertionError(
+                            f"Rust lock child exited before readiness: {output}"
+                        )
+                    time.sleep(0.5)
+                else:
+                    child.kill()
+                    output, _ = child.communicate(timeout=10)
+                    raise AssertionError(
+                        f"Rust lock child did not become ready: {output}"
+                    )
+            finally:
+                if child.stdin is not None:
+                    child.stdin.close()
+                    child.stdin = None
+                child.wait(timeout=30)
+                output = child.stdout.read() if child.stdout else ""
+                assert child.returncode == 0, output
+        finally:
+            lease.release()
 
 
 def test_cross_implementation_acquire_race_grants_one_owner_only(

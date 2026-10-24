@@ -15,7 +15,15 @@ from typing import BinaryIO, ParamSpec, TypeVar, cast
 from urllib.parse import parse_qs, unquote, urlsplit
 
 if os.name == "nt":
-    import msvcrt
+    import ctypes
+
+    _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    _kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_wchar_p]
+    _kernel32.CreateMutexW.restype = ctypes.c_void_p
+    _kernel32.OpenMutexW.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_wchar_p]
+    _kernel32.OpenMutexW.restype = ctypes.c_void_p
+    _kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+    _kernel32.CloseHandle.restype = ctypes.c_int
 else:
     import fcntl
 
@@ -42,6 +50,7 @@ _native_session_leases: dict[tuple[str, str], SQLiteDatabaseLease] = {}
 _native_reusable_sessions: set[tuple[str, str]] = set()
 _native_active_transactions: set[tuple[str, str]] = set()
 _process_authority_locks: dict[str, tuple[BinaryIO, int]] = {}
+_process_authority_mutexes: dict[str, int] = {}
 P = ParamSpec("P")
 R = TypeVar("R")
 
@@ -338,6 +347,11 @@ def _authority_lock_path(path_key: str) -> Path:
     return Path(f"{path_key}.kogwistar-authority.lock")
 
 
+def _authority_mutex_name(path_key: str) -> str:
+    identifier = uuid.uuid5(uuid.NAMESPACE_OID, path_key)
+    return f"Local\\KogwistarSQLiteAuthority-{identifier}"
+
+
 def _acquire_process_authority_lock(path_key: str) -> None:
     existing = _process_authority_locks.get(path_key)
     if existing is not None:
@@ -351,10 +365,26 @@ def _acquire_process_authority_lock(path_key: str) -> None:
     try:
         handle.seek(0)
         if os.name == "nt":
-            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            existing = _kernel32.OpenMutexW(
+                0x001F0001, 0, _authority_mutex_name(path_key)
+            )
+            if existing:
+                _kernel32.CloseHandle(existing)
+                raise OSError(13, "named Windows authority mutex is already owned")
+            mutex = _kernel32.CreateMutexW(None, 1, _authority_mutex_name(path_key))
+            if not mutex:
+                raise OSError(ctypes.get_last_error(), "CreateMutexW failed")
+            if ctypes.get_last_error() == 183:
+                _kernel32.CloseHandle(mutex)
+                raise OSError(13, "named Windows authority mutex is already owned")
+            _process_authority_mutexes[path_key] = int(mutex)
         else:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError as exc:
+        if os.name == "nt":
+            mutex = _process_authority_mutexes.pop(path_key, None)
+            if mutex is not None:
+                _kernel32.CloseHandle(mutex)
         handle.close()
         raise SQLiteContextError(
             "SQLite database authority is held by another process",
@@ -374,6 +404,10 @@ def _release_process_authority_lock(path_key: str) -> None:
     try:
         if os.name != "nt":
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        else:
+            mutex = _process_authority_mutexes.pop(path_key, None)
+            if mutex is not None:
+                _kernel32.CloseHandle(mutex)
     finally:
         handle.close()
         _process_authority_locks.pop(path_key, None)

@@ -3,6 +3,7 @@
 //! Schema names and event semantics intentionally match Python's
 //! `EngineSQLite`; this crate does not own queues, projections, or graph data.
 
+#[cfg(not(windows))]
 use fs2::FileExt;
 use kogwistar_contracts::EntityEventEnvelope;
 use kogwistar_engine::EntityProjection;
@@ -38,6 +39,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
+#[cfg(windows)]
+use uuid::Uuid;
 
 const BUSY_TIMEOUT_MS: u64 = 30_000;
 // Bump this when initialize_schema gains a migration. The marker lets ordinary
@@ -48,9 +51,90 @@ static NEXT_CLAIM_TOKEN: AtomicU64 = AtomicU64::new(0);
 
 static PROCESS_AUTHORITY_LOCKS: OnceLock<Mutex<BTreeMap<PathBuf, Weak<File>>>> = OnceLock::new();
 
+#[cfg(windows)]
+static WINDOWS_PROCESS_AUTHORITY_MUTEXES: OnceLock<
+    Mutex<BTreeMap<String, Weak<WindowsAuthorityMutex>>>,
+> = OnceLock::new();
+
+#[cfg(windows)]
+#[derive(Debug)]
+struct WindowsAuthorityMutex {
+    handle: winapi::shared::ntdef::HANDLE,
+}
+
+#[cfg(windows)]
+unsafe impl Send for WindowsAuthorityMutex {}
+
+#[cfg(windows)]
+unsafe impl Sync for WindowsAuthorityMutex {}
+
+#[cfg(windows)]
+impl Drop for WindowsAuthorityMutex {
+    fn drop(&mut self) {
+        unsafe {
+            winapi::um::handleapi::CloseHandle(self.handle);
+        }
+    }
+}
+
+#[cfg(windows)]
+fn acquire_windows_authority_mutex(
+    database: &Path,
+) -> SqliteStoreResult<Arc<WindowsAuthorityMutex>> {
+    let database_string = database.to_string_lossy().into_owned();
+    let database_key = database_string
+        .strip_prefix(r"\\?\")
+        .unwrap_or(&database_string)
+        .to_ascii_lowercase();
+    let key = format!(
+        "Local\\KogwistarSQLiteAuthority-{}",
+        Uuid::new_v5(&Uuid::NAMESPACE_OID, database_key.as_bytes())
+    );
+    let mutexes = WINDOWS_PROCESS_AUTHORITY_MUTEXES.get_or_init(|| Mutex::new(BTreeMap::new()));
+    let mut active = mutexes
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(mutex) = active.get(&key).and_then(Weak::upgrade) {
+        return Ok(mutex);
+    }
+
+    let name: Vec<u16> = key.encode_utf16().chain(std::iter::once(0)).collect();
+    let existing = unsafe { winapi::um::synchapi::OpenMutexW(0x001F0001, 0, name.as_ptr()) };
+    if !existing.is_null() {
+        unsafe {
+            winapi::um::handleapi::CloseHandle(existing);
+        }
+        return Err(SqliteStoreError::AuthorityConflict {
+            path: database.display().to_string(),
+            message: "named Windows authority mutex is already owned".to_owned(),
+        });
+    }
+    let handle =
+        unsafe { winapi::um::synchapi::CreateMutexW(std::ptr::null_mut(), 1, name.as_ptr()) };
+    if handle.is_null() {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    let already_exists = unsafe { winapi::um::errhandlingapi::GetLastError() }
+        == winapi::shared::winerror::ERROR_ALREADY_EXISTS;
+    if already_exists {
+        unsafe {
+            winapi::um::handleapi::CloseHandle(handle);
+        }
+        return Err(SqliteStoreError::AuthorityConflict {
+            path: database.display().to_string(),
+            message: "named Windows authority mutex is already owned".to_owned(),
+        });
+    }
+    let mutex = Arc::new(WindowsAuthorityMutex { handle });
+    active.insert(key, Arc::downgrade(&mutex));
+    Ok(mutex)
+}
+
 #[derive(Debug)]
 struct ProcessAuthorityLock {
     _file: Arc<File>,
+    #[cfg(windows)]
+    _mutex: Arc<WindowsAuthorityMutex>,
 }
 
 impl ProcessAuthorityLock {
@@ -62,6 +146,15 @@ impl ProcessAuthorityLock {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Some(file) = active.get(&lock_path).and_then(Weak::upgrade) {
+            #[cfg(windows)]
+            {
+                let mutex = acquire_windows_authority_mutex(&database)?;
+                return Ok(Self {
+                    _file: file,
+                    _mutex: mutex,
+                });
+            }
+            #[cfg(not(windows))]
             return Ok(Self { _file: file });
         }
 
@@ -70,14 +163,27 @@ impl ProcessAuthorityLock {
             .read(true)
             .write(true)
             .open(&lock_path)?;
-        file.try_lock_exclusive()
-            .map_err(|error| SqliteStoreError::AuthorityConflict {
-                path: database.display().to_string(),
-                message: error.to_string(),
-            })?;
-        let file = Arc::new(file);
-        active.insert(lock_path, Arc::downgrade(&file));
-        Ok(Self { _file: file })
+        #[cfg(windows)]
+        {
+            let mutex = acquire_windows_authority_mutex(&database)?;
+            let file = Arc::new(file);
+            active.insert(lock_path, Arc::downgrade(&file));
+            Ok(Self {
+                _file: file,
+                _mutex: mutex,
+            })
+        }
+        #[cfg(not(windows))]
+        {
+            file.try_lock_exclusive()
+                .map_err(|error| SqliteStoreError::AuthorityConflict {
+                    path: database.display().to_string(),
+                    message: error.to_string(),
+                })?;
+            let file = Arc::new(file);
+            active.insert(lock_path, Arc::downgrade(&file));
+            Ok(Self { _file: file })
+        }
     }
 }
 
@@ -4906,7 +5012,25 @@ mod tests {
         };
 
         let path = PathBuf::from(path);
-        let _store = SqliteStore::open(&path).unwrap();
+        let expect_conflict = std::env::var_os("KOGWISTAR_SQLITE_LOCK_EXPECT_CONFLICT").is_some();
+        if expect_conflict {
+            assert!(matches!(
+                SqliteStore::open(&path),
+                Err(SqliteStoreError::AuthorityConflict { .. })
+            ));
+        } else {
+            let store = SqliteStore::open(&path).unwrap();
+            std::hint::black_box(&store);
+            fs::write(
+                std::env::var("KOGWISTAR_SQLITE_LOCK_CHILD_READY").unwrap(),
+                b"ready",
+            )
+            .unwrap();
+            let mut input = String::new();
+            std::io::stdin().read_line(&mut input).unwrap();
+            drop(store);
+            return;
+        }
         fs::write(
             std::env::var("KOGWISTAR_SQLITE_LOCK_CHILD_READY").unwrap(),
             b"ready",
