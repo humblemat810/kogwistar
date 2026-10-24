@@ -9478,6 +9478,18 @@ impl SqliteRunApplicationService {
         if let Some(response) = visualization_shell_effect(&request) {
             return response;
         }
+        if request.method == "POST"
+            && matches!(
+                request.path_and_query.split('?').next(),
+                Some("/internal/graph/neighbors") | Some("/internal/graph/mutations")
+            )
+        {
+            return effect_error(
+                StatusCode::NOT_IMPLEMENTED,
+                "KOGWISTAR_GRAPH_AUTHORITY_UNSUPPORTED",
+                "The SQLite application service does not provide Rust graph authority",
+            );
+        }
         if let Some(response) = document_graph_validation_effect(&request) {
             return response;
         }
@@ -11954,6 +11966,29 @@ mod tests {
                 .map(|(method, path)| format!("{method} {path}"))
                 .collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn sqlite_graph_routes_fail_closed_with_explicit_authority_status() {
+        let path = std::env::temp_dir().join(format!(
+            "kogwistar-api-graph-authority-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let service = SqliteRunApplicationService::open(&path).unwrap();
+        for route in ["/internal/graph/neighbors", "/internal/graph/mutations"] {
+            let response = service.execute_sync(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: route.to_owned(),
+                body: br#"{}"#.to_vec(),
+                principal: json!({"sub":"alice","role":"rw","capabilities":["*"]}),
+            });
+            assert_eq!(response.status, StatusCode::NOT_IMPLEMENTED.as_u16());
+            let body: Value = serde_json::from_slice(&response.body).unwrap();
+            assert_eq!(body["code"], "KOGWISTAR_GRAPH_AUTHORITY_UNSUPPORTED");
+        }
+        drop(service);
+        remove_test_sqlite(&path);
     }
 
     #[test]
