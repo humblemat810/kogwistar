@@ -13357,6 +13357,59 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
                 Arc::new(service.clone()),
             )
         };
+        let mcp_list = make_app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp")
+                    .header("content-type", "application/json")
+                    .header(
+                        "authorization",
+                        format!("Bearer {}", make_token(&["read_graph"], "alpha")),
+                    )
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","id":"list","method":"tools/list"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(mcp_list.status(), StatusCode::OK);
+        let mcp_list_body = to_bytes(mcp_list.into_body(), 65_536).await.unwrap();
+        let mcp_list_value: Value = serde_json::from_slice(&mcp_list_body).unwrap();
+        assert!(
+            mcp_list_value["result"]["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|tool| tool["name"] == "kg_neighbors")
+        );
+
+        let mcp_missing_capability = make_app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp")
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {}", make_token(&[], "alpha")))
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","id":"denied","method":"tools/call","params":{"name":"kg_neighbors","arguments":{"rid":"node-1"}}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(mcp_missing_capability.status(), StatusCode::OK);
+        let denied_body = to_bytes(mcp_missing_capability.into_body(), 65_536)
+            .await
+            .unwrap();
+        let denied_value: Value = serde_json::from_slice(&denied_body).unwrap();
+        assert_eq!(denied_value["error"]["code"], -32000);
+        assert_eq!(
+            denied_value["error"]["data"]["code"],
+            "KOGWISTAR_CAPABILITY_FORBIDDEN"
+        );
+
         let send_mutation = |app: Router, token: String, payload: Value| async move {
             app.oneshot(
                 Request::builder()
@@ -13419,6 +13472,30 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
             .unwrap();
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].id, "node-1");
+
+        let mcp_neighbors = make_app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp")
+                    .header("content-type", "application/json")
+                    .header(
+                        "authorization",
+                        format!("Bearer {}", make_token(&["read_graph"], "alpha")),
+                    )
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","id":"neighbors","method":"tools/call","params":{"name":"kg_neighbors","arguments":{"rid":"node-1"}}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(mcp_neighbors.status(), StatusCode::OK);
+        let mcp_neighbors_body = to_bytes(mcp_neighbors.into_body(), 65_536).await.unwrap();
+        let mcp_neighbors_value: Value = serde_json::from_slice(&mcp_neighbors_body).unwrap();
+        assert_eq!(mcp_neighbors_value["result"]["nodes"], json!([]));
+        assert_eq!(mcp_neighbors_value["result"]["edges"], json!([]));
+
         let index_jobs = service
             .store
             .list_index_jobs(
