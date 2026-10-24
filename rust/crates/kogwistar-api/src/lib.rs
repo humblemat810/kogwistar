@@ -5750,6 +5750,9 @@ impl PostgresRunApplicationService {
         json_effect(
             StatusCode::OK,
             json!({
+                "implementation_authority": "rust",
+                "seam_attestation_version": 1,
+                "seam_crossings": [],
                 "nodes": neighbors.nodes.into_iter().collect::<Vec<_>>(),
                 "edges": neighbors.edges.into_iter().collect::<Vec<_>>(),
             }),
@@ -5837,7 +5840,12 @@ impl PostgresRunApplicationService {
         };
         json_effect(
             StatusCode::OK,
-            json!({"edges": graph_find_edges_from_records(&query, &nodes, &edges)}),
+            json!({
+                "implementation_authority": "rust",
+                "seam_attestation_version": 1,
+                "seam_crossings": [],
+                "edges": graph_find_edges_from_records(&query, &nodes, &edges),
+            }),
         )
     }
 
@@ -5930,7 +5938,12 @@ impl PostgresRunApplicationService {
         };
         json_effect(
             StatusCode::OK,
-            json!({"path": graph_shortest_path_from_records(&query, &nodes, &edges)}),
+            json!({
+                "implementation_authority": "rust",
+                "seam_attestation_version": 1,
+                "seam_crossings": [],
+                "path": graph_shortest_path_from_records(&query, &nodes, &edges),
+            }),
         )
     }
 
@@ -6035,7 +6048,15 @@ impl PostgresRunApplicationService {
                 })
             })
             .collect::<Vec<_>>();
-        json_effect(StatusCode::OK, json!({"layers": layers}))
+        json_effect(
+            StatusCode::OK,
+            json!({
+                "implementation_authority": "rust",
+                "seam_attestation_version": 1,
+                "seam_crossings": [],
+                "layers": layers,
+            }),
+        )
     }
 
     async fn syscall_effect(&self, request: &ApiEffectRequest, op: &str) -> ApiEffectResponse {
@@ -14134,6 +14155,12 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
         assert_eq!(mcp_adjacency.status(), StatusCode::OK);
         let adjacency_body = to_bytes(mcp_adjacency.into_body(), 65_536).await.unwrap();
         let adjacency_value: Value = serde_json::from_slice(&adjacency_body).unwrap();
+        assert_eq!(
+            adjacency_value["result"]["implementation_authority"],
+            "rust"
+        );
+        assert_eq!(adjacency_value["result"]["seam_attestation_version"], 1);
+        assert_eq!(adjacency_value["result"]["seam_crossings"], json!([]));
         assert_eq!(adjacency_value["result"]["nodes"], json!(["node-2"]));
         assert_eq!(adjacency_value["result"]["edges"], json!(["edge-1"]));
 
@@ -14157,6 +14184,12 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
         assert_eq!(mcp_find_edges.status(), StatusCode::OK);
         let find_edges_body = to_bytes(mcp_find_edges.into_body(), 65_536).await.unwrap();
         let find_edges_value: Value = serde_json::from_slice(&find_edges_body).unwrap();
+        assert_eq!(
+            find_edges_value["result"]["implementation_authority"],
+            "rust"
+        );
+        assert_eq!(find_edges_value["result"]["seam_attestation_version"], 1);
+        assert_eq!(find_edges_value["result"]["seam_crossings"], json!([]));
         assert_eq!(find_edges_value["result"]["edges"], json!(["edge-1"]));
 
         let mcp_shortest_path = make_app()
@@ -14182,6 +14215,12 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
             .unwrap();
         let shortest_path_value: Value = serde_json::from_slice(&shortest_path_body).unwrap();
         assert_eq!(
+            shortest_path_value["result"]["implementation_authority"],
+            "rust"
+        );
+        assert_eq!(shortest_path_value["result"]["seam_attestation_version"], 1);
+        assert_eq!(shortest_path_value["result"]["seam_crossings"], json!([]));
+        assert_eq!(
             shortest_path_value["result"]["path"],
             json!(["node-1", "edge-1", "node-2"])
         );
@@ -14206,6 +14245,9 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
         assert_eq!(mcp_k_hop.status(), StatusCode::OK);
         let k_hop_body = to_bytes(mcp_k_hop.into_body(), 65_536).await.unwrap();
         let k_hop_value: Value = serde_json::from_slice(&k_hop_body).unwrap();
+        assert_eq!(k_hop_value["result"]["implementation_authority"], "rust");
+        assert_eq!(k_hop_value["result"]["seam_attestation_version"], 1);
+        assert_eq!(k_hop_value["result"]["seam_crossings"], json!([]));
         assert_eq!(k_hop_value["result"]["layers"][0]["nodes"], json!([]));
         assert_eq!(
             k_hop_value["result"]["layers"][0]["edges"],
