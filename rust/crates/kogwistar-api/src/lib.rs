@@ -436,6 +436,14 @@ pub trait ApplicationService: Send + Sync + 'static {
         GraphAuthorityCapability::Unsupported
     }
 
+    /// Advertise only operations this concrete authority can execute.
+    ///
+    /// Keeping discovery on the application service prevents an unavailable or
+    /// partially wired backend from claiming the static catalog's operations.
+    fn supports_mcp_tool(&self, surface: &str, name: &str) -> bool {
+        rust_mcp_tool_supported(surface, name)
+    }
+
     fn execute(
         &self,
         request: ApiEffectRequest,
@@ -446,6 +454,10 @@ pub trait ApplicationService: Send + Sync + 'static {
 pub struct UnavailableApplicationService;
 
 impl ApplicationService for UnavailableApplicationService {
+    fn supports_mcp_tool(&self, _surface: &str, _name: &str) -> bool {
+        false
+    }
+
     fn execute(
         &self,
         request: ApiEffectRequest,
@@ -10704,7 +10716,7 @@ async fn mcp_handler(
                     .filter(|tool| {
                         tool.get("name")
                             .and_then(Value::as_str)
-                            .is_some_and(|name| rust_mcp_tool_supported(surface, name))
+                            .is_some_and(|name| state.application.supports_mcp_tool(surface, name))
                     })
                     .cloned()
                     .collect::<Vec<_>>()
@@ -12150,7 +12162,7 @@ mod tests {
         let workflow_value = serde_json::from_slice::<Value>(&workflow_body).unwrap();
         assert_eq!(
             workflow_value["result"]["tools"].as_array().unwrap().len(),
-            36
+            0
         );
 
         let conversation_mcp = app
@@ -12178,7 +12190,7 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .len(),
-            2
+            0
         );
 
         let pending_cutover = app
