@@ -128,20 +128,34 @@ def test_rust_slice_bridge_uses_the_declared_projection(
 @pytest.mark.requires_rust
 def test_built_rust_extension_projects_python_slice_envelope() -> None:
     native = pytest.importorskip("kogwistar._rust")
-    node = Node(
-        label="node",
-        type="entity",
-        summary="A node",
-        mentions=_mentions("node"),
-    )
-    envelope = build_graph_model_slice_envelope(node, field_mode="llm_in")
+    models = [
+        Node(
+            label="node",
+            type="entity",
+            summary="A node",
+            mentions=_mentions("node"),
+        ),
+        Edge(
+            label="edge",
+            type="relationship",
+            summary="An edge",
+            relation="relates_to",
+            source_ids=["node-a"],
+            target_ids=["node-b"],
+            source_edge_ids=None,
+            target_edge_ids=None,
+            mentions=_mentions("edge"),
+        ),
+    ]
 
-    projected = native.project_graph_model_slice(json.dumps(envelope))
-    result = json.loads(projected)
-    assert result["mode"] == "llm_in"
-    assert result["payload"] == node.model_dump(
-        field_mode="llm_in", dump_format="json"
-    )
+    for model in models:
+        envelope = build_graph_model_slice_envelope(model, field_mode="llm_in")
+        projected = native.project_graph_model_slice(json.dumps(envelope))
+        result = json.loads(projected)
+        assert result["mode"] == "llm_in"
+        assert result["payload"] == model.model_dump(
+            field_mode="llm_in", dump_format="json"
+        )
 
 
 def test_python_contract_mode_does_not_cross_native_boundary(
