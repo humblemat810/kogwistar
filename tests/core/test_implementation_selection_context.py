@@ -20,6 +20,7 @@ from kogwistar._rust_bridge import (
 from kogwistar.engine_core.engine import GraphKnowledgeEngine, engine_context
 from kogwistar.engine_core.in_memory_backend import build_in_memory_backend
 from kogwistar.engine_core.indexing import IndexingSubsystem
+from kogwistar.engine_core.subsystems.write import WriteSubsystem
 from kogwistar.implementation_selection import (
     capture_implementation_selection,
     implementation_selection_metadata,
@@ -179,6 +180,26 @@ def test_engine_context_uses_the_owning_engine_snapshot(
 
     monkeypatch.setenv("KOGWISTAR_IMPL_RUNTIME", "rust")
     assert boundary(owner) == "python"
+    assert runtime_implementation_mode() == "rust"
+
+
+def test_write_subsystem_proxy_uses_the_owning_engine_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_RUNTIME", "python")
+    engine = SimpleNamespace(
+        _implementation_selection_snapshot=capture_implementation_selection()
+    )
+    write = WriteSubsystem(engine)
+
+    observed: list[str] = []
+    write._add_node_impl = lambda *_args, **_kwargs: observed.append(
+        runtime_implementation_mode()
+    )
+
+    monkeypatch.setenv("KOGWISTAR_IMPL_RUNTIME", "rust")
+    write.add_node(SimpleNamespace())
+    assert observed == ["python"]
     assert runtime_implementation_mode() == "rust"
 
 

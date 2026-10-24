@@ -36,6 +36,7 @@ from ..models import (
     Span,
 )
 from ..storage_backend import AsyncTwoStageProjectionAdapter, StorageBackend
+from ...implementation_selection import implementation_selection_bound
 from ..utils.metadata import json_or_none, strip_none
 from ..utils.refs import (
     edge_doc_and_meta as edge_doc_and_meta_util,
@@ -376,9 +377,11 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         return cast(ProjectionBackendLike, self._e.backend)
 
     # Canonical write API
+    @implementation_selection_bound
     def add_node(self, node: Node, doc_id: str | None = None) -> None:
         self._add_node_impl(node, doc_id=doc_id)
 
+    @implementation_selection_bound
     def create_node_if_absent(
         self, node: Node, doc_id: str | None = None
     ) -> CreateNodeResult:
@@ -455,9 +458,11 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 revision=revision.revision if revision is not None else None,
             )
 
+    @implementation_selection_bound
     def add_edge(self, edge: Edge, doc_id: str | None = None) -> None:
         self._add_edge_impl(edge, doc_id=doc_id)
 
+    @implementation_selection_bound
     async def add_node_async(self, node: Node, doc_id: str | None = None) -> None:
         """Admit a node through the configured async persistence mode."""
         import asyncio
@@ -480,6 +485,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
 
         return await self._add_node_async_single_stage(node, doc_id=doc_id)
 
+    @implementation_selection_bound
     async def add_edge_async(self, edge: Edge, doc_id: str | None = None) -> None:
         """Admit an edge through the configured async persistence mode."""
         adapter = self._e.async_two_stage_projection_adapter

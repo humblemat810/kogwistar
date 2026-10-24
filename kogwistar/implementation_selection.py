@@ -28,6 +28,20 @@ _P = ParamSpec("_P")
 _R = TypeVar("_R")
 
 
+def _owner_implementation_snapshot(owner: object) -> ImplementationSelectionSnapshot | None:
+    """Resolve a construction snapshot from engines and their subsystem proxies."""
+    snapshot = getattr(owner, "_implementation_selection_snapshot", None)
+    if snapshot is not None:
+        return cast(ImplementationSelectionSnapshot, snapshot)
+    delegated_owner = getattr(owner, "_e", None)
+    delegated_snapshot = getattr(
+        delegated_owner, "_implementation_selection_snapshot", None
+    )
+    if delegated_snapshot is None:
+        return None
+    return cast(ImplementationSelectionSnapshot, delegated_snapshot)
+
+
 def implementation_env(name: str, default: str | None = None) -> str | None:
     """Read selector configuration from the active run snapshot, if present."""
     snapshot = _selection_snapshot.get()
@@ -160,7 +174,7 @@ def implementation_selection_bound(
         @wraps(function)
         async def async_wrapper(*args: _P.args, **kwargs: _P.kwargs) -> object:
             owner = args[0] if args else None
-            snapshot = getattr(owner, "_implementation_selection_snapshot", None)
+            snapshot = _owner_implementation_snapshot(owner)
             with implementation_selection_scope(snapshot):
                 return await async_function(*args, **kwargs)
 
@@ -169,7 +183,7 @@ def implementation_selection_bound(
     @wraps(function)
     def sync_wrapper(*args: _P.args, **kwargs: _P.kwargs) -> _R:
         owner = args[0] if args else None
-        snapshot = getattr(owner, "_implementation_selection_snapshot", None)
+        snapshot = _owner_implementation_snapshot(owner)
         with implementation_selection_scope(snapshot):
             return function(*args, **kwargs)
 
