@@ -153,26 +153,31 @@ pub struct GraphNeighbors {
 /// Compute Python-compatible node/edge adjacency from canonical edge records.
 ///
 /// This helper is deliberately storage-neutral: callers provide the already
-/// scope-filtered node IDs and edge projections. It does not authorize access,
+/// scope-filtered node records and edge projections. It does not authorize access,
 /// infer a namespace, or treat a projection row as authoritative outside the
 /// caller's read boundary. Tombstoned rows are excluded so a stale projection
 /// cannot reintroduce a deleted relationship.
 pub fn graph_neighbors_from_records(
     rid: &str,
-    node_ids: &BTreeSet<String>,
+    nodes: &[GraphRecord],
     edges: &[GraphRecord],
     doc_id: Option<&str>,
 ) -> GraphNeighbors {
     let mut result = GraphNeighbors::default();
+    let node_ids: BTreeSet<&str> = nodes
+        .iter()
+        .filter(|node| !is_tombstoned(&node.metadata))
+        .map(|node| node.id.as_str())
+        .collect();
+    let edge_ids: BTreeSet<&str> = edges
+        .iter()
+        .filter(|edge| !is_tombstoned(&edge.metadata))
+        .map(|edge| edge.id.as_str())
+        .collect();
     let is_node = node_ids.contains(rid);
 
     for edge in edges {
-        if edge
-            .metadata
-            .get("lifecycle_status")
-            .and_then(Value::as_str)
-            .is_some_and(|status| matches!(status, "tombstoned" | "deleted"))
-        {
+        if is_tombstoned(&edge.metadata) {
             continue;
         }
         let Some(document) = edge
@@ -208,22 +213,33 @@ pub fn graph_neighbors_from_records(
         if is_node && (source_nodes.contains(&rid) || target_nodes.contains(&rid)) {
             result.edges.insert(edge.id.clone());
             for endpoint in source_nodes.iter().chain(target_nodes.iter()) {
-                if *endpoint != rid {
+                if *endpoint != rid && node_ids.contains(endpoint) {
                     result.nodes.insert((*endpoint).to_owned());
                 }
             }
         }
         if edge.id == rid {
             for endpoint in source_nodes.iter().chain(target_nodes.iter()) {
-                result.nodes.insert((*endpoint).to_owned());
+                if node_ids.contains(endpoint) {
+                    result.nodes.insert((*endpoint).to_owned());
+                }
             }
             for endpoint in source_edges.iter().chain(target_edges.iter()) {
-                result.edges.insert((*endpoint).to_owned());
+                if edge_ids.contains(endpoint) {
+                    result.edges.insert((*endpoint).to_owned());
+                }
             }
         }
     }
 
     result
+}
+
+fn is_tombstoned(metadata: &Map<String, Value>) -> bool {
+    metadata
+        .get("lifecycle_status")
+        .and_then(Value::as_str)
+        .is_some_and(|status| matches!(status, "tombstoned" | "deleted"))
 }
 
 /// Scope carried by the graph projection.  The Python pgvector schema keeps
@@ -1444,18 +1460,32 @@ mod tests {
         }
     }
 
+    fn node_record(id: &str) -> GraphRecord {
+        GraphRecord::new(id)
+    }
+
     #[test]
     fn graph_neighbors_match_node_and_edge_hypergraph_semantics() {
-        let edges = vec![edge_record(
-            "e1",
-            serde_json::json!({
-                "source_ids": ["n1", "n2"],
-                "target_ids": ["n3"],
-                "source_edge_ids": ["e0"],
-                "target_edge_ids": ["e2"]
-            }),
-        )];
-        let nodes = BTreeSet::from(["n1".to_owned(), "n2".to_owned(), "n3".to_owned()]);
+        let edges = vec![
+            edge_record(
+                "e0",
+                serde_json::json!({"source_ids": [], "target_ids": []}),
+            ),
+            edge_record(
+                "e1",
+                serde_json::json!({
+                    "source_ids": ["n1", "n2"],
+                    "target_ids": ["n3"],
+                    "source_edge_ids": ["e0"],
+                    "target_edge_ids": ["e2"]
+                }),
+            ),
+            edge_record(
+                "e2",
+                serde_json::json!({"source_ids": [], "target_ids": []}),
+            ),
+        ];
+        let nodes = vec![node_record("n1"), node_record("n2"), node_record("n3")];
 
         assert_eq!(
             graph_neighbors_from_records("n1", &nodes, &edges, None),
@@ -1491,11 +1521,44 @@ mod tests {
                 "target_ids": ["n3"]
             }),
         );
-        let nodes = BTreeSet::from(["n1".to_owned(), "n2".to_owned(), "n3".to_owned()]);
+        let nodes = vec![node_record("n1"), node_record("n2"), node_record("n3")];
 
         assert_eq!(
             graph_neighbors_from_records("n1", &nodes, &[stale, other], Some("doc-requested")),
             GraphNeighbors::default()
+        );
+    }
+
+    #[test]
+    fn graph_neighbors_excludes_tombstoned_and_dangling_endpoints() {
+        let mut tombstoned_node = node_record("n2");
+        tombstoned_node.metadata.insert(
+            "lifecycle_status".to_owned(),
+            serde_json::json!("tombstoned"),
+        );
+        let edges = vec![edge_record(
+            "e1",
+            serde_json::json!({
+                "source_ids": ["n1", "n2", "missing"],
+                "target_ids": [],
+                "source_edge_ids": ["missing-edge"]
+            }),
+        )];
+        let nodes = vec![node_record("n1"), tombstoned_node];
+
+        assert_eq!(
+            graph_neighbors_from_records("n1", &nodes, &edges, None),
+            GraphNeighbors {
+                nodes: BTreeSet::new(),
+                edges: BTreeSet::from(["e1".to_owned()]),
+            }
+        );
+        assert_eq!(
+            graph_neighbors_from_records("e1", &nodes, &edges, None),
+            GraphNeighbors {
+                nodes: BTreeSet::from(["n1".to_owned()]),
+                edges: BTreeSet::new(),
+            }
         );
     }
     use kogwistar_contracts::{GraphModelClass, GraphModelEnvelope};

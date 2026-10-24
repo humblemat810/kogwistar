@@ -5678,8 +5678,7 @@ impl PostgresRunApplicationService {
                 );
             }
         };
-        let node_ids = nodes.into_iter().map(|record| record.id).collect();
-        let neighbors = graph_neighbors_from_records(rid, &node_ids, &edges, doc_id);
+        let neighbors = graph_neighbors_from_records(rid, &nodes, &edges, doc_id);
         json_effect(
             StatusCode::OK,
             json!({
