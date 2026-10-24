@@ -196,10 +196,38 @@ def main() -> int:
     parser.add_argument("--model-count", type=int, default=32)
     parser.add_argument("--iterations", type=int, default=30)
     parser.add_argument("--field-mode", default="llm_in")
+    parser.add_argument(
+        "--write-input",
+        type=Path,
+        help="write the canonical envelope fixture for the Rust-native benchmark",
+    )
     args = parser.parse_args()
     if args.model_count < 1 or args.iterations < 2:
         parser.error("--model-count must be positive and --iterations must be at least 2")
-    print(json.dumps(run(**vars(args)), indent=2, sort_keys=True))
+    if args.write_input is not None:
+        args.write_input.parent.mkdir(parents=True, exist_ok=True)
+        args.write_input.write_text(
+            json.dumps(
+                [
+                    build_graph_model_slice_envelope(model, field_mode=args.field_mode)
+                    for model in _models(args.model_count)
+                ],
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
+            encoding="utf-8",
+        )
+    print(
+        json.dumps(
+            run(
+                model_count=args.model_count,
+                iterations=args.iterations,
+                field_mode=args.field_mode,
+            ),
+            indent=2,
+            sort_keys=True,
+        )
+    )
     return 0
 
 

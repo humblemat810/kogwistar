@@ -15,6 +15,20 @@ host-native wheel procedure, then run:
 python scripts/graph_slice_seam_benchmark.py --model-count 32 --iterations 30
 ```
 
+To compare the no-seam Rust projection over the exact same typed envelope
+fixture:
+
+```text
+python scripts/graph_slice_seam_benchmark.py --model-count 32 --iterations 30 --write-input .tmp-graph-slice.json
+cargo run --release --manifest-path rust/Cargo.toml -p kogwistar-contracts --example graph_slice_native_benchmark -- .tmp-graph-slice.json 30
+```
+
+The Rust command parses the fixture before timing and keeps typed envelopes in
+Rust during timed iterations. Its result therefore excludes Python model
+construction, PyO3 dispatch, and JSON serialization. It is a lower-bound
+comparison for a future Rust-native service, not an end-to-end application
+claim.
+
 The harness verifies three equal projection digests before reporting timing:
 
 - Python `project_with_manifest` output;
@@ -59,3 +73,12 @@ useful as a compatibility and experiment seam, but callers must benchmark their
 payload size before selecting it. A Rust-native path that keeps typed values in
 Rust is still the candidate for removing the serialization seam; it must be
 measured separately before any default change.
+
+The same 64-envelope fixture was then run through the release Rust-native
+example for 30 iterations. It produced payload digest
+`ea476d0fae660f92166fba3f59dc0fac64b3d99eddb9f6b70b9ef1a988857ce4`, matching
+the Python and PyO3 digests, at `0.0619 ms` per typed projection iteration.
+That is roughly three orders of magnitude below the public Python bridge in
+this small synthetic fixture, but it excludes input construction, transport,
+authorization, storage, and output serialization. It should be treated as a
+measurement of the projection kernel and seam-removal opportunity only.
