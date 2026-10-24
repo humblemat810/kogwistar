@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "contract_id": "kogwistar-dual-language-support-matrix",
+  "status": "evidence-gated",
+  "policy": {
+    "enabled_requires": [
+      "correctness_gate_passed",
+      "operational_gate_passed",
+      "resource_evidence_available"
+    ],
+    "unverified_is_not_enabled": true,
+    "python_and_rust_are_maintained": true,
+    "deprecation_requires_separate_adr": true
+  },
+  "capabilities": [
+    {"id": "deterministic-contracts", "python": {"status": "enabled", "evidence": "DL-05A"}, "rust": {"status": "opt-in", "evidence": "DL-05A"}, "mixed": {"status": "opt-in", "evidence": "DL-05A"}},
+    {"id": "sqlite-meta", "python": {"status": "enabled", "evidence": "DL-07A"}, "rust": {"status": "opt-in", "evidence": "DL-18"}, "mixed": {"status": "opt-in", "evidence": "DL-07A"}},
+    {"id": "postgres-sequence-event-log", "python": {"status": "enabled", "evidence": "DL-07B"}, "rust": {"status": "opt-in", "evidence": "DL-07B"}, "mixed": {"status": "opt-in", "evidence": "DL-07C"}},
+    {"id": "projections-snapshots-run-registry", "python": {"status": "enabled", "evidence": "DL-09"}, "rust": {"status": "disabled", "evidence": "DL-09"}, "mixed": {"status": "disabled", "evidence": "DL-09"}},
+    {"id": "queues-leases-lanes", "python": {"status": "enabled", "evidence": "DL-10"}, "rust": {"status": "opt-in", "evidence": "DL-13"}, "mixed": {"status": "opt-in", "evidence": "DL-14"}},
+    {"id": "graph-pgvector", "python": {"status": "enabled", "evidence": "DL-16"}, "rust": {"status": "opt-in", "evidence": "DL-16I"}, "mixed": {"status": "opt-in", "evidence": "DL-16I"}},
+    {"id": "chroma-adapter", "python": {"status": "enabled", "evidence": "DL-17"}, "rust": {"status": "not-applicable", "evidence": "DL-17"}, "mixed": {"status": "disabled", "evidence": "DL-17"}},
+    {"id": "workflow-runtime", "python": {"status": "enabled", "evidence": "DL-14A"}, "rust": {"status": "opt-in", "evidence": "DL-13"}, "mixed": {"status": "opt-in", "evidence": "DL-14A"}},
+    {"id": "server-rest-sse-mcp-cli", "python": {"status": "enabled", "evidence": "DL-17"}, "rust": {"status": "opt-in", "evidence": "DL-16N"}, "mixed": {"status": "opt-in", "evidence": "DL-16N"}}
+  ]
+}

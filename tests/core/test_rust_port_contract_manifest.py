@@ -15,6 +15,7 @@ MANIFEST_PATH = ROOT / "contracts" / "rust-port-v1.json"
 DUAL_LANGUAGE_MANIFEST_PATH = (
     ROOT / "contracts" / "dual-language-capabilities-v1.json"
 )
+SUPPORT_MATRIX_PATH = ROOT / "contracts" / "dual-language-support-matrix-v1.json"
 CI_WORKFLOW_PATH = ROOT / ".github" / "workflows" / "ci.yml"
 RUST_PORT_WORKFLOW_PATH = ROOT / ".github" / "workflows" / "rust-port-compat.yml"
 CONSUMER_IMPORT_INVENTORY_PATH = (
@@ -275,6 +276,36 @@ def test_dual_language_crosswalk_matches_frozen_ownership_and_rust_gaps() -> Non
     gaps = crosswalk["rust_server_gaps"]
     assert [tuple(route) for route in gaps["pending_routes"]] == expected_routes
     assert gaps["pending_syscalls"] == expected_syscalls
+
+
+def test_dual_language_support_matrix_is_complete_and_conservative() -> None:
+    crosswalk = json.loads(
+        DUAL_LANGUAGE_MANIFEST_PATH.read_text(encoding="utf-8")
+    )
+    matrix = json.loads(SUPPORT_MATRIX_PATH.read_text(encoding="utf-8"))
+
+    assert matrix["schema_version"] == 1
+    assert matrix["status"] == "evidence-gated"
+    assert matrix["policy"]["unverified_is_not_enabled"] is True
+    assert matrix["policy"]["python_and_rust_are_maintained"] is True
+    assert matrix["policy"]["deprecation_requires_separate_adr"] is True
+
+    expected = {item["id"] for item in crosswalk["capabilities"]}
+    entries = {item["id"]: item for item in matrix["capabilities"]}
+    assert set(entries) == expected
+    allowed = {"enabled", "opt-in", "disabled", "not-applicable"}
+    for capability in entries.values():
+        assert set(capability) == {"id", "python", "rust", "mixed"}
+        for lane in ("python", "rust", "mixed"):
+            decision = capability[lane]
+            assert set(decision) == {"status", "evidence"}
+            assert decision["status"] in allowed
+            assert decision["evidence"].startswith("DL-")
+
+    for item in crosswalk["capabilities"]:
+        matrix_item = entries[item["id"]]
+        if item["native_rust_path"] == "not-verified":
+            assert matrix_item["rust"]["status"] != "enabled"
 
 
 def test_each_authoritative_capability_has_owner_and_rollback() -> None:
