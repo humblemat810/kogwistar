@@ -2896,6 +2896,7 @@ enum PostgresStoreOperation {
     CommitTransaction,
     RollbackTransaction,
     EnsureSchema,
+    GraphAuthorityCapability,
     NextGlobalSeq,
     CurrentGlobalSeq,
     NextUserSeq {
@@ -3533,6 +3534,14 @@ async fn postgres_store_operation_json(
         PostgresStoreOperation::EnsureSchema => {
             store.ensure_schema().await?;
             Ok(json!({"initialized": true}))
+        }
+        PostgresStoreOperation::GraphAuthorityCapability => {
+            let capability = store.graph_authority_capability();
+            Ok(json!({
+                "level": capability.as_str(),
+                "single_mutation": capability.supports_single_mutation(),
+                "atomic_index_jobs": capability.supports_atomic_index_jobs(),
+            }))
         }
         PostgresStoreOperation::NextGlobalSeq => Ok(json!(store.next_global_seq().await?)),
         PostgresStoreOperation::CurrentGlobalSeq => Ok(json!(store.current_global_seq().await?)),
@@ -5893,6 +5902,7 @@ fn validate_postgres_operation(value: &Value) -> Result<(), (&'static str, Strin
         | "commit_transaction"
         | "rollback_transaction"
         | "ensure_schema"
+        | "graph_authority_capability"
         | "next_global_seq"
         | "current_global_seq" => &["kind"][..],
         "next_user_seq" | "current_user_seq" => &["kind", "user_id"][..],
@@ -6775,6 +6785,21 @@ mod tests {
                 .unwrap()
                 .0,
             STORE_INVALID_PAYLOAD
+        );
+    }
+
+    #[test]
+    fn postgres_bridge_exposes_read_only_graph_authority_capability_operation() {
+        validate_postgres_operation(&json!({
+            "kind": "graph_authority_capability"
+        }))
+        .expect("capability discovery operation is part of the typed bridge");
+        assert!(
+            validate_postgres_operation(&json!({
+                "kind": "graph_authority_capability",
+                "write": true
+            }))
+            .is_err()
         );
     }
 
