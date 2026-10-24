@@ -842,6 +842,33 @@ justified: the run was not container-resource matched, used a very small
 fixture, and does not cover the complete graph, ACL, indexing, agent, or
 PostgreSQL paths.
 
+### 2026-10-25 elevated all-surface smoke
+
+The all-surface harness was rerun in the supported elevated Windows context
+after the unprivileged run stalled while creating the CPython Proactor
+self-pipe. This run used eight records, one warm-up, and two measured samples
+per mode. It exercised sequential and concurrent balanced/read-heavy traces,
+with one writer and four readers in the concurrent cases. The run completed
+without operation errors, and every mode in both concurrent mixes produced the
+same canonical digest:
+`02b0612aca04f7125b23aeb374702b7ec1883415fc85e08680f6e8f603b48bf8`.
+
+| Mode | Sequential median elapsed | Balanced concurrent median | Read-heavy concurrent median |
+| --- | ---: | ---: | ---: |
+| Python in-process | 530.38 ms | 903.78 ms | 1,235.72 ms |
+| Rust authority in-process | 915.89 ms | 1,106.45 ms | 1,258.22 ms |
+| Python HTTP | 865.39 ms | 1,394.51 ms | 1,920.93 ms |
+| Rust authority HTTP | 1,615.79 ms | 1,615.79 ms | 1,966.60 ms |
+| Rust-native HTTP | 343.93 ms | 397.96 ms | 514.32 ms |
+
+The sequential Rust-native HTTP throughput was 71.82 operations/second,
+compared with 45.26 for Python in-process and 27.75 for Python HTTP. Rust
+native startup was approximately 0.52 seconds in the measured sequential and
+concurrent cells; those startup costs are reported separately from steady-state
+elapsed time. This is fresh correctness and directional performance evidence
+for the narrow vertical slice, not a resource-matched rewrite decision. The
+raw report remains in the ignored `.tmp/mcp-smoke-goal-elevated/` directory.
+
 ## Interpretation Guardrail
 
 The implemented smoke slices establish sequential parity for Python MCP,
