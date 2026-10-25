@@ -537,9 +537,10 @@ impl GraphModelEnvelope {
         if self.schema_version != GRAPH_MODEL_ENVELOPE_VERSION {
             return Err(GraphModelError::UnsupportedVersion(self.schema_version));
         }
+        let level_field_present = self.payload.get("level_from_root").is_some();
         match self.model_class {
             GraphModelClass::Node => serde_json::from_value(self.payload.clone())
-                .map(PersistentNodeV1::into_validated)
+                .map(|payload: PersistentNodeV1| payload.into_validated(level_field_present))
                 .map_err(|error| GraphModelError::InvalidPayload(error.to_string()))?,
             GraphModelClass::Edge => {
                 for field in [
@@ -552,7 +553,7 @@ impl GraphModelEnvelope {
                     require_wire_field(&self.payload, field)?;
                 }
                 serde_json::from_value(self.payload.clone())
-                    .map(PersistentEdgeV1::into_validated)
+                    .map(|payload: PersistentEdgeV1| payload.into_validated(level_field_present))
                     .map_err(|error| GraphModelError::InvalidPayload(error.to_string()))?
             }
             model_class => Err(GraphModelError::StrictModelClassUnsupported { model_class }),
@@ -659,7 +660,9 @@ impl GraphModelEnvelope {
         }
         let mut payload: PersistentNodeV1 = serde_json::from_value(self.payload.clone())
             .map_err(|error| GraphModelError::InvalidPayload(error.to_string()))?;
-        payload.core.normalize_shared_mixin_fields();
+        payload
+            .core
+            .normalize_shared_mixin_fields(self.payload.get("level_from_root").is_some());
         payload.core.validate(self.model_class)?;
         Ok(payload)
     }
@@ -676,7 +679,8 @@ impl GraphModelEnvelope {
         }
         let mut edge: PersistentEdgeV1 = serde_json::from_value(self.payload.clone())
             .map_err(|error| GraphModelError::InvalidPayload(error.to_string()))?;
-        edge.core.normalize_shared_mixin_fields();
+        edge.core
+            .normalize_shared_mixin_fields(self.payload.get("level_from_root").is_some());
         edge.core.validate(self.model_class)?;
         Ok(edge)
     }
@@ -1371,7 +1375,7 @@ pub struct GraphEntityCoreV1 {
 }
 
 impl GraphEntityCoreV1 {
-    fn normalize_shared_mixin_fields(&mut self) {
+    fn normalize_shared_mixin_fields(&mut self, level_field_present: bool) {
         match self.metadata.get("lifecycle_status") {
             Some(Value::String(status)) if status == "deleted" => {
                 self.metadata.insert(
@@ -1394,8 +1398,10 @@ impl GraphEntityCoreV1 {
         if let Some(level) = self.level_from_root {
             self.metadata
                 .insert("level_from_root".to_owned(), Value::Number(level.into()));
-        } else if let Some(level) = self.metadata.get("level_from_root").and_then(Value::as_i64) {
-            self.level_from_root = Some(level);
+        } else if !level_field_present {
+            if let Some(level) = self.metadata.get("level_from_root").and_then(Value::as_i64) {
+                self.level_from_root = Some(level);
+            }
         }
     }
 
@@ -1439,7 +1445,6 @@ impl GraphEntityCoreV1 {
 
     fn effective_level(&self) -> Option<i64> {
         self.level_from_root
-            .or_else(|| self.metadata.get("level_from_root").and_then(Value::as_i64))
     }
 }
 
@@ -1792,16 +1797,22 @@ pub enum AclEdgeTypeV1 {
 }
 
 impl PersistentNodeV1 {
-    fn into_validated(mut self) -> Result<PersistentGraphEntityV1, GraphModelError> {
-        self.core.normalize_shared_mixin_fields();
+    fn into_validated(
+        mut self,
+        level_field_present: bool,
+    ) -> Result<PersistentGraphEntityV1, GraphModelError> {
+        self.core.normalize_shared_mixin_fields(level_field_present);
         self.core.validate(GraphModelClass::Node)?;
         Ok(PersistentGraphEntityV1::Node(self))
     }
 }
 
 impl PersistentEdgeV1 {
-    fn into_validated(mut self) -> Result<PersistentGraphEntityV1, GraphModelError> {
-        self.core.normalize_shared_mixin_fields();
+    fn into_validated(
+        mut self,
+        level_field_present: bool,
+    ) -> Result<PersistentGraphEntityV1, GraphModelError> {
+        self.core.normalize_shared_mixin_fields(level_field_present);
         self.core.validate(GraphModelClass::Edge)?;
         if self
             .source_ids
@@ -2699,6 +2710,25 @@ mod tests {
             };
             assert_eq!(core.level_from_root, Some(-1));
             assert_eq!(core.metadata["level_from_root"], -1);
+
+            let mut explicit_null = fixture["cases"]
+                .as_array()
+                .expect("fixture cases")
+                .iter()
+                .find(|case| case["kind"] == case_name)
+                .expect("fixture model case")["payload"]
+                .clone();
+            explicit_null["level_from_root"] = Value::Null;
+            explicit_null["metadata"]["level_from_root"] = Value::Number(2.into());
+            let decoded = GraphModelEnvelope::new(model_class, explicit_null)
+                .decode_persistent_v1()
+                .expect("explicit null remains distinct from omitted field");
+            let core = match decoded {
+                PersistentGraphEntityV1::Node(node) => node.core,
+                PersistentGraphEntityV1::Edge(edge) => edge.core,
+            };
+            assert_eq!(core.level_from_root, None);
+            assert_eq!(core.metadata["level_from_root"], 2);
         }
     }
 

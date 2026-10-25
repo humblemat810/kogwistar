@@ -87,6 +87,16 @@ def test_edge_model_shares_tombstone_and_level_metadata_contract() -> None:
     assert negative_level.level_from_root == -1
     assert negative_level.metadata["level_from_root"] == -1
 
+    explicit_null_level = Edge.model_validate(
+        {
+            **edge.model_dump(field_mode="backend", dump_format="json"),
+            "level_from_root": None,
+            "metadata": {**edge.metadata, "level_from_root": 2},
+        }
+    )
+    assert explicit_null_level.level_from_root is None
+    assert explicit_null_level.metadata["level_from_root"] == 2
+
     validated = Edge.model_validate(
         {
             **edge.model_dump(field_mode="backend", dump_format="json"),
