@@ -981,3 +981,32 @@ and per-call Rust facade retained crossing/session overhead. The raw report is
 kept in the ignored `.tmp/rust-port-smoke-current/` directory; it is not a
 release-grade performance claim because the fixture is small and only two
 measured samples were used.
+
+### 2026-10-25 Rust workspace and live PostgreSQL parity verification
+
+The full nested Rust workspace test suite passed on the current benchmark
+branch: 53 API tests, 60 contract tests, 24 runtime tests, 16 store tests, 17
+memory-store tests, 7 PostgreSQL-store tests, and 24 SQLite-store tests. One
+SQLite serving scale probe remains intentionally ignored because it is a manual
+benchmark rather than a correctness test.
+
+The matching Python/Rust parity suite was then run against the existing local
+`pgvector/pgvector:pg17` container on port `55433`, using SQLAlchemy's explicit
+`postgresql+psycopg` driver. All 12 tests passed, covering Python-created and
+Rust-created schemas, concurrent idempotency and collision handling, bounded
+recovery, rollback, named projection exchange, schema isolation, and restart
+semantics. The test command was:
+
+```powershell
+$env:GKE_PG_DSN='postgresql+psycopg://postgres:kogwistar@localhost:55433/kogwistar'
+.\.venv\Scripts\python.exe -m pytest `
+  kogwistar/tests/core/test_rust_store_postgres_differential.py `
+  kogwistar/tests/core/test_rust_store_recovery_differential.py `
+  kogwistar/tests/core/test_rust_store_projection_differential.py `
+  -q -p no:cacheprovider
+```
+
+This evidence supports the current interchangeable Python/Rust storage and
+projection seams. It does not prove that every application path is native Rust,
+nor does it remove the need for resource-matched endpoint benchmarks before a
+full-stack Rust cutover.
