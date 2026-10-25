@@ -8,6 +8,7 @@ from typing import NoReturn, cast
 
 from kogwistar._rust_bridge import store_postgres
 from kogwistar.json_types import JsonObject, JsonValue
+from kogwistar.implementation_selection import transaction_authority_scope
 from kogwistar.engine_core.rust_meta_sqlite import (
     RustEngineSQLite,
     _TransactionToken,
@@ -90,6 +91,12 @@ class RustPostgresSession:
 
     @contextmanager
     def transaction(self) -> Iterator[_RustPostgresTransactionToken]:
+        with transaction_authority_scope("rust"):
+            with self._transaction_impl() as token:
+                yield token
+
+    @contextmanager
+    def _transaction_impl(self) -> Iterator[_RustPostgresTransactionToken]:
         current = self._transaction_id.get()
         if current is not None:
             depth_token = self._transaction_depth.set(

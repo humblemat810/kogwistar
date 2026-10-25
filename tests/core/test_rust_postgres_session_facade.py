@@ -13,7 +13,11 @@ from kogwistar.engine_core.rust_postgres_session import (
 from kogwistar.engine_core.subsystems.read import ReadSubsystem
 from kogwistar.engine_core.subsystems.write import WriteSubsystem
 from kogwistar.engine_core.lifecycle import LifecycleSubsystem
-from kogwistar.implementation_selection import capture_implementation_selection
+from kogwistar.implementation_selection import (
+    capture_implementation_selection,
+    implementation_selection_scope,
+    transaction_authority_scope,
+)
 
 pytestmark = [pytest.mark.ci, pytest.mark.core]
 
@@ -176,6 +180,46 @@ def test_postgres_session_nested_commit_uses_one_native_transaction(monkeypatch)
         "replace_named_projection",
         "commit_transaction",
     ]
+
+
+def test_native_session_rejects_rust_transaction_inside_python_selection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "python")
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "python")
+    monkeypatch.setenv("KOGWISTAR_IMPL_GRAPH_STORE", "python")
+    snapshot = capture_implementation_selection()
+    calls: list[str] = []
+    monkeypatch.setattr(
+        "kogwistar.engine_core.rust_postgres_session.store_postgres",
+        lambda *, operation, **_kwargs: calls.append(operation["kind"]),
+    )
+    session = RustPostgresSession(dsn="postgresql://example/db", schema="test")
+
+    with implementation_selection_scope(snapshot):
+        with pytest.raises(RuntimeError, match="does not match frozen implementation selection"):
+            with session.transaction():
+                pytest.fail("a Python-selected run must not open a Rust transaction")
+
+    assert calls == []
+
+
+def test_native_session_rejects_nested_python_transaction_authority(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(
+        "kogwistar.engine_core.rust_postgres_session.store_postgres",
+        lambda *, operation, **_kwargs: calls.append(operation["kind"]),
+    )
+    session = RustPostgresSession(dsn="postgresql://example/db", schema="test")
+
+    with transaction_authority_scope("python"):
+        with pytest.raises(RuntimeError, match="nested transaction uses a different"):
+            with session.transaction():
+                pytest.fail("a Rust transaction must not join Python ownership")
+
+    assert calls == []
 
 
 def test_postgres_session_exposes_typed_graph_authority_capability(monkeypatch):
