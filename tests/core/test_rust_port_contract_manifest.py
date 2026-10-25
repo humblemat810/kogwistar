@@ -308,6 +308,19 @@ def test_dual_language_support_matrix_is_complete_and_conservative() -> None:
             assert matrix_item["rust"]["status"] != "enabled"
 
 
+def test_dual_language_checklist_ids_are_unique() -> None:
+    checklist = (
+        ROOT / "kogwistar" / "docs" / "ADR-022-dual-language-capability-checklist.md"
+    ).read_text(encoding="utf-8")
+    ids = [
+        line.split("|", 2)[1].strip()
+        for line in checklist.splitlines()
+        if line.startswith("| DL-")
+    ]
+
+    assert len(ids) == len(set(ids)), "dual-language checklist IDs must be unique"
+
+
 def test_unverified_runtime_matrix_lanes_are_not_enabled() -> None:
     matrix = json.loads(SUPPORT_MATRIX_PATH.read_text(encoding="utf-8"))
     entries = {item["id"]: item for item in matrix["capabilities"]}
