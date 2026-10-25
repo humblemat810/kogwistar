@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 from collections.abc import Callable
+from contextlib import asynccontextmanager
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
 from pathlib import Path
@@ -21,6 +22,7 @@ from kogwistar.engine_core.engine import GraphKnowledgeEngine, engine_context
 from kogwistar.engine_core.in_memory_backend import build_in_memory_backend
 from kogwistar.engine_core.indexing import IndexingSubsystem
 from kogwistar.engine_core.subsystems.write import WriteSubsystem
+from kogwistar.engine_core.two_stage_async import AsyncPostgresTwoStageProjectionAdapter
 from kogwistar.implementation_selection import (
     active_transaction_authority,
     capture_implementation_selection,
@@ -206,6 +208,31 @@ def test_write_subsystem_proxy_uses_the_owning_engine_snapshot(
 
 
 def test_transaction_authority_scope_rejects_nested_owner_switch() -> None:
+    assert active_transaction_authority() is None
+
+
+def test_async_projection_transaction_uses_engine_authority_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
+
+    class Backend:
+        _is_async_engine = True
+
+    class Uow:
+        @asynccontextmanager
+        async def transaction(self):
+            yield
+
+    engine = SimpleNamespace(
+        backend=Backend(),
+        _async_backend_uow=Uow(),
+        _implementation_selection_snapshot=capture_implementation_selection(),
+    )
+    adapter = AsyncPostgresTwoStageProjectionAdapter(engine)
+
+    with adapter._transaction_authority_scope():
+        assert active_transaction_authority() == "rust"
     assert active_transaction_authority() is None
     with transaction_authority_scope("python"):
         assert active_transaction_authority() == "python"

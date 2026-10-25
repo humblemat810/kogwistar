@@ -5,9 +5,18 @@ from __future__ import annotations
 import inspect
 import json
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
-from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from contextlib import (
+    AbstractAsyncContextManager,
+    AbstractContextManager,
+    asynccontextmanager,
+    nullcontext,
+)
 from typing import TYPE_CHECKING, Protocol, cast
 
+from ..implementation_selection import (
+    transaction_authority_for_selection,
+    transaction_authority_scope,
+)
 from ..json_types import JsonObject
 from ..utils.embedding_vectors import normalize_embedding_vector
 from .edge_endpoint_rows import edge_endpoint_rows
@@ -156,6 +165,14 @@ class AsyncPostgresTwoStageProjectionAdapter:
     def _namespace(self) -> str:
         return active_graph_namespace(self.engine)
 
+    def _transaction_authority_scope(self) -> AbstractContextManager[None]:
+        snapshot = getattr(self.engine, "_implementation_selection_snapshot", None)
+        if snapshot is None:
+            return nullcontext()
+        return transaction_authority_scope(
+            transaction_authority_for_selection(snapshot)
+        )
+
     @asynccontextmanager
     async def _backend_transaction(self) -> AsyncIterator[None]:
         """Join the configured async SQL UOW when one exists."""
@@ -163,8 +180,9 @@ class AsyncPostgresTwoStageProjectionAdapter:
         transaction = getattr(uow, "transaction", None)
         if callable(transaction):
             context = cast(AbstractAsyncContextManager[None], transaction())
-            async with context:
-                yield
+            with self._transaction_authority_scope():
+                async with context:
+                    yield
         else:
             yield
 
