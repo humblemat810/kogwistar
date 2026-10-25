@@ -41,6 +41,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 use tokio_postgres::{Config, GenericClient, NoTls, Row, Transaction};
 
+// Must match EnginePostgresMetaStore's stable startup DDL lock. Python and Rust
+// processes can bootstrap the same schema concurrently, so this key is part of
+// the cross-language storage protocol.
+const POSTGRES_BOOTSTRAP_ADVISORY_LOCK_KEY: i64 = 748_219_503;
+
 /// Future accepted by [`PostgresStore::transaction`].  The lifetime is tied
 /// to the UoW borrow, so a pooled client cannot escape its transaction.
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -526,11 +531,21 @@ impl PostgresStore {
 
     /// Create the exact Python `EnginePostgresMetaStore` Phase-2b tables.
     pub async fn ensure_schema(&self) -> PostgresStoreResult<()> {
-        let client = self.client().await?;
-        client
+        let mut pooled_client = self.client().await?;
+        let client: &mut tokio_postgres::Client = &mut pooled_client;
+        let transaction = client.transaction().await.map_err(backend)?;
+        transaction
+            .query_one(
+                "SELECT pg_advisory_xact_lock($1)",
+                &[&POSTGRES_BOOTSTRAP_ADVISORY_LOCK_KEY],
+            )
+            .await
+            .map_err(backend)?;
+        transaction
             .batch_execute(&schema_sql(&self.tables))
             .await
-            .map_err(backend)
+            .map_err(backend)?;
+        transaction.commit().await.map_err(backend)
     }
 
     /// Explicit operator action: create only Python-compatible pgvector graph

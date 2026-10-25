@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 import threading
 import uuid
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -644,6 +648,111 @@ def test_mixed_python_rust_postgres_writers_keep_event_and_projection_ordered(
     )
     persisted = Node.model_validate_json(projection["documents"][0])
     assert persisted.summary == json.loads(events[-1][4])["summary"]
+
+
+def test_mixed_python_rust_postgres_writers_serialize_across_processes(
+    tmp_path: Path,
+    pg_dsn: str | None,
+    pg_schema: str | None,
+    sa_engine: Any,
+) -> None:
+    dsn, schema = _require_pg(pg_dsn, pg_schema)
+    entity_id = f"cross-process-{uuid.uuid4().hex}"
+    gate_path = tmp_path / "release-writers"
+    backend = PgVectorBackend(engine=sa_engine, embedding_dim=3, schema=schema)
+    backend.ensure_schema()
+
+    child_script = r"""
+import os
+import time
+from sqlalchemy import create_engine
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.postgres_backend import PgVectorBackend
+from tests._helpers.graph_builders import build_entity_node
+
+gate = os.environ["KOGWISTAR_TEST_WRITER_GATE"]
+deadline = time.monotonic() + 30
+while not os.path.exists(gate):
+    if time.monotonic() >= deadline:
+        raise TimeoutError("parent did not release concurrent writers")
+    time.sleep(0.01)
+
+sql_engine = create_engine(os.environ["KOGWISTAR_TEST_PG_DSN"])
+backend = PgVectorBackend(
+    engine=sql_engine,
+    embedding_dim=3,
+    schema=os.environ["KOGWISTAR_TEST_PG_SCHEMA"],
+)
+engine = GraphKnowledgeEngine(
+    backend=backend,
+    namespace="cross-process-parity",
+    embedding_function=lambda texts: [[1.0, 0.0, 0.0] for _ in texts],
+)
+node = build_entity_node(
+    node_id=os.environ["KOGWISTAR_TEST_ENTITY_ID"],
+    doc_id="cross-process-test",
+    summary=os.environ["KOGWISTAR_TEST_SUMMARY"],
+    embedding=[1.0, 0.0, 0.0],
+)
+engine.write.add_node(node)
+sql_engine.dispose()
+"""
+
+    processes: list[subprocess.Popen[str]] = []
+    for authority, summary in (("python", "python-process"), ("rust", "rust-process")):
+        child_env = os.environ.copy()
+        child_env.update(
+            {
+                "KOGWISTAR_IMPL_POSTGRES_AUTHORITY": authority,
+                "KOGWISTAR_IMPL_META_STORE": authority,
+                "KOGWISTAR_IMPL_GRAPH_STORE": authority,
+                "KOGWISTAR_TEST_PG_DSN": dsn,
+                "KOGWISTAR_TEST_PG_SCHEMA": schema,
+                "KOGWISTAR_TEST_ENTITY_ID": entity_id,
+                "KOGWISTAR_TEST_SUMMARY": summary,
+                "KOGWISTAR_TEST_WRITER_GATE": str(gate_path),
+            }
+        )
+        processes.append(
+            subprocess.Popen(
+                [sys.executable, "-c", child_script],
+                cwd=Path(__file__).resolve().parents[2],
+                env=child_env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+        )
+
+    try:
+        gate_path.touch()
+        results = [process.communicate(timeout=60) for process in processes]
+    finally:
+        for process in processes:
+            if process.poll() is None:
+                process.kill()
+                process.communicate()
+
+    failures = [
+        f"exit={process.returncode}\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        for process, (stdout, stderr) in zip(processes, results, strict=True)
+        if process.returncode != 0
+    ]
+    assert not failures, "\n\n".join(failures)
+
+    metadata = EnginePostgresMetaStore(engine=sa_engine, schema=schema)
+    events = [
+        event
+        for event in metadata.iter_entity_events(namespace="cross-process-parity")
+        if event[1:3] == ("node", entity_id)
+    ]
+    assert len(events) == 2
+    summaries = [json.loads(event[4])["summary"] for event in events]
+    assert set(summaries) == {"python-process", "rust-process"}
+
+    projection = backend.node_get(ids=[entity_id], include=["documents"])
+    persisted = Node.model_validate_json(projection["documents"][0])
+    assert persisted.summary == summaries[-1]
 
 
 def test_public_rust_postgres_edge_add_is_atomic_with_event_and_jobs(

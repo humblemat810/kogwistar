@@ -69,6 +69,11 @@ that Python `sqlite3` and Rust `rusqlite`, or Python SQLAlchemy and Rust
 `tokio-postgres`, can pass a live transaction to each other. Separate
 PostgreSQL connections do not share one transaction just because they address
 the same database. A connection or transaction object is not a portable DTO.
+Python and Rust metadata bootstrap must nevertheless coordinate schema DDL
+through the same stable transaction-scoped PostgreSQL advisory lock. This
+prevents concurrent process startup from racing on compatible `CREATE TABLE`
+operations; it is not a writer-ownership lock and does not prevent a process
+with database credentials from opening an independent connection.
 
 When an operation needs graph, event, projection, ACL, and index-job effects
 to commit atomically, one selected implementation owns the entire transaction
