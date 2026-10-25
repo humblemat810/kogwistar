@@ -162,6 +162,19 @@ python scripts/mixed_mcp_benchmark.py `
   --items 8 --samples 2
 ```
 
+For a sequential-only comparison that does not open local HTTP listeners for
+the concurrent profiles, pass `--skip-concurrent`. This is useful when checking
+in-process and Rust-authority parity in restricted environments; it does not
+replace the complete transport/concurrency benchmark.
+
+```powershell
+python scripts/mixed_mcp_benchmark.py `
+  --output .tmp/mcp-sequential-smoke `
+  --items 8 --samples 2 `
+  --mode in_process --mode rust_authority `
+  --skip-concurrent
+```
+
 Run the three storage configurations against a local disposable PostgreSQL
 instance with pgvector and installed Chroma extra:
 
@@ -1068,6 +1081,22 @@ projection seams. It does not prove that every application path is native Rust,
 nor does it remove the need for resource-matched endpoint benchmarks before a
 full-stack Rust cutover.
 
+### 2026-10-25 elevated Windows MCP transport recheck
+
+After installing the already-declared `benchmark` extra (`psutil>=6`), the
+small MCP smoke was rerun with elevated local-loopback access. This separates
+the earlier Windows socket restriction from implementation behavior. The
+Rust-native sequential path completed two samples over 4 fixture items at a
+median **65.94 operations/s** (181.99 ms, coefficient of variation 0.77%).
+The concurrent matrix also completed for both mixes. Rust-native HTTP reached
+median **101.40 operations/s** in the balanced mix and **115.96 operations/s**
+in the read-heavy mix. All modes in each concurrent mix reported the same
+canonical final-state digest; the Rust-native HTTP samples reported
+`scope=rust_native_server`, `complete=true`, `ffi_calls=0`, and one transport
+request/tool dispatch per operation. This is a small elevated smoke, not a
+replacement for the larger resource-matched matrices or proof of whole-stack
+Rust readiness.
+
 ### Native seam-attestation invariant
 
 Native HTTP benchmark samples are now rejected unless the child server reports
@@ -1078,3 +1107,118 @@ runs use the same validation, so an incomplete `/metrics` response cannot be
 recorded as evidence for a no-Python seam. This is benchmark evidence for the
 selected workload only; it is not a production telemetry or whole-stack
 interoperability guarantee.
+
+### 2026-10-26 sequential-only Python/Rust-authority recheck
+
+The CLI now accepts `--skip-concurrent` so sequential-only comparisons do not
+implicitly start unrelated HTTP listeners. On Windows CPython 3.13, an 8-item
+trace (24 operations), one warm-up, and two measured samples completed for
+Python in-process and Rust-authority modes. Both modes produced final-state
+digest
+`46450db6dfea66390d75cf18e98cf1a0e8f4f0ffb2358a9a2e899b0bca3fa9e8`.
+
+| Mode | Median throughput | Median elapsed | Throughput CV |
+| --- | ---: | ---: | ---: |
+| Python in-process | 30.32 ops/s | 792.10 ms | 3.79% |
+| Rust-authority | 39.17 ops/s | 613.07 ms | 3.52% |
+
+This is a small, local SQLite comparison; Rust-authority still uses the Python
+service/runtime and switches the persistence authority. It is not the
+Rust-native full-stack path, resource-matched/container evidence, or enough
+samples to change a default. The complete JSON report is retained under the
+ignored `.tmp/dual-language-sequential-cli-20261026/` output directory.
+
+### 2026-10-26 three-mode same-trace recheck
+
+To compare the actual no-Python execution path against the existing
+interchangeable modes, the same 8-item/24-operation graph trace was run through
+Python in-process, Python service with Rust SQLite authority, and the
+Rust-native HTTP server. Each mode had one warm-up and two fresh-database
+samples. All modes returned the same canonical final-state digest:
+`46450db6dfea66390d75cf18e98cf1a0e8f4f0ffb2358a9a2e899b0bca3fa9e8`.
+
+| Mode | Median throughput | Median elapsed | Throughput CV | Median startup | FFI calls/sample |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Python in-process | 39.31 ops/s | 610.52 ms | 1.29% | 79.30 ms | 0 |
+| Python service + Rust authority | 48.75 ops/s | 492.32 ms | 0.47% | 81.03 ms | 79 |
+| Rust-native HTTP | 58.20 ops/s | 412.41 ms | 0.73% | 534.12 ms | 0 |
+
+Rust-native reduced measured trace time by about 32% versus Python in-process
+and 16% versus Python service + Rust authority. It also uses fewer serialized
+bytes than the Rust-authority facade (21,411 versus 66,802 per sample) and
+records exactly one HTTP request/tool dispatch per operation. The native
+server's median process CPU was 117.19 ms and sampled peak RSS was 9,406,464
+bytes. The Python host still performs benchmark orchestration and HTTP client
+work; zero FFI means the server-side operation path did not cross into Python,
+not that the entire benchmark process was Rust.
+
+The Rust-native cold startup was about 6.7x the Python modes in this sample, so
+the steady-state gain does not imply a win for short-lived invocations. This
+small Windows CPython/SQLite smoke is not resource-matched container evidence,
+does not cover production MCP session semantics, PostgreSQL, or heavy
+concurrency, and has only two samples. The full report is retained under the
+ignored `.tmp/dual-language-three-mode-recheck-20261026/` output directory.
+The preceding run completed the same samples but hit a transient Windows
+`PermissionError` replacing its progress JSON; this clean rerun completed and
+wrote the final parity-checked report.
+
+### 2026-10-26 100-item four-mode sequential recheck
+
+The current worktree completed a 100-item, 300-operation SQLite trace through
+all four modes, with one warm-up and two fresh-database samples per mode.
+`state_digest_equal` was true; all modes produced
+`a2713532374fe5995a8dcc68e4951bfcda5e74955e122de67f744291fec945d7`.
+
+| Mode | Median throughput | Median trace time | Median startup | Median host CPU | Native CPU / peak RSS | FFI calls/sample | Transport calls/sample |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Python in-process | 33.65 ops/s | 8,914.1 ms | 100.3 ms | 8,062.5 ms | n/a | 0 | 0 |
+| Python + Rust authority | 48.87 ops/s | 6,139.8 ms | 87.2 ms | 4,343.8 ms | n/a | 907 | 0 |
+| Python HTTP | 21.53 ops/s | 13,931.6 ms | 121.3 ms | 13,804.7 ms | n/a | 0 | 300 |
+| Rust-native HTTP | 76.04 ops/s | 3,945.3 ms | 521.0 ms | 1,023.4 ms | 1,695.3 ms / 9.67 MiB | 0 | 300 |
+
+For this synthetic local SQLite trace, Rust-native steady-state throughput was
+2.26x Python in-process, 1.56x Python + Rust authority, and 3.53x Python HTTP.
+The Rust-native mode still pays a roughly 0.52 s startup and one HTTP request
+per operation; it is not a zero-transport full-stack path. The Python + Rust
+authority path crosses PyO3 907 times and serializes 811,396 bytes per sample,
+while Rust-native crosses no Python FFI boundary and serializes 269,027 bytes.
+This suggests the current repeated Python/Rust facade conversions are a
+measurable cost on this path, but the result is only two samples, not
+resource-matched, and excludes PostgreSQL, vector indexing, ACL-heavy reads,
+agent/runtime workloads, and production MCP session costs. It does not justify
+a whole-stack rewrite or a default-path change. The full JSON, trace, and
+per-operation latency evidence are retained under the ignored
+`.tmp/dual-language-100-item-recheck-20261026/` directory.
+
+### 2026-10-26 benchmark-only batched-write seam experiment
+
+An opt-in `rust_authority_batch_write` mode applies each logical graph write as
+one Rust `execute_batch` call containing the same two event appends and two
+projection replacements. Each logical record still has its own atomic commit;
+this is not cross-record batching and does not weaken read-after-write
+visibility. The baseline and batch traces both produced
+`a2713532374fe5995a8dcc68e4951bfcda5e74955e122de67f744291fec945d7`.
+
+For 100 records / 300 operations on Windows CPython 3.13 with SQLite, the
+baseline had three measured samples (median **5,779.7 ms**, **51.91 ops/s**,
+2.0% throughput CV). Three successful batch samples had median **6,263.4 ms**,
+**47.90 ops/s**, and **14.5% throughput CV** (13.4% elapsed-time CV). The batch samples
+varied substantially (4,925.7-6,286.2 ms), so this run does **not** establish a
+throughput improvement. The batch reduced counted FFI calls from **907 to
+407** per trace (55.1% fewer) and serialized bytes from **811,396 to 810,596**;
+both modes retained **202 transaction-boundary operations**, confirming one
+commit boundary per logical write. Median write p50 was about **17.84 ms** for
+the batch samples versus **18.44 ms** baseline, but read latency and overall
+run time were not consistently improved.
+
+This benchmark-only result shows that a domain-level write envelope can reduce
+Python/Rust crossings without changing final state or commit granularity, but
+the current implementation does not yet translate that reduction into a
+repeatable end-to-end gain. Keep the mode opt-in and do not change production
+defaults. The run is an uncontained local Windows comparison, with only three
+samples and noticeable batch variance; it is not cross-backend, concurrent,
+or production service evidence. A transient Windows progress-file replacement
+failure interrupted the first full CLI run after baseline completion and the
+first batch sample; the remaining two independent batch samples were completed
+without rewriting that progress file. Focused parity evidence is
+`test_rust_batched_write_seam_preserves_trace_and_commit_boundaries`.

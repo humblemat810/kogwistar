@@ -22,12 +22,16 @@ import uuid
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 _NATIVE_BINARY_READY = False
 DEFAULT_MODES = ("in_process", "rust_authority", "http", "rust_native")
+AVAILABLE_MODES = (*DEFAULT_MODES, "rust_authority_batch_write")
+SYNC_MODES = frozenset(
+    {"in_process", "rust_authority", "rust_authority_batch_write"}
+)
 MCP_OPERATION_TIMEOUT_SECONDS = 30
 MCP_SESSION_TIMEOUT_SECONDS = 600
 NATIVE_HTTP_TIMEOUT_SECONDS = 30
@@ -107,6 +111,7 @@ from mcp.client.streamable_http import streamable_http_client
 
 from kogwistar.engine_core.engine_sqlite import EngineSQLite
 from kogwistar.engine_core.rust_meta_sqlite import RustEngineSQLite
+from kogwistar.json_types import JsonObject
 from kogwistar.server.mcp_registry import McpRegistry
 try:
     from .mixed_workload import (
@@ -301,10 +306,15 @@ def _make_registry(
     path: Path,
     *,
     authority: str = "python",
+    batch_write_transactions: bool = False,
     concurrent: _ConcurrentMcpBarriers | None = None,
     sync_concurrent: bool = False,
     seam_metrics: _SeamMetrics | None = None,
 ) -> tuple[McpRegistry, EngineSQLite | RustEngineSQLite]:
+    if batch_write_transactions and (authority != "rust" or concurrent is not None):
+        raise ValueError(
+            "batched writes require Rust authority and the sequential visibility contract"
+        )
     store_type = RustEngineSQLite if authority == "rust" else EngineSQLite
     store = store_type(path.parent, filename=path.name)
     store.ensure_initialized()
@@ -316,6 +326,9 @@ def _make_registry(
             seam_metrics.add_json({"kind": kind, **values})
             if kind in {"begin_transaction", "commit_transaction", "rollback_transaction"}:
                 seam_metrics.transaction_boundaries += 1
+            elif kind == "batch":
+                # The native batch owns one begin/commit pair inside this call.
+                seam_metrics.transaction_boundaries += 2
             return native_call(kind, **values)
 
         store._call = counted_native_call  # type: ignore[method-assign, attr-defined]
@@ -384,6 +397,66 @@ def _make_registry(
             or edge_payload.get("target_ids") != [expected_entity_id]
         ):
             raise RuntimeError("MCP write bundle does not match the expected graph operation")
+        if batch_write_transactions:
+            if not isinstance(store, RustEngineSQLite):
+                raise TypeError("batched benchmark writes require RustEngineSQLite")
+            node_seq = 2 + 2 * index
+            edge_seq = node_seq + 1
+            operations: list[JsonObject] = [
+                {
+                    "kind": "raw_append",
+                    "namespace": "mcp_benchmark",
+                    "event_id": f"mcp-node-event-{index:05d}",
+                    "entity_kind": "node",
+                    "entity_id": expected_entity_id,
+                    "op": "UPSERT",
+                    "payload_json": _canonical(node_payload),
+                },
+                {
+                    "kind": "raw_append",
+                    "namespace": "mcp_benchmark",
+                    "event_id": f"mcp-edge-event-{index:05d}",
+                    "entity_kind": "edge",
+                    "entity_id": expected_edge_id,
+                    "op": "UPSERT",
+                    "payload_json": _canonical(edge_payload),
+                },
+                {
+                    "kind": "replace_named_projection",
+                    "namespace": "mcp_benchmark_projection",
+                    "key": f"node:{expected_entity_id}",
+                    "payload": {
+                        "entity_kind": "node",
+                        "entity_id": expected_entity_id,
+                        "entity": cast(JsonObject, node_payload),
+                    },
+                    "last_authoritative_seq": node_seq,
+                    "last_materialized_seq": node_seq,
+                    "projection_schema_version": 1,
+                    "materialization_status": "ready",
+                },
+                {
+                    "kind": "replace_named_projection",
+                    "namespace": "mcp_benchmark_projection",
+                    "key": f"edge:{expected_edge_id}",
+                    "payload": {
+                        "entity_kind": "edge",
+                        "entity_id": expected_edge_id,
+                        "entity": cast(JsonObject, edge_payload),
+                    },
+                    "last_authoritative_seq": edge_seq,
+                    "last_materialized_seq": edge_seq,
+                    "projection_schema_version": 1,
+                    "materialization_status": "ready",
+                },
+            ]
+            results = store.execute_batch(operations)
+            if len(results) != len(operations):
+                raise RuntimeError("Rust write batch returned the wrong result count")
+            for result, expected_seq in zip(results[:2], (node_seq, edge_seq), strict=True):
+                if not isinstance(result, dict) or result.get("seq") != expected_seq:
+                    raise RuntimeError("Rust write batch returned an unexpected event sequence")
+            return {"seq": edge_seq, "entity_id": expected_entity_id, "edge_id": expected_edge_id}
         with store.transaction():
             node_seq = store.append_entity_event(
                 namespace="mcp_benchmark",
@@ -1382,10 +1455,11 @@ async def _run_one(
     registry = None
     startup_ms = 0.0
     native_result: dict[str, Any] = {}
-    if mode in {"in_process", "rust_authority"}:
+    if mode in SYNC_MODES:
         registry, _store = _make_registry(
             path,
-            authority="rust" if mode == "rust_authority" else "python",
+            authority="python" if mode == "in_process" else "rust",
+            batch_write_transactions=mode == "rust_authority_batch_write",
             seam_metrics=seam_metrics,
         )
         startup_ms = (time.perf_counter_ns() - started) / 1_000_000
@@ -1464,7 +1538,7 @@ def _run_one_sync(
 ) -> dict[str, Any]:
     """Run synchronous registry modes without an asyncio dependency."""
 
-    if mode not in {"in_process", "rust_authority"}:
+    if mode not in SYNC_MODES:
         raise ValueError(f"sync MCP benchmark does not support mode {mode!r}")
     try:
         import psutil
@@ -1481,7 +1555,8 @@ def _run_one_sync(
     seam_metrics = _SeamMetrics()
     registry, store = _make_registry(
         path,
-        authority="rust" if mode == "rust_authority" else "python",
+        authority="python" if mode == "in_process" else "rust",
+        batch_write_transactions=mode == "rust_authority_batch_write",
         seam_metrics=seam_metrics,
     )
     startup_ms = (time.perf_counter_ns() - started) / 1_000_000
@@ -2185,7 +2260,7 @@ def run_benchmark(
     modes: tuple[str, ...] = DEFAULT_MODES,
     include_concurrent: bool = True,
 ) -> dict[str, Any]:
-    supported_modes = {"in_process", "rust_authority", "http", "rust_native"}
+    supported_modes = set(AVAILABLE_MODES)
     if not modes or any(mode not in supported_modes for mode in modes):
         raise ValueError(f"unsupported MCP benchmark mode selection: {modes!r}")
     output.mkdir(parents=True, exist_ok=True)
@@ -2234,7 +2309,7 @@ def run_benchmark(
         )
         warmup = (
             _run_one_sync(warmup_path, trace, mode, trace_arguments=trace_arguments)
-            if mode in {"in_process", "rust_authority"}
+            if mode in SYNC_MODES
             else _run_async(_run_one(warmup_path, trace, mode, trace_arguments=trace_arguments))
         )
         mode_samples = []
@@ -2255,7 +2330,7 @@ def run_benchmark(
             )
             result = (
                 _run_one_sync(path, trace, mode, trace_arguments=trace_arguments)
-                if mode in {"in_process", "rust_authority"}
+                if mode in SYNC_MODES
                 else _run_async(_run_one(path, trace, mode, trace_arguments=trace_arguments))
             )
             digests.add(result["state_digest"])
@@ -2333,8 +2408,13 @@ def main() -> int:
     parser.add_argument(
         "--mode",
         action="append",
-        choices=DEFAULT_MODES,
+        choices=AVAILABLE_MODES,
         help="run only the selected sequential mode; repeat for a comparison subset",
+    )
+    parser.add_argument(
+        "--skip-concurrent",
+        action="store_true",
+        help="skip the concurrent HTTP/transport profiles after sequential modes",
     )
     args = parser.parse_args()
     if args.items < 1 or args.concurrent_items < 1 or args.samples < 2:
@@ -2345,6 +2425,7 @@ def main() -> int:
         samples=args.samples,
         concurrent_items=args.concurrent_items,
         modes=tuple(args.mode) if args.mode else DEFAULT_MODES,
+        include_concurrent=not args.skip_concurrent,
     )
     payload = json.dumps(report, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
     _write_json_atomic(args.output / "report.v3.json", report)

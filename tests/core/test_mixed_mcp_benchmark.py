@@ -59,6 +59,36 @@ def test_sync_mcp_modes_preserve_the_same_trace_digest(tmp_path) -> None:
     assert rust_result["seam_metrics"]["serialized_bytes"] > 0
 
 
+def test_rust_batched_write_seam_preserves_trace_and_commit_boundaries(
+    tmp_path,
+) -> None:
+    trace = build_read_after_write_trace(2)
+    ordinary = _run_one_sync(
+        tmp_path / "rust-ordinary.sqlite3", trace, "rust_authority"
+    )
+    batched = _run_one_sync(
+        tmp_path / "rust-batched.sqlite3", trace, "rust_authority_batch_write"
+    )
+
+    assert ordinary["state_digest"] == batched["state_digest"]
+    assert ordinary["operations"] == batched["operations"] == len(trace)
+    assert ordinary["per_operation"].keys() == batched["per_operation"].keys()
+    assert {
+        name: values["count"]
+        for name, values in ordinary["per_operation"].items()
+    } == {
+        name: values["count"]
+        for name, values in batched["per_operation"].items()
+    }
+    assert ordinary["seam_metrics"]["tool_dispatches"] == len(trace)
+    assert batched["seam_metrics"]["tool_dispatches"] == len(trace)
+    assert batched["seam_metrics"]["ffi_calls"] < ordinary["seam_metrics"]["ffi_calls"]
+    assert (
+        batched["seam_metrics"]["transaction_boundaries"]
+        == ordinary["seam_metrics"]["transaction_boundaries"]
+    )
+
+
 def test_native_seam_metrics_require_complete_zero_ffi_attestation() -> None:
     metrics = {
         "scope": "rust_native_server",
@@ -165,37 +195,46 @@ def test_concurrent_mcp_transports_preserve_exact_visibility(tmp_path) -> None:
                     assert latency["p99_ms"] >= latency["p95_ms"]
 
 
-def test_cli_passes_requested_concurrent_fixture_size(monkeypatch, tmp_path) -> None:
-    observed: dict[str, int] = {}
+@pytest.mark.parametrize("skip_concurrent", [False, True])
+def test_cli_passes_requested_concurrent_fixture_size(
+    monkeypatch, tmp_path, skip_concurrent: bool
+) -> None:
+    observed: dict[str, object] = {}
 
     def fake_run_benchmark(
-        output, *, items: int, samples: int, concurrent_items: int, modes
-    ) -> dict[str, int]:
+        output,
+        *,
+        items: int,
+        samples: int,
+        concurrent_items: int,
+        modes,
+        include_concurrent: bool,
+    ) -> dict[str, object]:
         observed.update(
             items=items,
             samples=samples,
             concurrent_items=concurrent_items,
             modes=list(modes),
+            include_concurrent=include_concurrent,
         )
         output.mkdir(parents=True, exist_ok=True)
         return observed.copy()
 
     monkeypatch.setattr(mixed_mcp_benchmark, "run_benchmark", fake_run_benchmark)
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "mixed_mcp_benchmark.py",
-            "--output",
-            str(tmp_path),
-            "--items",
-            "12",
-            "--samples",
-            "3",
-            "--concurrent-items",
-            "7",
-        ],
-    )
+    argv = [
+        "mixed_mcp_benchmark.py",
+        "--output",
+        str(tmp_path),
+        "--items",
+        "12",
+        "--samples",
+        "3",
+        "--concurrent-items",
+        "7",
+    ]
+    if skip_concurrent:
+        argv.append("--skip-concurrent")
+    monkeypatch.setattr(sys, "argv", argv)
 
     assert mixed_mcp_benchmark.main() == 0
     assert observed == {
@@ -203,6 +242,7 @@ def test_cli_passes_requested_concurrent_fixture_size(monkeypatch, tmp_path) -> 
         "samples": 3,
         "concurrent_items": 7,
         "modes": list(mixed_mcp_benchmark.DEFAULT_MODES),
+        "include_concurrent": not skip_concurrent,
     }
     assert json.loads((tmp_path / "report.v3.json").read_text()) == observed
 
