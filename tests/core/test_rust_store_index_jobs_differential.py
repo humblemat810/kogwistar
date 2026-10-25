@@ -78,6 +78,99 @@ def test_sqlite_python_to_rust_and_rust_to_python_queue_contract(tmp_path: Path)
     )
 
 
+def test_sqlite_python_rust_claim_and_ack_handoff_is_interoperable(
+    tmp_path: Path,
+) -> None:
+    python = EngineSQLite(tmp_path)
+    python.ensure_initialized()
+    database = python.db_path
+
+    python.enqueue_index_job(
+        job_id="python-enqueued",
+        namespace="handoff",
+        entity_kind="node",
+        entity_id="python-node",
+        index_kind="doc",
+        op="UPSERT",
+    )
+    rust_claim = _sqlite(
+        database,
+        {
+            "kind": "claim_index_jobs",
+            "namespace": "handoff",
+            "limit": 1,
+            "lease_seconds": 30,
+        },
+    )[0]
+    assert rust_claim["job_id"] == "python-enqueued"
+    assert rust_claim["claim_token"]
+    python_view = python.list_index_jobs(namespace="handoff")[0]
+    assert python_view.status == "DOING"
+    assert python_view.claim_token == rust_claim["claim_token"]
+    assert (
+        python.mark_index_job_done(
+            rust_claim["job_id"], claim_token="stale-python-token"
+        )
+        is False
+    )
+    assert (
+        _sqlite(
+            database,
+            {
+                "kind": "mark_index_job_done",
+                "job_id": rust_claim["job_id"],
+                "claim_token": rust_claim["claim_token"],
+            },
+        )
+        is True
+    )
+    assert python.list_index_jobs(namespace="handoff")[0].status == "DONE"
+
+    python.enqueue_index_job(
+        job_id="rust-acknowledged",
+        namespace="handoff",
+        entity_kind="node",
+        entity_id="rust-node",
+        index_kind="doc",
+        op="UPSERT",
+    )
+    python_claim = python.claim_index_jobs(
+        limit=1, lease_seconds=30, namespace="handoff"
+    )[0]
+    assert python_claim.job_id == "rust-acknowledged"
+    assert python_claim.claim_token
+    assert (
+        _sqlite(
+            database,
+            {
+                "kind": "mark_index_job_done",
+                "job_id": python_claim.job_id,
+                "claim_token": "stale-rust-token",
+            },
+        )
+        is False
+    )
+    assert (
+        _sqlite(
+            database,
+            {
+                "kind": "mark_index_job_done",
+                "job_id": python_claim.job_id,
+                "claim_token": python_claim.claim_token,
+            },
+        )
+        is True
+    )
+    rust_view = _sqlite(
+        database,
+        {"kind": "list_index_jobs", "namespace": "handoff"},
+    )
+    assert {row["job_id"]: row["status"] for row in rust_view} == {
+        "python-enqueued": "DONE",
+        "rust-acknowledged": "DONE",
+    }
+
+
 def test_sqlite_coalesce_claim_tokens_retry_tail_namespace_and_rollback(tmp_path: Path) -> None:
     path = tmp_path / "engine.db"
     assert _sqlite(path, _job("one", payload_json='{"old":true}')) == "one"
