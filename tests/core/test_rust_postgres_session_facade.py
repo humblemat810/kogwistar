@@ -204,6 +204,29 @@ def test_native_session_rejects_rust_transaction_inside_python_selection(
     assert calls == []
 
 
+def test_native_session_rejects_direct_call_inside_python_selection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "python")
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "python")
+    monkeypatch.setenv("KOGWISTAR_IMPL_GRAPH_STORE", "python")
+    snapshot = capture_implementation_selection()
+    calls: list[str] = []
+    monkeypatch.setattr(
+        "kogwistar.engine_core.rust_postgres_session.store_postgres",
+        lambda *, operation, **_kwargs: calls.append(operation["kind"]),
+    )
+    session = RustPostgresSession(dsn="postgresql://example/db", schema="test")
+
+    with implementation_selection_scope(snapshot):
+        with pytest.raises(
+            RuntimeError, match="does not match frozen implementation selection"
+        ):
+            session.call("graph_projection_records")
+
+    assert calls == []
+
+
 def test_native_session_rejects_nested_python_transaction_authority(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -218,6 +241,23 @@ def test_native_session_rejects_nested_python_transaction_authority(
         with pytest.raises(RuntimeError, match="nested transaction uses a different"):
             with session.transaction():
                 pytest.fail("a Rust transaction must not join Python ownership")
+
+    assert calls == []
+
+
+def test_native_session_rejects_direct_call_inside_python_transaction_authority(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(
+        "kogwistar.engine_core.rust_postgres_session.store_postgres",
+        lambda *, operation, **_kwargs: calls.append(operation["kind"]),
+    )
+    session = RustPostgresSession(dsn="postgresql://example/db", schema="test")
+
+    with transaction_authority_scope("python"):
+        with pytest.raises(RuntimeError, match="nested transaction uses a different"):
+            session.call("graph_projection_records")
 
     assert calls == []
 

@@ -53,13 +53,14 @@ class RustPostgresSession:
     def call(self, kind: str, **values: JsonValue) -> JsonValue:
         if self._closed and kind != "close_store":
             raise RustPostgresConnectionUnavailable("Rust PostgreSQL store is closed")
-        return store_postgres(
-            dsn=self.dsn,
-            schema=self.schema,
-            context_id=self.context_id,
-            operation={"kind": kind, **values},
-            transaction_id=self._transaction_id.get(),
-        )
+        with transaction_authority_scope("rust"):
+            return store_postgres(
+                dsn=self.dsn,
+                schema=self.schema,
+                context_id=self.context_id,
+                operation={"kind": kind, **values},
+                transaction_id=self._transaction_id.get(),
+            )
 
     @property
     def transaction_active(self) -> bool:
