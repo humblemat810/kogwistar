@@ -11,8 +11,47 @@ from kogwistar.engine_core.rust_postgres_session import (
     _RustPostgresTransactionToken,
 )
 from kogwistar.engine_core.subsystems.read import ReadSubsystem
+from kogwistar.engine_core.subsystems.write import WriteSubsystem
 
 pytestmark = [pytest.mark.ci, pytest.mark.core]
+
+
+def test_selected_rust_postgres_write_fails_closed_without_native_meta_store(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "rust")
+    writer = WriteSubsystem.__new__(WriteSubsystem)
+    writer._e = SimpleNamespace(meta_sqlite=object())
+
+    with pytest.raises(RuntimeError, match="refusing Python persistence fallback"):
+        writer._rust_postgres_add(
+            entity_kind="node",
+            entity_id="node-1",
+            document="{}",
+            metadata={},
+            embedding=[0.0],
+            payload={},
+        )
+
+
+def test_python_postgres_authority_keeps_legacy_native_probe_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", raising=False)
+    writer = WriteSubsystem.__new__(WriteSubsystem)
+    writer._e = SimpleNamespace(meta_sqlite=object())
+
+    assert (
+        writer._rust_postgres_add(
+            entity_kind="node",
+            entity_id="node-1",
+            document="{}",
+            metadata={},
+            embedding=[0.0],
+            payload={},
+        )
+        is False
+    )
 
 
 def test_postgres_session_nested_commit_uses_one_native_transaction(monkeypatch):

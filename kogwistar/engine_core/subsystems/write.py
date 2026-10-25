@@ -1125,6 +1125,13 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
     ) -> bool:
         meta = self._rust_postgres_meta()
         if meta is None:
+            from ..._rust_bridge import postgres_authority_implementation_mode
+
+            if postgres_authority_implementation_mode() == "rust":
+                raise RuntimeError(
+                    "Rust PostgreSQL authority is selected but the Rust PostgreSQL "
+                    "meta-store is unavailable; refusing Python persistence fallback"
+                )
             return False
         table = (
             self._projection_backend().nodes.name
