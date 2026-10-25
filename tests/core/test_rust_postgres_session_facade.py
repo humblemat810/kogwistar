@@ -271,6 +271,46 @@ def test_postgres_meta_facade_validates_native_graph_read_shapes(monkeypatch):
         store.graph_projection_records(table="gke_nodes")
 
 
+def test_postgres_meta_facade_forwards_optional_graph_projection_cursor(monkeypatch):
+    operations: list[dict] = []
+
+    def fake_store_postgres(*, operation, **kwargs):
+        del kwargs
+        operations.append(operation)
+        return []
+
+    monkeypatch.setattr(
+        "kogwistar.engine_core.rust_postgres_session.store_postgres",
+        fake_store_postgres,
+    )
+    store = RustEnginePostgresMetaStore(
+        dsn="postgresql://example/db", schema="test"
+    )
+
+    assert store.graph_projection_records(
+        table="gke_nodes", namespace="alpha", limit=2, after_id="node-1"
+    ) == []
+    assert store.graph_projection_records(
+        table="gke_nodes", namespace="alpha", limit=2
+    ) == []
+
+    assert operations == [
+        {
+            "kind": "graph_projection_records",
+            "table": "gke_nodes",
+            "namespace": "alpha",
+            "limit": 2,
+            "after_id": "node-1",
+        },
+        {
+            "kind": "graph_projection_records",
+            "table": "gke_nodes",
+            "namespace": "alpha",
+            "limit": 2,
+        },
+    ]
+
+
 def test_read_subsystem_routes_simple_base_reads_to_native_projection(monkeypatch):
     store = RustEnginePostgresMetaStore(
         dsn="postgresql://example/db", schema="test"
