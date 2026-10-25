@@ -27,6 +27,13 @@ and CI evidence rather than assigning one percentage to the whole port.
 - DL-06E remains **IN PROGRESS**: these PostgreSQL cases establish only the
   verified slice; broader backend, async, failure-injection, and full-stack
   cross-language atomicity requirements remain open.
+- The shared typed graph-mutation validator now also invokes the base mutation
+  contract before accepting a typed envelope, preventing typed callers from
+  bypassing namespace, operation, table, payload-shape, or vector checks.
+  `typed_graph_mutation_cannot_bypass_base_mutation_validation` covers these
+  rejection cases. Elevated Windows CPython 3.13 workspace verification passed
+  **247 Rust tests with 1 intentionally ignored**; this does not close the
+  remaining PyPy, other CPython, hosted-CI, or backend/live-DSN matrix.
 
 ## Design and inventory
 

@@ -1008,6 +1008,7 @@ pub fn validate_typed_graph_mutation(
     mutation: &GraphMutation,
     envelope: &GraphModelEnvelope,
 ) -> StoreResult<()> {
+    validate_graph_mutation(mutation)?;
     envelope
         .validate_family_v1()
         .map_err(|error| StoreError::InvalidEntityEventPayload {
@@ -3021,7 +3022,7 @@ mod tests {
     }
 
     #[test]
-    fn typed_graph_mutation_validates_before_storage_effects() {
+    fn typed_graph_mutation_accepts_matching_payload_and_identity() {
         let payload = fixture_payload(1);
         let mutation = typed_mutation("edge", payload.clone());
         let envelope = GraphModelEnvelope::new(GraphModelClass::Edge, payload);
@@ -3046,6 +3047,29 @@ mod tests {
             validate_typed_graph_mutation(&node_mutation, &node_envelope),
             Err(StoreError::InvalidEntityEventPayload { .. })
         ));
+    }
+
+    #[test]
+    fn typed_graph_mutation_cannot_bypass_base_mutation_validation() {
+        let payload = fixture_payload(0);
+        let envelope = GraphModelEnvelope::new(GraphModelClass::Node, payload.clone());
+        let valid = typed_mutation("node", payload);
+
+        let mut invalid = valid.clone();
+        invalid.table = "gke_edges".to_owned();
+        assert!(validate_typed_graph_mutation(&invalid, &envelope).is_err());
+
+        let mut invalid = valid.clone();
+        invalid.scope.namespace.clear();
+        assert!(validate_typed_graph_mutation(&invalid, &envelope).is_err());
+
+        let mut invalid = valid.clone();
+        invalid.op = "DELETE".to_owned();
+        assert!(validate_typed_graph_mutation(&invalid, &envelope).is_err());
+
+        let mut invalid = valid.clone();
+        invalid.payload = Value::Array(Vec::new());
+        assert!(validate_typed_graph_mutation(&invalid, &envelope).is_err());
     }
 
     #[test]
