@@ -51,11 +51,11 @@ use kogwistar_store_sqlite::{
 
 mod cutover;
 mod runtime_contract;
-use cutover::is_transport_owned_http_route;
 pub use cutover::{
     ImplementationSnapshot, PENDING_SERVER_CUTOVER_ROUTES, PENDING_SYSCALL_CUTOVER_OPS,
     TRANSPORT_OWNED_HTTP_ROUTES,
 };
+use cutover::{is_pending_server_cutover_route, is_transport_owned_http_route};
 use runtime_contract::{
     default_runtime_kind, runtime_implementation_attestation, runtime_worker_recipient,
     worker_protocol_for_runtime_kind,
@@ -9420,6 +9420,13 @@ impl PostgresRunApplicationService {
     }
 
     async fn execute_async(&self, request: ApiEffectRequest) -> ApiEffectResponse {
+        if is_pending_server_cutover_route(&request.method, &request.path_and_query) {
+            return effect_error(
+                StatusCode::NOT_IMPLEMENTED,
+                "KOGWISTAR_ROUTE_DEFERRED",
+                "This route remains deferred to the Python application service",
+            );
+        }
         if request.method == "GET"
             && request.path_and_query.split('?').next() == Some("/api/workflow/tools/audit")
         {
@@ -10943,6 +10950,13 @@ impl SqliteRunApplicationService {
     }
 
     fn execute_sync(&self, request: ApiEffectRequest) -> ApiEffectResponse {
+        if is_pending_server_cutover_route(&request.method, &request.path_and_query) {
+            return effect_error(
+                StatusCode::NOT_IMPLEMENTED,
+                "KOGWISTAR_ROUTE_DEFERRED",
+                "This route remains deferred to the Python application service",
+            );
+        }
         if request.method == "GET"
             && request.path_and_query.split('?').next() == Some("/api/workflow/tools/audit")
         {
@@ -14047,8 +14061,8 @@ mod tests {
         remove_test_sqlite(&sqlite_path);
     }
 
-    #[test]
-    fn pending_routes_remain_unadvertised_for_every_rust_service() {
+    #[tokio::test]
+    async fn pending_routes_fail_closed_for_every_rust_service() {
         let sqlite_path = std::env::temp_dir().join(format!(
             "kogwistar-api-document-route-{}.sqlite",
             uuid::Uuid::new_v4()
@@ -14065,6 +14079,32 @@ mod tests {
                 assert!(
                     !service.supports_http_operation(method, path),
                     "deferred route was advertised: {method} {path}"
+                );
+                let concrete_path = path
+                    .replace("{doc_id}", "deferred-probe")
+                    .replace("{conversation_id}", "deferred-probe");
+                let response = service
+                    .execute(ApiEffectRequest {
+                        contract_version: 1,
+                        method: method.to_owned(),
+                        path_and_query: concrete_path,
+                        body: Vec::new(),
+                        principal: json!({
+                            "sub": "alice",
+                            "ns": ["workflow", "conversation"],
+                            "capabilities": ["*"]
+                        }),
+                    })
+                    .await;
+                assert_eq!(
+                    response.status,
+                    StatusCode::NOT_IMPLEMENTED.as_u16(),
+                    "deferred route executed: {method} {path}"
+                );
+                assert_eq!(
+                    serde_json::from_slice::<Value>(&response.body).unwrap()["code"],
+                    "KOGWISTAR_ROUTE_DEFERRED",
+                    "deferred route returned the wrong failure: {method} {path}"
                 );
             }
         }

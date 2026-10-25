@@ -30,6 +30,34 @@ fn pending_server_routes_are_valid() -> bool {
         .all(|route| seen.insert(*route) && FROZEN_OPENAPI_ROUTES.contains(route))
 }
 
+pub(crate) fn is_pending_server_cutover_route(method: &str, path_and_query: &str) -> bool {
+    let path = path_and_query
+        .split_once('?')
+        .map(|(path, _)| path)
+        .unwrap_or(path_and_query);
+    PENDING_SERVER_CUTOVER_ROUTES
+        .iter()
+        .any(|(pending_method, template)| {
+            *pending_method == method && route_template_matches(template, path)
+        })
+}
+
+fn route_template_matches(template: &str, path: &str) -> bool {
+    let template_segments = template.split('/').collect::<Vec<_>>();
+    let path_segments = path.split('/').collect::<Vec<_>>();
+    template_segments.len() == path_segments.len()
+        && template_segments
+            .iter()
+            .zip(path_segments)
+            .all(|(expected, actual)| {
+                if expected.starts_with('{') && expected.ends_with('}') {
+                    !actual.is_empty()
+                } else {
+                    *expected == actual
+                }
+            })
+}
+
 pub const PENDING_SERVER_CUTOVER_ROUTES: &[(&str, &str)] = &[
     ("DELETE", "/admin/doc/{doc_id}"),
     ("GET", "/api/search_index_hybrid"),
@@ -100,6 +128,23 @@ mod tests {
                 .collect::<BTreeSet<_>>()
                 .len()
         );
+    }
+
+    #[test]
+    fn pending_route_matcher_handles_query_and_path_parameters() {
+        assert!(is_pending_server_cutover_route(
+            "POST",
+            "/api/conversations/c-1/turns:answer?mode=sync"
+        ));
+        assert!(is_pending_server_cutover_route(
+            "DELETE",
+            "/admin/doc/doc-1"
+        ));
+        assert!(!is_pending_server_cutover_route(
+            "GET",
+            "/api/workflow/tools/audit"
+        ));
+        assert!(!is_pending_server_cutover_route("POST", "/admin/doc/doc-1"));
     }
 
     #[test]
