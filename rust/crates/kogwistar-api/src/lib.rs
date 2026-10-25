@@ -2074,11 +2074,22 @@ fn syscall_allowed(
     write: bool,
     required: &[&str],
 ) -> bool {
+    syscall_allowed_in_namespace(request, shared, op, write, required, "workflow")
+}
+
+fn syscall_allowed_in_namespace(
+    request: &ApiEffectRequest,
+    shared: &SharedCapabilityState,
+    op: &str,
+    write: bool,
+    required: &[&str],
+    expected_namespace: &str,
+) -> bool {
     let role = principal_role(&request.principal);
     let role_allowed = !write || role == "rw";
     let namespace_allowed = principal_strings(&request.principal, "ns")
         .into_iter()
-        .any(|namespace| namespace == "workflow" || namespace == "*");
+        .any(|namespace| namespace == expected_namespace || namespace == "*");
     role_allowed && namespace_allowed && capability_allowed(request, shared, op, required)
 }
 
@@ -6319,6 +6330,42 @@ impl PostgresRunApplicationService {
                     )
                 }
             }
+            "receive_message" => {
+                if !syscall_allowed_in_namespace(
+                    request,
+                    &self.capabilities,
+                    op,
+                    false,
+                    &["read_graph"],
+                    "conversation",
+                ) {
+                    syscall_forbidden(op)
+                } else if let Some(conversation_id) = input.args["conversation_id"].as_str() {
+                    let limit = input.args["limit"].as_u64().unwrap_or(10_000).min(10_000);
+                    let nested = ApiEffectRequest {
+                        contract_version: request.contract_version,
+                        method: "POST".to_owned(),
+                        path_and_query: "/internal/conversation/transcript".to_owned(),
+                        body: serde_json::to_vec(&json!({
+                            "conversation_id": conversation_id,
+                            "limit": limit,
+                        }))
+                        .expect("transcript syscall args serialize"),
+                        principal: request.principal.clone(),
+                    };
+                    syscall_result(
+                        &input.version,
+                        op,
+                        self.internal_conversation_transcript_effect(&nested).await,
+                    )
+                } else {
+                    effect_error(
+                        StatusCode::BAD_REQUEST,
+                        "KOGWISTAR_INVALID_REQUEST",
+                        "conversation_id is required",
+                    )
+                }
+            }
             "project_view" => {
                 if !syscall_allowed(
                     request,
@@ -9209,6 +9256,20 @@ impl SqliteRunApplicationService {
                         "KOGWISTAR_INVALID_REQUEST",
                         "run_id and integer step_seq are required",
                     )
+                }
+            }
+            "receive_message" => {
+                if !syscall_allowed_in_namespace(
+                    request,
+                    &self.capabilities,
+                    op,
+                    false,
+                    &["read_graph"],
+                    "conversation",
+                ) {
+                    syscall_forbidden(op)
+                } else {
+                    unavailable_effect(request.clone())
                 }
             }
             "project_view" => {
@@ -18132,6 +18193,31 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
         assert_eq!(view["status"], "ok");
         assert!(view["result"]["scheduler"].is_object());
         assert!(view["result"]["runs"].is_object());
+        let receive_request = |namespace: &str| ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/syscall/v1/receive_message".to_owned(),
+            body: serde_json::to_vec(&json!({
+                "version":"v1",
+                "op":"receive_message",
+                "args":{"conversation_id":"conversation-1"}
+            }))
+            .unwrap(),
+            principal: json!({
+                "sub":"viewer",
+                "role":"ro",
+                "ns":namespace,
+                "capabilities":["read_graph"],
+            }),
+        };
+        assert_eq!(
+            service.execute_sync(receive_request("workflow")).status,
+            StatusCode::FORBIDDEN.as_u16()
+        );
+        assert_eq!(
+            service.execute_sync(receive_request("conversation")).status,
+            StatusCode::NOT_IMPLEMENTED.as_u16()
+        );
         let principal = json!({
             "sub":"operator",
             "role":"rw",
