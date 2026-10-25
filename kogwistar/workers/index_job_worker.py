@@ -58,6 +58,7 @@ class WorkerTickMetrics:
     done: int = 0
     retried: int = 0
     failed: int = 0
+    claim_lost: int = 0
     avg_job_duration_s: float | None = None
 
 
@@ -291,9 +292,14 @@ class IndexJobWorker:
                             # Preserve compatibility with legacy queue rows that
                             # predate leases; current claimed rows always carry a
                             # token and therefore take the ownership-checked path.
-                            mark_done(str(job_id))
+                            acknowledged = mark_done(str(job_id))
                         else:
-                            mark_done(str(job_id), claim_token=claim_token)
+                            acknowledged = mark_done(
+                                str(job_id), claim_token=claim_token
+                            )
+                        if acknowledged is False:
+                            metrics.claim_lost += 1
+                            return
                     metrics.done += 1
                 except Exception as e:
                     err = f"{type(e).__name__}: {e}"

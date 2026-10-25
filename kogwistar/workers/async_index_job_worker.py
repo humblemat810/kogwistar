@@ -23,6 +23,7 @@ class AsyncWorkerTickMetrics:
     done: int = 0
     retried: int = 0
     failed: int = 0
+    claim_lost: int = 0
     avg_job_duration_s: float | None = None
 
 
@@ -149,13 +150,17 @@ class AsyncIndexJobWorker:
                             payload_json=self._optional_text(self._value(job, "payload_json")),
                         )
                     done = getattr(meta, "mark_index_job_done", None)
+                    acknowledged: object = None
                     if callable(done):
                         if claim_token is None:
-                            await _maybe_await(done(str(job_id)))
+                            acknowledged = await _maybe_await(done(str(job_id)))
                         else:
-                            await _maybe_await(
+                            acknowledged = await _maybe_await(
                                 done(str(job_id), claim_token=claim_token)
                             )
+                    if acknowledged is False:
+                        metrics.claim_lost += 1
+                        continue
                     metrics.done += 1
                 except Exception as exc:
                     error = f"{type(exc).__name__}: {exc}"

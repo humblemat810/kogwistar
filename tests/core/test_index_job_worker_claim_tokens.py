@@ -9,8 +9,9 @@ from kogwistar.workers.index_job_worker import IndexJobWorker
 
 
 class _Meta:
-    def __init__(self, job: SimpleNamespace) -> None:
+    def __init__(self, job: SimpleNamespace, *, reject_ack: bool = False) -> None:
         self.job = job
+        self.reject_ack = reject_ack
         self.claimed = False
         self.done: list[tuple[str, str | None]] = []
         self.retried: list[tuple[str, str | None]] = []
@@ -22,8 +23,13 @@ class _Meta:
         self.claimed = True
         return [self.job]
 
-    def mark_index_job_done(self, job_id: str, *, claim_token: str | None = None) -> None:
+    def mark_index_job_done(
+        self, job_id: str, *, claim_token: str | None = None
+    ) -> object:
         self.done.append((job_id, claim_token))
+        if self.reject_ack:
+            return False  # type: ignore[return-value]
+        return None
 
     def bump_retry_and_requeue(
         self,
@@ -108,6 +114,16 @@ def test_sync_worker_propagates_claim_token_to_success_ack() -> None:
     assert meta.done == [("job-1", "claim-1")]
 
 
+def test_sync_worker_does_not_count_lost_claim_as_done() -> None:
+    meta = _Meta(_job(claim_token="claim-1"), reject_ack=True)
+    worker = IndexJobWorker(engine=_engine(meta))
+
+    metrics = worker.tick()
+
+    assert metrics.done == 0
+    assert metrics.claim_lost == 1
+
+
 def test_sync_worker_propagates_claim_token_to_retry() -> None:
     meta = _Meta(_job(claim_token="claim-1"))
     worker = IndexJobWorker(engine=_engine(meta, fail=True))
@@ -137,6 +153,19 @@ def test_async_worker_propagates_claim_token_to_success_ack() -> None:
 
         assert metrics.done == 1
         assert meta.done == [("job-1", "claim-1")]
+
+    asyncio.run(run())
+
+
+def test_async_worker_does_not_count_lost_claim_as_done() -> None:
+    async def run() -> None:
+        meta = _Meta(_job(claim_token="claim-1"), reject_ack=True)
+        worker = AsyncIndexJobWorker(engine=_engine(meta))
+
+        metrics = await worker.tick()
+
+        assert metrics.done == 0
+        assert metrics.claim_lost == 1
 
     asyncio.run(run())
 
@@ -181,6 +210,13 @@ def test_reconciler_propagates_claim_token_to_success_ack() -> None:
 
     assert subsystem.reconcile_indexes(max_jobs=1) == 1
     assert meta.done == [("job-1", "claim-1")]
+
+
+def test_reconciler_does_not_count_lost_claim_as_applied() -> None:
+    meta = _Meta(_job(claim_token="claim-1"), reject_ack=True)
+    subsystem = _reconciler(meta)
+
+    assert subsystem.reconcile_indexes(max_jobs=1) == 0
 
 
 def test_reconciler_propagates_claim_token_to_retry() -> None:

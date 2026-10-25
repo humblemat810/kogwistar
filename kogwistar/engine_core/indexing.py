@@ -512,10 +512,12 @@ class IndexingSubsystem:
             if mark_done is not None and job_id:
                 done_started = time.perf_counter()
                 if claim_token is None:
-                    mark_done(str(job_id))
+                    acknowledged = mark_done(str(job_id))
                 else:
-                    mark_done(str(job_id), claim_token=claim_token)
+                    acknowledged = mark_done(str(job_id), claim_token=claim_token)
                 self._profile_step("reconcile.mark_index_job_done", done_started)
+                if acknowledged is False:
+                    continue
             self._profile_step("reconcile.job_total", job_started)
             applied += 1
 
