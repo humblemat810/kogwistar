@@ -1078,6 +1078,21 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             else None
         )
 
+    def _rust_postgres_meta_or_python_fallback(
+        self, *, operation: str
+    ) -> RustEnginePostgresMetaStore | None:
+        meta = self._rust_postgres_meta()
+        if meta is None:
+            from ..._rust_bridge import postgres_authority_implementation_mode
+
+            if postgres_authority_implementation_mode() == "rust":
+                raise RuntimeError(
+                    "Rust PostgreSQL authority is selected but the Rust PostgreSQL "
+                    f"meta-store is unavailable for {operation}; refusing Python "
+                    "persistence fallback"
+                )
+        return meta
+
     def uses_rust_postgres_authority(self) -> bool:
         return self._rust_postgres_meta() is not None
 
@@ -1123,15 +1138,8 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         model_envelope: JsonObject | None = None,
         enqueue_index_jobs: bool = True,
     ) -> bool:
-        meta = self._rust_postgres_meta()
+        meta = self._rust_postgres_meta_or_python_fallback(operation="graph add")
         if meta is None:
-            from ..._rust_bridge import postgres_authority_implementation_mode
-
-            if postgres_authority_implementation_mode() == "rust":
-                raise RuntimeError(
-                    "Rust PostgreSQL authority is selected but the Rust PostgreSQL "
-                    "meta-store is unavailable; refusing Python persistence fallback"
-                )
             return False
         table = (
             self._projection_backend().nodes.name
@@ -1241,7 +1249,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         return True
 
     def _rust_postgres_delete_edges(self, edge_ids: list[str]) -> bool:
-        meta = self._rust_postgres_meta()
+        meta = self._rust_postgres_meta_or_python_fallback(operation="edge delete")
         if meta is None:
             return False
         for edge_id in edge_ids:
@@ -1271,7 +1279,9 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
     def rust_postgres_delete_existing(
         self, *, entity_kind: _GraphEntityKind, entity_ids: list[str]
     ) -> bool:
-        meta = self._rust_postgres_meta()
+        meta = self._rust_postgres_meta_or_python_fallback(
+            operation=f"{entity_kind} rollback delete"
+        )
         if meta is None:
             return False
         table = {
@@ -1319,7 +1329,9 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         metadata_patch: JsonObject,
         payload: JsonObject,
     ) -> bool:
-        meta = self._rust_postgres_meta()
+        meta = self._rust_postgres_meta_or_python_fallback(
+            operation=f"{entity_kind} replacement"
+        )
         if meta is None:
             return False
         table = (

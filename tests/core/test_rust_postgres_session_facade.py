@@ -16,22 +16,40 @@ from kogwistar.engine_core.subsystems.write import WriteSubsystem
 pytestmark = [pytest.mark.ci, pytest.mark.core]
 
 
-def test_selected_rust_postgres_write_fails_closed_without_native_meta_store(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize(
+    "operation", ["add", "edge-delete", "rollback-delete", "replace"]
+)
+def test_selected_rust_postgres_mutations_fail_closed_without_native_meta_store(
+    monkeypatch: pytest.MonkeyPatch, operation: str
 ) -> None:
     monkeypatch.setenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "rust")
     writer = WriteSubsystem.__new__(WriteSubsystem)
     writer._e = SimpleNamespace(meta_sqlite=object())
 
     with pytest.raises(RuntimeError, match="refusing Python persistence fallback"):
-        writer._rust_postgres_add(
-            entity_kind="node",
-            entity_id="node-1",
-            document="{}",
-            metadata={},
-            embedding=[0.0],
-            payload={},
-        )
+        if operation == "add":
+            writer._rust_postgres_add(
+                entity_kind="node",
+                entity_id="node-1",
+                document="{}",
+                metadata={},
+                embedding=[0.0],
+                payload={},
+            )
+        elif operation == "edge-delete":
+            writer._rust_postgres_delete_edges(["edge-1"])
+        elif operation == "rollback-delete":
+            writer.rust_postgres_delete_existing(
+                entity_kind="node", entity_ids=["node-1"]
+            )
+        else:
+            writer.rust_postgres_replace_existing(
+                entity_kind="node",
+                entity_id="node-1",
+                document="{}",
+                metadata_patch={},
+                payload={},
+            )
 
 
 def test_python_postgres_authority_keeps_legacy_native_probe_fallback(
@@ -41,17 +59,14 @@ def test_python_postgres_authority_keeps_legacy_native_probe_fallback(
     writer = WriteSubsystem.__new__(WriteSubsystem)
     writer._e = SimpleNamespace(meta_sqlite=object())
 
-    assert (
-        writer._rust_postgres_add(
-            entity_kind="node",
-            entity_id="node-1",
-            document="{}",
-            metadata={},
-            embedding=[0.0],
-            payload={},
-        )
-        is False
-    )
+    assert writer._rust_postgres_add(
+        entity_kind="node",
+        entity_id="node-1",
+        document="{}",
+        metadata={},
+        embedding=[0.0],
+        payload={},
+    ) is False
 
 
 def test_postgres_session_nested_commit_uses_one_native_transaction(monkeypatch):
