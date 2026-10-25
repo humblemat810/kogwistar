@@ -5714,6 +5714,16 @@ struct InternalConversationTranscriptRequest {
     limit: usize,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct InternalContextSnapshotRequest {
+    conversation_id: String,
+    #[serde(default)]
+    run_id: Option<String>,
+    #[serde(default)]
+    stage: Option<String>,
+}
+
 fn default_conversation_limit() -> usize {
     10_000
 }
@@ -5737,6 +5747,20 @@ fn parse_internal_conversation_transcript_request(
         serde_json::from_slice(body).map_err(|error| error.to_string())?;
     if input.conversation_id.trim().is_empty() || input.limit > 10_000 {
         return Err("conversation_id is required and limit must be <= 10000".to_owned());
+    }
+    Ok(input)
+}
+
+fn parse_internal_context_snapshot_request(
+    body: &[u8],
+) -> Result<InternalContextSnapshotRequest, String> {
+    let input: InternalContextSnapshotRequest =
+        serde_json::from_slice(body).map_err(|error| error.to_string())?;
+    if input.conversation_id.trim().is_empty()
+        || input.run_id.as_deref().is_some_and(str::is_empty)
+        || input.stage.as_deref().is_some_and(str::is_empty)
+    {
+        return Err("conversation_id is required and run_id/stage must not be empty".to_owned());
     }
     Ok(input)
 }
@@ -5829,6 +5853,102 @@ impl PostgresRunApplicationService {
         json_effect(
             StatusCode::OK,
             rust_native_attested(serde_json::to_value(transcript).expect("transcript serializes")),
+        )
+    }
+
+    async fn internal_context_snapshot_effect(
+        &self,
+        request: &ApiEffectRequest,
+    ) -> ApiEffectResponse {
+        if !capability_allowed(
+            request,
+            &self.capabilities,
+            "project_view",
+            &["project_view"],
+        ) {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                "Context snapshot reads require project_view capability",
+            );
+        }
+        let input = match parse_internal_context_snapshot_request(&request.body) {
+            Ok(value) => value,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    error,
+                );
+            }
+        };
+        let scope_value = security_scope_value(&request.principal);
+        let scope = GraphScope {
+            namespace: scope_value["storage_namespace"]
+                .as_str()
+                .unwrap_or("default")
+                .to_owned(),
+            workspace_id: request
+                .principal
+                .get("workspace_id")
+                .or_else(|| request.principal.get("workspace"))
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            graph_space: request
+                .principal
+                .get("graph_space")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+        };
+        let records = match self
+            .store
+            .graph_projection_records(GraphProjectionRead {
+                scope,
+                table: "gke_nodes".to_owned(),
+                ids: None,
+                metadata: MetadataFilter::default(),
+                limit: 10_000,
+            })
+            .await
+        {
+            Ok(records) => records,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_STORE_ERROR",
+                    error.to_string(),
+                );
+            }
+        };
+        let mut groups = principal_strings(&request.principal, "groups");
+        groups.extend(principal_strings(&request.principal, "principal_groups"));
+        groups.sort();
+        groups.dedup();
+        let principal = GraphAclPrincipal {
+            principal_id: principal_subject(&request.principal),
+            groups: groups.into_iter().collect(),
+            security_scope: scope_value["security_scope"].as_str().map(str::to_owned),
+        };
+        let (visible_nodes, _) =
+            graph_records_visible_by_acl(&records, &[], "conversation", &principal);
+        let snapshot = match kogwistar_store::context_snapshot_from_visible_records(
+            &visible_nodes,
+            &input.conversation_id,
+            input.run_id.as_deref(),
+            input.stage.as_deref(),
+        ) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::NOT_FOUND,
+                    "KOGWISTAR_CONTEXT_SNAPSHOT_NOT_FOUND",
+                    error.to_string(),
+                );
+            }
+        };
+        json_effect(
+            StatusCode::OK,
+            rust_native_attested(serde_json::to_value(snapshot).expect("snapshot serializes")),
         )
     }
 
@@ -6357,6 +6477,42 @@ impl PostgresRunApplicationService {
                         &input.version,
                         op,
                         self.internal_conversation_transcript_effect(&nested).await,
+                    )
+                } else {
+                    effect_error(
+                        StatusCode::BAD_REQUEST,
+                        "KOGWISTAR_INVALID_REQUEST",
+                        "conversation_id is required",
+                    )
+                }
+            }
+            "mount_memory" => {
+                if !syscall_allowed_in_namespace(
+                    request,
+                    &self.capabilities,
+                    op,
+                    false,
+                    &["project_view"],
+                    "conversation",
+                ) {
+                    syscall_forbidden(op)
+                } else if input.args["conversation_id"].as_str().is_some() {
+                    let nested = ApiEffectRequest {
+                        contract_version: request.contract_version,
+                        method: "POST".to_owned(),
+                        path_and_query: "/internal/conversation/context-snapshot".to_owned(),
+                        body: serde_json::to_vec(&json!({
+                            "conversation_id": input.args["conversation_id"],
+                            "run_id": input.args.get("run_id"),
+                            "stage": input.args.get("stage"),
+                        }))
+                        .expect("snapshot syscall args serialize"),
+                        principal: request.principal.clone(),
+                    };
+                    syscall_result(
+                        &input.version,
+                        op,
+                        self.internal_context_snapshot_effect(&nested).await,
                     )
                 } else {
                     effect_error(
@@ -8819,6 +8975,11 @@ impl PostgresRunApplicationService {
         {
             return self.internal_conversation_transcript_effect(&request).await;
         }
+        if request.method == "POST"
+            && request.path_and_query == "/internal/conversation/context-snapshot"
+        {
+            return self.internal_context_snapshot_effect(&request).await;
+        }
         if request.method == "POST" && request.path_and_query == "/internal/graph/mutations" {
             return self.apply_internal_graph_mutations(&request).await;
         }
@@ -9265,6 +9426,20 @@ impl SqliteRunApplicationService {
                     op,
                     false,
                     &["read_graph"],
+                    "conversation",
+                ) {
+                    syscall_forbidden(op)
+                } else {
+                    unavailable_effect(request.clone())
+                }
+            }
+            "mount_memory" => {
+                if !syscall_allowed_in_namespace(
+                    request,
+                    &self.capabilities,
+                    op,
+                    false,
+                    &["project_view"],
                     "conversation",
                 ) {
                     syscall_forbidden(op)
@@ -10227,6 +10402,7 @@ impl SqliteRunApplicationService {
                     | Some("/internal/graph/shortest-path")
                     | Some("/internal/graph/k-hop")
                     | Some("/internal/conversation/transcript")
+                    | Some("/internal/conversation/context-snapshot")
                     | Some("/internal/graph/mutations")
             )
         {
@@ -12072,6 +12248,10 @@ pub fn router_with_application(
     );
     router = router.route(
         "/internal/conversation/transcript",
+        post(application_effect_handler),
+    );
+    router = router.route(
+        "/internal/conversation/context-snapshot",
         post(application_effect_handler),
     );
     router = router.route(
@@ -18216,6 +18396,31 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
         );
         assert_eq!(
             service.execute_sync(receive_request("conversation")).status,
+            StatusCode::NOT_IMPLEMENTED.as_u16()
+        );
+        let mount_request = |namespace: &str| ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/syscall/v1/mount_memory".to_owned(),
+            body: serde_json::to_vec(&json!({
+                "version":"v1",
+                "op":"mount_memory",
+                "args":{"conversation_id":"conversation-1"}
+            }))
+            .unwrap(),
+            principal: json!({
+                "sub":"viewer",
+                "role":"ro",
+                "ns":namespace,
+                "capabilities":["project_view"],
+            }),
+        };
+        assert_eq!(
+            service.execute_sync(mount_request("workflow")).status,
+            StatusCode::FORBIDDEN.as_u16()
+        );
+        assert_eq!(
+            service.execute_sync(mount_request("conversation")).status,
             StatusCode::NOT_IMPLEMENTED.as_u16()
         );
         let principal = json!({
