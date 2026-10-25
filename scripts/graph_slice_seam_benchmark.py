@@ -29,11 +29,16 @@ from kogwistar._rust_bridge import (
     project_graph_model_slices,
 )
 from kogwistar.engine_core.graph_contracts import build_graph_model_slice_envelope
-from kogwistar.engine_core.graph_slice_manifest import project_with_manifest
+from kogwistar.engine_core.graph_slice_manifest import (
+    _project_value,
+    build_slice_manifest,
+    project_with_manifest,
+)
 from kogwistar.engine_core.models import Edge, Node
 
 
 JsonObject = dict[str, Any]
+_MODEL_BY_WIRE_TAG = {"node": Node, "edge": Edge}
 
 
 def _mentions(excerpt: str) -> list[JsonObject]:
@@ -108,6 +113,56 @@ def _digest(value: Any) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _python_json_pipeline(source: str, *, field_mode: str) -> str:
+    """Match Rust's canonical JSON parse, model validation, slice, and encode path."""
+    raw_envelopes = json.loads(source)
+    projected: list[JsonObject] = []
+    for envelope in raw_envelopes:
+        if envelope.get("schema_version") != 1:
+            raise ValueError("unsupported graph envelope version")
+        model_class = _MODEL_BY_WIRE_TAG.get(envelope.get("model_class"))
+        if model_class is None:
+            raise ValueError("unsupported graph model class")
+        declaration = envelope.get("slice")
+        if (
+            not isinstance(declaration, dict)
+            or declaration.get("schema_version") != 1
+            or declaration.get("mode") != field_mode
+            or declaration.get("manifest") != build_slice_manifest(model_class)
+        ):
+            raise ValueError("invalid or mismatched graph slice declaration")
+        model = model_class.model_validate(envelope["payload"])
+        backend_payload = model.model_dump(dump_format="json", field_mode="backend")
+        projected.append(
+            _project_value(backend_payload, declaration["manifest"], field_mode)
+        )
+    return json.dumps(
+        projected, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+
+
+def _python_raw_json_pipeline(source: str) -> str:
+    """Parse canonical envelopes and project their already-declared manifest."""
+    raw_envelopes = json.loads(source)
+    projected: list[JsonObject] = []
+    for envelope in raw_envelopes:
+        declaration = envelope.get("slice")
+        if (
+            envelope.get("schema_version") != 1
+            or not isinstance(declaration, dict)
+            or declaration.get("schema_version") != 1
+        ):
+            raise ValueError("invalid graph slice envelope")
+        projected.append(
+            _project_value(
+                envelope["payload"], declaration["manifest"], declaration["mode"]
+            )
+        )
+    return json.dumps(
+        projected, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+
+
 def run(*, model_count: int, iterations: int, field_mode: str) -> JsonObject:
     models = _models(model_count)
     envelopes = [
@@ -118,6 +173,12 @@ def run(*, model_count: int, iterations: int, field_mode: str) -> JsonObject:
         json.dumps(envelope, ensure_ascii=False, separators=(",", ":"))
         for envelope in envelopes
     ]
+    canonical_source = json.dumps(
+        envelopes, ensure_ascii=False, separators=(",", ":")
+    )
+    for model, envelope in zip(models, envelopes, strict=True):
+        if envelope["slice"]["manifest"] != build_slice_manifest(type(model)):
+            raise RuntimeError("canonical envelope manifest drifted from Python model")
 
     # Warm up model and extension loading before recording measurements.
     python_result = [
@@ -127,6 +188,14 @@ def run(*, model_count: int, iterations: int, field_mode: str) -> JsonObject:
     native_result = [json.loads(native.project_graph_model_slice(item)) for item in encoded]
     if [item["payload"] for item in native_result] != python_result:
         raise RuntimeError("Python and Rust slice projections differ")
+    python_pipeline_output = _python_json_pipeline(
+        canonical_source, field_mode=field_mode
+    )
+    if json.loads(python_pipeline_output) != python_result:
+        raise RuntimeError("Python JSON pipeline differs from model projection")
+    python_raw_pipeline_output = _python_raw_json_pipeline(canonical_source)
+    if json.loads(python_raw_pipeline_output) != python_result:
+        raise RuntimeError("Python raw JSON pipeline differs from model projection")
 
     python_projection = _timed(
         lambda: [
@@ -184,6 +253,13 @@ def run(*, model_count: int, iterations: int, field_mode: str) -> JsonObject:
         lambda: project_graph_model_slices(envelopes),
         iterations,
     )
+    python_json_pipeline = _timed(
+        lambda: _python_json_pipeline(canonical_source, field_mode=field_mode),
+        iterations,
+    )
+    python_raw_json_pipeline = _timed(
+        lambda: _python_raw_json_pipeline(canonical_source), iterations
+    )
 
     bridge_result = [project_graph_model_slice(envelope) for envelope in envelopes]
     bridge_batch_result = project_graph_model_slices(envelopes)
@@ -204,6 +280,10 @@ def run(*, model_count: int, iterations: int, field_mode: str) -> JsonObject:
         "bridge_batch_projection_digest": _digest(
             [item["payload"] for item in bridge_batch_result]
         ),
+        "python_json_pipeline_digest": _digest(json.loads(python_pipeline_output)),
+        "python_raw_json_pipeline_digest": _digest(
+            json.loads(python_raw_pipeline_output)
+        ),
         "stages": {
             "python_model_projection": _summary(python_projection),
             "python_json_encode": _summary(python_encode),
@@ -219,6 +299,10 @@ def run(*, model_count: int, iterations: int, field_mode: str) -> JsonObject:
             "bridge_batch_output_decode": _summary(bridge_batch_output_decode),
             "python_bridge_end_to_end": _summary(bridge_total),
             "python_bridge_batch_end_to_end": _summary(bridge_batch),
+            "python_json_parse_validate_project_encode": _summary(
+                python_json_pipeline
+            ),
+            "python_json_parse_project_encode": _summary(python_raw_json_pipeline),
         },
         "interpretation": {
             "python_projection": "Pydantic-extension governed Python projection only",
@@ -229,7 +313,9 @@ def run(*, model_count: int, iterations: int, field_mode: str) -> JsonObject:
             "bridge_output_decode_per_envelope": "Python JSON decoding of one Rust result per envelope",
             "bridge_batch_output_decode": "Python JSON decoding of one batched Rust result",
             "python_bridge_end_to_end": "Public Python bridge including input/output JSON conversion",
-            "rust_native_gap": "Run a Rust caller against the same envelope to remove the PyO3/string seam; this script does not claim that result.",
+            "rust_native_gap": "The companion release-mode Rust example measures JSON parse/project/encode and Rust family validation; these remain graph-slice microbenchmarks, not end-to-end service results.",
+            "python_json_parse_validate_project_encode": "Canonical JSON parse, Pydantic validation, exported-manifest projection, and canonical JSON output; pair with the Rust native JSON pipeline measurement on the same fixture.",
+            "python_json_parse_project_encode": "Canonical JSON parse and the same supplied manifest projection/JSON output, without Pydantic model validation; pair with the Rust native JSON projection measurement.",
         },
     }
 

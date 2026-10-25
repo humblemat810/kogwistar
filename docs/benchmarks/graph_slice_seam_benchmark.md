@@ -145,3 +145,55 @@ iterations. The public Python bridge measured `5.842 ms` median over 3
 iterations for the same fixture. This confirms the no-seam projection kernel
 is materially faster for this workload, while leaving the full-stack transport,
 authorization, persistence, and recovery costs outside the claim.
+
+An independent 2026-10-26 rerun used 16 envelopes (44,864 input bytes) and 10
+iterations. Python, PyO3, batch, and direct Rust outputs again matched digest
+`d8c2e7280f20e6c250dbecd781b2ba3529ce3f9834d19f6006d96fe7cec97eba`. The Rust
+typed projection measured `0.02907 ms` per iteration. Python's public
+per-envelope bridge measured `21.04 ms` median and its batch bridge measured
+`15.42 ms` median in this run. These figures are deliberately not presented as
+a speedup ratio: the direct Rust timer starts with typed envelopes already
+parsed and does not include output JSON serialization, while the Python bridge
+includes input normalization/encoding, the PyO3 crossing, and output decoding.
+They establish output parity and identify a large conversion/seam budget, but
+do not isolate equivalent end-to-end work. A fairer comparison must time
+equivalent parse/validation/projection/serialization boundaries, followed by
+the resource-matched HTTP and persistence workload; Docker was unavailable for
+that full-stack rerun in this session.
+
+The Rust example now reports a second, broader measurement that includes
+parsing the canonical JSON array into typed envelopes, validating/projecting
+each envelope, and serializing the projected output. A 30-iteration rerun on
+the same 16-envelope fixture measured `0.87468 ms` per Rust JSON-pipeline
+iteration and `0.01630 ms` for projection alone. The Python bridge rerun on
+the same generated fixture measured `15.38 ms` per-envelope and `12.86 ms`
+batched, with matching output digests. This is closer to a language-boundary
+comparison, but is still not fully equivalent: Python additionally normalizes
+Pydantic-derived values before encoding and decodes the result to Python
+objects, while Rust returns serialized output directly. The Python and Rust
+drivers also use different per-envelope versus array-call shapes. Treat the
+large difference as a strong signal to investigate conversion and call shape,
+not as an end-to-end service speedup claim. The resource-matched HTTP/storage
+benchmark remains the authoritative comparison for that claim.
+
+### Matched JSON Projection Recheck
+
+A follow-up run used one generated fixture for both languages: 32 envelopes,
+89,788 input bytes, 15 timed iterations, and identical output digest
+`c1939d02100f06c8bc171a7db870d58bf33e7e9b021adf61b20e7234d01e79aa`.
+The comparison below includes JSON parsing, declared-field projection, and
+canonical JSON serialization in both paths:
+
+| Path | Median per iteration | P95 per iteration |
+| --- | ---: | ---: |
+| Python JSON parse/project/encode | 3.834 ms | 4.745 ms |
+| Rust JSON parse/project/encode | 1.701 ms | 1.836 ms |
+
+This run shows about a 2.3x Rust advantage for this small, local graph-slice
+microbenchmark. It does not establish an end-to-end stack speedup: it excludes
+HTTP/MCP handling, authorization, persistence, and workflow/runtime costs, and
+is a single Windows-host sample. The separate Python Pydantic-validation
+measurement (1,958 ms median) must not be compared directly with Rust family
+validation (2.265 ms median): those validators do not yet implement equivalent
+validation contracts, so that result is a parity gap to resolve, not valid
+performance evidence.
