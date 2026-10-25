@@ -72,9 +72,18 @@ def transaction_authority_for_selection(
     Python owner. This is an internal decision, not caller-provided payload.
     """
     selected = dict(snapshot)
+    global_mode = selected.get("KOGWISTAR_IMPL_MODE")
+    if global_mode is None:
+        global_mode = "python"
+    meta_mode = selected.get("KOGWISTAR_IMPL_META_STORE")
+    if meta_mode is None:
+        meta_mode = global_mode
+    postgres_mode = selected.get("KOGWISTAR_IMPL_POSTGRES_AUTHORITY")
+    if postgres_mode is None:
+        postgres_mode = "python"
     if (
-        selected.get("KOGWISTAR_IMPL_META_STORE") == "rust"
-        or selected.get("KOGWISTAR_IMPL_POSTGRES_AUTHORITY") == "rust"
+        meta_mode == "rust"
+        or postgres_mode == "rust"
     ):
         return "rust"
     return "python"
@@ -180,18 +189,34 @@ def implementation_selection_metadata(
     """
 
     raw = {name: value for name, value in snapshot}
-    global_mode = raw.get("KOGWISTAR_IMPL_MODE") or "python"
+    global_mode = raw.get("KOGWISTAR_IMPL_MODE")
+    if global_mode is None:
+        global_mode = "python"
+
+    def effective_selector(name: str, *, fallback: str) -> str:
+        value = raw.get(name)
+        return fallback if value is None else value
+
     effective = {
         "KOGWISTAR_IMPL_MODE": global_mode,
-        "KOGWISTAR_IMPL_CONTRACTS": raw.get("KOGWISTAR_IMPL_CONTRACTS") or global_mode,
-        "KOGWISTAR_IMPL_META_STORE": raw.get("KOGWISTAR_IMPL_META_STORE") or global_mode,
-        "KOGWISTAR_IMPL_GRAPH_STORE": raw.get("KOGWISTAR_IMPL_GRAPH_STORE") or global_mode,
-        "KOGWISTAR_IMPL_RUNTIME": raw.get("KOGWISTAR_IMPL_RUNTIME") or global_mode,
-        "KOGWISTAR_IMPL_SERVER": raw.get("KOGWISTAR_IMPL_SERVER") or global_mode,
-        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY": raw.get(
-            "KOGWISTAR_IMPL_POSTGRES_AUTHORITY"
-        )
-        or "python",
+        "KOGWISTAR_IMPL_CONTRACTS": effective_selector(
+            "KOGWISTAR_IMPL_CONTRACTS", fallback=global_mode
+        ),
+        "KOGWISTAR_IMPL_META_STORE": effective_selector(
+            "KOGWISTAR_IMPL_META_STORE", fallback=global_mode
+        ),
+        "KOGWISTAR_IMPL_GRAPH_STORE": effective_selector(
+            "KOGWISTAR_IMPL_GRAPH_STORE", fallback=global_mode
+        ),
+        "KOGWISTAR_IMPL_RUNTIME": effective_selector(
+            "KOGWISTAR_IMPL_RUNTIME", fallback=global_mode
+        ),
+        "KOGWISTAR_IMPL_SERVER": effective_selector(
+            "KOGWISTAR_IMPL_SERVER", fallback=global_mode
+        ),
+        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY": effective_selector(
+            "KOGWISTAR_IMPL_POSTGRES_AUTHORITY", fallback="python"
+        ),
     }
     postgres_coherent = not (
         effective["KOGWISTAR_IMPL_POSTGRES_AUTHORITY"] == "rust"

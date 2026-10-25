@@ -32,6 +32,7 @@ from kogwistar.implementation_selection import (
     implementation_selection_scope,
     postgres_authority_selectors_aligned,
     resolve_implementation_selection,
+    transaction_authority_for_selection,
     transaction_authority_scope,
 )
 from kogwistar.runtime import AsyncWorkflowRuntime, WorkflowRuntime
@@ -109,6 +110,37 @@ def test_selection_metadata_records_effective_defaults_and_transaction_coherence
     assert metadata["effective_selectors"]["KOGWISTAR_IMPL_POSTGRES_AUTHORITY"] == "python"
     assert metadata["invariants"]["postgres_transaction_coherent"] is True
     assert metadata["invariants"]["postgres_selector_alignment"] is False
+
+
+def test_global_rust_fallback_and_transaction_owner_use_the_same_effective_selector(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_MODE", "rust")
+    monkeypatch.delenv("KOGWISTAR_IMPL_META_STORE", raising=False)
+    monkeypatch.delenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", raising=False)
+
+    snapshot = capture_implementation_selection()
+    metadata = implementation_selection_metadata(snapshot)
+
+    assert metadata["effective_selectors"]["KOGWISTAR_IMPL_META_STORE"] == "rust"
+    assert transaction_authority_for_selection(snapshot) == "rust"
+    with implementation_selection_scope(snapshot):
+        with pytest.raises(RuntimeError, match="does not match frozen implementation selection"):
+            with transaction_authority_scope("python"):
+                pass
+        with transaction_authority_scope("rust"):
+            assert active_transaction_authority() == "rust"
+
+
+def test_empty_selector_is_not_reported_as_an_unset_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_MODE", "python")
+    monkeypatch.setenv("KOGWISTAR_IMPL_RUNTIME", "")
+
+    metadata = implementation_selection_metadata(capture_implementation_selection())
+
+    assert metadata["effective_selectors"]["KOGWISTAR_IMPL_RUNTIME"] == ""
 
 
 def test_selection_metadata_flags_incoherent_postgres_authority(
