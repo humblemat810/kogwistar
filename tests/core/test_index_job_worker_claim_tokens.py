@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
+from kogwistar.engine_core.indexing import IndexingSubsystem
 from kogwistar.workers.async_index_job_worker import AsyncIndexJobWorker
 from kogwistar.workers.index_job_worker import IndexJobWorker
 
@@ -63,6 +64,24 @@ def _engine(meta: _Meta, *, fail: bool = False) -> SimpleNamespace:
         namespace="test",
         _implementation_selection_snapshot=None,
     )
+
+
+def _reconciler(meta: _Meta, *, fail: bool = False) -> IndexingSubsystem:
+    engine = SimpleNamespace(
+        meta_sqlite=meta,
+        namespace="test",
+        _phase1_enable_index_jobs=True,
+        _phase1_enable_validation_cache=False,
+        _implementation_selection_snapshot=None,
+    )
+    subsystem = IndexingSubsystem(engine)
+
+    def apply_index_job(**_: object) -> None:
+        if fail:
+            raise RuntimeError("projection failed")
+
+    subsystem.apply_index_job = apply_index_job  # type: ignore[method-assign]
+    return subsystem
 
 
 def _job(*, claim_token: str | None, max_retries: int = 3) -> SimpleNamespace:
@@ -154,3 +173,19 @@ def test_legacy_claim_without_token_keeps_compatibility_call_shape() -> None:
 
     assert worker.tick().done == 1
     assert meta.done == [("job-1", None)]
+
+
+def test_reconciler_propagates_claim_token_to_success_ack() -> None:
+    meta = _Meta(_job(claim_token="claim-1"))
+    subsystem = _reconciler(meta)
+
+    assert subsystem.reconcile_indexes(max_jobs=1) == 1
+    assert meta.done == [("job-1", "claim-1")]
+
+
+def test_reconciler_propagates_claim_token_to_retry() -> None:
+    meta = _Meta(_job(claim_token="claim-1"))
+    subsystem = _reconciler(meta, fail=True)
+
+    assert subsystem.reconcile_indexes(max_jobs=1) == 0
+    assert meta.retried == [("job-1", "claim-1")]

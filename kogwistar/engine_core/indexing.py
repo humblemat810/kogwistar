@@ -439,6 +439,12 @@ class IndexingSubsystem:
             payload_json = getattr(job, "payload_json", None) or (
                 job.get("payload_json") if isinstance(job, dict) else None
             )
+            raw_claim_token = getattr(job, "claim_token", None) or (
+                job.get("claim_token") if isinstance(job, dict) else None
+            )
+            claim_token = (
+                str(raw_claim_token) if raw_claim_token is not None else None
+            )
 
             retry_count = (
                 getattr(job, "retry_count", None)
@@ -477,11 +483,27 @@ class IndexingSubsystem:
                     if bump is not None and next_retry < try_mr:
                         delay = min(300, 2 ** min(next_retry - 1, 8))
                         bump_started = time.perf_counter()
-                        bump(str(job_id), err, next_run_at_seconds=int(delay))
+                        if claim_token is None:
+                            bump(str(job_id), err, next_run_at_seconds=int(delay))
+                        else:
+                            bump(
+                                str(job_id),
+                                err,
+                                next_run_at_seconds=int(delay),
+                                claim_token=claim_token,
+                            )
                         self._profile_step("reconcile.bump_retry_and_requeue", bump_started)
                     elif mark_failed is not None:
                         fail_started = time.perf_counter()
-                        mark_failed(str(job_id), err, final=True)
+                        if claim_token is None:
+                            mark_failed(str(job_id), err, final=True)
+                        else:
+                            mark_failed(
+                                str(job_id),
+                                err,
+                                final=True,
+                                claim_token=claim_token,
+                            )
                         self._profile_step("reconcile.mark_index_job_failed", fail_started)
                 self._profile_step("reconcile.job_total", job_started)
                 continue
@@ -489,7 +511,10 @@ class IndexingSubsystem:
             mark_done = getattr(self.engine.meta_sqlite, "mark_index_job_done", None)
             if mark_done is not None and job_id:
                 done_started = time.perf_counter()
-                mark_done(str(job_id))
+                if claim_token is None:
+                    mark_done(str(job_id))
+                else:
+                    mark_done(str(job_id), claim_token=claim_token)
                 self._profile_step("reconcile.mark_index_job_done", done_started)
             self._profile_step("reconcile.job_total", job_started)
             applied += 1
