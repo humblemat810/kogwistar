@@ -26,6 +26,7 @@ from kogwistar.engine_core.indexing import IndexingSubsystem
 from kogwistar.engine_core.postgres_backend import (
     CollectionSpec,
     PgCollectionFacade,
+    PgVectorBackend,
     PostgresUnitOfWork,
 )
 from kogwistar.engine_core.subsystems.write import WriteSubsystem
@@ -354,6 +355,60 @@ def test_backend_collection_mutations_cannot_run_from_worker_callback() -> None:
                 write()
 
     assert memory.node.count() == 0
+
+
+def test_native_store_bridges_cannot_be_called_from_worker_callback(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from kogwistar import _rust_bridge
+
+    native_calls: list[str] = []
+    monkeypatch.setattr(
+        _rust_bridge,
+        "_load_extension",
+        lambda: native_calls.append("loaded"),
+    )
+    operations = (
+        lambda: _rust_bridge.store_sqlite(
+            path=tmp_path / "guarded.sqlite", operation={"kind": "add_node"}
+        ),
+        lambda: _rust_bridge.store_postgres(
+            dsn="postgresql://example/db",
+            schema="test",
+            operation={"kind": "upsert_node"},
+        ),
+    )
+    expected = "transaction authority cannot be opened from a worker callback"
+
+    for operation in operations:
+        with callback_execution_scope():
+            with pytest.raises(RuntimeError, match=expected):
+                operation()
+
+    assert native_calls == []
+
+
+def test_postgres_sql_write_primitives_cannot_be_called_from_worker_callback() -> None:
+    backend = object.__new__(PgVectorBackend)
+    writes = (
+        lambda: backend._upsert(
+            object(), ids=[], documents=[], metadatas=[]  # type: ignore[arg-type]
+        ),
+        lambda: backend.stage1_projection_upsert(
+            namespace="ns",
+            entity_kind="node",
+            entity_id="n",
+            document="{}",
+            metadata={},
+            source_fingerprint="fp",
+        ),
+    )
+    expected = "transaction authority cannot be opened from a worker callback"
+
+    for write in writes:
+        with callback_execution_scope():
+            with pytest.raises(RuntimeError, match=expected):
+                write()
 
 
 def test_transaction_authority_scope_matches_frozen_selection(

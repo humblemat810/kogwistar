@@ -9,7 +9,10 @@ from importlib import import_module
 from typing import Any, Protocol, TypeVar, cast
 
 from kogwistar.json_types import JsonObject, JsonValue
-from kogwistar.implementation_selection import implementation_env
+from kogwistar.implementation_selection import (
+    assert_transaction_entry_allowed,
+    implementation_env,
+)
 from kogwistar.runtime.strict_json import normalize_json_value
 
 
@@ -115,6 +118,7 @@ def store_sqlite(
     Rust callers keep its default so every call observes the latest external
     SQLite commit.
     """
+    assert_transaction_entry_allowed()
     engine_sqlite = sys.modules.get("kogwistar.engine_core.engine_sqlite")
     active_connection = (
         getattr(engine_sqlite, "get_active_sqlite_conn", lambda: None)()
@@ -193,6 +197,7 @@ def store_postgres(
     route Python's public Postgres backend. SQLAlchemy DSNs are normalized in
     memory only; errors intentionally do not echo connection credentials.
     """
+    assert_transaction_entry_allowed()
     try:
         extension = _load_extension()
         return json.loads(

@@ -1204,6 +1204,7 @@ class PgVectorBackend:
         source_fingerprint: str,
         revision: int = 0,
     ) -> None:
+        assert_transaction_entry_allowed()
         if entity_kind not in {"node", "edge"}:
             raise ValueError(f"unsupported Stage-1 entity kind: {entity_kind!r}")
         table = self.stage1_projections
@@ -1285,6 +1286,7 @@ class PgVectorBackend:
     def stage1_projection_delete(
         self, *, namespace: str, entity_kind: str, entity_id: str
     ) -> None:
+        assert_transaction_entry_allowed()
         if entity_kind not in {"node", "edge"}:
             raise ValueError(f"unsupported Stage-1 entity kind: {entity_kind!r}")
         with self._conn() as conn:
@@ -1307,6 +1309,7 @@ class PgVectorBackend:
         source_fingerprint: str,
         revision: int = 0,
     ) -> None:
+        assert_transaction_entry_allowed()
         if entity_kind not in {"node", "edge"}:
             raise ValueError(f"unsupported Stage-1 entity kind: {entity_kind!r}")
         table = self.stage1_projections
@@ -1390,6 +1393,7 @@ class PgVectorBackend:
     async def stage1_projection_delete_async(
         self, *, namespace: str, entity_kind: str, entity_id: str
     ) -> None:
+        assert_transaction_entry_allowed()
         if entity_kind not in {"node", "edge"}:
             raise ValueError(f"unsupported Stage-1 entity kind: {entity_kind!r}")
         async with self._async_conn() as conn:
@@ -1649,6 +1653,7 @@ class PgVectorBackend:
     def _delete(
         self, table: sa.Table, *, ids: Sequence[str] | None, where: Json | None
     ) -> None:
+        assert_transaction_entry_allowed()
         stmt = sa.delete(table)
         if ids is not None:
             stmt = stmt.where(table.c.id.in_(list(ids)))
@@ -1662,6 +1667,7 @@ class PgVectorBackend:
     async def _delete_async(
         self, table: sa.Table, *, ids: Sequence[str] | None, where: Json | None
     ) -> None:
+        assert_transaction_entry_allowed()
         stmt = sa.delete(table)
         if ids is not None:
             stmt = stmt.where(table.c.id.in_(list(ids)))
@@ -1681,6 +1687,7 @@ class PgVectorBackend:
         metadatas: Sequence[Json],
         embeddings: Sequence[Sequence[float]] | None = None,
     ) -> None:
+        assert_transaction_entry_allowed()
         if embeddings is not None and len(embeddings) != len(ids):
             raise ValueError("embeddings length must match ids length")
 
@@ -1730,6 +1737,7 @@ class PgVectorBackend:
         metadatas: Sequence[Json],
         embeddings: Sequence[Sequence[float]] | None = None,
     ) -> None:
+        assert_transaction_entry_allowed()
         if embeddings is not None and len(embeddings) != len(ids):
             raise ValueError("embeddings length must match ids length")
 
@@ -1979,6 +1987,8 @@ class PgVectorBackend:
           non-vector tables, it is ignored.
         """
 
+        assert_transaction_entry_allowed()
+
         if documents is None and metadatas is None and embeddings is None:
             return
 
@@ -2038,6 +2048,7 @@ class PgVectorBackend:
         metadatas: Sequence[Json] | None = None,
         embeddings: Sequence[Sequence[float]] | None = None,
     ) -> None:
+        assert_transaction_entry_allowed()
         if documents is None and metadatas is None and embeddings is None:
             return
 
