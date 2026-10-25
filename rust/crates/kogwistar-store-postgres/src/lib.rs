@@ -3806,6 +3806,7 @@ where
             "graph delete event id must not be empty".to_owned(),
         ));
     }
+    validate_graph_delete_target(&mutation.table, &mutation.entity_kind)?;
     advisory_lock(client, &mutation.event_id, 0).await?;
     if let Some(existing) = event_by_id(client, tables, &mutation.event_id).await? {
         if existing.namespace != mutation.scope.namespace {
@@ -3883,6 +3884,24 @@ fn canonical_tombstone_present(metadata: &Map<String, Value>) -> bool {
         metadata.get("lifecycle_status").and_then(Value::as_str),
         Some("tombstoned") | Some("deleted")
     )
+}
+
+fn validate_graph_delete_target(table: &str, entity_kind: &str) -> PostgresStoreResult<()> {
+    let expected_table = match entity_kind {
+        "node" => "gke_nodes",
+        "edge" => "gke_edges",
+        _ => {
+            return Err(PostgresStoreError::Backend(
+                "physical graph purge only supports node or edge".to_owned(),
+            ));
+        }
+    };
+    if table != expected_table {
+        return Err(PostgresStoreError::Backend(format!(
+            "graph entity kind {entity_kind:?} must use table {expected_table:?}"
+        )));
+    }
+    Ok(())
 }
 
 async fn upsert_graph_projection<C>(
@@ -6517,6 +6536,14 @@ mod tests {
             Value::String("deleted".to_owned()),
         );
         assert!(canonical_tombstone_present(&tombstoned));
+    }
+
+    #[test]
+    fn physical_graph_purge_rejects_unknown_or_mismatched_targets() {
+        assert!(validate_graph_delete_target("gke_nodes", "node").is_ok());
+        assert!(validate_graph_delete_target("gke_edges", "edge").is_ok());
+        assert!(validate_graph_delete_target("gke_nodes", "document").is_err());
+        assert!(validate_graph_delete_target("gke_edges", "node").is_err());
     }
 
     fn raw(id: &str, payload_json: &str) -> NewRawEntityEvent {
