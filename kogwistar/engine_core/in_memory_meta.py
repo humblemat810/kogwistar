@@ -13,6 +13,7 @@ from types import TracebackType
 from typing import cast
 
 from ..json_types import JsonValue
+from ..implementation_selection import assert_transaction_entry_allowed
 from ..messaging.models import ProjectedLaneMessageRow
 from .engine_sqlite import IndexJobRow
 from .event_envelope import EntityEventEnvelope
@@ -315,6 +316,7 @@ class InMemoryMetaStore(LaneMessageMetaStoreMixin):
 
     @contextmanager
     def transaction(self, *, immediate: bool = True) -> Iterator[_TxnView]:
+        assert_transaction_entry_allowed()
         _ = immediate
         active = _active_in_memory_meta_txn.get()
         if active is not None and active.owner is self:

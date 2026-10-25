@@ -97,6 +97,14 @@ def active_transaction_authority() -> TransactionAuthority | None:
     return _transaction_authority.get()
 
 
+def assert_transaction_entry_allowed() -> None:
+    """Reject backend transaction entry from a worker resolver callback."""
+    if _callback_execution_active.get():
+        raise RuntimeError(
+            "transaction authority cannot be opened from a worker callback"
+        )
+
+
 @contextmanager
 def callback_execution_scope() -> Iterator[None]:
     """Reject callback execution while an authoritative transaction is open.
@@ -129,10 +137,7 @@ def transaction_authority_scope(authority: TransactionAuthority) -> Iterator[Non
     selection by entering a different authority scope directly.  Calls made
     without a selection snapshot retain the legacy behavior.
     """
-    if _callback_execution_active.get():
-        raise RuntimeError(
-            "transaction authority cannot be opened from a worker callback"
-        )
+    assert_transaction_entry_allowed()
     selected_snapshot = _selection_snapshot.get()
     if selected_snapshot is not None:
         expected = transaction_authority_for_selection(selected_snapshot)

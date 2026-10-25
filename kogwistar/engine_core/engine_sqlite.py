@@ -13,6 +13,7 @@ from types import TracebackType
 from typing import Literal, TypeAlias
 
 from ..json_types import JsonValue
+from ..implementation_selection import assert_transaction_entry_allowed
 from ..messaging.models import ProjectedLaneMessageRow
 from .event_envelope import EntityEventEnvelope
 from .meta_lane_messages import LaneMessageMetaStoreMixin
@@ -626,6 +627,7 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
         """
         from .sqlite_context import sqlite_execution_context
 
+        assert_transaction_entry_allowed()
         with sqlite_execution_context("python"):
             existing = get_active_sqlite_conn()
             if existing is not None and _active_sqlite_path.get() == self.db_path.resolve():

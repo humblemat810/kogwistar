@@ -61,6 +61,7 @@ from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from ..json_types import JsonValue
+from ..implementation_selection import assert_transaction_entry_allowed
 from ..utils.embedding_vectors import (
     normalize_embedding_rows,
     normalize_embedding_vector,
@@ -290,6 +291,7 @@ class PostgresUnitOfWork:
 
     @contextmanager
     def transaction(self) -> Iterator[None]:
+        assert_transaction_entry_allowed()
         existing = get_active_conn()
         if existing is not None:
             # Join outer transaction
@@ -309,6 +311,7 @@ class AsyncPostgresUnitOfWork:
 
     @asynccontextmanager
     async def transaction(self) -> AsyncIterator[None]:
+        assert_transaction_entry_allowed()
         existing = get_active_conn()
         if existing is not None:
             yield

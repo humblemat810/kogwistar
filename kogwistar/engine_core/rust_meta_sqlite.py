@@ -11,6 +11,7 @@ from typing import Any, NoReturn, Protocol, TYPE_CHECKING, TypeVar, cast
 from kogwistar._rust_bridge import store_sqlite
 from kogwistar.engine_core.engine_sqlite import IndexJobRow, ProjectedLaneMessageSqlRow
 from kogwistar.json_types import JsonObject, JsonValue
+from kogwistar.implementation_selection import assert_transaction_entry_allowed
 
 from .event_envelope import EntityEventEnvelope
 
@@ -165,6 +166,7 @@ class RustEngineSQLite:
     def transaction(self, *, immediate: bool = True) -> Iterator[_TransactionToken]:
         from .sqlite_context import sqlite_execution_context
 
+        assert_transaction_entry_allowed()
         del immediate
         with sqlite_execution_context("rust"):
             current = self._transaction_id.get()

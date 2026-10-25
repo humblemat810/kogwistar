@@ -20,7 +20,10 @@ from kogwistar._rust_bridge import (
 )
 from kogwistar.engine_core.engine import GraphKnowledgeEngine, engine_context
 from kogwistar.engine_core.in_memory_backend import build_in_memory_backend
+from kogwistar.engine_core.in_memory_meta import InMemoryMetaStore
+from kogwistar.engine_core.engine_sqlite import EngineSQLite
 from kogwistar.engine_core.indexing import IndexingSubsystem
+from kogwistar.engine_core.postgres_backend import PostgresUnitOfWork
 from kogwistar.engine_core.subsystems.write import WriteSubsystem
 from kogwistar.engine_core.two_stage_async import AsyncPostgresTwoStageProjectionAdapter
 from kogwistar.implementation_selection import (
@@ -292,6 +295,27 @@ def test_engine_unit_of_work_cannot_be_opened_from_worker_callback(
         with pytest.raises(RuntimeError, match=expected):
             with engine.uow():
                 pytest.fail("callback must not enter the engine UoW")
+
+
+def test_backend_transactions_cannot_be_opened_from_worker_callback(
+    tmp_path: Path,
+) -> None:
+    class EngineWithoutTransactions:
+        def begin(self) -> None:
+            pytest.fail("backend transaction started before callback guard")
+
+    contexts = (
+        EngineSQLite(tmp_path / "guarded.sqlite").transaction(),
+        InMemoryMetaStore().transaction(),
+        PostgresUnitOfWork(engine=EngineWithoutTransactions()).transaction(),
+    )
+    expected = "transaction authority cannot be opened from a worker callback"
+
+    for context in contexts:
+        with callback_execution_scope():
+            with pytest.raises(RuntimeError, match=expected):
+                with context:
+                    pytest.fail("backend transaction must not start in callback")
 
 
 def test_transaction_authority_scope_matches_frozen_selection(

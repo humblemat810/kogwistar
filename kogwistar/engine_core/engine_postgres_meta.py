@@ -20,6 +20,7 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from ..json_types import JsonValue
+from ..implementation_selection import assert_transaction_entry_allowed
 from ..messaging.models import ProjectedLaneMessageRow
 from ..typing_interfaces import SqlAlchemyConnectionLike, SqlAlchemyResultLike
 from .event_envelope import EntityEventEnvelope
@@ -514,6 +515,7 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
     # ----------------------------
     @contextmanager
     def transaction(self) -> Iterator[SqlAlchemyConnectionLike]:
+        assert_transaction_entry_allowed()
         existing = get_active_conn()
         if existing is not None:
             if isinstance(existing, _AsyncConnectionAdapter):
