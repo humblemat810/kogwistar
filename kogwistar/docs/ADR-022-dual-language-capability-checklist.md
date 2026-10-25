@@ -61,6 +61,10 @@ and CI evidence rather than assigning one percentage to the whole port.
   `graph_model::tests::persistent_node_and_edge_normalize_python_mixin_fields`,
   the strict persistent model lifecycle tests (**65 Rust contract tests pass**),
   and `test_edge_model_shares_tombstone_and_level_metadata_contract` (Python).
+- After these model-contract changes, the loopback-enabled Windows Rust
+  workspace suite passed **249 tests, 0 failed, 1 intentionally ignored**;
+  this includes 69 API tests and all storage/runtime/bridge crate tests. The
+  focused Python edge mixin contract also passed on CPython 3.13.
 
 ## Design and inventory
 
