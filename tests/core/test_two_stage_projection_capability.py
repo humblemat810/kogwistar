@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from kogwistar.engine_core import subsystems as engine_subsystems
 from kogwistar.engine_core.chroma_backend import (
     ChromaBackend,
     _chroma_safe_kwargs,
@@ -380,6 +381,100 @@ def test_two_stage_dispatches_to_executable_adapter_without_sync_fallback(tmp_pa
     node = build_entity_node(node_id="n1", doc_id="d1", embedding=None)
     engine.write.add_node(node, doc_id="node-doc")
     assert adapter.calls == [("node", node, "node-doc")]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("entity_kind", ["node", "edge"])
+async def test_async_two_stage_contract_rejection_precedes_durable_effects(
+    tmp_path, monkeypatch, entity_kind: str
+) -> None:
+    adapter_calls: list[str] = []
+
+    class _AsyncAdapter:
+        async def add_node(self, node, *, doc_id=None):
+            adapter_calls.append("node")
+
+        async def add_edge(self, edge, *, doc_id=None):
+            adapter_calls.append("edge")
+
+        async def apply_embedding_job(self, **kwargs):
+            del kwargs
+
+        async def stage1_query(self, **kwargs):
+            del kwargs
+            return []
+
+        async def remove_stage1(self, **kwargs):
+            del kwargs
+
+        async def promote_stage2(self, **kwargs):
+            del kwargs
+
+        async def remove_stage2_or_invalidate(self, **kwargs):
+            del kwargs
+
+        async def reconcile_projection(self, **kwargs):
+            del kwargs
+            return 0
+
+    adapter = _AsyncAdapter()
+
+    def factory(*args, **kwargs):
+        backend = build_fake_backend(*args, **kwargs)
+        backend.two_stage_projection_capability = _complete_capability()
+        backend.async_two_stage_projection_adapter = adapter
+        return backend
+
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path),
+        backend_factory=factory,
+        persistence_mode="two_stage",
+    )
+    validation_calls: list[object] = []
+    event_calls: list[dict[str, object]] = []
+
+    def reject_contract(entity):
+        validation_calls.append(entity)
+        raise ValueError("contract rejected")
+
+    def record_event(**kwargs):
+        event_calls.append(kwargs)
+
+    monkeypatch.setattr(
+        engine_subsystems.write, "_validate_graph_model_contract", reject_contract
+    )
+    monkeypatch.setattr(engine, "_append_event_for_entity", record_event)
+
+    if entity_kind == "node":
+        entity = build_entity_node(node_id="async-node", doc_id="doc", embedding=None)
+        write = engine.write.add_node_async(entity)
+    else:
+        entity = build_relationship_edge(
+            edge_id="async-edge",
+            src="source",
+            tgt="target",
+            doc_id="doc",
+            embedding=None,
+        )
+
+        monkeypatch.setattr(
+            engine.adjudicate,
+            "split_endpoints",
+            lambda source_ids, target_ids: (source_ids or [], [], target_ids or [], []),
+        )
+
+        async def endpoints_exist(edge):
+            del edge
+
+        monkeypatch.setattr(engine.persist, "assert_endpoints_exist_async", endpoints_exist)
+        write = engine.write.add_edge_async(entity)
+
+    with pytest.raises(ValueError, match="contract rejected"):
+        await write
+
+    assert validation_calls == [entity]
+    assert event_calls == []
+    assert adapter_calls == []
 
 
 @two_stage_case("pending_visibility")

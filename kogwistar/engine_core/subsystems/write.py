@@ -485,6 +485,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             if doc_id is not None:
                 node.doc_id = doc_id
             await asyncio.to_thread(self._run_pre_add_node_hooks, node)
+            await asyncio.to_thread(_validate_graph_model_contract, node)
             payload = node.model_dump(field_mode="backend", exclude=["embedding"])
             await asyncio.to_thread(
                 self._e._append_event_for_entity,
@@ -528,6 +529,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         await self._e.persist.assert_endpoints_exist_async(edge)
         if await asyncio.to_thread(self._run_pre_add_edge_hooks, edge, pure=False):
             return
+        await asyncio.to_thread(_validate_graph_model_contract, edge)
         payload = edge.model_dump(field_mode="backend", exclude=["embedding"])
         await asyncio.to_thread(
             self._e._append_event_for_entity,
