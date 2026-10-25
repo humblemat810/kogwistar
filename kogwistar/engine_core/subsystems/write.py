@@ -639,7 +639,9 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
     ) -> None:
         import asyncio
 
-        if self._rust_postgres_meta() is not None:
+        if self._rust_postgres_meta_or_python_fallback(
+            operation="async projection metadata patch"
+        ) is not None:
             await asyncio.to_thread(
                 self.patch_base_projection_metadata,
                 entity_kind=entity_kind,
@@ -921,7 +923,9 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             else node.model_dump(field_mode="backend", exclude=["embedding"])
         )
         native_added = False
-        if self._rust_postgres_meta() is not None:
+        if self._rust_postgres_meta_or_python_fallback(
+            operation="async node add"
+        ) is not None:
             native_added = await asyncio.to_thread(
                 self._rust_postgres_projection_upsert,
                 entity_kind="node",
@@ -1000,7 +1004,9 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             else edge.model_dump(field_mode="backend", exclude=["embedding"])
         )
         native_added = False
-        if self._rust_postgres_meta() is not None:
+        if self._rust_postgres_meta_or_python_fallback(
+            operation="async edge add"
+        ) is not None:
             native_added = await asyncio.to_thread(
                 self._rust_postgres_projection_upsert,
                 entity_kind="edge",
@@ -1094,7 +1100,12 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         return meta
 
     def uses_rust_postgres_authority(self) -> bool:
-        return self._rust_postgres_meta() is not None
+        return (
+            self._rust_postgres_meta_or_python_fallback(
+                operation="authority capability check"
+            )
+            is not None
+        )
 
     def patch_base_projection_metadata(
         self, *, entity_kind: _ProjectionEntityKind, entity_id: str, metadata_patch: JsonObject

@@ -20,7 +20,15 @@ pytestmark = [pytest.mark.ci, pytest.mark.core]
 
 @pytest.mark.parametrize(
     "operation",
-    ["add", "edge-delete", "rollback-delete", "replace", "metadata-patch"],
+    [
+        "add",
+        "edge-delete",
+        "rollback-delete",
+        "replace",
+        "metadata-patch",
+        "async-metadata-patch",
+        "authority-check",
+    ],
 )
 def test_selected_rust_postgres_mutations_fail_closed_without_native_meta_store(
     monkeypatch: pytest.MonkeyPatch, operation: str
@@ -47,6 +55,15 @@ def test_selected_rust_postgres_mutations_fail_closed_without_native_meta_store(
                 entity_id="node-1",
                 metadata_patch={"reference_fingerprint": "abc"},
             )
+        elif operation == "async-metadata-patch":
+            pending = writer._async_patch_base_projection_metadata(
+                entity_kind="node",
+                entity_id="node-1",
+                metadata_patch={"reference_fingerprint": "abc"},
+            )
+            pending.send(None)
+        elif operation == "authority-check":
+            writer.uses_rust_postgres_authority()
         elif operation == "rollback-delete":
             writer.rust_postgres_delete_existing(
                 entity_kind="node", entity_ids=["node-1"]
