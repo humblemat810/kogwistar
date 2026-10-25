@@ -278,6 +278,22 @@ def test_callback_execution_marker_is_cleared_after_callback_failure() -> None:
         assert active_transaction_authority() == "python"
 
 
+def test_engine_unit_of_work_cannot_be_opened_from_worker_callback(
+    tmp_path: Path,
+) -> None:
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path),
+        embedding_function=ConstantEmbeddingFunction(dim=4),
+        backend_factory=build_in_memory_backend,
+    )
+    expected = "transaction authority cannot be opened from a worker callback"
+
+    with callback_execution_scope():
+        with pytest.raises(RuntimeError, match=expected):
+            with engine.uow():
+                pytest.fail("callback must not enter the engine UoW")
+
+
 def test_transaction_authority_scope_matches_frozen_selection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
