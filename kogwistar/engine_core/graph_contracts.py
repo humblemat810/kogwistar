@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Literal, TypedDict, cast
 
-from pydantic import BaseModel
+from pydantic_extension.model_slicing.mixin import ModeSlicingMixin
 
 from kogwistar.engine_core.graph_slice_manifest import build_slice_manifest
 
@@ -43,6 +43,7 @@ GraphModelClassName = Literal[
 ]
 
 GraphWireFieldMode = Literal["backend", "frontend", "dto", "llm", "llm_in"]
+GraphWireDumpFormat = Literal["python", "json"]
 GRAPH_MODEL_ENVELOPE_VERSION = 1
 
 
@@ -96,7 +97,7 @@ SUPPORTED_GRAPH_MODEL_CLASSES: tuple[GraphModelClassName, ...] = tuple(
 )
 
 
-def graph_model_class_for(model: BaseModel) -> GraphModelClassName:
+def graph_model_class_for(model: ModeSlicingMixin) -> GraphModelClassName:
     """Return the explicit Rust envelope class for a supported Python model."""
 
     model_class = _MODEL_CLASS_BY_NAME.get(type(model).__name__)
@@ -109,9 +110,11 @@ def graph_model_class_for(model: BaseModel) -> GraphModelClassName:
 
 
 def build_graph_model_envelope(
-    model: BaseModel,
+    model: ModeSlicingMixin,
     *,
     field_mode: GraphWireFieldMode = "backend",
+    exclude: set[str] | list[str] | None = None,
+    dump_format: GraphWireDumpFormat = "json",
 ) -> GraphModelEnvelopeDict:
     """Build a lossless, versioned envelope without changing the model.
 
@@ -123,7 +126,14 @@ def build_graph_model_envelope(
 
     model_class = graph_model_class_for(model)
     try:
-        payload = model.model_dump(field_mode=field_mode, dump_format="json")
+        if dump_format == "json":
+            payload = model.model_dump(
+                field_mode=field_mode,
+                dump_format="json",
+                exclude=exclude,
+            )
+        else:
+            payload = model.model_dump(field_mode=field_mode, exclude=exclude)
     except (AttributeError, TypeError, ValueError) as exc:
         raise GraphModelAdapterError(
             "graph model does not support the versioned field-mode wire contract"
@@ -138,17 +148,18 @@ def build_graph_model_envelope(
 
 
 def build_graph_model_slice_envelope(
-    model: BaseModel,
+    model: ModeSlicingMixin,
     *,
     field_mode: GraphWireFieldMode,
 ) -> GraphModelSliceEnvelopeDict:
     """Build a canonical envelope plus an explicit projection declaration."""
 
-    envelope = build_graph_model_envelope(model, field_mode="backend")
-    envelope["slice"] = {
-        "schema_version": 1,
-        "mode": field_mode,
-        "manifest": build_slice_manifest(type(model)),
+    return {
+        **build_graph_model_envelope(model, field_mode="backend"),
+        "slice": {
+            "schema_version": 1,
+            "mode": field_mode,
+            "manifest": build_slice_manifest(type(model)),
+        },
     }
-    return cast(GraphModelSliceEnvelopeDict, envelope)
 

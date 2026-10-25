@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from typing import cast
 
 import pytest
 from pydantic_extension.model_slicing.mixin import ModeSlicingMixin
@@ -17,6 +18,7 @@ from kogwistar.engine_core.graph_contracts import (
     build_graph_model_slice_envelope,
     build_graph_model_envelope,
     graph_model_class_for,
+    GraphModelEnvelopeDict,
 )
 from kogwistar.engine_core.graph_slice_manifest import project_with_manifest
 from kogwistar.engine_core.models import (
@@ -419,6 +421,119 @@ def test_shadow_contract_mode_validates_the_versioned_envelope(
     assert captured[0]["schema_version"] == GRAPH_MODEL_ENVELOPE_VERSION
     assert captured[0]["model_class"] == "node"
     assert envelope == captured[0]
+
+
+@pytest.mark.parametrize(
+    ("model_class", "method_name", "backend_method"),
+    [
+        ("PureChromaNode", "add_pure_node", "node_add"),
+        ("PureChromaEdge", "add_pure_edge", "edge_add"),
+    ],
+)
+@pytest.mark.parametrize("contract_mode", ["python", "shadow"])
+def test_pure_graph_writes_honor_contract_mode_before_persistence(
+    monkeypatch: pytest.MonkeyPatch,
+    model_class: str,
+    method_name: str,
+    backend_method: str,
+    contract_mode: str,
+) -> None:
+    from types import SimpleNamespace
+
+    from kogwistar.engine_core.subsystems.write import WriteSubsystem
+
+    model_type = getattr(engine_models, model_class)
+    payload: dict[str, object] = {
+        "id": f"{model_class}:test",
+        "label": "pure graph fixture",
+        "type": "entity" if model_class.endswith("Node") else "relationship",
+        "summary": "pure graph fixture summary",
+        "embedding": [0.0],
+    }
+    if model_class.endswith("Edge"):
+        payload.update(
+            {
+                "relation": "related_to",
+                "source_ids": ["source"],
+                "target_ids": ["target"],
+                "source_edge_ids": None,
+                "target_edge_ids": None,
+            }
+        )
+    entity = model_type.model_validate(payload)
+    native_envelopes: list[GraphModelEnvelopeDict] = []
+    mutation_kwargs: list[dict[str, object]] = []
+    backend_calls: list[dict[str, object]] = []
+
+    def capture_envelope(envelope: object) -> None:
+        if not isinstance(envelope, dict):
+            raise AssertionError("Rust validator received a non-object envelope")
+        native_envelopes.append(cast(GraphModelEnvelopeDict, envelope))
+
+    monkeypatch.setenv("KOGWISTAR_IMPL_CONTRACTS", contract_mode)
+    monkeypatch.setattr(
+        "kogwistar._rust_bridge.validate_graph_model_family",
+        capture_envelope,
+    )
+    backend = SimpleNamespace(
+        **{
+            backend_method: lambda **kwargs: backend_calls.append(kwargs),
+        }
+    )
+    engine = SimpleNamespace(
+        meta_sqlite=object(),
+        namespace="test",
+        kg_graph_type="knowledge",
+        backend=backend,
+        adjudicate=SimpleNamespace(
+            split_endpoints=lambda source_ids, target_ids: (
+                source_ids,
+                [],
+                target_ids,
+                [],
+            )
+        ),
+        persist=SimpleNamespace(assert_endpoints_exist=lambda _edge: None),
+        pre_add_pure_edge_hooks=[],
+    )
+    writer = WriteSubsystem.__new__(WriteSubsystem)
+    from kogwistar.engine_core.engine import GraphKnowledgeEngine
+
+    writer._e = cast(GraphKnowledgeEngine, engine)
+    monkeypatch.setattr(
+        writer, "_rust_postgres_projection_upsert", lambda **_kwargs: False
+    )
+    monkeypatch.setattr(
+        writer,
+        "_rust_postgres_add",
+        lambda **kwargs: mutation_kwargs.append(kwargs) or False,
+    )
+    if model_class.endswith("Edge"):
+        monkeypatch.setattr(
+            writer,
+            "enrich_edge_meta",
+            lambda edge: {"namespace": "test"},
+        )
+
+    getattr(writer, method_name)(entity)
+
+    expected_payload = json.loads(
+        json.dumps(entity.model_dump(field_mode="backend", exclude=["embedding"]))
+    )
+    assert mutation_kwargs[0]["payload"] == expected_payload
+    if contract_mode == "python":
+        assert native_envelopes == []
+        assert mutation_kwargs[0]["model_envelope"] is None
+    else:
+        assert len(native_envelopes) == 1
+        assert native_envelopes[0]["model_class"] == (
+            "pure_chroma_node" if model_class.endswith("Node") else "pure_chroma_edge"
+        )
+        assert mutation_kwargs[0]["model_envelope"] == native_envelopes[0]
+        assert mutation_kwargs[0]["payload"] == native_envelopes[0]["payload"]
+        assert "embedding" not in native_envelopes[0]["payload"]
+        assert native_envelopes[0]["payload"] == expected_payload
+    assert len(backend_calls) == 1
 
 
 def test_workflow_runtime_subtypes_have_explicit_graph_wire_tags() -> None:

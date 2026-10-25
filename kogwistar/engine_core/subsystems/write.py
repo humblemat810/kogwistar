@@ -80,7 +80,12 @@ def _engine_identity(engine: object) -> int:
     return id(getattr(engine, "_real", engine))
 
 
-def _validate_graph_model_contract(entity: Node | Edge) -> JsonObject | None:
+def _validate_graph_model_contract(
+    entity: Node | Edge | PureChromaNode | PureChromaEdge,
+    *,
+    exclude: set[str] | list[str] | None = None,
+    dump_format: Literal["python", "json"] = "json",
+) -> JsonObject | None:
     """Run optional Rust model validation before any write-side effect."""
 
     from ..._rust_bridge import contract_implementation_mode, validate_graph_model_family
@@ -89,7 +94,11 @@ def _validate_graph_model_contract(entity: Node | Edge) -> JsonObject | None:
         return None
     from ..graph_contracts import build_graph_model_envelope
 
-    envelope = build_graph_model_envelope(entity)
+    envelope = build_graph_model_envelope(
+        entity,
+        exclude=exclude,
+        dump_format=dump_format,
+    )
     payload = decode_json_object(envelope, label="graph model envelope")
     validate_graph_model_family(payload)
     return payload
@@ -1680,6 +1689,11 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         doc, meta = node_doc_and_meta_util(node)
         if meta.get("doc_id"):
             meta.pop("doc_id")
+        model_envelope = _validate_graph_model_contract(
+            node,
+            exclude=["embedding"],
+            dump_format="python",
+        )
         embedding = normalize_embedding_vector(
             node.embedding
             if node.embedding is not None
@@ -1687,7 +1701,11 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             allow_none=False,
         )
         assert embedding is not None
-        payload = node.model_dump(field_mode="backend", exclude=["embedding"])
+        payload = (
+            model_envelope["payload"]
+            if model_envelope is not None
+            else node.model_dump(field_mode="backend", exclude=["embedding"])
+        )
         native_added = self._rust_postgres_projection_upsert(
             entity_kind="node",
             entity_id=cast(str, node.id),
@@ -1702,6 +1720,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             metadata=meta,
             embedding=embedding,
             payload=payload if isinstance(payload, dict) else {},
+            model_envelope=model_envelope,
             enqueue_index_jobs=False,
         )
         if not native_added:
@@ -1732,6 +1751,11 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
 
         doc = edge.model_dump_json(field_mode="backend", exclude=["embedding"])
         metadata = self.enrich_edge_meta(cast(Edge, edge))
+        model_envelope = _validate_graph_model_contract(
+            edge,
+            exclude=["embedding"],
+            dump_format="python",
+        )
         embedding = normalize_embedding_vector(
             edge.embedding
             if edge.embedding is not None
@@ -1739,7 +1763,11 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             allow_none=False,
         )
         assert embedding is not None
-        payload = edge.model_dump(field_mode="backend", exclude=["embedding"])
+        payload = (
+            model_envelope["payload"]
+            if model_envelope is not None
+            else edge.model_dump(field_mode="backend", exclude=["embedding"])
+        )
         native_added = self._rust_postgres_projection_upsert(
             entity_kind="edge",
             entity_id=cast(str, edge.id),
@@ -1754,6 +1782,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             metadata=metadata,
             embedding=embedding,
             payload=payload if isinstance(payload, dict) else {},
+            model_envelope=model_envelope,
             enqueue_index_jobs=False,
         )
         if not native_added:
