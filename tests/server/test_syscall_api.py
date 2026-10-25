@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+from types import SimpleNamespace
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -10,6 +14,7 @@ from tests.server.test_chat_server_api import (
     _runtime_success_runner,
     _token_header,
 )
+from kogwistar.server.syscall_api import SyscallRequest, create_syscall_router
 from tests.server.test_chat_server_api import (
     # Imported for pytest fixture discovery in this module.
     engine_triplet as engine_triplet,  # noqa: F401
@@ -183,6 +188,43 @@ def test_syscall_invoke_tool_list_transcript_returns_messages(monkeypatch, engin
         assert payload["status"] == "ok"
         assert payload["result"]["tool_name"] == "list_transcript"
         assert payload["result"]["messages"] == []
+
+
+def test_syscall_receive_message_matches_shared_wire_fixture():
+    fixture = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/receive-message-result-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    service = SimpleNamespace(
+        list_transcript=lambda conversation_id: fixture["messages"]
+        if conversation_id == fixture["conversation_id"]
+        else pytest.fail("unexpected conversation ID")
+    )
+    authorized: list[tuple[str, object]] = []
+    router = create_syscall_router(
+        get_service=lambda: service,
+        require_role=lambda role: authorized.append(("role", role)),
+        require_namespace=lambda namespace: authorized.append(("namespace", namespace)),
+        conversation_namespace="conversation",
+        workflow_namespaces={"workflow"},
+    )
+    dispatch = next(route.endpoint for route in router.routes if route.path.endswith("/{op}"))
+    response = dispatch(
+        op="receive_message",
+        inp=SyscallRequest(
+            version="v1",
+            op="receive_message",
+            args={"conversation_id": "conversation-1", "limit": 0},
+        ),
+    )
+    payload = response.model_dump(mode="json")
+    assert payload["version"] == "v1"
+    assert payload["op"] == "receive_message"
+    assert payload["status"] == "ok"
+    assert payload["result"] == fixture
+    assert authorized == [("role", "ro"), ("namespace", "conversation")]
 
 
 def test_syscall_request_approval_branches(monkeypatch, engine_triplet):
