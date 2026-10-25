@@ -52,6 +52,39 @@ The result is evidence for seam placement, not a release gate by itself. The
 full-stack decision still requires resource-matched MCP, persistence, ACL,
 runtime, and recovery benchmarks with equal canonical results.
 
+## Conversion Breakdown Recheck
+
+The harness now measures Python input normalization/encoding and Python output
+decoding separately. On the Windows CPython 3.13 checkout, 16 envelopes
+(44,864 bytes) over 50 iterations produced matching Python, PyO3, one-envelope
+bridge, and batch digests. Median measurements were:
+
+| Stage | Median |
+| --- | ---: |
+| Normalize-copy + encode baseline, 16 envelopes | 7.42 ms |
+| Experimental no-copy candidate, 16 envelopes | 7.15 ms |
+| Rust PyO3 projection + output JSON encoding, 16 calls | 0.64 ms |
+| Python decode of 16 Rust outputs | 0.06 ms |
+| Public bridge, 16 individual calls | 7.17 ms |
+| Public bridge, one batch call | 6.72 ms |
+
+An experimental no-copy validator/encoder was compared with the existing
+normalize-copy-plus-encode implementation in the same 50-iteration run: their
+medians were 7.15 ms and 7.42 ms respectively, with overlapping run-to-run
+spread. The experiment did not establish a meaningful gain, so the runtime
+shortcut was discarded. Input preparation is materially larger than the Rust
+kernel in this synthetic slice; output decoding is negligible. A future direct
+Python-object/PyO3 conversion should be prototyped and measured against the
+same strict JSON fixtures before replacing this compatible string ABI. The
+sample is a seam microbenchmark only and does not predict whole-stack latency.
+An immediate 20-iteration rerun confirmed the same digest, but end-to-end
+medians moved to 9.09 ms (individual calls) and 9.39 ms (batch), while the
+input-preparation and Rust-call medians remained 4.72 ms and 0.63 ms. The
+spread between runs is a warning that Windows host scheduling/noise dominates
+this small workload; do not use these numbers as a release threshold or claim
+a stable batch win. A longer controlled run with process isolation is needed
+before choosing a new boundary ABI.
+
 ## Interim Measurement
 
 On the Windows CPython 3.13 checkout environment, with 64 envelopes and 10

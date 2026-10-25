@@ -23,7 +23,11 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from kogwistar._rust_bridge import project_graph_model_slice, project_graph_model_slices
+from kogwistar._rust_bridge import (
+    _rust_json_payload,
+    project_graph_model_slice,
+    project_graph_model_slices,
+)
 from kogwistar.engine_core.graph_contracts import build_graph_model_slice_envelope
 from kogwistar.engine_core.graph_slice_manifest import project_with_manifest
 from kogwistar.engine_core.models import Edge, Node
@@ -145,6 +149,33 @@ def run(*, model_count: int, iterations: int, field_mode: str) -> JsonObject:
         lambda: [json.loads(native.project_graph_model_slice(item)) for item in encoded],
         iterations,
     )
+    bridge_input_encode = _timed(
+        lambda: [
+            _rust_json_payload(
+                envelope, ensure_ascii=False, separators=(",", ":")
+            )
+            for envelope in envelopes
+        ],
+        iterations,
+    )
+    bridge_batch_input_encode = _timed(
+        lambda: _rust_json_payload(
+            envelopes, ensure_ascii=False, separators=(",", ":")
+        ),
+        iterations,
+    )
+    rust_outputs = [native.project_graph_model_slice(item) for item in encoded]
+    bridge_output_decode = _timed(
+        lambda: [json.loads(item) for item in rust_outputs],
+        iterations,
+    )
+    batch_rust_output = native.project_graph_model_slices(
+        _rust_json_payload(envelopes, ensure_ascii=False, separators=(",", ":"))
+    )
+    bridge_batch_output_decode = _timed(
+        lambda: json.loads(batch_rust_output),
+        iterations,
+    )
     bridge_total = _timed(
         lambda: [project_graph_model_slice(envelope) for envelope in envelopes],
         iterations,
@@ -178,6 +209,14 @@ def run(*, model_count: int, iterations: int, field_mode: str) -> JsonObject:
             "python_json_encode": _summary(python_encode),
             "rust_pyo3_call_and_json_encode": _summary(rust_call),
             "rust_pyo3_call_decode": _summary(rust_decode),
+            "bridge_input_normalize_and_encode_per_envelope": _summary(
+                bridge_input_encode
+            ),
+            "bridge_batch_input_normalize_and_encode": _summary(
+                bridge_batch_input_encode
+            ),
+            "bridge_output_decode_per_envelope": _summary(bridge_output_decode),
+            "bridge_batch_output_decode": _summary(bridge_batch_output_decode),
             "python_bridge_end_to_end": _summary(bridge_total),
             "python_bridge_batch_end_to_end": _summary(bridge_batch),
         },
@@ -185,6 +224,10 @@ def run(*, model_count: int, iterations: int, field_mode: str) -> JsonObject:
             "python_projection": "Pydantic-extension governed Python projection only",
             "rust_pyo3_call_and_json_encode": "Rust projection plus PyO3 entry and output serialization",
             "rust_pyo3_call_decode": "Rust projection plus PyO3 and Python JSON decoding",
+            "bridge_input_normalize_and_encode_per_envelope": "Python strict-JSON normalization and JSON encoding before one bridge call per envelope",
+            "bridge_batch_input_normalize_and_encode": "Python strict-JSON normalization and JSON encoding before one batch bridge call",
+            "bridge_output_decode_per_envelope": "Python JSON decoding of one Rust result per envelope",
+            "bridge_batch_output_decode": "Python JSON decoding of one batched Rust result",
             "python_bridge_end_to_end": "Public Python bridge including input/output JSON conversion",
             "rust_native_gap": "Run a Rust caller against the same envelope to remove the PyO3/string seam; this script does not claim that result.",
         },
