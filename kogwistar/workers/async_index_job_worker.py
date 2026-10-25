@@ -117,6 +117,7 @@ class AsyncIndexJobWorker:
                     }
             for job in unit:
                 job_id = self._value(job, "job_id")
+                claim_token = self._optional_text(self._value(job, "claim_token"))
                 try:
                     if batch_results is not None:
                         error = batch_results.get(str(job_id))
@@ -149,7 +150,12 @@ class AsyncIndexJobWorker:
                         )
                     done = getattr(meta, "mark_index_job_done", None)
                     if callable(done):
-                        await _maybe_await(done(str(job_id)))
+                        if claim_token is None:
+                            await _maybe_await(done(str(job_id)))
+                        else:
+                            await _maybe_await(
+                                done(str(job_id), claim_token=claim_token)
+                            )
                     metrics.done += 1
                 except Exception as exc:
                     error = f"{type(exc).__name__}: {exc}"
@@ -158,16 +164,18 @@ class AsyncIndexJobWorker:
                     bump = getattr(meta, "bump_retry_and_requeue", None)
                     failed = getattr(meta, "mark_index_job_failed", None)
                     if retry < max_retries and callable(bump):
-                        await _maybe_await(
-                            bump(
-                                str(job_id),
-                                error,
-                                next_run_at_seconds=min(300, 2 ** min(retry - 1, 8)),
-                            )
-                        )
+                        kwargs = {
+                            "next_run_at_seconds": min(300, 2 ** min(retry - 1, 8))
+                        }
+                        if claim_token is not None:
+                            kwargs["claim_token"] = claim_token
+                        await _maybe_await(bump(str(job_id), error, **kwargs))
                         metrics.retried += 1
                     elif callable(failed):
-                        await _maybe_await(failed(str(job_id), error, final=True))
+                        kwargs = {"final": True}
+                        if claim_token is not None:
+                            kwargs["claim_token"] = claim_token
+                        await _maybe_await(failed(str(job_id), error, **kwargs))
                         metrics.failed += 1
                 finally:
                     durations.append(time.perf_counter() - started)

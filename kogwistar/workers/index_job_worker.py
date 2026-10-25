@@ -21,19 +21,35 @@ BatchApply = Callable[[list[object]], dict[str, BaseException | None]]
 class IndexJobDone(Protocol):
     """Acknowledge one successfully applied index job."""
 
-    def __call__(self, job_id: str, /) -> object: ...
+    def __call__(self, job_id: str, /, *, claim_token: str | None = None) -> object: ...
 
 
 class IndexJobRetry(Protocol):
     """Requeue one failed index job with a bounded delay."""
 
-    def __call__(self, job_id: str, error: str, /, *, next_run_at_seconds: int) -> object: ...
+    def __call__(
+        self,
+        job_id: str,
+        error: str,
+        /,
+        *,
+        next_run_at_seconds: int,
+        claim_token: str | None = None,
+    ) -> object: ...
 
 
 class IndexJobFailed(Protocol):
     """Move one index job to terminal failure or a non-terminal failure state."""
 
-    def __call__(self, job_id: str, error: str, /, *, final: bool) -> object: ...
+    def __call__(
+        self,
+        job_id: str,
+        error: str,
+        /,
+        *,
+        final: bool,
+        claim_token: str | None = None,
+    ) -> object: ...
 
 
 @dataclass
@@ -241,6 +257,7 @@ class IndexJobWorker:
                 index_kind = self._job_value(job, "index_kind")
                 op = self._job_value(job, "op")
                 payload_json = self._job_value(job, "payload_json")
+                claim_token = self._optional_text(self._job_value(job, "claim_token"))
                 retry_count = (
                     self._job_value(job, "retry_count")
                 )
@@ -270,17 +287,39 @@ class IndexJobWorker:
                             validated_entity_cache=entity_cache,
                         )
                     if mark_done is not None and job_id:
-                        mark_done(str(job_id))
+                        if claim_token is None:
+                            # Preserve compatibility with legacy queue rows that
+                            # predate leases; current claimed rows always carry a
+                            # token and therefore take the ownership-checked path.
+                            mark_done(str(job_id))
+                        else:
+                            mark_done(str(job_id), claim_token=claim_token)
                     metrics.done += 1
                 except Exception as e:
                     err = f"{type(e).__name__}: {e}"
                     next_retry = try_rc + 1
                     if bump is not None and job_id and next_retry < try_mr:
                         delay = min(300, 2 ** min(next_retry - 1, 8))
-                        bump(str(job_id), err, next_run_at_seconds=int(delay))
+                        if claim_token is None:
+                            bump(str(job_id), err, next_run_at_seconds=int(delay))
+                        else:
+                            bump(
+                                str(job_id),
+                                err,
+                                next_run_at_seconds=int(delay),
+                                claim_token=claim_token,
+                            )
                         metrics.retried += 1
                     elif mark_failed is not None and job_id:
-                        mark_failed(str(job_id), err, final=True)
+                        if claim_token is None:
+                            mark_failed(str(job_id), err, final=True)
+                        else:
+                            mark_failed(
+                                str(job_id),
+                                err,
+                                final=True,
+                                claim_token=claim_token,
+                            )
                         metrics.failed += 1
                 finally:
                     durations.append(time.time() - start)
