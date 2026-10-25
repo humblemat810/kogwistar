@@ -43,6 +43,7 @@ from typing import TYPE_CHECKING, TypeGuard, cast
 from kogwistar.engine_core.embedding_profile import EmbeddingStorageState
 from kogwistar.engine_core.in_memory_meta import InMemoryMetaStore
 from kogwistar.engine_core.models import Edge, Node
+from kogwistar.implementation_selection import assert_transaction_entry_allowed
 from kogwistar.engine_core.storage_backend import (
     NoopUnitOfWork,
     TwoStageProjectionCapability,
@@ -332,6 +333,7 @@ class _InMemoryCollection:
         embeddings: Sequence[Sequence[float]] | None = None,
         **_: object,
     ) -> None:
+        assert_transaction_entry_allowed()
         self._store(
             ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings
         )
@@ -358,6 +360,7 @@ class _InMemoryCollection:
         embeddings: Sequence[Sequence[float]] | None = None,
         **_: object,
     ) -> None:
+        assert_transaction_entry_allowed()
         ids_list = [str(i) for i in ids]
         docs_list = list(documents or [])
         metas_list = list(metadatas or [])
@@ -379,6 +382,7 @@ class _InMemoryCollection:
 
     def clear_embeddings(self, ids: Sequence[str]) -> None:
         """Clear derived vectors for a new staged canonical revision."""
+        assert_transaction_entry_allowed()
         for row_id in [str(i) for i in ids]:
             row = self._rows.get(row_id)
             if row is not None:
@@ -509,6 +513,7 @@ class _InMemoryCollection:
         where: dict[str, object] | None = None,
         **_: object,
     ) -> None:
+        assert_transaction_entry_allowed()
         if ids is not None:
             for row_id in [str(i) for i in ids]:
                 self._rows.pop(row_id, None)

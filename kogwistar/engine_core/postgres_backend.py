@@ -407,6 +407,7 @@ class PgCollectionFacade:
         metadatas: Sequence[Json],
         embeddings: Sequence[Sequence[float]] | None = None,
     ) -> None:
+        assert_transaction_entry_allowed()
         if self._s.ignore_embeddings:
             embeddings = None
         if self._b._is_async_engine:
@@ -465,6 +466,7 @@ class PgCollectionFacade:
     def delete(
         self, *, ids: Sequence[str] | None = None, where: Json | None = None
     ) -> None:
+        assert_transaction_entry_allowed()
         if self._b._is_async_engine:
             return cast(None, self._call_async(
                 lambda: self._b._delete_async(self._t, ids=ids, where=where)
@@ -530,6 +532,7 @@ class PgCollectionFacade:
         For vector collections we also allow updating embeddings (atomic in Postgres).
         For non-vector collections embeddings are ignored.
         """
+        assert_transaction_entry_allowed()
         if self._s.ignore_embeddings:
             embeddings = None
         if self._b._is_async_engine:

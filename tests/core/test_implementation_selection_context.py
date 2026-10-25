@@ -19,11 +19,15 @@ from kogwistar._rust_bridge import (
     server_implementation_mode,
 )
 from kogwistar.engine_core.engine import GraphKnowledgeEngine, engine_context
-from kogwistar.engine_core.in_memory_backend import build_in_memory_backend
+from kogwistar.engine_core.in_memory_backend import InMemoryBackend, build_in_memory_backend
 from kogwistar.engine_core.in_memory_meta import InMemoryMetaStore
 from kogwistar.engine_core.engine_sqlite import EngineSQLite
 from kogwistar.engine_core.indexing import IndexingSubsystem
-from kogwistar.engine_core.postgres_backend import PostgresUnitOfWork
+from kogwistar.engine_core.postgres_backend import (
+    CollectionSpec,
+    PgCollectionFacade,
+    PostgresUnitOfWork,
+)
 from kogwistar.engine_core.subsystems.write import WriteSubsystem
 from kogwistar.engine_core.two_stage_async import AsyncPostgresTwoStageProjectionAdapter
 from kogwistar.implementation_selection import (
@@ -316,6 +320,40 @@ def test_backend_transactions_cannot_be_opened_from_worker_callback(
             with pytest.raises(RuntimeError, match=expected):
                 with context:
                     pytest.fail("backend transaction must not start in callback")
+
+
+def test_backend_collection_mutations_cannot_run_from_worker_callback() -> None:
+    class PostgresBackendWithoutIO:
+        _is_async_engine = False
+
+        def _upsert(self, *_args: object, **_kwargs: object) -> None:
+            pytest.fail("PostgreSQL write started before callback guard")
+
+    memory = InMemoryBackend(engine=SimpleNamespace())
+    postgres = PgCollectionFacade(
+        backend=PostgresBackendWithoutIO(),  # type: ignore[arg-type]
+        table=SimpleNamespace(),  # type: ignore[arg-type]
+        spec=CollectionSpec(vector=True),
+    )
+    writes = (
+        lambda: memory.node_add(ids=["n"], documents=["node"], metadatas=[{}]),
+        lambda: memory.node_upsert(ids=["n"], documents=["node"], metadatas=[{}]),
+        lambda: memory.node_update(ids=["n"], metadatas=[{"title": "x"}]),
+        lambda: memory.node_delete(ids=["n"]),
+        lambda: memory.node_clear_embeddings(ids=["n"]),
+        lambda: postgres.add(ids=["n"], documents=["node"], metadatas=[{}]),
+        lambda: postgres.upsert(ids=["n"], documents=["node"], metadatas=[{}]),
+        lambda: postgres.update(ids=["n"], metadatas=[{"title": "x"}]),
+        lambda: postgres.delete(ids=["n"]),
+    )
+    expected = "transaction authority cannot be opened from a worker callback"
+
+    for write in writes:
+        with callback_execution_scope():
+            with pytest.raises(RuntimeError, match=expected):
+                write()
+
+    assert memory.node.count() == 0
 
 
 def test_transaction_authority_scope_matches_frozen_selection(
