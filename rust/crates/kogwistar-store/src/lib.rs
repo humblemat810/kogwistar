@@ -155,6 +155,77 @@ pub struct ConversationListEntry {
     pub turn_count: i64,
 }
 
+/// Incrementally projects conversation-list rows from already-authorized pages.
+/// Retains only turn counts and matching start records, not every graph node.
+#[derive(Clone, Debug, Default)]
+pub struct ConversationListAccumulator {
+    user_id: String,
+    turn_counts: BTreeMap<String, i64>,
+    starts: Vec<(String, String, String)>,
+}
+
+impl ConversationListAccumulator {
+    pub fn new(user_id: impl Into<String>) -> Self {
+        Self {
+            user_id: user_id.into(),
+            ..Self::default()
+        }
+    }
+
+    /// Add one page after the caller has applied namespace and ACL filtering.
+    pub fn extend_visible_records(&mut self, records: &[GraphRecord]) {
+        for record in records
+            .iter()
+            .filter(|record| !is_tombstoned(&record.metadata))
+        {
+            match value_string(record, "entity_type").as_deref() {
+                Some("conversation_turn" | "assistant_turn")
+                    if record_field(record, "turn_index")
+                        .and_then(|value| value.as_i64())
+                        .is_some() =>
+                {
+                    if let Some(conversation_id) = value_string(record, "conversation_id") {
+                        *self.turn_counts.entry(conversation_id).or_default() += 1;
+                    }
+                }
+                Some("conversation_start")
+                    if value_string(record, "user_id").as_deref()
+                        == Some(self.user_id.as_str()) =>
+                {
+                    if let Some(conversation_id) = value_string(record, "conversation_id") {
+                        let status =
+                            value_string(record, "status").unwrap_or_else(|| "active".to_owned());
+                        self.starts
+                            .push((conversation_id, record.id.clone(), status));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    pub fn finish(self) -> Vec<ConversationListEntry> {
+        let mut entries = self
+            .starts
+            .into_iter()
+            .map(
+                |(conversation_id, start_node_id, status)| ConversationListEntry {
+                    turn_count: self
+                        .turn_counts
+                        .get(&conversation_id)
+                        .copied()
+                        .unwrap_or_default(),
+                    id: conversation_id,
+                    start_node_id,
+                    status,
+                },
+            )
+            .collect::<Vec<_>>();
+        entries.sort_by(|left, right| right.turn_count.cmp(&left.turn_count));
+        entries
+    }
+}
+
 /// A document projection write owned by one concrete backend.
 ///
 /// This is intentionally separate from graph mutation: document ingestion has
@@ -518,47 +589,9 @@ pub fn conversation_list_for_user_from_visible_records(
     records: &[GraphRecord],
     user_id: &str,
 ) -> Vec<ConversationListEntry> {
-    let mut turn_counts = BTreeMap::<String, i64>::new();
-    for record in records
-        .iter()
-        .filter(|record| !is_tombstoned(&record.metadata))
-    {
-        if !matches!(
-            value_string(record, "entity_type").as_deref(),
-            Some("conversation_turn" | "assistant_turn")
-        ) || record_field(record, "turn_index")
-            .and_then(|value| value.as_i64())
-            .is_none()
-        {
-            continue;
-        }
-        if let Some(conversation_id) = value_string(record, "conversation_id") {
-            *turn_counts.entry(conversation_id).or_default() += 1;
-        }
-    }
-    let mut entries = records
-        .iter()
-        .filter(|record| !is_tombstoned(&record.metadata))
-        .filter(|record| {
-            value_string(record, "entity_type").as_deref() == Some("conversation_start")
-        })
-        .filter(|record| value_string(record, "user_id").as_deref() == Some(user_id))
-        .filter_map(|start| {
-            let conversation_id = value_string(start, "conversation_id")?;
-            let turn_count = turn_counts
-                .get(&conversation_id)
-                .copied()
-                .unwrap_or_default();
-            Some(ConversationListEntry {
-                id: conversation_id,
-                start_node_id: start.id.clone(),
-                status: value_string(start, "status").unwrap_or_else(|| "active".to_owned()),
-                turn_count,
-            })
-        })
-        .collect::<Vec<_>>();
-    entries.sort_by(|left, right| right.turn_count.cmp(&left.turn_count));
-    entries
+    let mut accumulator = ConversationListAccumulator::new(user_id);
+    accumulator.extend_visible_records(records);
+    accumulator.finish()
 }
 
 /// Project the latest already-authorized context snapshot without choosing a
@@ -1273,23 +1306,24 @@ pub trait GraphMutationStore: Send + Sync {
     ) -> impl Future<Output = StoreResult<Vec<VectorMatch>>> + Send;
 }
 
-/// Read every page of a graph projection using stable ID keyset pagination.
+/// Visit graph projection pages in stable ID order without retaining all rows.
 ///
 /// The helper rejects backends that return unordered or non-advancing pages,
 /// preventing silent omissions and infinite loops at language/backend seams.
-pub async fn graph_projection_records_all<S>(
+pub async fn for_each_graph_projection_page<S, F>(
     store: &S,
     read: GraphProjectionRead,
-) -> StoreResult<Vec<GraphRecord>>
+    mut visit: F,
+) -> StoreResult<()>
 where
     S: GraphMutationStore + Sync,
+    F: FnMut(&[GraphRecord]) -> StoreResult<()>,
 {
     let page_size = read.limit;
     if page_size == 0 {
-        return Ok(Vec::new());
+        return Ok(());
     }
 
-    let mut records = Vec::new();
     let mut after_id = None;
     loop {
         let page = store
@@ -1312,11 +1346,29 @@ where
         }
         let has_more = page.len() == page_size;
         after_id = page.last().map(|record| record.id.clone());
-        records.extend(page);
+        visit(&page)?;
         if !has_more {
             break;
         }
     }
+    Ok(())
+}
+
+/// Read every page into one vector. Prefer `for_each_graph_projection_page`
+/// when the consumer can reduce records incrementally.
+pub async fn graph_projection_records_all<S>(
+    store: &S,
+    read: GraphProjectionRead,
+) -> StoreResult<Vec<GraphRecord>>
+where
+    S: GraphMutationStore + Sync,
+{
+    let mut records = Vec::new();
+    for_each_graph_projection_page(store, read, |page| {
+        records.extend_from_slice(page);
+        Ok(())
+    })
+    .await?;
     Ok(records)
 }
 
@@ -3083,10 +3135,8 @@ mod tests {
             .metadata
             .insert("turn_index".to_owned(), 1.into());
 
-        let entries = conversation_list_for_user_from_visible_records(
-            &[start_alice, start_bob, first_turn, second_turn],
-            "alice",
-        );
+        let records = [start_alice, start_bob, first_turn, second_turn];
+        let entries = conversation_list_for_user_from_visible_records(&records, "alice");
         assert_eq!(
             entries,
             vec![ConversationListEntry {
@@ -3096,6 +3146,12 @@ mod tests {
                 turn_count: 2,
             }]
         );
+
+        let mut chunked = ConversationListAccumulator::new("alice");
+        chunked.extend_visible_records(&records[..1]);
+        chunked.extend_visible_records(&records[1..3]);
+        chunked.extend_visible_records(&records[3..]);
+        assert_eq!(chunked.finish(), entries);
     }
 
     #[test]

@@ -1892,6 +1892,30 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["a-parity-node", "parity-node"]
         );
+        let mut visited = Vec::new();
+        let mut page_count = 0;
+        block_on(kogwistar_store::for_each_graph_projection_page(
+            &store,
+            GraphProjectionRead {
+                scope: GraphScope {
+                    namespace: "typed".to_owned(),
+                    workspace_id: Some("ws".to_owned()),
+                    graph_space: Some("facts".to_owned()),
+                },
+                table: "gke_nodes".to_owned(),
+                ids: None,
+                metadata: Default::default(),
+                limit: 1,
+            },
+            |page| {
+                page_count += 1;
+                visited.extend(page.iter().map(|record| record.id.clone()));
+                Ok(())
+            },
+        ))
+        .expect("visit pages without collecting projection records");
+        assert_eq!(page_count, 2);
+        assert_eq!(visited, vec!["a-parity-node", "parity-node"]);
     }
 
     #[test]

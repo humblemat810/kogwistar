@@ -26,17 +26,18 @@ use kogwistar_runtime::{
     RuntimeStepExecutePayload, RuntimeStepExecuteRequest,
 };
 use kogwistar_store::{
-    AuthIdentityStore, AuthUser, DocumentAuthorityCapability, DocumentProjectionUpsert,
-    DocumentStore, EntityEvent, GraphAclPrincipal, GraphAuthorityCapability, GraphFindEdgesQuery,
-    GraphKHopQuery, GraphMutation, GraphMutationBatch, GraphMutationStore, GraphProjectionRead,
-    GraphRecord, GraphScope, GraphShortestPathQuery, LaneMessageClaimFilter, LaneMessageFilter,
-    MetadataFilter, NamedProjection, NamedProjectionWrite, NewIndexJob, NewProjectedLaneMessage,
+    AuthIdentityStore, AuthUser, ConversationListAccumulator, DocumentAuthorityCapability,
+    DocumentProjectionUpsert, DocumentStore, EntityEvent, GraphAclPrincipal,
+    GraphAuthorityCapability, GraphFindEdgesQuery, GraphKHopQuery, GraphMutation,
+    GraphMutationBatch, GraphMutationStore, GraphProjectionRead, GraphRecord, GraphScope,
+    GraphShortestPathQuery, LaneMessageClaimFilter, LaneMessageFilter, MetadataFilter,
+    NamedProjection, NamedProjectionWrite, NewIndexJob, NewProjectedLaneMessage,
     ProjectedLaneMessage, ResolveExternalIdentity, ServerRun, ServerRunCreate, ServerRunEvent,
     WorkflowDesignDeltaWrite, WorkflowDesignSnapshot, WorkflowDesignSnapshotWrite,
-    conversation_list_for_user_from_visible_records, conversation_summary_from_visible_records,
-    conversation_transcript_from_visible_records, graph_find_edges_from_records,
-    graph_k_hop_from_records, graph_neighbors_from_records, graph_projection_records_all,
-    graph_records_visible_by_acl, graph_shortest_path_from_records, validate_typed_graph_mutation,
+    conversation_summary_from_visible_records, conversation_transcript_from_visible_records,
+    for_each_graph_projection_page, graph_find_edges_from_records, graph_k_hop_from_records,
+    graph_neighbors_from_records, graph_projection_records_all, graph_records_visible_by_acl,
+    graph_shortest_path_from_records, validate_typed_graph_mutation,
 };
 use kogwistar_store_postgres::{
     NewRawEntityEvent as PostgresNewRawEntityEvent, PostgresAuthStore, PostgresStore,
@@ -6090,28 +6091,44 @@ impl PostgresRunApplicationService {
                 "User Identity required",
             );
         };
-        let visible_nodes = match self.authorized_conversation_nodes(&request.principal).await {
-            Ok(nodes) => nodes,
-            Err(error) => {
-                return effect_error(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "KOGWISTAR_STORE_ERROR",
-                    error,
-                );
-            }
-        };
-        let conversations =
-            conversation_list_for_user_from_visible_records(&visible_nodes, user_id)
-                .into_iter()
-                .map(|entry| {
-                    json!({
-                        "id": entry.id,
-                        "start_node_id": entry.start_node_id,
-                        "status": entry.status,
-                        "turn_count": entry.turn_count,
-                    })
+        let (scope, acl_principal) = conversation_graph_scope_and_acl_principal(&request.principal);
+        let mut conversations = ConversationListAccumulator::new(user_id);
+        let read_result = for_each_graph_projection_page(
+            &self.store,
+            GraphProjectionRead {
+                scope,
+                table: "gke_nodes".to_owned(),
+                ids: None,
+                metadata: MetadataFilter::default(),
+                limit: 1024,
+            },
+            |page| {
+                let (visible_nodes, _) =
+                    graph_records_visible_by_acl(page, &[], "conversation", &acl_principal);
+                conversations.extend_visible_records(&visible_nodes);
+                Ok(())
+            },
+        )
+        .await;
+        if let Err(error) = read_result {
+            return effect_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "KOGWISTAR_STORE_ERROR",
+                error.to_string(),
+            );
+        }
+        let conversations = conversations
+            .finish()
+            .into_iter()
+            .map(|entry| {
+                json!({
+                    "id": entry.id,
+                    "start_node_id": entry.start_node_id,
+                    "status": entry.status,
+                    "turn_count": entry.turn_count,
                 })
-                .collect::<Vec<_>>();
+            })
+            .collect::<Vec<_>>();
         json_effect(StatusCode::OK, json!({"conversations": conversations}))
     }
 
