@@ -16,12 +16,15 @@ from kogwistar.runtime.rust_worker import RustRuntimeWorker, RustWorkerError
 pytestmark = [pytest.mark.ci]
 ROOT = Path(__file__).resolve().parents[2]
 SERVER = ROOT / "rust" / "target" / "debug" / "kogwistar-server.exe"
-SERVER_SOURCES = (
-    ROOT / "rust" / "crates" / "kogwistar-api" / "src" / "lib.rs",
-    ROOT / "rust" / "crates" / "kogwistar-api" / "src" / "cutover.rs",
-    ROOT / "rust" / "crates" / "kogwistar-api" / "src" / "runtime_contract.rs",
-    ROOT / "rust" / "crates" / "kogwistar-runtime" / "src" / "lib.rs",
-    ROOT / "rust" / "crates" / "kogwistar-store-postgres" / "src" / "lib.rs",
+RUST_ROOT = ROOT / "rust"
+SERVER_SOURCES = tuple(
+    sorted(
+        path
+        for path in RUST_ROOT.rglob("*")
+        if path.is_file()
+        and "target" not in path.parts
+        and (path.suffix == ".rs" or path.name in {"Cargo.toml", "Cargo.lock"})
+    )
 )
 
 
