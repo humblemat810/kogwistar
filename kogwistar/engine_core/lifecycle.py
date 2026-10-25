@@ -7,12 +7,14 @@ from typing import TYPE_CHECKING, Literal, TypeVar, cast
 
 from ..typing_interfaces import ProjectionBackendLike
 from ..json_types import JsonObject, JsonValue
+from ..implementation_selection import implementation_selection_bound
 from .types import GraphEntityKind
 from .subsystems.base import NamespaceProxy
 
 if TYPE_CHECKING:
     # Avoid runtime import cycles; we only need this for typing.
     from .engine import GraphKnowledgeEngine
+    from .rust_postgres_session import RustEnginePostgresMetaStore
 T = TypeVar("T")  # Node/Edge-like
 
 
@@ -111,6 +113,7 @@ class LifecycleSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
     # Write-side
     # -----------------------
 
+    @implementation_selection_bound
     def tombstone_node(self, node_id: str, **kw: JsonValue) -> bool:
         patch = {
             "lifecycle_status": "tombstoned",
@@ -153,6 +156,7 @@ class LifecycleSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
 
         return ok
 
+    @implementation_selection_bound
     def redirect_node(self, from_id: str, to_id: str, **kw: JsonValue) -> bool:
         """Supersede ``from_id`` with ``to_id`` while preserving lookup continuity.
 
@@ -202,6 +206,7 @@ class LifecycleSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             self._maybe_index_delete(entity_kind="node", entity_id=from_id)
         return ok
 
+    @implementation_selection_bound
     def tombstone_edge(self, edge_id: str, **kw: JsonValue) -> bool:
         patch = {
             "lifecycle_status": "tombstoned",
@@ -244,6 +249,7 @@ class LifecycleSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
 
         return ok
 
+    @implementation_selection_bound
     def redirect_edge(self, from_id: str, to_id: str, **kw: JsonValue) -> bool:
         """Supersede ``from_id`` with ``to_id`` while preserving lookup continuity."""
         if from_id == to_id:
@@ -323,7 +329,7 @@ class LifecycleSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
     ) -> bool | None:
         from .rust_postgres_session import RustEnginePostgresMetaStore
 
-        meta = getattr(self._e, "meta_sqlite", None)
+        meta = self._rust_postgres_meta_or_python_fallback()
         if not isinstance(meta, RustEnginePostgresMetaStore):
             return None
         payload: JsonObject = {"entity_id": entity_id}
@@ -375,6 +381,7 @@ class LifecycleSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             pass
         return True
 
+    @implementation_selection_bound
     def apply_replayed_lifecycle_patch(
         self,
         *,
@@ -384,7 +391,7 @@ class LifecycleSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
     ) -> bool:
         from .rust_postgres_session import RustEnginePostgresMetaStore
 
-        meta = getattr(self._e, "meta_sqlite", None)
+        meta = self._rust_postgres_meta_or_python_fallback()
         if isinstance(meta, RustEnginePostgresMetaStore):
             table = (
                 cast(ProjectionBackendLike, self._e.backend).nodes.name
@@ -417,6 +424,23 @@ class LifecycleSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         if updated:
             self._maybe_index_delete(entity_kind=entity_kind, entity_id=entity_id)
         return bool(updated)
+
+    def _rust_postgres_meta_or_python_fallback(
+        self,
+    ) -> RustEnginePostgresMetaStore | None:
+        from .rust_postgres_session import RustEnginePostgresMetaStore
+
+        meta = getattr(self._e, "meta_sqlite", None)
+        if isinstance(meta, RustEnginePostgresMetaStore):
+            return cast(RustEnginePostgresMetaStore, meta)
+        from .._rust_bridge import postgres_authority_implementation_mode
+
+        if postgres_authority_implementation_mode() == "rust":
+            raise RuntimeError(
+                "Rust PostgreSQL authority is selected but the Rust PostgreSQL "
+                "meta-store is unavailable; refusing Python lifecycle fallback"
+            )
+        return None
 
     def _append_lifecycle_event(
         self,

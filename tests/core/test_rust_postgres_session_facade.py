@@ -12,6 +12,8 @@ from kogwistar.engine_core.rust_postgres_session import (
 )
 from kogwistar.engine_core.subsystems.read import ReadSubsystem
 from kogwistar.engine_core.subsystems.write import WriteSubsystem
+from kogwistar.engine_core.lifecycle import LifecycleSubsystem
+from kogwistar.implementation_selection import capture_implementation_selection
 
 pytestmark = [pytest.mark.ci, pytest.mark.core]
 
@@ -67,6 +69,43 @@ def test_python_postgres_authority_keeps_legacy_native_probe_fallback(
         embedding=[0.0],
         payload={},
     ) is False
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        "tombstone_node",
+        "redirect_node",
+        "tombstone_edge",
+        "redirect_edge",
+        "replay",
+    ],
+)
+def test_selected_rust_lifecycle_fails_closed_without_native_meta_store(
+    monkeypatch: pytest.MonkeyPatch, operation: str
+) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "rust")
+    engine = SimpleNamespace(
+        meta_sqlite=object(),
+        _implementation_selection_snapshot=capture_implementation_selection(),
+    )
+    lifecycle = LifecycleSubsystem(engine)
+
+    with pytest.raises(RuntimeError, match="refusing Python lifecycle fallback"):
+        if operation == "tombstone_node":
+            lifecycle.tombstone_node("node-1")
+        elif operation == "redirect_node":
+            lifecycle.redirect_node("node-1", "node-2")
+        elif operation == "tombstone_edge":
+            lifecycle.tombstone_edge("edge-1")
+        elif operation == "redirect_edge":
+            lifecycle.redirect_edge("edge-1", "edge-2")
+        else:
+            lifecycle.apply_replayed_lifecycle_patch(
+                entity_kind="node",
+                entity_id="node-1",
+                lifecycle_patch={"lifecycle_status": "tombstoned"},
+            )
 
 
 def test_postgres_session_nested_commit_uses_one_native_transaction(monkeypatch):
