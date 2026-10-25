@@ -1067,3 +1067,14 @@ This evidence supports the current interchangeable Python/Rust storage and
 projection seams. It does not prove that every application path is native Rust,
 nor does it remove the need for resource-matched endpoint benchmarks before a
 full-stack Rust cutover.
+
+### Native seam-attestation invariant
+
+Native HTTP benchmark samples are now rejected unless the child server reports
+an explicit `rust_native_server` scope, `complete: true`, zero FFI calls, and
+exactly one native tool dispatch and transport request per operation. The
+serialized-payload counter must also be positive. Serial and concurrent native
+runs use the same validation, so an incomplete `/metrics` response cannot be
+recorded as evidence for a no-Python seam. This is benchmark evidence for the
+selected workload only; it is not a production telemetry or whole-stack
+interoperability guarantee.
