@@ -103,6 +103,43 @@ def test_sqlite_coalesce_claim_tokens_retry_tail_namespace_and_rollback(tmp_path
     assert not any(row["job_id"] == "rolled" for row in _sqlite(path, {"kind": "list_index_jobs", "namespace": "ns"}))
 
 
+def test_sqlite_rust_result_admission_is_immutable_to_python_retries(tmp_path: Path) -> None:
+    python = EngineSQLite(tmp_path / "result.db")
+    python.ensure_initialized()
+    python.enqueue_index_job(
+        job_id="result-job",
+        namespace="ns",
+        entity_kind="node",
+        entity_id="node",
+        index_kind="doc",
+        op="UPSERT",
+    )
+    claim = python.claim_index_jobs(limit=1, lease_seconds=30, namespace="ns")[0]
+    token = claim.claim_token or ""
+
+    accepted = _sqlite(
+        python.db_path,
+        {
+            "kind": "accept_index_job_result",
+            "job_id": claim.job_id,
+            "claim_token": token,
+            "result_json": '{"winner":"rust"}',
+            "result_sha256": "rust-digest",
+        },
+    )
+    assert accepted["status"] == "accepted"
+
+    retry = python.accept_index_job_result(
+        claim.job_id,
+        claim_token="stale-python-worker",
+        result_json='{"winner":"python"}',
+        result_sha256="python-digest",
+    )
+    assert retry["status"] == "existing"
+    assert retry["result_json"] == '{"winner":"rust"}'
+    assert retry["result_sha256"] == "rust-digest"
+
+
 def test_sqlite_concurrent_same_key_enqueue_and_claim_are_exclusive(tmp_path: Path) -> None:
     path = tmp_path / "engine.db"
     with ThreadPoolExecutor(max_workers=8) as pool:
