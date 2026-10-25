@@ -461,16 +461,23 @@ class IndexingSubsystem:
 
             job_started = time.perf_counter()
             try:
-                self.apply_index_job(
-                    job_id=str(job_id),
-                    entity_kind=str(entity_kind),
-                    entity_id=str(entity_id),
-                    index_kind=str(index_kind),
-                    op=str(op),
-                    namespace=ns,
-                    payload_json=payload_json,
-                    validated_entity_cache=entity_cache,
-                )
+                # A result admitted by the Rust worker is already the durable
+                # idempotency record.  Reconcile only the queue acknowledgement
+                # instead of repeating provider or projection work.
+                accepted_result = getattr(job, "accepted_result_json", None)
+                if isinstance(job, dict):
+                    accepted_result = job.get("accepted_result_json")
+                if accepted_result is None:
+                    self.apply_index_job(
+                        job_id=str(job_id),
+                        entity_kind=str(entity_kind),
+                        entity_id=str(entity_id),
+                        index_kind=str(index_kind),
+                        op=str(op),
+                        namespace=ns,
+                        payload_json=payload_json,
+                        validated_entity_cache=entity_cache,
+                    )
             except Exception as e:
                 err = f"{type(e).__name__}: {e}"
                 bump = getattr(self.engine.meta_sqlite, "bump_retry_and_requeue", None)

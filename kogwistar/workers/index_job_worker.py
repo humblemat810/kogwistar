@@ -270,7 +270,12 @@ class IndexJobWorker:
                 try_mr = self._as_int(max_retries, 10)
 
                 try:
-                    if batch_results is not None:
+                    # Rust-owned workers may have admitted the provider result
+                    # before losing the queue acknowledgement.  Do not repeat
+                    # projection/provider work when the durable result exists.
+                    if self._job_value(job, "accepted_result_json") is not None:
+                        pass
+                    elif batch_results is not None:
                         if str(job_id) not in batch_results:
                             raise RuntimeError("batch embedding result missing job")
                         batch_error = batch_results[str(job_id)]

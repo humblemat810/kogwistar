@@ -120,7 +120,11 @@ class AsyncIndexJobWorker:
                 job_id = self._value(job, "job_id")
                 claim_token = self._optional_text(self._value(job, "claim_token"))
                 try:
-                    if batch_results is not None:
+                    # Match the Rust worker: an admitted result is the
+                    # idempotency record, so replay only finalizes the queue.
+                    if self._value(job, "accepted_result_json") is not None:
+                        pass
+                    elif batch_results is not None:
                         error = batch_results.get(str(job_id))
                         if error is not None:
                             raise error
