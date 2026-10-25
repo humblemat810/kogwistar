@@ -16348,6 +16348,11 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
         let parsed: GraphMutationBatchInput = serde_json::from_value(invalid_dimension).unwrap();
         assert!(graph_mutation_batch_value(parsed).is_err());
 
+        let mut physical_delete = body.clone();
+        physical_delete["mutations"][0]["op"] = json!("DELETE");
+        let parsed: GraphMutationBatchInput = serde_json::from_value(physical_delete).unwrap();
+        assert!(parsed.validate().is_err());
+
         for (field, value) in [("atomic", json!(false)), ("contract_version", json!(2))] {
             let mut invalid = json!({
                 "contract_version": 1,
