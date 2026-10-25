@@ -81,6 +81,63 @@ def _append(event_id: str) -> dict[str, Any]:
     }
 
 
+def test_python_facade_pages_postgres_projection_through_rust_bridge(
+    pg_dsn: str | None, pg_schema: str | None
+) -> None:
+    dsn, schema = _require_pg(pg_dsn, pg_schema)
+    store = RustEnginePostgresMetaStore(dsn=dsn, schema=schema)
+    try:
+        store.ensure_initialized()
+        for entity_id in ("page-a", "page-b", "page-c"):
+            store.upsert_graph_projection(
+                namespace="projection-page-contract",
+                workspace_id=None,
+                graph_space=None,
+                table="gke_nodes",
+                record={
+                    "id": entity_id,
+                    "document": f"body for {entity_id}",
+                    "metadata": {"partition": "cursor-contract"},
+                    "embedding": None,
+                },
+                embedding_dim=0,
+            )
+
+        read = {
+            "namespace": "projection-page-contract",
+            "workspace_id": None,
+            "graph_space": None,
+            "table": "gke_nodes",
+            "ids": None,
+            "metadata": {"partition": "cursor-contract"},
+            "limit": 2,
+        }
+        first_page = store.graph_projection_records(**read)
+        second_page = store.graph_projection_records(
+            **read, after_id=first_page[-1]["id"]
+        )
+        legacy_unpaged = store.graph_projection_records(
+            namespace=read["namespace"],
+            workspace_id=None,
+            graph_space=None,
+            table="gke_nodes",
+            ids=None,
+            metadata=read["metadata"],
+            limit=10,
+        )
+
+        assert [record["id"] for record in first_page] == ["page-a", "page-b"]
+        assert [record["id"] for record in second_page] == ["page-c"]
+        assert [record["id"] for record in legacy_unpaged] == [
+            "page-a",
+            "page-b",
+            "page-c",
+        ]
+        assert second_page[0]["document"] == "body for page-c"
+    finally:
+        store.close()
+
+
 def test_native_postgres_session_commit_rollback_and_fail_closed(
     pg_dsn: str | None, pg_schema: str | None, sa_engine: Any
 ) -> None:
