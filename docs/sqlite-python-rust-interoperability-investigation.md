@@ -100,6 +100,46 @@ codes, SQL statement fingerprints (not SQL text), and WAL/SHM metadata, never
 row contents. CPython 3.12 passed locally;
 mandatory native CI covers 3.12, 3.13, and 3.14.
 
+### Hard-link aliases and shared file identity
+
+The process authority lock was initially keyed only by the caller's database
+path. On Windows, a Python owner could hold one path while a Rust process opened
+a hard-link alias to the same SQLite file; both obtained different path mutexes
+and the second implementation was admitted. The reverse direction was
+reproducible too. This was a real bypass of the intended single-authority
+invariant, not just a theoretical concern.
+
+Both implementations now keep their path lock and additionally lock by stable
+file identity after the database exists. POSIX uses device/inode; Windows uses
+the Win32 volume serial and file index, derived identically by Python and Rust.
+Python acquires this identity lock as part of acquiring a lease for an existing
+file, and refreshes it when a previously absent database becomes available.
+The lock is released with the lease, and Windows process-crash recovery remains
+provided by named-mutex handle lifetime.
+
+Rust also creates a missing database file while holding its path lock, attaches
+the file-identity lock, and only then opens/configures the SQLite connection.
+This closes the window where connection setup could run before identity
+ownership was established. Python opens the connection and refreshes identity
+before issuing its connection pragmas.
+
+Windows CPython 3.13 evidence on 2026-10-26: both Python-owner/Rust-alias and
+Rust-owner/Python-alias subprocess regressions passed (**2 passed**); the full
+`test_sqlite_context_invariant.py` module passed (**29 passed**), Rust SQLite
+store tests passed (**23 passed, 1 ignored**), and Ruff plus Rust formatting
+checks passed. This closes the tested Windows hard-link case only. Linux/macOS,
+new-file creation races, and the supported Python CI matrix still require
+verification; do not infer complete SQLite interoperability from this result.
+PyPy 3.11 on Windows separately passed a direct path/SQLite-URI identity and
+lease-release smoke. Its local installation lacks pytest and Pydantic, so this
+is not a PyPy test-suite or cross-language parity result.
+
+The persisted-data contract was also rechecked on Windows CPython 3.13:
+`test_python_sqlite_then_rust_reads_and_writes_actual_database` and
+`test_rust_python_sqlite_handoff_repeated_commits_are_strictly_visible` both
+passed (**2 passed**), confirming actual Python/Rust data visibility in both
+directions in addition to process exclusion.
+
 ## Validation record
 
 - Linux CPython 3.12 Docker run with native extension: 31 context/interoperability

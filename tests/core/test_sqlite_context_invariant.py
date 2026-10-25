@@ -241,6 +241,134 @@ def test_python_authority_rejects_standalone_rust_process(
 
 
 @pytest.mark.ci_full
+def test_python_authority_rejects_rust_process_through_hardlink_alias(
+    tmp_path: Path,
+) -> None:
+    cargo = shutil.which("cargo")
+    if cargo is None:
+        pytest.skip("cargo is required for the cross-language process check")
+    database = tmp_path / "python-owned-hardlink.sqlite"
+    alias = tmp_path / "rust-hardlink.sqlite"
+    with sqlite3.connect(database):
+        pass
+    try:
+        os.link(database, alias)
+    except OSError as exc:
+        pytest.skip(f"hard links are unavailable: {exc}")
+
+    ready_path = Path(f"{database}.ready")
+    manifest = Path(__file__).resolve().parents[2] / "rust" / "Cargo.toml"
+    env = os.environ.copy()
+    env.update(
+        {
+            "KOGWISTAR_SQLITE_LOCK_CHILD_PATH": str(alias),
+            "KOGWISTAR_SQLITE_LOCK_CHILD_READY": str(ready_path),
+            "KOGWISTAR_SQLITE_LOCK_EXPECT_CONFLICT": "1",
+        }
+    )
+    command = [
+        cargo,
+        "test",
+        "--manifest-path",
+        str(manifest),
+        "-p",
+        "kogwistar-store-sqlite",
+        "tests::standalone_rust_process_cannot_open_an_authority_owned_database",
+        "--",
+        "--exact",
+        "--nocapture",
+    ]
+    with sqlite_execution_context("python"):
+        lease = acquire_sqlite_database(database, "python")
+        try:
+            child = subprocess.run(
+                command,
+                cwd=manifest.parent.parent,
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                timeout=90,
+                check=False,
+            )
+            assert child.returncode == 0, child.stdout
+        finally:
+            lease.release()
+
+
+@pytest.mark.ci_full
+def test_python_process_rejects_rust_authority_through_hardlink_alias(
+    tmp_path: Path,
+) -> None:
+    cargo = shutil.which("cargo")
+    if cargo is None:
+        pytest.skip("cargo is required for the cross-language process check")
+    database = tmp_path / "rust-owned-hardlink.sqlite"
+    alias = tmp_path / "python-hardlink.sqlite"
+    ready_path = Path(f"{database}.ready")
+    manifest = Path(__file__).resolve().parents[2] / "rust" / "Cargo.toml"
+    sqlite3.connect(database).close()
+    try:
+        os.link(database, alias)
+    except OSError as exc:
+        pytest.skip(f"hard links are unavailable: {exc}")
+
+    command = [
+        cargo,
+        "test",
+        "--manifest-path",
+        str(manifest),
+        "-p",
+        "kogwistar-store-sqlite",
+        "tests::standalone_rust_process_cannot_open_an_authority_owned_database",
+        "--",
+        "--exact",
+        "--nocapture",
+    ]
+    env = os.environ.copy()
+    env.update(
+        {
+            "KOGWISTAR_SQLITE_LOCK_CHILD_PATH": str(database),
+            "KOGWISTAR_SQLITE_LOCK_CHILD_READY": str(ready_path),
+        }
+    )
+    child = subprocess.Popen(
+        command,
+        cwd=manifest.parent.parent,
+        env=env,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    try:
+        for _ in range(120):
+            if ready_path.exists():
+                break
+            if child.poll() is not None:
+                output = child.stdout.read() if child.stdout else ""
+                raise AssertionError(
+                    f"Rust lock child exited before readiness: {output}"
+                )
+            time.sleep(0.5)
+        else:
+            child.kill()
+            output, _ = child.communicate(timeout=10)
+            raise AssertionError(f"Rust lock child did not become ready: {output}")
+
+        with sqlite_execution_context("python"):
+            with pytest.raises(SQLiteContextError) as conflict:
+                acquire_sqlite_database(alias, "python")
+        _assert_code(conflict.value, "KOGWISTAR_SQLITE_PROCESS_AUTHORITY_CONFLICT")
+    finally:
+        if child.stdin is not None:
+            child.stdin.close()
+        child.wait(timeout=30)
+        output = child.stdout.read() if child.stdout else ""
+        assert child.returncode == 0, output
+
+
+@pytest.mark.ci_full
 def test_rust_authority_rejects_python_process(tmp_path: Path) -> None:
     """Exercise the reverse direction of the shared authority contract."""
     cargo = shutil.which("cargo")
@@ -393,6 +521,16 @@ def test_database_aliases_share_ownership_identity(
         alias: str | Path = Path("engine.db")
     elif alias_kind == "uri":
         alias = f"file:{path.as_posix()}?mode=rw"
+        path_lease = acquire_sqlite_database(path, "python")
+        uri_lease = acquire_sqlite_database(alias, "python")
+        try:
+            assert (
+                uri_lease._process_identity_lock_key
+                == path_lease._process_identity_lock_key
+            )
+        finally:
+            uri_lease.release()
+            path_lease.release()
     elif alias_kind == "symlink":
         alias = tmp_path / "engine-link.db"
         try:
@@ -425,6 +563,19 @@ def test_shared_memory_uri_query_order_is_canonicalized() -> None:
                 "file:shared-memory?cache=shared&mode=memory", "rust"
             )
         _assert_code(conflict.value, "KOGWISTAR_SQLITE_DATABASE_ENGINE_CONFLICT")
+    finally:
+        owner.release()
+
+
+def test_shared_memory_uri_lock_does_not_create_files_in_working_directory(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    owner = acquire_sqlite_database(
+        "file:shared-memory?mode=memory&cache=shared", "python"
+    )
+    try:
+        assert not list(tmp_path.glob("*.kogwistar-authority.lock"))
     finally:
         owner.release()
 

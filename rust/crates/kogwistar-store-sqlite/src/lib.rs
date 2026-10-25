@@ -39,7 +39,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
-#[cfg(windows)]
 use uuid::Uuid;
 
 const BUSY_TIMEOUT_MS: u64 = 30_000;
@@ -79,16 +78,12 @@ impl Drop for WindowsAuthorityMutex {
 
 #[cfg(windows)]
 fn acquire_windows_authority_mutex(
-    database: &Path,
+    authority_key: &str,
+    display_path: &Path,
 ) -> SqliteStoreResult<Arc<WindowsAuthorityMutex>> {
-    let database_string = database.to_string_lossy().into_owned();
-    let database_key = database_string
-        .strip_prefix(r"\\?\")
-        .unwrap_or(&database_string)
-        .to_ascii_lowercase();
     let key = format!(
         "Local\\KogwistarSQLiteAuthority-{}",
-        Uuid::new_v5(&Uuid::NAMESPACE_OID, database_key.as_bytes())
+        Uuid::new_v5(&Uuid::NAMESPACE_OID, authority_key.as_bytes())
     );
     let mutexes = WINDOWS_PROCESS_AUTHORITY_MUTEXES.get_or_init(|| Mutex::new(BTreeMap::new()));
     let mut active = mutexes
@@ -105,7 +100,7 @@ fn acquire_windows_authority_mutex(
             winapi::um::handleapi::CloseHandle(existing);
         }
         return Err(SqliteStoreError::AuthorityConflict {
-            path: database.display().to_string(),
+            path: display_path.display().to_string(),
             message: "named Windows authority mutex is already owned".to_owned(),
         });
     }
@@ -121,7 +116,7 @@ fn acquire_windows_authority_mutex(
             winapi::um::handleapi::CloseHandle(handle);
         }
         return Err(SqliteStoreError::AuthorityConflict {
-            path: database.display().to_string(),
+            path: display_path.display().to_string(),
             message: "named Windows authority mutex is already owned".to_owned(),
         });
     }
@@ -131,59 +126,184 @@ fn acquire_windows_authority_mutex(
 }
 
 #[derive(Debug)]
-struct ProcessAuthorityLock {
+struct AuthorityLockHandle {
     _file: Arc<File>,
     #[cfg(windows)]
     _mutex: Arc<WindowsAuthorityMutex>,
+}
+
+fn acquire_authority_lock_handle(
+    lock_path: PathBuf,
+    authority_key: &str,
+    display_path: &Path,
+) -> SqliteStoreResult<AuthorityLockHandle> {
+    let locks = PROCESS_AUTHORITY_LOCKS.get_or_init(|| Mutex::new(BTreeMap::new()));
+    let mut active = locks
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(file) = active.get(&lock_path).and_then(Weak::upgrade) {
+        #[cfg(windows)]
+        {
+            let mutex = acquire_windows_authority_mutex(authority_key, display_path)?;
+            return Ok(AuthorityLockHandle {
+                _file: file,
+                _mutex: mutex,
+            });
+        }
+        #[cfg(not(windows))]
+        return Ok(AuthorityLockHandle { _file: file });
+    }
+
+    let file = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(&lock_path)?;
+    #[cfg(windows)]
+    {
+        let mutex = acquire_windows_authority_mutex(authority_key, display_path)?;
+        let file = Arc::new(file);
+        active.insert(lock_path, Arc::downgrade(&file));
+        Ok(AuthorityLockHandle {
+            _file: file,
+            _mutex: mutex,
+        })
+    }
+    #[cfg(not(windows))]
+    {
+        file.try_lock_exclusive()
+            .map_err(|error| SqliteStoreError::AuthorityConflict {
+                path: display_path.display().to_string(),
+                message: error.to_string(),
+            })?;
+        let file = Arc::new(file);
+        active.insert(lock_path, Arc::downgrade(&file));
+        Ok(AuthorityLockHandle { _file: file })
+    }
+}
+
+#[derive(Debug)]
+struct ProcessAuthorityLock {
+    _path: AuthorityLockHandle,
+    _file_identity: Option<AuthorityLockHandle>,
 }
 
 impl ProcessAuthorityLock {
     fn acquire(database: &Path) -> SqliteStoreResult<Self> {
         let database = normalized_database_path(database);
         let lock_path = PathBuf::from(format!("{}.kogwistar-authority.lock", database.display()));
-        let locks = PROCESS_AUTHORITY_LOCKS.get_or_init(|| Mutex::new(BTreeMap::new()));
-        let mut active = locks
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some(file) = active.get(&lock_path).and_then(Weak::upgrade) {
-            #[cfg(windows)]
-            {
-                let mutex = acquire_windows_authority_mutex(&database)?;
-                return Ok(Self {
-                    _file: file,
-                    _mutex: mutex,
-                });
-            }
-            #[cfg(not(windows))]
-            return Ok(Self { _file: file });
-        }
+        let authority_key = normalized_authority_path_key(&database);
+        let path = acquire_authority_lock_handle(lock_path, &authority_key, &database)?;
+        Ok(Self {
+            _path: path,
+            _file_identity: None,
+        })
+    }
 
-        let file = OpenOptions::new()
-            .create(true)
-            .read(true)
-            .write(true)
-            .open(&lock_path)?;
-        #[cfg(windows)]
-        {
-            let mutex = acquire_windows_authority_mutex(&database)?;
-            let file = Arc::new(file);
-            active.insert(lock_path, Arc::downgrade(&file));
-            Ok(Self {
-                _file: file,
-                _mutex: mutex,
-            })
+    fn attach_file_identity(&mut self, database: &Path) -> SqliteStoreResult<()> {
+        let Some(identity_key) = file_identity_authority_key(database)? else {
+            return Ok(());
+        };
+        let identifier = Uuid::new_v5(&Uuid::NAMESPACE_OID, identity_key.as_bytes());
+        let lock_path = std::env::temp_dir().join(format!(
+            "kogwistar-sqlite-authority-{}.lock",
+            identifier.simple()
+        ));
+        self._file_identity = Some(acquire_authority_lock_handle(
+            lock_path,
+            &identity_key,
+            database,
+        )?);
+        Ok(())
+    }
+}
+
+fn normalized_authority_path_key(database: &Path) -> String {
+    let database_string = database.to_string_lossy().into_owned();
+    #[cfg(windows)]
+    {
+        database_string
+            .strip_prefix(r"\\?\")
+            .unwrap_or(&database_string)
+            .to_ascii_lowercase()
+    }
+    #[cfg(not(windows))]
+    {
+        database_string
+    }
+}
+
+fn file_identity_authority_key(database: &Path) -> SqliteStoreResult<Option<String>> {
+    let _metadata = match fs::metadata(database) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use winapi::shared::minwindef::FALSE;
+        use winapi::um::fileapi::{
+            BY_HANDLE_FILE_INFORMATION, CreateFileW, GetFileInformationByHandle, OPEN_EXISTING,
+        };
+        use winapi::um::handleapi::{CloseHandle, INVALID_HANDLE_VALUE};
+        use winapi::um::winbase::FILE_FLAG_BACKUP_SEMANTICS;
+        use winapi::um::winnt::{
+            FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        };
+
+        let path = database
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect::<Vec<_>>();
+        let handle = unsafe {
+            CreateFileW(
+                path.as_ptr(),
+                FILE_READ_ATTRIBUTES,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                std::ptr::null_mut(),
+                OPEN_EXISTING,
+                FILE_FLAG_BACKUP_SEMANTICS,
+                std::ptr::null_mut(),
+            )
+        };
+        if handle == INVALID_HANDLE_VALUE {
+            return Err(std::io::Error::last_os_error().into());
         }
-        #[cfg(not(windows))]
-        {
-            file.try_lock_exclusive()
-                .map_err(|error| SqliteStoreError::AuthorityConflict {
-                    path: database.display().to_string(),
-                    message: error.to_string(),
-                })?;
-            let file = Arc::new(file);
-            active.insert(lock_path, Arc::downgrade(&file));
-            Ok(Self { _file: file })
+        let mut information: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+        let result = unsafe { GetFileInformationByHandle(handle, &mut information) };
+        let error = if result == FALSE {
+            Some(std::io::Error::last_os_error())
+        } else {
+            None
+        };
+        unsafe {
+            CloseHandle(handle);
         }
+        if let Some(error) = error {
+            return Err(error.into());
+        }
+        let file_index =
+            (u64::from(information.nFileIndexHigh) << 32) | u64::from(information.nFileIndexLow);
+        Ok(Some(format!(
+            "file-id:{:x}:{file_index:x}",
+            information.dwVolumeSerialNumber
+        )))
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        Ok(Some(format!(
+            "file-id:{:x}:{:x}",
+            _metadata.dev(),
+            _metadata.ino()
+        )))
+    }
+    #[cfg(not(any(windows, unix)))]
+    {
+        let _ = _metadata;
+        Ok(None)
     }
 }
 
@@ -492,8 +612,15 @@ impl SqliteStore {
         {
             fs::create_dir_all(parent)?;
         }
-        let authority_lock = Arc::new(ProcessAuthorityLock::acquire(&path)?);
+        let mut authority_lock = ProcessAuthorityLock::acquire(&path)?;
+        OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .open(&path)?;
+        authority_lock.attach_file_identity(&path)?;
         let conn = configured_connection(&path)?;
+        let authority_lock = Arc::new(authority_lock);
         let schema_version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
         if schema_version < STORE_SCHEMA_VERSION {
             initialize_schema(&conn)?;

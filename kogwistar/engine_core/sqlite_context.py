@@ -3,6 +3,7 @@ from __future__ import annotations
 import inspect
 import os
 import sys
+import tempfile
 import threading
 import uuid
 from collections.abc import Awaitable, Callable, Iterator
@@ -169,20 +170,16 @@ def sqlite_execution_bound(
 
 
 def _database_keys(database: str | os.PathLike[str]) -> set[tuple[object, ...]]:
-    value = os.fsdecode(os.fspath(database))
-    if value.startswith("file:"):
-        parsed = urlsplit(value)
+    raw_value = os.fsdecode(os.fspath(database))
+    if raw_value.startswith("file:"):
+        parsed = urlsplit(raw_value)
         query = parse_qs(parsed.query, keep_blank_values=True)
         if query.get("mode") == ["memory"]:
             normalized_query = tuple(
                 sorted((key, tuple(sorted(values))) for key, values in query.items())
             )
             return {("sqlite-uri-memory", parsed.netloc, parsed.path, normalized_query)}
-        raw_path = unquote(parsed.path)
-        if parsed.netloc:
-            raw_path = f"//{parsed.netloc}{raw_path}"
-        value = raw_path
-
+    value = _sqlite_database_path_value(database)
     resolved = Path(value).expanduser().resolve(strict=False)
     normalized = os.path.normcase(os.path.abspath(os.fspath(resolved)))
     keys: set[tuple[object, ...]] = {("path", normalized)}
@@ -195,13 +192,25 @@ def _database_keys(database: str | os.PathLike[str]) -> set[tuple[object, ...]]:
     return keys
 
 
+def _sqlite_database_path_value(database: str | os.PathLike[str]) -> str:
+    value = os.fsdecode(os.fspath(database))
+    if value.startswith("file:"):
+        parsed = urlsplit(value)
+        raw_path = unquote(parsed.path)
+        if parsed.netloc:
+            raw_path = f"//{parsed.netloc}{raw_path}"
+        value = raw_path
+    return value
+
+
 def _database_path_key(database: str | os.PathLike[str]) -> str:
     keys = _database_keys(database)
     for key in keys:
         if key[0] in {"path", "sqlite-uri"}:
             return str(key[1])
         if key[0] == "sqlite-uri-memory":
-            return repr(key[1:])
+            identifier = uuid.uuid5(uuid.NAMESPACE_OID, repr(key[1:])).hex
+            return f"sqlite-uri-memory:{identifier}"
     raise RuntimeError("SQLite database has no stable ownership key")
 
 
@@ -214,6 +223,7 @@ class SQLiteDatabaseLease:
         implementation: str,
         path_key: str,
         file_identity: tuple[object, ...] | None,
+        process_identity_lock_key: str | None = None,
     ) -> None:
         self._keys = keys
         self.implementation = implementation
@@ -224,6 +234,7 @@ class SQLiteDatabaseLease:
         self._process_lock_key = (
             path_key if implementation == "python" else None
         )
+        self._process_identity_lock_key = process_identity_lock_key
 
     def refresh_file_identity(self, database: str | os.PathLike[str]) -> None:
         new_keys = _database_keys(database)
@@ -250,6 +261,16 @@ class SQLiteDatabaseLease:
                         "SQLite database is already open through another implementation",
                         "KOGWISTAR_SQLITE_DATABASE_ENGINE_CONFLICT",
                     )
+            if (
+                self.implementation == "python"
+                and file_identity is not None
+                and self._process_identity_lock_key is None
+            ):
+                identity_lock_key = _file_identity_authority_key(
+                    file_identity, database
+                )
+                _acquire_process_authority_lock(identity_lock_key)
+                self._process_identity_lock_key = identity_lock_key
             for key in new_keys - self._keys:
                 owners = _active_implementations.setdefault(key, {})
                 owners[self.implementation] = owners.get(self.implementation, 0) + 1
@@ -277,6 +298,8 @@ class SQLiteDatabaseLease:
                     _active_implementations.pop(key, None)
             if self._process_lock_key is not None:
                 _release_process_authority_lock(self._process_lock_key)
+            if self._process_identity_lock_key is not None:
+                _release_process_authority_lock(self._process_identity_lock_key)
             identity, count = _active_path_identities[self._path_key]
             if count <= 1:
                 _active_path_identities.pop(self._path_key, None)
@@ -302,6 +325,7 @@ def acquire_sqlite_database(
     keys = _database_keys(database)
     path_key = _database_path_key(database)
     file_identity = next((key for key in keys if key[0] == "file-id"), None)
+    process_identity_lock_key: str | None = None
     with _registry_lock:
         active_identity = _active_path_identities.get(path_key)
         if (
@@ -322,6 +346,15 @@ def acquire_sqlite_database(
                 )
         if implementation == "python":
             _acquire_process_authority_lock(path_key)
+            try:
+                if file_identity is not None:
+                    process_identity_lock_key = _file_identity_authority_key(
+                        file_identity, database
+                    )
+                    _acquire_process_authority_lock(process_identity_lock_key)
+            except BaseException:
+                _release_process_authority_lock(path_key)
+                raise
         try:
             for key in keys:
                 owners = _active_implementations.setdefault(key, {})
@@ -329,12 +362,20 @@ def acquire_sqlite_database(
         except BaseException:
             if implementation == "python":
                 _release_process_authority_lock(path_key)
+                if process_identity_lock_key is not None:
+                    _release_process_authority_lock(process_identity_lock_key)
             raise
         identity, count = active_identity or (file_identity, 0)
         if identity is None and file_identity is not None:
             identity = file_identity
         _active_path_identities[path_key] = (identity, count + 1)
-    lease = SQLiteDatabaseLease(keys, implementation, path_key, file_identity)
+    lease = SQLiteDatabaseLease(
+        keys,
+        implementation,
+        path_key,
+        file_identity,
+        process_identity_lock_key,
+    )
     lease.context_id = binding.context_id
     _diagnostic(
         f"event=acquire implementation={implementation} context={binding.context_id} "
@@ -344,7 +385,83 @@ def acquire_sqlite_database(
 
 
 def _authority_lock_path(path_key: str) -> Path:
+    if path_key.startswith(("file-id:", "sqlite-uri-memory:")):
+        identifier = uuid.uuid5(uuid.NAMESPACE_OID, path_key).hex
+        return Path(tempfile.gettempdir()) / f"kogwistar-sqlite-authority-{identifier}.lock"
     return Path(f"{path_key}.kogwistar-authority.lock")
+
+
+def _file_identity_authority_key(
+    file_identity: tuple[object, ...], database: str | os.PathLike[str]
+) -> str:
+    _, device, inode = file_identity
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+
+        class FileTime(ctypes.Structure):
+            _fields_ = [("low", wintypes.DWORD), ("high", wintypes.DWORD)]
+
+        class FileInformation(ctypes.Structure):
+            _fields_ = [
+                ("attributes", wintypes.DWORD),
+                ("creation_time", FileTime),
+                ("last_access_time", FileTime),
+                ("last_write_time", FileTime),
+                ("volume_serial", wintypes.DWORD),
+                ("size_high", wintypes.DWORD),
+                ("size_low", wintypes.DWORD),
+                ("number_of_links", wintypes.DWORD),
+                ("file_index_high", wintypes.DWORD),
+                ("file_index_low", wintypes.DWORD),
+            ]
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        create_file = kernel32.CreateFileW
+        create_file.argtypes = (
+            wintypes.LPCWSTR,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.HANDLE,
+        )
+        create_file.restype = wintypes.HANDLE
+        get_information = kernel32.GetFileInformationByHandle
+        get_information.argtypes = (wintypes.HANDLE, ctypes.POINTER(FileInformation))
+        get_information.restype = wintypes.BOOL
+        close_handle = kernel32.CloseHandle
+        close_handle.argtypes = (wintypes.HANDLE,)
+        close_handle.restype = wintypes.BOOL
+
+        handle = create_file(
+            os.fspath(
+                Path(_sqlite_database_path_value(database))
+                .expanduser()
+                .resolve(strict=False)
+            ),
+            0x80,  # FILE_READ_ATTRIBUTES
+            0x1 | 0x2 | 0x4,  # Share read, write, and delete
+            None,
+            3,  # OPEN_EXISTING
+            0x02000000,  # FILE_FLAG_BACKUP_SEMANTICS
+            None,
+        )
+        invalid_handle = ctypes.c_void_p(-1).value
+        if handle == invalid_handle:
+            raise OSError(ctypes.get_last_error(), "could not open SQLite file identity")
+        try:
+            information = FileInformation()
+            if not get_information(handle, ctypes.byref(information)):
+                raise OSError(
+                    ctypes.get_last_error(), "could not read SQLite file identity"
+                )
+            file_index = (information.file_index_high << 32) | information.file_index_low
+            return f"file-id:{information.volume_serial:x}:{file_index:x}"
+        finally:
+            close_handle(handle)
+    return f"file-id:{int(device):x}:{int(inode):x}"
 
 
 def _authority_mutex_name(path_key: str) -> str:
