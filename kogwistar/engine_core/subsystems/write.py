@@ -377,6 +377,16 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
 
         return cast(ProjectionBackendLike, self._e.backend)
 
+    def _attach_graph_namespace(self, metadata: JsonObject) -> JsonObject:
+        """Persist the engine's authoritative graph namespace on projections."""
+        declared_namespace = metadata.get("namespace")
+        if declared_namespace is not None and declared_namespace != self._e.namespace:
+            raise ValueError(
+                "graph metadata namespace conflicts with the engine namespace"
+            )
+        metadata["namespace"] = self._e.namespace
+        return metadata
+
     # Canonical write API
     @implementation_selection_bound
     def add_node(self, node: Node, doc_id: str | None = None) -> None:
@@ -1393,7 +1403,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                     }
                 )
             )
-        return base_metadata
+        return self._attach_graph_namespace(base_metadata)
 
     def _add_node_impl(self, node: Node, doc_id: str | None = None) -> None:
         """Commit canonical node event, then converge projections around it.
@@ -1997,10 +2007,12 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         return [{k: v for k, v in r.items() if v is not None} for r in rows]
 
     def node_doc_and_meta(self, node: Node) -> tuple[str, JsonObject]:
-        return cast(tuple[str, JsonObject], node_doc_and_meta_util(node))
+        document, metadata = node_doc_and_meta_util(node)
+        return document, self._attach_graph_namespace(metadata)
 
     def edge_doc_and_meta(self, edge: Edge) -> tuple[str, JsonObject]:
-        return cast(tuple[str, JsonObject], edge_doc_and_meta_util(edge))
+        document, metadata = edge_doc_and_meta_util(edge)
+        return document, self._attach_graph_namespace(metadata)
 
     def strip_none(self, d: Mapping[str, _T]) -> dict[str, _T]:
         return strip_none(d)

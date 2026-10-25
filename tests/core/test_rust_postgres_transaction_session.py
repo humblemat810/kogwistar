@@ -26,6 +26,7 @@ from kogwistar.engine_core.models import (
 )
 from kogwistar.engine_core.postgres_backend import PgVectorBackend
 from kogwistar.engine_core.rust_postgres_session import RustEnginePostgresMetaStore
+from kogwistar.engine_core.rust_postgres_session import RustPostgresSession
 from tests._helpers.graph_builders import (
     build_entity_node,
     build_relationship_edge,
@@ -650,11 +651,15 @@ def test_mixed_python_rust_postgres_writers_keep_event_and_projection_ordered(
     assert persisted.summary == json.loads(events[-1][4])["summary"]
 
 
+@pytest.mark.parametrize(
+    "authority_order", [("python", "rust"), ("rust", "python")]
+)
 def test_mixed_python_rust_postgres_writers_serialize_across_processes(
     tmp_path: Path,
     pg_dsn: str | None,
     pg_schema: str | None,
     sa_engine: Any,
+    authority_order: tuple[str, str],
 ) -> None:
     dsn, schema = _require_pg(pg_dsn, pg_schema)
     entity_id = f"cross-process-{uuid.uuid4().hex}"
@@ -699,7 +704,8 @@ sql_engine.dispose()
 """
 
     processes: list[subprocess.Popen[str]] = []
-    for authority, summary in (("python", "python-process"), ("rust", "rust-process")):
+    for authority in authority_order:
+        summary = f"{authority}-process"
         child_env = os.environ.copy()
         child_env.update(
             {
@@ -753,6 +759,54 @@ sql_engine.dispose()
     projection = backend.node_get(ids=[entity_id], include=["documents"])
     persisted = Node.model_validate_json(projection["documents"][0])
     assert persisted.summary == summaries[-1]
+
+
+def test_postgres_transaction_token_is_rejected_in_another_process(
+    pg_dsn: str | None,
+    pg_schema: str | None,
+) -> None:
+    dsn, schema = _require_pg(pg_dsn, pg_schema)
+    session = RustPostgresSession(dsn=dsn, schema=schema)
+    session.ensure_initialized()
+    child_script = r"""
+import os
+from kogwistar._rust_bridge import RustParityError, store_postgres
+
+try:
+    store_postgres(
+        dsn=os.environ["KOGWISTAR_TEST_PG_DSN"],
+        schema=os.environ["KOGWISTAR_TEST_PG_SCHEMA"],
+        context_id=os.environ["KOGWISTAR_TEST_CONTEXT_ID"],
+        transaction_id=os.environ["KOGWISTAR_TEST_TRANSACTION_ID"],
+        operation={"kind": "next_global_seq"},
+    )
+except RustParityError:
+    pass
+else:
+    raise AssertionError("another process used the parent's transaction token")
+"""
+
+    with session.transaction() as token:
+        child_env = os.environ.copy()
+        child_env.update(
+            {
+                "KOGWISTAR_TEST_PG_DSN": dsn,
+                "KOGWISTAR_TEST_PG_SCHEMA": schema,
+                "KOGWISTAR_TEST_CONTEXT_ID": session.context_id,
+                "KOGWISTAR_TEST_TRANSACTION_ID": token.value,
+            }
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", child_script],
+            cwd=Path(__file__).resolve().parents[2],
+            env=child_env,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=30,
+        )
+        assert result.returncode == 0, result.stderr
+        assert session.call("next_global_seq") == 1
 
 
 def test_public_rust_postgres_edge_add_is_atomic_with_event_and_jobs(

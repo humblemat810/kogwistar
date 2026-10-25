@@ -74,6 +74,11 @@ through the same stable transaction-scoped PostgreSQL advisory lock. This
 prevents concurrent process startup from racing on compatible `CREATE TABLE`
 operations; it is not a writer-ownership lock and does not prevent a process
 with database credentials from opening an independent connection.
+Graph projection records must also persist the engine-selected namespace in
+their backend metadata in both implementations. Event-log namespace alone is
+not enough when a physical projection collection is shared: the record scope
+must remain checkable after a language handoff or reopen. A caller-provided
+conflicting namespace is rejected rather than allowed to relabel the record.
 
 When an operation needs graph, event, projection, ACL, and index-job effects
 to commit atomically, one selected implementation owns the entire transaction
