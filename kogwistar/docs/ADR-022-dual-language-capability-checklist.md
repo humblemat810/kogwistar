@@ -36,7 +36,14 @@ and CI evidence rather than assigning one percentage to the whole port.
   `kogwistar-python`, and the live PostgreSQL projection and conversation-route
   tests, all passing on Windows CPython/Rust. This removes the conversation
   route's silent 10,000-record truncation; the collector still retains all
-  records in memory, so bounded-memory scaling remains open.
+  records in memory, so bounded-memory scaling remains open. The Python facade
+  regression `test_postgres_meta_facade_forwards_optional_graph_projection_cursor`
+  confirms that `after_id` crosses the facade unchanged and omission preserves
+  the old operation shape; the entire facade module passed **11 tests** on
+  elevated Windows CPython 3.13. A new live Python facade → compiled Rust bridge
+  → PostgreSQL page-boundary test is present, but its local run skipped because
+  Docker's named pipe was unavailable; keep live execution open until Docker-
+  enabled CI or a local PostgreSQL fixture passes it.
 - The shared typed graph-mutation validator now also invokes the base mutation
   contract before accepting a typed envelope, preventing typed callers from
   bypassing namespace, operation, table, payload-shape, or vector checks.
