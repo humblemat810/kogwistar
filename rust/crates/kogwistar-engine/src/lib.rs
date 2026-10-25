@@ -9,6 +9,8 @@ use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
+pub mod index_worker;
+
 const STATE_VERSION: i64 = 1;
 
 /// Reducer state kept inside a named projection payload. It has a stable

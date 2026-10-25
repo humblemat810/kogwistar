@@ -11,3 +11,7 @@ kogwistar-contracts = { path = "../kogwistar-contracts" }
 kogwistar-store = { path = "../kogwistar-store" }
 serde_json.workspace = true
 sha2.workspace = true
+
+[dev-dependencies]
+kogwistar-store-memory = { path = "../kogwistar-store-memory" }
+tokio.workspace = true

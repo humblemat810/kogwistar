@@ -832,8 +832,10 @@ dependencies = [
  "hex",
  "kogwistar-contracts",
  "kogwistar-store",
+ "kogwistar-store-memory",
  "serde_json",
  "sha2 0.10.9",
+ "tokio",
 ]
 
 [[package]]
