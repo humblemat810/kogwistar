@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Generic, Protocol, TypeVar
+from typing import Generic, Protocol, TypeVar, runtime_checkable
 
 from kogwistar.id_provider import stable_id
 from kogwistar.json_types import JsonValue
@@ -19,6 +19,7 @@ class ProjectionConflictError(RuntimeError):
     """Raised when another projector advanced the named projection first."""
 
 
+@runtime_checkable
 class CheckpointedProjectionStore(Protocol):
     def get_latest_entity_event_seq(self, *, namespace: str = "default") -> int: ...
 
@@ -124,6 +125,10 @@ def refresh_checkpointed_named_projection(
     build_payload: Callable[[TState, ProjectionCheckpoint, Sequence[str]], ProjectionPayload],
     build_snapshot: Callable[[Mapping[str, JsonValue]], TSnapshot],
     include_event: Callable[[str, str, str, str], bool] | None = None,
+    migrate_current: (
+        Callable[[ProjectionLoadResult[TState], int], ProjectionLoadResult[TState]]
+        | None
+    ) = None,
     rebuild_from_scratch: bool = False,
 ) -> TSnapshot:
     current_row = store.get_named_projection(namespace, key)
@@ -142,6 +147,21 @@ def refresh_checkpointed_named_projection(
     if current_row:
         try:
             current = decode_current(current_row)
+            if current.checkpoint.projection_schema_version != projection_schema_version:
+                if migrate_current is None:
+                    current = None
+                    rebuild_reason = "incompatible_projection_schema"
+                else:
+                    migrated = migrate_current(current, projection_schema_version)
+                    if (
+                        migrated.checkpoint.projection_schema_version
+                        != projection_schema_version
+                    ):
+                        raise ValueError(
+                            "projection migration returned an incompatible schema version"
+                        )
+                    current = migrated
+                    rebuild_reason = "migrated_projection"
         except (KeyError, TypeError, ValueError):
             current = None
             rebuild_reason = "incompatible_projection"

@@ -16,6 +16,8 @@ mod graph_model;
 mod graph_mutation;
 mod graph_read;
 mod graph_slice;
+mod source_map;
+mod projection_checkpoint;
 pub use conversation::{
     CONVERSATION_WIRE_VERSION, ConversationContractError, ConversationSummaryV1,
     ConversationTranscriptV1, ConversationTurnV1, conversation_summary_from_str,
@@ -53,6 +55,13 @@ pub use graph_slice::{
     GRAPH_SLICE_MANIFEST_VERSION, GraphModelSliceV1, GraphSliceChildLocation,
     GraphSliceDeclarationV1, GraphSliceError, GraphSliceFieldV1, GraphSliceManifestV1,
     GraphSliceMode,
+};
+pub use source_map::{
+    SourceMapChunkV1, SourceMapValidationError, SourceMapV1, SOURCE_MAP_WIRE_VERSION,
+};
+pub use projection_checkpoint::{
+    ProjectionCheckpointV1, ProjectionCheckpointValidationError,
+    PROJECTION_CHECKPOINT_WIRE_VERSION,
 };
 
 /// Return the stable graph-class names exposed by the versioned Python seam.

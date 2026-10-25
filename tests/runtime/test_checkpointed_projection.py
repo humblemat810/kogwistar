@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import SimpleNamespace
 
 import pytest
@@ -305,6 +305,131 @@ def test_refresh_checkpointed_named_projection_materializes_and_resumes() -> Non
     assert second.checkpoint.source_from_seq == 3
     assert second.checkpoint.last_materialized_seq == 3
     assert second.checkpoint.processed_event_ids == ("evt-1", "evt-2", "evt-3")
+
+
+def test_refresh_rebuilds_when_projection_schema_version_changes() -> None:
+    store = _FakeStore()
+    _append_event(
+        store,
+        event=BudgetEvent(
+            event_id="evt-schema-1",
+            run_id="run-schema",
+            source="provider",
+            kind="token",
+            amount=9,
+            unit="input_tokens",
+        ),
+    )
+
+    first = refresh_checkpointed_named_projection(
+        store,
+        namespace="usage_projection",
+        key="schema-change",
+        projection_id="usage",
+        workspace_id="ws-1",
+        source_namespace="usage_events",
+        projection_schema_version=1,
+        decode_current=_load_current,
+        create_state=_create_state,
+        decode_event=_decode_event,
+        event_key=_event_key,
+        apply_event=_apply_event,
+        build_payload=_build_payload,
+        build_snapshot=_build_snapshot,
+    )
+    assert first.total == 9
+
+    rebuilt = refresh_checkpointed_named_projection(
+        store,
+        namespace="usage_projection",
+        key="schema-change",
+        projection_id="usage",
+        workspace_id="ws-1",
+        source_namespace="usage_events",
+        projection_schema_version=2,
+        decode_current=_load_current,
+        create_state=_create_state,
+        decode_event=_decode_event,
+        event_key=_event_key,
+        apply_event=_apply_event,
+        build_payload=_build_payload,
+        build_snapshot=_build_snapshot,
+    )
+
+    assert rebuilt.total == 9
+    assert rebuilt.checkpoint.projection_schema_version == 2
+    assert rebuilt.checkpoint.rebuild_reason == "incompatible_projection_schema"
+
+
+def test_refresh_uses_explicit_projection_schema_migration() -> None:
+    store = _FakeStore()
+    _append_event(
+        store,
+        event=BudgetEvent(
+            event_id="evt-migration-1",
+            run_id="run-migration",
+            source="provider",
+            kind="token",
+            amount=11,
+            unit="input_tokens",
+        ),
+    )
+
+    first = refresh_checkpointed_named_projection(
+        store,
+        namespace="usage_projection",
+        key="schema-migration",
+        projection_id="usage",
+        workspace_id="ws-1",
+        source_namespace="usage_events",
+        projection_schema_version=1,
+        decode_current=_load_current,
+        create_state=_create_state,
+        decode_event=_decode_event,
+        event_key=_event_key,
+        apply_event=_apply_event,
+        build_payload=_build_payload,
+        build_snapshot=_build_snapshot,
+    )
+    assert first.total == 11
+
+    def migrate(
+        current: ProjectionLoadResult[dict[str, int]],
+        target_version: int,
+    ) -> ProjectionLoadResult[dict[str, int]]:
+        checkpoint = replace(
+            current.checkpoint,
+            projection_schema_version=target_version,
+        )
+        payload = dict(current.payload)
+        payload["projection_schema_version"] = target_version
+        return ProjectionLoadResult(
+            state=current.state,
+            checkpoint=checkpoint,
+            payload=payload,
+        )
+
+    migrated = refresh_checkpointed_named_projection(
+        store,
+        namespace="usage_projection",
+        key="schema-migration",
+        projection_id="usage",
+        workspace_id="ws-1",
+        source_namespace="usage_events",
+        projection_schema_version=2,
+        decode_current=_load_current,
+        create_state=_create_state,
+        decode_event=_decode_event,
+        event_key=_event_key,
+        apply_event=_apply_event,
+        build_payload=_build_payload,
+        build_snapshot=_build_snapshot,
+        migrate_current=migrate,
+    )
+
+    assert migrated.total == 11
+    assert migrated.checkpoint.projection_schema_version == 2
+    assert migrated.checkpoint.rebuild_reason == "migrated_projection"
 
 
 def test_refresh_checkpointed_named_projection_failure_preserves_previous_checkpoint() -> None:

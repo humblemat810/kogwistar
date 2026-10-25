@@ -4,6 +4,7 @@ import copy
 import json
 import math
 import random
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +34,7 @@ from kogwistar.engine_core.models import (
 from kogwistar.id_provider import stable_id
 from kogwistar.provenance import evidence_pack_digest_hash
 from kogwistar.runtime.base_runtime import apply_state_update_inplace
+from kogwistar.runtime.checkpointed_projection import ProjectionCheckpoint
 from kogwistar.runtime.models import (
     WorkflowCancelledNode,
     WorkflowCheckpointNode,
@@ -45,6 +47,7 @@ from kogwistar.runtime.models import (
     WorkflowNode,
 )
 from kogwistar.runtime.serialize import stable_json_dumps
+from kogwistar.splitter import split_doc_deterministic
 
 pytestmark = [pytest.mark.ci, pytest.mark.core]
 
@@ -64,6 +67,16 @@ GRAPH_MODEL_FIXTURE = json.loads(
         encoding="utf-8"
     )
 )
+SOURCE_MAP_FIXTURE = json.loads(
+    (ROOT / "contracts" / "golden" / "source-map-v1.json").read_text(
+        encoding="utf-8"
+    )
+)
+PROJECTION_CHECKPOINT_FIXTURE = json.loads(
+    (ROOT / "contracts" / "golden" / "projection-checkpoint-v1.json").read_text(
+        encoding="utf-8"
+    )
+)
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -76,6 +89,49 @@ def test_stable_id_matches_python_golden(monkeypatch, mode: str) -> None:
     monkeypatch.setenv("KOGWISTAR_IMPL_CONTRACTS", mode)
     for case in FIXTURE["stable_ids"]:
         assert str(stable_id(case["kind"], *case["parts"])) == case["expected"]
+
+
+def test_python_source_map_projection_matches_shared_chunk_contract() -> None:
+    fixture = SOURCE_MAP_FIXTURE
+    content = "alpha beta"
+    chunks = split_doc_deterministic(
+        doc_id=fixture["doc_id"],
+        content=content,
+        max_chars=5,
+        overlap_chars=0,
+        prefer_window=0,
+    )
+    projected = {
+        "contract_version": 1,
+        "doc_id": fixture["doc_id"],
+        "chunks": [
+            {
+                "chunk_id": f"chunk-{index}",
+                "doc_id": chunk.doc_id,
+                "start_char": chunk.start_char,
+                "end_char": chunk.end_char,
+                "text": chunk.text,
+            }
+            for index, chunk in enumerate(chunks)
+        ],
+    }
+    assert projected == fixture
+
+
+def test_python_projection_checkpoint_matches_shared_wire_contract() -> None:
+    fixture = dict(PROJECTION_CHECKPOINT_FIXTURE)
+    checkpoint = ProjectionCheckpoint(
+        **{
+            key: value
+            for key, value in fixture.items()
+            if key != "contract_version"
+        }
+    )
+    assert asdict(checkpoint) == {
+        key: value
+        for key, value in fixture.items()
+        if key != "contract_version"
+    }
 
 
 @pytest.mark.requires_rust

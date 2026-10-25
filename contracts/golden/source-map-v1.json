@@ -1,0 +1,20 @@
+{
+  "contract_version": 1,
+  "doc_id": "doc-source-map-fixture",
+  "chunks": [
+    {
+      "chunk_id": "chunk-0",
+      "doc_id": "doc-source-map-fixture",
+      "start_char": 0,
+      "end_char": 5,
+      "text": "alpha"
+    },
+    {
+      "chunk_id": "chunk-1",
+      "doc_id": "doc-source-map-fixture",
+      "start_char": 5,
+      "end_char": 10,
+      "text": " beta"
+    }
+  ]
+}
