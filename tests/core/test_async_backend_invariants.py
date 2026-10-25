@@ -202,6 +202,8 @@ async def test_async_pg_rust_authority_writes_event_and_projection(
 ):
     """Async writes use the Rust event/projection authority as one operation."""
     pytest.importorskip("sqlalchemy")
+    pytest.importorskip("kogwistar._rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_CONTRACTS", "rust")
     monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
     monkeypatch.setenv("KOGWISTAR_IMPL_GRAPH_STORE", "rust")
     monkeypatch.setenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "rust")
@@ -261,6 +263,8 @@ async def test_async_pg_rust_authority_rolls_back_event_and_projection_together(
     entity_kind, async_pg_backend, tmp_path, monkeypatch
 ):
     """A failure after Rust mutation must roll back the outer async transaction."""
+    pytest.importorskip("kogwistar._rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_CONTRACTS", "rust")
     monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
     monkeypatch.setenv("KOGWISTAR_IMPL_GRAPH_STORE", "rust")
     monkeypatch.setenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "rust")
