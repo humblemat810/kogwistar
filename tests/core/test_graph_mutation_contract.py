@@ -43,6 +43,16 @@ def test_python_graph_mutation_contract_rejects_semantically_invalid_mutations(
         validate_graph_mutation_batch(payload)
 
 
+def test_canonical_graph_mutation_rejects_physical_delete_operation() -> None:
+    payload = _fixture()
+    mutation = payload["mutations"][0]
+    assert isinstance(mutation, dict)
+    mutation["op"] = "DELETE"
+
+    with pytest.raises(GraphMutationContractError):
+        validate_graph_mutation_batch(payload)
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [("contract_version", 2), ("atomic", False), ("mutations", [])],
