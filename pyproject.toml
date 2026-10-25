@@ -49,6 +49,7 @@ Repository = "https://github.com/humblemat810/kogwistar"
 Issues = "https://github.com/humblemat810/kogwistar/issues"
 
 [project.optional-dependencies]
+benchmark = ["psutil>=6"]
 chroma = ["chromadb>=1.0.15"]
 pgvector = ["sqlalchemy[asyncio]>=2.0", "pgvector>=0.3.6", "psycopg[binary]>=3.1"]
 server = ["uvicorn[standard]>=0.30", "mcp>=2.2.0,<3"]

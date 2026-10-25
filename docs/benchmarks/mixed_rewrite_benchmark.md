@@ -166,7 +166,7 @@ Run the three storage configurations against a local disposable PostgreSQL
 instance with pgvector and installed Chroma extra:
 
 ```powershell
-python -m pip install -e ".[chroma,pgvector]" psutil
+python -m pip install -e ".[benchmark,chroma,pgvector]"
 docker run --rm --name gke-mixed-benchmark-pg `
   -e POSTGRES_PASSWORD=benchpass `
   -e POSTGRES_DB=kogwistar_bench `
