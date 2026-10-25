@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import uuid
 from typing import Any
 
@@ -453,6 +454,196 @@ def test_public_rust_postgres_node_add_is_atomic_with_event_and_jobs(
     events = list(python.iter_entity_events(namespace=engine.namespace))
     assert [entity_id for _, _, entity_id, _, _ in events] == ["public-committed"]
     assert all(job.entity_id != "public-rolled-back" for job in python.list_index_jobs())
+
+
+def test_python_postgres_node_add_rolls_back_event_when_projection_write_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    pg_dsn: str | None,
+    pg_schema: str | None,
+    sa_engine: Any,
+) -> None:
+    _, schema = _require_pg(pg_dsn, pg_schema)
+    backend = PgVectorBackend(engine=sa_engine, embedding_dim=3, schema=schema)
+    backend.ensure_schema()
+    monkeypatch.setenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "python")
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "python")
+    monkeypatch.setenv("KOGWISTAR_IMPL_GRAPH_STORE", "python")
+    engine = GraphKnowledgeEngine(
+        backend=backend,
+        embedding_function=lambda texts: [[1.0, 0.0, 0.0] for _ in texts],
+    )
+    assert isinstance(engine.metadata, EnginePostgresMetaStore)
+    node = build_entity_node(
+        node_id="python-projection-failure", doc_id="doc", embedding=[1.0, 0.0, 0.0]
+    )
+
+    def fail_projection(**_values: Any) -> None:
+        raise RuntimeError("projection write failed")
+
+    monkeypatch.setattr(backend, "node_add", fail_projection)
+    with pytest.raises(RuntimeError, match="projection write failed"):
+        engine.write.add_node(node)
+
+    python = EnginePostgresMetaStore(engine=sa_engine, schema=schema)
+    assert list(python.iter_entity_events(namespace=engine.namespace)) == []
+    assert backend.node_get(ids=[node.id], include=[])["ids"] == []
+
+
+def test_python_postgres_edge_add_rolls_back_event_when_projection_write_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    pg_dsn: str | None,
+    pg_schema: str | None,
+    sa_engine: Any,
+) -> None:
+    _, schema = _require_pg(pg_dsn, pg_schema)
+    backend = PgVectorBackend(engine=sa_engine, embedding_dim=3, schema=schema)
+    backend.ensure_schema()
+    monkeypatch.setenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "python")
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "python")
+    monkeypatch.setenv("KOGWISTAR_IMPL_GRAPH_STORE", "python")
+    engine = GraphKnowledgeEngine(
+        backend=backend,
+        embedding_function=lambda texts: [[1.0, 0.0, 0.0] for _ in texts],
+    )
+    assert isinstance(engine.metadata, EnginePostgresMetaStore)
+    monkeypatch.setattr(engine, "reconcile_indexes", lambda **kwargs: 0)
+    for node_id in ("python-edge-source", "python-edge-target"):
+        engine.write.add_node(
+            build_entity_node(
+                node_id=node_id, doc_id="doc", embedding=[1.0, 0.0, 0.0]
+            )
+        )
+    edge = build_relationship_edge(
+        edge_id="python-edge-projection-failure",
+        src="python-edge-source",
+        tgt="python-edge-target",
+        doc_id="doc",
+        embedding=[1.0, 0.0, 0.0],
+    )
+
+    def fail_projection(**_values: Any) -> None:
+        raise RuntimeError("edge projection write failed")
+
+    monkeypatch.setattr(backend, "edge_add", fail_projection)
+    with pytest.raises(RuntimeError, match="edge projection write failed"):
+        engine.write.add_edge(edge)
+
+    python = EnginePostgresMetaStore(engine=sa_engine, schema=schema)
+    events = list(python.iter_entity_events(namespace=engine.namespace))
+    assert [(kind, entity_id, op) for _, kind, entity_id, op, _ in events] == [
+        ("node", "python-edge-source", "ADD"),
+        ("node", "python-edge-target", "ADD"),
+    ]
+    assert backend.edge_get(ids=[edge.id], include=())["ids"] == []
+
+
+def test_mixed_python_rust_postgres_writers_keep_event_and_projection_ordered(
+    monkeypatch: pytest.MonkeyPatch,
+    pg_dsn: str | None,
+    pg_schema: str | None,
+    sa_engine: Any,
+) -> None:
+    _, schema = _require_pg(pg_dsn, pg_schema)
+    backend = PgVectorBackend(engine=sa_engine, embedding_dim=3, schema=schema)
+    backend.ensure_schema()
+    monkeypatch.setenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "python")
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "python")
+    monkeypatch.setenv("KOGWISTAR_IMPL_GRAPH_STORE", "python")
+    python_engine = GraphKnowledgeEngine(
+        backend=backend,
+        embedding_function=lambda texts: [[1.0, 0.0, 0.0] for _ in texts],
+    )
+    assert isinstance(python_engine.metadata, EnginePostgresMetaStore)
+
+    monkeypatch.setenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_GRAPH_STORE", "rust")
+    rust_engine = GraphKnowledgeEngine(
+        backend=backend,
+        embedding_function=lambda texts: [[0.0, 1.0, 0.0] for _ in texts],
+    )
+    assert isinstance(rust_engine.meta_sqlite, RustEnginePostgresMetaStore)
+
+    projection_write_entered = threading.Event()
+    release_python_projection = threading.Event()
+    rust_graph_mutation_entered = threading.Event()
+    rust_write_finished = threading.Event()
+    thread_errors: list[BaseException] = []
+    original_node_add = backend.node_add
+
+    def pause_python_projection(**values: Any) -> Any:
+        projection_write_entered.set()
+        if not release_python_projection.wait(timeout=10):
+            raise TimeoutError("timed out waiting to release Python projection write")
+        return original_node_add(**values)
+
+    monkeypatch.setattr(backend, "node_add", pause_python_projection)
+    original_rust_call = rust_engine.meta_sqlite.session.call
+
+    def observe_rust_mutation(kind: str, **values: Any) -> Any:
+        if kind == "graph_mutation":
+            rust_graph_mutation_entered.set()
+        return original_rust_call(kind, **values)
+
+    monkeypatch.setattr(rust_engine.meta_sqlite.session, "call", observe_rust_mutation)
+    python_node = build_entity_node(
+        node_id="mixed-language-order",
+        doc_id="doc",
+        embedding=[1.0, 0.0, 0.0],
+    ).model_copy(update={"summary": "python-write"})
+    rust_node = build_entity_node(
+        node_id="mixed-language-order",
+        doc_id="doc",
+        embedding=[0.0, 1.0, 0.0],
+    ).model_copy(update={"summary": "rust-write"})
+
+    def write_python() -> None:
+        try:
+            python_engine.write.add_node(python_node)
+        except BaseException as exc:
+            thread_errors.append(exc)
+
+    def write_rust() -> None:
+        try:
+            rust_engine.write.add_node(rust_node)
+        except BaseException as exc:
+            thread_errors.append(exc)
+        finally:
+            rust_write_finished.set()
+
+    python_thread = threading.Thread(target=write_python)
+    rust_thread = threading.Thread(target=write_rust)
+    try:
+        python_thread.start()
+        assert projection_write_entered.wait(timeout=10)
+        rust_thread.start()
+        assert rust_graph_mutation_entered.wait(timeout=10)
+        assert not rust_write_finished.wait(timeout=0.5)
+    finally:
+        release_python_projection.set()
+        python_thread.join(timeout=10)
+        if rust_thread.ident is not None:
+            rust_thread.join(timeout=10)
+
+    assert not python_thread.is_alive()
+    assert not rust_thread.is_alive()
+    assert thread_errors == []
+
+    python_meta = EnginePostgresMetaStore(engine=sa_engine, schema=schema)
+    events = [
+        event
+        for event in python_meta.iter_entity_events(namespace=python_engine.namespace)
+        if event[1:3] == ("node", "mixed-language-order")
+    ]
+    assert [json.loads(event[4])["summary"] for event in events] == [
+        "python-write",
+        "rust-write",
+    ]
+    projection = backend.node_get(
+        ids=["mixed-language-order"], include=["documents"]
+    )
+    persisted = Node.model_validate_json(projection["documents"][0])
+    assert persisted.summary == json.loads(events[-1][4])["summary"]
 
 
 def test_public_rust_postgres_edge_add_is_atomic_with_event_and_jobs(
@@ -925,7 +1116,7 @@ def test_native_graph_delete_is_atomic_idempotent_and_scope_safe(
     ]
     assert _call(
         dsn, schema, {"kind": "latest_retained_event_seq", "namespace": "delete"}
-    ) == 1
+    ) == 2
 
 
 def test_public_rust_postgres_edge_delete_is_atomic_with_event_and_jobs(
@@ -1318,6 +1509,7 @@ def test_public_rust_postgres_prune_node_routes_edge_replace_and_delete(
     assert edge_events == [
         (deleted_edge.id, "ADD"),
         (updated_edge.id, "ADD"),
+        (deleted_edge.id, "TOMBSTONE"),
         (deleted_edge.id, "DELETE"),
         (updated_edge.id, "REPLACE"),
     ]
@@ -1522,7 +1714,7 @@ def test_public_rust_postgres_extraction_rollback_deletes_atomically(
             namespace=engine.namespace
         )
         if kind == "node"
-    ] == [(node.id, "ADD"), (node.id, "DELETE")]
+    ] == [(node.id, "ADD"), (node.id, "TOMBSTONE"), (node.id, "DELETE")]
 
     failed = build_entity_node(
         node_id="extraction-delete-failure",

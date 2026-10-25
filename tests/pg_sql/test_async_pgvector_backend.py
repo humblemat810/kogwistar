@@ -14,6 +14,7 @@ from kogwistar.engine_core.engine_postgres_meta import EnginePostgresMetaStore
 from kogwistar.engine_core.models import Node
 from kogwistar.engine_core.utils.refs import node_doc_and_meta
 from tests._kg_factories import kg_document, kg_grounding
+from tests._helpers.graph_builders import build_relationship_edge
 
 
 class _AsyncEmbeddingFunction:
@@ -350,6 +351,92 @@ async def test_async_pg_engine_uow_rolls_back_writes_together(
 
     assert (await backend.document_get(ids=[doc.id]))["ids"] == []
     assert (await backend.node_get(ids=[node.id]))["ids"] == []
+
+
+@pytest.mark.asyncio
+async def test_async_python_node_add_rolls_back_event_when_projection_fails(
+    async_pg_backend, async_pg_schema, monkeypatch
+):
+    backend = async_pg_backend
+    assert async_pg_schema is not None
+    engine = GraphKnowledgeEngine(
+        embedding_function=_AsyncEmbeddingFunction(), backend=backend
+    )
+    assert isinstance(engine.metadata, EnginePostgresMetaStore)
+    engine._phase1_enable_index_jobs = False
+    node = Node(
+        label="AsyncFailureNode",
+        type="entity",
+        summary="projection failure",
+        mentions=[
+            kg_grounding(
+                "doc::async-failure",
+                start_char=0,
+                end_char=4,
+                excerpt="text",
+                collection_page_url="document/doc::async-failure",
+            )
+        ],
+        metadata={"entity_type": "concept"},
+        embedding=[1.0, 0.0, 0.0],
+    )
+
+    async def fail_projection(**_values):
+        raise RuntimeError("async projection write failed")
+
+    monkeypatch.setattr(backend, "async_node_upsert", fail_projection)
+    with pytest.raises(RuntimeError, match="async projection write failed"):
+        await engine.async_add_node(node)
+
+    events = list(
+        EnginePostgresMetaStore(
+            engine=backend.engine, schema=async_pg_schema
+        ).iter_entity_events(namespace=engine.namespace)
+    )
+    assert not any(event[2] == node.id for event in events)
+    assert (await backend.node_get(ids=[node.id]))["ids"] == []
+
+
+@pytest.mark.asyncio
+async def test_async_python_edge_add_rolls_back_event_when_projection_fails(
+    async_pg_backend, async_pg_schema, monkeypatch
+):
+    backend = async_pg_backend
+    assert async_pg_schema is not None
+    engine = GraphKnowledgeEngine(
+        embedding_function=_AsyncEmbeddingFunction(), backend=backend
+    )
+    assert isinstance(engine.metadata, EnginePostgresMetaStore)
+    engine._phase1_enable_index_jobs = False
+    for node_id in ("async-failure-source", "async-failure-target"):
+        await backend.node_add(
+            ids=[node_id],
+            documents=[node_id],
+            metadatas=[{"namespace": engine.namespace}],
+            embeddings=[[1.0, 0.0, 0.0]],
+        )
+    edge = build_relationship_edge(
+        edge_id="async-edge-projection-failure",
+        src="async-failure-source",
+        tgt="async-failure-target",
+        doc_id="async-failure-doc",
+        embedding=[1.0, 0.0, 0.0],
+    )
+
+    async def fail_projection(**_values):
+        raise RuntimeError("async edge projection write failed")
+
+    monkeypatch.setattr(backend, "async_edge_upsert", fail_projection)
+    with pytest.raises(RuntimeError, match="async edge projection write failed"):
+        await engine.async_add_edge(edge)
+
+    events = list(
+        EnginePostgresMetaStore(
+            engine=backend.engine, schema=async_pg_schema
+        ).iter_entity_events(namespace=engine.namespace)
+    )
+    assert not any(event[2] == edge.id for event in events)
+    assert (await backend.edge_get(ids=[edge.id]))["ids"] == []
 
 
 @pytest.mark.asyncio

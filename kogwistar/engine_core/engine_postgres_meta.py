@@ -1642,6 +1642,90 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
             )
         return seq
 
+    async def append_entity_event_async(
+        self,
+        *,
+        namespace: str,
+        event_id: str,
+        entity_kind: str,
+        entity_id: str,
+        op: str,
+        payload_json: str,
+    ) -> int:
+        """Append an entity event on the current async PostgreSQL transaction."""
+        import asyncio
+
+        if not self._is_async_engine:
+            return await asyncio.to_thread(
+                self.append_entity_event,
+                namespace=namespace,
+                event_id=event_id,
+                entity_kind=entity_kind,
+                entity_id=entity_id,
+                op=op,
+                payload_json=payload_json,
+            )
+
+        async def _append(conn: AsyncConnection) -> int:
+            existing = await conn.execute(
+                sa.text(
+                    f"SELECT namespace, seq FROM {self.schema}.entity_events "
+                    "WHERE event_id = :eid"
+                ),
+                {"eid": event_id},
+            )
+            row = existing.fetchone()
+            if row is not None:
+                if str(row[0]) != str(namespace):
+                    raise ValueError(
+                        f"event_id already belongs to namespace {row[0]!r}"
+                    )
+                return int(row[1])
+
+            sequence = await conn.execute(
+                sa.text(
+                    f"""
+                    INSERT INTO {self.schema}.namespace_seq(namespace, next_seq)
+                    VALUES (:ns, 2)
+                    ON CONFLICT(namespace)
+                    DO UPDATE SET next_seq = {self.schema}.namespace_seq.next_seq + 1
+                    RETURNING next_seq - 1
+                    """
+                ),
+                {"ns": namespace},
+            )
+            sequence_row = sequence.fetchone()
+            if sequence_row is None:
+                raise RuntimeError(
+                    f"failed to allocate entity event seq for namespace {namespace!r}"
+                )
+            seq = int(sequence_row[0])
+            await conn.execute(
+                sa.text(
+                    f"""
+                    INSERT INTO {self.schema}.entity_events(
+                        namespace, seq, event_id, entity_kind, entity_id, op, payload_json
+                    ) VALUES (:ns, :seq, :eid, :ek, :id, :op, :payload)
+                    """
+                ),
+                {
+                    "ns": namespace,
+                    "seq": seq,
+                    "eid": event_id,
+                    "ek": entity_kind,
+                    "id": entity_id,
+                    "op": op,
+                    "payload": payload_json,
+                },
+            )
+            return seq
+
+        active = get_active_conn()
+        if isinstance(active, AsyncConnection):
+            return await _append(active)
+        async with cast(AsyncEngine, self.engine).begin() as conn:
+            return await _append(conn)
+
     def iter_entity_events(
         self,
         *,

@@ -520,6 +520,10 @@ async def test_postgres_single_stage_async_writes_embedding_directly(async_pg_ba
         assert got["ids"] == [node.id]
         assert got["embeddings"] == [[1.0, 0.0, 0.0]]
         assert call_threads and call_threads[0] == main_thread
+        events = list(
+            engine.meta_sqlite.iter_entity_events(namespace="default", from_seq=1)
+        )
+        assert any(event[2] == node.id and event[3] == "ADD" for event in events)
         jobs = engine.meta_sqlite.list_index_jobs(namespace="default")
         assert all(job.index_kind != "node_embedding" for job in jobs)
     finally:

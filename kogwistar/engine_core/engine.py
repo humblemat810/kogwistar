@@ -6,9 +6,10 @@ import pathlib
 import threading
 import time
 import uuid
-from contextlib import contextmanager
+from collections.abc import Awaitable
+from contextlib import asynccontextmanager, contextmanager
 from types import TracebackType
-from typing import Protocol
+from typing import Protocol, cast
 
 from ..acl.graph import (
     ACLDecision,
@@ -52,6 +53,7 @@ from .rust_meta_sqlite import build_sqlite_meta_store
 from .search_index.service import SearchIndexService
 from .service_health import ServiceHealthRegistry
 from .storage_backend import (
+    AsyncUnitOfWork,
     AtomicMutationCapability,
     NoopUnitOfWork,
     StorageBackend,
@@ -115,6 +117,21 @@ class CollectionLock(Protocol):
         traceback: TracebackType | None,
         /,
     ) -> object: ...
+
+
+class AsyncEntityEventAppender(Protocol):
+    """Optional metadata capability for appending events on an async UoW."""
+
+    def append_entity_event_async(
+        self,
+        *,
+        namespace: str,
+        event_id: str,
+        entity_kind: str,
+        entity_id: str,
+        op: str,
+        payload_json: str,
+    ) -> Awaitable[int]: ...
 from .utils import AliasBook
 from .utils.aliasing import AliasBookStore
 from .vector_search import VectorSearchHit
@@ -171,7 +188,7 @@ import json
 import math
 import os
 import warnings
-from collections.abc import Callable, Iterable, Iterator, Sequence
+from collections.abc import AsyncIterator, Callable, Iterable, Iterator, Sequence
 from datetime import datetime
 from functools import wraps
 from typing import (
@@ -962,6 +979,44 @@ class GraphKnowledgeEngine:
             entity_id=entity_id,
             op=op,
             payload_json=payload_json,
+        )
+
+    async def _append_event_for_entity_async(
+        self,
+        *,
+        namespace: str,
+        entity_kind: str,
+        entity_id: str,
+        op: str,
+        payload: dict,
+        required: bool = False,
+    ) -> None:
+        """Append a canonical event through an async-capable metadata store."""
+        import asyncio
+        import json
+        import uuid
+
+        if self._disable_event_log:
+            return
+        append_async = getattr(self.metadata, "append_entity_event_async", None)
+        if not callable(append_async):
+            await asyncio.to_thread(
+                self._append_event_for_entity,
+                namespace=namespace,
+                entity_kind=entity_kind,
+                entity_id=entity_id,
+                op=op,
+                payload=payload,
+                required=required,
+            )
+            return
+        await cast(AsyncEntityEventAppender, self.metadata).append_entity_event_async(
+            namespace=namespace,
+            event_id=str(uuid.uuid4()),
+            entity_kind=entity_kind,
+            entity_id=entity_id,
+            op=op,
+            payload_json=json.dumps(payload, sort_keys=True, separators=(",", ":")),
         )
 
     def enqueue_index_job(self, *args: object, **kwargs: object) -> str:
@@ -2270,6 +2325,27 @@ class GraphKnowledgeEngine:
         with transaction_authority_scope(authority):
             with self._uow_impl():
                 yield self._uow_ctx_conn.get()
+
+    @asynccontextmanager
+    async def async_uow(self) -> AsyncIterator[object | None]:
+        """Join the configured async backend transaction when available.
+
+        This is primarily the async PostgreSQL boundary: metadata event writes
+        and async vector projection writes share the same connection and commit.
+        Backends without an async transactional capability retain their legacy
+        behavior rather than being given a false atomicity guarantee.
+        """
+        authority = transaction_authority_for_selection(
+            self._implementation_selection_snapshot
+        )
+        with transaction_authority_scope(authority):
+            backend_uow = getattr(self, "_async_backend_uow", None)
+            transaction = getattr(backend_uow, "transaction", None)
+            if not callable(transaction):
+                yield None
+                return
+            async with cast(AsyncUnitOfWork, backend_uow).transaction():
+                yield None
 
     @contextmanager
     def _uow_impl(self) -> Iterator[object | None]:

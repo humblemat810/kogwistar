@@ -21,7 +21,7 @@ from typing_extensions import TypedDict
 from pydantic import TypeAdapter
 
 from ...cdc.change_event import EntityRefModel
-from ...json_types import JsonObject
+from ...json_types import JsonObject, decode_json_object
 from ...typing_interfaces import EmbeddingFunctionLike, ProjectionBackendLike
 from ...utils.embedding_vectors import normalize_embedding_vector
 from ..async_compat import run_awaitable_blocking
@@ -90,8 +90,9 @@ def _validate_graph_model_contract(entity: Node | Edge) -> JsonObject | None:
     from ..graph_contracts import build_graph_model_envelope
 
     envelope = build_graph_model_envelope(entity)
-    validate_graph_model_family(envelope)
-    return cast(JsonObject, envelope)
+    payload = decode_json_object(envelope, label="graph model envelope")
+    validate_graph_model_family(payload)
+    return payload
 
 
 @runtime_checkable
@@ -931,17 +932,22 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 enqueue_index_jobs=False,
             )
         if not native_added:
-            await asyncio.to_thread(
-                self._e._append_event_for_entity,
-                namespace=self._e.namespace,
-                entity_kind="node", entity_id=node.safe_get_id(), op="ADD",
-                payload=payload if isinstance(payload, dict) else {}, required=True,
-            )
-            await self._async_semantic_upsert(
-                entity_kind="node", entity_id=node.safe_get_id(),
-                document=document, metadata=metadata,
-                embedding=_required_embedding(node.embedding),
-            )
+            async with self._e.async_uow():
+                await self._e._append_event_for_entity_async(
+                    namespace=self._e.namespace,
+                    entity_kind="node",
+                    entity_id=node.safe_get_id(),
+                    op="ADD",
+                    payload=payload if isinstance(payload, dict) else {},
+                    required=True,
+                )
+                await self._async_semantic_upsert(
+                    entity_kind="node",
+                    entity_id=node.safe_get_id(),
+                    document=document,
+                    metadata=metadata,
+                    embedding=_required_embedding(node.embedding),
+                )
         await self._async_post_write(entity_kind="node", entity=node)
         await asyncio.to_thread(
             self._e._emit_change,
@@ -1005,17 +1011,22 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 enqueue_index_jobs=False,
             )
         if not native_added:
-            await asyncio.to_thread(
-                self._e._append_event_for_entity,
-                namespace=self._e.namespace,
-                entity_kind="edge", entity_id=edge.safe_get_id(), op="ADD",
-                payload=payload if isinstance(payload, dict) else {}, required=True,
-            )
-            await self._async_semantic_upsert(
-                entity_kind="edge", entity_id=edge.safe_get_id(),
-                document=document, metadata=metadata,
-                embedding=_required_embedding(edge.embedding),
-            )
+            async with self._e.async_uow():
+                await self._e._append_event_for_entity_async(
+                    namespace=self._e.namespace,
+                    entity_kind="edge",
+                    entity_id=edge.safe_get_id(),
+                    op="ADD",
+                    payload=payload if isinstance(payload, dict) else {},
+                    required=True,
+                )
+                await self._async_semantic_upsert(
+                    entity_kind="edge",
+                    entity_id=edge.safe_get_id(),
+                    document=document,
+                    metadata=metadata,
+                    embedding=_required_embedding(edge.embedding),
+                )
         await self._async_post_write(entity_kind="edge", entity=edge)
         await asyncio.to_thread(
             self._e._emit_change,
@@ -1252,7 +1263,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             "document": self._projection_backend().documents.name,
             "domain": self._projection_backend().domains.name,
         }[entity_kind]
-        if entity_kind in {"node", "edge"}:
+        if entity_kind == "node" or entity_kind == "edge":
             for entity_id in entity_ids:
                 self._ensure_rust_postgres_canonical_tombstone(
                     entity_kind=entity_kind, entity_id=entity_id
@@ -1450,22 +1461,23 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         )
 
         if not native_added:
-            self._e._append_event_for_entity(
-                namespace=self._e.namespace,
-                entity_kind="node",
-                entity_id=node.safe_get_id(),
-                op="ADD",
-                payload=payload if isinstance(payload, dict) else {},
-                required=True,
-            )
-            run_awaitable_blocking(self._e.backend.node_add(
-                ids=[node.safe_get_id()],
-                documents=[doc],
-                embeddings=[_required_embedding(node.embedding)]
-                if node.embedding is not None
-                else [self._e.embed.iterative_defensive_emb(str(doc))],
-                metadatas=[meta],
-            ))
+            with self._e.uow():
+                self._e._append_event_for_entity(
+                    namespace=self._e.namespace,
+                    entity_kind="node",
+                    entity_id=node.safe_get_id(),
+                    op="ADD",
+                    payload=payload if isinstance(payload, dict) else {},
+                    required=True,
+                )
+                run_awaitable_blocking(self._e.backend.node_add(
+                    ids=[node.safe_get_id()],
+                    documents=[doc],
+                    embeddings=[_required_embedding(node.embedding)]
+                    if node.embedding is not None
+                    else [self._e.embed.iterative_defensive_emb(str(doc))],
+                    metadatas=[meta],
+                ))
 
         if self._e._phase1_enable_index_jobs:
             if not native_added:
@@ -1568,22 +1580,23 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             model_envelope=model_envelope,
         )
         if not native_added:
-            self._e._append_event_for_entity(
-                namespace=self._e.namespace,
-                entity_kind="edge",
-                entity_id=edge.safe_get_id(),
-                op="ADD",
-                payload=payload if isinstance(payload, dict) else {},
-                required=True,
-            )
-            run_awaitable_blocking(self._e.backend.edge_add(
-                ids=[edge.safe_get_id()],
-                documents=[str(doc)],
-                embeddings=[_required_embedding(edge.embedding)]
-                if edge.embedding is not None
-                else [self._e.embed.iterative_defensive_emb(str(doc))],
-                metadatas=base_metadata,
-            ))
+            with self._e.uow():
+                self._e._append_event_for_entity(
+                    namespace=self._e.namespace,
+                    entity_kind="edge",
+                    entity_id=edge.safe_get_id(),
+                    op="ADD",
+                    payload=payload if isinstance(payload, dict) else {},
+                    required=True,
+                )
+                run_awaitable_blocking(self._e.backend.edge_add(
+                    ids=[edge.safe_get_id()],
+                    documents=[str(doc)],
+                    embeddings=[_required_embedding(edge.embedding)]
+                    if edge.embedding is not None
+                    else [self._e.embed.iterative_defensive_emb(str(doc))],
+                    metadatas=base_metadata,
+                ))
 
         if self._e._phase1_enable_index_jobs:
             if not native_added:
