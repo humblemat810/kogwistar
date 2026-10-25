@@ -16,9 +16,10 @@ use jsonwebtoken::{
     Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, decode_header, encode,
 };
 use kogwistar_contracts::{
-    DelegationAuthorityV1, DocumentUpsertV1, GraphMutationBatchV1 as GraphMutationBatchInput,
-    GraphMutationV1 as GraphMutationInput, GraphNeighborsRequestV1,
-    attach_rust_native_seam_attestation, attenuate_capabilities, graph_neighbors_request_from_str,
+    ConversationTranscriptV1, DelegationAuthorityV1, DocumentUpsertV1,
+    GraphMutationBatchV1 as GraphMutationBatchInput, GraphMutationV1 as GraphMutationInput,
+    GraphNeighborsRequestV1, attach_rust_native_seam_attestation, attenuate_capabilities,
+    graph_neighbors_request_from_str,
 };
 use kogwistar_runtime::{
     RECORDED_RUNTIME_CONTRACT_VERSION, RecordedRuntimeState, RecordedRuntimeTransition,
@@ -1374,6 +1375,51 @@ fn strip_snapshot_implementation_fields(response: &mut ApiEffectResponse) {
     object.remove("seam_attestation_version");
     object.remove("seam_crossings");
     response.body = serde_json::to_vec(&payload).expect("snapshot response serializes");
+}
+
+fn legacy_receive_message_payload(response: &mut ApiEffectResponse) {
+    if !(200..300).contains(&response.status) {
+        return;
+    }
+    let Ok(mut payload) = serde_json::from_slice::<Value>(&response.body) else {
+        *response = effect_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "KOGWISTAR_INVALID_RESPONSE",
+            "Transcript service returned an invalid response",
+        );
+        return;
+    };
+    if let Some(object) = payload.as_object_mut() {
+        object.remove("implementation_authority");
+        object.remove("seam_attestation_version");
+        object.remove("seam_crossings");
+    }
+    let Ok(transcript) = serde_json::from_value::<ConversationTranscriptV1>(payload) else {
+        *response = effect_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "KOGWISTAR_INVALID_RESPONSE",
+            "Transcript service returned an invalid response",
+        );
+        return;
+    };
+    let messages = transcript
+        .turns
+        .into_iter()
+        .map(|turn| {
+            json!({
+                "node_id": turn.node_id,
+                "turn_index": turn.turn_index,
+                "role": turn.role,
+                "content": turn.content,
+                "entity_type": turn.entity_type,
+            })
+        })
+        .collect::<Vec<_>>();
+    response.body = serde_json::to_vec(&json!({
+        "conversation_id": transcript.conversation_id,
+        "messages": messages,
+    }))
+    .expect("legacy transcript response serializes");
 }
 
 fn html_effect(body: String) -> ApiEffectResponse {
@@ -6780,23 +6826,21 @@ impl PostgresRunApplicationService {
                 ) {
                     syscall_forbidden(op)
                 } else if let Some(conversation_id) = input.args["conversation_id"].as_str() {
-                    let limit = input.args["limit"].as_u64().unwrap_or(10_000).min(10_000);
                     let nested = ApiEffectRequest {
                         contract_version: request.contract_version,
                         method: "POST".to_owned(),
                         path_and_query: "/internal/conversation/transcript".to_owned(),
                         body: serde_json::to_vec(&json!({
                             "conversation_id": conversation_id,
-                            "limit": limit,
+                            "limit": 10_000,
                         }))
                         .expect("transcript syscall args serialize"),
                         principal: request.principal.clone(),
                     };
-                    syscall_result(
-                        &input.version,
-                        op,
-                        self.internal_conversation_transcript_effect(&nested).await,
-                    )
+                    let mut transcript_response =
+                        self.internal_conversation_transcript_effect(&nested).await;
+                    legacy_receive_message_payload(&mut transcript_response);
+                    syscall_result(&input.version, op, transcript_response)
                 } else {
                     effect_error(
                         StatusCode::BAD_REQUEST,
@@ -13335,6 +13379,37 @@ mod tests {
             BTreeSet::from(["conversation_id".to_owned(), "turns".to_owned()])
         );
 
+        let receive_response = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/syscall/v1/receive_message".to_owned(),
+                body: serde_json::to_vec(&json!({
+                    "version": "v1",
+                    "op": "receive_message",
+                    "args": {"conversation_id": "conversation-1", "limit": 0}
+                }))
+                .unwrap(),
+                principal: json!({
+                    "sub": "alice",
+                    "role": "ro",
+                    "ns": "conversation",
+                    "storage_ns": "conversation",
+                    "capabilities": ["read_graph"]
+                }),
+            })
+            .await;
+        assert_eq!(receive_response.status, StatusCode::OK.as_u16());
+        let receive_payload: Value = serde_json::from_slice(&receive_response.body).unwrap();
+        let expected_receive = serde_json::from_str::<Value>(include_str!(
+            "../../../../contracts/golden/receive-message-result-v1.json"
+        ))
+        .unwrap();
+        assert_eq!(receive_payload["version"], "v1");
+        assert_eq!(receive_payload["op"], "receive_message");
+        assert_eq!(receive_payload["status"], "ok");
+        assert_eq!(receive_payload["result"], expected_receive);
+
         drop(service);
         let (cleanup, connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls)
             .await
@@ -19468,6 +19543,53 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
         let original_body = failure.body.clone();
         strip_snapshot_implementation_fields(&mut failure);
         assert_eq!(failure.body, original_body);
+    }
+
+    #[test]
+    fn receive_message_compatibility_matches_shared_wire_fixture() {
+        let expected = serde_json::from_str::<Value>(include_str!(
+            "../../../../contracts/golden/receive-message-result-v1.json"
+        ))
+        .unwrap();
+        let mut internal_payload = expected.clone();
+        let internal_object = internal_payload.as_object_mut().unwrap();
+        let mut turns = internal_object.remove("messages").unwrap();
+        for turn in turns.as_array_mut().unwrap() {
+            turn.as_object_mut()
+                .unwrap()
+                .insert("schema_version".to_owned(), json!(1));
+        }
+        internal_object.insert("turns".to_owned(), turns);
+        internal_object.insert("schema_version".to_owned(), json!(1));
+        internal_object.insert("implementation_authority".to_owned(), json!("rust"));
+        internal_object.insert("seam_attestation_version".to_owned(), json!(1));
+        internal_object.insert("seam_crossings".to_owned(), json!([]));
+        let mut response = json_effect(StatusCode::OK, internal_payload);
+
+        legacy_receive_message_payload(&mut response);
+
+        assert_eq!(response.status, StatusCode::OK.as_u16());
+        let actual = serde_json::from_slice::<Value>(&response.body).unwrap();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn receive_message_invalid_internal_payload_fails_closed() {
+        let mut response = json_effect(
+            StatusCode::OK,
+            json!({
+                "schema_version": 1,
+                "conversation_id": "conversation-1",
+                "turns": [],
+                "unexpected": true
+            }),
+        );
+
+        legacy_receive_message_payload(&mut response);
+
+        assert_eq!(response.status, StatusCode::INTERNAL_SERVER_ERROR.as_u16());
+        let error = serde_json::from_slice::<Value>(&response.body).unwrap();
+        assert_eq!(error["code"], "KOGWISTAR_INVALID_RESPONSE");
     }
 
     #[tokio::test]
