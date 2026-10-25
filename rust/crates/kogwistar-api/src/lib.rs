@@ -12433,6 +12433,41 @@ mod tests {
         remove_test_sqlite(&sqlite_path);
     }
 
+    #[tokio::test]
+    async fn sqlite_metadata_store_cannot_advertise_or_route_graph_authority() {
+        let sqlite_path = std::env::temp_dir().join(format!(
+            "kogwistar-api-sqlite-graph-authority-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let sqlite = SqliteRunApplicationService::open(&sqlite_path).unwrap();
+
+        assert_eq!(
+            sqlite.graph_authority_capability(),
+            GraphAuthorityCapability::Unsupported
+        );
+        assert!(!sqlite.supports_mcp_tool("root", "kg_neighbors"));
+        assert!(!sqlite.supports_http_operation("POST", "/internal/graph/neighbors"));
+        assert!(!sqlite.supports_http_operation("POST", "/internal/conversation/transcript"));
+
+        let response = sqlite
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/internal/graph/neighbors".to_owned(),
+                body: br#"{}"#.to_vec(),
+                principal: json!({"sub": "test"}),
+            })
+            .await;
+        assert_eq!(response.status, StatusCode::NOT_IMPLEMENTED.as_u16());
+        assert_eq!(
+            serde_json::from_slice::<Value>(&response.body).unwrap()["code"],
+            "KOGWISTAR_GRAPH_AUTHORITY_UNSUPPORTED"
+        );
+
+        drop(sqlite);
+        remove_test_sqlite(&sqlite_path);
+    }
+
     #[test]
     fn graph_neighbor_request_is_typed_and_closed_to_unknown_fields() {
         let request: GraphNeighborsRequestV1 =
