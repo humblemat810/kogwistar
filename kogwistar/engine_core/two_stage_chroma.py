@@ -234,7 +234,20 @@ class SQLiteChromaTwoStageProjectionAdapter:
         current = self.engine.indexing.canonical_entity_revision(
             entity_kind=entity_kind, entity_id=entity_id
         )
-        if op.upper() == "DELETE" or current is None or current.state != "active":
+        if op.upper() == "DELETE":
+            if (
+                expected
+                and current is not None
+                and current.state == "active"
+                and expected != self._current_fingerprint(
+                    entity_kind=entity_kind, entity_id=entity_id
+                )
+            ):
+                return
+            self.remove_stage1(entity_kind=entity_kind, entity_id=entity_id)
+            self.remove_stage2_or_invalidate(entity_kind=entity_kind, entity_id=entity_id)
+            return
+        if current is None or current.state != "active":
             self.remove_stage1(entity_kind=entity_kind, entity_id=entity_id)
             self.remove_stage2_or_invalidate(entity_kind=entity_kind, entity_id=entity_id)
             return

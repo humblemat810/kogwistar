@@ -203,7 +203,21 @@ class PostgresTwoStageProjectionAdapter:
     ) -> None:
         expected = str(json.loads(payload_json or "{}").get("source_fingerprint") or "")
         current = self._current(entity_kind=entity_kind, entity_id=entity_id)
-        if op.upper() == "DELETE" or current is None or current.state != "active":
+        if op.upper() == "DELETE":
+            if (
+                expected
+                and current is not None
+                and current.state == "active"
+                and expected != self._current_fingerprint(
+                    entity_kind=entity_kind, entity_id=entity_id
+                )
+            ):
+                return
+            with self.engine.uow():
+                self.remove_stage1(entity_kind=entity_kind, entity_id=entity_id)
+                self.remove_stage2_or_invalidate(entity_kind=entity_kind, entity_id=entity_id)
+            return
+        if current is None or current.state != "active":
             with self.engine.uow():
                 self.remove_stage1(entity_kind=entity_kind, entity_id=entity_id)
                 self.remove_stage2_or_invalidate(entity_kind=entity_kind, entity_id=entity_id)

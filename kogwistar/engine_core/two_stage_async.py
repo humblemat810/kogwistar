@@ -296,7 +296,18 @@ class AsyncPostgresTwoStageProjectionAdapter:
     ) -> None:
         current = await self._current(entity_kind, entity_id)
         expected = str(json.loads(payload_json or "{}").get("source_fingerprint") or "")
-        if op.upper() == "DELETE" or current is None or current.state != "active":
+        if op.upper() == "DELETE":
+            if (
+                expected
+                and current is not None
+                and current.state == "active"
+                and expected != await self._fingerprint(entity_kind, entity_id)
+            ):
+                return
+            await self.remove_stage1(entity_kind=entity_kind, entity_id=entity_id)
+            await self.remove_stage2_or_invalidate(entity_kind=entity_kind, entity_id=entity_id)
+            return
+        if current is None or current.state != "active":
             await self.remove_stage1(entity_kind=entity_kind, entity_id=entity_id)
             await self.remove_stage2_or_invalidate(entity_kind=entity_kind, entity_id=entity_id)
             return

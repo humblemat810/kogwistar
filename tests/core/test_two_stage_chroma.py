@@ -331,6 +331,22 @@ def test_chroma_arrangement_rejects_stale_promotion_and_deletes_stage1(tmp_path)
     assert not engine.backend.rows
 
 
+def test_chroma_arrangement_rejects_stale_delete_for_newer_active_revision(tmp_path):
+    engine, adapter = _engine(tmp_path)
+    node = build_entity_node(node_id="n1", doc_id="d1")
+    adapter.add_node(node)
+
+    engine.indexing.fingerprint = "fp-2"
+    adapter.apply_embedding_job(
+        entity_kind="node",
+        entity_id="n1",
+        op="DELETE",
+        payload_json=json.dumps({"source_fingerprint": "fp-1"}),
+    )
+
+    assert engine.meta_sqlite.get_stage1_node_projection("tenant-a", "n1") is not None
+
+
 def test_chroma_new_stage1_revision_removes_old_stage2_visibility(tmp_path):
     engine, adapter = _engine(tmp_path)
     node = build_entity_node(node_id="n1", doc_id="d1")
