@@ -862,6 +862,43 @@ pub struct GraphMutation {
     pub embedding_dim: usize,
 }
 
+/// Return the canonical projection table for a persisted graph entity kind.
+///
+/// `document` and `domain` share the graph event/projection transaction path,
+/// but are not Node/Edge lifecycle entities.
+pub fn graph_projection_table(entity_kind: &str) -> StoreResult<&'static str> {
+    match entity_kind {
+        "node" => Ok("gke_nodes"),
+        "edge" => Ok("gke_edges"),
+        "document" => Ok("gke_documents"),
+        "domain" => Ok("gke_domains"),
+        _ => Err(StoreError::InvalidEntityEventPayload {
+            message: format!("unsupported graph entity kind {entity_kind:?}"),
+        }),
+    }
+}
+
+/// Validate a projection target using the shared entity-kind/table mapping.
+pub fn validate_graph_projection_target(table: &str, entity_kind: &str) -> StoreResult<()> {
+    let expected_table = graph_projection_table(entity_kind)?;
+    if table != expected_table {
+        return Err(StoreError::InvalidEntityEventPayload {
+            message: format!("graph entity kind {entity_kind:?} must use table {expected_table:?}"),
+        });
+    }
+    Ok(())
+}
+
+/// Validate a node/edge-only lifecycle target, including its table mapping.
+pub fn validate_graph_lifecycle_target(table: &str, entity_kind: &str) -> StoreResult<()> {
+    if !matches!(entity_kind, "node" | "edge") {
+        return Err(StoreError::InvalidEntityEventPayload {
+            message: format!("graph lifecycle operations do not support {entity_kind:?}"),
+        });
+    }
+    validate_graph_projection_target(table, entity_kind)
+}
+
 /// A graph mutation batch plus optional indexing intents that must share its
 /// commit boundary.  Indexing remains explicit: a store must never infer a
 /// queue operation from arbitrary graph metadata.
@@ -889,29 +926,9 @@ pub fn validate_graph_mutation(mutation: &GraphMutation) -> StoreResult<()> {
     if mutation.record.id.is_empty() {
         return Err(StoreError::EmptyRecordId);
     }
-    let expected_table = match mutation.entity_kind.as_str() {
-        "node" => "gke_nodes",
-        "edge" => "gke_edges",
-        // Documents and domains use the same event/projection transaction
-        // internally, but remain excluded from the public graph route and
-        // typed graph envelope. This preserves the existing Python writer's
-        // projection semantics without widening graph authority.
-        "document" => "gke_documents",
-        "domain" => "gke_domains",
-        _ => {
-            return Err(StoreError::InvalidEntityEventPayload {
-                message: format!("unsupported graph entity kind {:?}", mutation.entity_kind),
-            });
-        }
-    };
-    if mutation.table != expected_table {
-        return Err(StoreError::InvalidEntityEventPayload {
-            message: format!(
-                "graph entity kind {:?} must use table {:?}",
-                mutation.entity_kind, expected_table
-            ),
-        });
-    }
+    // Documents and domains share this internal transaction path without
+    // being admitted to the public Node/Edge graph mutation authority.
+    validate_graph_projection_target(&mutation.table, &mutation.entity_kind)?;
     if !matches!(mutation.op.as_str(), "ADD" | "REPLACE" | "TOMBSTONE") {
         return Err(StoreError::UnsupportedEntityEventOperation {
             op: mutation.op.clone(),
@@ -3032,8 +3049,17 @@ mod tests {
     }
 
     #[test]
-    fn projection_mutation_accepts_existing_document_and_domain_tables() {
-        for (entity_kind, table) in [("document", "gke_documents"), ("domain", "gke_domains")] {
+    fn graph_projection_target_mapping_is_shared_and_exact() {
+        let targets = [
+            ("node", "gke_nodes"),
+            ("edge", "gke_edges"),
+            ("document", "gke_documents"),
+            ("domain", "gke_domains"),
+        ];
+        for (entity_kind, table) in targets {
+            assert_eq!(graph_projection_table(entity_kind), Ok(table));
+            validate_graph_projection_target(table, entity_kind)
+                .expect("matching projection target should be accepted");
             let mutation = GraphMutation {
                 scope: GraphScope {
                     namespace: "ns".to_owned(),
@@ -3049,7 +3075,17 @@ mod tests {
                 embedding_dim: 0,
             };
             validate_graph_mutation(&mutation).expect("projection mutation should be valid");
+            for (_, other_table) in targets {
+                if other_table != table {
+                    assert!(validate_graph_projection_target(other_table, entity_kind).is_err());
+                }
+            }
         }
+        assert!(graph_projection_table("unknown").is_err());
+        assert!(validate_graph_lifecycle_target("gke_documents", "document").is_err());
+        assert!(validate_graph_lifecycle_target("gke_domains", "domain").is_err());
+        assert!(validate_graph_lifecycle_target("gke_nodes", "node").is_ok());
+        assert!(validate_graph_lifecycle_target("gke_edges", "edge").is_ok());
     }
 
     #[test]

@@ -9,20 +9,21 @@ and CI evidence rather than assigning one percentage to the whole port.
 
 ## Latest verification update (2026-10-25)
 
-- Rust PostgreSQL graph mutation and physical-delete routing now validate node,
-  edge, document, and domain targets against their matching projection tables.
-  Lifecycle metadata patching and the canonical-tombstone requirement remain
-  restricted to node/edge entities. The document/domain routes are required by
-  existing atomic add and document rollback paths. Rust unit tests verify the
-  exact kind/table mapping and separately prove lifecycle operations reject
-  document/domain targets (`kogwistar-store-postgres --lib`: **11 passed**).
+- The shared `kogwistar-store` contract now owns the canonical projection
+  mapping for node, edge, document, and domain, plus a separate node/edge-only
+  lifecycle validator. PostgreSQL delegates to these functions rather than
+  carrying duplicate kind/table mappings. Rust unit suites pass **24** shared
+  store tests and **11** PostgreSQL store tests, including exact kind/table
+  mapping and lifecycle rejection of document/domain targets.
 - Live Windows CPython 3.13 PostgreSQL regression:
   `tests/core/test_rust_postgres_transaction_session.py` plus
   `tests/core/test_edge_metadata_serialization.py`: **34 passed, 0 failed**.
   This includes document/domain atomic add, document rollback delete, and
   node/edge tombstone-before-purge behavior. The rollback test now performs its
   canonical tombstone and physical purge within the same transaction before
-  asserting that rollback restores the row and event history.
+  asserting that rollback restores the row and event history. The rebuilt
+  PyO3 extension was used for this run, proving the shared validator through
+  the Python-to-Rust call path.
 - DL-06E remains **IN PROGRESS**: these PostgreSQL cases establish only the
   verified slice; broader backend, async, failure-injection, and full-stack
   cross-language atomicity requirements remain open.

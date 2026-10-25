@@ -31,7 +31,8 @@ use kogwistar_store::{
     WorkflowDesignHistoryReadStore, WorkflowDesignHistoryWriteStore, WorkflowDesignSnapshot,
     WorkflowDesignSnapshotWrite, runtime_checkpoint_namespace, runtime_projection_write,
     runtime_status_namespace, validate_entity_rebuild_request, validate_entity_recovery_request,
-    validate_graph_mutation, validate_graph_mutation_batch,
+    validate_graph_lifecycle_target, validate_graph_mutation, validate_graph_mutation_batch,
+    validate_graph_projection_target,
 };
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -3620,7 +3621,7 @@ where
             "graph mutation op must be ADD, REPLACE, or TOMBSTONE".to_owned(),
         ));
     }
-    validate_graph_mutation_target(&mutation.table, &mutation.entity_kind)?;
+    validate_graph_projection_target(&mutation.table, &mutation.entity_kind)?;
     let metadata = graph_metadata(&mutation.scope, &mutation.record.metadata)?;
     if let Some(embedding) = &mutation.record.embedding {
         finite_vector(embedding)?;
@@ -3722,7 +3723,7 @@ where
             "graph metadata patch op must be REPLACE or TOMBSTONE".to_owned(),
         ));
     }
-    validate_graph_entity_target(&mutation.table, &mutation.entity_kind)?;
+    validate_graph_lifecycle_target(&mutation.table, &mutation.entity_kind)?;
     let table = graph_table(tables, &mutation.table)?;
     let Some(row) = client
         .query_opt(
@@ -3823,7 +3824,7 @@ where
             "graph delete event id must not be empty".to_owned(),
         ));
     }
-    validate_graph_mutation_target(&mutation.table, &mutation.entity_kind)?;
+    validate_graph_projection_target(&mutation.table, &mutation.entity_kind)?;
     advisory_lock(client, &mutation.event_id, 0).await?;
     if let Some(existing) = event_by_id(client, tables, &mutation.event_id).await? {
         if existing.namespace != mutation.scope.namespace {
@@ -3901,44 +3902,6 @@ fn canonical_tombstone_present(metadata: &Map<String, Value>) -> bool {
         metadata.get("lifecycle_status").and_then(Value::as_str),
         Some("tombstoned") | Some("deleted")
     )
-}
-
-fn validate_graph_entity_target(table: &str, entity_kind: &str) -> PostgresStoreResult<()> {
-    let expected_table = match entity_kind {
-        "node" => "gke_nodes",
-        "edge" => "gke_edges",
-        _ => {
-            return Err(PostgresStoreError::Backend(
-                "physical graph purge only supports node or edge".to_owned(),
-            ));
-        }
-    };
-    if table != expected_table {
-        return Err(PostgresStoreError::Backend(format!(
-            "graph entity kind {entity_kind:?} must use table {expected_table:?}"
-        )));
-    }
-    Ok(())
-}
-
-fn validate_graph_mutation_target(table: &str, entity_kind: &str) -> PostgresStoreResult<()> {
-    let expected_table = match entity_kind {
-        "node" => "gke_nodes",
-        "edge" => "gke_edges",
-        "document" => "gke_documents",
-        "domain" => "gke_domains",
-        _ => {
-            return Err(PostgresStoreError::Backend(format!(
-                "unsupported graph mutation entity kind {entity_kind:?}"
-            )));
-        }
-    };
-    if table != expected_table {
-        return Err(PostgresStoreError::Backend(format!(
-            "graph entity kind {entity_kind:?} must use table {expected_table:?}"
-        )));
-    }
-    Ok(())
 }
 
 async fn upsert_graph_projection<C>(
@@ -6577,12 +6540,12 @@ mod tests {
 
     #[test]
     fn lifecycle_mutations_accept_only_nodes_and_edges() {
-        assert!(validate_graph_entity_target("gke_nodes", "node").is_ok());
-        assert!(validate_graph_entity_target("gke_edges", "edge").is_ok());
-        assert!(validate_graph_entity_target("gke_nodes", "document").is_err());
-        assert!(validate_graph_entity_target("gke_edges", "node").is_err());
-        assert!(validate_graph_entity_target("gke_documents", "document").is_err());
-        assert!(validate_graph_entity_target("gke_domains", "domain").is_err());
+        assert!(validate_graph_lifecycle_target("gke_nodes", "node").is_ok());
+        assert!(validate_graph_lifecycle_target("gke_edges", "edge").is_ok());
+        assert!(validate_graph_lifecycle_target("gke_nodes", "document").is_err());
+        assert!(validate_graph_lifecycle_target("gke_edges", "node").is_err());
+        assert!(validate_graph_lifecycle_target("gke_documents", "document").is_err());
+        assert!(validate_graph_lifecycle_target("gke_domains", "domain").is_err());
     }
 
     #[test]
@@ -6594,14 +6557,14 @@ mod tests {
             ("domain", "gke_domains"),
         ];
         for (entity_kind, expected_table) in targets {
-            assert!(validate_graph_mutation_target(expected_table, entity_kind).is_ok());
+            assert!(validate_graph_projection_target(expected_table, entity_kind).is_ok());
             for (_, other_table) in targets {
                 if other_table != expected_table {
-                    assert!(validate_graph_mutation_target(other_table, entity_kind).is_err());
+                    assert!(validate_graph_projection_target(other_table, entity_kind).is_err());
                 }
             }
         }
-        assert!(validate_graph_mutation_target("gke_nodes", "unknown").is_err());
+        assert!(validate_graph_projection_target("gke_nodes", "unknown").is_err());
     }
 
     fn raw(id: &str, payload_json: &str) -> NewRawEntityEvent {
