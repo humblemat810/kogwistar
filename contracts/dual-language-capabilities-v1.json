@@ -170,7 +170,6 @@
       "send_message",
       "receive_message",
       "mount_memory",
-      "project_view",
       "invoke_tool"
     ]
   },

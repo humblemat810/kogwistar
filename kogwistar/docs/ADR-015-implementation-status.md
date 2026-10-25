@@ -148,7 +148,7 @@ Only these local items remain in scope before production rollout:
   records grouped Python rollback ownership, prerequisite Rust authorities, and
   exit evidence; its exact operation set is bidirectionally checked against the
   Rust fail-closed inventory.
-- [x] Phase 5: explicitly version/defer the five conversation/tool syscall
+- [x] Phase 5: explicitly version/defer the four remaining conversation/tool syscall
   sub-operations listed by `PENDING_SYSCALL_CUTOVER_OPS`. The same versioned
   manifest entry records Python rollback ownership, the required worker/runtime
   protocol authority, and required exit evidence.
@@ -515,7 +515,7 @@ deployment canary evidence required to make Rust its live default writer.
   executable evidence; implementation and fresh four-layer proof remain pending.
 - Rust server binary and application services exist, but server and runtime
   cutover readiness remain false.
-- The 16 frozen server routes and five frozen conversation/tool syscalls are
+- The 16 frozen server routes and four remaining frozen conversation/tool syscalls are
   now versioned Python-roll-back deferrals in `server_operation_deferrals` in
   `contracts/rust-port-v1.json`. Each records a prerequisite authority and
   capability-specific exit evidence; a contract test requires an exact,
