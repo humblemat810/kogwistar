@@ -236,6 +236,40 @@ def test_python_node_edge_backend_payloads_round_trip_through_rust_json(
 
 
 @pytest.mark.requires_rust
+def test_tombstoned_edge_lifecycle_is_shared_by_python_and_rust(monkeypatch) -> None:
+    """An edge tombstone must cross the same typed seam as a node tombstone."""
+    monkeypatch.setenv("KOGWISTAR_IMPL_CONTRACTS", "rust")
+    from kogwistar import _rust
+
+    payload = copy.deepcopy(GRAPH_MODEL_FIXTURE["cases"][1]["payload"])
+    payload["metadata"]["lifecycle_status"] = "deleted"
+    payload["metadata"]["redirect_to_id"] = "parity-edge-replacement"
+
+    normalized = Edge.model_validate(payload).model_dump(
+        field_mode="backend", dump_format="json"
+    )
+    assert normalized["metadata"]["lifecycle_status"] == "tombstoned"
+    _rust.validate_graph_model_family(
+        json.dumps(
+            {"schema_version": 1, "model_class": "edge", "payload": normalized},
+            ensure_ascii=False,
+        )
+    )
+
+    invalid = copy.deepcopy(normalized)
+    invalid["metadata"]["lifecycle_status"] = "purged"
+    with pytest.raises(ValueError, match="lifecycle_status"):
+        Edge.model_validate(invalid)
+    with pytest.raises(Exception, match="lifecycle_status"):
+        _rust.validate_graph_model_family(
+            json.dumps(
+                {"schema_version": 1, "model_class": "edge", "payload": invalid},
+                ensure_ascii=False,
+            )
+        )
+
+
+@pytest.mark.requires_rust
 def test_python_family_payloads_validate_through_rust_graph_contract(monkeypatch) -> None:
     """Derived Python payloads use the same typed family boundary as Rust."""
 
