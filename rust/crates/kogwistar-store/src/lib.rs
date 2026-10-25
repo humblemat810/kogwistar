@@ -939,6 +939,13 @@ pub fn validate_graph_mutation(mutation: &GraphMutation) -> StoreResult<()> {
             message: "graph mutation payload must be a JSON object".to_owned(),
         });
     }
+    if matches!(mutation.entity_kind.as_str(), "node" | "edge")
+        && mutation.payload.get("id").and_then(Value::as_str) != Some(mutation.record.id.as_str())
+    {
+        return Err(StoreError::InvalidEntityEventPayload {
+            message: "graph mutation payload id must match the projection record id".to_owned(),
+        });
+    }
     if let Some(embedding) = &mutation.record.embedding {
         if embedding.iter().any(|value| !value.is_finite()) {
             return Err(StoreError::NonFiniteVector);
@@ -3094,7 +3101,11 @@ mod tests {
                 entity_kind: entity_kind.to_owned(),
                 event_id: format!("{entity_kind}-event"),
                 op: "ADD".to_owned(),
-                payload: serde_json::json!({}),
+                payload: if matches!(entity_kind, "node" | "edge") {
+                    serde_json::json!({"id": format!("{entity_kind}-id")})
+                } else {
+                    serde_json::json!({})
+                },
                 record: GraphRecord::new(format!("{entity_kind}-id")),
                 embedding_dim: 0,
             };
@@ -3156,6 +3167,18 @@ mod tests {
                     max_retries: 0,
                 }],
             }),
+            Err(StoreError::InvalidEntityEventPayload { .. })
+        ));
+    }
+
+    #[test]
+    fn graph_mutation_rejects_payload_and_projection_identity_drift() {
+        let payload = fixture_payload(0);
+        let mut mutation = typed_mutation("node", payload);
+        mutation.record.id = "different-node".to_owned();
+
+        assert!(matches!(
+            validate_graph_mutation(&mutation),
             Err(StoreError::InvalidEntityEventPayload { .. })
         ));
     }

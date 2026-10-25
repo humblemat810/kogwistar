@@ -87,6 +87,10 @@ class GraphMutationPayload(BaseModel):
             raise GraphMutationContractError("graph mutation namespace must not be empty")
         if not self.event_id or not self.record.id:
             raise GraphMutationContractError("graph mutation identifiers must not be empty")
+        if self.payload.get("id") != self.record.id:
+            raise GraphMutationContractError(
+                "graph mutation payload id must match the projection record id"
+            )
         if self.embedding_dim < 0:
             raise GraphMutationContractError("embedding dimension must not be negative")
         if self.record.embedding is not None and len(self.record.embedding) != self.embedding_dim:

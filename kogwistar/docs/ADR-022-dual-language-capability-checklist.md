@@ -34,6 +34,14 @@ and CI evidence rather than assigning one percentage to the whole port.
   rejection cases. Elevated Windows CPython 3.13 workspace verification passed
   **247 Rust tests with 1 intentionally ignored**; this does not close the
   remaining PyPy, other CPython, hosted-CI, or backend/live-DSN matrix.
+- Node/edge graph mutations now require the event payload's canonical `id` to
+  equal the projection record ID in both the shared Rust effect-owner validator
+  and Python's versioned wire validator. This prevents an event for one entity
+  from materializing under another entity's projection key. Evidence:
+  `cargo test --manifest-path rust/Cargo.toml -p kogwistar-store --lib` (**26
+  passed**) and `poetry run pytest tests/core/test_graph_mutation_contract.py -q
+  -p no:cacheprovider` (**13 passed**) on Windows CPython 3.13. This is a
+  graph-mutation identity invariant, not a claim of broad stack parity.
 
 ## Design and inventory
 

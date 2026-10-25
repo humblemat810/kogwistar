@@ -53,6 +53,16 @@ def test_canonical_graph_mutation_rejects_physical_delete_operation() -> None:
         validate_graph_mutation_batch(payload)
 
 
+def test_graph_mutation_rejects_payload_and_projection_identity_drift() -> None:
+    payload = _fixture()
+    mutation = payload["mutations"][0]
+    assert isinstance(mutation, dict)
+    mutation["record"]["id"] = "different-node"
+
+    with pytest.raises(GraphMutationContractError, match="payload id"):
+        validate_graph_mutation_batch(payload)
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [("contract_version", 2), ("atomic", False), ("mutations", [])],
