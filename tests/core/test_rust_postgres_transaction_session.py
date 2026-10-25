@@ -710,14 +710,16 @@ def test_mixed_python_rust_postgres_writers_keep_event_and_projection_ordered(
         return original_node_add(**values)
 
     monkeypatch.setattr(backend, "node_add", pause_python_projection)
-    original_rust_call = rust_engine.meta_sqlite.session.call
+    original_rust_call = rust_engine.meta_sqlite.native_session.call
 
     def observe_rust_mutation(kind: str, **values: Any) -> Any:
         if kind == "graph_mutation":
             rust_graph_mutation_entered.set()
         return original_rust_call(kind, **values)
 
-    monkeypatch.setattr(rust_engine.meta_sqlite.session, "call", observe_rust_mutation)
+    monkeypatch.setattr(
+        rust_engine.meta_sqlite.native_session, "call", observe_rust_mutation
+    )
     python_node = build_entity_node(
         node_id="mixed-language-order",
         doc_id="doc",
@@ -776,6 +778,19 @@ def test_mixed_python_rust_postgres_writers_keep_event_and_projection_ordered(
     )
     persisted = Node.model_validate_json(projection["documents"][0])
     assert persisted.summary == json.loads(events[-1][4])["summary"]
+
+    python_read = python_engine.read.get_nodes(ids=["mixed-language-order"])
+    assert len(python_read) == 1
+    assert python_read[0].summary == "rust-write"
+
+    def reject_python_projection_read(**_values: Any) -> Any:
+        raise AssertionError("Rust-selected singleton read fell back to Python")
+
+    monkeypatch.setattr(backend, "node_get", reject_python_projection_read)
+    rust_read = rust_engine.read.get_nodes(ids=["mixed-language-order"])
+    assert len(rust_read) == 1
+    assert rust_read[0].summary == "rust-write"
+    assert rust_read[0].metadata == python_read[0].metadata
 
 
 @pytest.mark.parametrize(

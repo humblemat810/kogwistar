@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import threading
+
 import pytest
+from pydantic_extension.model_slicing import use_mode
 
 from kogwistar.engine_core.rust_postgres_session import (
     RustEnginePostgresMetaStore,
@@ -19,6 +22,7 @@ from kogwistar.implementation_selection import (
     implementation_selection_scope,
     transaction_authority_scope,
 )
+from tests._helpers.graph_builders import build_entity_node, build_relationship_edge
 
 pytestmark = [pytest.mark.ci, pytest.mark.core]
 
@@ -242,6 +246,89 @@ def test_postgres_session_nested_commit_uses_one_native_transaction(monkeypatch)
         "replace_named_projection",
         "commit_transaction",
     ]
+
+
+def test_postgres_meta_facade_session_context_is_nested_and_reopenable(monkeypatch):
+    calls: list[str] = []
+
+    def fake_store_postgres(*, operation, **kwargs):
+        del kwargs
+        calls.append(operation["kind"])
+        return None
+
+    monkeypatch.setattr(
+        "kogwistar.engine_core.rust_postgres_session.store_postgres",
+        fake_store_postgres,
+    )
+    store = RustEnginePostgresMetaStore(
+        dsn="postgresql://example/db", schema="test"
+    )
+
+    with store.session() as outer:
+        assert outer is store
+        with store.session() as inner:
+            assert inner is store
+        with pytest.raises(
+            RustPostgresConnectionUnavailable,
+            match="active execution session",
+        ):
+            store.close()
+        assert not store.native_session._closed
+    assert store.native_session._closed
+
+    with store.session():
+        assert not store.native_session._closed
+    assert store.native_session._closed
+    assert calls == ["ensure_schema", "close_store", "ensure_schema", "close_store"]
+
+
+def test_postgres_meta_facade_keeps_store_open_for_overlapping_threads(monkeypatch):
+    calls: list[str] = []
+    calls_lock = threading.Lock()
+
+    def fake_store_postgres(*, operation, **kwargs):
+        del kwargs
+        with calls_lock:
+            calls.append(operation["kind"])
+        return None
+
+    monkeypatch.setattr(
+        "kogwistar.engine_core.rust_postgres_session.store_postgres",
+        fake_store_postgres,
+    )
+    store = RustEnginePostgresMetaStore(
+        dsn="postgresql://example/db", schema="test"
+    )
+    first_entered = threading.Event()
+    second_entered = threading.Event()
+    release_first = threading.Event()
+    release_second = threading.Event()
+
+    def hold_session(entered: threading.Event, release: threading.Event) -> None:
+        with store.session():
+            entered.set()
+            assert release.wait(timeout=5)
+
+    first = threading.Thread(
+        target=hold_session, args=(first_entered, release_first), daemon=True
+    )
+    second = threading.Thread(
+        target=hold_session, args=(second_entered, release_second), daemon=True
+    )
+    first.start()
+    assert first_entered.wait(timeout=5)
+    second.start()
+    assert second_entered.wait(timeout=5)
+
+    release_first.set()
+    first.join(timeout=5)
+    assert not first.is_alive()
+    assert "close_store" not in calls
+
+    release_second.set()
+    second.join(timeout=5)
+    assert not second.is_alive()
+    assert calls == ["ensure_schema", "close_store"]
 
 
 def test_postgres_graph_mutation_batch_uses_one_native_boundary(
@@ -655,10 +742,16 @@ def test_postgres_meta_facade_reuses_the_shared_atomic_batch_seam(monkeypatch):
 
 
 def test_postgres_meta_facade_validates_native_graph_read_shapes(monkeypatch):
+    valid_record = {
+        "id": "n1",
+        "document": '{"id":"n1"}',
+        "metadata": {"namespace": "alpha"},
+        "embedding": [1.0, 0.0],
+    }
     results = {
-        "graph_projection_records": [{"id": "n1"}],
+        "graph_projection_records": [valid_record],
         "graph_projection_vector_query": [
-            {"record": {"id": "n1"}, "distance": 0.0}
+            {"record": valid_record, "distance": 0.0}
         ],
     }
 
@@ -673,7 +766,7 @@ def test_postgres_meta_facade_validates_native_graph_read_shapes(monkeypatch):
     store = RustEnginePostgresMetaStore(
         dsn="postgresql://example/db", schema="test"
     )
-    assert store.graph_projection_records(table="gke_nodes") == [{"id": "n1"}]
+    assert store.graph_projection_records(table="gke_nodes") == [valid_record]
     assert store.graph_projection_vector_query(table="gke_nodes")[0][
         "distance"
     ] == 0.0
@@ -681,6 +774,22 @@ def test_postgres_meta_facade_validates_native_graph_read_shapes(monkeypatch):
     results["graph_projection_records"] = {"id": "wrong"}
     with pytest.raises(RuntimeError, match="invalid records"):
         store.graph_projection_records(table="gke_nodes")
+
+    results["graph_projection_records"] = [{**valid_record, "embedding": [float("nan")]}]
+    with pytest.raises(RuntimeError, match="invalid records"):
+        store.graph_projection_records(table="gke_nodes")
+
+    results["graph_projection_records"] = [
+        {**valid_record, "embedding": [10**10000]}
+    ]
+    with pytest.raises(RuntimeError, match="invalid records"):
+        store.graph_projection_records(table="gke_nodes")
+
+    results["graph_projection_vector_query"] = [
+        {"record": valid_record, "distance": float("inf")}
+    ]
+    with pytest.raises(RuntimeError, match="invalid matches"):
+        store.graph_projection_vector_query(table="gke_nodes")
 
 
 def test_postgres_meta_facade_forwards_optional_graph_projection_cursor(monkeypatch):
@@ -729,12 +838,22 @@ def test_read_subsystem_routes_simple_base_reads_to_native_projection(monkeypatc
     )
     calls: list[dict] = []
 
+    native_node = build_entity_node(
+        node_id="n1",
+        doc_id="doc-1",
+        summary="native",
+        metadata={"namespace": "alpha", "team": "red"},
+        embedding=[1.0, 0.0, 0.0],
+    )
+    with use_mode("backend"):
+        native_document = native_node.model_dump_json()
+
     def native_records(**values):
         calls.append(values)
         return [
             {
                 "id": "n1",
-                "document": '{"id":"n1","summary":"native"}',
+                "document": native_document,
                 "metadata": {"namespace": "alpha", "team": "red"},
                 "embedding": [1.0, 0.0, 0.0],
             }
@@ -749,27 +868,36 @@ def test_read_subsystem_routes_simple_base_reads_to_native_projection(monkeypatc
         embedding_dim = 3
         distance = "cosine"
 
-        async def node_get(self, **_values):
+        def node_get(self, **_values):
             return {"ids": ["python"]}
 
-        async def edge_get(self, **_values):
+        def edge_get(self, **_values):
             return {"ids": ["python-edge"]}
 
-        async def node_query(self, **_values):
+        def node_query(self, **_values):
             return {"ids": [["python-query"]]}
 
-        async def document_get(self, **_values):
+        def edge_query(self, **_values):
+            return {"ids": [["python-edge-query"]]}
+
+        def document_get(self, **_values):
             raise AssertionError("exact document read used Python backend")
 
-    reader = ReadSubsystem(
-        SimpleNamespace(meta_sqlite=store, backend=Backend(), namespace="alpha")
+    engine = SimpleNamespace(
+        meta_sqlite=store,
+        backend=Backend(),
+        namespace="alpha",
+        kg_graph_type="knowledge",
+        _resolve_redirect_chain=lambda *, initial_items, **_values: initial_items,
+        _filter_items_by_resolve_mode=lambda items, _mode: items,
     )
+    reader = ReadSubsystem(engine)
     result = reader._node_get_raw(
         ids=["n1"], where={"team": "red"}, limit=5
     )
     assert result == {
         "ids": ["n1"],
-        "documents": ['{"id":"n1","summary":"native"}'],
+        "documents": [native_document],
         "metadatas": [{"namespace": "alpha", "team": "red"}],
         "embeddings": [[1.0, 0.0, 0.0]],
     }
@@ -796,6 +924,173 @@ def test_read_subsystem_routes_simple_base_reads_to_native_projection(monkeypatc
     assert reader._node_get_raw(where={"team": "red"}, include=[], limit=5) == {
         "ids": ["python"]
     }
+
+    def reject_python_node_read(**_values):
+        raise AssertionError("Rust-selected singleton read fell back to Python")
+
+    monkeypatch.setattr(engine.backend, "node_get", reject_python_node_read)
+    hydrated = reader.get_nodes(ids=["n1"], where={"team": "red"}, limit=5)
+    assert len(hydrated) == 1
+    assert hydrated[0].summary == "native"
+    assert hydrated[0].embedding == [1.0, 0.0, 0.0]
+
+    native_query_calls: list[dict] = []
+
+    def native_vector_query(**values):
+        native_query_calls.append(values)
+        return [
+            {
+                "record": {
+                    "id": "n1",
+                    "document": native_document,
+                    "metadata": {"namespace": "alpha", "team": "red"},
+                    "embedding": [1.0, 0.0, 0.0],
+                },
+                "distance": 0.125,
+            }
+        ]
+
+    monkeypatch.setattr(store, "graph_projection_vector_query", native_vector_query)
+
+    def reject_python_vector_query(**_values):
+        raise AssertionError("Rust-selected vector query fell back to Python")
+
+    monkeypatch.setattr(engine.backend, "node_query", reject_python_vector_query)
+    native_hits = reader.query_nodes(
+        query_embeddings=[1.0, 0.0, 0.0], where={"team": "red"}, n_results=1
+    )
+    assert len(native_hits) == 1
+    assert native_hits[0][0].summary == "native"
+    assert native_query_calls == [
+        {
+            "namespace": "alpha",
+            "workspace_id": None,
+            "graph_space": None,
+            "table": "gke_nodes",
+            "embedding": [1.0, 0.0, 0.0],
+            "embedding_dim": 3,
+            "metadata": {"team": "red"},
+            "metric": "cosine",
+            "limit": 1,
+        }
+    ]
+
+    scored_hits = reader.search_nodes_as_of_scored(
+        query_embeddings=[1.0, 0.0, 0.0],
+        as_of_ts="2025-01-01T00:00:00Z",
+        where={"team": "red"},
+        n_results=1,
+    )
+    assert len(scored_hits) == 1
+    assert scored_hits[0].node.summary == "native"
+    assert scored_hits[0].raw_distance == 0.125
+    assert scored_hits[0].similarity == 0.875
+
+    legacy_query_calls: list[dict] = []
+
+    def legacy_vector_query(**values):
+        legacy_query_calls.append(values)
+        return {
+            "ids": [["n1"]],
+            "documents": [[native_document]],
+            "metadatas": [[{"namespace": "alpha", "team": "red"}]],
+            "embeddings": [[[1.0, 0.0, 0.0]]],
+        }
+
+    monkeypatch.setattr(engine.backend, "node_query", legacy_vector_query)
+    legacy_hits = reader.query_nodes(
+        query_embeddings=[1.0, 0.0, 0.0],
+        where={"team": {"$in": ["red"]}},
+        n_results=1,
+    )
+    assert legacy_hits[0][0].summary == "native"
+    assert len(legacy_query_calls) == 1
+    scored_legacy_hits = reader.search_nodes_as_of_scored(
+        query_embeddings=[1.0, 0.0, 0.0],
+        as_of_ts="2025-01-01T00:00:00Z",
+        where={"team": {"$in": ["red"]}},
+        n_results=1,
+    )
+    assert len(scored_legacy_hits) == 1
+    assert scored_legacy_hits[0].node.summary == "native"
+    assert scored_legacy_hits[0].raw_distance is None
+    assert len(legacy_query_calls) == 2
+
+    native_query_count = len(native_query_calls)
+    engine.backend.supports_historical_tombstone_query = True
+    tombstone_aware_hits = reader.search_nodes_as_of_scored(
+        query_embeddings=[1.0, 0.0, 0.0],
+        as_of_ts="2025-01-01T00:00:00Z",
+        where={"team": "red"},
+        n_results=1,
+    )
+    assert len(tombstone_aware_hits) == 1
+    assert legacy_query_calls[-1]["include_tombstoned"] is True
+    assert len(native_query_calls) == native_query_count
+
+    native_edge = build_relationship_edge(
+        edge_id="e1",
+        src="n1",
+        tgt="n2",
+        doc_id="doc-1",
+        summary="native edge",
+        metadata={"namespace": "alpha", "team": "red"},
+        source_edge_ids=["source-edge"],
+        target_edge_ids=["target-edge"],
+        embedding=[0.0, 1.0, 0.0],
+    )
+    with use_mode("backend"):
+        native_edge_document = native_edge.model_dump_json()
+    monkeypatch.setattr(
+        store,
+        "graph_projection_records",
+        lambda **_values: [
+            {
+                "id": "e1",
+                "document": native_edge_document,
+                "metadata": {"namespace": "alpha", "team": "red"},
+                "embedding": [0.0, 1.0, 0.0],
+            }
+        ],
+    )
+
+    def reject_python_edge_read(**_values):
+        raise AssertionError("Rust-selected edge read fell back to Python")
+
+    monkeypatch.setattr(engine.backend, "edge_get", reject_python_edge_read)
+    hydrated_edges = reader.get_edges(ids=["e1"], where={"team": "red"}, limit=5)
+    assert len(hydrated_edges) == 1
+    assert hydrated_edges[0].summary == "native edge"
+    assert hydrated_edges[0].source_edge_ids == ["source-edge"]
+    assert hydrated_edges[0].target_edge_ids == ["target-edge"]
+    assert hydrated_edges[0].embedding == [0.0, 1.0, 0.0]
+
+    monkeypatch.setattr(
+        store,
+        "graph_projection_vector_query",
+        lambda **_values: [
+            {
+                "record": {
+                    "id": "e1",
+                    "document": native_edge_document,
+                    "metadata": {"namespace": "alpha", "team": "red"},
+                    "embedding": [0.0, 1.0, 0.0],
+                },
+                "distance": 0.25,
+            }
+        ],
+    )
+
+    def reject_python_edge_vector_query(**_values):
+        raise AssertionError("Rust-selected edge vector query fell back to Python")
+
+    monkeypatch.setattr(engine.backend, "edge_query", reject_python_edge_vector_query)
+    native_edge_hits = reader.query_edges(
+        query_embeddings=[0.0, 1.0, 0.0], where={"team": "red"}, n_results=1
+    )
+    assert len(native_edge_hits) == 1
+    assert native_edge_hits[0][0].summary == "native edge"
+    assert native_edge_hits[0][0].source_edge_ids == ["source-edge"]
 
     native_records_result = {
         "id": "doc-1",

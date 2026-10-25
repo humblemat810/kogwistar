@@ -930,28 +930,42 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         # resolution; ordinary semantic search must continue excluding them.
         if getattr(self._e.backend, "supports_historical_tombstone_query", False):
             query_kwargs["include_tombstoned"] = True
-        try:
-            got = _json_object(run_awaitable_blocking(self._e.backend.node_query(**query_kwargs)))
-        except Exception as exc:
-            # Chroma's embedded Rust reader can briefly lose an HNSW segment
-            # after a local persistent update. Historical filtering is still
-            # correct over non-semantic node records, so fall back to a
-            # metadata/payload candidate read without retrying the vector path.
-            message = str(exc).lower()
-            is_chroma_hnsw_gap = (
-                self._e.backend.__class__.__name__ in {"ChromaBackend", "AsyncChromaBackend"}
-                and "nothing found on disk" in message
-                and "hnsw segment reader" in message
+        native = (
+            self._rust_postgres_projection_query(
+                entity_kind="node",
+                query_embeddings=query_embeddings,
+                where=where,
+                n_results=n_results,
+                include=include,
             )
-            if not is_chroma_hnsw_gap:
-                raise
-            got = _json_object(run_awaitable_blocking(
-                self._e.backend.node_get(
-                    where=where,
-                    limit=max(int(n_results), 10_000),
-                    include=["documents", "metadatas"],
+            if not kwargs and not query_kwargs.get("include_tombstoned")
+            else None
+        )
+        if native is not None:
+            got = native
+        else:
+            try:
+                got = _json_object(run_awaitable_blocking(self._e.backend.node_query(**query_kwargs)))
+            except Exception as exc:
+                # Chroma's embedded Rust reader can briefly lose an HNSW segment
+                # after a local persistent update. Historical filtering is still
+                # correct over non-semantic node records, so fall back to a
+                # metadata/payload candidate read without retrying the vector path.
+                message = str(exc).lower()
+                is_chroma_hnsw_gap = (
+                    self._e.backend.__class__.__name__ in {"ChromaBackend", "AsyncChromaBackend"}
+                    and "nothing found on disk" in message
+                    and "hnsw segment reader" in message
                 )
-            ))
+                if not is_chroma_hnsw_gap:
+                    raise
+                got = _json_object(run_awaitable_blocking(
+                    self._e.backend.node_get(
+                        where=where,
+                        limit=max(int(n_results), 10_000),
+                        include=["documents", "metadatas"],
+                    )
+                ))
         batches = self.nodes_from_query_result(got, node_type=node_type)
         candidates = [node for batch in batches for node in batch] if batches else []
         raw_ids = [item for batch in _json_string_rows(got.get("ids")) for item in batch]

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import contextvars
+import math
+import threading
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -34,6 +36,44 @@ class _RustPostgresTransactionToken:
         )
 
 
+def _valid_graph_projection_record(record: object) -> bool:
+    if not isinstance(record, dict):
+        return False
+    if (
+        not isinstance(record.get("id"), str)
+        or not record["id"]
+        or not isinstance(record.get("document"), str)
+        or not isinstance(record.get("metadata"), dict)
+    ):
+        return False
+    embedding = record.get("embedding")
+    if embedding is None:
+        return True
+    return isinstance(embedding, list) and all(
+        _finite_projection_number(value)
+        for value in embedding
+    )
+
+
+def _finite_projection_number(value: object) -> bool:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
+def _valid_graph_projection_match(match: object) -> bool:
+    if not isinstance(match, dict):
+        return False
+    distance = match.get("distance")
+    return (
+        _valid_graph_projection_record(match.get("record"))
+        and _finite_projection_number(distance)
+    )
+
+
 class RustPostgresSession:
     """Nest-safe Python facade over one native PostgreSQL transaction owner."""
 
@@ -52,6 +92,8 @@ class RustPostgresSession:
                 f"kogwistar_rust_postgres_transaction_depth_{id(self)}", default=0
             )
         )
+        self._session_lock = threading.RLock()
+        self._active_sessions = 0
 
     def call(self, kind: str, **values: JsonValue) -> JsonValue:
         if self._closed and kind != "close_store":
@@ -70,7 +112,23 @@ class RustPostgresSession:
         return self._transaction_id.get() is not None
 
     def ensure_initialized(self) -> None:
+        self._closed = False
         self.call("ensure_schema")
+
+    @contextmanager
+    def execution_session(self) -> Iterator[RustPostgresSession]:
+        """Keep the shared native store open until all overlapping scopes exit."""
+        with self._session_lock:
+            if self._active_sessions == 0:
+                self.ensure_initialized()
+            self._active_sessions += 1
+        try:
+            yield self
+        finally:
+            with self._session_lock:
+                self._active_sessions -= 1
+                if self._active_sessions == 0:
+                    self.close()
 
     def graph_authority_capability(self) -> JsonObject:
         result = self.call("graph_authority_capability")
@@ -79,14 +137,19 @@ class RustPostgresSession:
         return cast(JsonObject, result)
 
     def close(self) -> None:
-        if self._closed:
-            return
-        if self.transaction_active:
-            raise RustPostgresConnectionUnavailable(
-                "cannot close Rust PostgreSQL store during an active transaction"
-            )
-        self.call("close_store")
-        self._closed = True
+        with self._session_lock:
+            if self._closed:
+                return
+            if self._active_sessions:
+                raise RustPostgresConnectionUnavailable(
+                    "cannot close Rust PostgreSQL store during an active execution session"
+                )
+            if self.transaction_active:
+                raise RustPostgresConnectionUnavailable(
+                    "cannot close Rust PostgreSQL store during an active transaction"
+                )
+            self.call("close_store")
+            self._closed = True
 
     def connect(self) -> None:
         raise RustPostgresConnectionUnavailable(
@@ -144,15 +207,26 @@ class RustEnginePostgresMetaStore(RustEngineSQLite):
     """Python meta-store surface backed by one native PostgreSQL session."""
 
     def __init__(self, *, dsn: str, schema: str) -> None:
-        self.session = RustPostgresSession(dsn=dsn, schema=schema)
+        self._native_session = RustPostgresSession(dsn=dsn, schema=schema)
         self.schema = schema
 
     def _call(self, kind: str, **values: JsonValue) -> JsonValue:
-        return self.session.call(kind, **values)
+        return self._native_session.call(kind, **values)
 
     @property
     def transaction_active(self) -> bool:
-        return self.session.transaction_active
+        return self._native_session.transaction_active
+
+    @property
+    def native_session(self) -> RustPostgresSession:
+        """Expose the Rust worker handle without shadowing the context API."""
+        return self._native_session
+
+    @contextmanager
+    def session(self) -> Iterator[RustEnginePostgresMetaStore]:
+        """Match the SQLite facade's context-managed execution-session API."""
+        with self._native_session.execution_session():
+            yield self
 
     def apply_graph_mutation(self, **values: JsonValue) -> JsonObject:
         result = self._call("graph_mutation", **values)
@@ -214,7 +288,7 @@ class RustEnginePostgresMetaStore(RustEngineSQLite):
         ]
 
     def graph_authority_capability(self) -> JsonObject:
-        return self.session.graph_authority_capability()
+        return self._native_session.graph_authority_capability()
 
     def apply_graph_metadata_patch_mutation(
         self, **values: JsonValue
@@ -243,39 +317,39 @@ class RustEnginePostgresMetaStore(RustEngineSQLite):
     def graph_projection_records(self, **values: JsonValue) -> list[JsonObject]:
         result = self._call("graph_projection_records", **values)
         if not isinstance(result, list) or not all(
-            isinstance(record, dict) for record in result
+            _valid_graph_projection_record(record) for record in result
         ):
             raise RuntimeError("native graph projection read returned invalid records")
-        return [record for record in result if isinstance(record, dict)]
+        return [cast(JsonObject, record) for record in result]
 
     def graph_projection_vector_query(self, **values: JsonValue) -> list[JsonObject]:
         result = self._call("graph_projection_vector_query", **values)
         if not isinstance(result, list) or not all(
-            isinstance(match, dict) for match in result
+            _valid_graph_projection_match(match) for match in result
         ):
             raise RuntimeError("native graph vector query returned invalid matches")
-        return [match for match in result if isinstance(match, dict)]
+        return [cast(JsonObject, match) for match in result]
 
     def ensure_initialized(self) -> None:
-        self.session.ensure_initialized()
+        self._native_session.ensure_initialized()
 
     def close(self) -> None:
         """Release the native PostgreSQL worker and its connection pool."""
-        self.session.close()
+        self._native_session.close()
 
     def connect(self) -> None:
-        self.session.connect()
+        self._native_session.connect()
 
     @contextmanager
     def transaction(self, *, immediate: bool = True) -> Iterator[_RustPostgresTransactionToken]:
         del immediate
-        with self.session.transaction() as token:
+        with self._native_session.transaction() as token:
             yield token
 
     def _require_token(self, conn: _TransactionToken) -> None:
         if not isinstance(conn, _RustPostgresTransactionToken):
             raise RustPostgresConnectionUnavailable("invalid Rust PostgreSQL transaction token")
-        self.session.require_token(cast(_RustPostgresTransactionToken, conn))
+        self._native_session.require_token(cast(_RustPostgresTransactionToken, conn))
 
     def next_scoped_seq(self, scope_id: str) -> int:
         return self.next_user_seq(scope_id)

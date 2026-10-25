@@ -334,12 +334,17 @@ def test_dual_language_checklist_ids_are_unique() -> None:
     checklist = (
         ROOT / "kogwistar" / "docs" / "ADR-022-dual-language-capability-checklist.md"
     ).read_text(encoding="utf-8")
-    ids = [
-        line.split("|", 2)[1].strip()
-        for line in checklist.splitlines()
-        if line.startswith("| DL-")
-    ]
+    rows = [line for line in checklist.splitlines() if line.startswith("| DL-")]
+    gate_pattern = re.compile(
+        r"\|\s*(DL-[A-Z0-9-]+)\s*\|\s*"
+        r"(PASS|IN PROGRESS|NOT STARTED|FAIL|BLOCKED)"
+        r"(?:\s*\([^|]*\))?\s*\|"
+    )
+    gates = [gate_pattern.match(row) for row in rows]
+    ids = [gate.group(1) for gate in gates if gate is not None]
 
+    assert rows
+    assert all(gates), "every checklist row must use a recognized status"
     assert len(ids) == len(set(ids)), "dual-language checklist IDs must be unique"
 
 
