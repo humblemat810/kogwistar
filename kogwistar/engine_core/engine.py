@@ -328,7 +328,14 @@ class _BackendTarget(Protocol):
 def _is_async_postgres_backend(
     backend: StorageBackend,
 ) -> TypeGuard[_AsyncPostgresBackend]:
-    return isinstance(backend, _AsyncPostgresBackend) and backend._is_async_engine
+    # Do not use the full runtime Protocol check here.  PgVectorBackend is a
+    # deliberately broad adapter and does not need to implement every
+    # StorageBackend method just to identify its SQLAlchemy engine mode.  The
+    # explicit marker plus the two fields consumed by the async UoW are the
+    # stable authority contract.
+    return bool(getattr(backend, "_is_async_engine", False)) and all(
+        hasattr(backend, name) for name in ("engine", "schema")
+    )
 
 
 def _is_async_storage_backend(backend: StorageBackend) -> bool:

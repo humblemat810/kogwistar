@@ -73,3 +73,12 @@ def test_async_backend_identity_uses_explicit_capability_protocols() -> None:
 
     postgres_backend._is_async_engine = False
     assert not _is_async_postgres_backend(postgres_backend)
+
+
+def test_async_postgres_marker_does_not_require_full_storage_protocol() -> None:
+    class PartialAsyncPostgresBackend:
+        _is_async_engine = True
+        engine = object()
+        schema = "public"
+
+    assert _is_async_postgres_backend(PartialAsyncPostgresBackend())

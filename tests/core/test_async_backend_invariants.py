@@ -194,3 +194,42 @@ async def test_async_pg_backend_invariants(async_pg_backend, async_pg_uow, tmp_p
     assert (await backend.node_get(ids=[rollback_node.id]))["ids"] == []
     assert await asyncio.to_thread(registry.get_run, rollback_run_id) is None
     assert await asyncio.to_thread(registry.list_events, rollback_run_id) == []
+
+
+@pytest.mark.asyncio
+async def test_async_pg_rust_authority_writes_event_and_projection(
+    async_pg_backend, async_pg_schema, async_pg_uow, tmp_path, monkeypatch
+):
+    """Async writes use the Rust event/projection authority as one operation."""
+    pytest.importorskip("sqlalchemy")
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_GRAPH_STORE", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "rust")
+
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path / "async_pg_rust_contract"),
+        embedding_function=_AsyncEmbeddingFunction(),
+        backend=async_pg_backend,
+    )
+    engine._phase1_enable_index_jobs = False
+    assert engine.meta_sqlite.__class__.__name__ == "RustEnginePostgresMetaStore"
+
+    doc = kg_document(
+        doc_id="doc::async-pg-rust-contract",
+        content="rust authority alpha beta",
+        source="async-rust-contract",
+    )
+    node = _mk_node(
+        node_id="node::async-pg-rust-contract",
+        doc_id=doc.id,
+        summary="async Rust authority node",
+    )
+    await engine.write.add_node_async(node, doc_id=doc.id)
+
+    assert (await async_pg_backend.node_get(ids=[node.id]))["ids"] == [node.id]
+    events = list(
+        engine.meta_sqlite.iter_entity_events(namespace=engine.namespace)
+    )
+    assert [(kind, entity_id, op) for _, kind, entity_id, op, _ in events] == [
+        ("node", node.id, "ADD")
+    ]
