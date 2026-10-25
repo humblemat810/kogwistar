@@ -1355,6 +1355,16 @@ def test_native_graph_delete_is_atomic_idempotent_and_scope_safe(
         dsn,
         schema,
         {
+            **tombstone,
+            "event_id": "rollback-tombstone",
+            "entity_id": "rollback-delete",
+        },
+        transaction_id=transaction_id,
+    )
+    _call(
+        dsn,
+        schema,
+        {
             **operation,
             "event_id": "rollback-delete",
             "entity_id": "rollback-delete",

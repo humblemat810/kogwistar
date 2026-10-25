@@ -3620,7 +3620,7 @@ where
             "graph mutation op must be ADD, REPLACE, or TOMBSTONE".to_owned(),
         ));
     }
-    validate_graph_entity_target(&mutation.table, &mutation.entity_kind)?;
+    validate_graph_mutation_target(&mutation.table, &mutation.entity_kind)?;
     let metadata = graph_metadata(&mutation.scope, &mutation.record.metadata)?;
     if let Some(embedding) = &mutation.record.embedding {
         finite_vector(embedding)?;
@@ -3823,7 +3823,7 @@ where
             "graph delete event id must not be empty".to_owned(),
         ));
     }
-    validate_graph_entity_target(&mutation.table, &mutation.entity_kind)?;
+    validate_graph_mutation_target(&mutation.table, &mutation.entity_kind)?;
     advisory_lock(client, &mutation.event_id, 0).await?;
     if let Some(existing) = event_by_id(client, tables, &mutation.event_id).await? {
         if existing.namespace != mutation.scope.namespace {
@@ -3911,6 +3911,26 @@ fn validate_graph_entity_target(table: &str, entity_kind: &str) -> PostgresStore
             return Err(PostgresStoreError::Backend(
                 "physical graph purge only supports node or edge".to_owned(),
             ));
+        }
+    };
+    if table != expected_table {
+        return Err(PostgresStoreError::Backend(format!(
+            "graph entity kind {entity_kind:?} must use table {expected_table:?}"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_graph_mutation_target(table: &str, entity_kind: &str) -> PostgresStoreResult<()> {
+    let expected_table = match entity_kind {
+        "node" => "gke_nodes",
+        "edge" => "gke_edges",
+        "document" => "gke_documents",
+        "domain" => "gke_domains",
+        _ => {
+            return Err(PostgresStoreError::Backend(format!(
+                "unsupported graph mutation entity kind {entity_kind:?}"
+            )));
         }
     };
     if table != expected_table {
@@ -6561,6 +6581,10 @@ mod tests {
         assert!(validate_graph_entity_target("gke_edges", "edge").is_ok());
         assert!(validate_graph_entity_target("gke_nodes", "document").is_err());
         assert!(validate_graph_entity_target("gke_edges", "node").is_err());
+
+        assert!(validate_graph_mutation_target("gke_documents", "document").is_ok());
+        assert!(validate_graph_mutation_target("gke_domains", "domain").is_ok());
+        assert!(validate_graph_mutation_target("gke_nodes", "document").is_err());
     }
 
     fn raw(id: &str, payload_json: &str) -> NewRawEntityEvent {

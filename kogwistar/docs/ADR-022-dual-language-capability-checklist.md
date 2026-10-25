@@ -7,6 +7,24 @@ decision by itself does not prove an implementation gate. Update this file as
 each capability is implemented; record its implementation, backend, interpreter,
 and CI evidence rather than assigning one percentage to the whole port.
 
+## Latest verification update (2026-10-25)
+
+- Rust PostgreSQL graph mutation and physical-delete routing now validate node,
+  edge, document, and domain targets against their matching projection tables.
+  Lifecycle metadata patching and the canonical-tombstone requirement remain
+  restricted to node/edge entities. The document/domain routes are required by
+  existing atomic add and document rollback paths.
+- Live Windows CPython 3.13 PostgreSQL regression:
+  `tests/core/test_rust_postgres_transaction_session.py` plus
+  `tests/core/test_edge_metadata_serialization.py`: **34 passed, 0 failed**.
+  This includes document/domain atomic add, document rollback delete, and
+  node/edge tombstone-before-purge behavior. The rollback test now performs its
+  canonical tombstone and physical purge within the same transaction before
+  asserting that rollback restores the row and event history.
+- DL-06E remains **IN PROGRESS**: these PostgreSQL cases establish only the
+  verified slice; broader backend, async, failure-injection, and full-stack
+  cross-language atomicity requirements remain open.
+
 ## Design and inventory
 
 | ID | Status | Gate / evidence |
