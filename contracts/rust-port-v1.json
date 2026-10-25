@@ -502,10 +502,6 @@
             "path": "/api/conversations"
           },
           {
-            "method": "GET",
-            "path": "/api/conversations/{conversation_id}/turns"
-          },
-          {
             "method": "POST",
             "path": "/api/conversations"
           },

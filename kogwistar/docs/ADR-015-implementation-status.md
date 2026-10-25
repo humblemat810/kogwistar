@@ -143,7 +143,7 @@ Only these local items remain in scope before production rollout:
   same protocol. This line remains unchecked:
   public authority promotion still requires its capability canary and the
   explicit `workflow-runtime` readiness decision.
-- [x] Phase 5: explicitly version/defer the 14 currently frozen Python-owned
+- [x] Phase 5: explicitly version/defer the 13 currently frozen Python-owned
   server operations listed by `PENDING_SERVER_CUTOVER_ROUTES`. The manifest
   records grouped Python rollback ownership, prerequisite Rust authorities, and
   exit evidence; its exact operation set is bidirectionally checked against the
@@ -161,6 +161,11 @@ Only these local items remain in scope before production rollout:
   routes passed their gated integration tests against the existing local
   pgvector container on 2026-10-25 (1 passed each, 0 failed); neither route
   promotes the aggregate conversation capability or support matrix.
+- [x] The PostgreSQL Rust service now serves
+  `GET /api/conversations/{conversation_id}/turns` by adapting the existing
+  ACL-filtered internal transcript operation to the legacy public response
+  shape. The combined summary/transcript test passed live against local
+  pgvector on 2026-10-25; SQLite remains explicitly unsupported.
 - [x] Phase 5: explicitly version/defer the four remaining conversation/tool syscall
   sub-operations listed by `PENDING_SYSCALL_CUTOVER_OPS`. The same versioned
   manifest entry records Python rollback ownership, the required worker/runtime

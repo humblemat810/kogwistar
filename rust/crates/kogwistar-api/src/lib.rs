@@ -1497,6 +1497,18 @@ fn conversation_detail_id(path_and_query: &str) -> Option<String> {
     (!conversation_id.is_empty() && !conversation_id.contains('/')).then_some(conversation_id)
 }
 
+fn conversation_transcript_id(path_and_query: &str) -> Option<String> {
+    let path = path_and_query.split('?').next().unwrap_or(path_and_query);
+    let encoded_id = path
+        .strip_prefix("/api/conversations/")?
+        .strip_suffix("/turns")?;
+    let conversation_id = percent_encoding::percent_decode_str(encoded_id)
+        .decode_utf8()
+        .ok()?
+        .into_owned();
+    (!conversation_id.is_empty() && !conversation_id.contains('/')).then_some(conversation_id)
+}
+
 fn context_snapshot_query(path_and_query: &str) -> (Option<String>, Option<String>) {
     let mut run_id = None;
     let mut stage = None;
@@ -1550,6 +1562,7 @@ type SharedCapabilityState = Arc<Mutex<CapabilityState>>;
 
 const SQLITE_UNSUPPORTED_HTTP_ROUTES: &[(&str, &str)] = &[
     ("GET", "/api/conversations/{conversation_id}"),
+    ("GET", "/api/conversations/{conversation_id}/turns"),
     (
         "GET",
         "/api/conversations/{conversation_id}/snapshots/latest",
@@ -6161,6 +6174,67 @@ impl PostgresRunApplicationService {
         json_effect(StatusCode::OK, payload)
     }
 
+    async fn conversation_transcript_effect(
+        &self,
+        request: &ApiEffectRequest,
+    ) -> ApiEffectResponse {
+        let namespaces = principal_strings(&request.principal, "ns");
+        let namespaces = if namespaces.is_empty() {
+            vec!["docs".to_owned()]
+        } else {
+            namespaces
+        };
+        if !namespaces
+            .iter()
+            .any(|namespace| matches!(namespace.as_str(), "*" | "conversation"))
+        {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_NAMESPACE_FORBIDDEN",
+                "Conversation reads require conversation namespace",
+            );
+        }
+        let Some(conversation_id) = conversation_transcript_id(&request.path_and_query) else {
+            return effect_error(
+                StatusCode::NOT_FOUND,
+                "KOGWISTAR_ROUTE_NOT_FOUND",
+                "Conversation transcript route was not found",
+            );
+        };
+        let internal = ApiEffectRequest {
+            contract_version: request.contract_version,
+            method: "POST".to_owned(),
+            path_and_query: "/internal/conversation/transcript".to_owned(),
+            body: serde_json::to_vec(&json!({
+                "conversation_id": conversation_id,
+                "limit": 10_000,
+            }))
+            .expect("conversation transcript request serializes"),
+            principal: request.principal.clone(),
+        };
+        let mut response = self
+            .internal_conversation_transcript_effect(&internal)
+            .await;
+        if (200..300).contains(&response.status)
+            && let Ok(mut payload) = serde_json::from_slice::<Value>(&response.body)
+            && let Some(object) = payload.as_object_mut()
+        {
+            object.remove("schema_version");
+            object.remove("implementation_authority");
+            object.remove("seam_attestation_version");
+            object.remove("seam_crossings");
+            if let Some(turns) = object.get_mut("turns").and_then(Value::as_array_mut) {
+                for turn in turns {
+                    if let Some(turn) = turn.as_object_mut() {
+                        turn.remove("schema_version");
+                    }
+                }
+            }
+            response.body = serde_json::to_vec(&payload).expect("transcript response serializes");
+        }
+        response
+    }
+
     async fn graph_neighbors_effect(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
         if !capability_allowed(request, &self.capabilities, "read_graph", &["read_graph"]) {
             return effect_error(
@@ -9092,6 +9166,10 @@ impl PostgresRunApplicationService {
     }
 
     async fn execute_async(&self, request: ApiEffectRequest) -> ApiEffectResponse {
+        if request.method == "GET" && conversation_transcript_id(&request.path_and_query).is_some()
+        {
+            return self.conversation_transcript_effect(&request).await;
+        }
         if request.method == "GET" && conversation_detail_id(&request.path_and_query).is_some() {
             return self.conversation_detail_effect(&request).await;
         }
@@ -10601,6 +10679,14 @@ impl SqliteRunApplicationService {
     }
 
     fn execute_sync(&self, request: ApiEffectRequest) -> ApiEffectResponse {
+        if request.method == "GET" && conversation_transcript_id(&request.path_and_query).is_some()
+        {
+            return effect_error(
+                StatusCode::NOT_IMPLEMENTED,
+                "KOGWISTAR_GRAPH_AUTHORITY_UNSUPPORTED",
+                "The SQLite application service does not provide Rust graph authority",
+            );
+        }
         if request.method == "GET" && conversation_detail_id(&request.path_and_query).is_some() {
             return effect_error(
                 StatusCode::NOT_IMPLEMENTED,
@@ -12638,6 +12724,35 @@ mod tests {
         );
     }
 
+    #[test]
+    fn conversation_transcript_route_parsing_is_exact_and_decodes_path_id() {
+        assert_eq!(
+            conversation_transcript_id("/api/conversations/conversation-1/turns?limit=10"),
+            Some("conversation-1".to_owned())
+        );
+        assert_eq!(
+            conversation_transcript_id("/api/conversations/id%20with%20spaces/turns"),
+            Some("id with spaces".to_owned())
+        );
+        assert_eq!(
+            conversation_transcript_id("/api/conversations//turns"),
+            None
+        );
+        assert_eq!(
+            conversation_transcript_id("/api/conversations/a/b/turns"),
+            None
+        );
+        assert_eq!(
+            conversation_transcript_id("/api/conversations/id%2Fother/turns"),
+            None
+        );
+        assert_eq!(conversation_transcript_id("/api/conversations/c"), None);
+        assert_eq!(
+            conversation_transcript_id("/api/conversations/c/snapshots/latest"),
+            None
+        );
+    }
+
     #[tokio::test]
     async fn conversation_detail_route_checks_namespace_and_capability_before_storage() {
         let service = PostgresRunApplicationService::from_dsn(
@@ -12649,6 +12764,47 @@ mod tests {
             contract_version: 1,
             method: "GET".to_owned(),
             path_and_query: "/api/conversations/c-1".to_owned(),
+            body: Vec::new(),
+            principal,
+        };
+        let namespace_denied = service
+            .execute(make_request(json!({
+                "sub": "alice",
+                "ns": "docs",
+                "capabilities": ["read_graph"]
+            })))
+            .await;
+        assert_eq!(namespace_denied.status, StatusCode::FORBIDDEN.as_u16());
+        assert_eq!(
+            serde_json::from_slice::<Value>(&namespace_denied.body).unwrap()["code"],
+            "KOGWISTAR_NAMESPACE_FORBIDDEN"
+        );
+
+        let capability_denied = service
+            .execute(make_request(json!({
+                "sub": "alice",
+                "ns": "conversation",
+                "capabilities": []
+            })))
+            .await;
+        assert_eq!(capability_denied.status, StatusCode::FORBIDDEN.as_u16());
+        assert_eq!(
+            serde_json::from_slice::<Value>(&capability_denied.body).unwrap()["code"],
+            "KOGWISTAR_CAPABILITY_FORBIDDEN"
+        );
+    }
+
+    #[tokio::test]
+    async fn conversation_transcript_route_checks_namespace_and_capability_before_storage() {
+        let service = PostgresRunApplicationService::from_dsn(
+            "postgres://unused:unused@127.0.0.1:1/unused",
+            "conversation_transcript_auth_contract",
+        )
+        .unwrap();
+        let make_request = |principal| ApiEffectRequest {
+            contract_version: 1,
+            method: "GET".to_owned(),
+            path_and_query: "/api/conversations/c-1/turns".to_owned(),
             body: Vec::new(),
             principal,
         };
@@ -12849,9 +13005,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn postgres_conversation_detail_route_projects_authorized_summary_when_dsn_available() {
+    async fn postgres_conversation_routes_project_authorized_summary_and_transcript_when_dsn_available()
+     {
         let Some(dsn) = std::env::var("KOGWISTAR_TEST_PG_DSN").ok() else {
-            eprintln!("KOGWISTAR_TEST_PG_DSN absent; conversation detail integration skipped");
+            eprintln!("KOGWISTAR_TEST_PG_DSN absent; conversation route integration skipped");
             return;
         };
         let schema = format!("rust_conversation_detail_{}", uuid::Uuid::new_v4().simple());
@@ -12970,6 +13127,43 @@ mod tests {
             ])
         );
 
+        let transcript_response = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "GET".to_owned(),
+                path_and_query: "/api/conversations/conversation-1/turns".to_owned(),
+                body: Vec::new(),
+                principal: json!({
+                    "sub": "alice",
+                    "role": "ro",
+                    "ns": "conversation",
+                    "storage_ns": "conversation",
+                    "capabilities": ["read_graph"]
+                }),
+            })
+            .await;
+        assert_eq!(transcript_response.status, StatusCode::OK.as_u16());
+        let transcript: Value = serde_json::from_slice(&transcript_response.body).unwrap();
+        assert_eq!(transcript["conversation_id"], "conversation-1");
+        assert_eq!(transcript["turns"].as_array().unwrap().len(), 1);
+        assert_eq!(transcript["turns"][0]["node_id"], "turn-1");
+        assert_eq!(transcript["turns"][0]["turn_index"], 0);
+        assert_eq!(transcript["turns"][0]["role"], "user");
+        assert_eq!(transcript["turns"][0]["content"], "hello");
+        assert_eq!(transcript["turns"][0]["entity_type"], "conversation_turn");
+        assert!(transcript.get("schema_version").is_none());
+        assert!(transcript.get("implementation_authority").is_none());
+        assert!(transcript["turns"][0].get("schema_version").is_none());
+        assert_eq!(
+            transcript
+                .as_object()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from(["conversation_id".to_owned(), "turns".to_owned()])
+        );
+
         drop(service);
         let (cleanup, connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls)
             .await
@@ -13019,6 +13213,9 @@ mod tests {
         assert!(!service.supports_http_operation("GET", "/api/not-registered"));
         assert!(service.supports_http_operation("POST", "/api/workflow/runs"));
         assert!(service.supports_http_operation("GET", "/api/conversations/{conversation_id}"));
+        assert!(
+            service.supports_http_operation("GET", "/api/conversations/{conversation_id}/turns")
+        );
         assert!(service.supports_http_operation(
             "GET",
             "/api/conversations/{conversation_id}/snapshots/latest"
@@ -13100,6 +13297,9 @@ mod tests {
         assert!(!sqlite.supports_http_operation("POST", "/internal/graph/neighbors"));
         assert!(!sqlite.supports_http_operation("POST", "/internal/conversation/transcript"));
         assert!(!sqlite.supports_http_operation("GET", "/api/conversations/{conversation_id}"));
+        assert!(
+            !sqlite.supports_http_operation("GET", "/api/conversations/{conversation_id}/turns")
+        );
 
         let response = sqlite
             .execute(ApiEffectRequest {
@@ -13108,6 +13308,25 @@ mod tests {
                 path_and_query: "/internal/graph/neighbors".to_owned(),
                 body: br#"{}"#.to_vec(),
                 principal: json!({"sub": "test"}),
+            })
+            .await;
+        assert_eq!(response.status, StatusCode::NOT_IMPLEMENTED.as_u16());
+        assert_eq!(
+            serde_json::from_slice::<Value>(&response.body).unwrap()["code"],
+            "KOGWISTAR_GRAPH_AUTHORITY_UNSUPPORTED"
+        );
+
+        let response = sqlite
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "GET".to_owned(),
+                path_and_query: "/api/conversations/c-1/turns".to_owned(),
+                body: Vec::new(),
+                principal: json!({
+                    "sub": "alice",
+                    "ns": "conversation",
+                    "capabilities": ["read_graph"]
+                }),
             })
             .await;
         assert_eq!(response.status, StatusCode::NOT_IMPLEMENTED.as_u16());
