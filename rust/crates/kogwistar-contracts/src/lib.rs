@@ -21,9 +21,9 @@ mod projection_checkpoint;
 mod source_map;
 mod tool_audit;
 pub use conversation::{
-    CONVERSATION_WIRE_VERSION, ConversationContractError, ConversationSummaryV1,
-    ConversationTranscriptV1, ConversationTurnV1, conversation_summary_from_str,
-    conversation_transcript_from_str, conversation_turn_from_str,
+    CONVERSATION_WIRE_VERSION, ContextSnapshotV1, ConversationContractError, ConversationSummaryV1,
+    ConversationTranscriptV1, ConversationTurnV1, context_snapshot_from_str,
+    conversation_summary_from_str, conversation_transcript_from_str, conversation_turn_from_str,
 };
 pub use delegation::{
     DELEGATION_AUTHORITY_SCHEMA_VERSION, DelegationAuthorityV1, DelegationError,

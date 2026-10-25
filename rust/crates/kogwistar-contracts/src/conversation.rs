@@ -1,4 +1,6 @@
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::collections::BTreeMap;
 use thiserror::Error;
 
 pub const CONVERSATION_WIRE_VERSION: i32 = 1;
@@ -19,6 +21,35 @@ pub enum ConversationContractError {
     InvalidTurnOrder,
     #[error("unsupported conversation entity_type {entity_type:?}")]
     InvalidEntityType { entity_type: String },
+    #[error("context snapshot selection requires an ordering field")]
+    MissingSnapshotOrder,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ContextSnapshotV1 {
+    pub schema_version: i32,
+    pub snapshot_node_id: String,
+    pub conversation_id: String,
+    pub metadata: BTreeMap<String, Value>,
+    pub properties: BTreeMap<String, Value>,
+}
+
+impl ContextSnapshotV1 {
+    pub fn validate(&self) -> Result<(), ConversationContractError> {
+        if self.schema_version != CONVERSATION_WIRE_VERSION {
+            return Err(ConversationContractError::InvalidVersion);
+        }
+        for (field, value) in [
+            ("snapshot_node_id", &self.snapshot_node_id),
+            ("conversation_id", &self.conversation_id),
+        ] {
+            if value.trim().is_empty() {
+                return Err(ConversationContractError::EmptyField { field });
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -161,6 +192,18 @@ pub fn conversation_transcript_from_str(
     Ok(value)
 }
 
+pub fn context_snapshot_from_str(
+    payload: &str,
+) -> Result<ContextSnapshotV1, ConversationContractError> {
+    let value: ContextSnapshotV1 = serde_json::from_str(payload).map_err(|error| {
+        ConversationContractError::InvalidPayload {
+            message: error.to_string(),
+        }
+    })?;
+    value.validate()?;
+    Ok(value)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -215,5 +258,24 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error, ConversationContractError::InvalidTurnOrder);
+    }
+
+    #[test]
+    fn context_snapshot_contract_rejects_unknown_fields_and_round_trips() {
+        let snapshot = ContextSnapshotV1 {
+            schema_version: 1,
+            snapshot_node_id: "snapshot-1".to_owned(),
+            conversation_id: "conversation-1".to_owned(),
+            metadata: BTreeMap::from([(String::from("stage"), Value::from("answer"))]),
+            properties: BTreeMap::from([(String::from("count"), Value::from(2))]),
+        };
+        let payload = serde_json::to_string(&snapshot).unwrap();
+        assert_eq!(context_snapshot_from_str(&payload).unwrap(), snapshot);
+        assert!(matches!(
+            context_snapshot_from_str(
+                r#"{"schema_version":1,"snapshot_node_id":"s","conversation_id":"c","metadata":{},"properties":{},"extra":true}"#
+            ),
+            Err(ConversationContractError::InvalidPayload { .. })
+        ));
     }
 }

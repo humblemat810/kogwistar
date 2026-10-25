@@ -1,8 +1,8 @@
 //! Async-first storage contracts. Shadow handles expose reads only.
 use kogwistar_contracts::{
-    ConversationContractError, ConversationSummaryV1, ConversationTranscriptV1, ConversationTurnV1,
-    EntityEventEnvelope, GraphEntityKind, GraphModelEnvelope, ToolAuditContractError,
-    ToolAuditItemV1,
+    ContextSnapshotV1, ConversationContractError, ConversationSummaryV1, ConversationTranscriptV1,
+    ConversationTurnV1, EntityEventEnvelope, GraphEntityKind, GraphModelEnvelope,
+    ToolAuditContractError, ToolAuditItemV1,
 };
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -502,6 +502,62 @@ pub fn conversation_summary_from_visible_records(
     };
     summary.validate()?;
     Ok(summary)
+}
+
+/// Project the latest already-authorized context snapshot without choosing a
+/// database-specific representation. A snapshot must carry an explicit order
+/// field so a backend cannot silently select an arbitrary record.
+pub fn context_snapshot_from_visible_records(
+    records: &[GraphRecord],
+    conversation_id: &str,
+    run_id: Option<&str>,
+    stage: Option<&str>,
+) -> Result<ContextSnapshotV1, ConversationContractError> {
+    let mut candidates = Vec::new();
+    for record in records {
+        if is_tombstoned(&record.metadata)
+            || value_string(record, "entity_type").as_deref() != Some("context_snapshot")
+            || value_string(record, "conversation_id").as_deref() != Some(conversation_id)
+            || run_id
+                .is_some_and(|expected| value_string(record, "run_id").as_deref() != Some(expected))
+            || stage
+                .is_some_and(|expected| value_string(record, "stage").as_deref() != Some(expected))
+        {
+            continue;
+        }
+        let order = ["snapshot_seq", "created_at_ms", "step_seq"]
+            .into_iter()
+            .find_map(|field| record_field(record, field).and_then(|value| value.as_i64()))
+            .ok_or(ConversationContractError::MissingSnapshotOrder)?;
+        candidates.push((order, record.id.clone(), record));
+    }
+    let Some((_, _, record)) = candidates
+        .into_iter()
+        .max_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)))
+    else {
+        return Err(ConversationContractError::EmptyField {
+            field: "snapshot_node_id",
+        });
+    };
+    let document = record_json(record).unwrap_or_else(|| Value::Object(Map::new()));
+    let object = |field: &str| {
+        document
+            .get(field)
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .collect::<BTreeMap<_, _>>()
+    };
+    let snapshot = ContextSnapshotV1 {
+        schema_version: kogwistar_contracts::CONVERSATION_WIRE_VERSION,
+        snapshot_node_id: record.id.clone(),
+        conversation_id: conversation_id.to_owned(),
+        metadata: object("metadata"),
+        properties: object("properties"),
+    };
+    snapshot.validate()?;
+    Ok(snapshot)
 }
 
 /// Compute Python-compatible node/edge adjacency from canonical edge records.
@@ -2827,6 +2883,62 @@ mod tests {
         assert_eq!(summary.start_node_id, "conversation-start");
         assert_eq!(summary.tail_node_id, "turn-0");
         assert_eq!(summary.turn_count, 1);
+    }
+
+    #[test]
+    fn context_snapshot_projection_selects_latest_matching_scope() {
+        let mut older = GraphRecord::new("snapshot-old");
+        older
+            .metadata
+            .insert("entity_type".into(), "context_snapshot".into());
+        older
+            .metadata
+            .insert("conversation_id".into(), "conversation-1".into());
+        older.metadata.insert("run_id".into(), "run-1".into());
+        older.metadata.insert("stage".into(), "answer".into());
+        older.metadata.insert("snapshot_seq".into(), 3.into());
+        older.document = Some(
+            serde_json::json!({
+                "metadata": {"stage": "answer"},
+                "properties": {"value": "old"}
+            })
+            .to_string(),
+        );
+
+        let mut newer = older.clone();
+        newer.id = "snapshot-new".into();
+        newer.metadata.insert("snapshot_seq".into(), 4.into());
+        newer.document = Some(
+            serde_json::json!({
+                "metadata": {"stage": "answer"},
+                "properties": {"value": "new"}
+            })
+            .to_string(),
+        );
+
+        let snapshot = context_snapshot_from_visible_records(
+            &[older, newer],
+            "conversation-1",
+            Some("run-1"),
+            Some("answer"),
+        )
+        .unwrap();
+        assert_eq!(snapshot.snapshot_node_id, "snapshot-new");
+        assert_eq!(snapshot.properties["value"], "new");
+    }
+
+    #[test]
+    fn context_snapshot_projection_rejects_unordered_candidates() {
+        let mut record = GraphRecord::new("snapshot-invalid");
+        record
+            .metadata
+            .insert("entity_type".into(), "context_snapshot".into());
+        record
+            .metadata
+            .insert("conversation_id".into(), "conversation-1".into());
+        let error = context_snapshot_from_visible_records(&[record], "conversation-1", None, None)
+            .unwrap_err();
+        assert_eq!(error, ConversationContractError::MissingSnapshotOrder);
     }
     use kogwistar_contracts::{GraphModelClass, GraphModelEnvelope};
 
