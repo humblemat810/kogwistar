@@ -25,6 +25,7 @@ from kogwistar.engine_core.subsystems.write import WriteSubsystem
 from kogwistar.engine_core.two_stage_async import AsyncPostgresTwoStageProjectionAdapter
 from kogwistar.implementation_selection import (
     active_transaction_authority,
+    callback_execution_scope,
     capture_implementation_selection,
     implementation_selection_metadata,
     implementation_selection_bound,
@@ -209,6 +210,18 @@ def test_write_subsystem_proxy_uses_the_owning_engine_snapshot(
 
 def test_transaction_authority_scope_rejects_nested_owner_switch() -> None:
     assert active_transaction_authority() is None
+
+
+def test_callback_execution_scope_fails_closed_inside_authoritative_transaction() -> None:
+    with transaction_authority_scope("python"):
+        with pytest.raises(
+            RuntimeError,
+            match="callback execution is not allowed while a transaction is active",
+        ):
+            with callback_execution_scope():
+                pass
+    with callback_execution_scope():
+        assert active_transaction_authority() is None
 
 
 def test_transaction_authority_scope_matches_frozen_selection(

@@ -27,6 +27,7 @@ from kogwistar.runtime.rust_worker import (
     RustWorkerError,
     WorkerResultJournal,
 )
+from kogwistar.implementation_selection import transaction_authority_scope
 
 pytestmark = [pytest.mark.ci, pytest.mark.runtime]
 
@@ -902,6 +903,42 @@ def test_worker_journals_callback_before_send_and_replays_after_restart(
     assert accepted[0]["effect"]["state_update"] == [
         ["u", {"answer": "worker"}]
     ]
+
+
+def test_step_resolver_worker_rejects_callback_inside_transaction(
+    tmp_path: Path,
+) -> None:
+    calls = 0
+    accepted: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        accepted.append(json.loads(request.content))
+        return httpx.Response(200, json={"event_seq": 3}, request=request)
+
+    resolver = MappingStepResolver()
+
+    @resolver.register("start")
+    def execute(_ctx):
+        nonlocal calls
+        calls += 1
+        return RunSuccess(conversation_node_id=None, state_update=[])
+
+    worker = RustRuntimeWorker.from_step_resolver(
+        base_url="http://rust",
+        worker_id="worker-1",
+        journal_path=tmp_path / "transaction-guard.sqlite",
+        step_resolver=resolver,
+        client=httpx.Client(
+            transport=httpx.MockTransport(handler), base_url="http://rust"
+        ),
+    )
+    with worker:
+        with transaction_authority_scope("rust"):
+            worker.process(_work())
+
+    assert calls == 0
+    assert accepted[0]["effect"]["status"] == "failed"
+    assert "callback execution is not allowed" in accepted[0]["effect"]["errors"][0]
 
 
 def test_executing_journal_row_fails_closed_after_crash(tmp_path: Path) -> None:

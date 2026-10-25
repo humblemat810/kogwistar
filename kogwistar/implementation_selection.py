@@ -86,6 +86,23 @@ def active_transaction_authority() -> TransactionAuthority | None:
 
 
 @contextmanager
+def callback_execution_scope() -> Iterator[None]:
+    """Reject callback execution while an authoritative transaction is open.
+
+    Rust-owned worker callbacks are deliberately executed between durable
+    claim/result transactions.  Keeping this check at the framework context
+    boundary prevents a callback from accidentally re-entering a live Python
+    or Rust transaction and creating a second, untracked authority path.
+    """
+    active = _transaction_authority.get()
+    if active is not None:
+        raise RuntimeError(
+            "callback execution is not allowed while a transaction is active"
+        )
+    yield
+
+
+@contextmanager
 def transaction_authority_scope(authority: TransactionAuthority) -> Iterator[None]:
     """Bind a transaction to the run selection and prevent owner switching.
 

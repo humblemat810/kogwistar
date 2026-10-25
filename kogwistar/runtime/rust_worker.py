@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Protocol, cast
 import httpx
 
 from kogwistar.id_provider import stable_id
+from kogwistar.implementation_selection import callback_execution_scope
 from kogwistar.json_types import JsonValue
 from kogwistar.runtime.models import StepRunResult
 
@@ -462,7 +463,8 @@ class RustStepResolverAdapter:
             authority_context={"effective_capabilities": ()},
         )
         try:
-            result = resolver(ctx)
+            with callback_execution_scope():
+                result = resolver(ctx)
         except RustWorkerError:
             raise
         except Exception as error:
@@ -752,9 +754,10 @@ class AsyncRustStepResolverAdapter(RustStepResolverAdapter):
             authority_context={"effective_capabilities": ()},
         )
         try:
-            result = resolver(ctx)
-            if inspect.isawaitable(result):
-                result = await result
+            with callback_execution_scope():
+                result = resolver(ctx)
+                if inspect.isawaitable(result):
+                    result = await result
         except RustWorkerError:
             raise
         except Exception as error:
