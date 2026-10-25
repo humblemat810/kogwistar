@@ -1359,6 +1359,23 @@ fn json_effect(status: StatusCode, value: Value) -> ApiEffectResponse {
     }
 }
 
+fn strip_snapshot_implementation_fields(response: &mut ApiEffectResponse) {
+    if !(200..300).contains(&response.status) {
+        return;
+    }
+    let Ok(mut payload) = serde_json::from_slice::<Value>(&response.body) else {
+        return;
+    };
+    let Some(object) = payload.as_object_mut() else {
+        return;
+    };
+    object.remove("schema_version");
+    object.remove("implementation_authority");
+    object.remove("seam_attestation_version");
+    object.remove("seam_crossings");
+    response.body = serde_json::to_vec(&payload).expect("snapshot response serializes");
+}
+
 fn html_effect(body: String) -> ApiEffectResponse {
     ApiEffectResponse {
         status: StatusCode::OK.as_u16(),
@@ -6040,18 +6057,9 @@ impl PostgresRunApplicationService {
             principal: request.principal.clone(),
         };
         let mut response = self.internal_context_snapshot_effect(&internal).await;
-        if (200..300).contains(&response.status)
-            && let Ok(mut payload) = serde_json::from_slice::<Value>(&response.body)
-            && let Some(object) = payload.as_object_mut()
-        {
-            // Preserve the existing public REST shape; Rust projection and seam
-            // metadata are implementation details for this compatibility route.
-            object.remove("schema_version");
-            object.remove("implementation_authority");
-            object.remove("seam_attestation_version");
-            object.remove("seam_crossings");
-            response.body = serde_json::to_vec(&payload).expect("snapshot response serializes");
-        }
+        // Preserve the Python-compatible response shape; Rust projection and
+        // seam metadata are implementation details at this boundary.
+        strip_snapshot_implementation_fields(&mut response);
         response
     }
 
@@ -6820,11 +6828,10 @@ impl PostgresRunApplicationService {
                         .expect("snapshot syscall args serialize"),
                         principal: request.principal.clone(),
                     };
-                    syscall_result(
-                        &input.version,
-                        op,
-                        self.internal_context_snapshot_effect(&nested).await,
-                    )
+                    let mut snapshot_response =
+                        self.internal_context_snapshot_effect(&nested).await;
+                    strip_snapshot_implementation_fields(&mut snapshot_response);
+                    syscall_result(&input.version, op, snapshot_response)
                 } else {
                     effect_error(
                         StatusCode::BAD_REQUEST,
@@ -19403,6 +19410,42 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
         drop(store);
         drop(app);
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn snapshot_syscall_compatibility_drops_rust_only_fields() {
+        let mut response = json_effect(
+            StatusCode::OK,
+            json!({
+                "schema_version": 1,
+                "snapshot_node_id": "snapshot-1",
+                "conversation_id": "conversation-1",
+                "metadata": {"stage": "answer"},
+                "properties": {"value": 7},
+                "implementation_authority": "rust",
+                "seam_attestation_version": 1,
+                "seam_crossings": []
+            }),
+        );
+        strip_snapshot_implementation_fields(&mut response);
+        let actual = serde_json::from_slice::<Value>(&response.body).unwrap();
+        assert_eq!(
+            actual,
+            json!({
+                "snapshot_node_id": "snapshot-1",
+                "conversation_id": "conversation-1",
+                "metadata": {"stage": "answer"},
+                "properties": {"value": 7}
+            })
+        );
+
+        let mut failure = json_effect(
+            StatusCode::NOT_FOUND,
+            json!({"error": {"code": "KOGWISTAR_CONTEXT_SNAPSHOT_NOT_FOUND"}}),
+        );
+        let original_body = failure.body.clone();
+        strip_snapshot_implementation_fields(&mut failure);
+        assert_eq!(failure.body, original_body);
     }
 
     #[tokio::test]
