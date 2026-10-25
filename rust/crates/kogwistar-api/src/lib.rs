@@ -44,10 +44,15 @@ use kogwistar_store_sqlite::{
 };
 
 mod cutover;
+mod runtime_contract;
 use cutover::is_transport_owned_http_route;
 pub use cutover::{
     ImplementationSnapshot, PENDING_SERVER_CUTOVER_ROUTES, PENDING_SYSCALL_CUTOVER_OPS,
     TRANSPORT_OWNED_HTTP_ROUTES,
+};
+use runtime_contract::{
+    default_runtime_kind, runtime_implementation_attestation, runtime_worker_recipient,
+    worker_protocol_for_runtime_kind,
 };
 
 use axum::{
@@ -760,44 +765,6 @@ fn runtime_join_outstanding(join_count: usize, start_join_mask: i64) -> Vec<i64>
 
 fn default_runtime_priority_class() -> String {
     "foreground".to_owned()
-}
-
-fn default_runtime_kind() -> String {
-    "sync".to_owned()
-}
-
-fn worker_protocol_for_runtime_kind(runtime_kind: &str) -> &'static str {
-    if runtime_kind == "async" {
-        kogwistar_runtime::WORKER_PROTOCOL_ASYNC_V2
-    } else {
-        kogwistar_runtime::WORKER_PROTOCOL_SYNC_V1
-    }
-}
-
-fn runtime_implementation_attestation(runtime_kind: &str) -> Value {
-    json!({
-        "schema_version": 1,
-        "source": "rust_server_admission",
-        "scheduler": {
-            "language": "rust",
-            "package": "kogwistar-api",
-            "version": env!("CARGO_PKG_VERSION"),
-        },
-        "worker_contract": {
-            "runtime_kind": runtime_kind,
-            "protocol": worker_protocol_for_runtime_kind(runtime_kind),
-            "identity_status": "resolved_on_lane_claim",
-        },
-    })
-}
-
-fn runtime_worker_recipient(environment_id: Option<&str>) -> String {
-    let Some(environment_id) = environment_id.filter(|value| !value.trim().is_empty()) else {
-        return "python-worker".to_owned();
-    };
-    let digest = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .encode(Sha256::digest(environment_id.as_bytes()));
-    format!("python-worker-env-{digest}")
 }
 
 fn native_operation_name(operation: &str) -> Option<&str> {
