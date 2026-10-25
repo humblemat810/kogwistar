@@ -11,6 +11,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+_MAX_POSTGRES_INTEGER = 2_147_483_647
+
 
 class GraphMutationContractError(ValueError):
     """Raised when a graph mutation payload cannot cross the language seam."""
@@ -58,8 +60,10 @@ class IndexJobIntentPayload(BaseModel):
             )
         ):
             raise GraphMutationContractError("index job identifiers must not be empty")
-        if self.max_retries < 0:
-            raise GraphMutationContractError("index job max_retries must not be negative")
+        if not 0 <= self.max_retries <= _MAX_POSTGRES_INTEGER:
+            raise GraphMutationContractError(
+                "index job max_retries must fit a non-negative PostgreSQL INTEGER"
+            )
         return self
 
 

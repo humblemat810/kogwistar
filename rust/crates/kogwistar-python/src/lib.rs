@@ -5903,6 +5903,39 @@ fn validate_postgres_operation(value: &Value) -> Result<(), (&'static str, Strin
                 "invalid PostgreSQL store payload: operation kind must be a string".to_owned(),
             )
         })?;
+    if kind == "enqueue_index_job" {
+        require_postgres_fields(
+            value,
+            &[
+                "kind",
+                "job_id",
+                "namespace",
+                "entity_kind",
+                "entity_id",
+                "index_kind",
+                "op",
+                "payload_json",
+                "max_retries",
+            ],
+        )?;
+        let max_retries = match operation.get("max_retries") {
+            Some(value) => value.as_i64().ok_or_else(|| {
+                (
+                    STORE_INVALID_PAYLOAD,
+                    "invalid PostgreSQL store payload: index job max_retries must be an integer"
+                        .to_owned(),
+                )
+            })?,
+            None => default_max_retries(),
+        };
+        if !(0..=i32::MAX as i64).contains(&max_retries) {
+            return Err((
+                STORE_INVALID_PAYLOAD,
+                "invalid PostgreSQL store payload: index job max_retries must fit a non-negative PostgreSQL INTEGER".to_owned(),
+            ));
+        }
+        return Ok(());
+    }
     let allowed = match kind {
         "close_store"
         | "begin_transaction"
@@ -6127,17 +6160,6 @@ fn validate_postgres_operation(value: &Value) -> Result<(), (&'static str, Strin
             &["kind", "handoff", "transition", "abort_after_writes"][..]
         }
         "read_recorded_runtime_state" => &["kind", "run_id", "workflow_id", "conversation_id"][..],
-        "enqueue_index_job" => &[
-            "kind",
-            "job_id",
-            "namespace",
-            "entity_kind",
-            "entity_id",
-            "index_kind",
-            "op",
-            "payload_json",
-            "max_retries",
-        ][..],
         "claim_index_jobs" => &["kind", "limit", "lease_seconds", "namespace"][..],
         "mark_index_job_done" => &["kind", "job_id", "claim_token"][..],
         "accept_index_job_result" => &[
@@ -6864,6 +6886,91 @@ mod tests {
                 "typed_envelope": {}
             }))
             .is_err()
+        );
+    }
+
+    #[test]
+    fn postgres_bridge_validates_atomic_graph_batch_nested_operations() {
+        validate_postgres_operation(&json!({
+            "kind": "batch",
+            "abort": true,
+            "operations": [
+                {
+                    "kind": "graph_mutation",
+                    "namespace": "default",
+                    "workspace_id": "workspace-1",
+                    "graph_space": "knowledge",
+                    "table": "gke_nodes",
+                    "entity_kind": "node",
+                    "event_id": "event-1",
+                    "op": "ADD",
+                    "record": {"id": "node-1"},
+                    "payload": {},
+                    "embedding_dim": 3,
+                    "model_envelope": {
+                        "schema_version": 1,
+                        "model_class": "node",
+                        "payload": {"id": "node-1"}
+                    }
+                },
+                {
+                    "kind": "enqueue_index_job",
+                    "job_id": "job-1",
+                    "namespace": "default",
+                    "entity_kind": "node",
+                    "entity_id": "node-1",
+                    "index_kind": "node_docs",
+                    "op": "UPSERT",
+                    "payload_json": "{}",
+                    "max_retries": 3
+                }
+            ]
+        }))
+        .expect("graph mutation and index intent must share the validated batch seam");
+
+        assert!(
+            validate_postgres_operation(&json!({
+                "kind": "batch",
+                "abort": true,
+                "operations": [{
+                    "kind": "graph_mutation",
+                    "unexpected": "must fail closed"
+                }]
+            }))
+            .is_err(),
+            "unknown nested fields must be rejected before dispatch"
+        );
+    }
+
+    #[test]
+    fn postgres_bridge_rejects_nonportable_retry_count_before_dispatch() {
+        validate_postgres_operation(&json!({
+            "kind": "enqueue_index_job",
+            "max_retries": i32::MAX
+        }))
+        .expect("the inclusive PostgreSQL INTEGER maximum is portable");
+        validate_postgres_operation(&json!({
+            "kind": "enqueue_index_job"
+        }))
+        .expect("legacy omitted retry count retains its default");
+
+        let request = json!({
+            "dsn": "postgresql://invalid/unreachable",
+            "schema": "unused",
+            "context_id": "unused-context",
+            "operation": {
+                "kind": "batch",
+                "operations": [{
+                    "kind": "enqueue_index_job",
+                    "max_retries": i32::MAX as i64 + 1
+                }]
+            }
+        });
+        assert_eq!(
+            postgres_store_json_impl(&request.to_string())
+                .expect_err("invalid nested retry range must fail before DB dispatch")
+                .0,
+            STORE_INVALID_PAYLOAD
         );
     }
 

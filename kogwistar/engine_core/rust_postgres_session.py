@@ -13,6 +13,9 @@ from kogwistar.engine_core.rust_meta_sqlite import (
     RustEngineSQLite,
     _TransactionToken,
 )
+from kogwistar.engine_core.graph_mutation_contract import (
+    validate_graph_mutation_batch,
+)
 
 
 class RustPostgresConnectionUnavailable(RuntimeError):
@@ -156,6 +159,59 @@ class RustEnginePostgresMetaStore(RustEngineSQLite):
         if not isinstance(result, dict):
             raise RuntimeError("native graph mutation returned a non-object")
         return result
+
+    def apply_graph_mutations_atomic(self, batch: object) -> list[JsonObject]:
+        """Apply a versioned graph batch and its index intents in one Rust call.
+
+        This is an additive facade API. Existing single-mutation calls retain
+        their wire shape; batch callers opt into the shared atomic contract.
+        """
+        validated = validate_graph_mutation_batch(batch)
+        operations: list[JsonObject] = []
+        for mutation in validated.mutations:
+            operation: JsonObject = {
+                "kind": "graph_mutation",
+                "namespace": mutation.scope.namespace,
+                "workspace_id": mutation.scope.workspace_id,
+                "graph_space": mutation.scope.graph_space,
+                "table": mutation.table,
+                "entity_kind": mutation.entity_kind,
+                "event_id": mutation.event_id,
+                "op": mutation.op,
+                "record": mutation.record.model_dump(mode="json"),
+                "payload": mutation.payload,
+                "embedding_dim": mutation.embedding_dim,
+                "model_envelope": mutation.model_envelope,
+            }
+            operations.append(operation)
+        for job in validated.index_jobs:
+            operations.append(
+                {
+                    "kind": "enqueue_index_job",
+                    "job_id": job.job_id,
+                    "namespace": job.namespace,
+                    "entity_kind": job.entity_kind,
+                    "entity_id": job.entity_id,
+                    "index_kind": job.index_kind,
+                    "op": job.op,
+                    "payload_json": job.payload_json,
+                    "max_retries": job.max_retries,
+                }
+            )
+        result = self.execute_batch(operations)
+        if (
+            not isinstance(result, list)
+            or len(result) != len(operations)
+            or not all(
+                isinstance(item, dict)
+                for item in result[: len(validated.mutations)]
+            )
+        ):
+            raise RuntimeError("native graph mutation batch returned invalid results")
+        return [
+            cast(JsonObject, item)
+            for item in result[: len(validated.mutations)]
+        ]
 
     def graph_authority_capability(self) -> JsonObject:
         return self.session.graph_authority_capability()

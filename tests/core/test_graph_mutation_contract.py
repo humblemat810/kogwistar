@@ -83,6 +83,7 @@ def test_python_graph_mutation_contract_rejects_invalid_batch_header(
         ("namespace", "other-tenant"),
         ("op", "REPLACE"),
         ("max_retries", -1),
+        ("max_retries", 2_147_483_648),
     ],
 )
 def test_python_graph_mutation_contract_rejects_invalid_index_intents(
@@ -108,4 +109,23 @@ def test_python_graph_mutation_contract_rejects_invalid_index_intents(
 
     with pytest.raises(GraphMutationContractError):
         validate_graph_mutation_batch(payload)
+
+
+def test_python_graph_mutation_contract_accepts_postgres_integer_retry_limit() -> None:
+    payload = _fixture()
+    payload["index_jobs"] = [
+        {
+            "job_id": "index-node-1",
+            "namespace": "tenant-a",
+            "entity_kind": "node",
+            "entity_id": "node-1",
+            "index_kind": "node_embedding",
+            "op": "UPSERT",
+            "max_retries": 2_147_483_647,
+        }
+    ]
+
+    batch = validate_graph_mutation_batch(payload)
+
+    assert batch.index_jobs[0].max_retries == 2_147_483_647
 

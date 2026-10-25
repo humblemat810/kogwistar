@@ -183,6 +183,120 @@ def test_postgres_session_nested_commit_uses_one_native_transaction(monkeypatch)
     ]
 
 
+def test_postgres_graph_mutation_batch_uses_one_native_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+    store = RustEnginePostgresMetaStore(
+        dsn="postgresql://example/db", schema="test"
+    )
+
+    def fake_call(kind: str, **values: object) -> object:
+        calls.append((kind, values))
+        return [
+            {"event_seq": 1, "entity_id": "node-1"},
+            {"event_seq": 2, "entity_id": "edge-1"},
+            "job-1",
+        ]
+
+    monkeypatch.setattr(store, "_call", fake_call)
+    batch = {
+        "contract_version": 1,
+        "atomic": True,
+        "mutations": [
+            {
+                "scope": {"namespace": "ns"},
+                "table": "gke_nodes",
+                "entity_kind": "node",
+                "event_id": "node-event",
+                "op": "ADD",
+                "payload": {"id": "node-1", "entity_type": "node"},
+                "record": {"id": "node-1", "document": "node text"},
+                "embedding_dim": 0,
+            },
+            {
+                "scope": {"namespace": "ns"},
+                "table": "gke_edges",
+                "entity_kind": "edge",
+                "event_id": "edge-event",
+                "op": "ADD",
+                "payload": {"id": "edge-1", "entity_type": "edge"},
+                "record": {"id": "edge-1", "document": "edge text"},
+                "embedding_dim": 0,
+            },
+        ],
+        "index_jobs": [
+            {
+                "job_id": "job-1",
+                "namespace": "ns",
+                "entity_kind": "node",
+                "entity_id": "node-1",
+                "index_kind": "node_docs",
+                "op": "UPSERT",
+            }
+        ],
+    }
+
+    result = store.apply_graph_mutations_atomic(batch)
+
+    assert result == [
+        {"event_seq": 1, "entity_id": "node-1"},
+        {"event_seq": 2, "entity_id": "edge-1"},
+    ]
+    assert len(calls) == 1
+    kind, values = calls[0]
+    assert kind == "batch"
+    operations = values["operations"]
+    assert isinstance(operations, list)
+    assert [operation["kind"] for operation in operations] == [
+        "graph_mutation",
+        "graph_mutation",
+        "enqueue_index_job",
+    ]
+    assert operations[0]["record"]["id"] == "node-1"
+    assert operations[1]["record"]["id"] == "edge-1"
+
+
+@pytest.mark.parametrize(
+    "mutation_update",
+    [
+        {"scope": {"namespace": ""}},
+        {"table": "gke_edges"},
+        {"payload": {"id": "different-id"}},
+    ],
+)
+def test_postgres_graph_mutation_batch_rejects_invalid_contract_before_native_call(
+    monkeypatch: pytest.MonkeyPatch,
+    mutation_update: dict[str, object],
+) -> None:
+    store = RustEnginePostgresMetaStore(
+        dsn="postgresql://example/db", schema="test"
+    )
+    calls: list[str] = []
+    monkeypatch.setattr(
+        store,
+        "_call",
+        lambda kind, **values: calls.append(kind),
+    )
+    mutation: dict[str, object] = {
+        "scope": {"namespace": "ns"},
+        "table": "gke_nodes",
+        "entity_kind": "node",
+        "event_id": "node-event",
+        "op": "ADD",
+        "payload": {"id": "node-1"},
+        "record": {"id": "node-1"},
+        "embedding_dim": 0,
+    }
+    mutation.update(mutation_update)
+    batch = {"contract_version": 1, "atomic": True, "mutations": [mutation]}
+
+    with pytest.raises(ValueError):
+        store.apply_graph_mutations_atomic(batch)
+
+    assert calls == []
+
+
 def test_native_session_rejects_rust_transaction_inside_python_selection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

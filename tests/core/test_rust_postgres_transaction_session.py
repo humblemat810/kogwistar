@@ -82,9 +82,11 @@ def _append(event_id: str) -> dict[str, Any]:
 
 
 def test_python_facade_pages_postgres_projection_through_rust_bridge(
-    pg_dsn: str | None, pg_schema: str | None
+    pg_dsn: str | None, pg_schema: str | None, sa_engine: Any
 ) -> None:
     dsn, schema = _require_pg(pg_dsn, pg_schema)
+    backend = PgVectorBackend(engine=sa_engine, embedding_dim=3, schema=schema)
+    backend.ensure_schema()
     store = RustEnginePostgresMetaStore(dsn=dsn, schema=schema)
     try:
         store.ensure_initialized()
@@ -446,6 +448,73 @@ def test_rust_postgres_meta_facade_commits_and_rolls_back_shared_capabilities(
     assert [row.job_id for row in python.list_index_jobs(namespace="facade")] == [
         "committed-job"
     ]
+
+
+def test_python_facade_graph_batch_rolls_back_across_native_postgres_boundary(
+    pg_dsn: str | None,
+    pg_schema: str | None,
+    sa_engine: Any,
+) -> None:
+    dsn, schema = _require_pg(pg_dsn, pg_schema)
+    backend = PgVectorBackend(engine=sa_engine, embedding_dim=3, schema=schema)
+    backend.ensure_schema()
+    store = RustEnginePostgresMetaStore(dsn=dsn, schema=schema)
+    store.ensure_initialized()
+    quoted_schema = f'"{schema}"'
+    with sa_engine.begin() as connection:
+        connection.exec_driver_sql(
+            f"CREATE FUNCTION {quoted_schema}.reject_facade_batch_index_job() "
+            "RETURNS trigger LANGUAGE plpgsql AS $$ "
+            "BEGIN RAISE EXCEPTION 'injected facade index job failure'; "
+            "END; $$"
+        )
+        connection.exec_driver_sql(
+            "CREATE TRIGGER reject_facade_batch_index_job BEFORE INSERT ON "
+            f"{quoted_schema}.index_jobs FOR EACH ROW EXECUTE FUNCTION "
+            f"{quoted_schema}.reject_facade_batch_index_job();"
+        )
+    namespace = f"facade-batch-{uuid.uuid4().hex}"
+    entity_id = f"batch-node-{uuid.uuid4().hex}"
+
+    batch = {
+        "contract_version": 1,
+        "atomic": True,
+        "mutations": [
+            {
+                "scope": {"namespace": namespace},
+                "table": "gke_nodes",
+                "entity_kind": "node",
+                "event_id": f"event-{entity_id}",
+                "op": "ADD",
+                "payload": {"id": entity_id, "entity_type": "node"},
+                "record": {
+                    "id": entity_id,
+                    "document": "atomic Python-to-Rust facade probe",
+                    "metadata": {},
+                    "embedding": None,
+                },
+                "embedding_dim": 3,
+            }
+        ],
+        "index_jobs": [
+            {
+                "job_id": f"job-{entity_id}",
+                "namespace": namespace,
+                "entity_kind": "node",
+                "entity_id": entity_id,
+                "index_kind": "node_docs",
+                "op": "UPSERT",
+                "max_retries": 3,
+            }
+        ],
+    }
+
+    with pytest.raises(RustParityError):
+        store.apply_graph_mutations_atomic(batch)
+
+    assert list(store.iter_entity_events(namespace=namespace)) == []
+    assert store.list_index_jobs(namespace=namespace) == []
+    assert backend.node_get(ids=[entity_id], include=["documents"])["ids"] == []
 
 
 def test_public_rust_postgres_node_add_is_atomic_with_event_and_jobs(
