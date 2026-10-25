@@ -28,6 +28,9 @@ _selection_snapshot: ContextVar[ImplementationSelectionSnapshot | None] = (
 _transaction_authority: ContextVar[TransactionAuthority | None] = ContextVar(
     "kogwistar_transaction_authority", default=None
 )
+_callback_execution_active: ContextVar[bool] = ContextVar(
+    "kogwistar_callback_execution_active", default=False
+)
 _P = ParamSpec("_P")
 _R = TypeVar("_R")
 
@@ -108,7 +111,13 @@ def callback_execution_scope() -> Iterator[None]:
         raise RuntimeError(
             "callback execution is not allowed while a transaction is active"
         )
-    yield
+    if _callback_execution_active.get():
+        raise RuntimeError("nested callback execution is not allowed")
+    token = _callback_execution_active.set(True)
+    try:
+        yield
+    finally:
+        _callback_execution_active.reset(token)
 
 
 @contextmanager
@@ -120,6 +129,10 @@ def transaction_authority_scope(authority: TransactionAuthority) -> Iterator[Non
     selection by entering a different authority scope directly.  Calls made
     without a selection snapshot retain the legacy behavior.
     """
+    if _callback_execution_active.get():
+        raise RuntimeError(
+            "transaction authority cannot be opened from a worker callback"
+        )
     selected_snapshot = _selection_snapshot.get()
     if selected_snapshot is not None:
         expected = transaction_authority_for_selection(selected_snapshot)

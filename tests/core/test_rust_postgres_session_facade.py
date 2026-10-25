@@ -15,6 +15,7 @@ from kogwistar.engine_core.subsystems.write import WriteSubsystem
 from kogwistar.engine_core.lifecycle import LifecycleSubsystem
 from kogwistar.implementation_selection import (
     capture_implementation_selection,
+    callback_execution_scope,
     implementation_selection_scope,
     transaction_authority_scope,
 )
@@ -258,6 +259,26 @@ def test_native_session_rejects_direct_call_inside_python_transaction_authority(
     with transaction_authority_scope("python"):
         with pytest.raises(RuntimeError, match="nested transaction uses a different"):
             session.call("graph_projection_records")
+
+    assert calls == []
+
+
+def test_native_session_rejects_direct_call_from_worker_callback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(
+        "kogwistar.engine_core.rust_postgres_session.store_postgres",
+        lambda *, operation, **_kwargs: calls.append(operation["kind"]),
+    )
+    session = RustPostgresSession(dsn="postgresql://example/db", schema="test")
+
+    with callback_execution_scope():
+        with pytest.raises(
+            RuntimeError,
+            match="transaction authority cannot be opened from a worker callback",
+        ):
+            session.call("replace_named_projection")
 
     assert calls == []
 

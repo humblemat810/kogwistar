@@ -256,6 +256,28 @@ def test_callback_execution_scope_fails_closed_inside_authoritative_transaction(
         assert active_transaction_authority() is None
 
 
+def test_worker_callback_cannot_open_transaction_authority() -> None:
+    with callback_execution_scope():
+        with pytest.raises(
+            RuntimeError,
+            match="transaction authority cannot be opened from a worker callback",
+        ):
+            with transaction_authority_scope("python"):
+                pytest.fail("worker callbacks must return effects, not write directly")
+
+    with transaction_authority_scope("python"):
+        assert active_transaction_authority() == "python"
+
+
+def test_callback_execution_marker_is_cleared_after_callback_failure() -> None:
+    with pytest.raises(ValueError, match="callback failure"):
+        with callback_execution_scope():
+            raise ValueError("callback failure")
+
+    with transaction_authority_scope("python"):
+        assert active_transaction_authority() == "python"
+
+
 def test_transaction_authority_scope_matches_frozen_selection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
