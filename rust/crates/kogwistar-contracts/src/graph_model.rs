@@ -2566,6 +2566,41 @@ mod tests {
     }
 
     #[test]
+    fn persistent_node_and_edge_omitted_lifecycle_metadata_keep_python_defaults() {
+        let fixture = fixture();
+        for (model_class, case_name) in [
+            (GraphModelClass::Node, "node"),
+            (GraphModelClass::Edge, "edge"),
+        ] {
+            let mut payload = fixture["cases"]
+                .as_array()
+                .expect("fixture cases")
+                .iter()
+                .find(|case| case["kind"] == case_name)
+                .expect("fixture model case")["payload"]
+                .clone();
+            let metadata = payload
+                .get_mut("metadata")
+                .and_then(Value::as_object_mut)
+                .expect("fixture metadata");
+            metadata.remove("lifecycle_status");
+            metadata.remove("redirect_to_id");
+
+            let decoded = GraphModelEnvelope::new(model_class, payload)
+                .decode_persistent_v1()
+                .expect("omitted lifecycle metadata remains backward compatible");
+            match decoded {
+                PersistentGraphEntityV1::Node(node) => {
+                    assert_eq!(node.lifecycle_status(), LifecycleStatus::Active);
+                }
+                PersistentGraphEntityV1::Edge(edge) => {
+                    assert_eq!(edge.lifecycle_status(), LifecycleStatus::Active);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn strict_edge_extends_the_shared_graph_entity_interface() {
         fn assert_persistent_capabilities<T>()
         where
