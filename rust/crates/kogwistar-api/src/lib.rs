@@ -1887,6 +1887,37 @@ fn security_scope_value(principal: &Value) -> Value {
     })
 }
 
+fn conversation_graph_scope_and_acl_principal(
+    request_principal: &Value,
+) -> (GraphScope, GraphAclPrincipal) {
+    let scope_value = security_scope_value(request_principal);
+    let scope = GraphScope {
+        namespace: scope_value["storage_namespace"]
+            .as_str()
+            .unwrap_or("default")
+            .to_owned(),
+        workspace_id: request_principal
+            .get("workspace_id")
+            .or_else(|| request_principal.get("workspace"))
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        graph_space: request_principal
+            .get("graph_space")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+    };
+    let mut groups = principal_strings(request_principal, "groups");
+    groups.extend(principal_strings(request_principal, "principal_groups"));
+    groups.sort();
+    groups.dedup();
+    let acl_principal = GraphAclPrincipal {
+        principal_id: principal_subject(request_principal),
+        groups: groups.into_iter().collect(),
+        security_scope: scope_value["security_scope"].as_str().map(str::to_owned),
+    };
+    (scope, acl_principal)
+}
+
 fn capability_effect(
     request: &ApiEffectRequest,
     shared: &SharedCapabilityState,
@@ -5831,6 +5862,27 @@ fn parse_internal_context_snapshot_request(
 }
 
 impl PostgresRunApplicationService {
+    async fn authorized_conversation_nodes(
+        &self,
+        request_principal: &Value,
+    ) -> Result<Vec<GraphRecord>, String> {
+        let (scope, acl_principal) = conversation_graph_scope_and_acl_principal(request_principal);
+        let records = self
+            .store
+            .graph_projection_records(GraphProjectionRead {
+                scope,
+                table: "gke_nodes".to_owned(),
+                ids: None,
+                metadata: MetadataFilter::default(),
+                limit: 10_000,
+            })
+            .await
+            .map_err(|error| error.to_string())?;
+        let (visible_nodes, _) =
+            graph_records_visible_by_acl(&records, &[], "conversation", &acl_principal);
+        Ok(visible_nodes)
+    }
+
     async fn internal_conversation_transcript_effect(
         &self,
         request: &ApiEffectRequest,
@@ -5852,55 +5904,16 @@ impl PostgresRunApplicationService {
                 );
             }
         };
-        let scope_value = security_scope_value(&request.principal);
-        let scope = GraphScope {
-            namespace: scope_value["storage_namespace"]
-                .as_str()
-                .unwrap_or("default")
-                .to_owned(),
-            workspace_id: request
-                .principal
-                .get("workspace_id")
-                .or_else(|| request.principal.get("workspace"))
-                .and_then(Value::as_str)
-                .map(str::to_owned),
-            graph_space: request
-                .principal
-                .get("graph_space")
-                .and_then(Value::as_str)
-                .map(str::to_owned),
-        };
-        let records = match self
-            .store
-            .graph_projection_records(GraphProjectionRead {
-                scope,
-                table: "gke_nodes".to_owned(),
-                ids: None,
-                metadata: MetadataFilter::default(),
-                limit: 10_000,
-            })
-            .await
-        {
-            Ok(records) => records,
+        let visible_nodes = match self.authorized_conversation_nodes(&request.principal).await {
+            Ok(nodes) => nodes,
             Err(error) => {
                 return effect_error(
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "KOGWISTAR_STORE_ERROR",
-                    error.to_string(),
+                    error,
                 );
             }
         };
-        let mut groups = principal_strings(&request.principal, "groups");
-        groups.extend(principal_strings(&request.principal, "principal_groups"));
-        groups.sort();
-        groups.dedup();
-        let principal = GraphAclPrincipal {
-            principal_id: principal_subject(&request.principal),
-            groups: groups.into_iter().collect(),
-            security_scope: scope_value["security_scope"].as_str().map(str::to_owned),
-        };
-        let (visible_nodes, _) =
-            graph_records_visible_by_acl(&records, &[], "conversation", &principal);
         let transcript = match conversation_transcript_from_visible_records(
             &visible_nodes,
             &input.conversation_id,
@@ -5947,55 +5960,16 @@ impl PostgresRunApplicationService {
                 );
             }
         };
-        let scope_value = security_scope_value(&request.principal);
-        let scope = GraphScope {
-            namespace: scope_value["storage_namespace"]
-                .as_str()
-                .unwrap_or("default")
-                .to_owned(),
-            workspace_id: request
-                .principal
-                .get("workspace_id")
-                .or_else(|| request.principal.get("workspace"))
-                .and_then(Value::as_str)
-                .map(str::to_owned),
-            graph_space: request
-                .principal
-                .get("graph_space")
-                .and_then(Value::as_str)
-                .map(str::to_owned),
-        };
-        let records = match self
-            .store
-            .graph_projection_records(GraphProjectionRead {
-                scope,
-                table: "gke_nodes".to_owned(),
-                ids: None,
-                metadata: MetadataFilter::default(),
-                limit: 10_000,
-            })
-            .await
-        {
-            Ok(records) => records,
+        let visible_nodes = match self.authorized_conversation_nodes(&request.principal).await {
+            Ok(nodes) => nodes,
             Err(error) => {
                 return effect_error(
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "KOGWISTAR_STORE_ERROR",
-                    error.to_string(),
+                    error,
                 );
             }
         };
-        let mut groups = principal_strings(&request.principal, "groups");
-        groups.extend(principal_strings(&request.principal, "principal_groups"));
-        groups.sort();
-        groups.dedup();
-        let principal = GraphAclPrincipal {
-            principal_id: principal_subject(&request.principal),
-            groups: groups.into_iter().collect(),
-            security_scope: scope_value["security_scope"].as_str().map(str::to_owned),
-        };
-        let (visible_nodes, _) =
-            graph_records_visible_by_acl(&records, &[], "conversation", &principal);
         let snapshot = match kogwistar_store::context_snapshot_from_visible_records(
             &visible_nodes,
             &input.conversation_id,
@@ -6102,55 +6076,16 @@ impl PostgresRunApplicationService {
                 "Conversation route was not found",
             );
         };
-        let scope_value = security_scope_value(&request.principal);
-        let scope = GraphScope {
-            namespace: scope_value["storage_namespace"]
-                .as_str()
-                .unwrap_or("default")
-                .to_owned(),
-            workspace_id: request
-                .principal
-                .get("workspace_id")
-                .or_else(|| request.principal.get("workspace"))
-                .and_then(Value::as_str)
-                .map(str::to_owned),
-            graph_space: request
-                .principal
-                .get("graph_space")
-                .and_then(Value::as_str)
-                .map(str::to_owned),
-        };
-        let records = match self
-            .store
-            .graph_projection_records(GraphProjectionRead {
-                scope,
-                table: "gke_nodes".to_owned(),
-                ids: None,
-                metadata: MetadataFilter::default(),
-                limit: 10_000,
-            })
-            .await
-        {
-            Ok(records) => records,
+        let visible_nodes = match self.authorized_conversation_nodes(&request.principal).await {
+            Ok(nodes) => nodes,
             Err(error) => {
                 return effect_error(
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "KOGWISTAR_STORE_ERROR",
-                    error.to_string(),
+                    error,
                 );
             }
         };
-        let mut groups = principal_strings(&request.principal, "groups");
-        groups.extend(principal_strings(&request.principal, "principal_groups"));
-        groups.sort();
-        groups.dedup();
-        let principal = GraphAclPrincipal {
-            principal_id: principal_subject(&request.principal),
-            groups: groups.into_iter().collect(),
-            security_scope: scope_value["security_scope"].as_str().map(str::to_owned),
-        };
-        let (visible_nodes, _) =
-            graph_records_visible_by_acl(&records, &[], "conversation", &principal);
         let summary =
             match conversation_summary_from_visible_records(&visible_nodes, &conversation_id) {
                 Ok(summary) => summary,
@@ -12623,6 +12558,34 @@ pub async fn serve(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn conversation_reads_share_frozen_storage_scope_and_acl_principal() {
+        let (scope, acl) = conversation_graph_scope_and_acl_principal(&json!({
+            "sub": "Alice",
+            "ns": "conversation",
+            "storage_ns": "ConversationData",
+            "workspace_id": "Workspace-A",
+            "graph_space": "graph-space-a",
+            "security_scope": "Tenant-A",
+            "groups": [" Team-B ", "team-a"],
+            "principal_groups": ["team-a", "team-c"]
+        }));
+
+        assert_eq!(scope.namespace, "conversationdata");
+        assert_eq!(scope.workspace_id.as_deref(), Some("Workspace-A"));
+        assert_eq!(scope.graph_space.as_deref(), Some("graph-space-a"));
+        assert_eq!(acl.principal_id, "alice");
+        assert_eq!(
+            acl.groups,
+            BTreeSet::from([
+                "team-a".to_owned(),
+                "team-b".to_owned(),
+                "team-c".to_owned()
+            ])
+        );
+        assert_eq!(acl.security_scope.as_deref(), Some("tenant-a"));
+    }
     use axum::body::{Body, to_bytes};
     use axum::http::Request;
     use kogwistar_contracts::native_seam_attestation_is_valid;

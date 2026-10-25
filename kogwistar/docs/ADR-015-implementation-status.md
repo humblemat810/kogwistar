@@ -166,6 +166,10 @@ Only these local items remain in scope before production rollout:
   ACL-filtered internal transcript operation to the legacy public response
   shape. The combined summary/transcript test passed live against local
   pgvector on 2026-10-25; SQLite remains explicitly unsupported.
+- [x] Conversation summary, transcript, and latest-snapshot reads share one
+  storage-scope/ACL-principal derivation and one ACL-filtered record-read
+  helper. The scope/principal invariant test and both live summary/transcript
+  and latest-snapshot PostgreSQL integrations passed after refactoring.
 - [x] Phase 5: explicitly version/defer the four remaining conversation/tool syscall
   sub-operations listed by `PENDING_SYSCALL_CUTOVER_OPS`. The same versioned
   manifest entry records Python rollback ownership, the required worker/runtime
