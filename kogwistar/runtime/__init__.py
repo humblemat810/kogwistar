@@ -41,6 +41,11 @@ if TYPE_CHECKING:
         PROJECTION_CHECKPOINT_WIRE_VERSION,
         refresh_checkpointed_named_projection,
     )
+    from kogwistar.runtime.source_map_contract import (
+        SourceMapContractError,
+        source_map_from_wire,
+        source_map_to_wire,
+    )
     from kogwistar.runtime.contract import (
         BasePredicate,
         WorkflowEdgeInfo,
@@ -119,6 +124,7 @@ __all__ = [
     "RouteDecision",
     "RunRequest",
     "RunResult",
+    "SourceMapContractError",
     "StepContext",
     "SyncStepFn",
     "TerminalStatus",
@@ -139,6 +145,8 @@ __all__ = [
     "refresh_checkpointed_named_projection",
     "replay_to",
     "retry_with_context",
+    "source_map_from_wire",
+    "source_map_to_wire",
     "run_grouped_maintenance_template",
     "summarize_budget_events",
     "summarize_execution_failure_patterns",
@@ -196,6 +204,9 @@ _EXPORTS = {
     "ProjectionLoadResult": "kogwistar.runtime.checkpointed_projection",
     "ProjectionPayload": "kogwistar.runtime.checkpointed_projection",
     "PROJECTION_CHECKPOINT_WIRE_VERSION": "kogwistar.runtime.checkpointed_projection",
+    "SourceMapContractError": "kogwistar.runtime.source_map_contract",
+    "source_map_from_wire": "kogwistar.runtime.source_map_contract",
+    "source_map_to_wire": "kogwistar.runtime.source_map_contract",
     "refresh_checkpointed_named_projection": "kogwistar.runtime.checkpointed_projection",
     "BudgetAttribution": "kogwistar.runtime.budget",
     "BudgetEvent": "kogwistar.runtime.budget",
