@@ -146,8 +146,7 @@ def resolve_implementation_selection(
     snapshots = tuple(
         snapshot
         for owner in owners
-        if (snapshot := getattr(owner, "_implementation_selection_snapshot", None))
-        is not None
+        if (snapshot := _owner_implementation_snapshot(owner)) is not None
     )
     if snapshots and any(snapshot != snapshots[0] for snapshot in snapshots[1:]):
         raise ValueError(

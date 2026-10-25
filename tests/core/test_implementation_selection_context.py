@@ -289,6 +289,18 @@ def test_resolve_implementation_selection_rejects_split_authority() -> None:
         )
 
 
+def test_resolve_implementation_selection_includes_subsystem_owner_snapshot() -> None:
+    python_snapshot = (("KOGWISTAR_IMPL_MODE", "python"),)
+    rust_snapshot = (("KOGWISTAR_IMPL_MODE", "rust"),)
+    engine = SimpleNamespace(_implementation_selection_snapshot=python_snapshot)
+    subsystem = SimpleNamespace(_e=engine)
+    other_engine = SimpleNamespace(_implementation_selection_snapshot=rust_snapshot)
+
+    assert resolve_implementation_selection(subsystem, engine) == python_snapshot
+    with pytest.raises(ValueError, match="different implementation selections"):
+        resolve_implementation_selection(subsystem, other_engine)
+
+
 def test_indexing_boundary_uses_owning_engine_snapshot(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
