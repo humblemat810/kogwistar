@@ -1472,6 +1472,37 @@ fn query_string(path_and_query: &str, name: &str) -> Option<String> {
         })
 }
 
+fn latest_snapshot_conversation_id(path_and_query: &str) -> Option<String> {
+    let path = path_and_query.split('?').next().unwrap_or(path_and_query);
+    let encoded_id = path
+        .strip_prefix("/api/conversations/")?
+        .strip_suffix("/snapshots/latest")?;
+    let conversation_id = percent_encoding::percent_decode_str(encoded_id)
+        .decode_utf8()
+        .ok()?
+        .into_owned();
+    (!conversation_id.is_empty() && !conversation_id.contains('/')).then_some(conversation_id)
+}
+
+fn context_snapshot_query(path_and_query: &str) -> (Option<String>, Option<String>) {
+    let mut run_id = None;
+    let mut stage = None;
+    for (key, value) in url::form_urlencoded::parse(
+        path_and_query
+            .split_once('?')
+            .map(|(_, query)| query)
+            .unwrap_or_default()
+            .as_bytes(),
+    ) {
+        match key.as_ref() {
+            "run_id" => run_id = Some(value.into_owned()),
+            "stage" => stage = Some(value.into_owned()),
+            _ => {}
+        }
+    }
+    (run_id, stage)
+}
+
 const CAPABILITY_SPECS: &[(&str, &str, &str)] = &[
     ("read_graph", "Read graph state", "read"),
     ("write_graph", "Write graph state", "write"),
@@ -1503,6 +1534,11 @@ struct CapabilityState {
 }
 
 type SharedCapabilityState = Arc<Mutex<CapabilityState>>;
+
+const SQLITE_UNSUPPORTED_HTTP_ROUTES: &[(&str, &str)] = &[(
+    "GET",
+    "/api/conversations/{conversation_id}/snapshots/latest",
+)];
 
 fn principal_strings(principal: &Value, name: &str) -> Vec<String> {
     match principal.get(name) {
@@ -5952,6 +5988,60 @@ impl PostgresRunApplicationService {
         )
     }
 
+    async fn latest_snapshot_effect(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
+        let namespaces = principal_strings(&request.principal, "ns");
+        let namespaces = if namespaces.is_empty() {
+            vec!["docs".to_owned()]
+        } else {
+            namespaces
+        };
+        if !namespaces
+            .iter()
+            .any(|namespace| matches!(namespace.as_str(), "*" | "conversation" | "workflow"))
+        {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_NAMESPACE_FORBIDDEN",
+                "Context snapshot reads require conversation or workflow namespace",
+            );
+        }
+        let Some(conversation_id) = latest_snapshot_conversation_id(&request.path_and_query) else {
+            return effect_error(
+                StatusCode::NOT_FOUND,
+                "KOGWISTAR_ROUTE_NOT_FOUND",
+                "Conversation snapshot route was not found",
+            );
+        };
+        let (run_id, stage) = context_snapshot_query(&request.path_and_query);
+        let body = serde_json::to_vec(&json!({
+            "conversation_id": conversation_id,
+            "run_id": run_id,
+            "stage": stage,
+        }))
+        .expect("context snapshot request serializes");
+        let internal = ApiEffectRequest {
+            contract_version: request.contract_version,
+            method: "POST".to_owned(),
+            path_and_query: "/internal/conversation/context-snapshot".to_owned(),
+            body,
+            principal: request.principal.clone(),
+        };
+        let mut response = self.internal_context_snapshot_effect(&internal).await;
+        if (200..300).contains(&response.status)
+            && let Ok(mut payload) = serde_json::from_slice::<Value>(&response.body)
+            && let Some(object) = payload.as_object_mut()
+        {
+            // Preserve the existing public REST shape; Rust projection and seam
+            // metadata are implementation details for this compatibility route.
+            object.remove("schema_version");
+            object.remove("implementation_authority");
+            object.remove("seam_attestation_version");
+            object.remove("seam_crossings");
+            response.body = serde_json::to_vec(&payload).expect("snapshot response serializes");
+        }
+        response
+    }
+
     async fn graph_neighbors_effect(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
         if !capability_allowed(request, &self.capabilities, "read_graph", &["read_graph"]) {
             return effect_error(
@@ -8883,6 +8973,11 @@ impl PostgresRunApplicationService {
     }
 
     async fn execute_async(&self, request: ApiEffectRequest) -> ApiEffectResponse {
+        if request.method == "GET"
+            && latest_snapshot_conversation_id(&request.path_and_query).is_some()
+        {
+            return self.latest_snapshot_effect(&request).await;
+        }
         if request.method == "POST" && request.path_and_query == INTERNAL_DOCUMENT_PROJECTION_ROUTE
         {
             return self.document_projection_effect(&request).await;
@@ -9287,6 +9382,7 @@ impl ApplicationService for SqliteRunApplicationService {
         FROZEN_OPENAPI_ROUTES.contains(&(method, path))
             && !is_transport_owned_http_route(method, path)
             && !PENDING_SERVER_CUTOVER_ROUTES.contains(&(method, path))
+            && !SQLITE_UNSUPPORTED_HTTP_ROUTES.contains(&(method, path))
     }
 
     fn execute(
@@ -10383,6 +10479,15 @@ impl SqliteRunApplicationService {
     }
 
     fn execute_sync(&self, request: ApiEffectRequest) -> ApiEffectResponse {
+        if request.method == "GET"
+            && latest_snapshot_conversation_id(&request.path_and_query).is_some()
+        {
+            return effect_error(
+                StatusCode::NOT_IMPLEMENTED,
+                "KOGWISTAR_GRAPH_AUTHORITY_UNSUPPORTED",
+                "The SQLite application service does not provide Rust graph authority",
+            );
+        }
         if let Some(response) = visualization_shell_effect(&request) {
             return response;
         }
@@ -12342,6 +12447,215 @@ mod tests {
     }
 
     #[test]
+    fn latest_snapshot_route_parsing_is_exact_and_preserves_query_values() {
+        assert_eq!(
+            latest_snapshot_conversation_id(
+                "/api/conversations/conversation-1/snapshots/latest?run_id=run-1"
+            ),
+            Some("conversation-1".to_owned())
+        );
+        assert_eq!(
+            latest_snapshot_conversation_id(
+                "/api/conversations/conversation-1/extra/snapshots/latest"
+            ),
+            None
+        );
+        assert_eq!(
+            latest_snapshot_conversation_id("/api/conversations//snapshots/latest"),
+            None
+        );
+        assert_eq!(
+            latest_snapshot_conversation_id(
+                "/api/conversations/id%20with%20spaces/snapshots/latest"
+            ),
+            Some("id with spaces".to_owned())
+        );
+        assert_eq!(
+            latest_snapshot_conversation_id("/api/conversations/id%2Fother/snapshots/latest"),
+            None
+        );
+        assert_eq!(
+            context_snapshot_query(
+                "/api/conversations/c/snapshots/latest?run_id=run%2F1&stage=answer+final"
+            ),
+            (Some("run/1".to_owned()), Some("answer final".to_owned()))
+        );
+        assert_eq!(
+            context_snapshot_query("/api/conversations/c/snapshots/latest?run_id="),
+            (Some(String::new()), None)
+        );
+    }
+
+    #[tokio::test]
+    async fn latest_snapshot_route_checks_namespace_and_capability_before_storage() {
+        let service = PostgresRunApplicationService::from_dsn(
+            "postgres://unused:unused@127.0.0.1:1/unused",
+            "snapshot_route_auth_contract",
+        )
+        .unwrap();
+        let make_request = |principal| ApiEffectRequest {
+            contract_version: 1,
+            method: "GET".to_owned(),
+            path_and_query: "/api/conversations/c-1/snapshots/latest".to_owned(),
+            body: Vec::new(),
+            principal,
+        };
+        let namespace_denied = service
+            .execute(make_request(json!({
+                "sub": "alice",
+                "ns": "docs",
+                "capabilities": ["project_view"]
+            })))
+            .await;
+        assert_eq!(
+            namespace_denied.status,
+            StatusCode::FORBIDDEN.as_u16(),
+            "{}",
+            String::from_utf8_lossy(&namespace_denied.body)
+        );
+        assert_eq!(
+            serde_json::from_slice::<Value>(&namespace_denied.body).unwrap()["code"],
+            "KOGWISTAR_NAMESPACE_FORBIDDEN"
+        );
+
+        let capability_denied = service
+            .execute(make_request(json!({
+                "sub": "alice",
+                "ns": "workflow",
+                "capabilities": []
+            })))
+            .await;
+        assert_eq!(capability_denied.status, StatusCode::FORBIDDEN.as_u16());
+        assert_eq!(
+            serde_json::from_slice::<Value>(&capability_denied.body).unwrap()["code"],
+            "KOGWISTAR_CAPABILITY_FORBIDDEN"
+        );
+    }
+
+    #[tokio::test]
+    async fn postgres_latest_snapshot_route_projects_authorized_snapshot_when_dsn_available() {
+        let Some(dsn) = std::env::var("KOGWISTAR_TEST_PG_DSN").ok() else {
+            eprintln!("KOGWISTAR_TEST_PG_DSN absent; latest snapshot integration skipped");
+            return;
+        };
+        let schema = format!("rust_snapshot_route_{}", uuid::Uuid::new_v4().simple());
+        let service = PostgresRunApplicationService::from_dsn(&dsn, &schema).unwrap();
+        service.ensure_schema().await.unwrap();
+        service
+            .store
+            .create_graph_schema(3, kogwistar_store_postgres::GraphTableNames::default())
+            .await
+            .unwrap();
+        let scope = GraphScope {
+            namespace: "conversation".to_owned(),
+            workspace_id: None,
+            graph_space: None,
+        };
+        let mut snapshot_metadata = Map::new();
+        snapshot_metadata.insert("entity_type".to_owned(), json!("context_snapshot"));
+        snapshot_metadata.insert("conversation_id".to_owned(), json!("conversation-1"));
+        snapshot_metadata.insert("run_id".to_owned(), json!("run-1"));
+        snapshot_metadata.insert("stage".to_owned(), json!("final"));
+        service
+            .store
+            .upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
+                scope: scope.clone(),
+                table: "gke_nodes".to_owned(),
+                record: GraphRecord {
+                    id: "snapshot-1".to_owned(),
+                    document: Some(
+                        json!({
+                            "metadata": {"source": "integration"},
+                            "properties": {"snapshot_seq": 7, "summary": "latest snapshot"}
+                        })
+                        .to_string(),
+                    ),
+                    metadata: snapshot_metadata,
+                    embedding: None,
+                },
+                embedding_dim: 3,
+            })
+            .await
+            .unwrap();
+        let mut acl_metadata = Map::new();
+        for (key, value) in [
+            ("entity_type", json!("acl_record")),
+            ("acl_truth_graph", json!("conversation")),
+            ("acl_target_entity_id", json!("snapshot-1")),
+            ("acl_target_grain", json!("node")),
+            ("acl_version", json!(1)),
+            ("acl_mode", json!("public")),
+        ] {
+            acl_metadata.insert(key.to_owned(), value);
+        }
+        service
+            .store
+            .upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
+                scope: scope.clone(),
+                table: "gke_nodes".to_owned(),
+                record: GraphRecord {
+                    id: "acl-snapshot-1".to_owned(),
+                    document: None,
+                    metadata: acl_metadata,
+                    embedding: None,
+                },
+                embedding_dim: 3,
+            })
+            .await
+            .unwrap();
+
+        let response = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "GET".to_owned(),
+                path_and_query:
+                    "/api/conversations/conversation-1/snapshots/latest?run_id=run-1&stage=final"
+                        .to_owned(),
+                body: Vec::new(),
+                principal: json!({
+                    "sub": "alice",
+                    "role": "ro",
+                    "ns": "workflow",
+                    "storage_ns": "conversation",
+                    "capabilities": ["project_view"]
+                }),
+            })
+            .await;
+        assert_eq!(response.status, StatusCode::OK.as_u16());
+        let payload: Value = serde_json::from_slice(&response.body).unwrap();
+        assert_eq!(payload["snapshot_node_id"], "snapshot-1");
+        assert_eq!(payload["conversation_id"], "conversation-1");
+        assert_eq!(payload["metadata"]["source"], "integration");
+        assert_eq!(payload["properties"]["summary"], "latest snapshot");
+        assert_eq!(
+            payload
+                .as_object()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([
+                "conversation_id".to_owned(),
+                "metadata".to_owned(),
+                "properties".to_owned(),
+                "snapshot_node_id".to_owned(),
+            ])
+        );
+
+        drop(service);
+        let (cleanup, connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls)
+            .await
+            .unwrap();
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+        cleanup
+            .batch_execute(&format!("DROP SCHEMA \"{schema}\" CASCADE"))
+            .await
+            .unwrap();
+    }
+
+    #[test]
     fn server_readiness_cannot_overclaim_pending_routes() {
         let mut implementation = ImplementationSnapshot::default();
         assert!(!implementation.effective_server_cutover_ready());
@@ -12376,6 +12690,10 @@ mod tests {
         assert!(!service.supports_http_operation("POST", "/internal/conversation/transcript"));
         assert!(!service.supports_http_operation("GET", "/api/not-registered"));
         assert!(service.supports_http_operation("POST", "/api/workflow/runs"));
+        assert!(service.supports_http_operation(
+            "GET",
+            "/api/conversations/{conversation_id}/snapshots/latest"
+        ));
     }
 
     #[test]
@@ -12428,6 +12746,10 @@ mod tests {
             postgres.document_authority_capability(),
             DocumentAuthorityCapability::ProjectionUpsert
         );
+        assert!(!sqlite.supports_http_operation(
+            "GET",
+            "/api/conversations/{conversation_id}/snapshots/latest"
+        ));
 
         drop(sqlite);
         remove_test_sqlite(&sqlite_path);
@@ -13232,13 +13554,18 @@ mod tests {
         }
         drop(service);
         let _ = std::fs::remove_file(&path);
-        assert_eq!(
-            unavailable,
-            PENDING_SERVER_CUTOVER_ROUTES
-                .iter()
-                .map(|(method, path)| format!("{method} {path}"))
-                .collect::<Vec<_>>()
-        );
+        let mut expected_unavailable = PENDING_SERVER_CUTOVER_ROUTES
+            .iter()
+            .map(|(method, path)| format!("{method} {path}"))
+            .chain(
+                SQLITE_UNSUPPORTED_HTTP_ROUTES
+                    .iter()
+                    .map(|(method, path)| format!("{method} {path}")),
+            )
+            .collect::<Vec<_>>();
+        unavailable.sort();
+        expected_unavailable.sort();
+        assert_eq!(unavailable, expected_unavailable);
     }
 
     #[test]

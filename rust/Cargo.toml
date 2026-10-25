@@ -27,6 +27,7 @@ fs2 = "0.4"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 deadpool-postgres = { version = "0.14", features = ["rt_tokio_1"] }
 pyo3 = { version = "0.29.0", features = ["extension-module", "abi3-py312", "generate-import-lib"] }
+percent-encoding = "2"
 proptest = "1.6"
 ryu = "1"
 serde = { version = "1", features = ["derive"] }

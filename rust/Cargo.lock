@@ -800,6 +800,7 @@ dependencies = [
  "kogwistar-store",
  "kogwistar-store-postgres",
  "kogwistar-store-sqlite",
+ "percent-encoding",
  "reqwest",
  "serde",
  "serde_json",

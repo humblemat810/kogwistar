@@ -13,6 +13,7 @@ kogwistar-store = { path = "../kogwistar-store" }
 kogwistar-store-sqlite = { path = "../kogwistar-store-sqlite" }
 kogwistar-store-postgres = { path = "../kogwistar-store-postgres" }
 kogwistar-runtime = { path = "../kogwistar-runtime" }
+percent-encoding.workspace = true
 jsonwebtoken.workspace = true
 reqwest.workspace = true
 serde.workspace = true

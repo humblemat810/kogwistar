@@ -507,10 +507,6 @@
           },
           {
             "method": "GET",
-            "path": "/api/conversations/{conversation_id}/snapshots/latest"
-          },
-          {
-            "method": "GET",
             "path": "/api/conversations/{conversation_id}/turns"
           },
           {

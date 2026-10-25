@@ -34,10 +34,6 @@ pub const PENDING_SERVER_CUTOVER_ROUTES: &[(&str, &str)] = &[
     ("DELETE", "/admin/doc/{doc_id}"),
     ("GET", "/api/conversations"),
     ("GET", "/api/conversations/{conversation_id}"),
-    (
-        "GET",
-        "/api/conversations/{conversation_id}/snapshots/latest",
-    ),
     ("GET", "/api/conversations/{conversation_id}/turns"),
     ("GET", "/api/search_index_hybrid"),
     ("GET", "/api/viz/cytoscape.json"),
