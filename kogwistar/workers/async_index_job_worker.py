@@ -112,7 +112,7 @@ class AsyncIndexJobWorker:
                     if not inspect.iscoroutinefunction(batch_apply):
                         raise RuntimeError("async embedding batch handler must be awaitable")
                     batch_results = await batch_apply(unit)
-                except BaseException as exc:
+                except Exception as exc:
                     batch_results = {
                         str(self._value(job, "job_id")): exc for job in unit
                     }

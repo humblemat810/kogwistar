@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
+import pytest
+
 from kogwistar.engine_core.indexing import IndexingSubsystem
 from kogwistar.workers.async_index_job_worker import AsyncIndexJobWorker
 from kogwistar.workers.index_job_worker import IndexJobWorker
@@ -228,6 +230,38 @@ def test_async_worker_propagates_claim_token_to_terminal_failure() -> None:
         assert meta.failed == [("job-1", "claim-1")]
 
     asyncio.run(run())
+
+
+def test_async_batch_worker_propagates_cancellation_without_queue_mutation() -> None:
+    first = _job(claim_token="claim-1")
+    second = _job(claim_token="claim-2")
+    for job, job_id in ((first, "job-1"), (second, "job-2")):
+        job.job_id = job_id
+        job.index_kind = "node_embedding"
+        job.payload_json = '{"embedding_model":"test"}'
+
+    class BatchMeta(_Meta):
+        def claim_index_jobs(self, **_: object) -> list[SimpleNamespace]:
+            self.claimed = True
+            return [first, second]
+
+    class BatchAdapter:
+        async def apply_embedding_jobs_batch(
+            self, _jobs: list[object]
+        ) -> dict[str, BaseException | None]:
+            raise asyncio.CancelledError
+
+    meta = BatchMeta(first)
+    engine = _engine(meta)
+    engine.async_two_stage_projection_adapter = BatchAdapter()
+    worker = AsyncIndexJobWorker(engine=engine)
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(worker.tick())
+
+    assert meta.done == []
+    assert meta.retried == []
+    assert meta.failed == []
 
 
 def test_legacy_claim_without_token_keeps_compatibility_call_shape() -> None:
