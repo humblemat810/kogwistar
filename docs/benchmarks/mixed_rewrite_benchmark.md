@@ -42,6 +42,14 @@ benchmark-only Rust-native server exposes the same counters through its private
 `/metrics` endpoint, with `ffi_calls: 0` asserted by the native implementation.
 Process CPU/RSS measurements remain separate from these logical counters.
 
+The native counter path was verified with a two-sample, one-item sequential
+smoke on 2026-10-25 using `run_benchmark(..., modes=("rust_native",),
+include_concurrent=False)`. Its three-operation sample reported
+`tool_dispatches=3`, `transport_requests=3`, `transaction_boundaries=1`,
+`serialized_bytes=2667`, and `ffi_calls=0`. The probe required an elevated
+Windows loopback permission; the restricted sandbox's `WinError 10013` is not
+application evidence.
+
 Concurrent profiles are implemented in `scripts/mixed_concurrent_benchmark.py`
 for SQLite events/projections, Chroma with SQLite metadata, and PostgreSQL/
 pgvector with SQLite metadata. Each write has an individual commit boundary.
