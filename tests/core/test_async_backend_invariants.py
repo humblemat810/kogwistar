@@ -7,9 +7,9 @@ import pytest
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.engine_postgres_meta import EnginePostgresMetaStore
-from kogwistar.engine_core.models import Node
+from kogwistar.engine_core.models import Edge, Node
 from kogwistar.server.run_registry import RunRegistry
-from tests._helpers.graph_builders import build_entity_node
+from tests._helpers.graph_builders import build_entity_node, build_relationship_edge
 from tests._kg_factories import kg_document
 from tests.core._async_chroma_real import (
     make_real_async_chroma_backend,
@@ -224,12 +224,32 @@ async def test_async_pg_rust_authority_writes_event_and_projection(
         doc_id=doc.id,
         summary="async Rust authority node",
     )
+    target = _mk_node(
+        node_id="node::async-pg-rust-contract-target",
+        doc_id=doc.id,
+        summary="async Rust authority edge target",
+    )
     await engine.write.add_node_async(node, doc_id=doc.id)
+    await engine.write.add_node_async(target, doc_id=doc.id)
 
-    assert (await async_pg_backend.node_get(ids=[node.id]))["ids"] == [node.id]
+    edge: Edge = build_relationship_edge(
+        edge_id="edge::async-pg-rust-contract",
+        src=node.id,
+        tgt=target.id,
+        doc_id=doc.id,
+        summary="async Rust authority edge",
+    )
+    await engine.write.add_edge_async(edge, doc_id=doc.id)
+
+    assert (
+        await async_pg_backend.node_get(ids=[node.id, target.id])
+    )["ids"] == [node.id, target.id]
+    assert (await async_pg_backend.edge_get(ids=[edge.id]))["ids"] == [edge.id]
     events = list(
         engine.meta_sqlite.iter_entity_events(namespace=engine.namespace)
     )
     assert [(kind, entity_id, op) for _, kind, entity_id, op, _ in events] == [
-        ("node", node.id, "ADD")
+        ("node", node.id, "ADD"),
+        ("node", target.id, "ADD"),
+        ("edge", edge.id, "ADD"),
     ]
