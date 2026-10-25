@@ -253,3 +253,72 @@ async def test_async_pg_rust_authority_writes_event_and_projection(
         ("node", target.id, "ADD"),
         ("edge", edge.id, "ADD"),
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("entity_kind", ["node", "edge"])
+async def test_async_pg_rust_authority_rolls_back_event_and_projection_together(
+    entity_kind, async_pg_backend, tmp_path, monkeypatch
+):
+    """A failure after Rust mutation must roll back the outer async transaction."""
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_GRAPH_STORE", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "rust")
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path / f"async_pg_rust_rollback_{entity_kind}"),
+        embedding_function=_AsyncEmbeddingFunction(),
+        backend=async_pg_backend,
+    )
+    engine._phase1_enable_index_jobs = False
+    node = _mk_node(
+        node_id=f"node::async-pg-rollback-{entity_kind}",
+        doc_id="doc::async-pg-rollback",
+        summary="transaction rollback source",
+    )
+    target = _mk_node(
+        node_id=f"node::async-pg-rollback-{entity_kind}-target",
+        doc_id="doc::async-pg-rollback",
+        summary="transaction rollback target",
+    )
+    try:
+        if entity_kind == "edge":
+            await engine.write.add_node_async(node)
+            await engine.write.add_node_async(target)
+            entity = build_relationship_edge(
+                edge_id="edge::async-pg-rollback",
+                src=node.id,
+                tgt=target.id,
+                doc_id="doc::async-pg-rollback",
+                embedding=[0.1, 0.2, 0.3],
+            )
+        else:
+            entity = node
+
+        meta = engine.meta_sqlite
+        original_apply = meta.apply_graph_mutation
+
+        def apply_then_fail(**values):
+            result = original_apply(**values)
+            if values.get("entity_kind") == entity_kind:
+                raise RuntimeError("injected failure after Rust graph mutation")
+            return result
+
+        monkeypatch.setattr(meta, "apply_graph_mutation", apply_then_fail)
+        write = (
+            engine.write.add_edge_async
+            if entity_kind == "edge"
+            else engine.write.add_node_async
+        )
+        with pytest.raises(RuntimeError, match="after Rust graph mutation"):
+            await write(entity)
+
+        ids = (
+            (await async_pg_backend.edge_get(ids=[entity.id]))["ids"]
+            if entity_kind == "edge"
+            else (await async_pg_backend.node_get(ids=[entity.id]))["ids"]
+        )
+        assert ids == []
+        events = list(meta.iter_entity_events(namespace=engine.namespace))
+        assert not any(event[2] == entity.id for event in events)
+    finally:
+        engine.close()
