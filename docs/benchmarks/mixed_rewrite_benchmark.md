@@ -37,9 +37,10 @@ the benchmark paths that expose those process boundaries.
 
 Sequential MCP samples also include `seam_metrics`: observed tool dispatches,
 Rust-facade FFI calls, serialized payload bytes, transaction-boundary calls, and
-HTTP transport requests. These counters are scoped to the instrumented Python
-host boundary; Rust-native child-process samples explicitly mark the counters
-incomplete rather than implying that a zero count proves a zero-cost seam.
+HTTP transport requests. Python-host counters are scoped to that process; the
+benchmark-only Rust-native server exposes the same counters through its private
+`/metrics` endpoint, with `ffi_calls: 0` asserted by the native implementation.
+Process CPU/RSS measurements remain separate from these logical counters.
 
 Concurrent profiles are implemented in `scripts/mixed_concurrent_benchmark.py`
 for SQLite events/projections, Chroma with SQLite metadata, and PostgreSQL/

@@ -1408,8 +1408,11 @@ async def _run_one(
             }
             for name, values in timings.items()
         },
-        "seam_metrics": seam_metrics.as_dict(
-            scope="python_host_boundary", complete=mode != "rust_native"
+        "seam_metrics": native_result.get(
+            "seam_metrics",
+            seam_metrics.as_dict(
+                scope="python_host_boundary", complete=mode != "rust_native"
+            ),
         ),
     }
     if mode == "rust_native":
@@ -1614,6 +1617,10 @@ def _run_native_server(
         stop_sampling.set()
         sampler.join(timeout=2)
         cpu_ms = (cpu_after.user + cpu_after.system - cpu_before.user - cpu_before.system) * 1000
+        with urllib.request.urlopen(f"{url}/metrics", timeout=5) as response:
+            native_seam_metrics = json.loads(response.read())
+        if not isinstance(native_seam_metrics, dict):
+            raise RuntimeError("Rust MCP metrics endpoint returned a non-object")
     finally:
         process.terminate()
         try:
@@ -1628,6 +1635,7 @@ def _run_native_server(
         "cpu_elapsed_ms": cpu_ms,
         "peak_rss_bytes": peak_rss,
         "per_operation": timings,
+        "seam_metrics": native_seam_metrics,
     }
 
 

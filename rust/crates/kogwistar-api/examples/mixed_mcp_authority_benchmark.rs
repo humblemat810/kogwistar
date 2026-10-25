@@ -12,7 +12,10 @@ use std::{
     env,
     net::SocketAddr,
     path::PathBuf,
-    sync::{Arc, Barrier, Condvar, Mutex},
+    sync::{
+        Arc, Barrier, Condvar, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 fn canonical_json(value: &Value) -> String {
@@ -52,6 +55,29 @@ struct AppState {
     store: Arc<SqliteStore>,
     database: Arc<PathBuf>,
     concurrent: Option<Arc<ConcurrentCoordinator>>,
+    metrics: Arc<NativeMetrics>,
+}
+
+#[derive(Default)]
+struct NativeMetrics {
+    tool_dispatches: AtomicU64,
+    serialized_bytes: AtomicU64,
+    transaction_boundaries: AtomicU64,
+    transport_requests: AtomicU64,
+}
+
+impl NativeMetrics {
+    fn snapshot(&self) -> Value {
+        json!({
+            "scope": "rust_native_server",
+            "complete": true,
+            "tool_dispatches": self.tool_dispatches.load(Ordering::Relaxed),
+            "ffi_calls": 0,
+            "serialized_bytes": self.serialized_bytes.load(Ordering::Relaxed),
+            "transaction_boundaries": self.transaction_boundaries.load(Ordering::Relaxed),
+            "transport_requests": self.transport_requests.load(Ordering::Relaxed),
+        })
+    }
 }
 
 struct ConcurrentCoordinator {
@@ -276,6 +302,10 @@ fn concurrent_tool_call(
                     Ok((node_event.event.seq, edge_event.event.seq))
                 })
                 .map_err(|error| error.to_string())?;
+            state
+                .metrics
+                .transaction_boundaries
+                .fetch_add(1, Ordering::Relaxed);
             ConcurrentCoordinator::publish_commit(&step)?;
             step.after_commit.wait();
             coordinator.finish_step(index)?;
@@ -447,6 +477,14 @@ async fn mcp_call(
     State(state): State<AppState>,
     Json(request): Json<Value>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    state
+        .metrics
+        .transport_requests
+        .fetch_add(1, Ordering::Relaxed);
+    state
+        .metrics
+        .serialized_bytes
+        .fetch_add(request.to_string().len() as u64, Ordering::Relaxed);
     let id = request.get("id").cloned().unwrap_or(Value::Null);
     let invalid = |message: &str| {
         (
@@ -481,6 +519,10 @@ async fn mcp_call(
         .get("name")
         .and_then(Value::as_str)
         .ok_or_else(|| invalid("tool name is required"))?;
+    state
+        .metrics
+        .tool_dispatches
+        .fetch_add(1, Ordering::Relaxed);
     let args = params
         .get("arguments")
         .and_then(Value::as_object)
@@ -594,6 +636,10 @@ async fn mcp_call(
                     Ok((node_event.event.seq, edge_event.event.seq))
                 })
                 .map_err(|error| internal_error(error.to_string()))?;
+            state
+                .metrics
+                .transaction_boundaries
+                .fetch_add(1, Ordering::Relaxed);
             json!({"seq": edge_seq, "node_seq": node_seq, "entity_id": entity_id, "edge_id": edge_id})
         }
         "read_event" => {
@@ -684,6 +730,10 @@ async fn health() -> Json<Value> {
     Json(json!({"status": "ready"}))
 }
 
+async fn metrics_endpoint(State(state): State<AppState>) -> Json<Value> {
+    Json(state.metrics.snapshot())
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = env::args().skip(1);
@@ -704,6 +754,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("unexpected extra argument".into());
     }
     let store = SqliteStore::open(&database)?;
+    let metrics = Arc::new(NativeMetrics::default());
     let root_payload: Value = serde_json::from_str(
         &env::var("KOGWISTAR_MIXED_ROOT_PAYLOAD")
             .map_err(|_| "KOGWISTAR_MIXED_ROOT_PAYLOAD is required")?,
@@ -759,11 +810,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     })?;
     let app = Router::new()
         .route("/health", get(health))
+        .route("/metrics", get(metrics_endpoint))
         .route("/mcp", post(mcp_call))
         .with_state(AppState {
             store: Arc::new(store),
             database: Arc::new(database),
             concurrent,
+            metrics,
         });
     axum::serve(tokio::net::TcpListener::bind(address).await?, app).await?;
     Ok(())
