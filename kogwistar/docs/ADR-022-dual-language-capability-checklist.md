@@ -9,6 +9,51 @@ and CI evidence rather than assigning one percentage to the whole port.
 
 ## Latest verification update (2026-10-26)
 
+- Agent workflow runtime-version compatibility regression: `workflows.py` had
+  assigned `wf_version="agent-v1"` to each node/edge, but Kogwistar's `wf_version`
+  selects the registered operation implementation (currently `v1`); the agent
+  artifact's separate `workflow_version="agent-v1"` remains unchanged. Updated
+  node/edge operation versions to `v1`, corrected the `WorkflowNodeMetadata`
+  contract documentation, and added a regression assertion keeping the
+  distinction explicit. The Python model now rejects non-string, empty, and
+  whitespace-padded operation versions instead of coercing them, matching the
+  Rust worker's typed non-empty-string contract while retaining valid legacy
+  versions and the default `v1` for metadata that predates an explicit version.
+  The general workflow admission gate rejects unregistered versions; Python and
+  Rust now consume `contracts/golden/workflow-operation-version-v1.json` for
+  accepted, rejected, and legacy-default metadata values. The admission/metadata suite passed
+  on Windows CPython 3.13 and Linux PyPy 3.11 (**20 passed on each**); the Rust
+  `kogwistar-contracts` shared-fixture test passed (**1 passed**) and the full
+  contracts crate passed (**68 passed**). The same fixture also passed through
+  the rebuilt PyO3 extension (`test_workflow_operation_version_fixture_matches_native_graph_validator`,
+  **1 passed**); the host-native build smoke confirmed the expected ABI. The four
+  focused event/goal workflow tests passed on
+  Windows CPython 3.13 (**4 passed**) and Linux PyPy 3.11 (**4 passed**); the
+  full affected agent modules also passed in Linux PyPy 3.11 (**28 passed, 11
+  warnings**). A broader Windows rerun reached the final event-runtime test
+  with all observed cases passing but stopped making progress there; it is
+  inconclusive, not counted as a pass. This closes this runtime-version
+  compatibility slice only; it does not complete the supported-interpreter or
+  dual-language parity matrix. Fresh combined rerun on Windows CPython 3.13:
+  `poetry run pytest tests/runtime/test_workflow_version_admission.py
+  tests/agent/test_agent_goal_c.py
+  tests/core/test_rust_contract_differential.py -q -p no:cacheprovider` —
+  **141 passed, 9 warnings in 113.77s**, including the shared workflow-version
+  fixture through the rebuilt PyO3 graph validator.
+- DL-07 interpreter compatibility evidence: the focused graph-model adapter and
+  Rust contract differential suites passed on CPython 3.12.13 and CPython
+  3.14.3 (**114 passed on each interpreter**). A local Windows PyPy 3.11
+  environment could not resolve the project's required `mcp>=2.2.0` dependency:
+  its Windows dependency chain requires `pywin32`, for which the resolver found
+  no `pp311` wheel. In a Linux PyPy 3.11.13 container using
+  `requirements-pypy-3.11-experimental.txt`, the focused graph-model and
+  differential selection completed with **18 passed, 96 skipped**; Rust-required
+  cases were skipped because this was a Python-authority-only image. The exact
+  provider-free PyPy CI selection was also attempted, but the Docker Desktop
+  Windows bind mount stopped making file-I/O progress during test collection;
+  that container was stopped and the run is inconclusive, not a test failure or
+  pass. This environment limitation does not establish that supported Linux
+  PyPy CI fails. Full PyPy CI remains unverified locally; GitHub CI is authoritative.
 - DL-19/DL-20 benchmark-only batched-write experiment: three successful
   100-record / 300-operation Rust-authority batch samples preserved the
   baseline canonical digest and the same 202 transaction boundaries while

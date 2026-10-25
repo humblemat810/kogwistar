@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
+from pathlib import Path
 
 import pytest
 
@@ -8,6 +10,15 @@ from kogwistar.runtime.design import validate_workflow_design
 from kogwistar.runtime.models import WorkflowNode, WorkflowNodeMetadata
 
 pytestmark = [pytest.mark.ci, pytest.mark.runtime]
+
+_OPERATION_VERSION_FIXTURE = json.loads(
+    (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "golden"
+        / "workflow-operation-version-v1.json"
+    ).read_text(encoding="utf-8")
+)
 
 
 @dataclass
@@ -156,6 +167,26 @@ def test_legacy_workflow_metadata_keeps_environment_field_absent() -> None:
     )
 
     assert "wf_environment_id" not in metadata
+    assert metadata["wf_version"] == _OPERATION_VERSION_FIXTURE["legacy_default"]
+
+
+@pytest.mark.parametrize("version", _OPERATION_VERSION_FIXTURE["valid"])
+def test_workflow_operation_version_accepts_shared_canonical_values(
+    version: str,
+) -> None:
+    metadata = WorkflowNodeMetadata.model_validate(
+        {"workflow_id": "wf", "wf_op": "compute", "wf_version": version}
+    )
+
+    assert metadata.wf_version == version
+
+
+@pytest.mark.parametrize("version", _OPERATION_VERSION_FIXTURE["invalid"])
+def test_workflow_operation_version_requires_canonical_string(version: object) -> None:
+    with pytest.raises(ValueError, match="wf_version"):
+        WorkflowNodeMetadata.model_validate(
+            {"workflow_id": "wf", "wf_op": "compute", "wf_version": version}
+        )
 
 
 def test_workflow_metadata_normalization_preserves_declared_environment() -> None:

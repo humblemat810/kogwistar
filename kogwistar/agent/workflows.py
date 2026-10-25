@@ -37,7 +37,9 @@ def _node(
         "wf_op": op,
         "wf_start": start,
         "wf_terminal": terminal,
-        "wf_version": "agent-v1",
+        # Operation versions select resolver handlers. The agent template has
+        # its own workflow_version and contract metadata; its steps use v1.
+        "wf_version": "v1",
     }
     if metadata:
         node_metadata.update(metadata)
@@ -87,7 +89,7 @@ def _edge(
             "wf_is_default": is_default,
             "wf_priority": priority,
             "wf_multiplicity": "one",
-            "wf_version": "agent-v1",
+            "wf_version": "v1",
         },
         domain_id=None,
         canonical_entity_id=None,

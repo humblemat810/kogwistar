@@ -85,6 +85,9 @@ def test_normal_plan_goal_are_graph_templates_and_metadata_is_advisory() -> None
         "goal",
     ]
     for design in designs:
+        assert design.workflow_version == "agent-v1"
+        assert all(node.metadata["wf_version"] == "v1" for node in design.nodes)
+        assert all(edge.metadata["wf_version"] == "v1" for edge in design.edges)
         stripped = without_agent_mode_metadata(design)
         assert graph_signature(stripped) == graph_signature(design)
         assert "wf_mode" not in stripped.nodes[0].metadata

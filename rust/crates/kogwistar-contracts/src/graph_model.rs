@@ -747,6 +747,8 @@ fn validate_workflow_node_metadata(
     if value.entity_type != "workflow_node"
         || value.workflow_id.trim().is_empty()
         || (!value.wf_terminal && value.wf_op.trim().is_empty())
+        || value.wf_version.trim().is_empty()
+        || value.wf_version.trim() != value.wf_version
         || value
             .wf_environment_id
             .as_deref()
@@ -3254,6 +3256,54 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn workflow_operation_version_matches_shared_python_contract_fixture() {
+        let versions: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/workflow-operation-version-v1.json"
+        )))
+        .expect("valid workflow operation version fixture");
+
+        let validate_version = |version: Value| {
+            let metadata: BTreeMap<String, Value> = serde_json::from_value(serde_json::json!({
+                "entity_type": "workflow_node",
+                "workflow_id": "wf:version-fixture",
+                "wf_op": "compute",
+                "wf_version": version
+            }))
+            .expect("metadata object");
+            validate_workflow_node_metadata(&metadata)
+        };
+
+        for version in versions["valid"].as_array().expect("valid versions") {
+            assert!(validate_version(version.clone()).is_ok());
+        }
+        for version in versions["invalid"].as_array().expect("invalid versions") {
+            assert!(
+                validate_version(version.clone()).is_err(),
+                "Rust accepted invalid operation version {version}"
+            );
+        }
+
+        let legacy_metadata: BTreeMap<String, Value> = serde_json::from_value(serde_json::json!({
+            "entity_type": "workflow_node",
+            "workflow_id": "wf:version-fixture",
+            "wf_op": "compute"
+        }))
+        .expect("legacy metadata object");
+        let parsed: WorkflowNodeMetadataV1 = serde_json::from_value(serde_json::Value::Object(
+            legacy_metadata.clone().into_iter().collect(),
+        ))
+        .expect("legacy metadata defaults");
+        assert_eq!(
+            parsed.wf_version,
+            versions["legacy_default"]
+                .as_str()
+                .expect("legacy default version string")
+        );
+        assert!(validate_workflow_node_metadata(&legacy_metadata).is_ok());
     }
 
     #[test]

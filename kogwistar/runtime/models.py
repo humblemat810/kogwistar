@@ -1,6 +1,13 @@
 from typing import ClassVar, Literal, TypeAlias
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictStr,
+    field_validator,
+    model_validator,
+)
 
 from ..engine_core.models import Edge, Node
 from ..json_types import JsonValue
@@ -16,17 +23,21 @@ class WorkflowNodeMetadata(BaseModel):
       - wf_op (unless wf_terminal=True)
 
     Optional:
-      - wf_version: used for replay compatibility + future cache invalidation
+      - wf_version: version of the wf_op implementation selected by the resolver;
+        the exact version is part of the frozen execution/replay contract
       - wf_environment_id: required worker/runtime dependency environment
       - wf_fanout: allow multiple outgoing edges to fire in parallel
       - wf_start: marks the start node in this workflow_id
       - wf_terminal: marks terminal node
+
+    This is distinct from ``WorkflowDesignArtifact.workflow_version``, which
+    versions the workflow design as a whole and does not select step handlers.
     """
 
     entity_type: str = Field("workflow_node", description='Must be "workflow_node"')
     workflow_id: str
     wf_op: str = "noop"
-    wf_version: str = "v1"
+    wf_version: StrictStr = "v1"
     wf_environment_id: str | None = None
     wf_start: bool = False
     wf_terminal: bool = False
@@ -34,6 +45,13 @@ class WorkflowNodeMetadata(BaseModel):
     wf_join: bool = False  # barrier/join node
 
     model_config = ConfigDict(extra="allow")
+
+    @field_validator("wf_version")
+    @classmethod
+    def _validate_wf_version(cls, value: str) -> str:
+        if not value or value != value.strip():
+            raise ValueError("wf_version must be a non-empty canonical string")
+        return value
 
     @model_validator(mode="after")
     def _validate(self) -> "WorkflowNodeMetadata":

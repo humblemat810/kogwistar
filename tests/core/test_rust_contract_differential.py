@@ -77,6 +77,14 @@ GRAPH_MODEL_LEGACY_FIXTURE = json.loads(
         encoding="utf-8"
     )
 )
+WORKFLOW_OPERATION_VERSION_FIXTURE = json.loads(
+    (
+        ROOT
+        / "contracts"
+        / "golden"
+        / "workflow-operation-version-v1.json"
+    ).read_text(encoding="utf-8")
+)
 SOURCE_MAP_FIXTURE = json.loads(
     (ROOT / "contracts" / "golden" / "source-map-v1.json").read_text(
         encoding="utf-8"
@@ -602,6 +610,63 @@ def test_python_family_payloads_validate_through_rust_graph_contract(monkeypatch
     invalid_llm = copy.deepcopy(base_node)
     with pytest.raises(Exception):
         _rust.validate_graph_model_family(envelope("llm_node", invalid_llm))
+
+
+@pytest.mark.requires_rust
+def test_workflow_operation_version_fixture_matches_native_graph_validator(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_CONTRACTS", "rust")
+    from kogwistar import _rust
+
+    base_node = copy.deepcopy(GRAPH_MODEL_FIXTURE["cases"][0]["payload"])
+
+    def envelope(payload: dict[str, Any]) -> str:
+        return json.dumps(
+            {"schema_version": 1, "model_class": "workflow_node", "payload": payload},
+            ensure_ascii=False,
+        )
+
+    for version in WORKFLOW_OPERATION_VERSION_FIXTURE["valid"]:
+        candidate = copy.deepcopy(base_node)
+        candidate["metadata"] = {
+            "entity_type": "workflow_node",
+            "workflow_id": "wf:version-fixture",
+            "wf_op": "compute",
+            "wf_version": version,
+        }
+        normalized = WorkflowNode.model_validate(candidate).model_dump(
+            field_mode="backend", dump_format="json"
+        )
+        _rust.validate_graph_model_family(envelope(normalized))
+
+    for version in WORKFLOW_OPERATION_VERSION_FIXTURE["invalid"]:
+        candidate = copy.deepcopy(base_node)
+        candidate["metadata"] = {
+            "entity_type": "workflow_node",
+            "workflow_id": "wf:version-fixture",
+            "wf_op": "compute",
+            "wf_version": version,
+        }
+        with pytest.raises(ValueError):
+            WorkflowNode.model_validate(candidate)
+        with pytest.raises(Exception):
+            _rust.validate_graph_model_family(envelope(candidate))
+
+    legacy = copy.deepcopy(base_node)
+    legacy["metadata"] = {
+        "entity_type": "workflow_node",
+        "workflow_id": "wf:version-fixture",
+        "wf_op": "compute",
+    }
+    normalized_legacy = WorkflowNode.model_validate(legacy).model_dump(
+        field_mode="backend", dump_format="json"
+    )
+    assert (
+        normalized_legacy["metadata"]["wf_version"]
+        == WORKFLOW_OPERATION_VERSION_FIXTURE["legacy_default"]
+    )
+    _rust.validate_graph_model_family(envelope(normalized_legacy))
 
 
 @pytest.mark.parametrize("mode", ["shadow", "rust"])
