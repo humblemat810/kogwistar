@@ -5,6 +5,7 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -12,6 +13,7 @@ import pytest
 from kogwistar._rust_bridge import RustParityError, store_postgres, store_sqlite
 from kogwistar.engine_core.engine_postgres_meta import EnginePostgresMetaStore
 from kogwistar.engine_core.engine_sqlite import EngineSQLite
+from kogwistar.engine_core.indexing import IndexingSubsystem
 
 pytestmark = [pytest.mark.ci, pytest.mark.core]
 
@@ -231,6 +233,69 @@ def test_sqlite_rust_result_admission_is_immutable_to_python_retries(tmp_path: P
     assert retry["status"] == "existing"
     assert retry["result_json"] == '{"winner":"rust"}'
     assert retry["result_sha256"] == "rust-digest"
+
+
+def test_sqlite_reconciler_recovers_admitted_result_after_restart_and_lost_ack(
+    tmp_path: Path,
+) -> None:
+    python = EngineSQLite(tmp_path)
+    python.ensure_initialized()
+    python.enqueue_index_job(
+        job_id="ack-lost",
+        namespace="ns",
+        entity_kind="node",
+        entity_id="node",
+        index_kind="doc",
+        op="UPSERT",
+    )
+    claim = python.claim_index_jobs(limit=1, lease_seconds=30, namespace="ns")[0]
+
+    admitted = _sqlite(
+        python.db_path,
+        {
+            "kind": "accept_index_job_result",
+            "job_id": claim.job_id,
+            "claim_token": claim.claim_token,
+            "result_json": '{"embedding":[0.25,0.75]}',
+            "result_sha256": "durable-result",
+        },
+    )
+    assert admitted["status"] == "accepted"
+
+    # Model a worker crash after durable result admission but before its ack.
+    with sqlite3.connect(python.db_path) as conn:
+        conn.execute(
+            "UPDATE index_jobs SET lease_until=0 WHERE job_id=?",
+            (claim.job_id,),
+        )
+
+    reopened = EngineSQLite(tmp_path)
+    reopened.ensure_initialized()
+    persisted = reopened.list_index_jobs(namespace="ns")[0]
+    assert persisted.status == "DOING"
+    assert persisted.accepted_result_json == '{"embedding":[0.25,0.75]}'
+
+    engine = SimpleNamespace(
+        meta_sqlite=reopened,
+        namespace="ns",
+        _phase1_enable_index_jobs=True,
+        _phase1_enable_validation_cache=False,
+        _implementation_selection_snapshot=None,
+    )
+    reconciler = IndexingSubsystem(engine)
+    projection_calls = 0
+
+    def apply_index_job(**_: object) -> None:
+        nonlocal projection_calls
+        projection_calls += 1
+
+    reconciler.apply_index_job = apply_index_job  # type: ignore[method-assign]
+
+    assert reconciler.reconcile_indexes(max_jobs=1) == 1
+    assert projection_calls == 0
+    completed = reopened.list_index_jobs(namespace="ns")[0]
+    assert completed.status == "DONE"
+    assert completed.accepted_result_json == '{"embedding":[0.25,0.75]}'
 
 
 def test_sqlite_concurrent_same_key_enqueue_and_claim_are_exclusive(tmp_path: Path) -> None:
