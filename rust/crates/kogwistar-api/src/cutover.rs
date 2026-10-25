@@ -76,7 +76,6 @@ pub const PENDING_SYSCALL_CUTOVER_OPS: &[&str] = &[
     "send_message",
     "receive_message",
     "mount_memory",
-    "project_view",
     "invoke_tool",
 ];
 

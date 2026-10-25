@@ -16,7 +16,7 @@ use jsonwebtoken::{
     Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, decode_header, encode,
 };
 use kogwistar_contracts::{
-    DelegationAuthorityV1, GraphMutationBatchV1 as GraphMutationBatchInput,
+    DelegationAuthorityV1, DocumentUpsertV1, GraphMutationBatchV1 as GraphMutationBatchInput,
     GraphMutationV1 as GraphMutationInput, GraphNeighborsRequestV1,
     attach_rust_native_seam_attestation, attenuate_capabilities, graph_neighbors_request_from_str,
 };
@@ -26,15 +26,16 @@ use kogwistar_runtime::{
     RuntimeStepExecutePayload, RuntimeStepExecuteRequest,
 };
 use kogwistar_store::{
-    AuthIdentityStore, AuthUser, DocumentAuthorityCapability, DocumentStore, EntityEvent,
-    GraphAclPrincipal, GraphAuthorityCapability, GraphFindEdgesQuery, GraphKHopQuery,
-    GraphMutation, GraphMutationBatch, GraphMutationStore, GraphProjectionRead, GraphRecord,
-    GraphScope, GraphShortestPathQuery, LaneMessageClaimFilter, LaneMessageFilter, MetadataFilter,
-    NamedProjection, NamedProjectionWrite, NewIndexJob, NewProjectedLaneMessage,
+    AuthIdentityStore, AuthUser, DocumentAuthorityCapability, DocumentProjectionUpsert,
+    DocumentStore, EntityEvent, GraphAclPrincipal, GraphAuthorityCapability, GraphFindEdgesQuery,
+    GraphKHopQuery, GraphMutation, GraphMutationBatch, GraphMutationStore, GraphProjectionRead,
+    GraphRecord, GraphScope, GraphShortestPathQuery, LaneMessageClaimFilter, LaneMessageFilter,
+    MetadataFilter, NamedProjection, NamedProjectionWrite, NewIndexJob, NewProjectedLaneMessage,
     ProjectedLaneMessage, ResolveExternalIdentity, ServerRun, ServerRunCreate, ServerRunEvent,
     WorkflowDesignDeltaWrite, WorkflowDesignSnapshot, WorkflowDesignSnapshotWrite,
-    graph_find_edges_from_records, graph_k_hop_from_records, graph_neighbors_from_records,
-    graph_records_visible_by_acl, graph_shortest_path_from_records, validate_typed_graph_mutation,
+    conversation_transcript_from_visible_records, graph_find_edges_from_records,
+    graph_k_hop_from_records, graph_neighbors_from_records, graph_records_visible_by_acl,
+    graph_shortest_path_from_records, validate_typed_graph_mutation,
 };
 use kogwistar_store_postgres::{
     NewRawEntityEvent as PostgresNewRawEntityEvent, PostgresAuthStore, PostgresStore,
@@ -2436,6 +2437,73 @@ fn document_graph_validation_effect(request: &ApiEffectRequest) -> Option<ApiEff
             "edge_errors": edge_errors,
         }),
     ))
+}
+
+const INTERNAL_DOCUMENT_PROJECTION_ROUTE: &str = "/internal/document/projection";
+
+fn document_projection_input(
+    request: &ApiEffectRequest,
+) -> Result<DocumentUpsertV1, ApiEffectResponse> {
+    let input: DocumentUpsertV1 = serde_json::from_slice(&request.body).map_err(|error| {
+        effect_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "KOGWISTAR_INVALID_REQUEST",
+            error.to_string(),
+        )
+    })?;
+    input.validate().map_err(|error| {
+        effect_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "KOGWISTAR_INVALID_REQUEST",
+            error.to_string(),
+        )
+    })?;
+    Ok(input)
+}
+
+fn document_projection_write(
+    request: &ApiEffectRequest,
+    capabilities: &SharedCapabilityState,
+) -> Result<DocumentProjectionUpsert, ApiEffectResponse> {
+    if !capability_allowed(request, capabilities, "write_graph", &["write_graph"]) {
+        return Err(effect_error(
+            StatusCode::FORBIDDEN,
+            "KOGWISTAR_CAPABILITY_FORBIDDEN",
+            "Document projection requires write_graph capability",
+        ));
+    }
+    let input = document_projection_input(request)?;
+    if input.doc_type != "text" {
+        return Err(effect_error(
+            StatusCode::NOT_IMPLEMENTED,
+            "KOGWISTAR_DOCUMENT_PROJECTION_UNSUPPORTED",
+            "Rust projection handoff currently requires normalized text content",
+        ));
+    }
+    let scope = security_scope_value(&request.principal);
+    let mut metadata = input.metadata;
+    metadata.insert("doc_type".to_owned(), Value::String(input.doc_type));
+    metadata.insert(
+        "insertion_method".to_owned(),
+        Value::String(input.insertion_method),
+    );
+    Ok(DocumentProjectionUpsert {
+        scope: GraphScope {
+            namespace: scope["storage_namespace"]
+                .as_str()
+                .unwrap_or("docs")
+                .to_owned(),
+            workspace_id: scope["workspace"].as_str().map(str::to_owned),
+            graph_space: scope["graph_space"].as_str().map(str::to_owned),
+        },
+        record: GraphRecord {
+            id: input.doc_id,
+            document: Some(input.content),
+            metadata,
+            embedding: None,
+        },
+        embedding_dim: 0,
+    })
 }
 
 fn request_approval_syscall(
@@ -5627,6 +5695,18 @@ struct GraphKHopRequest {
     doc_id: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct InternalConversationTranscriptRequest {
+    conversation_id: String,
+    #[serde(default = "default_conversation_limit")]
+    limit: usize,
+}
+
+fn default_conversation_limit() -> usize {
+    10_000
+}
+
 fn default_graph_max_depth() -> usize {
     8
 }
@@ -5639,7 +5719,108 @@ fn parse_graph_find_edges_request(body: &[u8]) -> Result<GraphFindEdgesRequest, 
     serde_json::from_slice(body).map_err(|error| error.to_string())
 }
 
+fn parse_internal_conversation_transcript_request(
+    body: &[u8],
+) -> Result<InternalConversationTranscriptRequest, String> {
+    let input: InternalConversationTranscriptRequest =
+        serde_json::from_slice(body).map_err(|error| error.to_string())?;
+    if input.conversation_id.trim().is_empty() || input.limit > 10_000 {
+        return Err("conversation_id is required and limit must be <= 10000".to_owned());
+    }
+    Ok(input)
+}
+
 impl PostgresRunApplicationService {
+    async fn internal_conversation_transcript_effect(
+        &self,
+        request: &ApiEffectRequest,
+    ) -> ApiEffectResponse {
+        if !capability_allowed(request, &self.capabilities, "read_graph", &["read_graph"]) {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                "Conversation transcript reads require read_graph capability",
+            );
+        }
+        let input = match parse_internal_conversation_transcript_request(&request.body) {
+            Ok(value) => value,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    error,
+                );
+            }
+        };
+        let scope_value = security_scope_value(&request.principal);
+        let scope = GraphScope {
+            namespace: scope_value["storage_namespace"]
+                .as_str()
+                .unwrap_or("default")
+                .to_owned(),
+            workspace_id: request
+                .principal
+                .get("workspace_id")
+                .or_else(|| request.principal.get("workspace"))
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            graph_space: request
+                .principal
+                .get("graph_space")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+        };
+        let records = match self
+            .store
+            .graph_projection_records(GraphProjectionRead {
+                scope,
+                table: "gke_nodes".to_owned(),
+                ids: None,
+                metadata: MetadataFilter::default(),
+                limit: 10_000,
+            })
+            .await
+        {
+            Ok(records) => records,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_STORE_ERROR",
+                    error.to_string(),
+                );
+            }
+        };
+        let mut groups = principal_strings(&request.principal, "groups");
+        groups.extend(principal_strings(&request.principal, "principal_groups"));
+        groups.sort();
+        groups.dedup();
+        let principal = GraphAclPrincipal {
+            principal_id: principal_subject(&request.principal),
+            groups: groups.into_iter().collect(),
+            security_scope: scope_value["security_scope"].as_str().map(str::to_owned),
+        };
+        let (visible_nodes, _) =
+            graph_records_visible_by_acl(&records, &[], "conversation", &principal);
+        let transcript = match conversation_transcript_from_visible_records(
+            &visible_nodes,
+            &input.conversation_id,
+            input.limit,
+        ) {
+            Ok(transcript) => transcript,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::NOT_FOUND,
+                    "KOGWISTAR_CONVERSATION_NOT_FOUND",
+                    error.to_string(),
+                );
+            }
+        };
+        json_effect(
+            StatusCode::OK,
+            rust_native_attested(serde_json::to_value(transcript).expect("transcript serializes")),
+        )
+    }
+
     async fn graph_neighbors_effect(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
         if !capability_allowed(request, &self.capabilities, "read_graph", &["read_graph"]) {
             return effect_error(
@@ -6135,6 +6316,64 @@ impl PostgresRunApplicationService {
                         StatusCode::BAD_REQUEST,
                         "KOGWISTAR_INVALID_REQUEST",
                         "run_id and integer step_seq are required",
+                    )
+                }
+            }
+            "project_view" => {
+                if !syscall_allowed(
+                    request,
+                    &self.capabilities,
+                    op,
+                    false,
+                    &["read_security_scope", "project_view"],
+                ) {
+                    syscall_forbidden(op)
+                } else {
+                    let runs = match self.store.list_server_runs(None, None, None, 10_000).await {
+                        Ok(runs) => runs,
+                        Err(error) => {
+                            return effect_error(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                "KOGWISTAR_STORE_ERROR",
+                                error.to_string(),
+                            );
+                        }
+                    };
+                    let lanes = match self
+                        .store
+                        .list_projected_lane_messages(LaneMessageFilter {
+                            namespace: Some("workflow".to_owned()),
+                            limit: 10_000,
+                            ..LaneMessageFilter::default()
+                        })
+                        .await
+                    {
+                        Ok(lanes) => lanes,
+                        Err(error) => {
+                            return effect_error(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                "KOGWISTAR_STORE_ERROR",
+                                error.to_string(),
+                            );
+                        }
+                    };
+                    let mut events = Vec::new();
+                    for run in &runs {
+                        match self.store.list_server_run_events(&run.run_id, 0, 200).await {
+                            Ok(mut run_events) => events.append(&mut run_events),
+                            Err(error) => {
+                                return effect_error(
+                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                    "KOGWISTAR_STORE_ERROR",
+                                    error.to_string(),
+                                );
+                            }
+                        }
+                    }
+                    syscall_result(
+                        &input.version,
+                        op,
+                        operational_effect(request, "/api/workflow/resources", runs, lanes, events),
                     )
                 }
             }
@@ -8415,7 +8654,36 @@ impl PostgresRunApplicationService {
         }
     }
 
+    async fn document_projection_effect(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
+        let write = match document_projection_write(request, &self.capabilities) {
+            Ok(write) => write,
+            Err(response) => return response,
+        };
+        if !self
+            .document_authority_capability()
+            .supports_projection_upsert()
+        {
+            return effect_error(
+                StatusCode::NOT_IMPLEMENTED,
+                "KOGWISTAR_DOCUMENT_AUTHORITY_UNSUPPORTED",
+                "The selected Rust store does not own document projections",
+            );
+        }
+        match self.store.upsert_document_projection(write).await {
+            Ok(()) => json_effect(StatusCode::OK, json!({"ok": true})),
+            Err(error) => effect_error(
+                StatusCode::CONFLICT,
+                "KOGWISTAR_DOCUMENT_PROJECTION_FAILED",
+                error.to_string(),
+            ),
+        }
+    }
+
     async fn execute_async(&self, request: ApiEffectRequest) -> ApiEffectResponse {
+        if request.method == "POST" && request.path_and_query == INTERNAL_DOCUMENT_PROJECTION_ROUTE
+        {
+            return self.document_projection_effect(&request).await;
+        }
         if let Some(response) = visualization_shell_effect(&request) {
             return response;
         }
@@ -8499,6 +8767,10 @@ impl PostgresRunApplicationService {
         if request.method == "POST" && request.path_and_query == "/internal/runtime/native/execute"
         {
             return self.execute_native_runtime_step(&request).await;
+        }
+        if request.method == "POST" && request.path_and_query == "/internal/conversation/transcript"
+        {
+            return self.internal_conversation_transcript_effect(&request).await;
         }
         if request.method == "POST" && request.path_and_query == "/internal/graph/mutations" {
             return self.apply_internal_graph_mutations(&request).await;
@@ -8785,7 +9057,8 @@ impl ApplicationService for PostgresRunApplicationService {
     }
 
     fn supports_http_operation(&self, method: &str, path: &str) -> bool {
-        !is_transport_owned_http_route(method, path)
+        FROZEN_OPENAPI_ROUTES.contains(&(method, path))
+            && !is_transport_owned_http_route(method, path)
             && !PENDING_SERVER_CUTOVER_ROUTES.contains(&(method, path))
     }
 
@@ -8803,7 +9076,8 @@ impl ApplicationService for SqliteRunApplicationService {
     }
 
     fn supports_http_operation(&self, method: &str, path: &str) -> bool {
-        !is_transport_owned_http_route(method, path)
+        FROZEN_OPENAPI_ROUTES.contains(&(method, path))
+            && !is_transport_owned_http_route(method, path)
             && !PENDING_SERVER_CUTOVER_ROUTES.contains(&(method, path))
     }
 
@@ -8934,6 +9208,60 @@ impl SqliteRunApplicationService {
                         StatusCode::BAD_REQUEST,
                         "KOGWISTAR_INVALID_REQUEST",
                         "run_id and integer step_seq are required",
+                    )
+                }
+            }
+            "project_view" => {
+                if !syscall_allowed(
+                    request,
+                    &self.capabilities,
+                    op,
+                    false,
+                    &["read_security_scope", "project_view"],
+                ) {
+                    syscall_forbidden(op)
+                } else {
+                    let runs = match self.store.list_server_runs(None, None, None, 10_000) {
+                        Ok(runs) => runs,
+                        Err(error) => {
+                            return effect_error(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                "KOGWISTAR_STORE_ERROR",
+                                error.to_string(),
+                            );
+                        }
+                    };
+                    let lanes = match self.store.list_projected_lane_messages(LaneMessageFilter {
+                        namespace: Some("workflow".to_owned()),
+                        limit: 10_000,
+                        ..LaneMessageFilter::default()
+                    }) {
+                        Ok(lanes) => lanes,
+                        Err(error) => {
+                            return effect_error(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                "KOGWISTAR_STORE_ERROR",
+                                error.to_string(),
+                            );
+                        }
+                    };
+                    let mut events = Vec::new();
+                    for run in &runs {
+                        match self.store.list_server_run_events(&run.run_id, 0, 200) {
+                            Ok(mut run_events) => events.append(&mut run_events),
+                            Err(error) => {
+                                return effect_error(
+                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                    "KOGWISTAR_STORE_ERROR",
+                                    error.to_string(),
+                                );
+                            }
+                        }
+                    }
+                    syscall_result(
+                        &input.version,
+                        op,
+                        operational_effect(request, "/api/workflow/resources", runs, lanes, events),
                     )
                 }
             }
@@ -9822,6 +10150,14 @@ impl SqliteRunApplicationService {
         if let Some(response) = visualization_shell_effect(&request) {
             return response;
         }
+        if request.method == "POST" && request.path_and_query == INTERNAL_DOCUMENT_PROJECTION_ROUTE
+        {
+            return effect_error(
+                StatusCode::NOT_IMPLEMENTED,
+                "KOGWISTAR_DOCUMENT_AUTHORITY_UNSUPPORTED",
+                "The SQLite application service does not provide document projection authority",
+            );
+        }
         if request.method == "POST"
             && matches!(
                 request.path_and_query.split('?').next(),
@@ -9829,6 +10165,7 @@ impl SqliteRunApplicationService {
                     | Some("/internal/graph/neighbors")
                     | Some("/internal/graph/shortest-path")
                     | Some("/internal/graph/k-hop")
+                    | Some("/internal/conversation/transcript")
                     | Some("/internal/graph/mutations")
             )
         {
@@ -11665,7 +12002,15 @@ pub fn router_with_application(
         post(application_effect_handler),
     );
     router = router.route(
+        INTERNAL_DOCUMENT_PROJECTION_ROUTE,
+        post(application_effect_handler),
+    );
+    router = router.route(
         "/internal/graph/mutations",
+        post(application_effect_handler),
+    );
+    router = router.route(
+        "/internal/conversation/transcript",
         post(application_effect_handler),
     );
     router = router.route(
@@ -11787,6 +12132,8 @@ mod tests {
         .unwrap();
         assert!(!service.supports_http_operation("GET", "/health"));
         assert!(!service.supports_http_operation("GET", "/api/auth/me"));
+        assert!(!service.supports_http_operation("POST", "/internal/conversation/transcript"));
+        assert!(!service.supports_http_operation("GET", "/api/not-registered"));
         assert!(service.supports_http_operation("POST", "/api/workflow/runs"));
     }
 
@@ -11812,7 +12159,7 @@ mod tests {
     }
 
     #[test]
-    fn document_routes_remain_pending_for_every_rust_service() {
+    fn pending_routes_remain_unadvertised_for_every_rust_service() {
         let sqlite_path = std::env::temp_dir().join(format!(
             "kogwistar-api-document-route-{}.sqlite",
             uuid::Uuid::new_v4()
@@ -11825,8 +12172,12 @@ mod tests {
         .unwrap();
 
         for service in [&sqlite as &dyn ApplicationService, &postgres] {
-            assert!(!service.supports_http_operation("POST", "/api/document"));
-            assert!(!service.supports_http_operation("POST", "/api/document.upsert_tree"));
+            for &(method, path) in PENDING_SERVER_CUTOVER_ROUTES {
+                assert!(
+                    !service.supports_http_operation(method, path),
+                    "deferred route was advertised: {method} {path}"
+                );
+            }
         }
         assert_eq!(
             sqlite.document_authority_capability(),
@@ -11943,6 +12294,81 @@ mod tests {
         let status = response.status();
         let body = to_bytes(response.into_body(), 4096).await.unwrap();
         assert_eq!(status, StatusCode::FORBIDDEN, "body={:?}", body);
+    }
+
+    #[tokio::test]
+    async fn router_exposes_document_projection_effect_route() {
+        let service = Arc::new(
+            PostgresRunApplicationService::from_dsn(
+                "postgres://unused:unused@127.0.0.1:1/unused",
+                "document_projection_router_contract",
+            )
+            .unwrap(),
+        );
+        let app = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: Vec::new(),
+                implementation: ImplementationSnapshot::default(),
+                auth: AuthConfig {
+                    key: Some("route-test-secret".to_owned()),
+                    ..AuthConfig::default()
+                },
+            },
+            service,
+        );
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(INTERNAL_DOCUMENT_PROJECTION_ROUTE)
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"doc_id":"doc-1","content":"text","doc_type":"text"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let status = response.status();
+        let body = to_bytes(response.into_body(), 4096).await.unwrap();
+        assert_eq!(status, StatusCode::FORBIDDEN, "body={:?}", body);
+    }
+
+    #[tokio::test]
+    async fn router_exposes_internal_conversation_transcript_route() {
+        let service = Arc::new(
+            PostgresRunApplicationService::from_dsn(
+                "postgres://unused:unused@127.0.0.1:1/unused",
+                "conversation_transcript_router_contract",
+            )
+            .unwrap(),
+        );
+        let app = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: Vec::new(),
+                implementation: ImplementationSnapshot::default(),
+                auth: AuthConfig {
+                    key: Some("route-test-secret".to_owned()),
+                    ..AuthConfig::default()
+                },
+            },
+            service,
+        );
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/internal/conversation/transcript")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"conversation_id":"conversation-1"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 
     #[test]
@@ -14424,6 +14850,145 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
     }
 
     #[tokio::test]
+    async fn postgres_document_projection_route_persists_reopens_and_retries_when_dsn_available() {
+        let Some(dsn) = std::env::var("KOGWISTAR_TEST_PG_DSN").ok() else {
+            eprintln!("KOGWISTAR_TEST_PG_DSN absent; document route integration skipped");
+            return;
+        };
+        let schema = format!("rust_api_document_{}", uuid::Uuid::new_v4().simple());
+        let (client, connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls)
+            .await
+            .unwrap();
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+        client
+            .batch_execute(&format!(
+                r#"CREATE EXTENSION IF NOT EXISTS vector;
+                CREATE SCHEMA "{schema}";
+                CREATE TABLE "{schema}"."gke_documents" (
+                    id TEXT PRIMARY KEY,
+                    document TEXT NULL,
+                    metadata JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+                    embedding vector(3) NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );"#
+            ))
+            .await
+            .unwrap();
+
+        let service = PostgresRunApplicationService::from_dsn(&dsn, &schema).unwrap();
+        service.ensure_schema().await.unwrap();
+        let key = "document-route-test-secret";
+        let token = encode(
+            &Header::new(Algorithm::HS256),
+            &json!({
+                "sub": "alice",
+                "role": "rw",
+                "roles": ["reader", "rw"],
+                "ns": "workflow",
+                "storage_ns": "docs",
+                "workspace": "workspace-a",
+                "graph_space": "knowledge",
+                "capabilities": ["write_graph"],
+                "exp": 4102444800_u64
+            }),
+            &EncodingKey::from_secret(key.as_bytes()),
+        )
+        .unwrap();
+        let make_app = || {
+            router_with_application(
+                ApiState {
+                    health: snapshot(),
+                    required_roles: vec!["reader".to_owned()],
+                    implementation: ImplementationSnapshot::default(),
+                    auth: AuthConfig {
+                        mode: "jwt".to_owned(),
+                        algorithm: Some("HS256".to_owned()),
+                        key: Some(key.to_owned()),
+                        ..AuthConfig::default()
+                    },
+                },
+                Arc::new(service.clone()),
+            )
+        };
+        let send = |app: Router, body: Value| {
+            let token = token.clone();
+            async move {
+                app.oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(INTERNAL_DOCUMENT_PROJECTION_ROUTE)
+                        .header("content-type", "application/json")
+                        .header("authorization", format!("Bearer {token}"))
+                        .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+            }
+        };
+
+        let first = send(
+            make_app(),
+            json!({
+                "doc_id": "document-1",
+                "content": "first body",
+                "doc_type": "text",
+                "insertion_method": "route-test"
+            }),
+        )
+        .await;
+        assert_eq!(first.status(), StatusCode::OK);
+        let retry = send(
+            make_app(),
+            json!({
+                "doc_id": "document-1",
+                "content": "updated body",
+                "doc_type": "text",
+                "insertion_method": "route-test"
+            }),
+        )
+        .await;
+        assert_eq!(retry.status(), StatusCode::OK);
+
+        let reopened = PostgresRunApplicationService::from_dsn(&dsn, &schema).unwrap();
+        let rows = reopened
+            .store
+            .graph_projection_records(kogwistar_store::GraphProjectionRead {
+                scope: GraphScope {
+                    namespace: "docs".to_owned(),
+                    workspace_id: Some("workspace-a".to_owned()),
+                    graph_space: Some("knowledge".to_owned()),
+                },
+                table: "gke_documents".to_owned(),
+                ids: Some(vec!["document-1".to_owned()]),
+                metadata: MetadataFilter::default(),
+                limit: 10,
+            })
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].document.as_deref(), Some("updated body"));
+        assert_eq!(rows[0].metadata["namespace"], "docs");
+        assert_eq!(rows[0].metadata["workspace_id"], "workspace-a");
+        assert_eq!(rows[0].metadata["graph_space"], "knowledge");
+        assert_eq!(rows[0].metadata["insertion_method"], "route-test");
+
+        let (cleanup, cleanup_connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls)
+            .await
+            .unwrap();
+        tokio::spawn(async move {
+            let _ = cleanup_connection.await;
+        });
+        cleanup
+            .batch_execute(&format!("DROP SCHEMA \"{schema}\" CASCADE"))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
     async fn postgres_design_history_folds_and_repairs_projection_when_dsn_available() {
         use kogwistar_store_postgres::NewRawEntityEvent;
 
@@ -15333,8 +15898,9 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
             "external event",
             1_000,
         ));
-        assert_eq!(PENDING_SYSCALL_CUTOVER_OPS.len(), 5);
+        assert_eq!(PENDING_SYSCALL_CUTOVER_OPS.len(), 4);
         assert!(PENDING_SYSCALL_CUTOVER_OPS.contains(&"invoke_tool"));
+        assert!(!PENDING_SYSCALL_CUTOVER_OPS.contains(&"project_view"));
         assert!(!PENDING_SYSCALL_CUTOVER_OPS.contains(&"spawn_process"));
     }
 
@@ -15396,6 +15962,64 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
         assert_eq!(invalid["ok"], false);
         assert!(invalid["node_errors"]["node-bad"].is_string());
         assert!(invalid["edge_errors"]["edge-bad"].is_string());
+    }
+
+    #[test]
+    fn internal_document_projection_reuses_wire_contract_and_write_authority() {
+        let capabilities = Arc::new(Mutex::new(CapabilityState::default()));
+        let request = |principal: Value| ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: INTERNAL_DOCUMENT_PROJECTION_ROUTE.to_owned(),
+            body: serde_json::to_vec(&json!({
+                "doc_id": "doc-projection",
+                "doc_type": "text",
+                "insertion_method": "parser",
+                "content": "hello",
+                "metadata": {"source": "fixture"}
+            }))
+            .unwrap(),
+            principal,
+        };
+        let denied = document_projection_write(
+            &request(json!({"sub":"reader","role":"ro","capabilities":[]})),
+            &capabilities,
+        )
+        .unwrap_err();
+        assert_eq!(denied.status, StatusCode::FORBIDDEN);
+
+        let write = document_projection_write(
+            &request(json!({
+                "sub":"writer",
+                "role":"rw",
+                "ns":["docs"],
+                "capabilities":["write_graph"]
+            })),
+            &capabilities,
+        )
+        .unwrap();
+        assert_eq!(write.record.id, "doc-projection");
+        assert_eq!(write.record.document.as_deref(), Some("hello"));
+        assert_eq!(write.scope.namespace, "docs");
+        assert_eq!(write.record.metadata["doc_type"], "text");
+        assert_eq!(write.record.metadata["insertion_method"], "parser");
+
+        let ocr_request = ApiEffectRequest {
+            body: serde_json::to_vec(&json!({
+                "doc_id": "doc-ocr",
+                "doc_type": "ocr",
+                "content": "{}"
+            }))
+            .unwrap(),
+            ..request(json!({
+                "sub":"writer",
+                "role":"rw",
+                "ns":["docs"],
+                "capabilities":["write_graph"]
+            }))
+        };
+        let ocr = document_projection_write(&ocr_request, &capabilities).unwrap_err();
+        assert_eq!(ocr.status, StatusCode::NOT_IMPLEMENTED);
     }
 
     #[test]
@@ -17481,6 +18105,33 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
             .as_nanos();
         let path = std::env::temp_dir().join(format!("kogwistar-syscall-{nonce}.sqlite3"));
         let service = SqliteRunApplicationService::open(&path).unwrap();
+        let view_request = |capabilities: &[&str]| ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/syscall/v1/project_view".to_owned(),
+            body: serde_json::to_vec(&json!({
+                "version":"v1",
+                "op":"project_view",
+                "args":{}
+            }))
+            .unwrap(),
+            principal: json!({
+                "sub":"viewer",
+                "role":"ro",
+                "ns":"workflow",
+                "capabilities":capabilities,
+            }),
+        };
+        let denied_view = service.execute_sync(view_request(&["project_view"]));
+        assert_eq!(denied_view.status, StatusCode::FORBIDDEN.as_u16());
+        let view = service.execute_sync(view_request(&["project_view", "read_security_scope"]));
+        assert_eq!(view.status, StatusCode::OK.as_u16());
+        let view = serde_json::from_slice::<Value>(&view.body).unwrap();
+        assert_eq!(view["version"], "v1");
+        assert_eq!(view["op"], "project_view");
+        assert_eq!(view["status"], "ok");
+        assert!(view["result"]["scheduler"].is_object());
+        assert!(view["result"]["runs"].is_object());
         let principal = json!({
             "sub":"operator",
             "role":"rw",

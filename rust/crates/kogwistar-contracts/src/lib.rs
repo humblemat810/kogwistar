@@ -19,6 +19,7 @@ mod graph_slice;
 mod native_seam;
 mod projection_checkpoint;
 mod source_map;
+mod tool_audit;
 pub use conversation::{
     CONVERSATION_WIRE_VERSION, ConversationContractError, ConversationSummaryV1,
     ConversationTranscriptV1, ConversationTurnV1, conversation_summary_from_str,
@@ -68,6 +69,10 @@ pub use projection_checkpoint::{
 };
 pub use source_map::{
     SOURCE_MAP_WIRE_VERSION, SourceMapChunkV1, SourceMapV1, SourceMapValidationError,
+};
+pub use tool_audit::{
+    TOOL_AUDIT_WIRE_VERSION, ToolAuditContractError, ToolAuditItemV1, ToolAuditResponseV1,
+    tool_audit_response_from_str,
 };
 
 /// Return the stable graph-class names exposed by the versioned Python seam.

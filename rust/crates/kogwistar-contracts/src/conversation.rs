@@ -1,4 +1,4 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub const CONVERSATION_WIRE_VERSION: i32 = 1;
@@ -21,7 +21,7 @@ pub enum ConversationContractError {
     InvalidEntityType { entity_type: String },
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ConversationSummaryV1 {
     pub schema_version: i32,
@@ -55,7 +55,7 @@ impl ConversationSummaryV1 {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ConversationTurnV1 {
     pub schema_version: i32,
@@ -66,7 +66,7 @@ pub struct ConversationTurnV1 {
     pub entity_type: String,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ConversationTranscriptV1 {
     pub schema_version: i32,

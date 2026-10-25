@@ -211,6 +211,23 @@ def test_transaction_authority_scope_rejects_nested_owner_switch() -> None:
     assert active_transaction_authority() is None
 
 
+def test_transaction_authority_scope_matches_frozen_selection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
+    monkeypatch.delenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", raising=False)
+
+    with implementation_selection_scope():
+        with pytest.raises(
+            RuntimeError,
+            match="does not match frozen implementation selection",
+        ):
+            with transaction_authority_scope("python"):
+                pass
+        with transaction_authority_scope("rust"):
+            assert active_transaction_authority() == "rust"
+
+
 def test_async_projection_transaction_uses_engine_authority_snapshot(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

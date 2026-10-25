@@ -958,6 +958,43 @@ is intentionally kept in the ignored benchmark output directory rather than
 source control; rerun with `scripts/run_mixed_runtime_matrix.ps1
 -EndpointOnly -EndpointItems 100 -Samples 2` to reproduce it.
 
+### 2026-10-25 Linux endpoint smoke recheck
+
+The same endpoint harness was rerun in Docker with a deliberately small
+two-item trace and two measured samples. The container used CPython 3.15.1
+free-threaded, four CPU cores, an 8 GiB memory limit, and verified cgroup
+limits. Both HTTP modes produced the identical final-state digest
+`8984a097312f1d8b063c42812fa01019e3dc9ff2f7093cc51fc56b4b03ac4ce4`.
+
+| Mode | Median elapsed | Median throughput | Median startup |
+| --- | ---: | ---: | ---: |
+| Python HTTP | 1.577 s | 3.81 ops/s | 532 ms |
+| Rust-native HTTP | 184 ms | 32.54 ops/s | 347 ms |
+
+The measured native path was approximately 8.5x higher throughput on this
+small trace, with 1.55% throughput variation across the two samples. This is
+directional evidence that the no-Python endpoint path can remove a meaningful
+service and serialization seam cost. It is not a production-wide claim: the
+trace is synthetic, the native server remains a narrow benchmark slice, and
+the run does not cover agent, ACL, indexing, PostgreSQL, replay, or embedding
+operations. The raw output is kept under the ignored `.tmp/` benchmark
+directory.
+
+The same Docker image was then reused for a 100-item trace with two measured
+samples (300 operations per sample). Both modes again produced the identical
+digest `a2713532374fe5995a8dcc68e4951bfcda5e74955e122de67f744291fec945d7`.
+
+| Mode | Median elapsed | Median throughput | Median startup |
+| --- | ---: | ---: | ---: |
+| Python HTTP | 64.113 s | 4.68 ops/s | 522 ms |
+| Rust-native HTTP | 9.059 s | 33.14 ops/s | 346 ms |
+
+The larger trace measured approximately 7.1x higher throughput for the
+Rust-native endpoint, with 0.84% Python and 3.34% Rust-native throughput
+variation. This strengthens the narrow endpoint evidence but does not change
+the scope guardrails above: it is still not evidence for complete production
+route, indexing, ACL, agent, replay, or embedding parity.
+
 ### 2026-10-25 persistent SQLite smoke recheck
 
 A controlled local smoke run used five logical items, two measured samples, two

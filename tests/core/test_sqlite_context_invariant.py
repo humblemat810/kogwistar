@@ -134,6 +134,41 @@ def test_sqlite_authority_lock_rejects_another_process(tmp_path: Path) -> None:
         child.wait(timeout=10)
 
 
+def test_sqlite_authority_recovers_after_owner_process_crash(tmp_path: Path) -> None:
+    path = tmp_path / "crashed-owner.sqlite"
+    child_code = (
+        "import sys\n"
+        "from pathlib import Path\n"
+        "from kogwistar.engine_core.sqlite_context import acquire_sqlite_database\n"
+        "lease = acquire_sqlite_database(Path(sys.argv[1]), 'python')\n"
+        "print('ready', flush=True)\n"
+        "sys.stdin.read()\n"
+        "lease.release()\n"
+    )
+    child = subprocess.Popen(
+        [sys.executable, "-c", child_code, str(path)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    assert child.stdout is not None
+    try:
+        assert child.stdout.readline().strip() == "ready"
+        child.kill()
+        child.wait(timeout=10)
+        assert child.returncode is not None
+
+        with sqlite_execution_context("rust"):
+            lease = acquire_sqlite_database(path, "rust")
+            lease.release()
+    finally:
+        if child.poll() is None:
+            child.kill()
+        if child.stdin is not None:
+            child.stdin.close()
+        child.wait(timeout=10)
+
+
 @pytest.mark.ci_full
 def test_python_authority_rejects_standalone_rust_process(
     tmp_path: Path,

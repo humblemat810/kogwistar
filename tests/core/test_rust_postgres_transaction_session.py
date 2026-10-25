@@ -215,6 +215,50 @@ def test_native_postgres_session_commit_rollback_and_fail_closed(
     ) == "committed"
 
 
+@pytest.mark.ci_full
+def test_native_postgres_session_reconnects_after_backend_termination(
+    pg_dsn: str | None, pg_schema: str | None
+) -> None:
+    """A lost native backend must fail closed and permit a fresh session."""
+    dsn, schema = _require_pg(pg_dsn, pg_schema)
+    psycopg = pytest.importorskip("psycopg")
+    session = RustEnginePostgresMetaStore(dsn=dsn, schema=schema)
+    session.ensure_initialized()
+
+    try:
+        with pytest.raises(Exception) as failure:
+            with session.transaction() as token:
+                session.next_global_seq_conn(token)
+                with psycopg.connect(dsn, autocommit=True) as admin:
+                    rows = admin.execute(
+                        "SELECT pid FROM pg_stat_activity "
+                        "WHERE datname = current_database() "
+                        "AND usename = current_user "
+                        "AND state = 'idle in transaction' "
+                        "AND backend_xid IS NOT NULL "
+                        "AND pid <> pg_backend_pid()"
+                    ).fetchall()
+                    assert rows, "native transaction backend was not observable"
+                    for (pid,) in rows:
+                        admin.execute("SELECT pg_terminate_backend(%s)", (pid,))
+                session.current_global_seq()
+        assert "PostgreSQL" in str(failure.value)
+
+        assert not session.transaction_active
+        fresh = RustEnginePostgresMetaStore(dsn=dsn, schema=schema)
+        try:
+            fresh.ensure_initialized()
+            with fresh.transaction() as token:
+                assert fresh.next_global_seq_conn(token) == 1
+        finally:
+            fresh.close()
+    finally:
+        try:
+            session.close()
+        except Exception:
+            pass
+
+
 def test_native_postgres_sessions_are_isolated_by_schema(
     pg_dsn: str | None, pg_schema: str | None, sa_engine: Any
 ) -> None:

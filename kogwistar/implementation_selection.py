@@ -87,7 +87,20 @@ def active_transaction_authority() -> TransactionAuthority | None:
 
 @contextmanager
 def transaction_authority_scope(authority: TransactionAuthority) -> Iterator[None]:
-    """Prevent nested work from switching transaction owners mid-operation."""
+    """Bind a transaction to the run selection and prevent owner switching.
+
+    A frozen implementation selection is authoritative for the whole run.  The
+    explicit check here prevents a lower-level caller from bypassing that
+    selection by entering a different authority scope directly.  Calls made
+    without a selection snapshot retain the legacy behavior.
+    """
+    selected_snapshot = _selection_snapshot.get()
+    if selected_snapshot is not None:
+        expected = transaction_authority_for_selection(selected_snapshot)
+        if authority != expected:
+            raise RuntimeError(
+                "transaction authority does not match frozen implementation selection"
+            )
     active = _transaction_authority.get()
     if active is not None:
         if active != authority:

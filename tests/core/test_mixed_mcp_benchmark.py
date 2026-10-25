@@ -71,6 +71,24 @@ def test_concurrent_mcp_transports_preserve_exact_visibility(tmp_path) -> None:
             len(mode["samples"]) == 2 for mode in mix["modes"].values()
         )
         for mode_name, mode in mix["modes"].items():
+            assert mode["median_throughput_ops_per_sec"] > 0
+            assert mode["median_elapsed_ms"] > 0
+            assert mode["median_startup_ms"] >= 0
+            assert set(mode["throughput_sample_variation"]) == {
+                "mean",
+                "stdev",
+                "coefficient_of_variation_pct",
+                "normal_approx_95pct_ci_low",
+                "normal_approx_95pct_ci_high",
+                "min",
+                "max",
+            }
+            if mode_name == "rust_native_http":
+                assert mode["median_native_cpu_elapsed_ms"] > 0
+                assert mode["median_native_peak_rss_bytes"] > 0
+            else:
+                assert mode["median_host_process_cpu_elapsed_ms"] > 0
+                assert mode["median_host_process_rss_delta_bytes"] >= 0
             for sample in mode["samples"]:
                 assert sample["throughput_ops_per_sec"] > 0
                 assert sample["sqlite_database_footprint_bytes"] > 0

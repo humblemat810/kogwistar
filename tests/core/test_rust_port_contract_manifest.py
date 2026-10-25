@@ -289,6 +289,12 @@ def test_dual_language_support_matrix_is_complete_and_conservative() -> None:
 
     expected = {item["id"] for item in crosswalk["capabilities"]}
     entries = {item["id"]: item for item in matrix["capabilities"]}
+    ownership = {
+        item["capability"]: item
+        for item in json.loads(
+            (ROOT / "contracts" / "rust-port-v1.json").read_text(encoding="utf-8")
+        )["capability_ownership"]
+    }
     assert set(entries) == expected
     allowed = {"enabled", "opt-in", "disabled", "not-applicable"}
     for capability in entries.values():
@@ -303,6 +309,25 @@ def test_dual_language_support_matrix_is_complete_and_conservative() -> None:
         matrix_item = entries[item["id"]]
         if item["native_rust_path"] == "not-verified":
             assert matrix_item["rust"]["status"] != "enabled"
+
+    checklist_path = ROOT / "kogwistar" / "docs" / "ADR-022-dual-language-capability-checklist.md"
+    checklist_entries = {
+        line.split("|", 2)[1].strip(): line.split("|", 3)[2].strip()
+        for line in checklist_path.read_text(encoding="utf-8").splitlines()
+        if line.startswith("| DL-")
+    }
+    for capability in entries.values():
+        for lane in ("python", "rust", "mixed"):
+            decision = capability[lane]
+            evidence_id = decision["evidence"]
+            assert evidence_id in checklist_entries, (
+                f"{capability['id']}/{lane} references missing evidence {evidence_id}"
+            )
+            if decision["status"] == "enabled":
+                assert lane == "python"
+                assert ownership[capability["id"]][
+                    "current_authoritative_writer"
+                ] == "python"
 
 
 def test_dual_language_checklist_ids_are_unique() -> None:

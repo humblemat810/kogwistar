@@ -96,6 +96,7 @@ auth.sqlite
 # Rust/PyO3 local build outputs (Cargo.lock remains tracked).
 /rust/target*
 /rust/target-api-loopback/
+/target-*
 /target-api-loopback/
 /rust/collected_tests.json
 *.pyd

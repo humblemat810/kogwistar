@@ -30,6 +30,7 @@ _NATIVE_BINARY_READY = False
 DEFAULT_MODES = ("in_process", "rust_authority", "http", "rust_native")
 MCP_OPERATION_TIMEOUT_SECONDS = 30
 MCP_SESSION_TIMEOUT_SECONDS = 600
+NATIVE_HTTP_TIMEOUT_SECONDS = 30
 _AwaitedT = TypeVar("_AwaitedT")
 
 import uvicorn
@@ -1499,8 +1500,30 @@ def _run_native_server(
             http_request = urllib.request.Request(
                 f"{url}/mcp", data=request, headers={"Content-Type": "application/json"}
             )
-            with urllib.request.urlopen(http_request, timeout=30) as response:
-                payload = json.loads(response.read())
+            try:
+                with urllib.request.urlopen(
+                    http_request, timeout=NATIVE_HTTP_TIMEOUT_SECONDS
+                ) as response:
+                    payload = json.loads(response.read())
+            except urllib.error.HTTPError as exc:
+                detail = exc.read().decode("utf-8", errors="replace")[:500]
+                raise RuntimeError(
+                    "Rust MCP request failed: "
+                    f"operation={operation!r} index={step['index']} "
+                    f"status={exc.code} body={detail!r}"
+                ) from exc
+            except (TimeoutError, urllib.error.URLError, OSError) as exc:
+                raise TimeoutError(
+                    "Rust MCP request did not complete: "
+                    f"operation={operation!r} index={step['index']} "
+                    f"timeout_seconds={NATIVE_HTTP_TIMEOUT_SECONDS} "
+                    f"error={exc}"
+                ) from exc
+            except json.JSONDecodeError as exc:
+                raise RuntimeError(
+                    "Rust MCP returned invalid JSON: "
+                    f"operation={operation!r} index={step['index']}"
+                ) from exc
             result = payload.get("result", {}).get("structuredContent", {})
             if payload.get("id") != step["index"] + 1 or result.get("entity_id") != step["expected_entity_id"]:
                 raise RuntimeError("Rust MCP returned an unexpected result or request id")
@@ -1881,8 +1904,25 @@ def _run_concurrent_mcp_profiles(
                     "median_elapsed_ms": statistics.median(
                         run["elapsed_ms"] for run in runs
                     ),
+                    "median_startup_ms": statistics.median(
+                        run["startup_ms"] for run in runs
+                    ),
+                    "median_throughput_ops_per_sec": statistics.median(
+                        run["throughput_ops_per_sec"] for run in runs
+                    ),
                     "elapsed_sample_variation": _sample_variation(
                         [run["elapsed_ms"] for run in runs]
+                    ),
+                    "throughput_sample_variation": _sample_variation(
+                        [run["throughput_ops_per_sec"] for run in runs]
+                    ),
+                    "median_host_process_cpu_elapsed_ms": statistics.median(
+                        run["host_process_cpu_elapsed_ms"] for run in runs
+                    ),
+                    "median_host_process_rss_delta_bytes": int(
+                        statistics.median(
+                            run["host_process_rss_delta_bytes"] for run in runs
+                        )
                     ),
                     "samples": runs,
                 }
@@ -1957,8 +1997,23 @@ def _run_concurrent_mcp_profiles(
             "median_elapsed_ms": statistics.median(
                 run["elapsed_ms"] for run in native_runs
             ),
+            "median_startup_ms": statistics.median(
+                run["startup_ms"] for run in native_runs
+            ),
+            "median_throughput_ops_per_sec": statistics.median(
+                run["throughput_ops_per_sec"] for run in native_runs
+            ),
             "elapsed_sample_variation": _sample_variation(
                 [run["elapsed_ms"] for run in native_runs]
+            ),
+            "throughput_sample_variation": _sample_variation(
+                [run["throughput_ops_per_sec"] for run in native_runs]
+            ),
+            "median_native_cpu_elapsed_ms": statistics.median(
+                run["native_cpu_elapsed_ms"] for run in native_runs
+            ),
+            "median_native_peak_rss_bytes": int(
+                statistics.median(run["native_peak_rss_bytes"] for run in native_runs)
             ),
             "samples": native_runs,
         }

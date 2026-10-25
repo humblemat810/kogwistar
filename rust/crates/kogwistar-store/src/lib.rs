@@ -1,5 +1,9 @@
 //! Async-first storage contracts. Shadow handles expose reads only.
-use kogwistar_contracts::{EntityEventEnvelope, GraphEntityKind, GraphModelEnvelope};
+use kogwistar_contracts::{
+    ConversationContractError, ConversationSummaryV1, ConversationTranscriptV1, ConversationTurnV1,
+    EntityEventEnvelope, GraphEntityKind, GraphModelEnvelope, ToolAuditContractError,
+    ToolAuditItemV1,
+};
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
@@ -357,6 +361,147 @@ pub fn graph_records_visible_by_acl(
             .cloned()
             .collect(),
     )
+}
+
+/// Project already-authorized graph records into the versioned tool-audit
+/// payload shape used by the Python service.
+///
+/// The caller must provide records after namespace and ACL filtering.  This
+/// helper deliberately does not inspect or infer authorization, so it cannot
+/// become an alternate read path around the graph authority boundary.
+pub fn tool_audit_items_from_visible_records(
+    records: &[GraphRecord],
+    conversation_id: Option<&str>,
+    limit: usize,
+) -> Result<Vec<ToolAuditItemV1>, ToolAuditContractError> {
+    let mut items = Vec::new();
+    for record in records {
+        if is_tombstoned(&record.metadata) {
+            continue;
+        }
+        let Some(entity_type) = value_string(record, "entity_type") else {
+            continue;
+        };
+        if !matches!(entity_type.as_str(), "tool_call" | "tool_result") {
+            continue;
+        }
+        let item_conversation_id = value_string(record, "conversation_id");
+        if conversation_id.is_some_and(|expected| item_conversation_id.as_deref() != Some(expected))
+        {
+            continue;
+        }
+        let turn_index = record_field(record, "turn_index").and_then(|value| value.as_i64());
+        let summary = value_string(record, "summary").unwrap_or_default();
+        let tool_name = value_string(record, "tool_name").unwrap_or_default();
+        let properties = record_json(record)
+            .and_then(|document| document.get("properties").cloned())
+            .and_then(|value| value.as_object().cloned())
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+        let item = ToolAuditItemV1 {
+            schema_version: kogwistar_contracts::TOOL_AUDIT_WIRE_VERSION,
+            node_id: record.id.clone(),
+            entity_type,
+            tool_name,
+            conversation_id: item_conversation_id,
+            turn_index,
+            summary,
+            properties,
+        };
+        item.validate()?;
+        items.push(item);
+        if items.len() >= limit {
+            break;
+        }
+    }
+    Ok(items)
+}
+
+/// Project already-authorized conversation nodes into the shared transcript
+/// contract.  Conversation ordering is strict here: duplicate turn indexes
+/// are rejected instead of silently changing the Python/Rust interpretation.
+pub fn conversation_transcript_from_visible_records(
+    records: &[GraphRecord],
+    conversation_id: &str,
+    limit: usize,
+) -> Result<ConversationTranscriptV1, ConversationContractError> {
+    let mut turns = records
+        .iter()
+        .filter(|record| !is_tombstoned(&record.metadata))
+        .filter_map(|record| {
+            let entity_type = value_string(record, "entity_type")?;
+            if !matches!(entity_type.as_str(), "conversation_turn" | "assistant_turn") {
+                return None;
+            }
+            if value_string(record, "conversation_id").as_deref() != Some(conversation_id) {
+                return None;
+            }
+            let turn_index = record_field(record, "turn_index")?.as_i64()?;
+            let role = value_string(record, "role")?;
+            let content = value_string(record, "summary").unwrap_or_default();
+            Some(ConversationTurnV1 {
+                schema_version: kogwistar_contracts::CONVERSATION_WIRE_VERSION,
+                node_id: record.id.clone(),
+                turn_index,
+                role,
+                content,
+                entity_type,
+            })
+        })
+        .collect::<Vec<_>>();
+    turns.sort_by(|left, right| {
+        left.turn_index
+            .cmp(&right.turn_index)
+            .then_with(|| left.node_id.cmp(&right.node_id))
+    });
+    let mut transcript = ConversationTranscriptV1 {
+        schema_version: kogwistar_contracts::CONVERSATION_WIRE_VERSION,
+        conversation_id: conversation_id.to_owned(),
+        turns,
+    };
+    transcript.validate()?;
+    transcript.turns.truncate(limit);
+    Ok(transcript)
+}
+
+/// Project a conversation start node and its authorized turns into the
+/// versioned summary contract. The tail derives from the same strictly
+/// validated transcript used by the transcript endpoint.
+pub fn conversation_summary_from_visible_records(
+    records: &[GraphRecord],
+    conversation_id: &str,
+) -> Result<ConversationSummaryV1, ConversationContractError> {
+    let transcript =
+        conversation_transcript_from_visible_records(records, conversation_id, usize::MAX)?;
+    let start = records.iter().find(|record| {
+        !is_tombstoned(&record.metadata)
+            && value_string(record, "entity_type").as_deref() == Some("conversation_start")
+            && value_string(record, "conversation_id").as_deref() == Some(conversation_id)
+    });
+    let Some(start) = start else {
+        return Err(ConversationContractError::EmptyField {
+            field: "start_node_id",
+        });
+    };
+    let user_id = value_string(start, "user_id").unwrap_or_default();
+    let status = value_string(start, "status").unwrap_or_else(|| "active".to_owned());
+    let tail_node_id = transcript
+        .turns
+        .last()
+        .map(|turn| turn.node_id.clone())
+        .unwrap_or_else(|| start.id.clone());
+    let summary = ConversationSummaryV1 {
+        schema_version: kogwistar_contracts::CONVERSATION_WIRE_VERSION,
+        conversation_id: conversation_id.to_owned(),
+        user_id,
+        status,
+        start_node_id: start.id.clone(),
+        tail_node_id,
+        turn_count: transcript.turns.len() as i64,
+    };
+    summary.validate()?;
+    Ok(summary)
 }
 
 /// Compute Python-compatible node/edge adjacency from canonical edge records.
@@ -2515,6 +2660,173 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(node_ids, expected_nodes);
         assert_eq!(edge_ids, expected_edges);
+    }
+
+    #[test]
+    fn tool_audit_projection_is_scope_filtered_and_canonical() {
+        let mut call = GraphRecord::new("tool-call-1");
+        call.metadata
+            .insert("entity_type".into(), "tool_call".into());
+        call.metadata
+            .insert("tool_name".into(), "graph.read".into());
+        call.metadata
+            .insert("conversation_id".into(), "conversation-1".into());
+        call.metadata.insert("turn_index".into(), 2.into());
+        call.document = Some(
+            serde_json::json!({
+                "properties": {"status": "completed", "count": 1}
+            })
+            .to_string(),
+        );
+
+        let mut other = GraphRecord::new("tool-result-other");
+        other
+            .metadata
+            .insert("entity_type".into(), "tool_result".into());
+        other
+            .metadata
+            .insert("tool_name".into(), "graph.read".into());
+        other
+            .metadata
+            .insert("conversation_id".into(), "conversation-2".into());
+
+        let mut tombstoned = GraphRecord::new("tool-call-deleted");
+        tombstoned
+            .metadata
+            .insert("entity_type".into(), "tool_call".into());
+        tombstoned
+            .metadata
+            .insert("tool_name".into(), "secret".into());
+        tombstoned
+            .metadata
+            .insert("conversation_id".into(), "conversation-1".into());
+        tombstoned
+            .metadata
+            .insert("lifecycle_status".into(), "tombstoned".into());
+
+        let items = tool_audit_items_from_visible_records(
+            &[call, other, tombstoned],
+            Some("conversation-1"),
+            10,
+        )
+        .unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].node_id, "tool-call-1");
+        assert_eq!(items[0].turn_index, Some(2));
+        assert_eq!(items[0].properties["status"], "completed");
+    }
+
+    #[test]
+    fn tool_audit_projection_fails_closed_for_malformed_visible_records() {
+        let mut malformed = GraphRecord::new("tool-call-invalid");
+        malformed
+            .metadata
+            .insert("entity_type".into(), "tool_call".into());
+        malformed
+            .metadata
+            .insert("conversation_id".into(), "conversation-1".into());
+        let error = tool_audit_items_from_visible_records(&[malformed], None, 10).unwrap_err();
+        assert_eq!(
+            error,
+            kogwistar_contracts::ToolAuditContractError::EmptyField { field: "tool_name" }
+        );
+    }
+
+    #[test]
+    fn conversation_transcript_projection_is_ordered_and_scope_filtered() {
+        let mut assistant = GraphRecord::new("assistant-1");
+        assistant
+            .metadata
+            .insert("entity_type".into(), "assistant_turn".into());
+        assistant
+            .metadata
+            .insert("conversation_id".into(), "conversation-1".into());
+        assistant.metadata.insert("turn_index".into(), 1.into());
+        assistant.metadata.insert("role".into(), "assistant".into());
+        assistant.metadata.insert("summary".into(), "answer".into());
+
+        let mut user = GraphRecord::new("user-0");
+        user.metadata
+            .insert("entity_type".into(), "conversation_turn".into());
+        user.metadata
+            .insert("conversation_id".into(), "conversation-1".into());
+        user.metadata.insert("turn_index".into(), 0.into());
+        user.metadata.insert("role".into(), "user".into());
+        user.metadata.insert("summary".into(), "question".into());
+
+        let mut other = user.clone();
+        other.id = "other-user".into();
+        other
+            .metadata
+            .insert("conversation_id".into(), "conversation-2".into());
+
+        let transcript = conversation_transcript_from_visible_records(
+            &[assistant, other, user],
+            "conversation-1",
+            10,
+        )
+        .unwrap();
+        assert_eq!(transcript.turns.len(), 2);
+        assert_eq!(transcript.turns[0].node_id, "user-0");
+        assert_eq!(transcript.turns[1].node_id, "assistant-1");
+    }
+
+    #[test]
+    fn conversation_transcript_projection_rejects_duplicate_turn_indexes() {
+        let mut first = GraphRecord::new("turn-a");
+        first.metadata.extend(
+            serde_json::json!({
+                "entity_type": "conversation_turn",
+                "conversation_id": "conversation-1",
+                "turn_index": 0,
+                "role": "user",
+                "summary": "one"
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        );
+        let mut second = first.clone();
+        second.id = "turn-b".into();
+        let error =
+            conversation_transcript_from_visible_records(&[first, second], "conversation-1", 0)
+                .unwrap_err();
+        assert_eq!(error, ConversationContractError::InvalidTurnOrder);
+    }
+
+    #[test]
+    fn conversation_summary_projection_derives_owner_status_and_tail() {
+        let mut start = GraphRecord::new("conversation-start");
+        start.metadata.extend(
+            serde_json::json!({
+                "entity_type": "conversation_start",
+                "conversation_id": "conversation-1",
+                "user_id": "alice",
+                "status": "active"
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        );
+        let mut turn = GraphRecord::new("turn-0");
+        turn.metadata.extend(
+            serde_json::json!({
+                "entity_type": "conversation_turn",
+                "conversation_id": "conversation-1",
+                "turn_index": 0,
+                "role": "user",
+                "summary": "question"
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        );
+        let summary =
+            conversation_summary_from_visible_records(&[start, turn], "conversation-1").unwrap();
+        assert_eq!(summary.user_id, "alice");
+        assert_eq!(summary.start_node_id, "conversation-start");
+        assert_eq!(summary.tail_node_id, "turn-0");
+        assert_eq!(summary.turn_count, 1);
     }
     use kogwistar_contracts::{GraphModelClass, GraphModelEnvelope};
 
