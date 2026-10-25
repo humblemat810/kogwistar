@@ -50,6 +50,11 @@ include_concurrent=False)`. Its three-operation sample reported
 Windows loopback permission; the restricted sandbox's `WinError 10013` is not
 application evidence.
 
+The same endpoint was verified under the one-writer/four-reader concurrent
+balanced trace on 2026-10-25: 5 operations completed with
+`tool_dispatches=5`, `transport_requests=5`, `transaction_boundaries=1`,
+`serialized_bytes=3023`, and `ffi_calls=0`.
+
 Concurrent profiles are implemented in `scripts/mixed_concurrent_benchmark.py`
 for SQLite events/projections, Chroma with SQLite metadata, and PostgreSQL/
 pgvector with SQLite metadata. Each write has an individual commit boundary.

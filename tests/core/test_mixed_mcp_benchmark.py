@@ -102,6 +102,9 @@ def test_concurrent_mcp_transports_preserve_exact_visibility(tmp_path) -> None:
                 if mode_name == "rust_native_http":
                     assert sample["native_cpu_elapsed_ms"] > 0
                     assert sample["native_peak_rss_bytes"] > 0
+                    assert sample["seam_metrics"]["complete"] is True
+                    assert sample["seam_metrics"]["ffi_calls"] == 0
+                    assert sample["seam_metrics"]["tool_dispatches"] > 0
                 else:
                     assert sample["host_process_cpu_elapsed_ms"] > 0
                     assert sample["host_process_rss_start_bytes"] > 0

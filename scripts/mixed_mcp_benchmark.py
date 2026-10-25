@@ -1739,6 +1739,7 @@ async def _run_native_concurrent_one(
     stop_sampling = threading.Event()
     peak_rss = 0
     cpu_before = None
+    native_seam_metrics: dict[str, object] = {}
     try:
         while time.monotonic() < deadline:
             if process.poll() is not None:
@@ -1875,6 +1876,11 @@ async def _run_native_concurrent_one(
         cpu_ms = (
             cpu_after.user + cpu_after.system - cpu_before.user - cpu_before.system
         ) * 1000
+        with urllib.request.urlopen(f"{url}/metrics", timeout=5) as response:
+            metrics_value = json.loads(response.read())
+        if not isinstance(metrics_value, dict):
+            raise RuntimeError("Rust concurrent MCP metrics returned a non-object")
+        native_seam_metrics = metrics_value
     finally:
         stop_sampling.set()
         if sampler is not None:
@@ -1895,6 +1901,7 @@ async def _run_native_concurrent_one(
         "throughput_ops_per_sec": operation_count * 1000 / elapsed_ms,
         "native_cpu_elapsed_ms": cpu_ms,
         "native_peak_rss_bytes": peak_rss,
+        "seam_metrics": native_seam_metrics,
         "per_operation": {
             name: {
                 "count": len(values),
