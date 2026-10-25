@@ -67,6 +67,16 @@ GRAPH_MODEL_FIXTURE = json.loads(
         encoding="utf-8"
     )
 )
+GRAPH_MODEL_INVALID_FIXTURE = json.loads(
+    (ROOT / "contracts" / "golden" / "graph-model-invalid-v1.json").read_text(
+        encoding="utf-8"
+    )
+)
+GRAPH_MODEL_LEGACY_FIXTURE = json.loads(
+    (ROOT / "contracts" / "golden" / "graph-model-legacy-compat-v1.json").read_text(
+        encoding="utf-8"
+    )
+)
 SOURCE_MAP_FIXTURE = json.loads(
     (ROOT / "contracts" / "golden" / "source-map-v1.json").read_text(
         encoding="utf-8"
@@ -233,6 +243,99 @@ def test_python_node_edge_backend_payloads_round_trip_through_rust_json(
         assert wire_json == case["canonical_json"]
         restored = type(model).model_validate(json.loads(wire_json))
         assert restored.model_dump(field_mode="backend", dump_format="json") == payload
+
+
+@pytest.mark.requires_rust
+def test_python_and_rust_reject_shared_invalid_persistent_graph_cases(monkeypatch) -> None:
+    """Python and Rust must reject the same malformed Node/Edge contract cases."""
+    monkeypatch.setenv("KOGWISTAR_IMPL_CONTRACTS", "rust")
+    from kogwistar import _rust
+
+    baseline_by_kind = {
+        case["kind"]: case["payload"] for case in GRAPH_MODEL_FIXTURE["cases"]
+    }
+    model_by_kind = {"node": Node, "edge": Edge}
+    assert GRAPH_MODEL_INVALID_FIXTURE["schema_version"] == 1
+    for case_id in GRAPH_MODEL_INVALID_FIXTURE["cases"]:
+        kind, mutation = case_id.split(".", maxsplit=1)
+        payload = copy.deepcopy(baseline_by_kind[kind])
+        if mutation == "invalid_lifecycle_status":
+            payload["metadata"]["lifecycle_status"] = "purged"
+        elif mutation == "empty_id":
+            payload["id"] = ""
+        elif mutation == "invalid_redirect_id":
+            payload["metadata"]["redirect_to_id"] = 7
+        elif mutation == "empty_node_endpoint_id" and kind == "edge":
+            payload["source_ids"] = [""]
+        elif mutation == "empty_edge_endpoint_id" and kind == "edge":
+            payload["source_edge_ids"] = [""]
+        elif mutation == "missing_relation" and kind == "edge":
+            payload.pop("relation")
+        else:
+            raise AssertionError(f"unknown graph-model parity fixture: {case_id}")
+
+        with pytest.raises(ValueError):
+            model_by_kind[kind].model_validate(payload)
+        with pytest.raises(Exception):
+            _rust.validate_graph_model_family(
+                json.dumps(
+                    {"schema_version": 1, "model_class": kind, "payload": payload},
+                    ensure_ascii=False,
+                )
+            )
+
+
+@pytest.mark.requires_rust
+def test_python_and_rust_preserve_shared_legacy_graph_defaults(monkeypatch) -> None:
+    """Legacy lifecycle omissions and aliases retain the same meaning in both languages."""
+    monkeypatch.setenv("KOGWISTAR_IMPL_CONTRACTS", "rust")
+    from kogwistar import _rust
+
+    baseline_by_kind = {
+        case["kind"]: case["payload"] for case in GRAPH_MODEL_FIXTURE["cases"]
+    }
+    model_by_kind = {"node": Node, "edge": Edge}
+    assert GRAPH_MODEL_LEGACY_FIXTURE["schema_version"] == 1
+    for case_id in GRAPH_MODEL_LEGACY_FIXTURE["cases"]:
+        kind, compatibility_case = case_id.split(".", maxsplit=1)
+        payload = copy.deepcopy(baseline_by_kind[kind])
+        if compatibility_case == "omitted_lifecycle_defaults":
+            payload["metadata"].pop("lifecycle_status")
+            payload["metadata"].pop("redirect_to_id")
+            expected_status = "active"
+        elif compatibility_case == "deleted_alias_normalizes":
+            payload["metadata"]["lifecycle_status"] = "deleted"
+            expected_status = "tombstoned"
+        elif compatibility_case == "level_metadata_fallback":
+            payload.pop("level_from_root")
+            payload["metadata"]["level_from_root"] = 2
+            expected_status = "active"
+        elif compatibility_case == "level_top_level_precedence":
+            payload["level_from_root"] = 3
+            payload["metadata"]["level_from_root"] = 2
+            expected_status = "active"
+        else:
+            raise AssertionError(f"unknown graph-model compatibility case: {case_id}")
+
+        python_model = model_by_kind[kind].model_validate(copy.deepcopy(payload))
+        python_payload = python_model.model_dump(
+            field_mode="backend", dump_format="json"
+        )
+        assert python_payload["metadata"]["lifecycle_status"] == expected_status
+        assert python_payload["metadata"]["redirect_to_id"] is None
+        if compatibility_case == "level_metadata_fallback":
+            assert python_payload["level_from_root"] == 2
+            assert python_payload["metadata"]["level_from_root"] == 2
+        elif compatibility_case == "level_top_level_precedence":
+            assert python_payload["level_from_root"] == 3
+            assert python_payload["metadata"]["level_from_root"] == 3
+
+        _rust.validate_graph_model_family(
+            json.dumps(
+                {"schema_version": 1, "model_class": kind, "payload": payload},
+                ensure_ascii=False,
+            )
+        )
 
 
 @pytest.mark.requires_rust

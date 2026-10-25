@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "baseline_fixture": "python-graph-model-payloads-v1.json",
+  "cases": [
+    "node.invalid_lifecycle_status",
+    "edge.invalid_lifecycle_status",
+    "node.empty_id",
+    "edge.empty_id",
+    "node.invalid_redirect_id",
+    "edge.invalid_redirect_id",
+    "edge.empty_node_endpoint_id",
+    "edge.empty_edge_endpoint_id",
+    "edge.missing_relation"
+  ]
+}

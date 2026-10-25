@@ -1,0 +1,20 @@
+{
+  "contract_version": 1,
+  "status": "success",
+  "state_update": [],
+  "update": null,
+  "state_schema": {},
+  "successors": [
+    {
+      "node_id": "finish",
+      "join_mask": 0
+    }
+  ],
+  "route_next": [],
+  "result": {
+    "workflow_status": "succeeded",
+    "final_state": {
+      "seed": 1
+    }
+  }
+}

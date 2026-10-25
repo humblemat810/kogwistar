@@ -2498,6 +2498,152 @@ mod tests {
     }
 
     #[test]
+    fn persistent_graph_invalid_cases_match_shared_python_rejection_fixture() {
+        let baseline: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/python-graph-model-payloads-v1.json"
+        )))
+        .expect("valid Python graph payload fixture");
+        let invalid: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/graph-model-invalid-v1.json"
+        )))
+        .expect("valid graph invalid-case fixture");
+        assert_eq!(invalid["schema_version"], 1);
+
+        for case in invalid["cases"].as_array().expect("invalid cases") {
+            let case_id = case.as_str().expect("case id");
+            let (kind, mutation) = case_id.split_once('.').expect("kind.mutation");
+            let baseline_case = baseline["cases"]
+                .as_array()
+                .expect("baseline cases")
+                .iter()
+                .find(|candidate| candidate["kind"] == kind)
+                .expect("matching baseline model");
+            let mut payload = baseline_case["payload"].clone();
+            let model_class = match kind {
+                "node" => GraphModelClass::Node,
+                "edge" => GraphModelClass::Edge,
+                _ => panic!("unexpected fixture model class: {kind}"),
+            };
+            match mutation {
+                "invalid_lifecycle_status" => {
+                    payload["metadata"]["lifecycle_status"] = Value::String("purged".into());
+                }
+                "empty_id" => {
+                    payload["id"] = Value::String(String::new());
+                }
+                "invalid_redirect_id" => {
+                    payload["metadata"]["redirect_to_id"] = Value::Number(7.into());
+                }
+                "empty_node_endpoint_id" if kind == "edge" => {
+                    payload["source_ids"] = serde_json::json!([""]);
+                }
+                "empty_edge_endpoint_id" if kind == "edge" => {
+                    payload["source_edge_ids"] = serde_json::json!([""]);
+                }
+                "missing_relation" if kind == "edge" => {
+                    payload
+                        .as_object_mut()
+                        .expect("edge payload object")
+                        .remove("relation");
+                }
+                _ => panic!("unexpected graph-model invalid fixture: {case_id}"),
+            }
+            assert!(
+                GraphModelEnvelope::new(model_class, payload)
+                    .validate_family_v1()
+                    .is_err(),
+                "Rust accepted shared invalid graph-model case {case_id}"
+            );
+        }
+    }
+
+    #[test]
+    fn persistent_graph_legacy_defaults_match_shared_compatibility_fixture() {
+        let baseline: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/python-graph-model-payloads-v1.json"
+        )))
+        .expect("valid Python graph payload fixture");
+        let compatibility: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/graph-model-legacy-compat-v1.json"
+        )))
+        .expect("valid graph compatibility fixture");
+        assert_eq!(compatibility["schema_version"], 1);
+
+        for case in compatibility["cases"]
+            .as_array()
+            .expect("compatibility cases")
+        {
+            let case_id = case.as_str().expect("case id");
+            let (kind, compatibility_case) = case_id.split_once('.').expect("kind.case");
+            let baseline_case = baseline["cases"]
+                .as_array()
+                .expect("baseline cases")
+                .iter()
+                .find(|candidate| candidate["kind"] == kind)
+                .expect("matching baseline model");
+            let mut payload = baseline_case["payload"].clone();
+            let model_class = match kind {
+                "node" => GraphModelClass::Node,
+                "edge" => GraphModelClass::Edge,
+                _ => panic!("unexpected fixture model class: {kind}"),
+            };
+            let expected_status = match compatibility_case {
+                "omitted_lifecycle_defaults" => {
+                    let metadata = payload
+                        .get_mut("metadata")
+                        .and_then(Value::as_object_mut)
+                        .expect("fixture metadata");
+                    metadata.remove("lifecycle_status");
+                    metadata.remove("redirect_to_id");
+                    "active"
+                }
+                "deleted_alias_normalizes" => {
+                    payload["metadata"]["lifecycle_status"] = Value::String("deleted".into());
+                    "tombstoned"
+                }
+                "level_metadata_fallback" => {
+                    payload
+                        .as_object_mut()
+                        .expect("graph payload object")
+                        .remove("level_from_root");
+                    payload["metadata"]["level_from_root"] = Value::Number(2.into());
+                    "active"
+                }
+                "level_top_level_precedence" => {
+                    payload["level_from_root"] = Value::Number(3.into());
+                    payload["metadata"]["level_from_root"] = Value::Number(2.into());
+                    "active"
+                }
+                _ => panic!("unexpected graph-model compatibility case: {case_id}"),
+            };
+            let decoded = GraphModelEnvelope::new(model_class, payload)
+                .decode_persistent_v1()
+                .expect("legacy graph payload remains accepted");
+            let core = match decoded {
+                PersistentGraphEntityV1::Node(node) => node.core,
+                PersistentGraphEntityV1::Edge(edge) => edge.core,
+            };
+            assert_eq!(core.metadata["lifecycle_status"], expected_status);
+            assert_eq!(core.metadata["redirect_to_id"], Value::Null);
+            match compatibility_case {
+                "level_metadata_fallback" => {
+                    assert_eq!(core.level_from_root, Some(2));
+                    assert_eq!(core.metadata["level_from_root"], 2);
+                }
+                "level_top_level_precedence" => {
+                    assert_eq!(core.level_from_root, Some(3));
+                    assert_eq!(core.metadata["level_from_root"], 3);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
     fn model_class_tag_is_out_of_band_and_preserves_legacy_payload_shape() {
         let payload = fixture()["cases"][0]["payload"].clone();
         let envelope = GraphModelEnvelope::new(GraphModelClass::AclNode, payload.clone());

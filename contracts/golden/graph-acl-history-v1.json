@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "truth_graph": "knowledge",
+  "principal": {
+    "id": "alice",
+    "groups": ["reviewers"],
+    "security_scope": "team-a"
+  },
+  "targets": [
+    {
+      "id": "node-active-before-tombstone",
+      "grain": "node",
+      "acl_records": [
+        {"version": 1, "mode": "public"},
+        {"version": 2, "mode": "private", "owner_id": "bob", "tombstoned": true}
+      ]
+    },
+    {
+      "id": "node-newer-active",
+      "grain": "node",
+      "acl_records": [
+        {"version": 1, "mode": "public"},
+        {"version": 2, "mode": "private", "owner_id": "bob"}
+      ]
+    },
+    {
+      "id": "edge-active-before-tombstone",
+      "grain": "edge",
+      "acl_records": [
+        {"version": 1, "mode": "private", "owner_id": "bob"},
+        {"version": 2, "mode": "public", "tombstoned": true}
+      ]
+    },
+    {
+      "id": "edge-active-after-tombstone",
+      "grain": "edge",
+      "acl_records": [
+        {"version": 1, "mode": "public", "tombstoned": true},
+        {"version": 2, "mode": "shared", "shared_with_principals": ["alice"]}
+      ]
+    },
+    {"id": "node-no-acl", "grain": "node", "acl_records": []}
+  ],
+  "expected_visible": {
+    "nodes": ["node-active-before-tombstone"],
+    "edges": ["edge-active-after-tombstone"]
+  }
+}

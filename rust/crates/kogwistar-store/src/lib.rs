@@ -342,7 +342,10 @@ impl GraphAclIndex {
                 continue;
             };
             let replace = self.rules.get(&key).is_none_or(|current| {
-                (rule.version, acl_rank(&rule.mode)) > (current.version, acl_rank(&current.mode))
+                (current.tombstoned && !rule.tombstoned)
+                    || (current.tombstoned == rule.tombstoned
+                        && (rule.version, acl_rank(&rule.mode))
+                            > (current.version, acl_rank(&current.mode)))
             });
             if replace {
                 self.rules.insert(key, rule);
@@ -1151,9 +1154,10 @@ pub fn validate_graph_mutation_batch(batch: &GraphMutationBatch) -> StoreResult<
                 message: "index job op must be UPSERT or DELETE".to_owned(),
             });
         }
-        if job.max_retries < 0 {
+        if !(0..=i32::MAX as i64).contains(&job.max_retries) {
             return Err(StoreError::InvalidEntityEventPayload {
-                message: "index job max_retries must not be negative".to_owned(),
+                message: "index job max_retries must fit a non-negative PostgreSQL INTEGER"
+                    .to_owned(),
             });
         }
     }
@@ -3074,6 +3078,139 @@ mod tests {
     }
 
     #[test]
+    fn graph_acl_history_matches_shared_golden_contract() {
+        let fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/graph-acl-history-v1.json"
+        )))
+        .expect("valid graph ACL history fixture");
+        assert_eq!(fixture["schema_version"], 1);
+        let principal = GraphAclPrincipal {
+            principal_id: fixture["principal"]["id"]
+                .as_str()
+                .expect("principal ID")
+                .to_owned(),
+            groups: fixture["principal"]["groups"]
+                .as_array()
+                .expect("principal groups")
+                .iter()
+                .map(|value| value.as_str().expect("group").to_owned())
+                .collect(),
+            security_scope: fixture["principal"]["security_scope"]
+                .as_str()
+                .map(str::to_owned),
+        };
+        let mut nodes = Vec::new();
+        let mut edges = Vec::new();
+        for target in fixture["targets"].as_array().expect("targets") {
+            let id = target["id"].as_str().expect("target ID");
+            let grain = target["grain"].as_str().expect("target grain");
+            let target_record = GraphRecord::new(id);
+            for (index, rule) in target["acl_records"]
+                .as_array()
+                .expect("ACL record history")
+                .iter()
+                .enumerate()
+            {
+                let mut acl = GraphRecord::new(format!("acl-{id}-{index}"));
+                acl.metadata
+                    .insert("entity_type".into(), "acl_record".into());
+                acl.metadata
+                    .insert("acl_truth_graph".into(), fixture["truth_graph"].clone());
+                acl.metadata
+                    .insert("acl_target_entity_id".into(), id.into());
+                acl.metadata.insert("acl_target_grain".into(), grain.into());
+                acl.metadata.insert(
+                    "acl_version".into(),
+                    rule["version"].as_i64().expect("version").into(),
+                );
+                acl.metadata.insert(
+                    "acl_mode".into(),
+                    rule["mode"].as_str().expect("mode").into(),
+                );
+                if let Some(owner) = rule["owner_id"].as_str() {
+                    acl.metadata.insert("owner_id".into(), owner.into());
+                }
+                if let Some(scope) = rule["security_scope"].as_str() {
+                    acl.metadata.insert("security_scope".into(), scope.into());
+                }
+                if rule["tombstoned"].as_bool().unwrap_or(false) {
+                    acl.metadata.insert("tombstoned".into(), true.into());
+                }
+                let mut properties = serde_json::Map::new();
+                for field in ["shared_with_principals", "shared_with_groups"] {
+                    if let Some(values) = rule[field].as_array() {
+                        properties.insert(field.into(), Value::Array(values.clone()));
+                    }
+                }
+                if !properties.is_empty() {
+                    acl.document = Some(serde_json::json!({"properties": properties}).to_string());
+                }
+                nodes.push(acl);
+            }
+            if grain == "node" {
+                nodes.push(target_record);
+            } else {
+                edges.push(target_record);
+            }
+        }
+
+        let (visible_nodes, visible_edges) = graph_records_visible_by_acl(
+            &nodes,
+            &edges,
+            fixture["truth_graph"].as_str().expect("truth graph"),
+            &principal,
+        );
+        let node_ids = visible_nodes
+            .iter()
+            .map(|record| record.id.as_str())
+            .collect::<Vec<_>>();
+        let edge_ids = visible_edges
+            .iter()
+            .map(|record| record.id.as_str())
+            .collect::<Vec<_>>();
+        let expected_nodes = fixture["expected_visible"]["nodes"]
+            .as_array()
+            .expect("expected nodes")
+            .iter()
+            .map(|value| value.as_str().expect("node ID"))
+            .collect::<Vec<_>>();
+        let expected_edges = fixture["expected_visible"]["edges"]
+            .as_array()
+            .expect("expected edges")
+            .iter()
+            .map(|value| value.as_str().expect("edge ID"))
+            .collect::<Vec<_>>();
+        assert_eq!(node_ids, expected_nodes);
+        assert_eq!(edge_ids, expected_edges);
+
+        let reversed_nodes = nodes.iter().rev().cloned().collect::<Vec<_>>();
+        let reversed_edges = edges.iter().rev().cloned().collect::<Vec<_>>();
+        let (reordered_visible_nodes, reordered_visible_edges) = graph_records_visible_by_acl(
+            &reversed_nodes,
+            &reversed_edges,
+            fixture["truth_graph"].as_str().expect("truth graph"),
+            &principal,
+        );
+        let mut reordered_node_ids = reordered_visible_nodes
+            .iter()
+            .map(|record| record.id.as_str())
+            .collect::<Vec<_>>();
+        let mut reordered_edge_ids = reordered_visible_edges
+            .iter()
+            .map(|record| record.id.as_str())
+            .collect::<Vec<_>>();
+        reordered_node_ids.sort_unstable();
+        reordered_edge_ids.sort_unstable();
+        let mut expected_node_ids = expected_nodes.clone();
+        let mut expected_edge_ids = expected_edges.clone();
+        expected_node_ids.sort_unstable();
+        expected_edge_ids.sort_unstable();
+        assert_eq!(reordered_node_ids, expected_node_ids);
+        assert_eq!(reordered_edge_ids, expected_edge_ids);
+    }
+
+    #[test]
     fn tool_audit_projection_is_scope_filtered_and_canonical() {
         let mut call = GraphRecord::new("tool-call-1");
         call.metadata
@@ -3577,6 +3714,45 @@ mod tests {
             }),
             Err(StoreError::InvalidEntityEventPayload { .. })
         ));
+    }
+
+    #[test]
+    fn graph_mutation_batch_rejects_index_retry_counts_outside_portable_range() {
+        let mutation = typed_mutation("node", fixture_payload(0));
+        for max_retries in [-1, i32::MAX as i64 + 1] {
+            let result = validate_graph_mutation_batch(&GraphMutationBatch {
+                mutations: vec![mutation.clone()],
+                index_jobs: vec![NewIndexJob {
+                    job_id: "job-1".to_owned(),
+                    namespace: mutation.scope.namespace.clone(),
+                    entity_kind: "node".to_owned(),
+                    entity_id: mutation.record.id.clone(),
+                    index_kind: "doc".to_owned(),
+                    op: "UPSERT".to_owned(),
+                    payload_json: None,
+                    max_retries,
+                }],
+            });
+            assert!(matches!(
+                result,
+                Err(StoreError::InvalidEntityEventPayload { .. })
+            ));
+        }
+
+        let boundary = validate_graph_mutation_batch(&GraphMutationBatch {
+            mutations: vec![mutation.clone()],
+            index_jobs: vec![NewIndexJob {
+                job_id: "job-boundary".to_owned(),
+                namespace: mutation.scope.namespace.clone(),
+                entity_kind: "node".to_owned(),
+                entity_id: mutation.record.id.clone(),
+                index_kind: "doc".to_owned(),
+                op: "UPSERT".to_owned(),
+                payload_json: None,
+                max_retries: i32::MAX as i64,
+            }],
+        });
+        assert!(boundary.is_ok());
     }
 
     #[test]

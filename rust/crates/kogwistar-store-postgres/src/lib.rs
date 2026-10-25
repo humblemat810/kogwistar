@@ -7083,6 +7083,109 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn graph_mutation_batch_rolls_back_when_index_intent_fails_when_dsn_available()
+    -> PostgresStoreResult<()> {
+        let Some(dsn) = std::env::var("KOGWISTAR_TEST_PG_DSN").ok() else {
+            eprintln!("KOGWISTAR_TEST_PG_DSN absent; graph batch rollback integration skipped");
+            return Ok(());
+        };
+        let schema = test_schema("graph_batch_rollback");
+        let store = PostgresStore::from_dsn(&dsn, &schema)?;
+        store.ensure_schema().await?;
+        store
+            .create_graph_schema(3, GraphTableNames::default())
+            .await?;
+        let tables = Tables::new(&schema)?;
+        store
+            .client()
+            .await?
+            .batch_execute(&format!(
+                "CREATE FUNCTION {}.reject_batch_index_job() RETURNS trigger \
+                 LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected index job failure'; \
+                 END; $$; CREATE TRIGGER reject_batch_index_job BEFORE INSERT ON {} \
+                 FOR EACH ROW EXECUTE FUNCTION {}.reject_batch_index_job();",
+                tables.quoted_schema, tables.index_jobs, tables.quoted_schema
+            ))
+            .await
+            .map_err(backend)?;
+
+        let namespace = format!("batch-{}", std::process::id());
+        let entity_id = "batch-rollback-node";
+        let mutation = kogwistar_store::GraphMutation {
+            scope: kogwistar_store::GraphScope {
+                namespace: namespace.clone(),
+                workspace_id: None,
+                graph_space: None,
+            },
+            table: "gke_nodes".to_owned(),
+            entity_kind: "node".to_owned(),
+            event_id: format!("event-{entity_id}"),
+            op: "ADD".to_owned(),
+            payload: serde_json::json!({"id": entity_id, "entity_type": "node"}),
+            record: kogwistar_store::GraphRecord {
+                id: entity_id.to_owned(),
+                document: Some("atomic batch rollback probe".to_owned()),
+                metadata: Map::new(),
+                embedding: None,
+            },
+            embedding_dim: 3,
+        };
+        let batch = kogwistar_store::GraphMutationBatch {
+            mutations: vec![mutation],
+            index_jobs: vec![kogwistar_store::NewIndexJob {
+                job_id: format!("job-{entity_id}"),
+                namespace: namespace.clone(),
+                entity_kind: "node".to_owned(),
+                entity_id: entity_id.to_owned(),
+                index_kind: "node_docs".to_owned(),
+                op: "UPSERT".to_owned(),
+                payload_json: None,
+                max_retries: 3,
+            }],
+        };
+
+        assert!(matches!(
+            store
+                .apply_graph_mutations_with_index_jobs_atomic(batch)
+                .await,
+            Err(PostgresStoreError::Backend(_))
+        ));
+        assert!(store.replay_raw_events(&namespace, 0, 10).await?.is_empty());
+        assert!(
+            store
+                .graph_projection_records(GraphProjectionRead {
+                    scope: kogwistar_store::GraphScope {
+                        namespace: namespace.clone(),
+                        workspace_id: None,
+                        graph_space: None,
+                    },
+                    table: "gke_nodes".to_owned(),
+                    ids: Some(vec![entity_id.to_owned()]),
+                    metadata: kogwistar_store::MetadataFilter::default(),
+                    limit: 10,
+                })
+                .await?
+                .is_empty()
+        );
+        assert!(
+            store
+                .claim_index_jobs(10, 30, Some(&namespace))
+                .await?
+                .is_empty()
+        );
+
+        let cleanup = store.client().await?;
+        cleanup
+            .batch_execute(&format!(
+                "DROP SCHEMA {} CASCADE",
+                Tables::new(&schema)?.quoted_schema
+            ))
+            .await
+            .map_err(backend)?;
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn recorded_runtime_and_claimed_handoff_are_atomic_when_dsn_available()
     -> PostgresStoreResult<()> {
         let Some(dsn) = std::env::var("KOGWISTAR_TEST_PG_DSN").ok() else {

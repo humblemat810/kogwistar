@@ -79,6 +79,53 @@ def test_base_graph_models_get_explicit_versioned_envelopes() -> None:
     assert node_envelope["payload"] != node.model_dump(field_mode="llm_in", dump_format="json")
 
 
+@pytest.mark.parametrize("model_kind", ["node", "edge"])
+def test_persistent_graph_models_reject_non_finite_embeddings(model_kind: str) -> None:
+    model_type = Node if model_kind == "node" else Edge
+    payload: dict[str, object] = {
+        "id": f"{model_kind}-finite-check",
+        "label": model_kind,
+        "type": "entity" if model_kind == "node" else "relationship",
+        "summary": "finite vector contract",
+        "mentions": _mentions("vector evidence"),
+        "embedding": [0.25, float("nan")],
+    }
+    if model_kind == "edge":
+        payload.update(
+            {
+                "relation": "relates_to",
+                "source_ids": ["source"],
+                "target_ids": ["target"],
+                "source_edge_ids": None,
+                "target_edge_ids": None,
+            }
+        )
+
+    with pytest.raises(ValueError, match="embedding values must be finite"):
+        model_type.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    ["source_ids", "target_ids", "source_edge_ids", "target_edge_ids"],
+)
+def test_python_edge_rejects_empty_endpoint_ids(field_name: str) -> None:
+    payload: dict[str, object] = {
+        "id": "edge-endpoint-check",
+        "label": "edge",
+        "type": "relationship",
+        "summary": "endpoint contract",
+        "mentions": _mentions("edge evidence"),
+        "source_ids": ["source"],
+        "target_ids": ["target"],
+        "source_edge_ids": None,
+        "target_edge_ids": None,
+        field_name: [""],
+    }
+    with pytest.raises(ValueError, match="edge endpoint IDs must not be empty"):
+        Edge.model_validate(payload)
+
+
 def test_unknown_subclass_fails_closed_instead_of_guessing() -> None:
     class FutureNode(Node):
         pass
@@ -260,6 +307,58 @@ def test_native_capability_report_matches_corrected_doc_node_profile() -> None:
         "lifecycle": False,
         "level": False,
     }
+
+
+@pytest.mark.requires_rust
+def test_native_capability_profiles_match_python_model_inheritance() -> None:
+    """Rust's graph capability report must track the Python model MRO."""
+    pytest.importorskip("kogwistar._rust")
+    python_models = {
+        "node": Node,
+        "edge": Edge,
+        "acl_node": acl_models.ACLNode,
+        "acl_edge": acl_models.ACLEdge,
+        "conversation_node": conversation_models.ConversationNode,
+        "conversation_edge": conversation_models.ConversationEdge,
+        "workflow_node": runtime_models.WorkflowNode,
+        "workflow_edge": runtime_models.WorkflowEdge,
+        "workflow_run_node": runtime_models.WorkflowRunNode,
+        "workflow_step_exec_node": runtime_models.WorkflowStepExecNode,
+        "workflow_checkpoint_node": runtime_models.WorkflowCheckpointNode,
+        "workflow_completed_node": runtime_models.WorkflowCompletedNode,
+        "workflow_cancelled_node": runtime_models.WorkflowCancelledNode,
+        "workflow_failed_node": runtime_models.WorkflowFailedNode,
+        "workflow_runtime_edge": runtime_models.WorkflowRuntimeEdge,
+        "pure_chroma_node": engine_models.PureChromaNode,
+        "pure_chroma_edge": engine_models.PureChromaEdge,
+        "doc_node": engine_models.DocNode,
+        "llm_node": engine_models.LLMNode,
+        "llm_edge": engine_models.LLMEdge,
+        "llm_node_extraction": engine_models.LLMNodeExtraction,
+        "llm_edge_extraction": engine_models.LLMEdgeExtraction,
+        "flattened_llm_node": engine_models.FlattenedLLMNode,
+        "flattened_llm_edge": engine_models.FlattenedLLMEdge,
+        "assoc_flattened_llm_node": engine_models.AssocFlattenedLLMNode,
+        "assoc_flattened_llm_edge": engine_models.AssocFlattenedLLMEdge,
+    }
+
+    profiles = graph_model_capability_profiles()
+    assert {profile["model_class"] for profile in profiles} == set(python_models)
+    for profile in profiles:
+        model = python_models[profile["model_class"]]
+        fields = model.model_fields
+        expected = {
+            "graph_entity": issubclass(model, engine_models.GraphEntityBase),
+            "edge_entity": issubclass(model, EdgeMixin),
+            "metadata": "metadata" in fields,
+            "lifecycle": issubclass(model, TombstoneMixin),
+            "level": issubclass(model, LevelAwareMixin),
+        }
+        actual = {
+            key: profile[key]
+            for key in expected
+        }
+        assert actual == expected, profile["model_class"]
 
 
 def test_python_slice_envelope_accepts_all_extension_modes() -> None:

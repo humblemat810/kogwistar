@@ -1,4 +1,5 @@
 import logging
+from math import isfinite
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 
@@ -97,6 +98,13 @@ class IdPolicyMixin(BaseModel):
     id: str | None = Field(default=None)
     id_policy: ClassVar[Literal["event", "canonical"]] = "event"
     id_kind: ClassVar[str] = "model"
+
+    @field_validator("id")
+    @classmethod
+    def _reject_empty_id(cls, value: str | None) -> str | None:
+        if value == "":
+            raise ValueError("id must not be empty")
+        return value
 
     def identity_key(self) -> tuple[str, ...]:
         """
@@ -440,6 +448,15 @@ class EdgeMixin(ModeSlicingMixin, BaseModel):
         ..., description="List of target edge IDs"
     )
 
+    @field_validator(
+        "source_ids", "target_ids", "source_edge_ids", "target_edge_ids"
+    )
+    @classmethod
+    def _reject_empty_endpoint_ids(cls, value: list[str] | None) -> list[str] | None:
+        if value is not None and any(not endpoint_id for endpoint_id in value):
+            raise ValueError("edge endpoint IDs must not be empty")
+        return value
+
 
 # -------------------------
 # Storage-facing mixin (embedding OPTIONAL)
@@ -466,6 +483,15 @@ class ChromaMixin(BaseModel):
         None, description="Document ID from which this entity was extracted"
     )
     metadata: dict[str, JsonValue] = Field(default_factory=dict, description="metadata")
+
+    @field_validator("embedding")
+    @classmethod
+    def _require_finite_embedding(
+        cls, value: Sequence[float] | None
+    ) -> Sequence[float] | None:
+        if value is not None and any(not isfinite(item) for item in value):
+            raise ValueError("embedding values must be finite")
+        return value
 
     @field_validator("metadata")
     def check_metadata(cls, v: dict[str, JsonValue]) -> dict[str, JsonValue]:
@@ -584,6 +610,10 @@ class TombstoneMixin(BaseModel):
                 )
         if "redirect_to_id" not in v:
             v["redirect_to_id"] = None
+        elif v["redirect_to_id"] is not None and not isinstance(
+            v["redirect_to_id"], str
+        ):
+            raise ValueError("redirect_to_id must be a string or null")
         return v
 
 
