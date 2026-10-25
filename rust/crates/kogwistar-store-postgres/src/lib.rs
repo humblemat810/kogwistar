@@ -6576,15 +6576,32 @@ mod tests {
     }
 
     #[test]
-    fn physical_graph_purge_rejects_unknown_or_mismatched_targets() {
+    fn lifecycle_mutations_accept_only_nodes_and_edges() {
         assert!(validate_graph_entity_target("gke_nodes", "node").is_ok());
         assert!(validate_graph_entity_target("gke_edges", "edge").is_ok());
         assert!(validate_graph_entity_target("gke_nodes", "document").is_err());
         assert!(validate_graph_entity_target("gke_edges", "node").is_err());
+        assert!(validate_graph_entity_target("gke_documents", "document").is_err());
+        assert!(validate_graph_entity_target("gke_domains", "domain").is_err());
+    }
 
-        assert!(validate_graph_mutation_target("gke_documents", "document").is_ok());
-        assert!(validate_graph_mutation_target("gke_domains", "domain").is_ok());
-        assert!(validate_graph_mutation_target("gke_nodes", "document").is_err());
+    #[test]
+    fn graph_mutations_map_each_entity_kind_to_exactly_one_table() {
+        let targets = [
+            ("node", "gke_nodes"),
+            ("edge", "gke_edges"),
+            ("document", "gke_documents"),
+            ("domain", "gke_domains"),
+        ];
+        for (entity_kind, expected_table) in targets {
+            assert!(validate_graph_mutation_target(expected_table, entity_kind).is_ok());
+            for (_, other_table) in targets {
+                if other_table != expected_table {
+                    assert!(validate_graph_mutation_target(other_table, entity_kind).is_err());
+                }
+            }
+        }
+        assert!(validate_graph_mutation_target("gke_nodes", "unknown").is_err());
     }
 
     fn raw(id: &str, payload_json: &str) -> NewRawEntityEvent {

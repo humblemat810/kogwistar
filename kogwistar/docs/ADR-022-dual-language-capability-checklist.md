@@ -13,7 +13,9 @@ and CI evidence rather than assigning one percentage to the whole port.
   edge, document, and domain targets against their matching projection tables.
   Lifecycle metadata patching and the canonical-tombstone requirement remain
   restricted to node/edge entities. The document/domain routes are required by
-  existing atomic add and document rollback paths.
+  existing atomic add and document rollback paths. Rust unit tests verify the
+  exact kind/table mapping and separately prove lifecycle operations reject
+  document/domain targets (`kogwistar-store-postgres --lib`: **11 passed**).
 - Live Windows CPython 3.13 PostgreSQL regression:
   `tests/core/test_rust_postgres_transaction_session.py` plus
   `tests/core/test_edge_metadata_serialization.py`: **34 passed, 0 failed**.
