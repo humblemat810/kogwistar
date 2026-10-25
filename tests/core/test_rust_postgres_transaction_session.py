@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 import threading
+import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -807,6 +808,98 @@ else:
         )
         assert result.returncode == 0, result.stderr
         assert session.call("next_global_seq") == 1
+
+
+def test_postgres_owner_process_crash_rolls_back_and_releases_store(
+    tmp_path: Path,
+    pg_dsn: str | None,
+    pg_schema: str | None,
+    sa_engine: Any,
+) -> None:
+    dsn, schema = _require_pg(pg_dsn, pg_schema)
+    entity_id = f"crashed-owner-{uuid.uuid4().hex}"
+    marker = tmp_path / "transaction-open"
+    child_script = r"""
+import os
+import time
+from kogwistar.engine_core.rust_postgres_session import RustPostgresSession
+
+session = RustPostgresSession(
+    dsn=os.environ["KOGWISTAR_TEST_PG_DSN"],
+    schema=os.environ["KOGWISTAR_TEST_PG_SCHEMA"],
+)
+session.ensure_initialized()
+with session.transaction():
+    session.call(
+        "raw_append",
+        namespace="crash-recovery",
+        event_id=os.environ["KOGWISTAR_TEST_EVENT_ID"],
+        entity_kind="node",
+        entity_id=os.environ["KOGWISTAR_TEST_ENTITY_ID"],
+        op="UPSERT",
+        payload_json='{"summary":"must-roll-back"}',
+    )
+    open(os.environ["KOGWISTAR_TEST_MARKER"], "w").close()
+    time.sleep(300)
+"""
+    child_env = os.environ.copy()
+    child_env.update(
+        {
+            "KOGWISTAR_TEST_PG_DSN": dsn,
+            "KOGWISTAR_TEST_PG_SCHEMA": schema,
+            "KOGWISTAR_TEST_EVENT_ID": uuid.uuid4().hex,
+            "KOGWISTAR_TEST_ENTITY_ID": entity_id,
+            "KOGWISTAR_TEST_MARKER": str(marker),
+        }
+    )
+    process = subprocess.Popen(
+        [sys.executable, "-c", child_script],
+        cwd=Path(__file__).resolve().parents[2],
+        env=child_env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        deadline = time.monotonic() + 30
+        while not marker.exists() and process.poll() is None:
+            if time.monotonic() >= deadline:
+                pytest.fail("Rust process did not reach its open transaction")
+            time.sleep(0.02)
+        assert marker.exists(), process.stderr.read() if process.poll() is not None else ""
+    finally:
+        if process.poll() is None:
+            process.kill()
+        process.communicate(timeout=10)
+
+    metadata = EnginePostgresMetaStore(engine=sa_engine, schema=schema)
+    events = [
+        event
+        for event in metadata.iter_entity_events(namespace="crash-recovery")
+        if event[1:3] == ("node", entity_id)
+    ]
+    assert events == []
+
+    recovery = RustPostgresSession(dsn=dsn, schema=schema)
+    recovery.ensure_initialized()
+    with recovery.transaction():
+        result = recovery.call(
+            "raw_append",
+            namespace="crash-recovery",
+            event_id=uuid.uuid4().hex,
+            entity_kind="node",
+            entity_id=entity_id,
+            op="UPSERT",
+            payload_json='{"summary":"recovered-owner"}',
+        )
+    assert result["seq"] == 1
+    recovered_events = [
+        event
+        for event in metadata.iter_entity_events(namespace="crash-recovery")
+        if event[1:3] == ("node", entity_id)
+    ]
+    assert len(recovered_events) == 1
+    assert json.loads(recovered_events[0][4]) == {"summary": "recovered-owner"}
 
 
 def test_public_rust_postgres_edge_add_is_atomic_with_event_and_jobs(
