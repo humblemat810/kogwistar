@@ -535,22 +535,6 @@
         ]
       },
       {
-        "name": "tool-audit-read",
-        "owner": "python",
-        "status": "intentionally-deferred",
-        "required_authority": [
-          "workflow-runtime",
-          "graph-pgvector"
-        ],
-        "exit_evidence": "conversation tool-call/result read parity, security-scope enforcement, audit ordering, and REST/MCP conformance",
-        "operations": [
-          {
-            "method": "GET",
-            "path": "/api/workflow/tools/audit"
-          }
-        ]
-      },
-      {
         "name": "derived-index-admission",
         "owner": "python",
         "status": "intentionally-deferred",

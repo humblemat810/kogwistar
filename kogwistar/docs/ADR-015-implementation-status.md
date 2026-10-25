@@ -143,7 +143,7 @@ Only these local items remain in scope before production rollout:
   same protocol. This line remains unchecked:
   public authority promotion still requires its capability canary and the
   explicit `workflow-runtime` readiness decision.
-- [x] Phase 5: explicitly version/defer the 12 currently frozen Python-owned
+- [x] Phase 5: explicitly version/defer the 11 currently frozen Python-owned
   server operations listed by `PENDING_SERVER_CUTOVER_ROUTES`. The manifest
   records grouped Python rollback ownership, prerequisite Rust authorities, and
   exit evidence; its exact operation set is bidirectionally checked against the

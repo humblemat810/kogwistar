@@ -35,7 +35,6 @@ pub const PENDING_SERVER_CUTOVER_ROUTES: &[(&str, &str)] = &[
     ("GET", "/api/search_index_hybrid"),
     ("GET", "/api/viz/cytoscape.json"),
     ("GET", "/api/viz/d3.json"),
-    ("GET", "/api/workflow/tools/audit"),
     ("GET", "/viz/d3.bundle"),
     ("POST", "/api/add_index_entries"),
     ("POST", "/api/conversations"),

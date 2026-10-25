@@ -516,44 +516,46 @@ pub fn tool_audit_items_from_visible_records(
     limit: usize,
 ) -> Result<Vec<ToolAuditItemV1>, ToolAuditContractError> {
     let mut items = Vec::new();
-    for record in records {
-        if is_tombstoned(&record.metadata) {
-            continue;
-        }
-        let Some(entity_type) = value_string(record, "entity_type") else {
-            continue;
-        };
-        if !matches!(entity_type.as_str(), "tool_call" | "tool_result") {
-            continue;
-        }
-        let item_conversation_id = value_string(record, "conversation_id");
-        if conversation_id.is_some_and(|expected| item_conversation_id.as_deref() != Some(expected))
-        {
-            continue;
-        }
-        let turn_index = record_field(record, "turn_index").and_then(|value| value.as_i64());
-        let summary = value_string(record, "summary").unwrap_or_default();
-        let tool_name = value_string(record, "tool_name").unwrap_or_default();
-        let properties = record_json(record)
-            .and_then(|document| document.get("properties").cloned())
-            .and_then(|value| value.as_object().cloned())
-            .unwrap_or_default()
-            .into_iter()
-            .collect();
-        let item = ToolAuditItemV1 {
-            schema_version: kogwistar_contracts::TOOL_AUDIT_WIRE_VERSION,
-            node_id: record.id.clone(),
-            entity_type,
-            tool_name,
-            conversation_id: item_conversation_id,
-            turn_index,
-            summary,
-            properties,
-        };
-        item.validate()?;
-        items.push(item);
-        if items.len() >= limit {
-            break;
+    if limit == 0 {
+        return Ok(items);
+    }
+    for expected_type in ["tool_call", "tool_result"] {
+        for record in records {
+            if is_tombstoned(&record.metadata)
+                || value_string(record, "entity_type").as_deref() != Some(expected_type)
+            {
+                continue;
+            }
+            let item_conversation_id = value_string(record, "conversation_id");
+            if conversation_id
+                .is_some_and(|expected| item_conversation_id.as_deref() != Some(expected))
+            {
+                continue;
+            }
+            let turn_index = record_field(record, "turn_index").and_then(|value| value.as_i64());
+            let summary = value_string(record, "summary").unwrap_or_default();
+            let tool_name = value_string(record, "tool_name").unwrap_or_default();
+            let properties = record_json(record)
+                .and_then(|document| document.get("properties").cloned())
+                .and_then(|value| value.as_object().cloned())
+                .unwrap_or_default()
+                .into_iter()
+                .collect();
+            let item = ToolAuditItemV1 {
+                schema_version: kogwistar_contracts::TOOL_AUDIT_WIRE_VERSION,
+                node_id: record.id.clone(),
+                entity_type: expected_type.to_owned(),
+                tool_name,
+                conversation_id: item_conversation_id,
+                turn_index,
+                summary,
+                properties,
+            };
+            item.validate()?;
+            items.push(item);
+            if items.len() >= limit {
+                return Ok(items);
+            }
         }
     }
     Ok(items)
@@ -3088,6 +3090,23 @@ mod tests {
             .to_string(),
         );
 
+        let mut result = GraphRecord::new("tool-result-1");
+        result
+            .metadata
+            .insert("entity_type".into(), "tool_result".into());
+        result
+            .metadata
+            .insert("tool_name".into(), "graph.read".into());
+        result
+            .metadata
+            .insert("conversation_id".into(), "conversation-1".into());
+        result.document = Some(
+            serde_json::json!({
+                "properties": {"status": "completed"}
+            })
+            .to_string(),
+        );
+
         let mut other = GraphRecord::new("tool-result-other");
         other
             .metadata
@@ -3114,15 +3133,21 @@ mod tests {
             .insert("lifecycle_status".into(), "tombstoned".into());
 
         let items = tool_audit_items_from_visible_records(
-            &[call, other, tombstoned],
+            &[result, call, other, tombstoned],
             Some("conversation-1"),
             10,
         )
         .unwrap();
-        assert_eq!(items.len(), 1);
+        assert_eq!(items.len(), 2);
         assert_eq!(items[0].node_id, "tool-call-1");
         assert_eq!(items[0].turn_index, Some(2));
         assert_eq!(items[0].properties["status"], "completed");
+        assert_eq!(items[1].node_id, "tool-result-1");
+        assert!(
+            tool_audit_items_from_visible_records(&[GraphRecord::new("ignored")], None, 0)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]

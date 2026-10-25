@@ -1,11 +1,11 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use thiserror::Error;
 
 pub const TOOL_AUDIT_WIRE_VERSION: i32 = 1;
 
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ToolAuditItemV1 {
     pub schema_version: i32,
@@ -18,7 +18,7 @@ pub struct ToolAuditItemV1 {
     pub properties: BTreeMap<String, Value>,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ToolAuditResponseV1 {
     pub schema_version: i32,

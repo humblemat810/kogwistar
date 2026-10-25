@@ -18,8 +18,8 @@ use jsonwebtoken::{
 use kogwistar_contracts::{
     ConversationTranscriptV1, DelegationAuthorityV1, DocumentUpsertV1,
     GraphMutationBatchV1 as GraphMutationBatchInput, GraphMutationV1 as GraphMutationInput,
-    GraphNeighborsRequestV1, attach_rust_native_seam_attestation, attenuate_capabilities,
-    graph_neighbors_request_from_str,
+    GraphNeighborsRequestV1, ToolAuditResponseV1, attach_rust_native_seam_attestation,
+    attenuate_capabilities, graph_neighbors_request_from_str,
 };
 use kogwistar_runtime::{
     RECORDED_RUNTIME_CONTRACT_VERSION, RecordedRuntimeState, RecordedRuntimeTransition,
@@ -40,7 +40,7 @@ use kogwistar_store::{
     graph_find_edges_from_records, graph_k_hop_from_records, graph_neighbors_from_records,
     graph_projection_records_all, graph_records_visible_by_acl,
     graph_records_visible_by_acl_with_index, graph_shortest_path_from_records,
-    validate_typed_graph_mutation,
+    tool_audit_items_from_visible_records, validate_typed_graph_mutation,
 };
 use kogwistar_store_postgres::{
     NewRawEntityEvent as PostgresNewRawEntityEvent, PostgresAuthStore, PostgresStore,
@@ -222,6 +222,7 @@ fn rust_mcp_tool_supported(surface: &str, name: &str) -> bool {
                 | "workflow.service_repair"
                 | "workflow.service_trigger"
                 | "workflow.services_repair"
+                | "workflow.tool_audit"
                 | "workflow.visibility_snapshot"
         ),
         "conversation" => matches!(name, "conversation.run_status" | "conversation.cancel_run"),
@@ -1539,6 +1540,33 @@ fn query_string(path_and_query: &str, name: &str) -> Option<String> {
         })
 }
 
+fn tool_audit_query(path_and_query: &str) -> Result<(Option<String>, usize), String> {
+    let query = path_and_query
+        .split_once('?')
+        .map(|(_, query)| query)
+        .unwrap_or_default();
+    let mut conversation_id = None;
+    let mut limit = 200usize;
+    for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
+        match key.as_ref() {
+            "conversation_id" => conversation_id = Some(value.into_owned()),
+            "limit" => {
+                limit = value
+                    .parse::<usize>()
+                    .map_err(|_| "limit must be a non-negative integer".to_owned())?;
+            }
+            _ => {}
+        }
+    }
+    if conversation_id.as_deref() == Some("") {
+        return Err("conversation_id must not be empty".to_owned());
+    }
+    if limit > 10_000 {
+        return Err("limit must be <= 10000".to_owned());
+    }
+    Ok((conversation_id, limit))
+}
+
 fn latest_snapshot_conversation_id(path_and_query: &str) -> Option<String> {
     let path = path_and_query.split('?').next().unwrap_or(path_and_query);
     let encoded_id = path
@@ -1633,6 +1661,7 @@ type SharedCapabilityState = Arc<Mutex<CapabilityState>>;
 
 const SQLITE_UNSUPPORTED_HTTP_ROUTES: &[(&str, &str)] = &[
     ("GET", "/api/conversations"),
+    ("GET", "/api/workflow/tools/audit"),
     ("GET", "/api/conversations/{conversation_id}"),
     ("GET", "/api/conversations/{conversation_id}/turns"),
     (
@@ -5956,6 +5985,152 @@ impl PostgresRunApplicationService {
         Ok(visible_nodes)
     }
 
+    async fn authorized_tool_audit_nodes(
+        &self,
+        request_principal: &Value,
+        conversation_id: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<GraphRecord>, String> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let (scope, acl_principal) = conversation_graph_scope_and_acl_principal(request_principal);
+        let mut candidates = Vec::new();
+        for entity_type in ["tool_call", "tool_result"] {
+            let mut equals = BTreeMap::new();
+            equals.insert("entity_type".to_owned(), json!(entity_type));
+            if let Some(conversation_id) = conversation_id.filter(|value| !value.is_empty()) {
+                equals.insert("conversation_id".to_owned(), json!(conversation_id));
+            }
+            candidates.extend(
+                graph_projection_records_all(
+                    &self.store,
+                    GraphProjectionRead {
+                        scope: scope.clone(),
+                        table: "gke_nodes".to_owned(),
+                        ids: None,
+                        metadata: MetadataFilter { equals },
+                        limit,
+                    },
+                )
+                .await
+                .map_err(|error| error.to_string())?,
+            );
+        }
+        let acl_records = graph_projection_records_all(
+            &self.store,
+            GraphProjectionRead {
+                scope,
+                table: "gke_nodes".to_owned(),
+                ids: None,
+                metadata: MetadataFilter {
+                    equals: BTreeMap::from([("entity_type".to_owned(), json!("acl_record"))]),
+                },
+                limit: 10_000,
+            },
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+        let mut acl_index = GraphAclIndex::default();
+        acl_index.extend_from_records(&acl_records, "conversation");
+        let (visible_nodes, _) =
+            graph_records_visible_by_acl_with_index(&candidates, &[], &acl_index, &acl_principal);
+        Ok(visible_nodes)
+    }
+
+    async fn tool_audit_effect(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
+        let namespaces = principal_strings(&request.principal, "ns");
+        let namespaces = if namespaces.is_empty() {
+            vec!["docs".to_owned()]
+        } else {
+            namespaces
+        };
+        if !namespaces
+            .iter()
+            .any(|namespace| matches!(namespace.as_str(), "*" | "conversation" | "workflow"))
+        {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_NAMESPACE_FORBIDDEN",
+                "Tool audit reads require conversation or workflow namespace",
+            );
+        }
+        if !capability_allowed(
+            request,
+            &self.capabilities,
+            "project_view",
+            &["project_view", "read_graph"],
+        ) {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                "Reading tool audit requires project_view capability",
+            );
+        }
+        let (conversation_id, limit) = match tool_audit_query(&request.path_and_query) {
+            Ok(query) => query,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    error,
+                );
+            }
+        };
+        let visible_nodes = match self
+            .authorized_tool_audit_nodes(&request.principal, conversation_id.as_deref(), limit)
+            .await
+        {
+            Ok(nodes) => nodes,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_STORE_ERROR",
+                    error,
+                );
+            }
+        };
+        let items = match tool_audit_items_from_visible_records(
+            &visible_nodes,
+            conversation_id.as_deref(),
+            limit,
+        ) {
+            Ok(items) => items,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_TOOL_AUDIT_INVALID",
+                    error.to_string(),
+                );
+            }
+        };
+        let response = ToolAuditResponseV1 {
+            schema_version: kogwistar_contracts::TOOL_AUDIT_WIRE_VERSION,
+            conversation_id,
+            items,
+        };
+        if let Err(error) = response.validate() {
+            return effect_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "KOGWISTAR_TOOL_AUDIT_INVALID",
+                error.to_string(),
+            );
+        }
+        let mut payload =
+            serde_json::to_value(response).expect("validated tool audit response serializes");
+        if let Some(object) = payload.as_object_mut() {
+            object.remove("schema_version");
+            if let Some(items) = object.get_mut("items").and_then(Value::as_array_mut) {
+                for item in items {
+                    if let Some(item) = item.as_object_mut() {
+                        item.remove("schema_version");
+                    }
+                }
+            }
+        }
+        json_effect(StatusCode::OK, payload)
+    }
+
     async fn internal_conversation_transcript_effect(
         &self,
         request: &ApiEffectRequest,
@@ -9245,6 +9420,11 @@ impl PostgresRunApplicationService {
     }
 
     async fn execute_async(&self, request: ApiEffectRequest) -> ApiEffectResponse {
+        if request.method == "GET"
+            && request.path_and_query.split('?').next() == Some("/api/workflow/tools/audit")
+        {
+            return self.tool_audit_effect(&request).await;
+        }
         if request.method == "GET" && is_conversation_list_route(&request.path_and_query) {
             return self.conversation_list_effect(&request).await;
         }
@@ -9639,6 +9819,8 @@ impl ApplicationService for PostgresRunApplicationService {
     fn supports_mcp_tool(&self, surface: &str, name: &str) -> bool {
         rust_mcp_tool_supported(surface, name)
             && (surface != "root" || self.graph_authority_capability().supports_single_mutation())
+            && (name != "workflow.tool_audit"
+                || self.graph_authority_capability().supports_single_mutation())
     }
 
     fn supports_http_operation(&self, method: &str, path: &str) -> bool {
@@ -9657,7 +9839,7 @@ impl ApplicationService for PostgresRunApplicationService {
 
 impl ApplicationService for SqliteRunApplicationService {
     fn supports_mcp_tool(&self, surface: &str, name: &str) -> bool {
-        surface != "root" && rust_mcp_tool_supported(surface, name)
+        surface != "root" && name != "workflow.tool_audit" && rust_mcp_tool_supported(surface, name)
     }
 
     fn supports_http_operation(&self, method: &str, path: &str) -> bool {
@@ -10761,6 +10943,15 @@ impl SqliteRunApplicationService {
     }
 
     fn execute_sync(&self, request: ApiEffectRequest) -> ApiEffectResponse {
+        if request.method == "GET"
+            && request.path_and_query.split('?').next() == Some("/api/workflow/tools/audit")
+        {
+            return effect_error(
+                StatusCode::NOT_IMPLEMENTED,
+                "KOGWISTAR_GRAPH_AUTHORITY_UNSUPPORTED",
+                "The SQLite application service does not provide Rust graph authority",
+            );
+        }
         if request.method == "GET" && conversation_transcript_id(&request.path_and_query).is_some()
         {
             return effect_error(
@@ -12229,6 +12420,53 @@ async fn mcp_handler(
                 body: Vec::new(),
                 principal: principal.clone(),
             }),
+            "workflow.tool_audit" => {
+                let conversation_id =
+                    match arguments.get("conversation_id") {
+                        None | Some(Value::Null) => None,
+                        Some(Value::String(value)) if !value.is_empty() => Some(value.as_str()),
+                        _ => return Json(json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "error": {"code": -32602, "message": "Invalid tool-audit arguments"},
+                        }))
+                        .into_response(),
+                    };
+                let limit = match arguments.get("limit") {
+                    None => 200,
+                    Some(Value::Number(value)) => match value.as_i64() {
+                        Some(value) => value,
+                        None => {
+                            return Json(json!({
+                                "jsonrpc": "2.0",
+                                "id": id,
+                                "error": {"code": -32602, "message": "Invalid tool-audit limit"},
+                            }))
+                            .into_response();
+                        }
+                    },
+                    _ => {
+                        return Json(json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "error": {"code": -32602, "message": "Invalid tool-audit limit"},
+                        }))
+                        .into_response();
+                    }
+                };
+                let mut query = url::form_urlencoded::Serializer::new(String::new());
+                query.append_pair("limit", &limit.to_string());
+                if let Some(conversation_id) = conversation_id {
+                    query.append_pair("conversation_id", conversation_id);
+                }
+                Some(ApiEffectRequest {
+                    contract_version: 1,
+                    method: "GET".to_owned(),
+                    path_and_query: format!("/api/workflow/tools/audit?{}", query.finish()),
+                    body: Vec::new(),
+                    principal: principal.clone(),
+                })
+            }
             "workflow.operator_dashboard" => Some(ApiEffectRequest {
                 contract_version: 1,
                 method: "GET".to_owned(),
@@ -12838,6 +13076,22 @@ mod tests {
     }
 
     #[test]
+    fn tool_audit_query_decodes_scope_and_validates_limits() {
+        assert_eq!(
+            tool_audit_query("/api/workflow/tools/audit?conversation_id=conversation%3A1&limit=12")
+                .unwrap(),
+            (Some("conversation:1".to_owned()), 12)
+        );
+        assert_eq!(
+            tool_audit_query("/api/workflow/tools/audit").unwrap(),
+            (None, 200)
+        );
+        assert!(tool_audit_query("/api/workflow/tools/audit?limit=-1").is_err());
+        assert!(tool_audit_query("/api/workflow/tools/audit?limit=10001").is_err());
+        assert!(tool_audit_query("/api/workflow/tools/audit?conversation_id=").is_err());
+    }
+
+    #[test]
     fn conversation_transcript_route_parsing_is_exact_and_decodes_path_id() {
         assert_eq!(
             conversation_transcript_id("/api/conversations/conversation-1/turns?limit=10"),
@@ -12905,6 +13159,108 @@ mod tests {
             serde_json::from_slice::<Value>(&capability_denied.body).unwrap()["code"],
             "KOGWISTAR_CAPABILITY_FORBIDDEN"
         );
+    }
+
+    #[tokio::test]
+    async fn tool_audit_route_checks_namespace_and_capability_before_storage() {
+        let service = PostgresRunApplicationService::from_dsn(
+            "postgres://unused:unused@127.0.0.1:1/unused",
+            "tool_audit_auth_contract",
+        )
+        .unwrap();
+        assert!(service.supports_http_operation("GET", "/api/workflow/tools/audit"));
+        let make_request = |principal| ApiEffectRequest {
+            contract_version: 1,
+            method: "GET".to_owned(),
+            path_and_query: "/api/workflow/tools/audit?limit=5".to_owned(),
+            body: Vec::new(),
+            principal,
+        };
+        let namespace_denied = service
+            .execute(make_request(json!({
+                "sub": "alice",
+                "ns": "docs",
+                "capabilities": ["project_view"]
+            })))
+            .await;
+        assert_eq!(namespace_denied.status, StatusCode::FORBIDDEN.as_u16());
+        assert_eq!(
+            serde_json::from_slice::<Value>(&namespace_denied.body).unwrap()["code"],
+            "KOGWISTAR_NAMESPACE_FORBIDDEN"
+        );
+
+        let capability_denied = service
+            .execute(make_request(json!({
+                "sub": "alice",
+                "ns": "conversation",
+                "capabilities": []
+            })))
+            .await;
+        assert_eq!(capability_denied.status, StatusCode::FORBIDDEN.as_u16());
+        assert_eq!(
+            serde_json::from_slice::<Value>(&capability_denied.body).unwrap()["code"],
+            "KOGWISTAR_CAPABILITY_FORBIDDEN"
+        );
+    }
+
+    #[tokio::test]
+    async fn router_exposes_tool_audit_route_and_sqlite_fails_closed() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        let postgres = Arc::new(
+            PostgresRunApplicationService::from_dsn(
+                "postgres://unused:unused@127.0.0.1:1/unused",
+                "tool_audit_router_contract",
+            )
+            .unwrap(),
+        );
+        let app = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: Vec::new(),
+                implementation: ImplementationSnapshot::default(),
+                auth: AuthConfig {
+                    key: Some("route-test-secret".to_owned()),
+                    ..AuthConfig::default()
+                },
+            },
+            postgres,
+        );
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/workflow/tools/audit")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            response.status(),
+            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
+        ));
+
+        let path = std::env::temp_dir().join(format!(
+            "kogwistar-tool-audit-sqlite-{}.sqlite3",
+            uuid::Uuid::new_v4()
+        ));
+        let sqlite = SqliteRunApplicationService::open(&path).unwrap();
+        assert!(!sqlite.supports_http_operation("GET", "/api/workflow/tools/audit"));
+        let unsupported = sqlite
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "GET".to_owned(),
+                path_and_query: "/api/workflow/tools/audit".to_owned(),
+                body: Vec::new(),
+                principal: json!({"ns": "conversation", "capabilities": ["project_view"]}),
+            })
+            .await;
+        assert_eq!(unsupported.status, StatusCode::NOT_IMPLEMENTED.as_u16());
+        drop(sqlite);
+        let _ = std::fs::remove_file(path);
     }
 
     #[tokio::test]
@@ -13185,6 +13541,10 @@ mod tests {
     #[tokio::test]
     async fn postgres_conversation_routes_project_authorized_summary_and_transcript_when_dsn_available()
      {
+        use axum::body::{Body, to_bytes};
+        use axum::http::Request;
+        use tower::ServiceExt;
+
         let Some(dsn) = std::env::var("KOGWISTAR_TEST_PG_DSN").ok() else {
             eprintln!("KOGWISTAR_TEST_PG_DSN absent; conversation route integration skipped");
             return;
@@ -13251,6 +13611,94 @@ mod tests {
                 ("acl_mode", json!("public")),
             ] {
                 acl_metadata.insert(key.to_owned(), value);
+            }
+            service
+                .store
+                .upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
+                    scope: scope.clone(),
+                    table: "gke_nodes".to_owned(),
+                    record: GraphRecord {
+                        id: format!("acl-{id}"),
+                        document: None,
+                        metadata: acl_metadata,
+                        embedding: None,
+                    },
+                    embedding_dim: 3,
+                })
+                .await
+                .unwrap();
+        }
+
+        for (id, entity_type, summary, status, acl_mode) in [
+            (
+                "tool-call-1",
+                "tool_call",
+                "Read graph neighbors",
+                "requested",
+                "public",
+            ),
+            (
+                "tool-result-1",
+                "tool_result",
+                "Returned one neighbor",
+                "completed",
+                "public",
+            ),
+            (
+                "tool-call-other",
+                "tool_call",
+                "Other user's private call",
+                "requested",
+                "public",
+            ),
+            (
+                "tool-call-private",
+                "tool_call",
+                "Private call owned by another user",
+                "requested",
+                "private",
+            ),
+        ] {
+            let conversation_id = if id == "tool-call-other" {
+                "conversation-other"
+            } else {
+                "conversation-1"
+            };
+            let mut metadata = Map::new();
+            metadata.insert("entity_type".to_owned(), json!(entity_type));
+            metadata.insert("conversation_id".to_owned(), json!(conversation_id));
+            metadata.insert("tool_name".to_owned(), json!("kg_neighbors"));
+            metadata.insert("summary".to_owned(), json!(summary));
+            metadata.insert("turn_index".to_owned(), json!(0));
+            let record = GraphRecord {
+                id: id.to_owned(),
+                document: Some(json!({"properties": {"status": status}}).to_string()),
+                metadata,
+                embedding: None,
+            };
+            service
+                .store
+                .upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
+                    scope: scope.clone(),
+                    table: "gke_nodes".to_owned(),
+                    record,
+                    embedding_dim: 3,
+                })
+                .await
+                .unwrap();
+            let mut acl_metadata = Map::new();
+            for (key, value) in [
+                ("entity_type", json!("acl_record")),
+                ("acl_truth_graph", json!("conversation")),
+                ("acl_target_entity_id", json!(id)),
+                ("acl_target_grain", json!("node")),
+                ("acl_version", json!(1)),
+                ("acl_mode", json!(acl_mode)),
+            ] {
+                acl_metadata.insert(key.to_owned(), value);
+            }
+            if acl_mode == "private" {
+                acl_metadata.insert("owner_id".to_owned(), json!("bob"));
             }
             service
                 .store
@@ -13379,6 +13827,35 @@ mod tests {
             BTreeSet::from(["conversation_id".to_owned(), "turns".to_owned()])
         );
 
+        let audit_response = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "GET".to_owned(),
+                path_and_query: "/api/workflow/tools/audit?conversation_id=conversation-1&limit=10"
+                    .to_owned(),
+                body: Vec::new(),
+                principal: json!({
+                    "sub": "alice",
+                    "role": "ro",
+                    "ns": "conversation",
+                    "storage_ns": "conversation",
+                    "capabilities": ["project_view", "read_graph"]
+                }),
+            })
+            .await;
+        assert_eq!(audit_response.status, StatusCode::OK.as_u16());
+        let audit: Value = serde_json::from_slice(&audit_response.body).unwrap();
+        assert_eq!(audit["conversation_id"], "conversation-1");
+        assert_eq!(audit["items"].as_array().unwrap().len(), 2);
+        assert_eq!(audit["items"][0]["node_id"], "tool-call-1");
+        assert_eq!(audit["items"][1]["node_id"], "tool-result-1");
+        assert_eq!(audit["items"][1]["properties"]["status"], "completed");
+        assert!(audit["items"].as_array().unwrap().iter().all(|item| {
+            item["node_id"] != "tool-call-private" && item["node_id"] != "tool-call-other"
+        }));
+        assert!(audit.get("schema_version").is_none());
+        assert!(audit["items"][0].get("schema_version").is_none());
+
         let receive_response = service
             .execute(ApiEffectRequest {
                 contract_version: 1,
@@ -13410,7 +13887,83 @@ mod tests {
         assert_eq!(receive_payload["status"], "ok");
         assert_eq!(receive_payload["result"], expected_receive);
 
-        drop(service);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let auth = AuthConfig {
+            mode: "dev".to_owned(),
+            algorithm: Some("HS256".to_owned()),
+            key: Some("tool-audit-mcp-secret".to_owned()),
+            jwks_json: None,
+            issuer: Some("local".to_owned()),
+            audience: None,
+            oidc_providers_json: None,
+            auth_db_url: None,
+        };
+        let token = encode(
+            &Header::new(Algorithm::HS256),
+            &json!({
+                "sub": "alice",
+                "role": "ro",
+                "ns": ["workflow"],
+                "storage_ns": "conversation",
+                "capabilities": ["project_view", "read_graph"],
+                "iss": "local",
+                "exp": now + 300
+            }),
+            &EncodingKey::from_secret(b"tool-audit-mcp-secret"),
+        )
+        .unwrap();
+        let app = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: Vec::new(),
+                implementation: ImplementationSnapshot::default(),
+                auth,
+            },
+            Arc::new(service),
+        );
+        let http_audit = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/workflow/tools/audit?conversation_id=conversation-1&limit=10")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(http_audit.status(), StatusCode::OK);
+        let http_audit: Value =
+            serde_json::from_slice(&to_bytes(http_audit.into_body(), 65_536).await.unwrap())
+                .unwrap();
+        assert_eq!(http_audit, audit);
+
+        let mcp_audit = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp/workflow")
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","id":"audit","method":"tools/call","params":{"name":"workflow.tool_audit","arguments":{"conversation_id":"conversation-1","limit":10}}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(mcp_audit.status(), StatusCode::OK);
+        let mcp_audit: Value =
+            serde_json::from_slice(&to_bytes(mcp_audit.into_body(), 65_536).await.unwrap())
+                .unwrap();
+        assert_eq!(mcp_audit["result"]["items"].as_array().unwrap().len(), 2);
+        assert_eq!(mcp_audit["result"]["items"][0]["node_id"], "tool-call-1");
+        assert_eq!(mcp_audit["result"]["items"][1]["node_id"], "tool-result-1");
+
         let (cleanup, connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls)
             .await
             .unwrap();
@@ -13459,6 +14012,7 @@ mod tests {
         assert!(!service.supports_http_operation("GET", "/api/not-registered"));
         assert!(service.supports_http_operation("POST", "/api/workflow/runs"));
         assert!(service.supports_http_operation("GET", "/api/conversations"));
+        assert!(service.supports_http_operation("GET", "/api/workflow/tools/audit"));
         assert!(service.supports_http_operation("GET", "/api/conversations/{conversation_id}"));
         assert!(
             service.supports_http_operation("GET", "/api/conversations/{conversation_id}/turns")
@@ -13478,6 +14032,7 @@ mod tests {
         .unwrap();
         assert!(postgres.supports_mcp_tool("root", "kg_neighbors"));
         assert!(postgres.supports_mcp_tool("workflow", "workflow.run_status"));
+        assert!(postgres.supports_mcp_tool("workflow", "workflow.tool_audit"));
 
         let sqlite_path = std::env::temp_dir().join(format!(
             "kogwistar-api-mcp-authority-{}.sqlite",
@@ -13486,6 +14041,7 @@ mod tests {
         let sqlite = SqliteRunApplicationService::open(&sqlite_path).unwrap();
         assert!(!sqlite.supports_mcp_tool("root", "kg_neighbors"));
         assert!(sqlite.supports_mcp_tool("workflow", "workflow.run_status"));
+        assert!(!sqlite.supports_mcp_tool("workflow", "workflow.tool_audit"));
         assert!(!sqlite.supports_http_operation("GET", "/api/conversations"));
         drop(sqlite);
         remove_test_sqlite(&sqlite_path);
@@ -14448,7 +15004,7 @@ mod tests {
             .iter()
             .filter(|tool| rust_mcp_tool_supported("workflow", tool["name"].as_str().unwrap()))
             .count();
-        assert_eq!(supported, 36);
+        assert_eq!(supported, 37);
     }
 
     #[tokio::test]
