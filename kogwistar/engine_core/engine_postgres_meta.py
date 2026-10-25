@@ -1095,7 +1095,9 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
         sql = sa.text(
             f"""
             SELECT job_id, namespace, entity_kind, entity_id, index_kind, coalesce_key, op, status,
-                   lease_until, next_run_at, max_retries, retry_count, last_error, payload_json
+                   lease_until, next_run_at, max_retries, retry_count, last_error, payload_json,
+                   claim_token, claim_attempts, accepted_result_json,
+                   accepted_result_sha256, accepted_at
             FROM {ij}
             {where_sql}
             ORDER BY created_at ASC
@@ -1136,6 +1138,27 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                     payload_json=(
                         str(r.get("payload_json"))
                         if r.get("payload_json") is not None
+                        else None
+                    ),
+                    claim_token=(
+                        str(r.get("claim_token"))
+                        if r.get("claim_token") is not None
+                        else None
+                    ),
+                    claim_attempts=_int_or_default(r.get("claim_attempts")),
+                    accepted_result_json=(
+                        str(r.get("accepted_result_json"))
+                        if r.get("accepted_result_json") is not None
+                        else None
+                    ),
+                    accepted_result_sha256=(
+                        str(r.get("accepted_result_sha256"))
+                        if r.get("accepted_result_sha256") is not None
+                        else None
+                    ),
+                    accepted_at=(
+                        str(r.get("accepted_at"))
+                        if r.get("accepted_at") is not None
                         else None
                     ),
                 )

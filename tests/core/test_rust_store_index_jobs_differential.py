@@ -363,6 +363,78 @@ def test_postgres_python_rust_queue_differential_live(sa_engine, pg_dsn: str | N
     assert invalid.value.code == "KOGWISTAR_STORE_INVALID_PAYLOAD"
 
 
+def test_postgres_reconciler_recovers_admitted_result_after_restart_and_lost_ack(
+    sa_engine, pg_dsn: str | None, pg_schema: str | None
+) -> None:
+    dsn, schema = _require_pg(pg_dsn, pg_schema)
+    python = EnginePostgresMetaStore(engine=sa_engine, schema=schema)
+    python.ensure_initialized()
+    namespace = f"ack-lost-{uuid.uuid4().hex}"
+    job_id = f"ack-lost-{uuid.uuid4().hex}"
+    python.enqueue_index_job(
+        job_id=job_id,
+        namespace=namespace,
+        entity_kind="node",
+        entity_id="node",
+        index_kind="doc",
+        op="UPSERT",
+    )
+    claim = python.claim_index_jobs(
+        limit=1, lease_seconds=30, namespace=namespace
+    )[0]
+
+    admitted = _pg(
+        dsn,
+        schema,
+        {
+            "kind": "accept_index_job_result",
+            "job_id": job_id,
+            "claim_token": claim.claim_token,
+            "result_json": '{"embedding":[0.25,0.75]}',
+            "result_sha256": "durable-result",
+        },
+    )
+    assert admitted["status"] == "accepted"
+
+    # Model a worker crash after durable result admission but before its ack.
+    with sa_engine.begin() as conn:
+        conn.exec_driver_sql(
+            f"UPDATE \"{schema}\".index_jobs SET lease_until=TIMESTAMPTZ 'epoch' WHERE job_id=%s",
+            (job_id,),
+        )
+
+    reopened = EnginePostgresMetaStore(engine=sa_engine, schema=schema)
+    reopened.ensure_initialized()
+    persisted = reopened.list_index_jobs(namespace=namespace)[0]
+    assert persisted.status == "DOING"
+    assert persisted.claim_token == claim.claim_token
+    assert persisted.accepted_result_json == '{"embedding":[0.25,0.75]}'
+    assert persisted.accepted_result_sha256 == "durable-result"
+    assert persisted.accepted_at is not None
+
+    engine = SimpleNamespace(
+        meta_sqlite=reopened,
+        namespace=namespace,
+        _phase1_enable_index_jobs=True,
+        _phase1_enable_validation_cache=False,
+        _implementation_selection_snapshot=None,
+    )
+    reconciler = IndexingSubsystem(engine)
+    projection_calls = 0
+
+    def apply_index_job(**_: object) -> None:
+        nonlocal projection_calls
+        projection_calls += 1
+
+    reconciler.apply_index_job = apply_index_job  # type: ignore[method-assign]
+
+    assert reconciler.reconcile_indexes(max_jobs=1) == 1
+    assert projection_calls == 0
+    completed = reopened.list_index_jobs(namespace=namespace)[0]
+    assert completed.status == "DONE"
+    assert completed.accepted_result_json == '{"embedding":[0.25,0.75]}'
+
+
 def test_postgres_queue_concurrency_reclaim_and_terminal_retry_live(
     pg_dsn: str | None, pg_schema: str | None
 ) -> None:
