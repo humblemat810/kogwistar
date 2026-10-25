@@ -43,6 +43,13 @@ use kogwistar_store_sqlite::{
     NewRawEntityEvent as SqliteNewRawEntityEvent, SqliteAuthStore, SqliteStore,
 };
 
+mod cutover;
+use cutover::is_transport_owned_http_route;
+pub use cutover::{
+    ImplementationSnapshot, PENDING_SERVER_CUTOVER_ROUTES, PENDING_SYSCALL_CUTOVER_OPS,
+    TRANSPORT_OWNED_HTTP_ROUTES,
+};
+
 use axum::{
     Json, Router,
     body::{Body, Bytes},
@@ -283,91 +290,6 @@ impl AuthConfig {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-pub struct ImplementationSnapshot {
-    pub mode: String,
-    pub contract_version: u32,
-    pub schema_version: u32,
-    pub frozen_route_operations: usize,
-    pub implemented_route_operations: usize,
-    pub runtime_cutover_ready: bool,
-    pub server_cutover_ready: bool,
-}
-
-impl ImplementationSnapshot {
-    /// Return the readiness that is safe to expose to operators.
-    ///
-    /// The stored flag is intentionally retained for compatibility with the
-    /// existing health payload, but it cannot overrule the frozen route
-    /// inventory. This prevents transport registration from accidentally
-    /// turning into a claim that the whole public server is cut over.
-    pub fn effective_server_cutover_ready(&self) -> bool {
-        self.server_cutover_ready
-            && PENDING_SERVER_CUTOVER_ROUTES.is_empty()
-            && self.implemented_route_operations == frozen_application_route_operations()
-    }
-}
-
-/// Frozen OpenAPI operations still owned by the Python rollback deployment.
-/// Keep this list explicit so health/readiness cannot infer server completion
-/// from transport registration alone.
-pub const PENDING_SERVER_CUTOVER_ROUTES: &[(&str, &str)] = &[
-    ("DELETE", "/admin/doc/{doc_id}"),
-    ("GET", "/api/conversations"),
-    ("GET", "/api/conversations/{conversation_id}"),
-    (
-        "GET",
-        "/api/conversations/{conversation_id}/snapshots/latest",
-    ),
-    ("GET", "/api/conversations/{conversation_id}/turns"),
-    ("GET", "/api/search_index_hybrid"),
-    ("GET", "/api/viz/cytoscape.json"),
-    ("GET", "/api/viz/d3.json"),
-    ("GET", "/api/workflow/tools/audit"),
-    ("GET", "/viz/d3.bundle"),
-    ("POST", "/api/add_index_entries"),
-    ("POST", "/api/conversations"),
-    ("POST", "/api/conversations/{conversation_id}/turns:answer"),
-    ("POST", "/api/document"),
-    ("POST", "/api/document.upsert_tree"),
-    ("POST", "/api/graph/upsert"),
-];
-
-/// OpenAPI operations handled by the Axum transport layer rather than by an
-/// `ApplicationService`. Keep these out of backend authority accounting so a
-/// service cannot appear to implement authentication merely because the
-/// router registers those handlers.
-pub const TRANSPORT_OWNED_HTTP_ROUTES: &[(&str, &str)] = &[
-    ("GET", "/health"),
-    ("GET", "/api/auth/login"),
-    ("GET", "/api/auth/callback"),
-    ("GET", "/api/auth/me"),
-    ("POST", "/api/auth/logout"),
-    ("POST", "/auth/dev-token"),
-];
-
-fn is_transport_owned_http_route(method: &str, path: &str) -> bool {
-    TRANSPORT_OWNED_HTTP_ROUTES.contains(&(method, path))
-}
-
-fn frozen_application_route_operations() -> usize {
-    FROZEN_OPENAPI_ROUTES
-        .iter()
-        .filter(|(method, path)| !is_transport_owned_http_route(method, path))
-        .count()
-}
-
-/// Syscall sub-operations which still require conversation/tool authority.
-/// OpenAPI freezes these behind one parameterized route, so keep sub-route
-/// readiness explicit instead of classifying the whole dispatcher as absent.
-pub const PENDING_SYSCALL_CUTOVER_OPS: &[&str] = &[
-    "send_message",
-    "receive_message",
-    "mount_memory",
-    "project_view",
-    "invoke_tool",
-];
-
 fn environment(name: &str, default: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| default.to_owned())
 }
@@ -439,25 +361,6 @@ pub async fn run_server_from_environment() -> Result<(), Box<dyn std::error::Err
         })
         .await?;
     Ok(())
-}
-
-impl Default for ImplementationSnapshot {
-    fn default() -> Self {
-        Self {
-            mode: "rust".to_owned(),
-            contract_version: 1,
-            schema_version: 1,
-            frozen_route_operations: FROZEN_OPENAPI_ROUTES.len(),
-            // health + submit + two aliases each for run GET/events/cancel,
-            // resume, resume-contract, steps, checkpoint list/item, and replay;
-            // plus poll on the conversation API. Static transport-only
-            // /api/events and /mcp are not frozen OpenAPI operations.
-            implemented_route_operations: frozen_application_route_operations()
-                .saturating_sub(PENDING_SERVER_CUTOVER_ROUTES.len()),
-            runtime_cutover_ready: false,
-            server_cutover_ready: false,
-        }
-    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -11906,7 +11809,8 @@ mod tests {
     #[test]
     fn application_route_accounting_excludes_transport_owned_handlers() {
         assert_eq!(
-            frozen_application_route_operations() + TRANSPORT_OWNED_HTTP_ROUTES.len(),
+            super::cutover::frozen_application_route_operations()
+                + TRANSPORT_OWNED_HTTP_ROUTES.len(),
             FROZEN_OPENAPI_ROUTES.len()
         );
         let service = PostgresRunApplicationService::from_dsn(
