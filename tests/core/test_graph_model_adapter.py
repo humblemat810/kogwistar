@@ -536,6 +536,79 @@ def test_pure_graph_writes_honor_contract_mode_before_persistence(
     assert len(backend_calls) == 1
 
 
+@pytest.mark.parametrize(
+    ("base_name", "method_name"),
+    [
+        ("PureChromaNode", "add_pure_node"),
+        ("PureChromaEdge", "add_pure_edge"),
+    ],
+)
+def test_unmapped_pure_graph_subtype_fails_before_persistence(
+    monkeypatch: pytest.MonkeyPatch,
+    base_name: str,
+    method_name: str,
+) -> None:
+    from types import SimpleNamespace
+
+    from kogwistar.engine_core.graph_contracts import GraphModelAdapterError
+    from kogwistar.engine_core.subsystems.write import WriteSubsystem
+
+    base_type = getattr(engine_models, base_name)
+    subtype = type(f"Unmapped{base_name}", (base_type,), {})
+    payload: dict[str, object] = {
+        "id": f"unmapped:{base_name}",
+        "label": "unmapped subtype",
+        "type": "entity" if base_name.endswith("Node") else "relationship",
+        "summary": "must be rejected before persistence",
+        "embedding": [0.0],
+    }
+    if base_name.endswith("Edge"):
+        payload.update(
+            {
+                "relation": "related_to",
+                "source_ids": ["source"],
+                "target_ids": ["target"],
+                "source_edge_ids": None,
+                "target_edge_ids": None,
+            }
+        )
+    entity = subtype.model_validate(payload)
+    monkeypatch.setenv("KOGWISTAR_IMPL_CONTRACTS", "shadow")
+    backend = SimpleNamespace(
+        node_add=lambda **_kwargs: pytest.fail("unmapped node subtype was persisted"),
+        edge_add=lambda **_kwargs: pytest.fail("unmapped edge subtype was persisted"),
+    )
+    engine = SimpleNamespace(
+        meta_sqlite=object(),
+        namespace="test",
+        kg_graph_type="knowledge",
+        backend=backend,
+        adjudicate=SimpleNamespace(
+            split_endpoints=lambda source_ids, target_ids: (
+                source_ids,
+                [],
+                target_ids,
+                [],
+            )
+        ),
+        persist=SimpleNamespace(assert_endpoints_exist=lambda _edge: None),
+        pre_add_pure_edge_hooks=[],
+    )
+    writer = WriteSubsystem.__new__(WriteSubsystem)
+    from kogwistar.engine_core.engine import GraphKnowledgeEngine
+
+    writer._e = cast(GraphKnowledgeEngine, engine)
+    if base_name.endswith("Edge"):
+        monkeypatch.setattr(
+            writer,
+            "enrich_edge_meta",
+            lambda edge: {"namespace": "test"},
+        )
+
+    with pytest.raises(GraphModelAdapterError, match="unsupported graph model class"):
+        getattr(writer, method_name)(entity)
+
+
 def test_workflow_runtime_subtypes_have_explicit_graph_wire_tags() -> None:
     run_node = WorkflowRunNode(
         label="run",
