@@ -2,12 +2,12 @@ use kogwistar_contracts as contracts;
 use kogwistar_runtime::{RecordedRuntimeTransition, RecordedWorkerHandoff};
 use kogwistar_store::{
     DistanceMetric, EntityRebuildRequest, EntityRecoveryReport, EntityRecoveryRequest,
-    EventReadStore, GraphMutationStore, GraphReadStore, GraphRecord, GraphWriteStore,
-    LaneMessageClaimFilter, LaneMessageFilter, MetadataFilter, NamedProjection,
-    NamedProjectionWrite, NewProjectedLaneMessage, ProjectedLaneMessage, ProjectionReadStore,
-    ReplayCursor, ServerRun, ServerRunCreate, ServerRunEvent, ServerRunUpdate, VectorQuery,
-    WorkflowDesignDelta, WorkflowDesignDeltaWrite, WorkflowDesignSnapshot,
-    WorkflowDesignSnapshotWrite,
+    EventReadStore, GraphMutationStore, GraphProjectionPageRead, GraphProjectionRead,
+    GraphReadStore, GraphRecord, GraphWriteStore, LaneMessageClaimFilter, LaneMessageFilter,
+    MetadataFilter, NamedProjection, NamedProjectionWrite, NewProjectedLaneMessage,
+    ProjectedLaneMessage, ProjectionReadStore, ReplayCursor, ServerRun, ServerRunCreate,
+    ServerRunEvent, ServerRunUpdate, VectorQuery, WorkflowDesignDelta, WorkflowDesignDeltaWrite,
+    WorkflowDesignSnapshot, WorkflowDesignSnapshotWrite,
 };
 use kogwistar_store_memory::InMemoryStore;
 use kogwistar_store_postgres::{
@@ -3026,6 +3026,8 @@ enum PostgresStoreOperation {
         ids: Option<Vec<String>>,
         #[serde(default)]
         metadata: BTreeMap<String, Value>,
+        #[serde(default)]
+        after_id: Option<String>,
         #[serde(default = "default_list_limit")]
         limit: usize,
     },
@@ -3743,21 +3745,26 @@ async fn postgres_store_operation_json(
             table,
             ids,
             metadata,
+            after_id,
             limit,
-        } => Ok(Value::Array(
-            store
-                .graph_projection_records(kogwistar_store::GraphProjectionRead {
-                    scope: graph_scope(namespace, workspace_id, graph_space),
-                    table,
-                    ids,
-                    metadata: metadata_filter(metadata),
-                    limit,
-                })
-                .await?
-                .into_iter()
-                .map(graph_record_json)
-                .collect(),
-        )),
+        } => {
+            let read = GraphProjectionRead {
+                scope: graph_scope(namespace, workspace_id, graph_space),
+                table,
+                ids,
+                metadata: metadata_filter(metadata),
+                limit,
+            };
+            let records = match after_id {
+                Some(after_id) => {
+                    store
+                        .graph_projection_page(GraphProjectionPageRead { read, after_id: Some(after_id) })
+                        .await?
+                }
+                None => store.graph_projection_records(read).await?,
+            };
+            Ok(Value::Array(records.into_iter().map(graph_record_json).collect()))
+        }
         PostgresStoreOperation::GraphProjectionVectorQuery {
             namespace,
             workspace_id,
@@ -6011,6 +6018,7 @@ fn validate_postgres_operation(value: &Value) -> Result<(), (&'static str, Strin
             "table",
             "ids",
             "metadata",
+            "after_id",
             "limit",
         ][..],
         "graph_projection_vector_query" => &[
@@ -6806,6 +6814,34 @@ mod tests {
             validate_postgres_operation(&json!({
                 "kind": "graph_authority_capability",
                 "write": true
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn postgres_graph_projection_page_is_optional_and_validated_at_the_bridge() {
+        validate_postgres_operation(&json!({
+            "kind": "graph_projection_records",
+            "namespace": "conversation",
+            "table": "gke_nodes",
+            "after_id": "conversation-start-9",
+            "limit": 100
+        }))
+        .expect("optional cursor must be accepted by the Python/Rust bridge");
+        validate_postgres_operation(&json!({
+            "kind": "graph_projection_records",
+            "namespace": "conversation",
+            "table": "gke_nodes",
+            "limit": 100
+        }))
+        .expect("legacy unpaged graph reads remain accepted");
+        assert!(
+            validate_postgres_operation(&json!({
+                "kind": "graph_projection_records",
+                "namespace": "conversation",
+                "table": "gke_nodes",
+                "unknown_cursor": "bad"
             }))
             .is_err()
         );

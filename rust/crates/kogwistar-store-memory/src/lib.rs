@@ -3,16 +3,16 @@ use kogwistar_contracts::EntityEventEnvelope;
 use kogwistar_store::{
     AcceptedIndexJobResult, AppendedEvent, AppliedGraphMutation, DistanceMetric, EntityEvent,
     EventPruneStore, EventReadStore, EventWriteStore, GraphAuthorityCapability, GraphMutation,
-    GraphMutationStore, GraphProjectionRead, GraphProjectionVectorQuery, GraphReadStore,
-    GraphRecord, GraphScope, GraphWriteStore, IndexJob, IndexJobReadStore, IndexJobWriteStore,
-    LaneMessageClaimFilter, LaneMessageFilter, LaneMessageReadStore, LaneMessageWriteStore,
-    MetadataFilter, NamedProjection, NamedProjectionWrite, NewEntityEvent, NewIndexJob,
-    NewProjectedLaneMessage, ProjectedLaneMessage, ProjectionReadStore, ProjectionWriteStore,
-    ReplayCursor, ServerRun, ServerRunCreate, ServerRunEvent, ServerRunReadStore, ServerRunUpdate,
-    ServerRunWriteStore, StoreError, StoreResult, VectorMatch, VectorQuery, WorkflowDesignDelta,
-    WorkflowDesignDeltaWrite, WorkflowDesignHistoryReadStore, WorkflowDesignHistoryWriteStore,
-    WorkflowDesignSnapshot, WorkflowDesignSnapshotWrite, integer_timestamp, timestamp_i64,
-    validate_graph_mutation,
+    GraphMutationStore, GraphProjectionPageRead, GraphProjectionRead, GraphProjectionVectorQuery,
+    GraphReadStore, GraphRecord, GraphScope, GraphWriteStore, IndexJob, IndexJobReadStore,
+    IndexJobWriteStore, LaneMessageClaimFilter, LaneMessageFilter, LaneMessageReadStore,
+    LaneMessageWriteStore, MetadataFilter, NamedProjection, NamedProjectionWrite, NewEntityEvent,
+    NewIndexJob, NewProjectedLaneMessage, ProjectedLaneMessage, ProjectionReadStore,
+    ProjectionWriteStore, ReplayCursor, ServerRun, ServerRunCreate, ServerRunEvent,
+    ServerRunReadStore, ServerRunUpdate, ServerRunWriteStore, StoreError, StoreResult, VectorMatch,
+    VectorQuery, WorkflowDesignDelta, WorkflowDesignDeltaWrite, WorkflowDesignHistoryReadStore,
+    WorkflowDesignHistoryWriteStore, WorkflowDesignSnapshot, WorkflowDesignSnapshotWrite,
+    integer_timestamp, timestamp_i64, validate_graph_mutation,
 };
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
@@ -951,6 +951,28 @@ impl InMemoryStore {
         Ok(())
     }
 
+    fn graph_projection_rows(&self, read: &GraphProjectionRead) -> StoreResult<Vec<GraphRecord>> {
+        namespace(&read.scope.namespace)?;
+        let state = self.state.read().expect("in-memory store lock poisoned");
+        let mut rows = state
+            .graph_projections
+            .get(&read.scope)
+            .map(|projection| {
+                projection
+                    .record_order
+                    .iter()
+                    .filter_map(|id| projection.records.get(id))
+                    .filter(|record| read.metadata.matches(&record.metadata))
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        if let Some(ids) = &read.ids {
+            rows.retain(|record| ids.contains(&record.id));
+        }
+        Ok(rows)
+    }
+
     fn scope<'a>(state: &'a State, ns: &str) -> Option<&'a NamespaceState> {
         state.namespaces.get(ns)
     }
@@ -1308,26 +1330,25 @@ impl GraphMutationStore for InMemoryStore {
         &self,
         read: GraphProjectionRead,
     ) -> StoreResult<Vec<GraphRecord>> {
-        namespace(&read.scope.namespace)?;
-        let state = self.state.read().expect("in-memory store lock poisoned");
-        let mut rows = state
-            .graph_projections
-            .get(&read.scope)
-            .map(|projection| {
-                projection
-                    .record_order
-                    .iter()
-                    .filter_map(|id| projection.records.get(id))
-                    .filter(|record| read.metadata.matches(&record.metadata))
-                    .cloned()
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        if let Some(ids) = read.ids {
-            rows.retain(|record| ids.contains(&record.id));
-        }
+        let mut rows = self.graph_projection_rows(&read)?;
         rows.truncate(read.limit);
         Ok(rows)
+    }
+
+    fn graph_projection_page(
+        &self,
+        page: GraphProjectionPageRead,
+    ) -> impl std::future::Future<Output = StoreResult<Vec<GraphRecord>>> + Send {
+        async move {
+            let GraphProjectionPageRead { read, after_id } = page;
+            let mut rows = self.graph_projection_rows(&read)?;
+            if let Some(after_id) = after_id {
+                rows.retain(|record| record.id > after_id);
+            }
+            rows.sort_by(|left, right| left.id.cmp(&right.id));
+            rows.truncate(read.limit);
+            Ok(rows)
+        }
     }
 
     async fn graph_projection_vector_query(
@@ -1831,16 +1852,46 @@ mod tests {
             payload,
         );
         assert!(block_on(store.apply_typed_graph_mutation(invalid, invalid_envelope)).is_err());
-        let records = block_on(store.graph_projection_records(GraphProjectionRead {
-            scope,
+        block_on(store.apply_graph_mutation(graph_mutation(
+            scope.clone(),
+            "typed-event-2",
+            "a-parity-node",
+            &[0.0, 1.0, 0.0],
+        )))
+        .expect("insert second record for cursor paging");
+        let legacy_records = block_on(store.graph_projection_records(GraphProjectionRead {
+            scope: scope.clone(),
             table: "gke_nodes".to_owned(),
             ids: None,
             metadata: Default::default(),
             limit: 10,
         }))
-        .expect("read memory projection");
-        assert_eq!(records.len(), 1);
-        assert_eq!(records[0].id, "parity-node");
+        .expect("legacy read preserves insertion order");
+        assert_eq!(
+            legacy_records
+                .iter()
+                .map(|record| record.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["parity-node", "a-parity-node"]
+        );
+        let records = block_on(kogwistar_store::graph_projection_records_all(
+            &store,
+            GraphProjectionRead {
+                scope,
+                table: "gke_nodes".to_owned(),
+                ids: None,
+                metadata: Default::default(),
+                limit: 1,
+            },
+        ))
+        .expect("read all memory projection pages");
+        assert_eq!(
+            records
+                .iter()
+                .map(|record| record.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a-parity-node", "parity-node"]
+        );
     }
 
     #[test]

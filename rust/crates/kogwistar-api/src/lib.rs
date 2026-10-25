@@ -35,8 +35,8 @@ use kogwistar_store::{
     WorkflowDesignDeltaWrite, WorkflowDesignSnapshot, WorkflowDesignSnapshotWrite,
     conversation_list_for_user_from_visible_records, conversation_summary_from_visible_records,
     conversation_transcript_from_visible_records, graph_find_edges_from_records,
-    graph_k_hop_from_records, graph_neighbors_from_records, graph_records_visible_by_acl,
-    graph_shortest_path_from_records, validate_typed_graph_mutation,
+    graph_k_hop_from_records, graph_neighbors_from_records, graph_projection_records_all,
+    graph_records_visible_by_acl, graph_shortest_path_from_records, validate_typed_graph_mutation,
 };
 use kogwistar_store_postgres::{
     NewRawEntityEvent as PostgresNewRawEntityEvent, PostgresAuthStore, PostgresStore,
@@ -5873,17 +5873,18 @@ impl PostgresRunApplicationService {
         request_principal: &Value,
     ) -> Result<Vec<GraphRecord>, String> {
         let (scope, acl_principal) = conversation_graph_scope_and_acl_principal(request_principal);
-        let records = self
-            .store
-            .graph_projection_records(GraphProjectionRead {
+        let records = graph_projection_records_all(
+            &self.store,
+            GraphProjectionRead {
                 scope,
                 table: "gke_nodes".to_owned(),
                 ids: None,
                 metadata: MetadataFilter::default(),
                 limit: 10_000,
-            })
-            .await
-            .map_err(|error| error.to_string())?;
+            },
+        )
+        .await
+        .map_err(|error| error.to_string())?;
         let (visible_nodes, _) =
             graph_records_visible_by_acl(&records, &[], "conversation", &acl_principal);
         Ok(visible_nodes)

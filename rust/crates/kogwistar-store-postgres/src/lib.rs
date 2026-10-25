@@ -20,10 +20,10 @@ use kogwistar_store::{
     DocumentAuthorityCapability, DocumentProjectionUpsert, DocumentStore, EntityEvent,
     EntityRebuildRequest, EntityRecoveryReport, EntityRecoveryRequest, EventPruneStore,
     EventReadStore, EventWriteStore, ExternalIdentity, GraphAuthorityCapability, GraphMutation,
-    GraphMutationBatch, GraphMutationStore, GraphProjectionRead, GraphProjectionVectorQuery,
-    GraphRecord, IndexJob, IndexJobReadStore, IndexJobWriteStore, LaneMessageClaimFilter,
-    LaneMessageFilter, LaneMessageReadStore, LaneMessageWriteStore, NamedProjection,
-    NamedProjectionWrite, NewEntityEvent, NewIndexJob, NewProjectedLaneMessage,
+    GraphMutationBatch, GraphMutationStore, GraphProjectionPageRead, GraphProjectionRead,
+    GraphProjectionVectorQuery, GraphRecord, IndexJob, IndexJobReadStore, IndexJobWriteStore,
+    LaneMessageClaimFilter, LaneMessageFilter, LaneMessageReadStore, LaneMessageWriteStore,
+    NamedProjection, NamedProjectionWrite, NewEntityEvent, NewIndexJob, NewProjectedLaneMessage,
     ProjectedLaneMessage, ProjectionReadStore, ProjectionWriteStore,
     RUNTIME_CURRENT_STATE_NAMESPACE, ReplayCursor, ResolveExternalIdentity, ServerRun,
     ServerRunCreate, ServerRunEvent, ServerRunReadStore, ServerRunUpdate, ServerRunWriteStore,
@@ -767,7 +767,15 @@ impl PostgresStore {
         read: GraphProjectionRead,
     ) -> PostgresStoreResult<Vec<GraphRecord>> {
         let client = self.client().await?;
-        graph_projection_records(&**client, &self.tables, read).await
+        graph_projection_records(&**client, &self.tables, read, None, false).await
+    }
+
+    pub async fn graph_projection_page(
+        &self,
+        page: GraphProjectionPageRead,
+    ) -> PostgresStoreResult<Vec<GraphRecord>> {
+        let client = self.client().await?;
+        graph_projection_records(&**client, &self.tables, page.read, page.after_id, true).await
     }
 
     pub async fn graph_projection_vector_query(
@@ -1732,7 +1740,7 @@ impl PostgresUnitOfWork<'_> {
         &self,
         read: GraphProjectionRead,
     ) -> PostgresStoreResult<Vec<GraphRecord>> {
-        graph_projection_records(&self.transaction, &self.tables, read).await
+        graph_projection_records(&self.transaction, &self.tables, read, None, false).await
     }
 
     pub async fn graph_projection_vector_query(
@@ -2771,6 +2779,15 @@ impl GraphMutationStore for PostgresStore {
         read: GraphProjectionRead,
     ) -> StoreResult<Vec<GraphRecord>> {
         PostgresStore::graph_projection_records(self, read)
+            .await
+            .map_err(trait_error)
+    }
+
+    async fn graph_projection_page(
+        &self,
+        page: GraphProjectionPageRead,
+    ) -> StoreResult<Vec<GraphRecord>> {
+        PostgresStore::graph_projection_page(self, page)
             .await
             .map_err(trait_error)
     }
@@ -4040,6 +4057,8 @@ async fn graph_projection_records<C>(
     client: &C,
     tables: &Tables,
     read: GraphProjectionRead,
+    after_id: Option<String>,
+    keyset_page: bool,
 ) -> PostgresStoreResult<Vec<GraphRecord>>
 where
     C: GenericClient + Sync,
@@ -4061,16 +4080,28 @@ where
         ));
         values.extend(ids);
     }
+    if let Some(after_id) = after_id {
+        let cursor_index = values.len() + 1;
+        clauses.push(format!(
+            "id COLLATE \"C\" > ${cursor_index}::TEXT COLLATE \"C\""
+        ));
+        values.push(after_id);
+    }
     let limit = i64::try_from(read.limit).unwrap_or(i64::MAX).to_string();
     values.push(limit);
     let params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = values
         .iter()
         .map(|value| value as &(dyn tokio_postgres::types::ToSql + Sync))
         .collect();
+    let ordering = if keyset_page {
+        "id COLLATE \"C\" ASC"
+    } else {
+        "id ASC"
+    };
     let rows = client
         .query(
             &format!(
-                "SELECT id, document, metadata::TEXT, embedding::TEXT FROM {table} WHERE {} ORDER BY id ASC LIMIT ${}::TEXT::BIGINT",
+                "SELECT id, document, metadata::TEXT, embedding::TEXT FROM {table} WHERE {} ORDER BY {ordering} LIMIT ${}::TEXT::BIGINT",
                 clauses.join(" AND "),
                 values.len()
             ),
@@ -7020,6 +7051,21 @@ mod tests {
         assert_eq!(rows[0].metadata["graph_space"], "knowledge");
         assert_eq!(rows[0].metadata["doc_type"], "text");
         assert_eq!(rows[0].metadata["insertion_method"], "integration-test");
+
+        let next_page = store
+            .graph_projection_page(GraphProjectionPageRead {
+                read: read.clone(),
+                after_id: Some("document-0".to_owned()),
+            })
+            .await?;
+        assert_eq!(next_page, rows);
+        let exhausted_page = store
+            .graph_projection_page(GraphProjectionPageRead {
+                read: read.clone(),
+                after_id: Some("document-1".to_owned()),
+            })
+            .await?;
+        assert!(exhausted_page.is_empty());
 
         let reopened = PostgresStore::from_dsn(&dsn, &schema)?;
         let reopened_rows = reopened.graph_projection_records(read).await?;

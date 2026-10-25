@@ -1172,6 +1172,14 @@ pub struct GraphProjectionRead {
     pub limit: usize,
 }
 
+/// Keyset-paginated graph projection read. Existing `GraphProjectionRead`
+/// remains unchanged for source compatibility.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GraphProjectionPageRead {
+    pub read: GraphProjectionRead,
+    pub after_id: Option<String>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct GraphProjectionVectorQuery {
     pub scope: GraphScope,
@@ -1246,10 +1254,70 @@ pub trait GraphMutationStore: Send + Sync {
         &self,
         read: GraphProjectionRead,
     ) -> impl Future<Output = StoreResult<Vec<GraphRecord>>> + Send;
+    /// Read one keyset page. The default fails closed so older store
+    /// implementations remain source-compatible without pretending to page.
+    fn graph_projection_page(
+        &self,
+        _read: GraphProjectionPageRead,
+    ) -> impl Future<Output = StoreResult<Vec<GraphRecord>>> + Send {
+        async {
+            Err(StoreError::Backend {
+                backend: "graph-projection-pagination".to_owned(),
+                message: "keyset pagination is not supported by this store".to_owned(),
+            })
+        }
+    }
     fn graph_projection_vector_query(
         &self,
         query: GraphProjectionVectorQuery,
     ) -> impl Future<Output = StoreResult<Vec<VectorMatch>>> + Send;
+}
+
+/// Read every page of a graph projection using stable ID keyset pagination.
+///
+/// The helper rejects backends that return unordered or non-advancing pages,
+/// preventing silent omissions and infinite loops at language/backend seams.
+pub async fn graph_projection_records_all<S>(
+    store: &S,
+    read: GraphProjectionRead,
+) -> StoreResult<Vec<GraphRecord>>
+where
+    S: GraphMutationStore + Sync,
+{
+    let page_size = read.limit;
+    if page_size == 0 {
+        return Ok(Vec::new());
+    }
+
+    let mut records = Vec::new();
+    let mut after_id = None;
+    loop {
+        let page = store
+            .graph_projection_page(GraphProjectionPageRead {
+                read: read.clone(),
+                after_id: after_id.clone(),
+            })
+            .await?;
+        let Some(first) = page.first() else {
+            break;
+        };
+        if after_id.as_ref().is_some_and(|cursor| first.id <= *cursor)
+            || page.windows(2).any(|pair| pair[0].id >= pair[1].id)
+            || page.len() > page_size
+        {
+            return Err(StoreError::Backend {
+                backend: "graph-projection-pagination".to_owned(),
+                message: "backend returned a non-advancing or unordered page".to_owned(),
+            });
+        }
+        let has_more = page.len() == page_size;
+        after_id = page.last().map(|record| record.id.clone());
+        records.extend(page);
+        if !has_more {
+            break;
+        }
+    }
+    Ok(records)
 }
 
 /// Declared document-projection authority for a store implementation.
