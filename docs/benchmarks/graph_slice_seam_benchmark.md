@@ -85,6 +85,24 @@ this small workload; do not use these numbers as a release threshold or claim
 a stable batch win. A longer controlled run with process isolation is needed
 before choosing a new boundary ABI.
 
+### Direct Python-object ABI experiment
+
+A temporary PyO3 variant recursively converted Python dict/list/scalar objects
+to `serde_json::Value`, projected the same declared envelope, then returned the
+same JSON-string result. On the same 16-envelope fixture, all Python, existing
+string-ABI, and object-ABI projection digests matched; invalid non-string keys,
+non-finite floats, out-of-range integers, and unsupported objects were rejected.
+An alternating-order 12-sample paired run measured median **11.22 ms** for the
+existing string ABI and **25.68 ms** for the object ABI (projection plus output
+decode). This prototype was about 2.3x slower in this noisy Windows run, so it
+was removed rather than kept as an experimental public extension method. The
+result is a useful negative finding: avoiding JSON text does not automatically
+make a PyO3 seam faster; recursive GIL-bound object traversal and constructing
+an intermediate `serde_json::Value` can cost more than Rust's optimized JSON
+parser. The native Rust path, which keeps typed data in Rust rather than
+round-tripping Python objects, remains the no-language-seam optimization
+candidate.
+
 ## Interim Measurement
 
 On the Windows CPython 3.13 checkout environment, with 64 envelopes and 10
