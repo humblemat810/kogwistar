@@ -15,6 +15,11 @@ and CI evidence rather than assigning one percentage to the whole port.
   writes while preserving their pre-existing embedding-excluded payload. The
   stale DL-16 sentence claiming no Python adapter exists is superseded; typed
   envelope validation is still not proof of full in-memory model interchange.
+- Live Rust/PostgreSQL confirmation: with `KOGWISTAR_IMPL_CONTRACTS=rust`,
+  `tests/core/test_rust_postgres_transaction_session.py::test_public_rust_postgres_pure_adds_use_native_events_without_fanout_jobs`
+  passed against the local disposable PostgreSQL service. It verifies pure node
+  and edge projection visibility, ordered canonical ADD events, and no index
+  fanout jobs. The fixture created and dropped its unique test schema.
 
 - Agent workflow runtime-version compatibility regression: `workflows.py` had
   assigned `wf_version="agent-v1"` to each node/edge, but Kogwistar's `wf_version`
