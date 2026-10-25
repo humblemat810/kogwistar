@@ -18,8 +18,8 @@ class _SnapshotService:
     def get_context_snapshot_payload(self, *, snapshot_node_id: str) -> dict[str, Any]:
         assert snapshot_node_id == "snapshot-1"
         return {
-            "metadata": {"stage": "answer", "run_id": "run-1"},
-            "properties": {"summary": "checkpoint payload", "step_seq": 12},
+            "metadata": {"source": "integration"},
+            "properties": {"snapshot_seq": 7, "summary": "latest snapshot"},
         }
 
 

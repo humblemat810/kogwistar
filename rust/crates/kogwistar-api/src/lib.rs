@@ -13002,9 +13002,16 @@ mod tests {
             workspace_id: None,
             graph_space: None,
         };
+        let expected = serde_json::from_str::<Value>(include_str!(
+            "../../../../contracts/golden/mount-memory-result-v1.json"
+        ))
+        .unwrap();
         let mut snapshot_metadata = Map::new();
         snapshot_metadata.insert("entity_type".to_owned(), json!("context_snapshot"));
-        snapshot_metadata.insert("conversation_id".to_owned(), json!("conversation-1"));
+        snapshot_metadata.insert(
+            "conversation_id".to_owned(),
+            expected["conversation_id"].clone(),
+        );
         snapshot_metadata.insert("run_id".to_owned(), json!("run-1"));
         snapshot_metadata.insert("stage".to_owned(), json!("final"));
         service
@@ -13013,14 +13020,8 @@ mod tests {
                 scope: scope.clone(),
                 table: "gke_nodes".to_owned(),
                 record: GraphRecord {
-                    id: "snapshot-1".to_owned(),
-                    document: Some(
-                        json!({
-                            "metadata": {"source": "integration"},
-                            "properties": {"snapshot_seq": 7, "summary": "latest snapshot"}
-                        })
-                        .to_string(),
-                    ),
+                    id: expected["snapshot_node_id"].as_str().unwrap().to_owned(),
+                    document: Some(expected.to_string()),
                     metadata: snapshot_metadata,
                     embedding: None,
                 },
@@ -13092,6 +13093,37 @@ mod tests {
                 "snapshot_node_id".to_owned(),
             ])
         );
+
+        let syscall_response = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/syscall/v1/mount_memory".to_owned(),
+                body: serde_json::to_vec(&json!({
+                    "version": "v1",
+                    "op": "mount_memory",
+                    "args": {
+                        "conversation_id": expected["conversation_id"],
+                        "run_id": "run-1",
+                        "stage": "final"
+                    }
+                }))
+                .unwrap(),
+                principal: json!({
+                    "sub": "alice",
+                    "role": "ro",
+                    "ns": "conversation",
+                    "storage_ns": "conversation",
+                    "capabilities": ["project_view"]
+                }),
+            })
+            .await;
+        assert_eq!(syscall_response.status, StatusCode::OK.as_u16());
+        let syscall_payload: Value = serde_json::from_slice(&syscall_response.body).unwrap();
+        assert_eq!(syscall_payload["version"], "v1");
+        assert_eq!(syscall_payload["op"], "mount_memory");
+        assert_eq!(syscall_payload["status"], "ok");
+        assert_eq!(syscall_payload["result"], expected);
 
         drop(service);
         let (cleanup, connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls)
