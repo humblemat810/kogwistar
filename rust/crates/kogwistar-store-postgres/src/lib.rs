@@ -149,6 +149,12 @@ pub struct GraphMetadataPatchMutation {
     pub payload: Value,
 }
 
+/// Physical projection purge after canonical lifecycle admission.
+///
+/// This is not the user-facing delete lifecycle. Node and edge callers must
+/// persist a canonical tombstone before this operation is accepted; the
+/// tombstone remains the durable source of deletion history even when the
+/// materialized row is later purged.
 #[derive(Clone, Debug, PartialEq)]
 pub struct GraphDeleteMutation {
     pub scope: kogwistar_store::GraphScope,
@@ -3832,6 +3838,18 @@ where
     if !graph_scope_matches_or_legacy_default(&mutation.scope, &current_metadata)? {
         return Err(PostgresStoreError::Backend(
             "graph record id belongs to a different scope".to_owned(),
+        ));
+    }
+    if matches!(mutation.entity_kind.as_str(), "node" | "edge")
+        && !matches!(
+            current_metadata
+                .get("lifecycle_status")
+                .and_then(Value::as_str),
+            Some("tombstoned") | Some("deleted")
+        )
+    {
+        return Err(PostgresStoreError::Backend(
+            "physical graph purge requires a canonical tombstone".to_owned(),
         ));
     }
 

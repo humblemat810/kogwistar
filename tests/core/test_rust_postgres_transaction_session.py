@@ -841,6 +841,23 @@ def test_native_graph_delete_is_atomic_idempotent_and_scope_safe(
         "entity_id": "delete-me",
         "payload": {"reason": "test"},
     }
+    tombstone = {
+        "kind": "graph_metadata_patch_mutation",
+        "namespace": "delete",
+        "table": backend.nodes.name,
+        "entity_kind": "node",
+        "event_id": "tombstone-event",
+        "entity_id": "delete-me",
+        "op": "TOMBSTONE",
+        "metadata_patch": {
+            "lifecycle_status": "tombstoned",
+            "redirect_to_id": None,
+        },
+        "payload": {"reason": "test"},
+    }
+    tombstoned = _call(dsn, schema, tombstone)
+    assert tombstoned["inserted"] is True
+    assert tombstoned["mutated"] is True
     deleted = _call(dsn, schema, operation)
     assert deleted["inserted"] is True
     assert deleted["mutated"] is True
@@ -857,7 +874,7 @@ def test_native_graph_delete_is_atomic_idempotent_and_scope_safe(
     ) is None
     assert _call(
         dsn, schema, {"kind": "latest_retained_event_seq", "namespace": "delete"}
-    ) == 1
+    ) == 2
 
     with pytest.raises(RustParityError) as wrong_scope:
         _call(

@@ -1180,10 +1180,46 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                     self._e.enqueue_index_jobs_for_edge(entity_id, op="UPSERT")
         return True
 
+    def _ensure_rust_postgres_canonical_tombstone(
+        self, *, entity_kind: Literal["node", "edge"], entity_id: str
+    ) -> bool:
+        """Make physical native purge safe after canonical lifecycle admission."""
+        getter = (
+            self._e.backend.node_get
+            if entity_kind == "node"
+            else self._e.backend.edge_get
+        )
+        current = _backend_object(
+            run_awaitable_blocking(getter(ids=[entity_id], include=["metadatas"]))
+        )
+        if not current.get("ids"):
+            return False
+        metadata_rows = current.get("metadatas") or []
+        metadata = metadata_rows[0] if metadata_rows else None
+        if isinstance(metadata, Mapping) and str(
+            metadata.get("lifecycle_status") or "active"
+        ) in {"tombstoned", "deleted"}:
+            return True
+        tombstoned = (
+            self._e.lifecycle.tombstone_node(entity_id, reason="native_graph_purge")
+            if entity_kind == "node"
+            else self._e.lifecycle.tombstone_edge(entity_id, reason="native_graph_purge")
+        )
+        if not tombstoned:
+            raise RuntimeError(
+                f"cannot physically purge active {entity_kind} {entity_id!r}"
+                " without a canonical tombstone"
+            )
+        return True
+
     def _rust_postgres_delete_edges(self, edge_ids: list[str]) -> bool:
         meta = self._rust_postgres_meta()
         if meta is None:
             return False
+        for edge_id in edge_ids:
+            self._ensure_rust_postgres_canonical_tombstone(
+                entity_kind="edge", entity_id=edge_id
+            )
         with meta.transaction():
             for edge_id in edge_ids:
                 result = meta.apply_graph_delete_mutation(
@@ -1216,6 +1252,11 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             "document": self._projection_backend().documents.name,
             "domain": self._projection_backend().domains.name,
         }[entity_kind]
+        if entity_kind in {"node", "edge"}:
+            for entity_id in entity_ids:
+                self._ensure_rust_postgres_canonical_tombstone(
+                    entity_kind=entity_kind, entity_id=entity_id
+                )
         with meta.transaction():
             for entity_id in entity_ids:
                 result = meta.apply_graph_delete_mutation(
