@@ -1,4 +1,5 @@
 use serde::Serialize;
+use std::collections::BTreeSet;
 
 use super::FROZEN_OPENAPI_ROUTES;
 
@@ -17,8 +18,16 @@ impl ImplementationSnapshot {
     pub fn effective_server_cutover_ready(&self) -> bool {
         self.server_cutover_ready
             && PENDING_SERVER_CUTOVER_ROUTES.is_empty()
+            && pending_server_routes_are_valid()
             && self.implemented_route_operations == frozen_application_route_operations()
     }
+}
+
+fn pending_server_routes_are_valid() -> bool {
+    let mut seen = BTreeSet::new();
+    PENDING_SERVER_CUTOVER_ROUTES
+        .iter()
+        .all(|route| seen.insert(*route) && FROZEN_OPENAPI_ROUTES.contains(route))
 }
 
 pub const PENDING_SERVER_CUTOVER_ROUTES: &[(&str, &str)] = &[
@@ -83,5 +92,27 @@ impl Default for ImplementationSnapshot {
             runtime_cutover_ready: false,
             server_cutover_ready: false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pending_server_routes_are_unique_and_frozen() {
+        assert!(pending_server_routes_are_valid());
+        assert_eq!(
+            PENDING_SERVER_CUTOVER_ROUTES.len(),
+            PENDING_SERVER_CUTOVER_ROUTES
+                .iter()
+                .collect::<BTreeSet<_>>()
+                .len()
+        );
+    }
+
+    #[test]
+    fn default_snapshot_cannot_claim_server_cutover() {
+        assert!(!ImplementationSnapshot::default().effective_server_cutover_ready());
     }
 }
