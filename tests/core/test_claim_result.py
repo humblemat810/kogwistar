@@ -43,3 +43,22 @@ def test_first_live_claim_wins_and_result_is_immutable(backend: str, tmp_path: P
     )
     assert loser["status"] == "existing"
     assert loser["result_json"] == '{"winner":1}'
+
+
+@pytest.mark.parametrize("backend", ["memory", "sqlite"])
+def test_expired_claim_cannot_admit_a_result(backend: str, tmp_path: Path) -> None:
+    meta = InMemoryMetaStore() if backend == "memory" else EngineSQLite(tmp_path / "meta")
+    if backend == "sqlite":
+        meta.ensure_initialized()
+    _enqueue(meta)
+
+    claim = meta.claim_index_jobs(limit=1, lease_seconds=-1, namespace="maintenance")[0]
+    rejected = meta.accept_index_job_result(
+        claim.job_id,
+        claim_token=claim.claim_token or "",
+        result_json='{"late":1}',
+        result_sha256="late-digest",
+    )
+
+    assert rejected["status"] == "rejected"
+    assert meta.get_index_job_result(claim.job_id) is None
