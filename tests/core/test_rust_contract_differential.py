@@ -407,6 +407,26 @@ def test_python_family_payloads_validate_through_rust_graph_contract(monkeypatch
     conversation_node = project(ConversationNode, conversation_node)
     _rust.validate_graph_model_family(envelope("conversation_node", conversation_node))
 
+    for entity_type, role, turn_index in (
+        ("conversation_start", "system", -1),
+        ("conversation_turn", "user", 0),
+        ("conversation_summary", "system", 1),
+        ("assistant_turn", "assistant", 2),
+    ):
+        conversation_subtype = copy.deepcopy(base_node)
+        conversation_subtype["metadata"] = {
+            "entity_type": entity_type,
+            "level_from_root": 0,
+            "role": role,
+            "turn_index": turn_index,
+            "conversation_id": "conversation:python-fixture",
+            "user_id": "user:python-fixture",
+        }
+        conversation_subtype = project(ConversationNode, conversation_subtype)
+        _rust.validate_graph_model_family(
+            envelope("conversation_node", conversation_subtype)
+        )
+
     conversation_edge = copy.deepcopy(GRAPH_MODEL_FIXTURE["cases"][1]["payload"])
     conversation_edge["metadata"] = {
         "causal_type": "chain",

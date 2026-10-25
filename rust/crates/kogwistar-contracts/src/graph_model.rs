@@ -817,10 +817,7 @@ fn validate_conversation_node_metadata(
         "prev_node_distance_from_last_summary",
         "prev_turn_meta_summary",
     ];
-    if value.entity_type != "conversation_node"
-        || value.level_from_root < 0
-        || forbidden.iter().any(|key| metadata.contains_key(*key))
-    {
+    if value.level_from_root < 0 || forbidden.iter().any(|key| metadata.contains_key(*key)) {
         return Err(GraphModelError::InvalidEntityFields {
             model_class: GraphModelClass::ConversationNode,
             reason: "invalid conversation node metadata",
@@ -3073,6 +3070,29 @@ mod tests {
                 .validate_family_v1()
                 .is_ok()
         );
+
+        for (entity_type, role, turn_index) in [
+            ("conversation_start", "system", -1),
+            ("conversation_turn", "user", 0),
+            ("conversation_summary", "system", 1),
+            ("assistant_turn", "assistant", 2),
+        ] {
+            let mut conversation_subtype = fixture["cases"][0]["payload"].clone();
+            conversation_subtype["metadata"] = serde_json::json!({
+                "entity_type": entity_type,
+                "level_from_root": 0,
+                "role": role,
+                "turn_index": turn_index,
+                "conversation_id": "conversation:demo",
+                "user_id": "user:demo"
+            });
+            assert!(
+                GraphModelEnvelope::new(GraphModelClass::ConversationNode, conversation_subtype)
+                    .validate_family_v1()
+                    .is_ok(),
+                "Python ConversationNode subtype {entity_type:?} must remain valid"
+            );
+        }
 
         let mut invalid_conversation = fixture["cases"][0]["payload"].clone();
         invalid_conversation["metadata"] = serde_json::json!({
