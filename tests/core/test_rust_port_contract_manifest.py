@@ -18,6 +18,9 @@ DUAL_LANGUAGE_MANIFEST_PATH = (
 SUPPORT_MATRIX_PATH = ROOT / "contracts" / "dual-language-support-matrix-v1.json"
 CI_WORKFLOW_PATH = ROOT / ".github" / "workflows" / "ci.yml"
 RUST_PORT_WORKFLOW_PATH = ROOT / ".github" / "workflows" / "rust-port-compat.yml"
+RUST_CUTOVER_SOURCE_PATH = (
+    ROOT / "rust" / "crates" / "kogwistar-api" / "src" / "cutover.rs"
+)
 CONSUMER_IMPORT_INVENTORY_PATH = (
     ROOT / "contracts" / "inventory" / "consumer-imports-v1.json"
 )
@@ -158,12 +161,10 @@ def test_four_layer_ci_core_pin_matches_reference_application_contract() -> None
 
 
 def test_server_cutover_ledger_count_matches_rust_frozen_route_inventory() -> None:
-    rust_api = (
-        ROOT / "rust" / "crates" / "kogwistar-api" / "src" / "lib.rs"
-    ).read_text(encoding="utf-8")
+    rust_cutover = RUST_CUTOVER_SOURCE_PATH.read_text(encoding="utf-8")
     pending = re.search(
         r"pub const PENDING_SERVER_CUTOVER_ROUTES:.*?= &\[(.*?)\];",
-        rust_api,
+        rust_cutover,
         flags=re.DOTALL,
     )
     assert pending is not None
@@ -183,17 +184,15 @@ def test_versioned_server_and_syscall_deferrals_match_rust_frozen_inventory() ->
     assert deferrals["status"] == "versioned-intentionally-deferred"
     assert deferrals["owner"] == "python-rollback-deployment"
 
-    rust_api = (
-        ROOT / "rust" / "crates" / "kogwistar-api" / "src" / "lib.rs"
-    ).read_text(encoding="utf-8")
+    rust_cutover = RUST_CUTOVER_SOURCE_PATH.read_text(encoding="utf-8")
     pending_routes = re.search(
         r"pub const PENDING_SERVER_CUTOVER_ROUTES:.*?= &\[(.*?)\];",
-        rust_api,
+        rust_cutover,
         flags=re.DOTALL,
     )
     pending_syscalls = re.search(
         r"pub const PENDING_SYSCALL_CUTOVER_OPS:.*?= &\[(.*?)\];",
-        rust_api,
+        rust_cutover,
         flags=re.DOTALL,
     )
     assert pending_routes is not None
@@ -254,17 +253,15 @@ def test_dual_language_crosswalk_matches_frozen_ownership_and_rust_gaps() -> Non
         if expected_rust_coverage != "python-only":
             assert item["native_rust_path"] == "not-verified"
 
-    rust_api = (
-        ROOT / "rust" / "crates" / "kogwistar-api" / "src" / "lib.rs"
-    ).read_text(encoding="utf-8")
+    rust_cutover = RUST_CUTOVER_SOURCE_PATH.read_text(encoding="utf-8")
     routes_match = re.search(
         r"pub const PENDING_SERVER_CUTOVER_ROUTES:.*?= &\[(.*?)\];",
-        rust_api,
+        rust_cutover,
         flags=re.DOTALL,
     )
     syscalls_match = re.search(
         r"pub const PENDING_SYSCALL_CUTOVER_OPS:.*?= &\[(.*?)\];",
-        rust_api,
+        rust_cutover,
         flags=re.DOTALL,
     )
     assert routes_match is not None
