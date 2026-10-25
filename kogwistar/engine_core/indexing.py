@@ -684,6 +684,26 @@ class IndexingSubsystem:
         ) -> dict[str, Any]:
             return _backend_object(run_awaitable_blocking(fn(*args, **kwargs)))
 
+        if op == "DELETE" and index_kind in self._PHASE1_JOIN_INDEX_KINDS:
+            # A derived-index delete is valid only after canonical lifecycle
+            # state has made the entity tombstoned, or when the base entity is
+            # already absent.  This prevents a stale/manual queue row from
+            # deleting projections for an active graph entity.
+            getter = (
+                self.engine.backend.node_get
+                if entity_kind == "node"
+                else self.engine.backend.edge_get
+            )
+            canonical = _backend_call(getter, ids=[entity_id], include=["metadatas"])
+            canonical_ids = canonical.get("ids") or []
+            if canonical_ids:
+                metadata_rows = canonical.get("metadatas") or []
+                metadata = metadata_rows[0] if metadata_rows else None
+                if not isinstance(metadata, dict) or not _is_tombstoned(metadata):
+                    raise ValueError(
+                        "derived index DELETE requires a canonical tombstone"
+                    )
+
         def _actual_payload() -> list[Any]:
             if entity_kind == "node":
                 if index_kind == "node_docs":

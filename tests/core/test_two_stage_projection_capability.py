@@ -623,6 +623,25 @@ def test_in_memory_two_stage_delete_hides_ready_projection(tmp_path) -> None:
     )["ids"] == [[]]
 
 
+def test_derived_delete_rejects_active_canonical_entity(tmp_path) -> None:
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path),
+        backend_factory=build_fake_backend,
+        persistence_mode="two_stage",
+    )
+    engine.write.add_node(build_entity_node(node_id="n1", doc_id="d1", embedding=None))
+
+    with pytest.raises(ValueError, match="canonical tombstone"):
+        engine.indexing.apply_index_job(
+            job_id="manual-delete",
+            entity_kind="node",
+            entity_id="n1",
+            index_kind="node_docs",
+            op="DELETE",
+            namespace="default",
+        )
+
+
 def test_two_stage_does_not_dispatch_before_canonical_event(tmp_path) -> None:
     class _Adapter:
         def __init__(self) -> None:
