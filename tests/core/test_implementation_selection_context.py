@@ -22,12 +22,14 @@ from kogwistar.engine_core.in_memory_backend import build_in_memory_backend
 from kogwistar.engine_core.indexing import IndexingSubsystem
 from kogwistar.engine_core.subsystems.write import WriteSubsystem
 from kogwistar.implementation_selection import (
+    active_transaction_authority,
     capture_implementation_selection,
     implementation_selection_metadata,
     implementation_selection_bound,
     implementation_selection_scope,
     postgres_authority_selectors_aligned,
     resolve_implementation_selection,
+    transaction_authority_scope,
 )
 from kogwistar.runtime import AsyncWorkflowRuntime, WorkflowRuntime
 from tests._helpers.embeddings import ConstantEmbeddingFunction
@@ -201,6 +203,18 @@ def test_write_subsystem_proxy_uses_the_owning_engine_snapshot(
     write.add_node(SimpleNamespace())
     assert observed == ["python"]
     assert runtime_implementation_mode() == "rust"
+
+
+def test_transaction_authority_scope_rejects_nested_owner_switch() -> None:
+    assert active_transaction_authority() is None
+    with transaction_authority_scope("python"):
+        assert active_transaction_authority() == "python"
+        with transaction_authority_scope("python"):
+            assert active_transaction_authority() == "python"
+        with pytest.raises(RuntimeError, match="different implementation authority"):
+            with transaction_authority_scope("rust"):
+                pass
+    assert active_transaction_authority() is None
 
 
 def test_resolve_implementation_selection_rejects_split_authority() -> None:

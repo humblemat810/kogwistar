@@ -23,6 +23,8 @@ from ..json_types import JsonObject
 from ..implementation_selection import (
     capture_implementation_selection,
     implementation_selection_scope,
+    transaction_authority_for_selection,
+    transaction_authority_scope,
 )
 from ..utils.log import bind_log_context
 from ..workers.index_job_worker import IndexJobWorker
@@ -2255,6 +2257,16 @@ class GraphKnowledgeEngine:
         - **Cross-Backend Synchronization**: Coordinates the SQLite/Postgres metadata
           transaction with the Vector backend's transaction (if supported).
         """
+        authority = transaction_authority_for_selection(
+            self._implementation_selection_snapshot
+        )
+        with transaction_authority_scope(authority):
+            with self._uow_impl():
+                yield self._uow_ctx_conn.get()
+
+    @contextmanager
+    def _uow_impl(self) -> Iterator[object | None]:
+        """Run the legacy UoW mechanics inside the authority guard."""
         self._ensure_uow_ctxvars()
 
         depth = self._uow_ctx_depth.get()

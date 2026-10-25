@@ -6,7 +6,7 @@ from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from functools import wraps
-from typing import ParamSpec, TypeAlias, TypeVar, cast
+from typing import Literal, ParamSpec, TypeAlias, TypeVar, cast
 
 from kogwistar.json_types import JsonObject
 
@@ -20,9 +20,13 @@ _IMPLEMENTATION_ENV_NAMES = (
     "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
 )
 ImplementationSelectionSnapshot: TypeAlias = tuple[tuple[str, str | None], ...]
+TransactionAuthority: TypeAlias = Literal["python", "rust"]
 
 _selection_snapshot: ContextVar[ImplementationSelectionSnapshot | None] = (
     ContextVar("kogwistar_implementation_selection", default=None)
+)
+_transaction_authority: ContextVar[TransactionAuthority | None] = ContextVar(
+    "kogwistar_transaction_authority", default=None
 )
 _P = ParamSpec("_P")
 _R = TypeVar("_R")
@@ -56,6 +60,47 @@ def implementation_env(name: str, default: str | None = None) -> str | None:
 def capture_implementation_selection() -> ImplementationSelectionSnapshot:
     """Capture all implementation selectors as one immutable configuration."""
     return tuple((name, os.getenv(name)) for name in _IMPLEMENTATION_ENV_NAMES)
+
+
+def transaction_authority_for_selection(
+    snapshot: ImplementationSelectionSnapshot,
+) -> TransactionAuthority:
+    """Derive the transaction owner from the frozen implementation choice.
+
+    Rust owns a transaction only when the metadata or coordinated PostgreSQL
+    authority is explicitly Rust. All other configurations retain the legacy
+    Python owner. This is an internal decision, not caller-provided payload.
+    """
+    selected = dict(snapshot)
+    if (
+        selected.get("KOGWISTAR_IMPL_META_STORE") == "rust"
+        or selected.get("KOGWISTAR_IMPL_POSTGRES_AUTHORITY") == "rust"
+    ):
+        return "rust"
+    return "python"
+
+
+def active_transaction_authority() -> TransactionAuthority | None:
+    """Return the owner of the current unit of work, if one is active."""
+    return _transaction_authority.get()
+
+
+@contextmanager
+def transaction_authority_scope(authority: TransactionAuthority) -> Iterator[None]:
+    """Prevent nested work from switching transaction owners mid-operation."""
+    active = _transaction_authority.get()
+    if active is not None:
+        if active != authority:
+            raise RuntimeError(
+                "nested transaction uses a different implementation authority"
+            )
+        yield
+        return
+    token = _transaction_authority.set(authority)
+    try:
+        yield
+    finally:
+        _transaction_authority.reset(token)
 
 
 def resolve_implementation_selection(
