@@ -167,4 +167,60 @@ mod tests {
         assert_eq!(summary.retried, 1);
         assert!(store.index_job_result("job-1").await.unwrap().is_none());
     }
+
+    #[tokio::test]
+    async fn accepted_result_is_reused_after_lost_ack_and_lease_reclaim() {
+        let store = InMemoryStore::new();
+        enqueue(&store, 3).await;
+
+        // Model a worker that durably admitted the provider result but lost
+        // the acknowledgement before marking the queue row done.
+        let claimed = store
+            .claim_index_jobs(1, 0, Some("ns"))
+            .await
+            .unwrap()
+            .pop()
+            .unwrap();
+        let claim_token = claimed.claim_token.clone().unwrap();
+        let first_result = "{\"embedding\":[1,0]}";
+        assert_eq!(
+            store
+                .accept_index_job_result(
+                    "job-1",
+                    &claim_token,
+                    first_result,
+                    &result_digest(first_result),
+                )
+                .await
+                .unwrap()
+                .status,
+            "accepted"
+        );
+
+        // The in-memory clock is second-granularity, so wait for the lease to
+        // become reclaimable rather than relying on a timing race.
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        let mut provider_calls = 0;
+        let summary = run_index_jobs_once(&store, 1, 30, Some("ns"), |_job| {
+            provider_calls += 1;
+            async { Ok("{\"embedding\":[0,1]}".to_owned()) }
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(provider_calls, 1);
+        assert_eq!(summary.accepted, 0);
+        assert_eq!(summary.existing, 1);
+        assert_eq!(summary.claim_lost, 0);
+        assert_eq!(
+            store
+                .index_job_result("job-1")
+                .await
+                .unwrap()
+                .unwrap()
+                .result_json
+                .as_deref(),
+            Some(first_result)
+        );
+    }
 }
