@@ -147,6 +147,14 @@ pub struct GraphRecord {
     pub embedding: Option<Vec<f32>>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConversationListEntry {
+    pub id: String,
+    pub start_node_id: String,
+    pub status: String,
+    pub turn_count: i64,
+}
+
 /// A document projection write owned by one concrete backend.
 ///
 /// This is intentionally separate from graph mutation: document ingestion has
@@ -502,6 +510,55 @@ pub fn conversation_summary_from_visible_records(
     };
     summary.validate()?;
     Ok(summary)
+}
+
+/// Project the legacy conversation-list response from already-authorized
+/// records. The caller must apply namespace and ACL filtering before calling.
+pub fn conversation_list_for_user_from_visible_records(
+    records: &[GraphRecord],
+    user_id: &str,
+) -> Vec<ConversationListEntry> {
+    let mut turn_counts = BTreeMap::<String, i64>::new();
+    for record in records
+        .iter()
+        .filter(|record| !is_tombstoned(&record.metadata))
+    {
+        if !matches!(
+            value_string(record, "entity_type").as_deref(),
+            Some("conversation_turn" | "assistant_turn")
+        ) || record_field(record, "turn_index")
+            .and_then(|value| value.as_i64())
+            .is_none()
+        {
+            continue;
+        }
+        if let Some(conversation_id) = value_string(record, "conversation_id") {
+            *turn_counts.entry(conversation_id).or_default() += 1;
+        }
+    }
+    let mut entries = records
+        .iter()
+        .filter(|record| !is_tombstoned(&record.metadata))
+        .filter(|record| {
+            value_string(record, "entity_type").as_deref() == Some("conversation_start")
+        })
+        .filter(|record| value_string(record, "user_id").as_deref() == Some(user_id))
+        .filter_map(|start| {
+            let conversation_id = value_string(start, "conversation_id")?;
+            let turn_count = turn_counts
+                .get(&conversation_id)
+                .copied()
+                .unwrap_or_default();
+            Some(ConversationListEntry {
+                id: conversation_id,
+                start_node_id: start.id.clone(),
+                status: value_string(start, "status").unwrap_or_else(|| "active".to_owned()),
+                turn_count,
+            })
+        })
+        .collect::<Vec<_>>();
+    entries.sort_by(|left, right| right.turn_count.cmp(&left.turn_count));
+    entries
 }
 
 /// Project the latest already-authorized context snapshot without choosing a
@@ -2914,6 +2971,63 @@ mod tests {
         assert_eq!(summary.start_node_id, "conversation-start");
         assert_eq!(summary.tail_node_id, "turn-0");
         assert_eq!(summary.turn_count, 1);
+    }
+
+    #[test]
+    fn conversation_list_projection_is_user_scoped_and_counts_visible_turns() {
+        let mut start_alice = GraphRecord::new("start-alice");
+        start_alice.metadata.extend(
+            serde_json::json!({
+                "entity_type": "conversation_start",
+                "conversation_id": "conversation-alice",
+                "user_id": "alice",
+                "status": "active"
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        );
+        let mut start_bob = start_alice.clone();
+        start_bob.id = "start-bob".to_owned();
+        start_bob
+            .metadata
+            .insert("conversation_id".to_owned(), "conversation-bob".into());
+        start_bob
+            .metadata
+            .insert("user_id".to_owned(), "bob".into());
+        let mut first_turn = GraphRecord::new("turn-1");
+        first_turn.metadata.extend(
+            serde_json::json!({
+                "entity_type": "conversation_turn",
+                "conversation_id": "conversation-alice",
+                "turn_index": 0
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        );
+        let mut second_turn = first_turn.clone();
+        second_turn.id = "turn-2".to_owned();
+        second_turn
+            .metadata
+            .insert("entity_type".to_owned(), "assistant_turn".into());
+        second_turn
+            .metadata
+            .insert("turn_index".to_owned(), 1.into());
+
+        let entries = conversation_list_for_user_from_visible_records(
+            &[start_alice, start_bob, first_turn, second_turn],
+            "alice",
+        );
+        assert_eq!(
+            entries,
+            vec![ConversationListEntry {
+                id: "conversation-alice".to_owned(),
+                start_node_id: "start-alice".to_owned(),
+                status: "active".to_owned(),
+                turn_count: 2,
+            }]
+        );
     }
 
     #[test]

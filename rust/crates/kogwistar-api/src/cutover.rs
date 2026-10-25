@@ -32,7 +32,6 @@ fn pending_server_routes_are_valid() -> bool {
 
 pub const PENDING_SERVER_CUTOVER_ROUTES: &[(&str, &str)] = &[
     ("DELETE", "/admin/doc/{doc_id}"),
-    ("GET", "/api/conversations"),
     ("GET", "/api/search_index_hybrid"),
     ("GET", "/api/viz/cytoscape.json"),
     ("GET", "/api/viz/d3.json"),

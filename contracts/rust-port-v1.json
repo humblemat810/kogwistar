@@ -498,10 +498,6 @@
         "exit_evidence": "conversation graph projection/read parity, security-scope checks, turn idempotency, snapshot replay, and REST/MCP conformance",
         "operations": [
           {
-            "method": "GET",
-            "path": "/api/conversations"
-          },
-          {
             "method": "POST",
             "path": "/api/conversations"
           },

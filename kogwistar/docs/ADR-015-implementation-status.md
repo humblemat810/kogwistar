@@ -143,7 +143,7 @@ Only these local items remain in scope before production rollout:
   same protocol. This line remains unchecked:
   public authority promotion still requires its capability canary and the
   explicit `workflow-runtime` readiness decision.
-- [x] Phase 5: explicitly version/defer the 13 currently frozen Python-owned
+- [x] Phase 5: explicitly version/defer the 12 currently frozen Python-owned
   server operations listed by `PENDING_SERVER_CUTOVER_ROUTES`. The manifest
   records grouped Python rollback ownership, prerequisite Rust authorities, and
   exit evidence; its exact operation set is bidirectionally checked against the
@@ -166,6 +166,14 @@ Only these local items remain in scope before production rollout:
   ACL-filtered internal transcript operation to the legacy public response
   shape. The combined summary/transcript test passed live against local
   pgvector on 2026-10-25; SQLite remains explicitly unsupported.
+- [x] The PostgreSQL Rust service now serves `GET /api/conversations` using
+  the same ACL-filtered conversation projection, an exact authenticated-user
+  filter, and the Python-compatible list item shape. SQLite does not advertise
+  the graph-dependent route. Projection, authorization, route-accounting, and
+  live PostgreSQL tests pass; the live fixture includes another user's public
+  conversation and verifies it is excluded. This route inherits the shared
+  10,000-visible-record read cap; large-graph pagination/volume parity remains
+  open and is not implied by the route-level conformance result.
 - [x] Conversation summary, transcript, and latest-snapshot reads share one
   storage-scope/ACL-principal derivation and one ACL-filtered record-read
   helper. The scope/principal invariant test and both live summary/transcript

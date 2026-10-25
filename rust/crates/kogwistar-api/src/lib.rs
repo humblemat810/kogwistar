@@ -33,9 +33,10 @@ use kogwistar_store::{
     MetadataFilter, NamedProjection, NamedProjectionWrite, NewIndexJob, NewProjectedLaneMessage,
     ProjectedLaneMessage, ResolveExternalIdentity, ServerRun, ServerRunCreate, ServerRunEvent,
     WorkflowDesignDeltaWrite, WorkflowDesignSnapshot, WorkflowDesignSnapshotWrite,
-    conversation_summary_from_visible_records, conversation_transcript_from_visible_records,
-    graph_find_edges_from_records, graph_k_hop_from_records, graph_neighbors_from_records,
-    graph_records_visible_by_acl, graph_shortest_path_from_records, validate_typed_graph_mutation,
+    conversation_list_for_user_from_visible_records, conversation_summary_from_visible_records,
+    conversation_transcript_from_visible_records, graph_find_edges_from_records,
+    graph_k_hop_from_records, graph_neighbors_from_records, graph_records_visible_by_acl,
+    graph_shortest_path_from_records, validate_typed_graph_mutation,
 };
 use kogwistar_store_postgres::{
     NewRawEntityEvent as PostgresNewRawEntityEvent, PostgresAuthStore, PostgresStore,
@@ -1497,6 +1498,10 @@ fn conversation_detail_id(path_and_query: &str) -> Option<String> {
     (!conversation_id.is_empty() && !conversation_id.contains('/')).then_some(conversation_id)
 }
 
+fn is_conversation_list_route(path_and_query: &str) -> bool {
+    path_and_query.split('?').next() == Some("/api/conversations")
+}
+
 fn conversation_transcript_id(path_and_query: &str) -> Option<String> {
     let path = path_and_query.split('?').next().unwrap_or(path_and_query);
     let encoded_id = path
@@ -1561,6 +1566,7 @@ struct CapabilityState {
 type SharedCapabilityState = Arc<Mutex<CapabilityState>>;
 
 const SQLITE_UNSUPPORTED_HTTP_ROUTES: &[(&str, &str)] = &[
+    ("GET", "/api/conversations"),
     ("GET", "/api/conversations/{conversation_id}"),
     ("GET", "/api/conversations/{conversation_id}/turns"),
     (
@@ -6045,6 +6051,69 @@ impl PostgresRunApplicationService {
         response
     }
 
+    async fn conversation_list_effect(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
+        let namespaces = principal_strings(&request.principal, "ns");
+        let namespaces = if namespaces.is_empty() {
+            vec!["docs".to_owned()]
+        } else {
+            namespaces
+        };
+        if !namespaces
+            .iter()
+            .any(|namespace| matches!(namespace.as_str(), "*" | "conversation"))
+        {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_NAMESPACE_FORBIDDEN",
+                "Conversation reads require conversation namespace",
+            );
+        }
+        if !capability_allowed(request, &self.capabilities, "read_graph", &["read_graph"]) {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                "Conversation reads require read_graph capability",
+            );
+        }
+        let user_id = request
+            .principal
+            .get("sub")
+            .or_else(|| request.principal.get("user_id"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let Some(user_id) = user_id else {
+            return effect_error(
+                StatusCode::UNAUTHORIZED,
+                "KOGWISTAR_USER_IDENTITY_REQUIRED",
+                "User Identity required",
+            );
+        };
+        let visible_nodes = match self.authorized_conversation_nodes(&request.principal).await {
+            Ok(nodes) => nodes,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_STORE_ERROR",
+                    error,
+                );
+            }
+        };
+        let conversations =
+            conversation_list_for_user_from_visible_records(&visible_nodes, user_id)
+                .into_iter()
+                .map(|entry| {
+                    json!({
+                        "id": entry.id,
+                        "start_node_id": entry.start_node_id,
+                        "status": entry.status,
+                        "turn_count": entry.turn_count,
+                    })
+                })
+                .collect::<Vec<_>>();
+        json_effect(StatusCode::OK, json!({"conversations": conversations}))
+    }
+
     async fn conversation_detail_effect(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
         let namespaces = principal_strings(&request.principal, "ns");
         let namespaces = if namespaces.is_empty() {
@@ -9101,6 +9170,9 @@ impl PostgresRunApplicationService {
     }
 
     async fn execute_async(&self, request: ApiEffectRequest) -> ApiEffectResponse {
+        if request.method == "GET" && is_conversation_list_route(&request.path_and_query) {
+            return self.conversation_list_effect(&request).await;
+        }
         if request.method == "GET" && conversation_transcript_id(&request.path_and_query).is_some()
         {
             return self.conversation_transcript_effect(&request).await;
@@ -12666,6 +12738,9 @@ mod tests {
 
     #[test]
     fn conversation_detail_route_parsing_is_exact_and_decodes_path_id() {
+        assert!(is_conversation_list_route("/api/conversations"));
+        assert!(is_conversation_list_route("/api/conversations?limit=10"));
+        assert!(!is_conversation_list_route("/api/conversations/"));
         assert_eq!(
             conversation_detail_id("/api/conversations/conversation-1?view=summary"),
             Some("conversation-1".to_owned())
@@ -12755,6 +12830,39 @@ mod tests {
             serde_json::from_slice::<Value>(&capability_denied.body).unwrap()["code"],
             "KOGWISTAR_CAPABILITY_FORBIDDEN"
         );
+    }
+
+    #[tokio::test]
+    async fn conversation_list_route_checks_namespace_capability_and_identity_before_storage() {
+        let service = PostgresRunApplicationService::from_dsn(
+            "postgres://unused:unused@127.0.0.1:1/unused",
+            "conversation_list_auth_contract",
+        )
+        .unwrap();
+        let make_request = |principal| ApiEffectRequest {
+            contract_version: 1,
+            method: "GET".to_owned(),
+            path_and_query: "/api/conversations".to_owned(),
+            body: Vec::new(),
+            principal,
+        };
+        for (principal, expected_status) in [
+            (
+                json!({"sub": "alice", "ns": "docs", "capabilities": ["read_graph"]}),
+                StatusCode::FORBIDDEN,
+            ),
+            (
+                json!({"sub": "alice", "ns": "conversation", "capabilities": []}),
+                StatusCode::FORBIDDEN,
+            ),
+            (
+                json!({"ns": "conversation", "capabilities": ["read_graph"]}),
+                StatusCode::UNAUTHORIZED,
+            ),
+        ] {
+            let response = service.execute(make_request(principal)).await;
+            assert_eq!(response.status, expected_status.as_u16());
+        }
     }
 
     #[tokio::test]
@@ -12987,21 +13095,29 @@ mod tests {
             workspace_id: None,
             graph_space: None,
         };
-        for (id, entity_type, extra) in [
+        for (id, conversation_id, entity_type, extra) in [
             (
                 "start-1",
+                "conversation-1",
                 "conversation_start",
                 json!({"user_id": "alice", "status": "active"}),
             ),
             (
                 "turn-1",
+                "conversation-1",
                 "conversation_turn",
                 json!({"turn_index": 0, "role": "user", "summary": "hello"}),
+            ),
+            (
+                "start-other-user",
+                "conversation-other",
+                "conversation_start",
+                json!({"user_id": "bob", "status": "active"}),
             ),
         ] {
             let mut metadata = Map::new();
             metadata.insert("entity_type".to_owned(), json!(entity_type));
-            metadata.insert("conversation_id".to_owned(), json!("conversation-1"));
+            metadata.insert("conversation_id".to_owned(), json!(conversation_id));
             metadata.extend(extra.as_object().unwrap().clone());
             service
                 .store
@@ -13090,6 +13206,35 @@ mod tests {
             ])
         );
 
+        let list_response = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "GET".to_owned(),
+                path_and_query: "/api/conversations".to_owned(),
+                body: Vec::new(),
+                principal: json!({
+                    "sub": "alice",
+                    "role": "ro",
+                    "ns": "conversation",
+                    "storage_ns": "conversation",
+                    "capabilities": ["read_graph"]
+                }),
+            })
+            .await;
+        assert_eq!(list_response.status, StatusCode::OK.as_u16());
+        let list: Value = serde_json::from_slice(&list_response.body).unwrap();
+        assert_eq!(
+            list,
+            json!({
+                "conversations": [{
+                    "id": "conversation-1",
+                    "start_node_id": "start-1",
+                    "status": "active",
+                    "turn_count": 1
+                }]
+            })
+        );
+
         let transcript_response = service
             .execute(ApiEffectRequest {
                 contract_version: 1,
@@ -13175,6 +13320,7 @@ mod tests {
         assert!(!service.supports_http_operation("POST", "/internal/conversation/transcript"));
         assert!(!service.supports_http_operation("GET", "/api/not-registered"));
         assert!(service.supports_http_operation("POST", "/api/workflow/runs"));
+        assert!(service.supports_http_operation("GET", "/api/conversations"));
         assert!(service.supports_http_operation("GET", "/api/conversations/{conversation_id}"));
         assert!(
             service.supports_http_operation("GET", "/api/conversations/{conversation_id}/turns")
@@ -13202,6 +13348,7 @@ mod tests {
         let sqlite = SqliteRunApplicationService::open(&sqlite_path).unwrap();
         assert!(!sqlite.supports_mcp_tool("root", "kg_neighbors"));
         assert!(sqlite.supports_mcp_tool("workflow", "workflow.run_status"));
+        assert!(!sqlite.supports_http_operation("GET", "/api/conversations"));
         drop(sqlite);
         remove_test_sqlite(&sqlite_path);
     }
