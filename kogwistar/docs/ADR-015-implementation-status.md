@@ -143,7 +143,7 @@ Only these local items remain in scope before production rollout:
   same protocol. This line remains unchecked:
   public authority promotion still requires its capability canary and the
   explicit `workflow-runtime` readiness decision.
-- [x] Phase 5: explicitly version/defer the 15 currently frozen Python-owned
+- [x] Phase 5: explicitly version/defer the 14 currently frozen Python-owned
   server operations listed by `PENDING_SERVER_CUTOVER_ROUTES`. The manifest
   records grouped Python rollback ownership, prerequisite Rust authorities, and
   exit evidence; its exact operation set is bidirectionally checked against the
@@ -153,9 +153,14 @@ Only these local items remain in scope before production rollout:
   existing ACL-filtered snapshot projection, with Python-compatible namespace,
   capability, query, and response-shape checks. Focused Rust route tests and
   the route-manifest suite pass; SQLite remains explicitly unsupported.
-- [ ] Run the successful Postgres snapshot-route integration test against a
-  live `KOGWISTAR_TEST_PG_DSN` before release; it was skipped in the current
-  environment because no local Postgres service was available.
+- [x] The PostgreSQL Rust service also serves
+  `GET /api/conversations/{conversation_id}` through the shared summary
+  projection and ACL filter, preserving the six-field Python response and
+  stripping Rust seam metadata. Path, namespace/capability, SQLite fail-closed,
+  and route-accounting tests pass. Both conversation summary and latest-snapshot
+  routes passed their gated integration tests against the existing local
+  pgvector container on 2026-10-25 (1 passed each, 0 failed); neither route
+  promotes the aggregate conversation capability or support matrix.
 - [x] Phase 5: explicitly version/defer the four remaining conversation/tool syscall
   sub-operations listed by `PENDING_SYSCALL_CUTOVER_OPS`. The same versioned
   manifest entry records Python rollback ownership, the required worker/runtime

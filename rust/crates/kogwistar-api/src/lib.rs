@@ -33,9 +33,9 @@ use kogwistar_store::{
     MetadataFilter, NamedProjection, NamedProjectionWrite, NewIndexJob, NewProjectedLaneMessage,
     ProjectedLaneMessage, ResolveExternalIdentity, ServerRun, ServerRunCreate, ServerRunEvent,
     WorkflowDesignDeltaWrite, WorkflowDesignSnapshot, WorkflowDesignSnapshotWrite,
-    conversation_transcript_from_visible_records, graph_find_edges_from_records,
-    graph_k_hop_from_records, graph_neighbors_from_records, graph_records_visible_by_acl,
-    graph_shortest_path_from_records, validate_typed_graph_mutation,
+    conversation_summary_from_visible_records, conversation_transcript_from_visible_records,
+    graph_find_edges_from_records, graph_k_hop_from_records, graph_neighbors_from_records,
+    graph_records_visible_by_acl, graph_shortest_path_from_records, validate_typed_graph_mutation,
 };
 use kogwistar_store_postgres::{
     NewRawEntityEvent as PostgresNewRawEntityEvent, PostgresAuthStore, PostgresStore,
@@ -1484,6 +1484,19 @@ fn latest_snapshot_conversation_id(path_and_query: &str) -> Option<String> {
     (!conversation_id.is_empty() && !conversation_id.contains('/')).then_some(conversation_id)
 }
 
+fn conversation_detail_id(path_and_query: &str) -> Option<String> {
+    let path = path_and_query.split('?').next().unwrap_or(path_and_query);
+    let encoded_id = path.strip_prefix("/api/conversations/")?;
+    if encoded_id.contains('/') {
+        return None;
+    }
+    let conversation_id = percent_encoding::percent_decode_str(encoded_id)
+        .decode_utf8()
+        .ok()?
+        .into_owned();
+    (!conversation_id.is_empty() && !conversation_id.contains('/')).then_some(conversation_id)
+}
+
 fn context_snapshot_query(path_and_query: &str) -> (Option<String>, Option<String>) {
     let mut run_id = None;
     let mut stage = None;
@@ -1535,10 +1548,13 @@ struct CapabilityState {
 
 type SharedCapabilityState = Arc<Mutex<CapabilityState>>;
 
-const SQLITE_UNSUPPORTED_HTTP_ROUTES: &[(&str, &str)] = &[(
-    "GET",
-    "/api/conversations/{conversation_id}/snapshots/latest",
-)];
+const SQLITE_UNSUPPORTED_HTTP_ROUTES: &[(&str, &str)] = &[
+    ("GET", "/api/conversations/{conversation_id}"),
+    (
+        "GET",
+        "/api/conversations/{conversation_id}/snapshots/latest",
+    ),
+];
 
 fn principal_strings(principal: &Value, name: &str) -> Vec<String> {
     match principal.get(name) {
@@ -6042,6 +6058,109 @@ impl PostgresRunApplicationService {
         response
     }
 
+    async fn conversation_detail_effect(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
+        let namespaces = principal_strings(&request.principal, "ns");
+        let namespaces = if namespaces.is_empty() {
+            vec!["docs".to_owned()]
+        } else {
+            namespaces
+        };
+        if !namespaces
+            .iter()
+            .any(|namespace| matches!(namespace.as_str(), "*" | "conversation"))
+        {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_NAMESPACE_FORBIDDEN",
+                "Conversation reads require conversation namespace",
+            );
+        }
+        if !capability_allowed(request, &self.capabilities, "read_graph", &["read_graph"]) {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                "Conversation reads require read_graph capability",
+            );
+        }
+        let Some(conversation_id) = conversation_detail_id(&request.path_and_query) else {
+            return effect_error(
+                StatusCode::NOT_FOUND,
+                "KOGWISTAR_ROUTE_NOT_FOUND",
+                "Conversation route was not found",
+            );
+        };
+        let scope_value = security_scope_value(&request.principal);
+        let scope = GraphScope {
+            namespace: scope_value["storage_namespace"]
+                .as_str()
+                .unwrap_or("default")
+                .to_owned(),
+            workspace_id: request
+                .principal
+                .get("workspace_id")
+                .or_else(|| request.principal.get("workspace"))
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            graph_space: request
+                .principal
+                .get("graph_space")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+        };
+        let records = match self
+            .store
+            .graph_projection_records(GraphProjectionRead {
+                scope,
+                table: "gke_nodes".to_owned(),
+                ids: None,
+                metadata: MetadataFilter::default(),
+                limit: 10_000,
+            })
+            .await
+        {
+            Ok(records) => records,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_STORE_ERROR",
+                    error.to_string(),
+                );
+            }
+        };
+        let mut groups = principal_strings(&request.principal, "groups");
+        groups.extend(principal_strings(&request.principal, "principal_groups"));
+        groups.sort();
+        groups.dedup();
+        let principal = GraphAclPrincipal {
+            principal_id: principal_subject(&request.principal),
+            groups: groups.into_iter().collect(),
+            security_scope: scope_value["security_scope"].as_str().map(str::to_owned),
+        };
+        let (visible_nodes, _) =
+            graph_records_visible_by_acl(&records, &[], "conversation", &principal);
+        let summary =
+            match conversation_summary_from_visible_records(&visible_nodes, &conversation_id) {
+                Ok(summary) => summary,
+                Err(error) => {
+                    return effect_error(
+                        StatusCode::NOT_FOUND,
+                        "KOGWISTAR_CONVERSATION_NOT_FOUND",
+                        error.to_string(),
+                    );
+                }
+            };
+        let mut payload = rust_native_attested(
+            serde_json::to_value(summary).expect("conversation summary serializes"),
+        );
+        if let Some(object) = payload.as_object_mut() {
+            object.remove("schema_version");
+            object.remove("implementation_authority");
+            object.remove("seam_attestation_version");
+            object.remove("seam_crossings");
+        }
+        json_effect(StatusCode::OK, payload)
+    }
+
     async fn graph_neighbors_effect(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
         if !capability_allowed(request, &self.capabilities, "read_graph", &["read_graph"]) {
             return effect_error(
@@ -8973,6 +9092,9 @@ impl PostgresRunApplicationService {
     }
 
     async fn execute_async(&self, request: ApiEffectRequest) -> ApiEffectResponse {
+        if request.method == "GET" && conversation_detail_id(&request.path_and_query).is_some() {
+            return self.conversation_detail_effect(&request).await;
+        }
         if request.method == "GET"
             && latest_snapshot_conversation_id(&request.path_and_query).is_some()
         {
@@ -10479,6 +10601,13 @@ impl SqliteRunApplicationService {
     }
 
     fn execute_sync(&self, request: ApiEffectRequest) -> ApiEffectResponse {
+        if request.method == "GET" && conversation_detail_id(&request.path_and_query).is_some() {
+            return effect_error(
+                StatusCode::NOT_IMPLEMENTED,
+                "KOGWISTAR_GRAPH_AUTHORITY_UNSUPPORTED",
+                "The SQLite application service does not provide Rust graph authority",
+            );
+        }
         if request.method == "GET"
             && latest_snapshot_conversation_id(&request.path_and_query).is_some()
         {
@@ -12486,6 +12615,70 @@ mod tests {
         );
     }
 
+    #[test]
+    fn conversation_detail_route_parsing_is_exact_and_decodes_path_id() {
+        assert_eq!(
+            conversation_detail_id("/api/conversations/conversation-1?view=summary"),
+            Some("conversation-1".to_owned())
+        );
+        assert_eq!(
+            conversation_detail_id("/api/conversations/id%20with%20spaces"),
+            Some("id with spaces".to_owned())
+        );
+        assert_eq!(conversation_detail_id("/api/conversations/"), None);
+        assert_eq!(conversation_detail_id("/api/conversations/a/b"), None);
+        assert_eq!(
+            conversation_detail_id("/api/conversations/id%2Fother"),
+            None
+        );
+        assert_eq!(conversation_detail_id("/api/conversations/c/turns"), None);
+        assert_eq!(
+            conversation_detail_id("/api/conversations/c/snapshots/latest"),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn conversation_detail_route_checks_namespace_and_capability_before_storage() {
+        let service = PostgresRunApplicationService::from_dsn(
+            "postgres://unused:unused@127.0.0.1:1/unused",
+            "conversation_detail_auth_contract",
+        )
+        .unwrap();
+        let make_request = |principal| ApiEffectRequest {
+            contract_version: 1,
+            method: "GET".to_owned(),
+            path_and_query: "/api/conversations/c-1".to_owned(),
+            body: Vec::new(),
+            principal,
+        };
+        let namespace_denied = service
+            .execute(make_request(json!({
+                "sub": "alice",
+                "ns": "docs",
+                "capabilities": ["read_graph"]
+            })))
+            .await;
+        assert_eq!(namespace_denied.status, StatusCode::FORBIDDEN.as_u16());
+        assert_eq!(
+            serde_json::from_slice::<Value>(&namespace_denied.body).unwrap()["code"],
+            "KOGWISTAR_NAMESPACE_FORBIDDEN"
+        );
+
+        let capability_denied = service
+            .execute(make_request(json!({
+                "sub": "alice",
+                "ns": "conversation",
+                "capabilities": []
+            })))
+            .await;
+        assert_eq!(capability_denied.status, StatusCode::FORBIDDEN.as_u16());
+        assert_eq!(
+            serde_json::from_slice::<Value>(&capability_denied.body).unwrap()["code"],
+            "KOGWISTAR_CAPABILITY_FORBIDDEN"
+        );
+    }
+
     #[tokio::test]
     async fn latest_snapshot_route_checks_namespace_and_capability_before_storage() {
         let service = PostgresRunApplicationService::from_dsn(
@@ -12655,6 +12848,141 @@ mod tests {
             .unwrap();
     }
 
+    #[tokio::test]
+    async fn postgres_conversation_detail_route_projects_authorized_summary_when_dsn_available() {
+        let Some(dsn) = std::env::var("KOGWISTAR_TEST_PG_DSN").ok() else {
+            eprintln!("KOGWISTAR_TEST_PG_DSN absent; conversation detail integration skipped");
+            return;
+        };
+        let schema = format!("rust_conversation_detail_{}", uuid::Uuid::new_v4().simple());
+        let service = PostgresRunApplicationService::from_dsn(&dsn, &schema).unwrap();
+        service.ensure_schema().await.unwrap();
+        service
+            .store
+            .create_graph_schema(3, kogwistar_store_postgres::GraphTableNames::default())
+            .await
+            .unwrap();
+        let scope = GraphScope {
+            namespace: "conversation".to_owned(),
+            workspace_id: None,
+            graph_space: None,
+        };
+        for (id, entity_type, extra) in [
+            (
+                "start-1",
+                "conversation_start",
+                json!({"user_id": "alice", "status": "active"}),
+            ),
+            (
+                "turn-1",
+                "conversation_turn",
+                json!({"turn_index": 0, "role": "user", "summary": "hello"}),
+            ),
+        ] {
+            let mut metadata = Map::new();
+            metadata.insert("entity_type".to_owned(), json!(entity_type));
+            metadata.insert("conversation_id".to_owned(), json!("conversation-1"));
+            metadata.extend(extra.as_object().unwrap().clone());
+            service
+                .store
+                .upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
+                    scope: scope.clone(),
+                    table: "gke_nodes".to_owned(),
+                    record: GraphRecord {
+                        id: id.to_owned(),
+                        document: None,
+                        metadata,
+                        embedding: None,
+                    },
+                    embedding_dim: 3,
+                })
+                .await
+                .unwrap();
+            let mut acl_metadata = Map::new();
+            for (key, value) in [
+                ("entity_type", json!("acl_record")),
+                ("acl_truth_graph", json!("conversation")),
+                ("acl_target_entity_id", json!(id)),
+                ("acl_target_grain", json!("node")),
+                ("acl_version", json!(1)),
+                ("acl_mode", json!("public")),
+            ] {
+                acl_metadata.insert(key.to_owned(), value);
+            }
+            service
+                .store
+                .upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
+                    scope: scope.clone(),
+                    table: "gke_nodes".to_owned(),
+                    record: GraphRecord {
+                        id: format!("acl-{id}"),
+                        document: None,
+                        metadata: acl_metadata,
+                        embedding: None,
+                    },
+                    embedding_dim: 3,
+                })
+                .await
+                .unwrap();
+        }
+
+        let response = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "GET".to_owned(),
+                path_and_query: "/api/conversations/conversation-1".to_owned(),
+                body: Vec::new(),
+                principal: json!({
+                    "sub": "alice",
+                    "role": "ro",
+                    "ns": "conversation",
+                    "storage_ns": "conversation",
+                    "capabilities": ["read_graph"]
+                }),
+            })
+            .await;
+        assert_eq!(response.status, StatusCode::OK.as_u16());
+        let payload: Value = serde_json::from_slice(&response.body).unwrap();
+        assert_eq!(payload["conversation_id"], "conversation-1");
+        assert_eq!(payload["user_id"], "alice");
+        assert_eq!(payload["status"], "active");
+        assert_eq!(payload["start_node_id"], "start-1");
+        assert_eq!(payload["tail_node_id"], "turn-1");
+        assert_eq!(payload["turn_count"], 1);
+        assert!(payload.get("schema_version").is_none());
+        assert!(payload.get("implementation_authority").is_none());
+        assert!(payload.get("seam_attestation_version").is_none());
+        assert!(payload.get("seam_crossings").is_none());
+        assert_eq!(
+            payload
+                .as_object()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([
+                "conversation_id".to_owned(),
+                "start_node_id".to_owned(),
+                "status".to_owned(),
+                "tail_node_id".to_owned(),
+                "turn_count".to_owned(),
+                "user_id".to_owned(),
+            ])
+        );
+
+        drop(service);
+        let (cleanup, connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls)
+            .await
+            .unwrap();
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+        cleanup
+            .batch_execute(&format!("DROP SCHEMA \"{schema}\" CASCADE"))
+            .await
+            .unwrap();
+    }
+
     #[test]
     fn server_readiness_cannot_overclaim_pending_routes() {
         let mut implementation = ImplementationSnapshot::default();
@@ -12690,6 +13018,7 @@ mod tests {
         assert!(!service.supports_http_operation("POST", "/internal/conversation/transcript"));
         assert!(!service.supports_http_operation("GET", "/api/not-registered"));
         assert!(service.supports_http_operation("POST", "/api/workflow/runs"));
+        assert!(service.supports_http_operation("GET", "/api/conversations/{conversation_id}"));
         assert!(service.supports_http_operation(
             "GET",
             "/api/conversations/{conversation_id}/snapshots/latest"
@@ -12770,6 +13099,7 @@ mod tests {
         assert!(!sqlite.supports_mcp_tool("root", "kg_neighbors"));
         assert!(!sqlite.supports_http_operation("POST", "/internal/graph/neighbors"));
         assert!(!sqlite.supports_http_operation("POST", "/internal/conversation/transcript"));
+        assert!(!sqlite.supports_http_operation("GET", "/api/conversations/{conversation_id}"));
 
         let response = sqlite
             .execute(ApiEffectRequest {
@@ -12778,6 +13108,25 @@ mod tests {
                 path_and_query: "/internal/graph/neighbors".to_owned(),
                 body: br#"{}"#.to_vec(),
                 principal: json!({"sub": "test"}),
+            })
+            .await;
+        assert_eq!(response.status, StatusCode::NOT_IMPLEMENTED.as_u16());
+        assert_eq!(
+            serde_json::from_slice::<Value>(&response.body).unwrap()["code"],
+            "KOGWISTAR_GRAPH_AUTHORITY_UNSUPPORTED"
+        );
+
+        let response = sqlite
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "GET".to_owned(),
+                path_and_query: "/api/conversations/c-1".to_owned(),
+                body: Vec::new(),
+                principal: json!({
+                    "sub": "alice",
+                    "ns": "conversation",
+                    "capabilities": ["read_graph"]
+                }),
             })
             .await;
         assert_eq!(response.status, StatusCode::NOT_IMPLEMENTED.as_u16());

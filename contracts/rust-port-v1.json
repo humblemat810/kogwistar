@@ -503,10 +503,6 @@
           },
           {
             "method": "GET",
-            "path": "/api/conversations/{conversation_id}"
-          },
-          {
-            "method": "GET",
             "path": "/api/conversations/{conversation_id}/turns"
           },
           {
