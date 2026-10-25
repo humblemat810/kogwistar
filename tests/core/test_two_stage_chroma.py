@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -532,6 +533,52 @@ def test_real_chroma_stage1_pending_survives_engine_restart_and_worker_recovery(
         ) is None
     finally:
         restarted.close()
+
+
+def test_real_chroma_provider_failure_keeps_stage1_retryable(tmp_path, monkeypatch):
+    """A provider failure must not acknowledge or lose the staged projection."""
+    from kogwistar.engine_core.engine import GraphKnowledgeEngine
+
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path),
+        persistence_mode="two_stage",
+        embedding_function=build_test_embedding_function("constant", dim=2),
+    )
+    try:
+        engine.write.add_node(build_entity_node(node_id="n1", doc_id="d1"))
+        original = engine.embed.iterative_defensive_emb
+
+        def fail_provider(document):
+            raise RuntimeError(f"provider unavailable for {document}")
+
+        monkeypatch.setattr(engine.embed, "iterative_defensive_emb", fail_provider)
+        worker = engine.indexing.make_index_job_worker(
+            batch_size=1, max_inflight=1, max_jobs_per_tick=1
+        )
+        failed = worker.tick()
+        assert failed.claimed == 1
+        assert failed.done == 0
+        assert failed.retried == 1
+        assert engine.meta_sqlite.get_stage1_node_projection(
+            engine.namespace, "n1"
+        ) is not None
+        assert any(
+            item.status == "PENDING"
+            for item in engine.meta_sqlite.list_index_jobs(
+                namespace=engine.namespace, entity_kind="node", entity_id="n1"
+            )
+        )
+
+        monkeypatch.setattr(engine.embed, "iterative_defensive_emb", original)
+        time.sleep(1.1)
+        recovered = worker.tick()
+        assert recovered.done == 1
+        assert engine.meta_sqlite.get_stage1_node_projection(
+            engine.namespace, "n1"
+        ) is None
+        assert engine.read.query_nodes(query_embeddings=[[0.1, 0.2]], n_results=10)
+    finally:
+        engine.close()
 
 
 @pytest.mark.integration
