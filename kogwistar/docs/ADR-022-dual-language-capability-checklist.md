@@ -42,6 +42,12 @@ and CI evidence rather than assigning one percentage to the whole port.
   passed**) and `poetry run pytest tests/core/test_graph_mutation_contract.py -q
   -p no:cacheprovider` (**13 passed**) on Windows CPython 3.13. This is a
   graph-mutation identity invariant, not a claim of broad stack parity.
+- Post-change Windows Rust workspace verification with loopback access passed
+  **248 tests, 0 failed, 1 intentionally ignored** across all library crates;
+  the API crate independently passed **69/69**, including the local OIDC and
+  real-TCP tests that failed or stalled in the restricted run. The restricted
+  run was interrupted after confirming its loopback-dependent stall; it is not
+  counted as a product failure or as passing evidence.
 
 ## Design and inventory
 
