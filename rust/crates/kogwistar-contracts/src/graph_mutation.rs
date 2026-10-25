@@ -260,5 +260,12 @@ mod tests {
             wrong_embedding.validate(),
             Err(GraphMutationValidationError::EmbeddingDimension)
         );
+
+        let mut physical_delete = valid;
+        physical_delete.mutations[0].op = "DELETE".to_owned();
+        assert_eq!(
+            physical_delete.validate(),
+            Err(GraphMutationValidationError::MutationOperation)
+        );
     }
 }
