@@ -14,7 +14,7 @@ from kogwistar.engine_core.storage_backend import (
     get_two_stage_projection_capability,
 )
 from tests._helpers.fake_backend import build_fake_backend
-from tests._helpers.graph_builders import build_entity_node
+from tests._helpers.graph_builders import build_entity_node, build_relationship_edge
 from tests.core.two_stage_case_catalog import two_stage_case
 
 
@@ -637,6 +637,35 @@ def test_derived_delete_rejects_active_canonical_entity(tmp_path) -> None:
             entity_kind="node",
             entity_id="n1",
             index_kind="node_docs",
+            op="DELETE",
+            namespace="default",
+        )
+
+
+def test_derived_edge_delete_rejects_active_canonical_edge(tmp_path) -> None:
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path),
+        backend_factory=build_fake_backend,
+        persistence_mode="two_stage",
+    )
+    engine.write.add_node(build_entity_node(node_id="source", doc_id="d1", embedding=None))
+    engine.write.add_node(build_entity_node(node_id="target", doc_id="d1", embedding=None))
+    engine.write.add_edge(
+        build_relationship_edge(
+            edge_id="e1",
+            src="source",
+            tgt="target",
+            doc_id="d1",
+            embedding=None,
+        )
+    )
+
+    with pytest.raises(ValueError, match="canonical tombstone"):
+        engine.indexing.apply_index_job(
+            job_id="manual-edge-delete",
+            entity_kind="edge",
+            entity_id="e1",
+            index_kind="edge_refs",
             op="DELETE",
             namespace="default",
         )
