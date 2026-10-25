@@ -55,6 +55,21 @@ where
         let Some(claim_token) = job.claim_token.as_deref() else {
             return Err(worker_error("claimed index job has no claim token"));
         };
+        // A result may have been admitted before a worker lost the final
+        // acknowledgement.  Replaying the provider in that state would waste
+        // inference and could repeat provider-side effects.  The durable
+        // result is the idempotency record; only finalize the queue row.
+        if job.accepted_result_json.is_some() {
+            if store
+                .mark_index_job_done(&job.job_id, Some(claim_token))
+                .await?
+            {
+                summary.existing += 1;
+            } else {
+                summary.claim_lost += 1;
+            }
+            continue;
+        }
         let retry = job.retry_count + 1;
         match provider(job.clone()).await {
             Ok(result_json) => {
@@ -208,7 +223,7 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(provider_calls, 1);
+        assert_eq!(provider_calls, 0);
         assert_eq!(summary.accepted, 0);
         assert_eq!(summary.existing, 1);
         assert_eq!(summary.claim_lost, 0);
