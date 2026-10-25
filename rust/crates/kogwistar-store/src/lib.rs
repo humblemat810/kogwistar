@@ -226,6 +226,43 @@ impl ConversationListAccumulator {
     }
 }
 
+/// Project conversation-list source rows to the small field set needed after
+/// graph scanning. Source documents and embeddings are deliberately discarded.
+pub fn compact_conversation_list_candidates(records: &[GraphRecord]) -> Vec<GraphRecord> {
+    const FIELDS: &[&str] = &[
+        "entity_type",
+        "turn_index",
+        "conversation_id",
+        "user_id",
+        "status",
+        "lifecycle_status",
+    ];
+    records
+        .iter()
+        .filter_map(|record| {
+            let entity_type = value_string(record, "entity_type")?;
+            if !matches!(
+                entity_type.as_str(),
+                "conversation_start" | "conversation_turn" | "assistant_turn"
+            ) {
+                return None;
+            }
+            let metadata = FIELDS
+                .iter()
+                .filter_map(|field| {
+                    record_field(record, field).map(|value| ((*field).to_owned(), value))
+                })
+                .collect();
+            Some(GraphRecord {
+                id: record.id.clone(),
+                document: None,
+                metadata,
+                embedding: None,
+            })
+        })
+        .collect()
+}
+
 /// A document projection write owned by one concrete backend.
 ///
 /// This is intentionally separate from graph mutation: document ingestion has
@@ -289,6 +326,29 @@ struct GraphAclRule {
     shared_principals: BTreeSet<String>,
     shared_groups: BTreeSet<String>,
     tombstoned: bool,
+}
+
+/// Compact, reusable ACL rules collected independently of graph-record pages.
+/// This is required when a target and its ACL record are in different pages.
+#[derive(Clone, Debug, Default)]
+pub struct GraphAclIndex {
+    rules: BTreeMap<(String, String), GraphAclRule>,
+}
+
+impl GraphAclIndex {
+    pub fn extend_from_records(&mut self, records: &[GraphRecord], truth_graph: &str) {
+        for record in records {
+            let Some((key, rule)) = acl_rule_for(record, truth_graph) else {
+                continue;
+            };
+            let replace = self.rules.get(&key).is_none_or(|current| {
+                (rule.version, acl_rank(&rule.mode)) > (current.version, acl_rank(&current.mode))
+            });
+            if replace {
+                self.rules.insert(key, rule);
+            }
+        }
+    }
 }
 
 fn record_json(record: &GraphRecord) -> Option<Value> {
@@ -408,23 +468,25 @@ pub fn graph_records_visible_by_acl(
     truth_graph: &str,
     principal: &GraphAclPrincipal,
 ) -> (Vec<GraphRecord>, Vec<GraphRecord>) {
-    let mut rules: BTreeMap<(String, String), GraphAclRule> = BTreeMap::new();
-    for record in nodes {
-        let Some((key, rule)) = acl_rule_for(record, truth_graph) else {
-            continue;
-        };
-        let replace = rules.get(&key).is_none_or(|current| {
-            (rule.version, acl_rank(&rule.mode)) > (current.version, acl_rank(&current.mode))
-        });
-        if replace {
-            rules.insert(key, rule);
-        }
-    }
+    let mut index = GraphAclIndex::default();
+    index.extend_from_records(nodes, truth_graph);
+    graph_records_visible_by_acl_with_index(nodes, edges, &index, principal)
+}
+
+/// Filter a page using ACL rules indexed from the complete relevant ACL set.
+/// ACL helper records are never returned as graph entities.
+pub fn graph_records_visible_by_acl_with_index(
+    nodes: &[GraphRecord],
+    edges: &[GraphRecord],
+    index: &GraphAclIndex,
+    principal: &GraphAclPrincipal,
+) -> (Vec<GraphRecord>, Vec<GraphRecord>) {
     let visible = |record: &GraphRecord, grain: &str| {
         if is_acl_record(record) {
             return false;
         }
-        rules
+        index
+            .rules
             .get(&(grain.to_owned(), record.id.clone()))
             .is_some_and(|rule| acl_rule_visible(rule, principal))
     };
@@ -2769,6 +2831,89 @@ mod tests {
             graph_records_visible_by_acl(&nodes, &edges, "knowledge", &bob);
         assert!(bob_nodes.is_empty());
         assert!(bob_edges.is_empty());
+    }
+
+    #[test]
+    fn paged_conversation_acl_uses_rules_from_other_pages() {
+        let acl_record = |id: &str, target_id: &str| {
+            let mut record = GraphRecord::new(id);
+            record.metadata.extend(
+                serde_json::json!({
+                    "entity_type": "acl_record",
+                    "acl_truth_graph": "conversation",
+                    "acl_target_entity_id": target_id,
+                    "acl_target_grain": "node",
+                    "acl_version": 1,
+                    "acl_mode": "private",
+                    "owner_id": "alice"
+                })
+                .as_object()
+                .expect("ACL metadata is an object")
+                .clone(),
+            );
+            record
+        };
+        let mut start = GraphRecord::new("start-alice");
+        start.document = Some(
+            serde_json::json!({
+                "metadata": {
+                    "entity_type": "conversation_start",
+                    "conversation_id": "conversation-1",
+                    "user_id": "alice",
+                    "status": "active"
+                }
+            })
+            .to_string(),
+        );
+        let mut turn = GraphRecord::new("turn-1");
+        turn.metadata.extend(
+            serde_json::json!({
+                "entity_type": "conversation_turn",
+                "conversation_id": "conversation-1",
+                "turn_index": 0
+            })
+            .as_object()
+            .expect("turn metadata is an object")
+            .clone(),
+        );
+        let acl_page = [
+            acl_record("acl-start", "start-alice"),
+            acl_record("acl-turn", "turn-1"),
+        ];
+        let data_page = [start, turn];
+
+        let mut acl_index = GraphAclIndex::default();
+        acl_index.extend_from_records(&acl_page, "conversation");
+        let compact = compact_conversation_list_candidates(&data_page);
+        assert!(compact.iter().all(|record| record.document.is_none()));
+
+        let alice = GraphAclPrincipal {
+            principal_id: "alice".to_owned(),
+            ..Default::default()
+        };
+        let bob = GraphAclPrincipal {
+            principal_id: "bob".to_owned(),
+            ..Default::default()
+        };
+        let (visible_alice, _) =
+            graph_records_visible_by_acl_with_index(&compact, &[], &acl_index, &alice);
+        let (visible_bob, _) =
+            graph_records_visible_by_acl_with_index(&compact, &[], &acl_index, &bob);
+        let mut alice_list = ConversationListAccumulator::new("alice");
+        alice_list.extend_visible_records(&visible_alice);
+
+        assert_eq!(
+            alice_list.finish(),
+            vec![ConversationListEntry {
+                id: "conversation-1".to_owned(),
+                start_node_id: "start-alice".to_owned(),
+                status: "active".to_owned(),
+                turn_count: 1,
+            }]
+        );
+        let mut bob_list = ConversationListAccumulator::new("bob");
+        bob_list.extend_visible_records(&visible_bob);
+        assert!(bob_list.finish().is_empty());
     }
 
     #[test]

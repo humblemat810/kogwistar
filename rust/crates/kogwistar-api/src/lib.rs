@@ -27,17 +27,19 @@ use kogwistar_runtime::{
 };
 use kogwistar_store::{
     AuthIdentityStore, AuthUser, ConversationListAccumulator, DocumentAuthorityCapability,
-    DocumentProjectionUpsert, DocumentStore, EntityEvent, GraphAclPrincipal,
+    DocumentProjectionUpsert, DocumentStore, EntityEvent, GraphAclIndex, GraphAclPrincipal,
     GraphAuthorityCapability, GraphFindEdgesQuery, GraphKHopQuery, GraphMutation,
     GraphMutationBatch, GraphMutationStore, GraphProjectionRead, GraphRecord, GraphScope,
     GraphShortestPathQuery, LaneMessageClaimFilter, LaneMessageFilter, MetadataFilter,
     NamedProjection, NamedProjectionWrite, NewIndexJob, NewProjectedLaneMessage,
     ProjectedLaneMessage, ResolveExternalIdentity, ServerRun, ServerRunCreate, ServerRunEvent,
     WorkflowDesignDeltaWrite, WorkflowDesignSnapshot, WorkflowDesignSnapshotWrite,
-    conversation_summary_from_visible_records, conversation_transcript_from_visible_records,
-    for_each_graph_projection_page, graph_find_edges_from_records, graph_k_hop_from_records,
-    graph_neighbors_from_records, graph_projection_records_all, graph_records_visible_by_acl,
-    graph_shortest_path_from_records, validate_typed_graph_mutation,
+    compact_conversation_list_candidates, conversation_summary_from_visible_records,
+    conversation_transcript_from_visible_records, for_each_graph_projection_page,
+    graph_find_edges_from_records, graph_k_hop_from_records, graph_neighbors_from_records,
+    graph_projection_records_all, graph_records_visible_by_acl,
+    graph_records_visible_by_acl_with_index, graph_shortest_path_from_records,
+    validate_typed_graph_mutation,
 };
 use kogwistar_store_postgres::{
     NewRawEntityEvent as PostgresNewRawEntityEvent, PostgresAuthStore, PostgresStore,
@@ -6092,7 +6094,8 @@ impl PostgresRunApplicationService {
             );
         };
         let (scope, acl_principal) = conversation_graph_scope_and_acl_principal(&request.principal);
-        let mut conversations = ConversationListAccumulator::new(user_id);
+        let mut acl_index = GraphAclIndex::default();
+        let mut candidates = Vec::new();
         let read_result = for_each_graph_projection_page(
             &self.store,
             GraphProjectionRead {
@@ -6103,9 +6106,8 @@ impl PostgresRunApplicationService {
                 limit: 1024,
             },
             |page| {
-                let (visible_nodes, _) =
-                    graph_records_visible_by_acl(page, &[], "conversation", &acl_principal);
-                conversations.extend_visible_records(&visible_nodes);
+                acl_index.extend_from_records(page, "conversation");
+                candidates.extend(compact_conversation_list_candidates(page));
                 Ok(())
             },
         )
@@ -6117,6 +6119,10 @@ impl PostgresRunApplicationService {
                 error.to_string(),
             );
         }
+        let (visible_nodes, _) =
+            graph_records_visible_by_acl_with_index(&candidates, &[], &acl_index, &acl_principal);
+        let mut conversations = ConversationListAccumulator::new(user_id);
+        conversations.extend_visible_records(&visible_nodes);
         let conversations = conversations
             .finish()
             .into_iter()
