@@ -27,6 +27,8 @@ pytestmark = [pytest.mark.ci, pytest.mark.core]
     "operation",
     [
         "add",
+        "pure-node-add",
+        "pure-edge-add",
         "edge-delete",
         "rollback-delete",
         "replace",
@@ -51,6 +53,65 @@ def test_selected_rust_postgres_mutations_fail_closed_without_native_meta_store(
                 metadata={},
                 embedding=[0.0],
                 payload={},
+            )
+        elif operation == "pure-node-add":
+            from kogwistar.engine_core.models import PureChromaNode
+
+            writer._e = SimpleNamespace(
+                meta_sqlite=object(),
+                kg_graph_type="knowledge",
+                namespace="test",
+                backend=SimpleNamespace(
+                    node_add=lambda **_values: pytest.fail(
+                        "selected Rust operation fell back to Python node persistence"
+                    )
+                ),
+            )
+            writer.add_pure_node(
+                PureChromaNode(
+                    id="pure-node-1",
+                    label="pure node",
+                    type="entity",
+                    summary="pure node summary",
+                    embedding=[0.0],
+                )
+            )
+        elif operation == "pure-edge-add":
+            from kogwistar.engine_core.models import PureChromaEdge
+
+            writer._e = SimpleNamespace(
+                meta_sqlite=object(),
+                kg_graph_type="knowledge",
+                namespace="test",
+                backend=SimpleNamespace(
+                    edge_add=lambda **_values: pytest.fail(
+                        "selected Rust operation fell back to Python edge persistence"
+                    )
+                ),
+                adjudicate=SimpleNamespace(
+                    split_endpoints=lambda source_ids, target_ids: (
+                        source_ids,
+                        [],
+                        target_ids,
+                        [],
+                    )
+                ),
+                persist=SimpleNamespace(assert_endpoints_exist=lambda _edge: None),
+                pre_add_pure_edge_hooks=[],
+            )
+            writer.add_pure_edge(
+                PureChromaEdge(
+                    id="pure-edge-1",
+                    label="pure edge",
+                    type="relationship",
+                    summary="pure edge summary",
+                    relation="related_to",
+                    source_ids=["source"],
+                    target_ids=["target"],
+                    source_edge_ids=None,
+                    target_edge_ids=None,
+                    embedding=[0.0],
+                )
             )
         elif operation == "edge-delete":
             writer._rust_postgres_delete_edges(["edge-1"])
