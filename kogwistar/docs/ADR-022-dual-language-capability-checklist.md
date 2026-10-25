@@ -48,6 +48,15 @@ and CI evidence rather than assigning one percentage to the whole port.
   real-TCP tests that failed or stalled in the restricted run. The restricted
   run was interrupted after confirming its loopback-dependent stall; it is not
   counted as a product failure or as passing evidence.
+- Strict Rust persistent node/edge decoding now matches Python's shared
+  `TombstoneMixin` and `LevelAwareMixin` behavior: omitted lifecycle defaults
+  are materialized, legacy `deleted` becomes `tombstoned`, metadata-only levels
+  populate the typed field, explicit field levels overwrite metadata, and
+  Python-accepted negative integer levels remain accepted. The original
+  envelope payload remains unchanged for lossless forwarding. Evidence:
+  `graph_model::tests::persistent_node_and_edge_normalize_python_mixin_fields`,
+  the strict persistent model lifecycle tests (**65 Rust contract tests pass**),
+  and `test_edge_model_shares_tombstone_and_level_metadata_contract` (Python).
 
 ## Design and inventory
 

@@ -657,8 +657,9 @@ impl GraphModelEnvelope {
                 reason: "family node payload contains edge-only fields",
             });
         }
-        let payload: PersistentNodeV1 = serde_json::from_value(self.payload.clone())
+        let mut payload: PersistentNodeV1 = serde_json::from_value(self.payload.clone())
             .map_err(|error| GraphModelError::InvalidPayload(error.to_string()))?;
+        payload.core.normalize_shared_mixin_fields();
         payload.core.validate(self.model_class)?;
         Ok(payload)
     }
@@ -673,8 +674,9 @@ impl GraphModelEnvelope {
         ] {
             require_wire_field(&self.payload, field)?;
         }
-        let edge: PersistentEdgeV1 = serde_json::from_value(self.payload.clone())
+        let mut edge: PersistentEdgeV1 = serde_json::from_value(self.payload.clone())
             .map_err(|error| GraphModelError::InvalidPayload(error.to_string()))?;
+        edge.core.normalize_shared_mixin_fields();
         edge.core.validate(self.model_class)?;
         Ok(edge)
     }
@@ -1369,6 +1371,34 @@ pub struct GraphEntityCoreV1 {
 }
 
 impl GraphEntityCoreV1 {
+    fn normalize_shared_mixin_fields(&mut self) {
+        match self.metadata.get("lifecycle_status") {
+            Some(Value::String(status)) if status == "deleted" => {
+                self.metadata.insert(
+                    "lifecycle_status".to_owned(),
+                    Value::String("tombstoned".to_owned()),
+                );
+            }
+            Some(_) => {}
+            None => {
+                self.metadata.insert(
+                    "lifecycle_status".to_owned(),
+                    Value::String("active".to_owned()),
+                );
+            }
+        }
+        self.metadata
+            .entry("redirect_to_id".to_owned())
+            .or_insert(Value::Null);
+
+        if let Some(level) = self.level_from_root {
+            self.metadata
+                .insert("level_from_root".to_owned(), Value::Number(level.into()));
+        } else if let Some(level) = self.metadata.get("level_from_root").and_then(Value::as_i64) {
+            self.level_from_root = Some(level);
+        }
+    }
+
     fn validate(&self, model_class: GraphModelClass) -> Result<(), GraphModelError> {
         for id in [&self.id, &self.local_id] {
             if id.as_deref().is_some_and(str::is_empty) {
@@ -1386,12 +1416,6 @@ impl GraphEntityCoreV1 {
         }
         for grounding in &self.mentions {
             grounding.validate(model_class)?;
-        }
-        if self.level_from_root.is_some_and(|level| level < 0) {
-            return Err(GraphModelError::InvalidEntityFields {
-                model_class,
-                reason: "level_from_root must not be negative",
-            });
         }
         if let Some(status) = self.metadata.get("lifecycle_status") {
             if !matches!(status.as_str(), Some("active" | "tombstoned")) {
@@ -1768,14 +1792,16 @@ pub enum AclEdgeTypeV1 {
 }
 
 impl PersistentNodeV1 {
-    fn into_validated(self) -> Result<PersistentGraphEntityV1, GraphModelError> {
+    fn into_validated(mut self) -> Result<PersistentGraphEntityV1, GraphModelError> {
+        self.core.normalize_shared_mixin_fields();
         self.core.validate(GraphModelClass::Node)?;
         Ok(PersistentGraphEntityV1::Node(self))
     }
 }
 
 impl PersistentEdgeV1 {
-    fn into_validated(self) -> Result<PersistentGraphEntityV1, GraphModelError> {
+    fn into_validated(mut self) -> Result<PersistentGraphEntityV1, GraphModelError> {
+        self.core.normalize_shared_mixin_fields();
         self.core.validate(GraphModelClass::Edge)?;
         if self
             .source_ids
@@ -2554,7 +2580,7 @@ mod tests {
         ));
 
         let mut invalid_lifecycle = fixture["cases"][0]["payload"].clone();
-        invalid_lifecycle["metadata"]["lifecycle_status"] = Value::String("deleted".into());
+        invalid_lifecycle["metadata"]["lifecycle_status"] = Value::String("purged".into());
         assert!(matches!(
             GraphModelEnvelope::new(GraphModelClass::Node, invalid_lifecycle)
                 .decode_persistent_v1(),
@@ -2592,11 +2618,87 @@ mod tests {
             match decoded {
                 PersistentGraphEntityV1::Node(node) => {
                     assert_eq!(node.lifecycle_status(), LifecycleStatus::Active);
+                    assert_eq!(node.core.metadata["redirect_to_id"], Value::Null);
                 }
                 PersistentGraphEntityV1::Edge(edge) => {
                     assert_eq!(edge.lifecycle_status(), LifecycleStatus::Active);
+                    assert_eq!(edge.core.metadata["redirect_to_id"], Value::Null);
                 }
             }
+        }
+    }
+
+    #[test]
+    fn persistent_node_and_edge_normalize_python_mixin_fields() {
+        let fixture = fixture();
+        for (model_class, case_name) in [
+            (GraphModelClass::Node, "node"),
+            (GraphModelClass::Edge, "edge"),
+        ] {
+            let mut payload = fixture["cases"]
+                .as_array()
+                .expect("fixture cases")
+                .iter()
+                .find(|case| case["kind"] == case_name)
+                .expect("fixture model case")["payload"]
+                .clone();
+            payload["metadata"]["lifecycle_status"] = Value::String("deleted".to_owned());
+            payload["metadata"]["level_from_root"] = Value::Number(2.into());
+            payload
+                .as_object_mut()
+                .expect("object payload")
+                .remove("level_from_root");
+            let envelope = GraphModelEnvelope::new(model_class, payload.clone());
+
+            let decoded = envelope
+                .decode_persistent_v1()
+                .expect("legacy model fields normalize like Python mixins");
+            let core = match decoded {
+                PersistentGraphEntityV1::Node(node) => node.core,
+                PersistentGraphEntityV1::Edge(edge) => edge.core,
+            };
+            assert_eq!(core.metadata["lifecycle_status"], "tombstoned");
+            assert_eq!(core.metadata["redirect_to_id"], Value::Null);
+            assert_eq!(core.level_from_root, Some(2));
+            assert_eq!(core.metadata["level_from_root"], 2);
+            assert_eq!(envelope.payload["metadata"]["lifecycle_status"], "deleted");
+
+            let mut conflicting = fixture["cases"]
+                .as_array()
+                .expect("fixture cases")
+                .iter()
+                .find(|case| case["kind"] == case_name)
+                .expect("fixture model case")["payload"]
+                .clone();
+            conflicting["level_from_root"] = Value::Number(3.into());
+            conflicting["metadata"]["level_from_root"] = Value::Number(2.into());
+            let decoded = GraphModelEnvelope::new(model_class, conflicting)
+                .decode_persistent_v1()
+                .expect("explicit level field overrides metadata like Python mixin");
+            let core = match decoded {
+                PersistentGraphEntityV1::Node(node) => node.core,
+                PersistentGraphEntityV1::Edge(edge) => edge.core,
+            };
+            assert_eq!(core.level_from_root, Some(3));
+            assert_eq!(core.metadata["level_from_root"], 3);
+
+            let mut negative = fixture["cases"]
+                .as_array()
+                .expect("fixture cases")
+                .iter()
+                .find(|case| case["kind"] == case_name)
+                .expect("fixture model case")["payload"]
+                .clone();
+            negative["level_from_root"] = Value::Number((-1).into());
+            let decoded = GraphModelEnvelope::new(model_class, negative)
+                .decode_persistent_v1()
+                .expect("preserve Python's existing integer level acceptance");
+            let core = match decoded {
+                PersistentGraphEntityV1::Node(node) => node.core,
+                PersistentGraphEntityV1::Edge(edge) => edge.core,
+            };
+            assert_eq!(core.level_from_root, Some(-1));
+            assert_eq!(core.metadata["level_from_root"], -1);
         }
     }
 
