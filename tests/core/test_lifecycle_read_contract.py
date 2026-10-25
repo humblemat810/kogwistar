@@ -97,6 +97,20 @@ def test_edge_model_shares_tombstone_and_level_metadata_contract() -> None:
     assert explicit_null_level.level_from_root is None
     assert explicit_null_level.metadata["level_from_root"] == 2
 
+    for raw_level, expected in [("2", 2), (True, 1), (2.0, 2)]:
+        payload = edge.model_dump(field_mode="backend", dump_format="json")
+        payload.pop("level_from_root")
+        payload["metadata"]["level_from_root"] = raw_level
+        coerced_level = Edge.model_validate(payload)
+        assert coerced_level.level_from_root == expected
+        assert coerced_level.metadata["level_from_root"] == expected
+
+    invalid_level = edge.model_dump(field_mode="backend", dump_format="json")
+    invalid_level.pop("level_from_root")
+    invalid_level["metadata"]["level_from_root"] = 2.5
+    with pytest.raises(ValidationError, match="valid integer"):
+        Edge.model_validate(invalid_level)
+
     validated = Edge.model_validate(
         {
             **edge.model_dump(field_mode="backend", dump_format="json"),

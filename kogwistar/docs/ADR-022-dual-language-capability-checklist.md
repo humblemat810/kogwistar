@@ -54,8 +54,10 @@ and CI evidence rather than assigning one percentage to the whole port.
   populate the typed field, explicit field levels overwrite metadata, and
   Python-accepted negative integer levels remain accepted. Decode preserves the
   distinction between an omitted level field and explicit `null`, matching
-  Python even when metadata contains a level. The original envelope payload
-  remains unchanged for lossless forwarding. Evidence:
+  Python even when metadata contains a level; Python-compatible coercions for
+  integer strings, booleans, and integral floats are also covered, while
+  fractional values fail validation. The original envelope payload remains
+  unchanged for lossless forwarding. Evidence:
   `graph_model::tests::persistent_node_and_edge_normalize_python_mixin_fields`,
   the strict persistent model lifecycle tests (**65 Rust contract tests pass**),
   and `test_edge_model_shares_tombstone_and_level_metadata_contract` (Python).

@@ -540,7 +540,9 @@ impl GraphModelEnvelope {
         let level_field_present = self.payload.get("level_from_root").is_some();
         match self.model_class {
             GraphModelClass::Node => serde_json::from_value(self.payload.clone())
-                .map(|payload: PersistentNodeV1| payload.into_validated(level_field_present))
+                .map(|payload: PersistentNodeV1| {
+                    payload.into_validated(self.model_class, level_field_present)
+                })
                 .map_err(|error| GraphModelError::InvalidPayload(error.to_string()))?,
             GraphModelClass::Edge => {
                 for field in [
@@ -553,7 +555,9 @@ impl GraphModelEnvelope {
                     require_wire_field(&self.payload, field)?;
                 }
                 serde_json::from_value(self.payload.clone())
-                    .map(|payload: PersistentEdgeV1| payload.into_validated(level_field_present))
+                    .map(|payload: PersistentEdgeV1| {
+                        payload.into_validated(self.model_class, level_field_present)
+                    })
                     .map_err(|error| GraphModelError::InvalidPayload(error.to_string()))?
             }
             model_class => Err(GraphModelError::StrictModelClassUnsupported { model_class }),
@@ -660,9 +664,10 @@ impl GraphModelEnvelope {
         }
         let mut payload: PersistentNodeV1 = serde_json::from_value(self.payload.clone())
             .map_err(|error| GraphModelError::InvalidPayload(error.to_string()))?;
-        payload
-            .core
-            .normalize_shared_mixin_fields(self.payload.get("level_from_root").is_some());
+        payload.core.normalize_shared_mixin_fields(
+            self.model_class,
+            self.payload.get("level_from_root").is_some(),
+        )?;
         payload.core.validate(self.model_class)?;
         Ok(payload)
     }
@@ -679,8 +684,10 @@ impl GraphModelEnvelope {
         }
         let mut edge: PersistentEdgeV1 = serde_json::from_value(self.payload.clone())
             .map_err(|error| GraphModelError::InvalidPayload(error.to_string()))?;
-        edge.core
-            .normalize_shared_mixin_fields(self.payload.get("level_from_root").is_some());
+        edge.core.normalize_shared_mixin_fields(
+            self.model_class,
+            self.payload.get("level_from_root").is_some(),
+        )?;
         edge.core.validate(self.model_class)?;
         Ok(edge)
     }
@@ -1368,14 +1375,57 @@ pub struct GraphEntityCoreV1 {
     pub embedding: Option<Vec<f64>>,
     #[serde(default)]
     pub metadata: BTreeMap<String, Value>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_python_integer_option")]
     pub level_from_root: Option<i64>,
     #[serde(flatten)]
     pub extension_fields: BTreeMap<String, Value>,
 }
 
+fn coerce_python_integer(value: &Value) -> Result<Option<i64>, &'static str> {
+    match value {
+        Value::Null => Ok(None),
+        Value::Bool(value) => Ok(Some(i64::from(*value))),
+        Value::Number(value) => {
+            if let Some(integer) = value.as_i64() {
+                return Ok(Some(integer));
+            }
+            if let Some(unsigned) = value.as_u64() {
+                return i64::try_from(unsigned)
+                    .map(Some)
+                    .map_err(|_| "integer is outside the Rust i64 range");
+            }
+            let float = value.as_f64().ok_or("value is not an integer")?;
+            if !float.is_finite() || float.fract() != 0.0 {
+                return Err("value is not an integer");
+            }
+            if float < i64::MIN as f64 || float >= -(i64::MIN as f64) {
+                return Err("integer is outside the Rust i64 range");
+            }
+            Ok(Some(float as i64))
+        }
+        Value::String(value) => value
+            .trim()
+            .parse::<i64>()
+            .map(Some)
+            .map_err(|_| "string is not a valid integer"),
+        _ => Err("value is not a valid integer"),
+    }
+}
+
+fn deserialize_python_integer_option<'de, D>(deserializer: D) -> Result<Option<i64>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Value::deserialize(deserializer)?;
+    coerce_python_integer(&value).map_err(serde::de::Error::custom)
+}
+
 impl GraphEntityCoreV1 {
-    fn normalize_shared_mixin_fields(&mut self, level_field_present: bool) {
+    fn normalize_shared_mixin_fields(
+        &mut self,
+        model_class: GraphModelClass,
+        level_field_present: bool,
+    ) -> Result<(), GraphModelError> {
         match self.metadata.get("lifecycle_status") {
             Some(Value::String(status)) if status == "deleted" => {
                 self.metadata.insert(
@@ -1399,10 +1449,20 @@ impl GraphEntityCoreV1 {
             self.metadata
                 .insert("level_from_root".to_owned(), Value::Number(level.into()));
         } else if !level_field_present {
-            if let Some(level) = self.metadata.get("level_from_root").and_then(Value::as_i64) {
-                self.level_from_root = Some(level);
+            if let Some(value) = self.metadata.get("level_from_root") {
+                self.level_from_root = coerce_python_integer(value).map_err(|reason| {
+                    GraphModelError::InvalidEntityFields {
+                        model_class,
+                        reason,
+                    }
+                })?;
+                if let Some(level) = self.level_from_root {
+                    self.metadata
+                        .insert("level_from_root".to_owned(), Value::Number(level.into()));
+                }
             }
         }
+        Ok(())
     }
 
     fn validate(&self, model_class: GraphModelClass) -> Result<(), GraphModelError> {
@@ -1799,9 +1859,11 @@ pub enum AclEdgeTypeV1 {
 impl PersistentNodeV1 {
     fn into_validated(
         mut self,
+        model_class: GraphModelClass,
         level_field_present: bool,
     ) -> Result<PersistentGraphEntityV1, GraphModelError> {
-        self.core.normalize_shared_mixin_fields(level_field_present);
+        self.core
+            .normalize_shared_mixin_fields(model_class, level_field_present)?;
         self.core.validate(GraphModelClass::Node)?;
         Ok(PersistentGraphEntityV1::Node(self))
     }
@@ -1810,9 +1872,11 @@ impl PersistentNodeV1 {
 impl PersistentEdgeV1 {
     fn into_validated(
         mut self,
+        model_class: GraphModelClass,
         level_field_present: bool,
     ) -> Result<PersistentGraphEntityV1, GraphModelError> {
-        self.core.normalize_shared_mixin_fields(level_field_present);
+        self.core
+            .normalize_shared_mixin_fields(model_class, level_field_present)?;
         self.core.validate(GraphModelClass::Edge)?;
         if self
             .source_ids
@@ -2692,6 +2756,52 @@ mod tests {
             };
             assert_eq!(core.level_from_root, Some(3));
             assert_eq!(core.metadata["level_from_root"], 3);
+
+            for (raw_level, expected) in [
+                (Value::String("2".to_owned()), 2),
+                (Value::Bool(true), 1),
+                (serde_json::json!(2.0), 2),
+            ] {
+                let mut coerced = fixture["cases"]
+                    .as_array()
+                    .expect("fixture cases")
+                    .iter()
+                    .find(|case| case["kind"] == case_name)
+                    .expect("fixture model case")["payload"]
+                    .clone();
+                coerced["metadata"]["level_from_root"] = raw_level;
+                coerced
+                    .as_object_mut()
+                    .expect("object payload")
+                    .remove("level_from_root");
+                let decoded = GraphModelEnvelope::new(model_class, coerced)
+                    .decode_persistent_v1()
+                    .expect("coerce metadata level as Python's integer field does");
+                let core = match decoded {
+                    PersistentGraphEntityV1::Node(node) => node.core,
+                    PersistentGraphEntityV1::Edge(edge) => edge.core,
+                };
+                assert_eq!(core.level_from_root, Some(expected));
+                assert_eq!(core.metadata["level_from_root"], expected);
+            }
+
+            let mut fractional = fixture["cases"]
+                .as_array()
+                .expect("fixture cases")
+                .iter()
+                .find(|case| case["kind"] == case_name)
+                .expect("fixture model case")["payload"]
+                .clone();
+            fractional["metadata"]["level_from_root"] = serde_json::json!(2.5);
+            fractional
+                .as_object_mut()
+                .expect("object payload")
+                .remove("level_from_root");
+            assert!(
+                GraphModelEnvelope::new(model_class, fractional)
+                    .decode_persistent_v1()
+                    .is_err()
+            );
 
             let mut negative = fixture["cases"]
                 .as_array()
