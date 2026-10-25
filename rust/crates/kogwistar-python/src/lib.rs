@@ -5956,6 +5956,7 @@ fn validate_postgres_operation(value: &Value) -> Result<(), (&'static str, Strin
             "record",
             "payload",
             "embedding_dim",
+            "model_envelope",
         ][..],
         "graph_metadata_patch_mutation" => &[
             "kind",
@@ -6805,6 +6806,26 @@ mod tests {
             validate_postgres_operation(&json!({
                 "kind": "graph_authority_capability",
                 "write": true
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn postgres_bridge_accepts_typed_graph_mutation_envelope() {
+        validate_postgres_operation(&json!({
+            "kind": "graph_mutation",
+            "model_envelope": {
+                "schema_version": 1,
+                "model_class": "node",
+                "payload": {"id": "node-1"}
+            }
+        }))
+        .expect("typed graph mutation envelopes must cross the Python/Rust bridge");
+        assert!(
+            validate_postgres_operation(&json!({
+                "kind": "graph_mutation",
+                "typed_envelope": {}
             }))
             .is_err()
         );
