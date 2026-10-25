@@ -957,3 +957,27 @@ and production request paths remain outside this comparison. The raw report
 is intentionally kept in the ignored benchmark output directory rather than
 source control; rerun with `scripts/run_mixed_runtime_matrix.ps1
 -EndpointOnly -EndpointItems 100 -Samples 2` to reproduce it.
+
+### 2026-10-25 persistent SQLite smoke recheck
+
+A controlled local smoke run used five logical items, two measured samples, two
+read cycles, and one warm-up per mode. Python, Rust per-call, Rust cached
+session, and Rust-native direct-store modes all produced the identical final
+state digest:
+`172ad3e95de64f1ece92ae3f511dfd3ce4c78ca2c0cc1844351df8f3e2019813`.
+
+| Mode | Event append | Mixed interleaved | Projection replace |
+| --- | ---: | ---: | ---: |
+| Python | 41.73 ops/s | 58.57 ops/s | 43.91 ops/s |
+| Rust per-call | 21.53 ops/s | 27.09 ops/s | 26.69 ops/s |
+| Rust cached session | 38.39 ops/s | 27.37 ops/s | 63.09 ops/s |
+| Rust-native direct store | 50.46 ops/s | 130.67 ops/s | 75.81 ops/s |
+
+The benchmark gate correctly reported `failed` because the Rust per-call mode
+did not meet the configured 95% throughput and 110% p95-latency thresholds.
+This is a useful result, not a correctness failure: the digest parity passed,
+and the native no-seam path was faster on this fixture while the Python bridge
+and per-call Rust facade retained crossing/session overhead. The raw report is
+kept in the ignored `.tmp/rust-port-smoke-current/` directory; it is not a
+release-grade performance claim because the fixture is small and only two
+measured samples were used.
