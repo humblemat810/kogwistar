@@ -120,18 +120,24 @@ def test_python_source_map_projection_matches_shared_chunk_contract() -> None:
 
 def test_python_projection_checkpoint_matches_shared_wire_contract() -> None:
     fixture = dict(PROJECTION_CHECKPOINT_FIXTURE)
-    checkpoint = ProjectionCheckpoint(
-        **{
-            key: value
-            for key, value in fixture.items()
-            if key != "contract_version"
-        }
-    )
+    checkpoint = ProjectionCheckpoint.from_wire(fixture)
+    assert checkpoint.to_wire() == fixture
     assert asdict(checkpoint) == {
         key: value
         for key, value in fixture.items()
         if key != "contract_version"
-    }
+    } | {"processed_event_ids": tuple(fixture["processed_event_ids"])}
+
+
+def test_python_projection_checkpoint_wire_decoder_fails_closed() -> None:
+    fixture = dict(PROJECTION_CHECKPOINT_FIXTURE)
+    with pytest.raises(ValueError, match="unknown"):
+        ProjectionCheckpoint.from_wire({**fixture, "unexpected": True})
+
+    with pytest.raises(ValueError, match="unique"):
+        ProjectionCheckpoint.from_wire(
+            {**fixture, "processed_event_ids": ["event-1", "event-1"]}
+        )
 
 
 @pytest.mark.requires_rust

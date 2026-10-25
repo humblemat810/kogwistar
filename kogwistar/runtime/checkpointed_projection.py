@@ -13,6 +13,27 @@ TEvent = TypeVar("TEvent")
 TSnapshot = TypeVar("TSnapshot")
 ProjectionPayload = dict[str, JsonValue]
 _PROCESSED_EVENT_ID_TAIL_LIMIT = 1024
+PROJECTION_CHECKPOINT_WIRE_VERSION = 1
+_PROJECTION_CHECKPOINT_WIRE_FIELDS = frozenset(
+    {
+        "contract_version",
+        "projection_id",
+        "workspace_id",
+        "projection_schema_version",
+        "source_namespace",
+        "source_from_seq",
+        "source_to_seq",
+        "last_authoritative_seq",
+        "last_materialized_seq",
+        "projected_at_ms",
+        "last_source_event_ts_ms",
+        "snapshot_id",
+        "raw_event_count",
+        "materialization_status",
+        "rebuild_reason",
+        "processed_event_ids",
+    }
+)
 
 
 class ProjectionConflictError(RuntimeError):
@@ -80,6 +101,92 @@ class ProjectionCheckpoint:
     materialization_status: str
     rebuild_reason: str | None
     processed_event_ids: tuple[str, ...] = ()
+
+    def to_wire(self) -> dict[str, JsonValue]:
+        """Return the strict versioned checkpoint payload shared with Rust."""
+        return {
+            "contract_version": PROJECTION_CHECKPOINT_WIRE_VERSION,
+            "projection_id": self.projection_id,
+            "workspace_id": self.workspace_id,
+            "projection_schema_version": self.projection_schema_version,
+            "source_namespace": self.source_namespace,
+            "source_from_seq": self.source_from_seq,
+            "source_to_seq": self.source_to_seq,
+            "last_authoritative_seq": self.last_authoritative_seq,
+            "last_materialized_seq": self.last_materialized_seq,
+            "projected_at_ms": self.projected_at_ms,
+            "last_source_event_ts_ms": self.last_source_event_ts_ms,
+            "snapshot_id": self.snapshot_id,
+            "raw_event_count": self.raw_event_count,
+            "materialization_status": self.materialization_status,
+            "rebuild_reason": self.rebuild_reason,
+            "processed_event_ids": list(self.processed_event_ids),
+        }
+
+    @classmethod
+    def from_wire(cls, payload: Mapping[str, object]) -> "ProjectionCheckpoint":
+        """Decode a Rust-compatible checkpoint and reject ambiguous payloads."""
+        unknown = set(payload) - _PROJECTION_CHECKPOINT_WIRE_FIELDS
+        if unknown:
+            raise ValueError(f"unknown projection checkpoint fields: {sorted(unknown)!r}")
+        contract_version = payload.get("contract_version", PROJECTION_CHECKPOINT_WIRE_VERSION)
+        if contract_version != PROJECTION_CHECKPOINT_WIRE_VERSION:
+            raise ValueError("unsupported projection checkpoint contract version")
+
+        def required_text(name: str) -> str:
+            value = payload.get(name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"projection checkpoint {name} must be non-empty text")
+            return value
+
+        def required_uint(name: str) -> int:
+            value = payload.get(name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"projection checkpoint {name} must be a non-negative integer")
+            return value
+
+        def optional_int(name: str) -> int | None:
+            value = payload.get(name)
+            if value is None:
+                return None
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise ValueError(f"projection checkpoint {name} must be an integer or null")
+            return value
+
+        def optional_text(name: str) -> str | None:
+            value = payload.get(name)
+            if value is None:
+                return None
+            if not isinstance(value, str):
+                raise ValueError(f"projection checkpoint {name} must be text or null")
+            return value
+
+        processed = payload.get("processed_event_ids", ())
+        if not isinstance(processed, (list, tuple)):
+            raise ValueError("projection checkpoint processed_event_ids must be a list")
+        event_ids = tuple(processed)
+        if any(not isinstance(event_id, str) or not event_id.strip() for event_id in event_ids):
+            raise ValueError("projection checkpoint event IDs must be non-empty text")
+        if len(set(event_ids)) != len(event_ids):
+            raise ValueError("projection checkpoint event IDs must be unique")
+
+        return cls(
+            projection_id=required_text("projection_id"),
+            workspace_id=required_text("workspace_id"),
+            projection_schema_version=required_uint("projection_schema_version"),
+            source_namespace=required_text("source_namespace"),
+            source_from_seq=required_uint("source_from_seq"),
+            source_to_seq=required_uint("source_to_seq"),
+            last_authoritative_seq=required_uint("last_authoritative_seq"),
+            last_materialized_seq=required_uint("last_materialized_seq"),
+            projected_at_ms=optional_int("projected_at_ms"),
+            last_source_event_ts_ms=optional_int("last_source_event_ts_ms"),
+            snapshot_id=required_text("snapshot_id"),
+            raw_event_count=required_uint("raw_event_count"),
+            materialization_status=required_text("materialization_status"),
+            rebuild_reason=optional_text("rebuild_reason"),
+            processed_event_ids=event_ids,
+        )
 
 
 @dataclass(frozen=True, slots=True)

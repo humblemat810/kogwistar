@@ -38,6 +38,7 @@ if TYPE_CHECKING:
         ProjectionConflictError,
         ProjectionLoadResult,
         ProjectionPayload,
+        PROJECTION_CHECKPOINT_WIRE_VERSION,
         refresh_checkpointed_named_projection,
     )
     from kogwistar.runtime.contract import (
@@ -111,6 +112,7 @@ __all__ = [
     "ProjectionConflictError",
     "ProjectionLoadResult",
     "ProjectionPayload",
+    "PROJECTION_CHECKPOINT_WIRE_VERSION",
     "RetryAttemptRecord",
     "RetryExhaustedError",
     "RetryResult",
@@ -193,6 +195,7 @@ _EXPORTS = {
     "ProjectionCheckpoint": "kogwistar.runtime.checkpointed_projection",
     "ProjectionLoadResult": "kogwistar.runtime.checkpointed_projection",
     "ProjectionPayload": "kogwistar.runtime.checkpointed_projection",
+    "PROJECTION_CHECKPOINT_WIRE_VERSION": "kogwistar.runtime.checkpointed_projection",
     "refresh_checkpointed_named_projection": "kogwistar.runtime.checkpointed_projection",
     "BudgetAttribution": "kogwistar.runtime.budget",
     "BudgetEvent": "kogwistar.runtime.budget",
