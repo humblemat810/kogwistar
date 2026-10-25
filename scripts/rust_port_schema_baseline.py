@@ -13,6 +13,7 @@ from kogwistar.engine_core.engine_sqlite import EngineSQLite
 
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = ROOT / "contracts" / "golden" / "database-ddl.json"
+LOCAL_TEMP_ROOT = ROOT / ".tmp_pytest"
 
 
 class _ClosingConnection:
@@ -44,7 +45,10 @@ def _digest(values: Any) -> str:
 
 
 def build_baseline() -> dict[str, Any]:
-    with tempfile.TemporaryDirectory(prefix="kogwistar-ddl-") as raw_root:
+    LOCAL_TEMP_ROOT.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(
+        prefix="kogwistar-ddl-", dir=LOCAL_TEMP_ROOT
+    ) as raw_root:
         root = Path(raw_root)
         sqlite_store = EngineSQLite(root, filename="baseline.sqlite")
         original_connect = sqlite_store.connect
