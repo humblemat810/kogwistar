@@ -229,7 +229,10 @@ def test_native_postgres_session_reconnects_after_backend_termination(
         with pytest.raises(Exception) as failure:
             with session.transaction() as token:
                 session.next_global_seq_conn(token)
-                with psycopg.connect(dsn, autocommit=True) as admin:
+                admin_dsn = dsn.replace(
+                    "postgresql+psycopg://", "postgresql://", 1
+                )
+                with psycopg.connect(admin_dsn, autocommit=True) as admin:
                     rows = admin.execute(
                         "SELECT pid FROM pg_stat_activity "
                         "WHERE datname = current_database() "

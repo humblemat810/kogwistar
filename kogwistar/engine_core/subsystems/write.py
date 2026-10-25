@@ -1311,7 +1311,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                     "references": json_or_none(
                         [
                             r.model_dump(field_mode="backend")
-                            for r in (edge.mentions or [])
+                            for r in (getattr(edge, "mentions", None) or [])
                         ]
                     ),
                     "node_endpoint_count": node_endpoint_count,

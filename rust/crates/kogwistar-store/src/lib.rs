@@ -892,6 +892,12 @@ pub fn validate_graph_mutation(mutation: &GraphMutation) -> StoreResult<()> {
     let expected_table = match mutation.entity_kind.as_str() {
         "node" => "gke_nodes",
         "edge" => "gke_edges",
+        // Documents and domains use the same event/projection transaction
+        // internally, but remain excluded from the public graph route and
+        // typed graph envelope. This preserves the existing Python writer's
+        // projection semantics without widening graph authority.
+        "document" => "gke_documents",
+        "domain" => "gke_domains",
         _ => {
             return Err(StoreError::InvalidEntityEventPayload {
                 message: format!("unsupported graph entity kind {:?}", mutation.entity_kind),
@@ -3023,6 +3029,27 @@ mod tests {
             validate_typed_graph_mutation(&node_mutation, &node_envelope),
             Err(StoreError::InvalidEntityEventPayload { .. })
         ));
+    }
+
+    #[test]
+    fn projection_mutation_accepts_existing_document_and_domain_tables() {
+        for (entity_kind, table) in [("document", "gke_documents"), ("domain", "gke_domains")] {
+            let mutation = GraphMutation {
+                scope: GraphScope {
+                    namespace: "ns".to_owned(),
+                    workspace_id: None,
+                    graph_space: None,
+                },
+                table: table.to_owned(),
+                entity_kind: entity_kind.to_owned(),
+                event_id: format!("{entity_kind}-event"),
+                op: "ADD".to_owned(),
+                payload: serde_json::json!({}),
+                record: GraphRecord::new(format!("{entity_kind}-id")),
+                embedding_dim: 0,
+            };
+            validate_graph_mutation(&mutation).expect("projection mutation should be valid");
+        }
     }
 
     #[test]
