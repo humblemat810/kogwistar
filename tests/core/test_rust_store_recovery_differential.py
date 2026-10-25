@@ -9,6 +9,14 @@ import pytest
 
 from kogwistar._rust_bridge import RustParityError, store_postgres, store_sqlite
 from kogwistar.engine_core.engine_sqlite import EngineSQLite
+from kogwistar.engine_core.rust_meta_sqlite import RustEngineSQLite
+from kogwistar.engine_core.rust_postgres_session import RustEnginePostgresMetaStore
+from kogwistar.runtime import (
+    CheckpointedProjectionStore,
+    ProjectionCheckpoint,
+    ProjectionLoadResult,
+    refresh_checkpointed_named_projection,
+)
 
 pytestmark = [pytest.mark.ci, pytest.mark.core]
 
@@ -84,6 +92,20 @@ def _assert_projection_shape(payload: dict[str, Any]) -> None:
     active = entities['["alien_kind","n2"]']
     assert active["deleted"] is False
     assert active["entity"]["id"] == "n2"
+
+
+def test_rust_meta_facades_implement_checkpointed_projection_store_protocol(
+    tmp_path: Path,
+) -> None:
+    """Both native metadata facades preserve the shared Python projection seam."""
+
+    sqlite = RustEngineSQLite(tmp_path)
+    postgres = RustEnginePostgresMetaStore(
+        dsn="postgresql://unconfigured.example.invalid/db",
+        schema="contract_only",
+    )
+    assert isinstance(sqlite, CheckpointedProjectionStore)
+    assert isinstance(postgres, CheckpointedProjectionStore)
 
 
 def _run_recovery_contract(
@@ -265,6 +287,126 @@ def test_sqlite_atomic_bounded_recovery_rebuild_and_python_rust_interop(tmp_path
         "alien_kind",
         "node",
     ]
+
+
+def test_python_projection_recovery_over_rust_owned_sqlite_store(tmp_path: Path) -> None:
+    """A Python reducer must replay and checkpoint against the Rust-owned facade."""
+
+    def decode_current(row: dict[str, Any]) -> ProjectionLoadResult[dict[str, int]]:
+        payload = dict(row["payload"])
+        checkpoint = ProjectionCheckpoint(
+            projection_id=str(payload["projection_id"]),
+            workspace_id=str(payload["workspace_id"]),
+            projection_schema_version=int(payload["projection_schema_version"]),
+            source_namespace=str(payload["source_namespace"]),
+            source_from_seq=int(payload["source_from_seq"]),
+            source_to_seq=int(payload["source_to_seq"]),
+            last_authoritative_seq=int(row["last_authoritative_seq"]),
+            last_materialized_seq=int(row["last_materialized_seq"]),
+            projected_at_ms=int(payload["projected_at_ms"]),
+            last_source_event_ts_ms=None,
+            snapshot_id=str(payload["snapshot_id"]),
+            raw_event_count=int(payload["raw_event_count"]),
+            materialization_status=str(row["materialization_status"]),
+            rebuild_reason=(
+                str(payload["rebuild_reason"])
+                if payload.get("rebuild_reason") is not None
+                else None
+            ),
+            processed_event_ids=tuple(str(value) for value in payload.get("processed_event_ids", [])),
+        )
+        return ProjectionLoadResult(
+            state={"total": int(payload["total"])},
+            checkpoint=checkpoint,
+            payload=payload,
+        )
+
+    def decode_event(payload_json: str) -> dict[str, int | str]:
+        value = json.loads(payload_json)
+        assert isinstance(value, dict)
+        return {"event_id": str(value["event_id"]), "delta": int(value["delta"])}
+
+    def build_payload(
+        state: dict[str, int],
+        checkpoint: ProjectionCheckpoint,
+        processed_event_ids: tuple[str, ...],
+    ) -> dict[str, Any]:
+        return {
+            "projection_id": checkpoint.projection_id,
+            "workspace_id": checkpoint.workspace_id,
+            "projection_schema_version": checkpoint.projection_schema_version,
+            "source_namespace": checkpoint.source_namespace,
+            "source_from_seq": checkpoint.source_from_seq,
+            "source_to_seq": checkpoint.source_to_seq,
+            "projected_at_ms": checkpoint.projected_at_ms,
+            "last_source_event_ts_ms": checkpoint.last_source_event_ts_ms,
+            "snapshot_id": checkpoint.snapshot_id,
+            "raw_event_count": checkpoint.raw_event_count,
+            "rebuild_reason": checkpoint.rebuild_reason,
+            "processed_event_ids": list(processed_event_ids),
+            "total": state["total"],
+        }
+
+    def refresh(store: RustEngineSQLite, *, rebuild_from_scratch: bool = False) -> dict[str, Any]:
+        return dict(
+            refresh_checkpointed_named_projection(
+                store,
+                namespace="projection",
+                key="counter",
+                projection_id="counter-v1",
+                workspace_id="workspace",
+                source_namespace="events",
+                projection_schema_version=1,
+                decode_current=decode_current,
+                create_state=lambda: {"total": 0},
+                decode_event=decode_event,
+                event_key=lambda event: str(event["event_id"]),
+                apply_event=lambda state, event, _seq: state.__setitem__(
+                    "total", state["total"] + int(event["delta"])
+                ),
+                build_payload=build_payload,
+                build_snapshot=lambda row: dict(row["payload"]),
+                rebuild_from_scratch=rebuild_from_scratch,
+            )
+        )
+
+    first = RustEngineSQLite(tmp_path)
+    first.ensure_initialized()
+    for event_id, delta in (("rust-1", 2), ("rust-2", 3)):
+        assert (
+            first.append_entity_event(
+                namespace="events",
+                event_id=event_id,
+                entity_kind="counter",
+                entity_id="total",
+                op="ADD",
+                payload_json=json.dumps({"event_id": event_id, "delta": delta}),
+            )
+            > 0
+        )
+    assert refresh(first, rebuild_from_scratch=True)["total"] == 5
+    first.close()
+
+    reopened = RustEngineSQLite(tmp_path)
+    reopened.ensure_initialized()
+    replayed = refresh(reopened, rebuild_from_scratch=True)
+    assert replayed["total"] == 5
+    assert replayed["source_to_seq"] == 2
+
+    assert (
+        reopened.append_entity_event(
+            namespace="events",
+            event_id="rust-3",
+            entity_kind="counter",
+            entity_id="total",
+            op="ADD",
+            payload_json=json.dumps({"event_id": "rust-3", "delta": 7}),
+        )
+        > 0
+    )
+    assert refresh(reopened)["total"] == 12
+    assert refresh(reopened)["total"] == 12
+    reopened.close()
 
 
 def test_postgres_atomic_bounded_recovery_rebuild_and_python_rust_interop(

@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import json
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -33,6 +34,120 @@ def test_registry_accepts_structured_output_compatibility_option() -> None:
         assert result.structured_content == {"value": 42}
 
     asyncio.run(exercise())
+
+
+def test_registry_sync_invocation_context_is_scoped_to_tool_body() -> None:
+    from kogwistar.server.mcp_registry import McpRegistry
+
+    entered: list[str] = []
+
+    @contextmanager
+    def context():
+        entered.append("enter")
+        try:
+            yield
+        finally:
+            entered.append("exit")
+
+    registry = McpRegistry(
+        "sync-context-test", sync_invocation_context=lambda _name: context()
+    )
+
+    @registry.tool()
+    def answer() -> dict[str, int]:
+        assert entered == ["enter"]
+        return {"value": 42}
+
+    async def exercise() -> None:
+        result = await registry.call_tool("answer")
+        assert result.structured_content == {"value": 42}
+
+    asyncio.run(exercise())
+    assert entered == ["enter", "exit"]
+
+
+def test_registry_does_not_hold_sync_context_across_async_tool_await() -> None:
+    from kogwistar.server.mcp_registry import McpRegistry
+
+    entered: list[str] = []
+
+    @contextmanager
+    def context():
+        entered.append("enter")
+        try:
+            yield
+        finally:
+            entered.append("exit")
+
+    registry = McpRegistry(
+        "async-context-test", sync_invocation_context=lambda _name: context()
+    )
+
+    @registry.tool()
+    async def answer() -> dict[str, int]:
+        assert entered == ["enter", "exit"]
+        return {"value": 42}
+
+    async def exercise() -> None:
+        result = await registry.call_tool("answer")
+        assert result.structured_content == {"value": 42}
+
+    asyncio.run(exercise())
+    assert entered == ["enter", "exit"]
+
+
+def test_registry_authorization_precedes_sync_invocation_context(monkeypatch) -> None:
+    from kogwistar.server import mcp_tools
+    from kogwistar.server.mcp_registry import McpRegistry
+
+    entered: list[str] = []
+
+    @contextmanager
+    def context():
+        entered.append("enter")
+        try:
+            yield
+        finally:
+            entered.append("exit")
+
+    registry = McpRegistry(
+        "authorization-order-test", sync_invocation_context=lambda _name: context()
+    )
+
+    @registry.tool()
+    def answer() -> dict[str, int]:
+        return {"value": 42}
+
+    monkeypatch.setattr(
+        mcp_tools, "_tool_allowed", lambda *_args, **_kwargs: False
+    )
+
+    async def exercise() -> None:
+        with pytest.raises(PermissionError):
+            await registry._execute("answer", {}, enforce_visibility=True)
+
+    asyncio.run(exercise())
+    assert entered == []
+
+
+def test_production_sync_context_is_knowledge_only_and_unknown_fails_closed(monkeypatch) -> None:
+    from kogwistar.server import mcp_tools
+    from kogwistar.server.auth_middleware import NameSpace
+
+    def forbidden_engine_access():
+        raise AssertionError("non-knowledge tool opened the knowledge engine")
+
+    monkeypatch.setattr(mcp_tools.engine, "get", forbidden_engine_access)
+    mcp_tools.TOOL_NAMESPACE["test_wisdom_tool"] = {NameSpace.WISDOM.value}
+    mcp_tools.TOOL_NAMESPACE["test_workflow_tool"] = {NameSpace.WORKFLOW.value}
+    try:
+        for name in ("test_wisdom_tool", "test_workflow_tool", "test_unknown_tool"):
+            context = mcp_tools._knowledge_sync_invocation_context(name)
+            with context:
+                pass
+    finally:
+        for name in ("test_wisdom_tool", "test_workflow_tool"):
+            mcp_tools.TOOL_NAMESPACE.pop(name, None)
 
 
 def test_workflow_mcp_tool_names_are_declared_once() -> None:

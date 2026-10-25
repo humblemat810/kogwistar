@@ -59,6 +59,74 @@ def _effect() -> dict[str, Any]:
     }
 
 
+def test_python_worker_noop_matches_shared_native_effect_golden() -> None:
+    fixture = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts"
+            / "golden"
+            / "runtime-native-noop-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    resolver = MappingStepResolver()
+
+    @resolver.register("noop")
+    def execute(_ctx):
+        return RunSuccess(conversation_node_id=None, state_update=[])
+
+    effect = RustStepResolverAdapter(resolver)(
+        _adapter_work(
+            state={"seed": 1},
+            op="noop",
+            routes=[_route("finish")],
+        )
+    )
+    assert {
+        "contract_version": 1,
+        "status": effect["status"],
+        "state_update": effect["state_update"],
+        "update": effect.get("update"),
+        "state_schema": effect["state_schema"],
+        "successors": effect["successors"],
+        "route_next": effect["route_next"],
+        "result": effect["result"],
+    } == fixture
+
+
+def test_python_worker_increment_counter_matches_shared_native_effect_golden() -> None:
+    fixture = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts"
+            / "golden"
+            / "runtime-native-increment-counter-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    resolver = MappingStepResolver()
+
+    @resolver.register("increment-counter")
+    def execute(ctx):
+        counter = int(ctx.state_view["counter"])
+        return RunSuccess(
+            conversation_node_id=None,
+            state_update=[("u", {"counter": counter + 1})],
+        )
+
+    effect = RustStepResolverAdapter(resolver)(
+        _adapter_work(state={"counter": 1}, op="increment-counter")
+    )
+    assert {
+        "contract_version": 1,
+        "status": effect["status"],
+        "state_update": effect["state_update"],
+        "update": effect.get("update"),
+        "state_schema": effect["state_schema"],
+        "successors": effect["successors"],
+        "route_next": effect["route_next"],
+        "result": effect["result"],
+    } == fixture
+
+
 def _adapter_work(
     *,
     state: dict[str, Any] | None = None,

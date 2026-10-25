@@ -3,6 +3,7 @@ from __future__ import annotations
 import functools
 import os
 from collections.abc import Awaitable, Callable, Sequence
+from contextlib import AbstractContextManager, nullcontext
 from typing import (
     Any,
     ClassVar,
@@ -200,6 +201,24 @@ def require_ns(
 
 
 mcp = McpRegistry("KnowledgeEngine + MCP + Admin", filter_tools=True)
+
+
+def _knowledge_sync_invocation_context(tool_name: str) -> AbstractContextManager[object]:
+    """Reuse the exact Rust SQLite handle for one synchronous MCP tool call."""
+
+    from kogwistar.engine_core.rust_meta_sqlite import RustEngineSQLite
+
+    # Unknown tools must not inherit knowledge-store authority by default.
+    tool_namespaces = TOOL_NAMESPACE.get(tool_name, set())
+    if NameSpace.DOCS.value not in tool_namespaces:
+        return nullcontext()
+    metadata = engine.get().metadata
+    if type(metadata) is RustEngineSQLite:
+        return metadata.session()
+    return nullcontext()
+
+
+mcp.set_sync_invocation_context(_knowledge_sync_invocation_context)
 
 
 def _server_chat_service() -> ChatRunService:

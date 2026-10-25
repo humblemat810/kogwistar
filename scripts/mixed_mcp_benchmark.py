@@ -19,7 +19,7 @@ import time
 import urllib.error
 import urllib.request
 import uuid
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TypeVar
@@ -29,6 +29,7 @@ sys.path.insert(0, str(ROOT))
 _NATIVE_BINARY_READY = False
 DEFAULT_MODES = ("in_process", "rust_authority", "http", "rust_native")
 MCP_OPERATION_TIMEOUT_SECONDS = 30
+MCP_SESSION_TIMEOUT_SECONDS = 600
 _AwaitedT = TypeVar("_AwaitedT")
 
 import uvicorn
@@ -125,6 +126,34 @@ async def _await_mcp_operation(awaitable: Awaitable[_AwaitedT], operation: str) 
         ) from exc
 
 
+@asynccontextmanager
+async def _bounded_streamable_http_client(url: str) -> AsyncIterator[tuple[Any, Any]]:
+    """Bound MCP session setup/teardown as well as individual operations."""
+
+    client = streamable_http_client(url, terminate_on_close=True)
+    try:
+        streams = await asyncio.wait_for(
+            client.__aenter__(), timeout=MCP_SESSION_TIMEOUT_SECONDS
+        )
+    except BaseException:
+        await asyncio.wait_for(
+            client.__aexit__(*sys.exc_info()), timeout=MCP_SESSION_TIMEOUT_SECONDS
+        )
+        raise
+
+    try:
+        yield streams
+    except BaseException:
+        await asyncio.wait_for(
+            client.__aexit__(*sys.exc_info()), timeout=MCP_SESSION_TIMEOUT_SECONDS
+        )
+        raise
+    else:
+        await asyncio.wait_for(
+            client.__aexit__(None, None, None), timeout=MCP_SESSION_TIMEOUT_SECONDS
+        )
+
+
 def _sqlite_footprint_bytes(path: Path) -> int:
     return sum(
         candidate.stat().st_size
@@ -205,7 +234,7 @@ def _make_registry(
     authority: str = "python",
     concurrent: _ConcurrentMcpBarriers | None = None,
     sync_concurrent: bool = False,
-) -> McpRegistry:
+) -> tuple[McpRegistry, EngineSQLite | RustEngineSQLite]:
     store_type = RustEngineSQLite if authority == "rust" else EngineSQLite
     store = store_type(path.parent, filename=path.name)
     store.ensure_initialized()
@@ -497,7 +526,18 @@ def _make_registry(
             async def read_head(expected_revision: int) -> dict[str, object]:
                 return await asyncio.to_thread(read_head_sync, expected_revision)
 
-    return registry
+    return registry, store
+
+
+@contextmanager
+def _reuse_rust_store_session(store: EngineSQLite | RustEngineSQLite):
+    """Keep one Rust SQLite handle alive for a sequential authority trace."""
+
+    if isinstance(store, RustEngineSQLite):
+        with store.session():
+            yield
+        return
+    yield
 
 
 def _result_payload(result: object) -> dict[str, object]:
@@ -581,9 +621,7 @@ async def _serve_http(
     timings: dict[str, list[float]] = {"write_record": [], "read_event": [], "read_projection": []}
     elapsed_ms = 0.0
     try:
-        async with streamable_http_client(
-            f"http://{host}:{port}/mcp", terminate_on_close=True
-        ) as (read, write):
+        async with _bounded_streamable_http_client(f"http://{host}:{port}/mcp") as (read, write):
             async with ClientSession(read, write) as session:
                 init_started = time.perf_counter_ns()
                 await _await_mcp_operation(session.initialize(), "initialize")
@@ -722,9 +760,7 @@ async def _serve_http_concurrent(
 
     async def actor(actor_id: int | None) -> int:
         operations = 0
-        async with streamable_http_client(
-            f"http://{host}:{port}/mcp", terminate_on_close=True
-        ) as (read, write):
+        async with _bounded_streamable_http_client(f"http://{host}:{port}/mcp") as (read, write):
             async with ClientSession(read, write) as session:
                 await _await_mcp_operation(session.initialize(), "initialize")
                 tools = {
@@ -1084,7 +1120,7 @@ def _run_concurrent_one(
     rss_start = int(process.memory_info().rss)
     cpu_started = time.process_time_ns()
     barriers = _ConcurrentMcpBarriers.create()
-    registry = _make_registry(path, authority=authority, concurrent=barriers)
+    registry, _store = _make_registry(path, authority=authority, concurrent=barriers)
     if transport == "http":
         transport_result = _run_async(
             _serve_http_concurrent(registry, phases, barriers, graph_payloads)
@@ -1169,7 +1205,7 @@ def _run_sync_threadpool_one(
     rss_start = int(process.memory_info().rss)
     cpu_started = time.process_time_ns()
     barriers = _ConcurrentMcpBarriers.create()
-    registry = _make_registry(
+    registry, _store = _make_registry(
         path, authority="python", concurrent=barriers, sync_concurrent=True
     )
     transport_result = _run_sync_threadpool_concurrent(
@@ -1248,7 +1284,7 @@ async def _run_one(
     startup_ms = 0.0
     native_result: dict[str, Any] = {}
     if mode in {"in_process", "rust_authority"}:
-        registry = _make_registry(
+        registry, _store = _make_registry(
             path,
             authority="rust" if mode == "rust_authority" else "python",
         )
@@ -1265,7 +1301,7 @@ async def _run_one(
             timings[operation].append((time.perf_counter_ns() - started) / 1_000_000)
         elapsed_ms = (time.perf_counter_ns() - wall_started) / 1_000_000
     elif mode == "http":
-        registry = _make_registry(path)
+        registry, _store = _make_registry(path)
         startup_ms = (time.perf_counter_ns() - started) / 1_000_000
         http_result = await _serve_http(registry, trace, trace_arguments)
         startup_ms += http_result["startup_ms"]
@@ -1332,7 +1368,7 @@ def _run_one_sync(
     rss_start = int(process.memory_info().rss)
     cpu_started = time.process_time_ns()
     started = time.perf_counter_ns()
-    registry = _make_registry(
+    registry, store = _make_registry(
         path,
         authority="rust" if mode == "rust_authority" else "python",
     )
@@ -1343,17 +1379,18 @@ def _run_one_sync(
         "read_event": [],
         "read_projection": [],
     }
-    for step, arguments in zip(trace, trace_arguments, strict=True):
-        operation = step["operation"]
-        operation_started = time.perf_counter_ns()
-        payload = _call_registry_sync(registry, operation, arguments)
-        if payload.get("entity_id") != step["expected_entity_id"]:
-            raise RuntimeError("in-process MCP returned an unexpected entity id")
-        if operation == "read_projection" and payload.get("index") != step["index"]:
-            raise RuntimeError("in-process MCP returned an unexpected projection index")
-        timings[operation].append(
-            (time.perf_counter_ns() - operation_started) / 1_000_000
-        )
+    with _reuse_rust_store_session(store):
+        for step, arguments in zip(trace, trace_arguments, strict=True):
+            operation = step["operation"]
+            operation_started = time.perf_counter_ns()
+            payload = _call_registry_sync(registry, operation, arguments)
+            if payload.get("entity_id") != step["expected_entity_id"]:
+                raise RuntimeError("in-process MCP returned an unexpected entity id")
+            if operation == "read_projection" and payload.get("index") != step["index"]:
+                raise RuntimeError("in-process MCP returned an unexpected projection index")
+            timings[operation].append(
+                (time.perf_counter_ns() - operation_started) / 1_000_000
+            )
     elapsed_ms = (time.perf_counter_ns() - wall_started) / 1_000_000
     state = _final_state(path)
     return {

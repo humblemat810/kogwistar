@@ -19,7 +19,6 @@ use kogwistar_contracts::{
     DelegationAuthorityV1, GraphMutationBatchV1 as GraphMutationBatchInput,
     GraphMutationV1 as GraphMutationInput, GraphNeighborsRequestV1,
     attach_rust_native_seam_attestation, attenuate_capabilities, graph_neighbors_request_from_str,
-    native_seam_attestation_is_valid,
 };
 use kogwistar_runtime::{
     RECORDED_RUNTIME_CONTRACT_VERSION, RecordedRuntimeState, RecordedRuntimeTransition,
@@ -1065,9 +1064,15 @@ fn native_step_request_from_payload(
         if handoff.run_id != run_id || handoff.step_id != node_id {
             return Err("native run payload does not match the claimed handoff".to_owned());
         }
+        let op_version = match payload.get("op_version") {
+            None => "v1".to_owned(),
+            Some(Value::String(version)) => version.clone(),
+            Some(_) => return Err("native run payload has an invalid op_version".to_owned()),
+        };
         return Ok(kogwistar_runtime::RuntimeNativeStepRequest {
             executor_target: kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET.to_owned(),
             operation: operation.to_owned(),
+            op_version,
             run_id: run_id.to_owned(),
             workflow_id: workflow_id.to_owned(),
             node_id: node_id.to_owned(),
@@ -1076,6 +1081,8 @@ fn native_step_request_from_payload(
             token_id: run_id.to_owned(),
             parent_token_id: None,
             step_seq: 0,
+            state: serde_json::from_value(payload["initial_state"].clone())
+                .map_err(|error| format!("invalid native initial state: {error}"))?,
             runtime_routes,
         });
     }
@@ -1100,6 +1107,7 @@ fn native_step_request_from_payload(
     Ok(kogwistar_runtime::RuntimeNativeStepRequest {
         executor_target: kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET.to_owned(),
         operation: operation.to_owned(),
+        op_version: payload.op_version,
         run_id: payload.run_id,
         workflow_id: payload.workflow_id,
         node_id: payload.node_id,
@@ -1108,6 +1116,7 @@ fn native_step_request_from_payload(
         token_id: payload.token_id,
         parent_token_id: payload.parent_token_id,
         step_seq: payload.step_seq,
+        state: payload.state,
         runtime_routes: payload.runtime_routes,
     })
 }
@@ -11840,6 +11849,7 @@ mod tests {
     use super::*;
     use axum::body::{Body, to_bytes};
     use axum::http::Request;
+    use kogwistar_contracts::native_seam_attestation_is_valid;
     use tower::ServiceExt;
 
     fn remove_test_sqlite(path: &std::path::Path) {
@@ -12119,7 +12129,7 @@ mod tests {
                     .header("content-type", "application/json")
                     .header("x-kogwistar-roles", "reader")
                     .body(Body::from(
-                        r#"{"run_id":"native-run","workflow_id":"native-workflow","conversation_id":"native-conversation","initial_state":{"seed":1},"runtime_kind":"sync","start_node_id":"entry","node_ops":{"entry":"rust-native/noop","finish":"rust-native/emit-result"},"runtime_routes":[{"source_node_id":"entry","target_node_id":"finish","join_mask":0}]}"#,
+                        r#"{"run_id":"native-run","workflow_id":"native-workflow","conversation_id":"native-conversation","initial_state":{"counter":1},"runtime_kind":"sync","start_node_id":"entry","node_ops":{"entry":"rust-native/increment-counter","finish":"rust-native/emit-result"},"runtime_routes":[{"source_node_id":"entry","target_node_id":"finish","join_mask":0}]}"#,
                     ))
                     .unwrap(),
             )
@@ -12145,12 +12155,41 @@ mod tests {
         assert_eq!(claim.status(), StatusCode::OK);
         let claim_body = to_bytes(claim.into_body(), 16_384).await.unwrap();
         let work = serde_json::from_slice::<Value>(&claim_body).unwrap()["work"][0].clone();
-        assert_eq!(work["payload"]["op"], "rust-native/noop");
+        assert_eq!(work["payload"]["op"], "rust-native/increment-counter");
         assert_eq!(
             work["payload"]["executor_target"],
             kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET
         );
         assert_eq!(work["claimed_by"], "rust-native-worker");
+
+        let mut malformed_version_payload = work["payload"].clone();
+        malformed_version_payload["op_version"] = json!(2);
+        let malformed_version = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/internal/runtime/native/execute")
+                    .header("content-type", "application/json")
+                    .header("x-kogwistar-roles", "reader")
+                    .body(Body::from(
+                        serde_json::to_vec(&json!({
+                            "handoff": {
+                                "message_id": work["message_id"],
+                                "claimed_by": work["claimed_by"],
+                                "run_id": work["run_id"],
+                                "step_id": work["step_id"],
+                                "correlation_id": work["correlation_id"]
+                            },
+                            "payload": malformed_version_payload
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(malformed_version.status(), StatusCode::CONFLICT);
 
         let execute = app
             .clone()
@@ -12266,6 +12305,12 @@ mod tests {
             kogwistar_runtime::RUST_NATIVE_SEAM_ATTESTATION_VERSION
         );
         assert_eq!(native_trace_payload["trace"]["seam_crossings"], json!([]));
+        assert!(events.iter().any(|event| {
+            event.event_type == "workflow.recorded_transition.v1"
+                && event.payload_json.contains("increment-counter")
+                && event.payload_json.contains("counter")
+                && event.payload_json.contains(":2")
+        }));
         assert!(events.iter().any(|event| {
             event.event_type == "workflow.recorded_transition.v1"
                 && event.payload_json.contains("emit-result")

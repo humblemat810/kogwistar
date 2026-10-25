@@ -10,7 +10,7 @@ import asyncio
 import inspect
 import json
 from collections.abc import AsyncIterator, Callable
-from contextlib import asynccontextmanager
+from contextlib import AbstractContextManager, asynccontextmanager, nullcontext
 from dataclasses import dataclass
 from typing import Any, ParamSpec, TypeVar, cast, get_type_hints, overload
 
@@ -109,7 +109,14 @@ def _make_tool(
 class McpRegistry:
     """Decorator-friendly registry backed by an official low-level Server."""
 
-    def __init__(self, name: str, *, filter_tools: bool = False) -> None:
+    def __init__(
+        self,
+        name: str,
+        *,
+        filter_tools: bool = False,
+        sync_invocation_context: Callable[[str], AbstractContextManager[object]]
+        | None = None,
+    ) -> None:
         # MCP SDK changed from constructor callbacks to decorator handlers.
         # Keep both paths so the registry remains importable across supported
         # SDK minor versions without changing the public registry contract.
@@ -135,8 +142,21 @@ class McpRegistry:
 
             del _list_tools, _call_tool
         self._filter_tools = filter_tools
+        self._sync_invocation_context = sync_invocation_context
         self._records: dict[str, _ToolRecord] = {}
         self._children: list[McpRegistry] = []
+
+    def set_sync_invocation_context(
+        self, factory: Callable[[str], AbstractContextManager[object]] | None
+    ) -> None:
+        """Set an optional context for synchronous tool execution only.
+
+        The context is entered after authorization and is never held across an
+        awaited tool result. This keeps request-scoped native sessions from
+        leaking across async tasks or changing authorization semantics.
+        """
+
+        self._sync_invocation_context = factory
 
     @overload
     def tool(
@@ -294,7 +314,13 @@ class McpRegistry:
             field: getattr(values, field)
             for field in record.input_model.model_fields
         }
-        result = record.function(**kwargs)
+        context = (
+            self._sync_invocation_context(name)
+            if self._sync_invocation_context is not None
+            else nullcontext()
+        )
+        with context:
+            result = record.function(**kwargs)
         if inspect.isawaitable(result):
             result = await result
         if isinstance(result, BaseModel):

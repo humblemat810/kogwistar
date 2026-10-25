@@ -109,6 +109,10 @@ pub struct RuntimeStepExecuteRequest {
 pub struct RuntimeNativeStepRequest {
     pub executor_target: String,
     pub operation: String,
+    /// Version of the registered native operation. Legacy native payloads
+    /// omit this field and retain the v1 operation contract.
+    #[serde(default = "default_operation_version")]
+    pub op_version: String,
     pub run_id: String,
     pub workflow_id: String,
     pub node_id: String,
@@ -119,6 +123,8 @@ pub struct RuntimeNativeStepRequest {
     #[serde(default)]
     pub parent_token_id: Option<String>,
     pub step_seq: i64,
+    #[serde(default)]
+    pub state: Map<String, Value>,
     #[serde(default)]
     pub runtime_routes: Vec<RuntimeStaticRoute>,
 }
@@ -131,10 +137,17 @@ pub enum RuntimeNativeExecutionError {
     EmptyOperation,
     #[error("native operation {0:?} is not registered")]
     UnsupportedOperation(String),
+    #[error("native operation version for {operation:?} is unsupported: {version:?}")]
+    UnsupportedOperationVersion { operation: String, version: String },
     #[error("native step identifier {field} must be non-empty")]
     EmptyIdentifier { field: &'static str },
     #[error("native step sequence must not be negative")]
     NegativeStepSequence,
+    #[error("native operation state field {field:?} is invalid: {reason}")]
+    InvalidState {
+        field: &'static str,
+        reason: &'static str,
+    },
     #[error("native routing failed: {0}")]
     Routing(#[from] RecordedRuntimeError),
 }
@@ -155,6 +168,12 @@ pub fn execute_native_step(
     if request.operation.trim().is_empty() {
         return Err(RuntimeNativeExecutionError::EmptyOperation);
     }
+    if !is_default_operation_version(&request.op_version) {
+        return Err(RuntimeNativeExecutionError::UnsupportedOperationVersion {
+            operation: request.operation.clone(),
+            version: request.op_version.clone(),
+        });
+    }
     for (field, value) in [
         ("run_id", request.run_id.as_str()),
         ("workflow_id", request.workflow_id.as_str()),
@@ -169,8 +188,35 @@ pub fn execute_native_step(
     if request.step_seq < 0 {
         return Err(RuntimeNativeExecutionError::NegativeStepSequence);
     }
+    let mut state_update = Vec::new();
     let result = match request.operation.as_str() {
-        "noop" => None,
+        "noop" => Some(json!({
+            "workflow_status": "succeeded",
+            "final_state": request.state.clone(),
+        })),
+        "increment-counter" => {
+            let current = request.state.get("counter").and_then(Value::as_i64).ok_or(
+                RuntimeNativeExecutionError::InvalidState {
+                    field: "counter",
+                    reason: "expected a signed integer",
+                },
+            )?;
+            let next = current
+                .checked_add(1)
+                .ok_or(RuntimeNativeExecutionError::InvalidState {
+                    field: "counter",
+                    reason: "integer overflow",
+                })?;
+            let mut values = Map::new();
+            values.insert("counter".to_owned(), json!(next));
+            state_update.push(RecordedStateUpdate::Pair(("u".to_owned(), values)));
+            let mut final_state = request.state.clone();
+            final_state.insert("counter".to_owned(), json!(next));
+            Some(json!({
+                "workflow_status": "succeeded",
+                "final_state": final_state,
+            }))
+        }
         "emit-result" => Some(json!({
             "executor": RUST_NATIVE_EXECUTOR_TARGET,
             "operation": request.operation,
@@ -191,7 +237,7 @@ pub fn execute_native_step(
             request.run_id, request.node_id, request.token_id, request.step_seq
         ),
         status: RuntimeWorkerEffectStatus::Success,
-        state_update: Vec::new(),
+        state_update,
         update: None,
         state_schema: Map::new(),
         successors,
@@ -207,6 +253,7 @@ pub fn execute_native_step(
                 "event": "runtime.native.step.completed",
                 "executor_target": RUST_NATIVE_EXECUTOR_TARGET,
                 "operation": request.operation,
+                "op_version": request.op_version,
                 "run_id": request.run_id,
                 "workflow_id": request.workflow_id,
                 "conversation_id": request.conversation_id,
@@ -2308,6 +2355,7 @@ mod tests {
         let effect = execute_native_step(&RuntimeNativeStepRequest {
             executor_target: RUST_NATIVE_EXECUTOR_TARGET.to_owned(),
             operation: "noop".to_owned(),
+            op_version: "v1".to_owned(),
             run_id: "run".to_owned(),
             workflow_id: "workflow".to_owned(),
             node_id: "start".to_owned(),
@@ -2316,6 +2364,7 @@ mod tests {
             token_id: "token".to_owned(),
             parent_token_id: None,
             step_seq: 1,
+            state: Map::from_iter([(String::from("seed"), json!(1))]),
             runtime_routes: vec![RuntimeStaticRoute {
                 edge_id: "edge".to_owned(),
                 source_node_id: "start".to_owned(),
@@ -2336,10 +2385,18 @@ mod tests {
         assert_eq!(effect.successors[0].node_id, "finish");
         assert!(effect.state_update.is_empty());
         assert_eq!(
+            effect.result,
+            Some(json!({
+                "workflow_status": "succeeded",
+                "final_state": {"seed": 1},
+            }))
+        );
+        assert_eq!(
             effect.trace_events[0]["event"],
             "runtime.native.step.completed"
         );
         assert_eq!(effect.trace_events[0]["schema_version"], 1);
+        assert_eq!(effect.trace_events[0]["op_version"], "v1");
         assert_eq!(
             effect.trace_events[0]["implementation_authority"],
             RUST_NATIVE_EXECUTOR_TARGET
@@ -2349,6 +2406,22 @@ mod tests {
             RUST_NATIVE_SEAM_ATTESTATION_VERSION
         );
         assert_eq!(effect.trace_events[0]["seam_crossings"], json!([]));
+
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../contracts/golden/runtime-native-noop-v1.json"
+        ))
+        .unwrap();
+        let durable = json!({
+            "contract_version": effect.contract_version,
+            "status": "success",
+            "state_update": effect.state_update,
+            "update": effect.update,
+            "state_schema": effect.state_schema,
+            "successors": effect.successors,
+            "route_next": effect.route_next,
+            "result": effect.result,
+        });
+        assert_eq!(durable, fixture);
     }
 
     #[test]
@@ -2356,6 +2429,7 @@ mod tests {
         let request = RuntimeNativeStepRequest {
             executor_target: "python-worker".to_owned(),
             operation: "noop".to_owned(),
+            op_version: "v1".to_owned(),
             run_id: "run".to_owned(),
             workflow_id: "workflow".to_owned(),
             node_id: "node".to_owned(),
@@ -2364,6 +2438,7 @@ mod tests {
             token_id: "token".to_owned(),
             parent_token_id: None,
             step_seq: 0,
+            state: Map::new(),
             runtime_routes: vec![],
         };
         assert!(matches!(
@@ -2384,6 +2459,35 @@ mod tests {
                 "schema_version": RUST_NATIVE_OPERATION_SCHEMA_VERSION,
             }))
         );
+        let increment = RuntimeNativeStepRequest {
+            executor_target: RUST_NATIVE_EXECUTOR_TARGET.to_owned(),
+            operation: "increment-counter".to_owned(),
+            state: Map::from_iter([(String::from("counter"), json!(1))]),
+            ..request.clone()
+        };
+        let increment_effect = execute_native_step(&increment).unwrap();
+        assert_eq!(
+            serde_json::to_value(&increment_effect.state_update).unwrap(),
+            json!([["u", {"counter": 2}]])
+        );
+        assert_eq!(
+            increment_effect.result,
+            Some(json!({
+                "workflow_status": "succeeded",
+                "final_state": {"counter": 2},
+            }))
+        );
+        let invalid_increment = RuntimeNativeStepRequest {
+            state: Map::new(),
+            ..increment
+        };
+        assert!(matches!(
+            execute_native_step(&invalid_increment),
+            Err(RuntimeNativeExecutionError::InvalidState {
+                field: "counter",
+                ..
+            })
+        ));
         let unsupported = RuntimeNativeStepRequest {
             executor_target: RUST_NATIVE_EXECUTOR_TARGET.to_owned(),
             operation: "arbitrary-callback".to_owned(),
@@ -2394,6 +2498,19 @@ mod tests {
             Err(RuntimeNativeExecutionError::UnsupportedOperation(operation))
                 if operation == "arbitrary-callback"
         ));
+        let unsupported_version = RuntimeNativeStepRequest {
+            executor_target: RUST_NATIVE_EXECUTOR_TARGET.to_owned(),
+            operation: "noop".to_owned(),
+            op_version: "v2".to_owned(),
+            ..emit_result
+        };
+        assert!(matches!(
+            execute_native_step(&unsupported_version),
+            Err(RuntimeNativeExecutionError::UnsupportedOperationVersion {
+                operation,
+                version
+            }) if operation == "noop" && version == "v2"
+        ));
     }
 
     #[test]
@@ -2402,6 +2519,33 @@ mod tests {
         assert_eq!(native_operation_name("rust-native/"), None);
         assert_eq!(native_operation_name("rust-native"), None);
         assert_eq!(native_operation_name("python/noop"), None);
+    }
+
+    #[test]
+    fn native_request_legacy_wire_defaults_state_without_changing_routing() {
+        let request: RuntimeNativeStepRequest = serde_json::from_value(json!({
+            "executor_target": RUST_NATIVE_EXECUTOR_TARGET,
+            "operation": "noop",
+            "run_id": "run",
+            "workflow_id": "workflow",
+            "node_id": "start",
+            "conversation_id": "conversation",
+            "token_id": "token",
+            "step_seq": 0,
+            "runtime_routes": []
+        }))
+        .unwrap();
+        assert!(request.state.is_empty());
+        assert_eq!(request.op_version, "v1");
+        let effect = execute_native_step(&request).unwrap();
+        assert!(effect.successors.is_empty());
+        assert_eq!(
+            effect.result,
+            Some(json!({
+                "workflow_status": "succeeded",
+                "final_state": {},
+            }))
+        );
     }
 
     #[test]
