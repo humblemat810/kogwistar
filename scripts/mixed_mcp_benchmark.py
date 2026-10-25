@@ -67,6 +67,40 @@ class _SeamMetrics:
             "transport_requests": self.transport_requests,
         }
 
+
+def _validate_native_seam_metrics(
+    value: object, *, expected_operations: int, label: str
+) -> dict[str, object]:
+    """Require complete, native-owned seam evidence before reporting a sample."""
+
+    if not isinstance(value, dict):
+        raise RuntimeError(f"{label} metrics endpoint returned a non-object")
+    if value.get("scope") != "rust_native_server":
+        raise RuntimeError(f"{label} metrics have an unexpected scope")
+    if value.get("complete") is not True:
+        raise RuntimeError(f"{label} metrics are incomplete")
+    for key in (
+        "tool_dispatches",
+        "ffi_calls",
+        "serialized_bytes",
+        "transaction_boundaries",
+        "transport_requests",
+    ):
+        counter = value.get(key)
+        if not isinstance(counter, int) or isinstance(counter, bool) or counter < 0:
+            raise RuntimeError(f"{label} metrics have an invalid {key} counter")
+    if value["ffi_calls"] != 0:
+        raise RuntimeError(f"{label} native metrics report unexpected FFI calls")
+    for key in ("tool_dispatches", "transport_requests"):
+        if value[key] != expected_operations:
+            raise RuntimeError(
+                f"{label} metrics report {value[key]} {key}; "
+                f"expected {expected_operations}"
+            )
+    if value["serialized_bytes"] <= 0:
+        raise RuntimeError(f"{label} native metrics report no serialized payloads")
+    return value
+
 import uvicorn
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
@@ -1619,8 +1653,11 @@ def _run_native_server(
         cpu_ms = (cpu_after.user + cpu_after.system - cpu_before.user - cpu_before.system) * 1000
         with urllib.request.urlopen(f"{url}/metrics", timeout=5) as response:
             native_seam_metrics = json.loads(response.read())
-        if not isinstance(native_seam_metrics, dict):
-            raise RuntimeError("Rust MCP metrics endpoint returned a non-object")
+        native_seam_metrics = _validate_native_seam_metrics(
+            native_seam_metrics,
+            expected_operations=len(trace),
+            label="Rust MCP",
+        )
     finally:
         process.terminate()
         try:
@@ -1878,9 +1915,11 @@ async def _run_native_concurrent_one(
         ) * 1000
         with urllib.request.urlopen(f"{url}/metrics", timeout=5) as response:
             metrics_value = json.loads(response.read())
-        if not isinstance(metrics_value, dict):
-            raise RuntimeError("Rust concurrent MCP metrics returned a non-object")
-        native_seam_metrics = metrics_value
+        native_seam_metrics = _validate_native_seam_metrics(
+            metrics_value,
+            expected_operations=operation_count,
+            label="Rust concurrent MCP",
+        )
     finally:
         stop_sampling.set()
         if sampler is not None:

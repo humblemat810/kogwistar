@@ -59,6 +59,52 @@ def test_sync_mcp_modes_preserve_the_same_trace_digest(tmp_path) -> None:
     assert rust_result["seam_metrics"]["serialized_bytes"] > 0
 
 
+def test_native_seam_metrics_require_complete_zero_ffi_attestation() -> None:
+    metrics = {
+        "scope": "rust_native_server",
+        "complete": True,
+        "tool_dispatches": 3,
+        "ffi_calls": 0,
+        "serialized_bytes": 42,
+        "transaction_boundaries": 1,
+        "transport_requests": 3,
+    }
+
+    assert mixed_mcp_benchmark._validate_native_seam_metrics(
+        metrics, expected_operations=3, label="test"
+    ) == metrics
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("scope", "python_host_boundary", "scope"),
+        ("complete", False, "incomplete"),
+        ("ffi_calls", 1, "FFI"),
+        ("tool_dispatches", 2, "tool_dispatches"),
+        ("transport_requests", 4, "transport_requests"),
+    ],
+)
+def test_native_seam_metrics_reject_false_or_incomplete_attestation(
+    field: str, value: object, message: str
+) -> None:
+    metrics: dict[str, object] = {
+        "scope": "rust_native_server",
+        "complete": True,
+        "tool_dispatches": 3,
+        "ffi_calls": 0,
+        "serialized_bytes": 42,
+        "transaction_boundaries": 1,
+        "transport_requests": 3,
+    }
+    metrics[field] = value
+
+    with pytest.raises(RuntimeError, match=message):
+        mixed_mcp_benchmark._validate_native_seam_metrics(
+            metrics, expected_operations=3, label="test"
+        )
+
+
 @pytest.mark.ci_full
 def test_concurrent_mcp_transports_preserve_exact_visibility(tmp_path) -> None:
     report = _run_concurrent_mcp_profiles(tmp_path, items=2, samples=2)
