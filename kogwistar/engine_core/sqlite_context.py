@@ -171,6 +171,8 @@ def sqlite_execution_bound(
 
 def _database_keys(database: str | os.PathLike[str]) -> set[tuple[object, ...]]:
     raw_value = os.fsdecode(os.fspath(database))
+    if raw_value in {"", ":memory:"}:
+        return {("sqlite-private-memory",)}
     if raw_value.startswith("file:"):
         parsed = urlsplit(raw_value)
         query = parse_qs(parsed.query, keep_blank_values=True)
@@ -232,7 +234,10 @@ class SQLiteDatabaseLease:
         self._released = False
         self.context_id = ""
         self._process_lock_key = (
-            path_key if implementation == "python" else None
+            path_key
+            if implementation == "python"
+            and not path_key.startswith("sqlite-private-memory:")
+            else None
         )
         self._process_identity_lock_key = process_identity_lock_key
 
@@ -241,6 +246,8 @@ class SQLiteDatabaseLease:
         with _registry_lock:
             if self._released:
                 raise RuntimeError("cannot refresh a released SQLite lease")
+            if any(key[0] == "sqlite-private-memory" for key in new_keys):
+                new_keys = {("sqlite-private-memory", self.context_id)}
             file_identity = next(
                 (key for key in new_keys if key[0] == "file-id"), None
             )
@@ -323,7 +330,14 @@ def acquire_sqlite_database(
 ) -> SQLiteDatabaseLease:
     binding = select_sqlite_implementation(implementation)
     keys = _database_keys(database)
-    path_key = _database_path_key(database)
+    private_memory = next(iter(keys))[0] == "sqlite-private-memory"
+    if private_memory:
+        keys = {("sqlite-private-memory", binding.context_id)}
+    path_key = (
+        f"sqlite-private-memory:{binding.context_id}"
+        if private_memory
+        else _database_path_key(database)
+    )
     file_identity = next((key for key in keys if key[0] == "file-id"), None)
     process_identity_lock_key: str | None = None
     with _registry_lock:
@@ -344,7 +358,7 @@ def acquire_sqlite_database(
                     "SQLite database is already open through another implementation",
                     "KOGWISTAR_SQLITE_DATABASE_ENGINE_CONFLICT",
                 )
-        if implementation == "python":
+        if implementation == "python" and not private_memory:
             _acquire_process_authority_lock(path_key)
             try:
                 if file_identity is not None:
@@ -360,7 +374,7 @@ def acquire_sqlite_database(
                 owners = _active_implementations.setdefault(key, {})
                 owners[implementation] = owners.get(implementation, 0) + 1
         except BaseException:
-            if implementation == "python":
+            if implementation == "python" and not private_memory:
                 _release_process_authority_lock(path_key)
                 if process_identity_lock_key is not None:
                     _release_process_authority_lock(process_identity_lock_key)

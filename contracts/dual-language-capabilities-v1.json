@@ -77,7 +77,7 @@
       "rust_port_manifest_id": "sqlite-meta",
       "conformance_profile": "sqlite-meta",
       "rust_coverage": "cutover-ready",
-      "mixed_coverage": "partial; in-process sequential handoff only, cross-process ownership open",
+      "mixed_coverage": "partial; Windows CPython/Rust cross-process ownership, hard-link alias rejection, and bidirectional persisted-data handoff verified; POSIX runtime and supported-runtime matrix remain open",
       "native_python_path": "not-verified",
       "native_rust_path": "not-verified"
     },

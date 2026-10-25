@@ -9,9 +9,11 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Coroutine
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import Context, copy_context
 from pathlib import Path
+from typing import Any, TypeVar
 
 import pytest
 
@@ -28,10 +30,18 @@ from kogwistar.engine_core.sqlite_context import (
 )
 
 pytestmark = [pytest.mark.ci, pytest.mark.core]
+T = TypeVar("T")
 
 
 def _assert_code(error: BaseException, code: str) -> None:
     assert getattr(error, "code", None) == code
+
+
+def _run_async(coroutine: Coroutine[Any, Any, T]) -> T:
+    if sys.platform == "win32":
+        with asyncio.Runner(loop_factory=asyncio.SelectorEventLoop) as runner:
+            return runner.run(coroutine)
+    return asyncio.run(coroutine)
 
 
 def test_context_binding_is_immutable_and_nested_calls_inherit() -> None:
@@ -506,7 +516,7 @@ def test_same_implementation_async_contexts_share_database_normally(tmp_path: Pa
         return list(await asyncio.gather(allocate(), allocate()))
 
     for implementation in ("python", "rust"):
-        assert sorted(asyncio.run(scenario(implementation))) == [1, 2]
+        assert sorted(_run_async(scenario(implementation))) == [1, 2]
 
 
 @pytest.mark.parametrize("alias_kind", ["relative", "uri", "symlink", "hardlink"])
@@ -578,6 +588,25 @@ def test_shared_memory_uri_lock_does_not_create_files_in_working_directory(
         assert not list(tmp_path.glob("*.kogwistar-authority.lock"))
     finally:
         owner.release()
+
+
+def test_private_memory_database_leases_are_context_scoped_without_files(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    with independent_sqlite_execution_context("python"):
+        python_lease = acquire_sqlite_database(":memory:", "python")
+    python_lease.refresh_file_identity(":memory:")
+    try:
+        with independent_sqlite_execution_context("rust"):
+            rust_lease = acquire_sqlite_database(":memory:", "rust")
+        try:
+            assert python_lease._path_key != rust_lease._path_key
+            assert not list(tmp_path.glob("*.kogwistar-authority.lock"))
+        finally:
+            rust_lease.release()
+    finally:
+        python_lease.release()
 
 
 def test_database_replacement_is_rejected_while_old_identity_is_owned(
@@ -661,7 +690,7 @@ def test_async_child_inherits_binding_and_independent_contexts_run_in_parallel(
                 assert select_sqlite_implementation("rust").implementation == "rust"
             assert select_sqlite_implementation("python").implementation == "python"
 
-    asyncio.run(scenario())
+    _run_async(scenario())
 
 
 def test_executor_context_must_be_copied_explicitly(tmp_path: Path) -> None:
@@ -722,7 +751,7 @@ def test_cancellation_does_not_release_live_connection_ownership(
             lease = acquire_sqlite_database(engine.db_path, "rust")
             lease.release()
 
-    asyncio.run(scenario())
+    _run_async(scenario())
 
 
 @pytest.mark.requires_rust

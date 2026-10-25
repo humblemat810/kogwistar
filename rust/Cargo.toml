@@ -40,4 +40,4 @@ tower = { version = "0.5", features = ["util"] }
 tokio-postgres = "0.7"
 url = "2"
 uuid = { version = "1", features = ["v4", "v5"] }
-winapi = { version = "0.3", features = ["errhandlingapi", "handleapi", "synchapi", "winerror"] }
+winapi = { version = "0.3", features = ["errhandlingapi", "fileapi", "handleapi", "minwinbase", "synchapi", "winbase", "winerror", "winnt"] }

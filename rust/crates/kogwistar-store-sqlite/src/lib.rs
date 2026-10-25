@@ -184,23 +184,32 @@ fn acquire_authority_lock_handle(
 
 #[derive(Debug)]
 struct ProcessAuthorityLock {
-    _path: AuthorityLockHandle,
+    _path: Option<AuthorityLockHandle>,
     _file_identity: Option<AuthorityLockHandle>,
 }
 
 impl ProcessAuthorityLock {
     fn acquire(database: &Path) -> SqliteStoreResult<Self> {
+        if is_private_memory_database(database) {
+            return Ok(Self {
+                _path: None,
+                _file_identity: None,
+            });
+        }
         let database = normalized_database_path(database);
         let lock_path = PathBuf::from(format!("{}.kogwistar-authority.lock", database.display()));
         let authority_key = normalized_authority_path_key(&database);
         let path = acquire_authority_lock_handle(lock_path, &authority_key, &database)?;
         Ok(Self {
-            _path: path,
+            _path: Some(path),
             _file_identity: None,
         })
     }
 
     fn attach_file_identity(&mut self, database: &Path) -> SqliteStoreResult<()> {
+        if self._path.is_none() {
+            return Ok(());
+        }
         let Some(identity_key) = file_identity_authority_key(database)? else {
             return Ok(());
         };
@@ -216,6 +225,10 @@ impl ProcessAuthorityLock {
         )?);
         Ok(())
     }
+}
+
+fn is_private_memory_database(database: &Path) -> bool {
+    database.as_os_str().is_empty() || database == Path::new(":memory:")
 }
 
 fn normalized_authority_path_key(database: &Path) -> String {
@@ -606,19 +619,24 @@ impl SqliteStore {
     /// reproducible instead of depending on a host-provided SQLite library.
     pub fn open(path: impl AsRef<Path>) -> SqliteStoreResult<Self> {
         let path = path.as_ref().to_path_buf();
-        if let Some(parent) = path
-            .parent()
-            .filter(|parent| !parent.as_os_str().is_empty())
-        {
-            fs::create_dir_all(parent)?;
+        let private_memory = is_private_memory_database(&path);
+        if !private_memory {
+            if let Some(parent) = path
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+            {
+                fs::create_dir_all(parent)?;
+            }
         }
         let mut authority_lock = ProcessAuthorityLock::acquire(&path)?;
-        OpenOptions::new()
-            .create(true)
-            .read(true)
-            .write(true)
-            .open(&path)?;
-        authority_lock.attach_file_identity(&path)?;
+        if !private_memory {
+            OpenOptions::new()
+                .create(true)
+                .read(true)
+                .write(true)
+                .open(&path)?;
+            authority_lock.attach_file_identity(&path)?;
+        }
         let conn = configured_connection(&path)?;
         let authority_lock = Arc::new(authority_lock);
         let schema_version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
@@ -647,7 +665,7 @@ impl SqliteStore {
             .connection
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if conn.is_autocommit() {
+        if conn.is_autocommit() && !is_private_memory_database(self.path.as_ref()) {
             // Python EngineSQLite may commit between Rust calls. Do not start
             // an immediate transaction from the cached handle, whose read
             // snapshot can predate that external commit. Keep the store mutex
@@ -1483,7 +1501,7 @@ impl SqliteStore {
             .connection
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if conn.is_autocommit() {
+        if conn.is_autocommit() && !is_private_memory_database(self.path.as_ref()) {
             drop(conn);
             // A Python EngineSQLite connection may commit between native
             // calls. A fresh read handle prevents an autocommit snapshot from
@@ -5101,6 +5119,40 @@ mod tests {
     fn store(label: &str) -> (SqliteStore, PathBuf) {
         let path = database_path(label);
         (SqliteStore::open(&path).unwrap(), path)
+    }
+
+    #[test]
+    fn private_memory_database_preserves_sqlite_memory_semantics() {
+        let first = SqliteStore::open(":memory:").unwrap();
+        let second = SqliteStore::open(":memory:").unwrap();
+
+        assert_eq!(first.next_global_seq().unwrap(), 1);
+        assert_eq!(first.current_global_seq().unwrap(), 1);
+        assert_eq!(second.current_global_seq().unwrap(), 0);
+
+        let first_connection = first.connection.lock().unwrap();
+        let first_filename: String = first_connection
+            .query_row("PRAGMA database_list", [], |row| row.get(2))
+            .unwrap();
+        assert!(first_filename.is_empty());
+        first_connection
+            .execute("CREATE TABLE private_memory_probe (value INTEGER)", [])
+            .unwrap();
+        drop(first_connection);
+
+        let second_connection = second.connection.lock().unwrap();
+        let second_filename: String = second_connection
+            .query_row("PRAGMA database_list", [], |row| row.get(2))
+            .unwrap();
+        assert!(second_filename.is_empty());
+        let table_count: i64 = second_connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'private_memory_probe'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(table_count, 0);
     }
 
     #[test]
