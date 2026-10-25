@@ -126,7 +126,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kogwistar_store::NewIndexJob;
+    use kogwistar_store::{IndexJobReadStore, NewIndexJob};
     use kogwistar_store_memory::InMemoryStore;
 
     async fn enqueue(store: &InMemoryStore, max_retries: i64) {
@@ -181,6 +181,49 @@ mod tests {
         .unwrap();
         assert_eq!(summary.retried, 1);
         assert!(store.index_job_result("job-1").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn cancelled_provider_leaves_claim_for_lease_recovery() {
+        let store = InMemoryStore::new();
+        enqueue(&store, 3).await;
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let task_store = store.clone();
+        let task = tokio::spawn(async move {
+            let mut started_tx = Some(started_tx);
+            run_index_jobs_once(&task_store, 1, 0, Some("ns"), move |_job| {
+                let signal = started_tx.take();
+                async move {
+                    if let Some(signal) = signal {
+                        let _ = signal.send(());
+                    }
+                    std::future::pending::<StoreResult<String>>().await
+                }
+            })
+            .await
+        });
+
+        started_rx.await.unwrap();
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+
+        let claimed = store
+            .index_jobs(Some("ns"), Some("DOING"), None, None, None, 10)
+            .await
+            .unwrap();
+        assert_eq!(claimed.len(), 1);
+        let original_claim_token = claimed[0].claim_token.as_deref().unwrap();
+        assert_eq!(claimed[0].retry_count, 0);
+        assert!(claimed[0].accepted_result_json.is_none());
+
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        let reclaimed = store.claim_index_jobs(1, 30, Some("ns")).await.unwrap();
+        assert_eq!(reclaimed.len(), 1);
+        assert_eq!(reclaimed[0].job_id, "job-1");
+        assert_ne!(
+            reclaimed[0].claim_token.as_deref(),
+            Some(original_claim_token)
+        );
     }
 
     #[tokio::test]
