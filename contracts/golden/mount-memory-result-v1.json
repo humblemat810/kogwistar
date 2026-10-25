@@ -1,0 +1,12 @@
+{
+  "snapshot_node_id": "snapshot-1",
+  "conversation_id": "conversation-1",
+  "metadata": {
+    "stage": "answer",
+    "run_id": "run-1"
+  },
+  "properties": {
+    "summary": "checkpoint payload",
+    "step_seq": 12
+  }
+}

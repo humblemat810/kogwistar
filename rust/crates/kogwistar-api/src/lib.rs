@@ -19414,30 +19414,20 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
 
     #[test]
     fn snapshot_syscall_compatibility_drops_rust_only_fields() {
-        let mut response = json_effect(
-            StatusCode::OK,
-            json!({
-                "schema_version": 1,
-                "snapshot_node_id": "snapshot-1",
-                "conversation_id": "conversation-1",
-                "metadata": {"stage": "answer"},
-                "properties": {"value": 7},
-                "implementation_authority": "rust",
-                "seam_attestation_version": 1,
-                "seam_crossings": []
-            }),
-        );
+        let expected = serde_json::from_str::<Value>(include_str!(
+            "../../../../contracts/golden/mount-memory-result-v1.json"
+        ))
+        .unwrap();
+        let mut internal_payload = expected.clone();
+        let internal_object = internal_payload.as_object_mut().unwrap();
+        internal_object.insert("schema_version".to_owned(), json!(1));
+        internal_object.insert("implementation_authority".to_owned(), json!("rust"));
+        internal_object.insert("seam_attestation_version".to_owned(), json!(1));
+        internal_object.insert("seam_crossings".to_owned(), json!([]));
+        let mut response = json_effect(StatusCode::OK, internal_payload);
         strip_snapshot_implementation_fields(&mut response);
         let actual = serde_json::from_slice::<Value>(&response.body).unwrap();
-        assert_eq!(
-            actual,
-            json!({
-                "snapshot_node_id": "snapshot-1",
-                "conversation_id": "conversation-1",
-                "metadata": {"stage": "answer"},
-                "properties": {"value": 7}
-            })
-        );
+        assert_eq!(actual, expected);
 
         let mut failure = json_effect(
             StatusCode::NOT_FOUND,
