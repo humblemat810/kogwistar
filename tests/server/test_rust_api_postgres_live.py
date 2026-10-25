@@ -18,6 +18,8 @@ ROOT = Path(__file__).resolve().parents[2]
 SERVER = ROOT / "rust" / "target" / "debug" / "kogwistar-server.exe"
 SERVER_SOURCES = (
     ROOT / "rust" / "crates" / "kogwistar-api" / "src" / "lib.rs",
+    ROOT / "rust" / "crates" / "kogwistar-api" / "src" / "cutover.rs",
+    ROOT / "rust" / "crates" / "kogwistar-api" / "src" / "runtime_contract.rs",
     ROOT / "rust" / "crates" / "kogwistar-runtime" / "src" / "lib.rs",
     ROOT / "rust" / "crates" / "kogwistar-store-postgres" / "src" / "lib.rs",
 )
