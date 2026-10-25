@@ -33,6 +33,40 @@ MCP_SESSION_TIMEOUT_SECONDS = 600
 NATIVE_HTTP_TIMEOUT_SECONDS = 30
 _AwaitedT = TypeVar("_AwaitedT")
 
+
+@dataclass
+class _SeamMetrics:
+    """Observed host-side seam counters for one benchmark sample.
+
+    These counters are deliberately local to the benchmark. They are not a
+    production telemetry API and do not claim visibility into a separate
+    native HTTP child process.
+    """
+
+    tool_dispatches: int = 0
+    ffi_calls: int = 0
+    serialized_bytes: int = 0
+    transaction_boundaries: int = 0
+    transport_requests: int = 0
+
+    def add_json(self, value: object) -> None:
+        self.serialized_bytes += len(
+            json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode(
+                "utf-8"
+            )
+        )
+
+    def as_dict(self, *, scope: str, complete: bool) -> dict[str, object]:
+        return {
+            "scope": scope,
+            "complete": complete,
+            "tool_dispatches": self.tool_dispatches,
+            "ffi_calls": self.ffi_calls,
+            "serialized_bytes": self.serialized_bytes,
+            "transaction_boundaries": self.transaction_boundaries,
+            "transport_requests": self.transport_requests,
+        }
+
 import uvicorn
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
@@ -235,10 +269,22 @@ def _make_registry(
     authority: str = "python",
     concurrent: _ConcurrentMcpBarriers | None = None,
     sync_concurrent: bool = False,
+    seam_metrics: _SeamMetrics | None = None,
 ) -> tuple[McpRegistry, EngineSQLite | RustEngineSQLite]:
     store_type = RustEngineSQLite if authority == "rust" else EngineSQLite
     store = store_type(path.parent, filename=path.name)
     store.ensure_initialized()
+    if seam_metrics is not None and authority == "rust":
+        native_call = store._call  # type: ignore[attr-defined]
+
+        def counted_native_call(kind: str, **values: object) -> object:
+            seam_metrics.ffi_calls += 1
+            seam_metrics.add_json({"kind": kind, **values})
+            if kind in {"begin_transaction", "commit_transaction", "rollback_transaction"}:
+                seam_metrics.transaction_boundaries += 1
+            return native_call(kind, **values)
+
+        store._call = counted_native_call  # type: ignore[method-assign, attr-defined]
 
     def _write_graph_projection(
         target: EngineSQLite | RustEngineSQLite,
@@ -551,13 +597,20 @@ def _result_payload(result: object) -> dict[str, object]:
 
 
 def _call_registry_sync(
-    registry: McpRegistry, name: str, arguments: dict[str, object]
+    registry: McpRegistry,
+    name: str,
+    arguments: dict[str, object],
+    *,
+    seam_metrics: _SeamMetrics | None = None,
 ) -> dict[str, object]:
     """Dispatch synchronous benchmark tools without creating an event loop."""
 
     record = registry._record_for(name)
     if record is None:
         raise RuntimeError(f"sync MCP tool {name!r} is missing")
+    if seam_metrics is not None:
+        seam_metrics.tool_dispatches += 1
+        seam_metrics.add_json(arguments)
     values = record.input_model.model_validate(arguments)
     kwargs = {
         field: getattr(values, field)
@@ -571,6 +624,8 @@ def _call_registry_sync(
     payload = json.loads(json.dumps(result, default=str))
     if not isinstance(payload, dict):
         raise RuntimeError("sync MCP response serialization changed its shape")
+    if seam_metrics is not None:
+        seam_metrics.add_json(payload)
     return payload
 
 
@@ -593,6 +648,8 @@ async def _serve_http(
     registry: McpRegistry,
     trace: list[WorkloadOperation],
     trace_arguments: list[dict[str, object]],
+    *,
+    seam_metrics: _SeamMetrics | None = None,
 ) -> dict[str, Any]:
     app = registry.http_app(path="/mcp")
     sock = socket.socket()
@@ -639,11 +696,17 @@ async def _serve_http(
                 for step, arguments in zip(trace, trace_arguments, strict=True):
                     operation = step["operation"]
                     started = time.perf_counter_ns()
+                    if seam_metrics is not None:
+                        seam_metrics.tool_dispatches += 1
+                        seam_metrics.transport_requests += 1
+                        seam_metrics.add_json(arguments)
                     result = await _await_mcp_operation(
                         session.call_tool(operation, arguments=arguments),
                         operation,
                     )
                     payload = _result_payload(result)
+                    if seam_metrics is not None:
+                        seam_metrics.add_json(payload)
                     if payload.get("entity_id") != step["expected_entity_id"]:
                         raise RuntimeError("MCP HTTP returned an unexpected entity id")
                     if operation == "read_projection" and payload.get("index") != step["index"]:
@@ -1281,6 +1344,7 @@ async def _run_one(
     host_cpu_started = time.process_time_ns()
     started = time.perf_counter_ns()
     timings: dict[str, list[float]] = {"write_record": [], "read_event": [], "read_projection": []}
+    seam_metrics = _SeamMetrics()
     registry = None
     startup_ms = 0.0
     native_result: dict[str, Any] = {}
@@ -1288,13 +1352,16 @@ async def _run_one(
         registry, _store = _make_registry(
             path,
             authority="rust" if mode == "rust_authority" else "python",
+            seam_metrics=seam_metrics,
         )
         startup_ms = (time.perf_counter_ns() - started) / 1_000_000
         wall_started = time.perf_counter_ns()
         for step, arguments in zip(trace, trace_arguments, strict=True):
             operation = step["operation"]
             started = time.perf_counter_ns()
-            payload = _call_registry_sync(registry, operation, arguments)
+            payload = _call_registry_sync(
+                registry, operation, arguments, seam_metrics=seam_metrics
+            )
             if payload.get("entity_id") != step["expected_entity_id"]:
                 raise RuntimeError("in-process MCP returned an unexpected entity id")
             if operation == "read_projection" and payload.get("index") != step["index"]:
@@ -1304,7 +1371,9 @@ async def _run_one(
     elif mode == "http":
         registry, _store = _make_registry(path)
         startup_ms = (time.perf_counter_ns() - started) / 1_000_000
-        http_result = await _serve_http(registry, trace, trace_arguments)
+        http_result = await _serve_http(
+            registry, trace, trace_arguments, seam_metrics=seam_metrics
+        )
         startup_ms += http_result["startup_ms"]
         timings = http_result["per_operation"]
         elapsed_ms = http_result["elapsed_ms"]
@@ -1339,6 +1408,9 @@ async def _run_one(
             }
             for name, values in timings.items()
         },
+        "seam_metrics": seam_metrics.as_dict(
+            scope="python_host_boundary", complete=mode != "rust_native"
+        ),
     }
     if mode == "rust_native":
         result["native_cpu_elapsed_ms"] = native_result["cpu_elapsed_ms"]
@@ -1369,9 +1441,11 @@ def _run_one_sync(
     rss_start = int(process.memory_info().rss)
     cpu_started = time.process_time_ns()
     started = time.perf_counter_ns()
+    seam_metrics = _SeamMetrics()
     registry, store = _make_registry(
         path,
         authority="rust" if mode == "rust_authority" else "python",
+        seam_metrics=seam_metrics,
     )
     startup_ms = (time.perf_counter_ns() - started) / 1_000_000
     wall_started = time.perf_counter_ns()
@@ -1384,7 +1458,9 @@ def _run_one_sync(
         for step, arguments in zip(trace, trace_arguments, strict=True):
             operation = step["operation"]
             operation_started = time.perf_counter_ns()
-            payload = _call_registry_sync(registry, operation, arguments)
+            payload = _call_registry_sync(
+                registry, operation, arguments, seam_metrics=seam_metrics
+            )
             if payload.get("entity_id") != step["expected_entity_id"]:
                 raise RuntimeError("in-process MCP returned an unexpected entity id")
             if operation == "read_projection" and payload.get("index") != step["index"]:
@@ -1414,6 +1490,9 @@ def _run_one_sync(
             }
             for name, values in timings.items()
         },
+        "seam_metrics": seam_metrics.as_dict(
+            scope="python_host_boundary", complete=True
+        ),
     }
 
 

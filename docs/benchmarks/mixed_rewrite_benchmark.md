@@ -35,6 +35,12 @@ Database footprint includes SQLite main, WAL, and shared-memory files.
 Python host CPU/RSS and native Rust child CPU/sampled peak RSS are recorded for
 the benchmark paths that expose those process boundaries.
 
+Sequential MCP samples also include `seam_metrics`: observed tool dispatches,
+Rust-facade FFI calls, serialized payload bytes, transaction-boundary calls, and
+HTTP transport requests. These counters are scoped to the instrumented Python
+host boundary; Rust-native child-process samples explicitly mark the counters
+incomplete rather than implying that a zero count proves a zero-cost seam.
+
 Concurrent profiles are implemented in `scripts/mixed_concurrent_benchmark.py`
 for SQLite events/projections, Chroma with SQLite metadata, and PostgreSQL/
 pgvector with SQLite metadata. Each write has an individual commit boundary.

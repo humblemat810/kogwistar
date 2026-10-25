@@ -50,6 +50,13 @@ def test_sync_mcp_modes_preserve_the_same_trace_digest(tmp_path) -> None:
 
     assert python_result["state_digest"] == rust_result["state_digest"]
     assert python_result["operations"] == rust_result["operations"] == len(trace)
+    assert python_result["seam_metrics"]["tool_dispatches"] == len(trace)
+    assert python_result["seam_metrics"]["ffi_calls"] == 0
+    assert python_result["seam_metrics"]["serialized_bytes"] > 0
+    assert rust_result["seam_metrics"]["tool_dispatches"] == len(trace)
+    assert rust_result["seam_metrics"]["ffi_calls"] > 0
+    assert rust_result["seam_metrics"]["transaction_boundaries"] > 0
+    assert rust_result["seam_metrics"]["serialized_bytes"] > 0
 
 
 @pytest.mark.ci_full
