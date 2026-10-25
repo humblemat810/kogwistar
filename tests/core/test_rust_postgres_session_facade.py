@@ -19,7 +19,8 @@ pytestmark = [pytest.mark.ci, pytest.mark.core]
 
 
 @pytest.mark.parametrize(
-    "operation", ["add", "edge-delete", "rollback-delete", "replace"]
+    "operation",
+    ["add", "edge-delete", "rollback-delete", "replace", "metadata-patch"],
 )
 def test_selected_rust_postgres_mutations_fail_closed_without_native_meta_store(
     monkeypatch: pytest.MonkeyPatch, operation: str
@@ -40,6 +41,12 @@ def test_selected_rust_postgres_mutations_fail_closed_without_native_meta_store(
             )
         elif operation == "edge-delete":
             writer._rust_postgres_delete_edges(["edge-1"])
+        elif operation == "metadata-patch":
+            writer.patch_base_projection_metadata(
+                entity_kind="node",
+                entity_id="node-1",
+                metadata_patch={"reference_fingerprint": "abc"},
+            )
         elif operation == "rollback-delete":
             writer.rust_postgres_delete_existing(
                 entity_kind="node", entity_ids=["node-1"]
@@ -59,7 +66,14 @@ def test_python_postgres_authority_keeps_legacy_native_probe_fallback(
 ) -> None:
     monkeypatch.delenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", raising=False)
     writer = WriteSubsystem.__new__(WriteSubsystem)
-    writer._e = SimpleNamespace(meta_sqlite=object())
+    updates: list[dict[str, object]] = []
+    writer._e = SimpleNamespace(
+        meta_sqlite=object(),
+        namespace="default",
+        backend=SimpleNamespace(
+            node_update=lambda **kwargs: updates.append(kwargs),
+        ),
+    )
 
     assert writer._rust_postgres_add(
         entity_kind="node",
@@ -69,6 +83,14 @@ def test_python_postgres_authority_keeps_legacy_native_probe_fallback(
         embedding=[0.0],
         payload={},
     ) is False
+    writer.patch_base_projection_metadata(
+        entity_kind="node",
+        entity_id="node-1",
+        metadata_patch={"reference_fingerprint": "abc"},
+    )
+    assert updates == [
+        {"ids": ["node-1"], "metadatas": [{"reference_fingerprint": "abc"}]}
+    ]
 
 
 @pytest.mark.parametrize(

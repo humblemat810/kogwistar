@@ -1099,7 +1099,9 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
     def patch_base_projection_metadata(
         self, *, entity_kind: _ProjectionEntityKind, entity_id: str, metadata_patch: JsonObject
     ) -> None:
-        meta = self._rust_postgres_meta()
+        meta = self._rust_postgres_meta_or_python_fallback(
+            operation="projection metadata patch"
+        )
         if meta is not None:
             table = (
                 self._projection_backend().nodes.name
