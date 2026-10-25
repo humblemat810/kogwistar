@@ -3841,12 +3841,7 @@ where
         ));
     }
     if matches!(mutation.entity_kind.as_str(), "node" | "edge")
-        && !matches!(
-            current_metadata
-                .get("lifecycle_status")
-                .and_then(Value::as_str),
-            Some("tombstoned") | Some("deleted")
-        )
+        && !canonical_tombstone_present(&current_metadata)
     {
         return Err(PostgresStoreError::Backend(
             "physical graph purge requires a canonical tombstone".to_owned(),
@@ -3881,6 +3876,13 @@ where
         inserted: true,
         mutated: true,
     }))
+}
+
+fn canonical_tombstone_present(metadata: &Map<String, Value>) -> bool {
+    matches!(
+        metadata.get("lifecycle_status").and_then(Value::as_str),
+        Some("tombstoned") | Some("deleted")
+    )
 }
 
 async fn upsert_graph_projection<C>(
@@ -6496,6 +6498,25 @@ mod tests {
             std::process::id(),
             NEXT_SCHEMA.fetch_add(1, Ordering::Relaxed)
         )
+    }
+
+    #[test]
+    fn physical_graph_purge_requires_canonical_tombstone() {
+        let active = Map::new();
+        assert!(!canonical_tombstone_present(&active));
+
+        let mut tombstoned = Map::new();
+        tombstoned.insert(
+            "lifecycle_status".to_owned(),
+            Value::String("tombstoned".to_owned()),
+        );
+        assert!(canonical_tombstone_present(&tombstoned));
+
+        tombstoned.insert(
+            "lifecycle_status".to_owned(),
+            Value::String("deleted".to_owned()),
+        );
+        assert!(canonical_tombstone_present(&tombstoned));
     }
 
     fn raw(id: &str, payload_json: &str) -> NewRawEntityEvent {
