@@ -341,6 +341,17 @@ fn principal_group_set(principal: &Value) -> BTreeSet<String> {
         .collect()
 }
 
+fn graph_acl_principal_from_claims(
+    principal: &Value,
+    security_scope: Option<&str>,
+) -> GraphAclPrincipal {
+    GraphAclPrincipal {
+        principal_id: graph_acl_principal_id(principal),
+        groups: principal_group_set(principal),
+        security_scope: security_scope.map(str::to_owned),
+    }
+}
+
 fn principal_subject(principal: &Value) -> String {
     ["sub", "user_id", "agent_id"]
         .into_iter()
@@ -669,11 +680,10 @@ fn conversation_graph_scope_and_acl_principal(
             .and_then(Value::as_str)
             .map(str::to_owned),
     };
-    let acl_principal = GraphAclPrincipal {
-        principal_id: graph_acl_principal_id(request_principal),
-        groups: principal_group_set(request_principal),
-        security_scope: scope_value["security_scope"].as_str().map(str::to_owned),
-    };
+    let acl_principal = graph_acl_principal_from_claims(
+        request_principal,
+        scope_value["security_scope"].as_str(),
+    );
     (scope, acl_principal)
 }
 

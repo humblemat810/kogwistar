@@ -617,11 +617,10 @@ impl PostgresRunApplicationService {
                 );
             }
         };
-        let principal = GraphAclPrincipal {
-            principal_id: graph_acl_principal_id(&request.principal),
-            groups: principal_group_set(&request.principal),
-            security_scope: scope_value["security_scope"].as_str().map(str::to_owned),
-        };
+        let principal = graph_acl_principal_from_claims(
+            &request.principal,
+            scope_value["security_scope"].as_str(),
+        );
         let (nodes, edges) =
             graph_records_visible_by_acl(&nodes, &edges, input.truth_graph.trim(), &principal);
         let neighbors = graph_neighbors_from_records(rid, &nodes, &edges, doc_id);
@@ -787,11 +786,10 @@ impl PostgresRunApplicationService {
         } else {
             "gke_edges"
         };
-        let principal = GraphAclPrincipal {
-            principal_id: graph_acl_principal_id(&request.principal),
-            groups: principal_group_set(&request.principal),
-            security_scope: scope_value["security_scope"].as_str().map(str::to_owned),
-        };
+        let principal = graph_acl_principal_from_claims(
+            &request.principal,
+            scope_value["security_scope"].as_str(),
+        );
 
         let mut all_ids = Vec::with_capacity(input.query_embeddings.len());
         let mut all_documents = Vec::with_capacity(input.query_embeddings.len());
@@ -987,11 +985,10 @@ impl PostgresRunApplicationService {
                 );
             }
         };
-        let principal = GraphAclPrincipal {
-            principal_id: graph_acl_principal_id(&request.principal),
-            groups: principal_group_set(&request.principal),
-            security_scope: scope_value["security_scope"].as_str().map(str::to_owned),
-        };
+        let principal = graph_acl_principal_from_claims(
+            &request.principal,
+            scope_value["security_scope"].as_str(),
+        );
         let (nodes, edges) = graph_records_visible_by_acl(&nodes, &edges, "knowledge", &principal);
         let query = GraphFindEdgesQuery {
             relation: input.relation,
@@ -1078,11 +1075,10 @@ impl PostgresRunApplicationService {
                 );
             }
         };
-        let principal = GraphAclPrincipal {
-            principal_id: graph_acl_principal_id(&request.principal),
-            groups: principal_group_set(&request.principal),
-            security_scope: scope_value["security_scope"].as_str().map(str::to_owned),
-        };
+        let principal = graph_acl_principal_from_claims(
+            &request.principal,
+            scope_value["security_scope"].as_str(),
+        );
         let (nodes, edges) = graph_records_visible_by_acl(&nodes, &edges, "knowledge", &principal);
         let query = GraphShortestPathQuery {
             src_id: input.src_id,
@@ -1175,11 +1171,10 @@ impl PostgresRunApplicationService {
                 );
             }
         };
-        let principal = GraphAclPrincipal {
-            principal_id: graph_acl_principal_id(&request.principal),
-            groups: principal_group_set(&request.principal),
-            security_scope: scope_value["security_scope"].as_str().map(str::to_owned),
-        };
+        let principal = graph_acl_principal_from_claims(
+            &request.principal,
+            scope_value["security_scope"].as_str(),
+        );
         let (nodes, edges) = graph_records_visible_by_acl(&nodes, &edges, "knowledge", &principal);
         let query = GraphKHopQuery {
             start_ids: input.start_ids,

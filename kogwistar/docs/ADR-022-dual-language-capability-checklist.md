@@ -36,7 +36,11 @@ snapshot's denominator.
   unchanged. Rust PostgreSQL graph-read routes and conversation ACL scope now
   share one `principal_group_set()` projection, so claim selection, Unicode
   normalization, sorting, and deduplication cannot drift by route. This adds
-  evidence under existing `DL-08C`; no item ID or denominator changed.
+  evidence under existing `DL-08C`. The complete principal constructor is now
+  shared by all five PostgreSQL graph-read routes and conversation ACL scope,
+  preserving the established principal-ID precedence and derived security
+  scope. The shared identity/group fixture and frozen conversation-scope test
+  pass after consolidation; no item ID or denominator changed.
 - Additional malformed edge-endpoint parity: Rust graph ACL projection previously
   discarded non-string endpoint values and could expose an edge without checking
   a corresponding hidden endpoint. It now fails closed for non-string node and
