@@ -1098,16 +1098,29 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
     def _rust_postgres_meta_or_python_fallback(
         self, *, operation: str
     ) -> RustEnginePostgresMetaStore | None:
-        meta = self._rust_postgres_meta()
-        if meta is None:
-            from ..._rust_bridge import postgres_authority_implementation_mode
+        from ..._rust_bridge import meta_store_implementation_mode
+        from ..._rust_bridge import postgres_authority_implementation_mode
 
-            if postgres_authority_implementation_mode() == "rust":
+        selected_mode = meta_store_implementation_mode()
+        authority_mode = postgres_authority_implementation_mode()
+        meta = self._rust_postgres_meta()
+        if selected_mode != "rust":
+            if authority_mode == "rust":
+                raise RuntimeError(
+                    "Rust PostgreSQL authority is selected without the Rust "
+                    f"metadata selector for {operation}; refusing split authority"
+                )
+            if meta is not None:
+                return None
+            return None
+        if meta is None:
+            if authority_mode == "rust":
                 raise RuntimeError(
                     "Rust PostgreSQL authority is selected but the Rust PostgreSQL "
                     f"meta-store is unavailable for {operation}; refusing Python "
                     "persistence fallback"
                 )
+            return None
         return meta
 
     def uses_rust_postgres_authority(self) -> bool:

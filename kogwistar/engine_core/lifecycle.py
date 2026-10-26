@@ -428,14 +428,23 @@ class LifecycleSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
     def _rust_postgres_meta_or_python_fallback(
         self,
     ) -> RustEnginePostgresMetaStore | None:
+        from kogwistar._rust_bridge import meta_store_implementation_mode
+        from kogwistar._rust_bridge import postgres_authority_implementation_mode
         from .rust_postgres_session import RustEnginePostgresMetaStore
 
         meta = getattr(self._e, "metadata", None)
+        selected_mode = meta_store_implementation_mode()
+        authority_mode = postgres_authority_implementation_mode()
+        if selected_mode != "rust":
+            if authority_mode == "rust":
+                raise RuntimeError(
+                    "Rust PostgreSQL authority is selected without the Rust "
+                    "metadata selector; refusing split lifecycle authority"
+                )
+            return None
         if isinstance(meta, RustEnginePostgresMetaStore):
             return cast(RustEnginePostgresMetaStore, meta)
-        from .._rust_bridge import postgres_authority_implementation_mode
-
-        if postgres_authority_implementation_mode() == "rust":
+        if authority_mode == "rust":
             raise RuntimeError(
                 "Rust PostgreSQL authority is selected but the Rust PostgreSQL "
                 "meta-store is unavailable; refusing Python lifecycle fallback"

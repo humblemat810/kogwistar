@@ -47,6 +47,8 @@ pytestmark = [pytest.mark.ci, pytest.mark.core]
 def test_selected_rust_postgres_mutations_fail_closed_without_native_meta_store(
     monkeypatch: pytest.MonkeyPatch, operation: str
 ) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_GRAPH_STORE", "rust")
     monkeypatch.setenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "rust")
     writer = WriteSubsystem.__new__(WriteSubsystem)
     writer._e = SimpleNamespace(metadata=object(), meta_sqlite=object())
@@ -199,6 +201,8 @@ def test_python_postgres_authority_keeps_legacy_native_probe_fallback(
 def test_selected_rust_lifecycle_fails_closed_without_native_meta_store(
     monkeypatch: pytest.MonkeyPatch, operation: str
 ) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_GRAPH_STORE", "rust")
     monkeypatch.setenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "rust")
     engine = SimpleNamespace(
         meta_sqlite=object(),
@@ -984,6 +988,67 @@ def test_frozen_python_meta_selection_never_dispatches_to_rust_projection(
         query_embeddings=[1.0, 0.0, 0.0], n_results=1
     )
     assert results[0][0].summary == "Python-owned result"
+    assert native_calls == []
+
+
+def test_frozen_python_meta_selection_keeps_write_and_lifecycle_on_python(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "python")
+    monkeypatch.setenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "python")
+    store = RustEnginePostgresMetaStore(
+        dsn="postgresql://example/db", schema="test"
+    )
+    snapshot = capture_implementation_selection()
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
+    native_calls: list[str] = []
+    python_calls: list[str] = []
+
+    def reject_native(**_values):
+        native_calls.append("rust")
+        raise AssertionError("frozen Python selection invoked Rust metadata authority")
+
+    monkeypatch.setattr(store, "patch_graph_projection_metadata", reject_native)
+    monkeypatch.setattr(store, "apply_graph_metadata_patch_mutation", reject_native)
+
+    class Backend:
+        nodes = SimpleNamespace(name="gke_nodes")
+        edges = SimpleNamespace(name="gke_edges")
+
+        def node_update(self, **_values):
+            python_calls.append("write")
+
+    backend = Backend()
+    writer = WriteSubsystem.__new__(WriteSubsystem)
+    writer._e = SimpleNamespace(
+        metadata=store, backend=backend, namespace="alpha"
+    )
+    engine = SimpleNamespace(
+        metadata=store,
+        backend=backend,
+        namespace="alpha",
+        _implementation_selection_snapshot=snapshot,
+        _backend_update_record_lifecycle=lambda **_values: python_calls.append(
+            "lifecycle"
+        )
+        or True,
+        _maybe_index_delete=lambda **_values: None,
+    )
+    lifecycle = LifecycleSubsystem(engine)
+
+    with implementation_selection_scope(snapshot):
+        writer.patch_base_projection_metadata(
+            entity_kind="node",
+            entity_id="node-1",
+            metadata_patch={"reviewed": True},
+        )
+        assert lifecycle.apply_replayed_lifecycle_patch(
+            entity_kind="node",
+            entity_id="node-1",
+            lifecycle_patch={"lifecycle_status": "tombstoned"},
+        )
+
+    assert python_calls == ["write", "lifecycle"]
     assert native_calls == []
 
 
