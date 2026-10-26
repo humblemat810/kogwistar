@@ -635,6 +635,48 @@
         body["mutations"][0]["record"]["document"] = json!("{\"label\":\"Alpha source\"}");
         body["mutations"][0]["record"]["embedding"] = json!([1.0, 0.0, 0.0]);
         body["mutations"][0]["embedding_dim"] = json!(3);
+        let mut second_node = body["mutations"][0].clone();
+        second_node["event_id"] = json!("graph-route-event-node-2");
+        second_node["payload"]["id"] = json!("node-2");
+        second_node["record"]["id"] = json!("node-2");
+        second_node["record"]["document"] = json!(r#"{"label":"Beta target"}"#);
+
+        let mut edge = body["mutations"][0].clone();
+        edge["table"] = json!("gke_edges");
+        edge["entity_kind"] = json!("edge");
+        edge["event_id"] = json!("graph-route-event-edge-1");
+        edge["payload"] = json!({"id": "edge-1"});
+        edge["record"]["id"] = json!("edge-1");
+        edge["record"]["document"] = json!(
+            r#"{"source_ids":["node-1"],"target_ids":["node-2"],"relation":"supports"}"#
+        );
+        body["mutations"].as_array_mut().unwrap().push(second_node);
+        body["mutations"].as_array_mut().unwrap().push(edge);
+        for (target_grain, target_id) in [
+            ("node", "node-1"),
+            ("node", "node-2"),
+            ("edge", "edge-1"),
+        ] {
+            let acl_id = format!("acl-{target_grain}-{target_id}");
+            let mut acl_record = body["mutations"][0].clone();
+            acl_record["event_id"] = json!(format!("graph-route-event-{acl_id}"));
+            acl_record["payload"]["id"] = json!(acl_id);
+            acl_record["record"]["id"] = json!(acl_id);
+            acl_record["record"]["metadata"] = json!({
+                "entity_type": "acl_record",
+                "acl_truth_graph": "knowledge",
+                "acl_target_grain": target_grain,
+                "acl_target_item_id": "",
+                "acl_target_entity_id": target_id,
+                "acl_version": 1,
+                "acl_mode": "private",
+                "owner_id": "alice",
+                "tombstoned": false
+            });
+            acl_record["record"]["document"] = Value::Null;
+            acl_record["record"]["embedding"] = Value::Null;
+            body["mutations"].as_array_mut().unwrap().push(acl_record);
+        }
         body["index_jobs"] = json!([{
             "job_id": "graph-route-index-1",
             "namespace": "alpha",
@@ -750,7 +792,9 @@
         assert_eq!(missing_capability.status(), StatusCode::FORBIDDEN);
 
         let mut cross_scope_body = body.clone();
-        cross_scope_body["mutations"][0]["scope"]["namespace"] = json!("beta");
+        for mutation in cross_scope_body["mutations"].as_array_mut().unwrap() {
+            mutation["scope"]["namespace"] = json!("beta");
+        }
         cross_scope_body["index_jobs"][0]["namespace"] = json!("beta");
         let cross_scope = send_mutation(
             make_app(),
@@ -778,12 +822,16 @@
         )
         .unwrap();
         let mut workspace_mismatch_body = body.clone();
-        workspace_mismatch_body["mutations"][0]["scope"]["workspace_id"] = json!("workspace-b");
+        for mutation in workspace_mismatch_body["mutations"].as_array_mut().unwrap() {
+            mutation["scope"]["workspace_id"] = json!("workspace-b");
+        }
         let workspace_mismatch =
             send_mutation(make_app(), scoped_token, workspace_mismatch_body).await;
         assert_eq!(workspace_mismatch.status(), StatusCode::FORBIDDEN);
         let mut graph_space_mismatch_body = body.clone();
-        graph_space_mismatch_body["mutations"][0]["scope"]["graph_space"] = json!("private");
+        for mutation in graph_space_mismatch_body["mutations"].as_array_mut().unwrap() {
+            mutation["scope"]["graph_space"] = json!("private");
+        }
         let graph_space_mismatch = send_mutation(
             make_app(),
             encode(
@@ -845,6 +893,23 @@
             .unwrap();
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].id, "node-1");
+        let edge_records = service
+            .store
+            .graph_projection_records(kogwistar_store::GraphProjectionRead {
+                scope: GraphScope {
+                    namespace: "alpha".to_owned(),
+                    workspace_id: Some("ws".to_owned()),
+                    graph_space: Some("facts".to_owned()),
+                },
+                table: "gke_edges".to_owned(),
+                ids: Some(vec!["edge-1".to_owned()]),
+                metadata: Default::default(),
+                limit: 10,
+            })
+            .await
+            .unwrap();
+        assert_eq!(edge_records.len(), 1);
+        assert_eq!(edge_records[0].id, "edge-1");
 
         let mcp_neighbors = make_app()
             .oneshot(
@@ -866,8 +931,8 @@
         assert_eq!(mcp_neighbors.status(), StatusCode::OK);
         let mcp_neighbors_body = to_bytes(mcp_neighbors.into_body(), 65_536).await.unwrap();
         let mcp_neighbors_value: Value = serde_json::from_slice(&mcp_neighbors_body).unwrap();
-        assert_eq!(mcp_neighbors_value["result"]["nodes"], json!([]));
-        assert_eq!(mcp_neighbors_value["result"]["edges"], json!([]));
+        assert_eq!(mcp_neighbors_value["result"]["nodes"], json!(["node-2"]));
+        assert_eq!(mcp_neighbors_value["result"]["edges"], json!(["edge-1"]));
 
         let index_jobs = service
             .store
@@ -910,7 +975,7 @@
                 .await
                 .unwrap()
                 .len(),
-            1
+            6
         );
         assert_eq!(
             service
@@ -934,9 +999,9 @@
         // graph truth ahead of its durable indexing intent.
         let mut rollback_body = body.clone();
         rollback_body["mutations"][0]["event_id"] = json!("graph-route-event-2");
-        rollback_body["mutations"][0]["record"]["id"] = json!("node-2");
-        rollback_body["mutations"][0]["payload"]["id"] = json!("node-2");
-        rollback_body["index_jobs"][0]["entity_id"] = json!("node-2");
+        rollback_body["mutations"][0]["record"]["id"] = json!("node-rollback");
+        rollback_body["mutations"][0]["payload"]["id"] = json!("node-rollback");
+        rollback_body["index_jobs"][0]["entity_id"] = json!("node-rollback");
         rollback_body["index_jobs"][0]["job_id"] = json!("graph-route-index-1");
         let rollback_response = send_mutation(
             make_app(),
@@ -955,7 +1020,7 @@
                         graph_space: Some("facts".to_owned()),
                     },
                     table: "gke_nodes".to_owned(),
-                    ids: Some(vec!["node-2".to_owned()]),
+                    ids: Some(vec!["node-rollback".to_owned()]),
                     metadata: Default::default(),
                     limit: 10,
                 })
@@ -970,7 +1035,7 @@
                 .await
                 .unwrap()
                 .len(),
-            1
+            6
         );
         assert!(
             service
