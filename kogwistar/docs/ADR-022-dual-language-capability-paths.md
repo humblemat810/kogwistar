@@ -126,6 +126,8 @@ always covers the original serialized bytes. Python adapters must raise on
 write errors; an explicit `False` from upsert is treated as rejection and is
 retried rather than acknowledged. A delete that reports `False` (already
 absent) is accepted as the same idempotent desired state as the Rust store.
+Accepted results must remain valid JSON objects; malformed or non-object
+payloads fail/retry instead of falling through to legacy replay-and-ack.
 
 This worker is not yet wired into Rust HTTP backend selection. Its current
 contract also does not fence an older in-flight projection against a newer

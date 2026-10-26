@@ -293,6 +293,20 @@ def test_sync_worker_replays_admitted_result_without_projection() -> None:
     assert engine.indexing.calls == 0
 
 
+def test_sync_worker_does_not_ack_malformed_accepted_result_json() -> None:
+    job = _admitted_job(claim_token="claim-1")
+    job.accepted_result_json = '{"operation":'
+    meta = _Meta(job)
+    worker = IndexJobWorker(engine=_engine(meta))
+
+    metrics = worker.tick()
+
+    assert metrics.done == 0
+    assert metrics.retried == 1
+    assert meta.done == []
+    assert meta.retried == [("job-1", "claim-1")]
+
+
 def test_sync_worker_propagates_claim_token_to_retry() -> None:
     meta = _Meta(_job(claim_token="claim-1"))
     worker = IndexJobWorker(engine=_engine(meta, fail=True))
@@ -427,6 +441,23 @@ def test_async_worker_replays_admitted_result_without_projection() -> None:
 
         assert metrics.done == 1
         assert engine.indexing.calls == 0
+
+    asyncio.run(run())
+
+
+def test_async_worker_does_not_ack_malformed_accepted_result_json() -> None:
+    async def run() -> None:
+        job = _admitted_job(claim_token="claim-1")
+        job.accepted_result_json = '{"operation":'
+        meta = _Meta(job)
+        worker = AsyncIndexJobWorker(engine=_engine(meta))
+
+        metrics = await worker.tick()
+
+        assert metrics.done == 0
+        assert metrics.retried == 1
+        assert meta.done == []
+        assert meta.retried == [("job-1", "claim-1")]
 
     asyncio.run(run())
 

@@ -199,12 +199,18 @@ def decode_projection_action(
 
 
 def is_projection_action_payload(result_json: str) -> bool:
-    """Recognize the versioned action family without rejecting legacy results."""
+    """Recognize projection actions and reject malformed accepted-result JSON.
+
+    Legacy accepted results are JSON objects too. Invalid JSON must not be
+    mistaken for an opaque legacy result and acknowledged without projection.
+    """
     try:
         value = json.loads(result_json)
     except (TypeError, ValueError):
-        return False
-    return isinstance(value, dict) and (
+        raise _fail("accepted index-job result is not valid JSON") from None
+    if not isinstance(value, dict):
+        raise _fail("accepted index-job result must be a JSON object")
+    return (
         "operation" in value
         or {"job_id", "entity_kind"}.issubset(value)
         or {"entity_id", "index_kind", "record"}.issubset(value)
